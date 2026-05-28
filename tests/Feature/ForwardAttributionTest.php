@@ -87,6 +87,34 @@ class ForwardAttributionTest extends TestCase
         $this->assertStringNotContainsString('Forwarded into', $note->body);
     }
 
+    public function test_forwarded_email_with_unparseable_sender_falls_back_to_forwarder(): void
+    {
+        $ticket = $this->makeTicket();
+
+        // Gmail-style banner makes isForwarded() true (genuinely hits the forward
+        // branch), but the From: line has no extractable email address, so
+        // parseOriginalSender() returns null and we must fall back to the forwarder.
+        $email = Email::create([
+            'direction'    => 'inbound',
+            'from_address' => 'charlie@couttspnw.com',
+            'from_name'    => 'Charlie Coutts',
+            'subject'      => "FW: Printer offline [{$ticket->display_id}]",
+            'body_text'    => "FYI\n\n---------- Forwarded message ---------\nFrom: Jane Doe\nDate: Thursday, May 28, 2026\nSubject: Printer offline\nTo: Charlie Coutts\n\nThe printer is still offline.",
+            'received_at'  => now(),
+        ]);
+
+        app(EmailService::class)->linkEmailToTicket($email, $ticket);
+
+        $note = TicketNote::where('ticket_id', $ticket->id)
+            ->where('email_id', $email->id)
+            ->first();
+
+        $this->assertNotNull($note);
+        $this->assertSame('Charlie Coutts', $note->author_name);
+        $this->assertSame(WhoType::EndUser, $note->who_type);
+        $this->assertStringNotContainsString('Forwarded into', $note->body);
+    }
+
     public function test_forwarded_email_does_not_create_a_new_ticket(): void
     {
         $ticket = $this->makeTicket();
