@@ -21,6 +21,7 @@ use App\Models\User;
 use App\Services\Graph\GraphClient;
 use App\Support\AiConfig;
 use App\Services\Graph\GraphClientException;
+use App\Services\Email\ForwardedEmailParser;
 use App\Services\Mesh\MeshEmailParser;
 use App\Services\Zorus\ZorusEmailParser;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
@@ -489,13 +490,16 @@ PROMPT;
     }
 
     /**
-     * Match an inbound email to an existing ticket via two strategies:
-     * 1. conversation_id — same Graph conversation thread (most reliable)
-     * 2. In-Reply-To — RFC 5322 header chain
+     * Match an inbound email to an existing ticket, in priority order:
+     *  1. conversation_id  — same Graph conversation thread (most reliable)
+     *  2. In-Reply-To      — RFC 5322 header chain
+     *  3. Subject [T-123]  — Sound PSA ticket ID
+     *  4. Subject [ID:123] — Halo ticket ID (legacy)
+     *  5. Subject [#123]   — Halo display ID (legacy)
      *
-     * Subject matching excluded — too noisy for MVP.
-     * Known gap: client emails with Re: [T-123] in subject but no In-Reply-To header
-     * will miss the match.
+     * Subject-token matching lets staff thread a forwarded email onto an
+     * existing ticket by putting the ticket's display ID in the subject — the
+     * basis of the forward-attribution flow (see ForwardedEmailParser).
      */
     private function matchToExistingTicket(Email $email): ?Ticket
     {
@@ -592,10 +596,27 @@ PROMPT;
                 $bodyHtml = HtmlSanitizer::sanitize($bodyHtml);
             }
 
+            // Forwarded customer emails arrive with the forwarder (a technician)
+            // as the envelope sender. Recover the original sender so the note is
+            // attributed to the customer, with a provenance line naming the forwarder.
+            $authorName = $email->from_name ?? $email->from_address;
+            if (ForwardedEmailParser::isForwarded($email)) {
+                $sender = ForwardedEmailParser::parseOriginalSender($email);
+                if ($sender && $sender['email'] !== strtolower($email->from_address)) {
+                    $authorName = $sender['name'] ?? $sender['email'];
+                    $forwarder  = $email->from_name ?? $email->from_address;
+                    $provenance = "[Forwarded into {$ticket->display_id} by {$forwarder}]";
+                    $body = $provenance . "\n\n" . ($body !== '' ? $body : '[see attachments]');
+                    if ($bodyHtml !== null) {
+                        $bodyHtml = '<p>' . e($provenance) . '</p>' . $bodyHtml;
+                    }
+                }
+            }
+
             $note = TicketNote::create([
                 'ticket_id'   => $ticket->id,
                 'author_id'   => null,
-                'author_name' => $email->from_name ?? $email->from_address,
+                'author_name' => $authorName,
                 'who_type'    => WhoType::EndUser,
                 'email_id'    => $email->id,
                 'body'        => $body ?: '[see attachments]',
