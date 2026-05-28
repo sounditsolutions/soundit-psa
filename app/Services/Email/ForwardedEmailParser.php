@@ -44,6 +44,12 @@ class ForwardedEmailParser
     {
         $text = self::text($email);
 
+        // If a Gmail-style banner is present, search after it so a From: line
+        // above the forwarded block can't be picked up by mistake.
+        if (preg_match('/-{2,}\s*forwarded message\s*-{2,}/i', $text, $bm, PREG_OFFSET_CAPTURE)) {
+            $text = substr($text, $bm[0][1]);
+        }
+
         if (! preg_match('/^\s*from\s*:\s*(.+)$/im', $text, $m)) {
             return null;
         }
@@ -56,8 +62,10 @@ class ForwardedEmailParser
 
         $address = strtolower($em[0]);
 
-        // Name is whatever precedes the address / angle-bracket, de-quoted.
-        $name = trim(preg_replace('/<[^>]*>/', '', $line));
+        // Name is whatever precedes the address. Remove an angle-bracketed or
+        // bare address, then de-quote; null it out if nothing meaningful remains.
+        $name = preg_replace('/<[^>]*>/', '', $line);
+        $name = trim(str_ireplace($address, '', $name));
         $name = trim($name, " \t\"'");
         if ($name === '' || strcasecmp($name, $address) === 0) {
             $name = null;
@@ -83,7 +91,7 @@ class ForwardedEmailParser
     {
         $text = $email->body_text;
         if ($text === null || trim($text) === '') {
-            $text = strip_tags((string) $email->body_html);
+            $text = html_entity_decode(strip_tags((string) $email->body_html), ENT_QUOTES | ENT_HTML5);
         }
 
         return (string) $text;

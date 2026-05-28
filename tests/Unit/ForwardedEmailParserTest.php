@@ -67,4 +67,41 @@ class ForwardedEmailParserTest extends TestCase
         $this->assertNull($sender['name']);
         $this->assertSame('jane@acme.com', $sender['email']);
     }
+
+    public function test_forward_prefix_without_forward_block_is_not_forwarded(): void
+    {
+        $email = new Email([
+            'subject'   => 'FW: Printer offline [T-123]',
+            'body_text' => "Just a heads up, no quoted message here.",
+        ]);
+
+        $this->assertFalse(ForwardedEmailParser::isForwarded($email));
+    }
+
+    public function test_parses_sender_from_html_body_when_text_is_empty(): void
+    {
+        $email = new Email([
+            'subject'   => 'FW: Printer offline [T-123]',
+            'body_text' => null,
+            'body_html' => "<div>FYI</div>\n<div>From: Jane Doe &lt;jane@acme.com&gt;</div>\n<div>Sent: today</div>\n<div>Subject: Printer offline</div>\n<div>still broken</div>",
+        ]);
+
+        $this->assertTrue(ForwardedEmailParser::isForwarded($email));
+
+        $sender = ForwardedEmailParser::parseOriginalSender($email);
+        $this->assertSame('Jane Doe', $sender['name']);
+        $this->assertSame('jane@acme.com', $sender['email']);
+    }
+
+    public function test_unquoted_bare_address_is_stripped_from_name(): void
+    {
+        $email = new Email([
+            'subject'   => 'FW: Help [T-9]',
+            'body_text' => "From: Jane Doe jane@acme.com\nSent: today\nSubject: Help\n\nbody",
+        ]);
+
+        $sender = ForwardedEmailParser::parseOriginalSender($email);
+        $this->assertSame('Jane Doe', $sender['name']);
+        $this->assertSame('jane@acme.com', $sender['email']);
+    }
 }
