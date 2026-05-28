@@ -1,0 +1,99 @@
+/* Client Portal — Supplemental styles
+   Loaded after app.css. Reuses brand variables from :root. */
+
+/* ── Guest pages (login, password reset) ── */
+.portal-guest-logo {
+    max-height: 60px;
+    width: auto;
+}
+
+.portal-guest-page .card {
+    border-radius: 12px;
+    border: 1px solid #e5e7eb;
+}
+
+/* ── Portal nav ── */
+.portal-navbar {
+    background: var(--primary-dark);
+}
+
+.portal-navbar .nav-link {
+    color: rgba(255, 255, 255, 0.85);
+    font-family: 'Montserrat', sans-serif;
+    font-weight: 600;
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    padding: 0.5rem 0.75rem;
+}
+
+.portal-navbar .nav-link:hover,
+.portal-navbar .nav-link.active {
+    color: var(--accent);
+}
+
+.portal-navbar .navbar-brand {
+    color: #fff;
+    font-family: 'Montserrat', sans-serif;
+    font-weight: 700;
+}
+
+.portal-navbar .navbar-brand img {
+    max-height: 32px;
+    width: auto;
+}
+
+/* ── Dashboard cards ── */
+.portal-stat-card {
+    border-radius: 12px;
+    border: 1px solid #e5e7eb;
+    transition: transform 0.15s, box-shadow 0.15s;
+}
+
+.portal-stat-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+}
+
+.portal-stat-card .stat-value {
+    font-size: 2rem;
+    font-weight: 700;
+    color: var(--primary);
+    font-family: 'Montserrat', sans-serif;
+}
+
+.portal-stat-card .stat-label {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    font-weight: 600;
+}
+
+/* ── Portal content area ── */
+.portal-content {
+    min-height: calc(100vh - 120px);
+}
+
+/* ── Ticket timeline ── */
+.portal-note {
+    border-left: 3px solid #e5e7eb;
+    padding-left: 1rem;
+    margin-bottom: 1.5rem;
+}
+
+.portal-note.note-staff {
+    border-left-color: var(--primary);
+}
+
+.portal-note.note-client {
+    border-left-color: #2d8a4e;
+}
+
+/* ── Footer ── */
+.portal-footer {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    border-top: 1px solid #e5e7eb;
+    padding: 1rem 0;
+}

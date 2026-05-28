@@ -1,0 +1,640 @@
+/* Softphone widget — loaded in popup window */
+
+:root {
+    --sp-navy: #1a365d;
+    --sp-navy-light: #234179;
+    --sp-navy-dark: #0f2440;
+    --sp-gold: #fed136;
+    --sp-gold-hover: #fdc50c;
+    --sp-green: #16a34a;
+    --sp-green-hover: #15803d;
+    --sp-red: #dc2626;
+    --sp-red-hover: #b91c1c;
+    --sp-amber: #f59e0b;
+    --sp-gray: #6b7280;
+    --sp-gray-light: #e5e7eb;
+    --sp-bg: #f8fafc;
+}
+
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: #fff;
+    overflow: hidden;
+}
+
+@keyframes pulse-ring-btn {
+    0% { box-shadow: 0 0 0 0 rgba(22, 163, 74, 0.6); }
+    70% { box-shadow: 0 0 0 12px rgba(22, 163, 74, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(22, 163, 74, 0); }
+}
+
+/* ── Panel (fills popup window) ── */
+.sp-panel {
+    width: 100%;
+    height: 100vh;
+    background: #fff;
+    border-radius: 0;
+    box-shadow: none;
+    overflow-y: auto;
+    overflow-x: hidden;
+    position: static;
+    border: none;
+}
+
+/* ── Header ── */
+.sp-header {
+    background: var(--sp-navy-dark);
+    color: #fff;
+    padding: 10px 14px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.sp-title {
+    font-family: 'Montserrat', sans-serif;
+    font-weight: 700;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+.sp-status {
+    font-size: 0.7rem;
+    color: rgba(255, 255, 255, 0.6);
+    margin-left: auto;
+    margin-right: 4px;
+}
+
+.sp-status.connected {
+    color: var(--sp-green);
+}
+
+.sp-status.error {
+    color: var(--sp-red);
+}
+
+.sp-header-btn {
+    background: none;
+    border: none;
+    color: rgba(255, 255, 255, 0.7);
+    cursor: pointer;
+    font-size: 1rem;
+    padding: 2px;
+    line-height: 1;
+}
+
+.sp-header-btn:hover {
+    color: var(--sp-gold);
+}
+
+/* ── Number input ── */
+.sp-number-row {
+    padding: 12px 14px 4px;
+}
+
+.sp-number-input {
+    width: 100%;
+    border: 1px solid var(--sp-gray-light);
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: 1.1rem;
+    font-weight: 500;
+    text-align: center;
+    letter-spacing: 1px;
+    outline: none;
+    transition: border-color 0.2s;
+}
+
+.sp-number-input:focus {
+    border-color: var(--sp-navy-light);
+    box-shadow: 0 0 0 3px rgba(26, 54, 93, 0.12);
+}
+
+/* ── Dial pad ── */
+.sp-dialpad {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+    padding: 8px 14px;
+}
+
+.sp-key {
+    background: var(--sp-bg);
+    border: 1px solid var(--sp-gray-light);
+    border-radius: 10px;
+    padding: 10px 0;
+    font-size: 1.2rem;
+    font-weight: 600;
+    color: var(--sp-navy);
+    cursor: pointer;
+    transition: all 0.15s;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    line-height: 1.2;
+}
+
+.sp-key:hover {
+    background: var(--sp-navy);
+    color: #fff;
+    border-color: var(--sp-navy);
+}
+
+.sp-key:active {
+    transform: scale(0.95);
+}
+
+.sp-sub {
+    font-size: 0.55rem;
+    font-weight: 500;
+    color: var(--sp-gray);
+    letter-spacing: 2px;
+}
+
+.sp-key:hover .sp-sub {
+    color: rgba(255, 255, 255, 0.7);
+}
+
+.sp-key-sm {
+    padding: 6px 0;
+    font-size: 0.95rem;
+}
+
+.sp-dialpad-small {
+    padding: 4px 14px 8px;
+}
+
+/* ── Call/answer/decline buttons ── */
+.sp-actions {
+    padding: 4px 14px 14px;
+    text-align: center;
+}
+
+.sp-call-btn {
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    border: none;
+    background: var(--sp-green);
+    color: #fff;
+    font-size: 1.3rem;
+    cursor: pointer;
+    transition: background 0.2s, transform 0.2s;
+    box-shadow: 0 4px 12px rgba(22, 163, 74, 0.3);
+}
+
+.sp-call-btn:hover {
+    background: var(--sp-green-hover);
+    transform: scale(1.08);
+}
+
+.sp-call-btn:disabled {
+    background: var(--sp-gray);
+    cursor: not-allowed;
+    transform: none;
+    box-shadow: none;
+}
+
+/* ── Incoming call ── */
+.sp-incoming-info {
+    text-align: center;
+    padding: 24px 14px 16px;
+    position: relative;
+}
+
+.sp-incoming-icon {
+    font-size: 2rem;
+    color: var(--sp-green);
+    animation: bounce-phone 1s infinite;
+}
+
+@keyframes bounce-phone {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-6px); }
+}
+
+.sp-pulse-ring {
+    position: absolute;
+    top: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 60px;
+    height: 60px;
+    border-radius: 50%;
+    border: 3px solid var(--sp-green);
+    animation: pulse-ring-anim 1.5s infinite;
+}
+
+@keyframes pulse-ring-anim {
+    0% { transform: translateX(-50%) scale(0.8); opacity: 1; }
+    100% { transform: translateX(-50%) scale(1.6); opacity: 0; }
+}
+
+.sp-caller-number {
+    font-size: 1.2rem;
+    font-weight: 600;
+    color: var(--sp-navy);
+    margin-top: 12px;
+}
+
+.sp-caller-name {
+    font-size: 0.95rem;
+    font-weight: 500;
+    color: var(--sp-navy);
+    margin-top: 2px;
+}
+
+.sp-caller-client {
+    font-size: 0.8rem;
+    color: var(--sp-gray);
+    margin-top: 2px;
+}
+
+/* ── Context panel (rich caller ID) ── */
+.sp-context-panel {
+    margin-top: 8px;
+    padding: 8px 10px;
+    background: var(--sp-bg);
+    border: 1px solid var(--sp-gray-light);
+    border-radius: 8px;
+    text-align: left;
+    max-height: 280px;
+    overflow-y: auto;
+}
+
+.sp-context-panel:empty {
+    display: none;
+}
+
+.sp-context-panel::-webkit-scrollbar {
+    width: 4px;
+}
+
+.sp-context-panel::-webkit-scrollbar-thumb {
+    background: var(--sp-gray-light);
+    border-radius: 2px;
+}
+
+.sp-context-link {
+    color: var(--sp-navy);
+    font-weight: 500;
+    text-decoration: none;
+    font-size: 0.8rem;
+}
+
+.sp-context-link:hover {
+    text-decoration: underline;
+    color: var(--sp-navy-light);
+}
+
+.sp-context-call-link {
+    display: inline-block;
+    margin-top: 4px;
+    font-size: 0.7rem;
+    color: var(--sp-gray);
+    text-decoration: none;
+}
+
+.sp-context-call-link:hover {
+    color: var(--sp-navy);
+    text-decoration: underline;
+}
+
+.sp-ticket-list {
+    list-style: none;
+    margin: 6px 0 0;
+    padding: 0;
+}
+
+.sp-ticket-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 0;
+    font-size: 0.72rem;
+    border-bottom: 1px solid var(--sp-gray-light);
+    text-decoration: none;
+    color: inherit;
+}
+
+.sp-ticket-item:last-child {
+    border-bottom: none;
+}
+
+.sp-ticket-item:hover {
+    background: rgba(26, 54, 93, 0.04);
+}
+
+.sp-ticket-id {
+    font-weight: 600;
+    color: var(--sp-navy);
+    white-space: nowrap;
+    font-size: 0.68rem;
+}
+
+.sp-ticket-subject {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--sp-gray);
+}
+
+.sp-ticket-badge {
+    font-size: 0.6rem;
+    padding: 1px 5px;
+    border-radius: 4px;
+    color: #fff;
+    white-space: nowrap;
+}
+
+.sp-no-tickets {
+    font-size: 0.72rem;
+    color: var(--sp-gray);
+    margin-top: 4px;
+}
+
+.sp-incoming-actions {
+    display: flex;
+    justify-content: center;
+    gap: 24px;
+    padding: 0 14px 20px;
+}
+
+.sp-answer-btn {
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    border: none;
+    background: var(--sp-green);
+    color: #fff;
+    font-size: 1.3rem;
+    cursor: pointer;
+    transition: transform 0.2s;
+    animation: pulse-ring-btn 1.2s infinite;
+}
+
+.sp-answer-btn:hover {
+    transform: scale(1.08);
+}
+
+.sp-decline-btn {
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    border: none;
+    background: var(--sp-red);
+    color: #fff;
+    font-size: 1.3rem;
+    cursor: pointer;
+    transition: transform 0.2s;
+}
+
+.sp-decline-btn:hover {
+    background: var(--sp-red-hover);
+    transform: scale(1.08);
+}
+
+/* ── Active call ── */
+.sp-active-info {
+    text-align: center;
+    padding: 16px 14px 8px;
+    border-bottom: 1px solid var(--sp-gray-light);
+}
+
+.sp-timer {
+    font-size: 1.3rem;
+    font-weight: 700;
+    color: var(--sp-gold);
+    font-family: 'Montserrat', sans-serif;
+    margin-top: 6px;
+    letter-spacing: 1px;
+}
+
+.sp-hold-label {
+    font-size: 0.7rem;
+    font-weight: 700;
+    color: var(--sp-amber);
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    margin-top: 4px;
+    animation: blink 1.5s infinite;
+}
+
+@keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+}
+
+.sp-controls {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 16px;
+    padding: 10px 14px;
+}
+
+.sp-control-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    background: var(--sp-bg);
+    border: 1px solid var(--sp-gray-light);
+    border-radius: 10px;
+    padding: 8px 16px;
+    cursor: pointer;
+    transition: all 0.2s;
+    font-size: 1.1rem;
+    color: var(--sp-navy);
+}
+
+.sp-control-btn span {
+    font-size: 0.6rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.sp-control-btn:hover {
+    background: var(--sp-navy);
+    color: #fff;
+    border-color: var(--sp-navy);
+}
+
+.sp-control-btn.active {
+    background: var(--sp-navy);
+    color: var(--sp-gold);
+    border-color: var(--sp-navy);
+}
+
+.sp-control-btn.hold-active {
+    background: var(--sp-amber);
+    color: #fff;
+    border-color: var(--sp-amber);
+}
+
+.sp-hangup-btn {
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    border: none;
+    background: var(--sp-red);
+    color: #fff;
+    font-size: 1.2rem;
+    cursor: pointer;
+    transition: background 0.2s, transform 0.2s;
+}
+
+.sp-hangup-btn:hover {
+    background: var(--sp-red-hover);
+    transform: scale(1.08);
+}
+
+/* ── Section labels ── */
+.sp-section-label {
+    font-size: 0.65rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--sp-gray);
+    margin-top: 8px;
+    margin-bottom: 2px;
+}
+
+/* ── Activity stream ── */
+.sp-activity-scroll {
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+.sp-activity-scroll::-webkit-scrollbar {
+    width: 4px;
+}
+
+.sp-activity-scroll::-webkit-scrollbar-thumb {
+    background: var(--sp-gray-light);
+    border-radius: 2px;
+}
+
+.sp-activity-item {
+    padding: 4px 0;
+    border-bottom: 1px solid var(--sp-gray-light);
+    font-size: 0.7rem;
+}
+
+.sp-activity-item:last-child {
+    border-bottom: none;
+}
+
+.sp-activity-header {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    color: inherit;
+    text-decoration: none;
+}
+
+.sp-expandable .sp-activity-header {
+    cursor: pointer;
+}
+
+.sp-expandable .sp-activity-header:hover {
+    background: rgba(26, 54, 93, 0.04);
+}
+
+.sp-activity-icon {
+    font-size: 0.7rem;
+    color: var(--sp-gray);
+    margin-top: 2px;
+    flex-shrink: 0;
+}
+
+.sp-activity-content {
+    flex: 1;
+    min-width: 0;
+}
+
+.sp-activity-who {
+    font-weight: 600;
+    color: var(--sp-navy);
+}
+
+.sp-activity-ticket {
+    font-weight: 600;
+    color: var(--sp-navy-light);
+    font-size: 0.65rem;
+}
+
+.sp-activity-label {
+    font-size: 0.6rem;
+    color: var(--sp-gray);
+}
+
+.sp-activity-preview {
+    color: var(--sp-gray);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 0.68rem;
+}
+
+.sp-activity-time {
+    font-size: 0.6rem;
+    color: var(--sp-gray);
+    white-space: nowrap;
+    flex-shrink: 0;
+    margin-top: 2px;
+}
+
+.sp-activity-chevron {
+    font-size: 0.6rem;
+    color: var(--sp-gray);
+    flex-shrink: 0;
+    margin-top: 3px;
+    transition: transform 0.15s;
+}
+
+.sp-activity-open {
+    font-size: 0.6rem;
+    color: var(--sp-gray);
+    flex-shrink: 0;
+    margin-top: 2px;
+    text-decoration: none;
+}
+
+.sp-activity-open:hover {
+    color: var(--sp-navy);
+}
+
+.sp-activity-body {
+    margin: 4px 0 2px 18px;
+    padding: 4px 6px;
+    background: #f1f5f9;
+    border-radius: 4px;
+    font-size: 0.68rem;
+    color: var(--sp-navy);
+    line-height: 1.4;
+}
+
+.sp-activity-body-text {
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+/* ── Error toast ── */
+.sp-error {
+    background: var(--sp-red);
+    color: #fff;
+    text-align: center;
+    padding: 8px 14px;
+    font-size: 0.8rem;
+    font-weight: 500;
+}

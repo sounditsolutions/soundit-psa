@@ -1,0 +1,270 @@
+<?php
+
+namespace App\Http\Controllers\Api;
+
+use App\Http\Controllers\Controller;
+use App\Models\McpAuditLog;
+use App\Models\User;
+use App\Services\Assistant\AssistantToolDefinitions;
+use App\Services\Assistant\AssistantToolExecutor;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
+
+/**
+ * MCP server (Streamable HTTP transport, JSON-RPC 2.0) exposing the existing
+ * AssistantToolExecutor surface to remote Claude clients via Anthropic's MCP
+ * connector beta.
+ *
+ * Single bot-identity model: every call here is treated as the configured
+ * service-account user (no per-Teams-user identity propagates through the
+ * MCP connector — see psa-axy notes). Allowlist gating happens on the bot
+ * side, not here.
+ *
+ * Only the three tool-related MCP methods are implemented — connector
+ * limitation says only tool calls are supported anyway.
+ */
+class McpStaffController extends Controller
+{
+    private const PROTOCOL_VERSION = '2025-03-26';
+    private const SERVER_NAME = 'PSA Staff';
+    private const SERVER_VERSION = '1.0.0';
+
+    public function handle(Request $request): JsonResponse
+    {
+        $body = $request->json()->all() ?? [];
+
+        // JSON-RPC 2.0 supports batched requests (arrays). MCP via Streamable
+        // HTTP can send these. We don't currently use any tool that benefits
+        // from batching, but reject cleanly with diagnostics rather than the
+        // generic -32600 so the bot side can see what happened.
+        if (is_array($body) && array_is_list($body)) {
+            Log::warning('[MCP/staff] Batched request received (not supported)', [
+                'count' => count($body),
+                'first_method' => $body[0]['method'] ?? null,
+            ]);
+
+            return $this->error(null, -32600, 'Batched requests are not supported by this server');
+        }
+
+        $id = $body['id'] ?? null;
+        $method = $body['method'] ?? null;
+        $params = $body['params'] ?? [];
+
+        if (! is_array($body) || empty($method)) {
+            // Surface the actual incoming shape so we can fix mismatches. Raw
+            // body capped at 1KB; sensitive tokens are in the Authorization
+            // header, not the body.
+            $raw = (string) $request->getContent();
+            Log::warning('[MCP/staff] Invalid Request — empty method', [
+                'content_type' => $request->header('Content-Type'),
+                'has_body' => $raw !== '',
+                'body_preview' => mb_substr($raw, 0, 1024),
+                'parsed_keys' => is_array($body) ? array_keys($body) : 'non-array',
+            ]);
+
+            return $this->error($id, -32600, 'Invalid Request');
+        }
+
+        $start = microtime(true);
+
+        try {
+            return match ($method) {
+                'initialize' => $this->initialize($id, $params),
+                'notifications/initialized' => $this->ack(),
+                'tools/list' => $this->listTools($id, $request, $start),
+                'tools/call' => $this->callTool($id, $params, $request, $start),
+                default => $this->error($id, -32601, "Method not found: {$method}"),
+            };
+        } catch (\Throwable $e) {
+            Log::error('[MCP/staff] Unhandled error', [
+                'method' => $method,
+                'error' => $e->getMessage(),
+                'trace' => mb_substr($e->getTraceAsString(), 0, 500),
+            ]);
+
+            return $this->error($id, -32603, 'Internal error: '.$e->getMessage());
+        }
+    }
+
+    private function initialize(mixed $id, array $params): JsonResponse
+    {
+        // We don't persist client capabilities — the server is stateless and
+        // every request includes the JSON-RPC envelope. Just echo a compatible
+        // protocol version + advertise the only capability we implement.
+        return response()->json([
+            'jsonrpc' => '2.0',
+            'id' => $id,
+            'result' => [
+                'protocolVersion' => $params['protocolVersion'] ?? self::PROTOCOL_VERSION,
+                'capabilities' => ['tools' => new \stdClass()],
+                'serverInfo' => [
+                    'name' => self::SERVER_NAME,
+                    'version' => self::SERVER_VERSION,
+                ],
+            ],
+        ]);
+    }
+
+    /**
+     * notifications/initialized has no JSON-RPC id and expects no response,
+     * but Laravel needs to return something. Empty 204 keeps the wire clean.
+     */
+    private function ack(): JsonResponse
+    {
+        return response()->json(null, 204);
+    }
+
+    private function listTools(mixed $id, Request $request, float $start): JsonResponse
+    {
+        // Expose the full tool surface — both the general (no client context
+        // required) and the client-scoped sets, deduped. For client-scoped
+        // tools, inject `client_id` into the input schema — the AI picks it
+        // up via find_clients() and passes it along on the call. The boundary
+        // strips client_id off before dispatch, so the executor doesn't need
+        // to know about MCP.
+        $generalTools = AssistantToolDefinitions::getTools(hasClient: false);
+        $generalNames = array_flip(array_column($generalTools, 'name'));
+
+        $clientScopedTools = AssistantToolDefinitions::getTools(hasClient: true);
+
+        // Merge by tool name (general tools win on duplicate names).
+        $merged = [];
+        foreach (array_merge($clientScopedTools, $generalTools) as $t) {
+            $merged[$t['name']] = $t;
+        }
+        $allTools = array_values($merged);
+
+        // find_persons / find_assets accept an OPTIONAL client_id — they
+        // cross-client search when omitted. All other client-scoped tools
+        // require it.
+        $clientIdOptionalFor = ['find_persons', 'find_assets'];
+
+        $translated = array_map(function ($t) use ($generalNames, $clientIdOptionalFor) {
+            $schema = $t['input_schema'] ?? ['type' => 'object', 'properties' => new \stdClass()];
+            $isClientScoped = ! isset($generalNames[$t['name']]);
+
+            if ($isClientScoped) {
+                $props = (array) ($schema['properties'] ?? []);
+                $clientIdRequired = ! in_array($t['name'], $clientIdOptionalFor, true);
+                $props['client_id'] = [
+                    'type' => 'integer',
+                    'description' => $clientIdRequired
+                        ? 'PSA client ID (required). Use find_clients(query) to resolve a name to an ID.'
+                        : 'PSA client ID (optional). Provide to scope the search to one client; omit to search across all clients.',
+                ];
+                $schema['properties'] = $props;
+                if ($clientIdRequired) {
+                    $required = $schema['required'] ?? [];
+                    if (! in_array('client_id', $required, true)) {
+                        $required[] = 'client_id';
+                    }
+                    $schema['required'] = $required;
+                }
+            }
+
+            return [
+                'name' => $t['name'],
+                'description' => $t['description'] ?? '',
+                'inputSchema' => $schema,
+            ];
+        }, $allTools);
+
+        $this->audit('tools/list', null, null, 'success', null, $start, $request);
+
+        return response()->json([
+            'jsonrpc' => '2.0',
+            'id' => $id,
+            'result' => ['tools' => $translated],
+        ]);
+    }
+
+    private function callTool(mixed $id, array $params, Request $request, float $start): JsonResponse
+    {
+        $name = $params['name'] ?? null;
+        $arguments = is_array($params['arguments'] ?? null) ? $params['arguments'] : [];
+
+        if (! $name) {
+            return $this->error($id, -32602, 'Missing tool name');
+        }
+
+        // Extract client_id from the arguments — this is how client-scoped
+        // tools get their context in the MCP world. Strip it before dispatch
+        // so it doesn't get passed to tools that don't expect it.
+        $clientId = isset($arguments['client_id']) ? (int) $arguments['client_id'] : null;
+        unset($arguments['client_id']);
+
+        // Service-account identity. The triage system user is repurposed here —
+        // when we add proper Teams-sender forwarding (see psa-axy notes) the
+        // actor field will reflect the real user.
+        $userId = \App\Support\TriageConfig::systemUserId();
+        $executor = new AssistantToolExecutor(ticket: null, clientId: $clientId, userId: $userId);
+
+        try {
+            $result = $executor->execute($name, is_array($arguments) ? $arguments : []);
+            $isError = is_array($result) && isset($result['error']);
+
+            $this->audit(
+                'tools/call', $name, $arguments,
+                $isError ? 'error' : 'success',
+                $isError ? (string) $result['error'] : null,
+                $start, $request,
+            );
+
+            return response()->json([
+                'jsonrpc' => '2.0',
+                'id' => $id,
+                'result' => [
+                    'content' => [
+                        ['type' => 'text', 'text' => json_encode($result, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)],
+                    ],
+                    'isError' => $isError,
+                ],
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning('[MCP/staff] Tool execution failed', [
+                'tool' => $name,
+                'error' => $e->getMessage(),
+            ]);
+
+            $this->audit('tools/call', $name, $arguments, 'error', $e->getMessage(), $start, $request);
+
+            return response()->json([
+                'jsonrpc' => '2.0',
+                'id' => $id,
+                'result' => [
+                    'content' => [['type' => 'text', 'text' => 'Tool execution failed: '.$e->getMessage()]],
+                    'isError' => true,
+                ],
+            ]);
+        }
+    }
+
+    private function error(mixed $id, int $code, string $message): JsonResponse
+    {
+        return response()->json([
+            'jsonrpc' => '2.0',
+            'id' => $id,
+            'error' => ['code' => $code, 'message' => $message],
+        ]);
+    }
+
+    private function audit(string $method, ?string $tool, mixed $args, string $status, ?string $error, float $start, Request $request): void
+    {
+        try {
+            McpAuditLog::create([
+                'server_name' => 'staff',
+                'method' => $method,
+                'tool_name' => $tool,
+                'arguments' => is_array($args) ? $args : null,
+                'status' => $status,
+                'error_message' => $error ? mb_substr($error, 0, 1000) : null,
+                'duration_ms' => (int) round((microtime(true) - $start) * 1000),
+                'actor_label' => 'teams-bot',
+                'source_ip' => $request->ip(),
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning('[MCP/staff] Audit log write failed: '.$e->getMessage());
+        }
+    }
+}

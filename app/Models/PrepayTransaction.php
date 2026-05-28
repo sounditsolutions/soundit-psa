@@ -1,0 +1,98 @@
+<?php
+
+namespace App\Models;
+
+use App\Enums\PrepayTransactionSource;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+
+class PrepayTransaction extends Model
+{
+    protected $fillable = [
+        'contract_id',
+        'halo_id',
+        'source',
+        'invoice_id',
+        'ticket_note_id',
+        'phone_call_id',
+        'user_id',
+        'date',
+        'hours',
+        'amount',
+        'description',
+        'note',
+        'invoice_number',
+        'invoice_date',
+        'expiry_date',
+    ];
+
+    protected function casts(): array
+    {
+        return [
+            'source' => PrepayTransactionSource::class,
+            'date' => 'datetime',
+            'hours' => 'decimal:4',
+            'amount' => 'decimal:2',
+            'invoice_date' => 'datetime',
+            'expiry_date' => 'datetime',
+        ];
+    }
+
+    // ── Relations ──
+
+    public function contract(): BelongsTo
+    {
+        return $this->belongsTo(Contract::class);
+    }
+
+    public function invoice(): BelongsTo
+    {
+        return $this->belongsTo(Invoice::class);
+    }
+
+    public function user(): BelongsTo
+    {
+        return $this->belongsTo(User::class);
+    }
+
+    public function ticketNote(): BelongsTo
+    {
+        return $this->belongsTo(TicketNote::class);
+    }
+
+    public function phoneCall(): BelongsTo
+    {
+        return $this->belongsTo(PhoneCall::class);
+    }
+
+    // ── Scopes ──
+
+    /**
+     * Consumption transactions only — excludes deposits and credits.
+     * Used for burn rate calculation and usage reporting.
+     */
+    public function scopeConsumption(Builder $query): Builder
+    {
+        return $query->where(function (Builder $q) {
+            $q->whereNotIn('source', [
+                PrepayTransactionSource::InvoiceDeposit->value,
+                PrepayTransactionSource::InvoiceReversal->value,
+                PrepayTransactionSource::ManualCredit->value,
+            ])->orWhereNull('source');
+        });
+    }
+
+    /**
+     * Format the value for display. Caller passes the flag explicitly
+     * to avoid N+1 loading the parent contract on every row.
+     */
+    public function formatValue(bool $asAmount): string
+    {
+        if ($asAmount) {
+            return $this->amount !== null ? '$' . number_format($this->amount, 2) : '-';
+        }
+
+        return $this->hours !== null ? number_format($this->hours, 2) . ' hrs' : '-';
+    }
+}

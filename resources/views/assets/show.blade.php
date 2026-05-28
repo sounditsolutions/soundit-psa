@@ -1,0 +1,2158 @@
+@extends('layouts.app')
+
+@section('title', ($asset->hostname ?: $asset->name) . '')
+
+@section('content')
+<div class="row mb-3">
+    <div class="col">
+        @if($asset->client)
+            <a href="{{ route('clients.show', $asset->client) }}" class="text-decoration-none text-muted">
+                <i class="bi bi-arrow-left me-1"></i>Back to {{ $asset->client->name }}
+            </a>
+        @else
+            <a href="{{ route('assets.index') }}" class="text-decoration-none text-muted">
+                <i class="bi bi-arrow-left me-1"></i>Back to Assets
+            </a>
+        @endif
+    </div>
+</div>
+
+@if($asset->trashed())
+    <div class="alert alert-danger d-flex align-items-center justify-content-between mb-3">
+        <div>
+            <i class="bi bi-trash me-2"></i>
+            This asset was deleted on {{ $asset->deleted_at->toAppTz()->format('M j, Y g:i A') }}.
+        </div>
+        <form method="POST" action="{{ route('assets.restore', $asset) }}">
+            @csrf
+            <button type="submit" class="btn btn-outline-danger btn-sm">
+                <i class="bi bi-arrow-counterclockwise me-1"></i>Restore
+            </button>
+        </form>
+    </div>
+@endif
+
+<div class="row mb-4">
+    <div class="col d-flex align-items-center justify-content-between">
+        <div>
+            <h4 class="section-title mb-1">{{ $asset->hostname ?: $asset->name }}</h4>
+            @if($asset->hostname && $asset->hostname !== $asset->name)
+                <small class="text-muted">{{ $asset->name }}</small>
+            @endif
+        </div>
+        <div class="d-flex align-items-center gap-2">
+            @php $status = $asset->statusBadge; @endphp
+            @if($status === 'Online')
+                <span class="badge bg-success fs-6" title="Online per RMM">Online</span>
+            @elseif($status === 'Offline')
+                <span class="badge bg-danger fs-6" title="Offline per RMM">Offline</span>
+            @else
+                <span class="badge bg-secondary fs-6" title="No RMM status available">Unknown</span>
+            @endif
+            @unless($asset->is_active)
+                <span class="badge bg-secondary fs-6">Inactive</span>
+            @endunless
+            @if($asset->contracts->isNotEmpty())
+                @foreach($asset->contracts as $coveredContract)
+                    <a href="{{ route('contracts.show', $coveredContract) }}" class="badge bg-primary text-decoration-none" title="Covered by contract">
+                        <i class="bi bi-file-earmark-text me-1"></i>{{ $coveredContract->name }}
+                    </a>
+                @endforeach
+            @endif
+            <a href="{{ route('assets.edit', $asset) }}" class="btn btn-outline-primary btn-sm">
+                <i class="bi bi-pencil me-1"></i>Edit
+            </a>
+            <button type="button" class="btn btn-outline-danger btn-sm" title="Delete device"
+                    data-bs-toggle="modal" data-bs-target="#deleteAssetModal">
+                <i class="bi bi-trash"></i>
+            </button>
+        </div>
+    </div>
+</div>
+
+{{-- Tab Navigation --}}
+<ul class="nav nav-tabs mb-0" role="tablist">
+    <li class="nav-item">
+        @if(($activeTab ?? '') === 'tickets')
+            <a class="nav-link" href="{{ route('assets.show', $asset) }}">Overview</a>
+        @else
+            <a class="nav-link active" data-bs-toggle="tab" href="#tab-overview">Overview</a>
+        @endif
+    </li>
+    <li class="nav-item">
+        @if(($activeTab ?? '') === 'tickets')
+            <a class="nav-link" href="{{ route('assets.show', $asset) }}#tab-network">Network</a>
+        @else
+            <a class="nav-link" data-bs-toggle="tab" href="#tab-network" data-ajax-section="network">Network</a>
+        @endif
+    </li>
+    <li class="nav-item">
+        @if(($activeTab ?? '') === 'tickets')
+            <a class="nav-link" href="{{ route('assets.show', $asset) }}#tab-storage">Storage</a>
+        @else
+            <a class="nav-link" data-bs-toggle="tab" href="#tab-storage" data-ajax-section="storage">Storage</a>
+        @endif
+    </li>
+    <li class="nav-item">
+        @if(($activeTab ?? '') === 'tickets')
+            <a class="nav-link" href="{{ route('assets.show', $asset) }}#tab-software">Software</a>
+        @else
+            <a class="nav-link" data-bs-toggle="tab" href="#tab-software" data-ajax-section="software">Software</a>
+        @endif
+    </li>
+    <li class="nav-item">
+        @if(($activeTab ?? '') === 'tickets')
+            <a class="nav-link" href="{{ route('assets.show', $asset) }}#tab-patches">Patches</a>
+        @else
+            <a class="nav-link" data-bs-toggle="tab" href="#tab-patches" data-ajax-section="patches">Patches</a>
+        @endif
+    </li>
+    <li class="nav-item">
+        @if(($activeTab ?? '') === 'tickets')
+            <a class="nav-link" href="{{ route('assets.show', $asset) }}#tab-security">Security</a>
+        @else
+            <a class="nav-link" data-bs-toggle="tab" href="#tab-security">Security</a>
+        @endif
+    </li>
+    <li class="nav-item">
+        @if(($activeTab ?? '') === 'tickets')
+            <a class="nav-link active" href="#">
+                Alerts & Tickets @if(isset($tickets))<span class="text-muted">({{ $tickets->total() }})</span>@endif
+            </a>
+        @else
+            <a class="nav-link" data-bs-toggle="tab" href="#tab-alerts">Alerts & Tickets</a>
+        @endif
+    </li>
+    @if($asset->ninja_id || $asset->comet_device_id)
+    <li class="nav-item">
+        @if(($activeTab ?? '') === 'tickets')
+            <a class="nav-link" href="{{ route('assets.show', $asset) }}#tab-backup">Backup</a>
+        @else
+            <a class="nav-link" data-bs-toggle="tab" href="#tab-backup">Backup</a>
+        @endif
+    </li>
+    @endif
+</ul>
+
+<div class="tab-content border border-top-0 rounded-bottom bg-white">
+
+    {{-- ==================== TAB 1: OVERVIEW ==================== --}}
+    <div class="tab-pane fade {{ ($activeTab ?? '') !== 'tickets' ? 'show active' : '' }} p-3" id="tab-overview">
+        @if(!empty($asset->notes))
+            <div class="card shadow-sm mb-4">
+                <div class="card-header d-flex align-items-center gap-2">
+                    <i class="bi bi-sticky"></i><span>Notes</span>
+                </div>
+                <div class="card-body">
+                    <div class="mb-0" style="white-space: pre-wrap;">{{ $asset->notes }}</div>
+                </div>
+            </div>
+        @endif
+        <div class="row g-4">
+            {{-- Left column: Device Identity --}}
+            <div class="col-md-6">
+                <h6 class="text-muted mb-3"><i class="bi bi-pc-display me-1"></i>Device Identity</h6>
+                <table class="table table-borderless mb-0">
+                    <tbody>
+                        <tr>
+                            <th class="text-muted" style="width: 140px;">Name</th>
+                            <td>{{ $asset->name }}</td>
+                        </tr>
+                        @if($asset->hostname && $asset->hostname !== $asset->name)
+                        <tr>
+                            <th class="text-muted">Hostname</th>
+                            <td>{{ $asset->hostname }}</td>
+                        </tr>
+                        @endif
+                        <tr>
+                            <th class="text-muted">Type</th>
+                            <td>{{ $asset->asset_type ?: '-' }}</td>
+                        </tr>
+                        <tr>
+                            <th class="text-muted">Serial</th>
+                            <td>{{ $asset->serial_number ?: '-' }}</td>
+                        </tr>
+                        <tr>
+                            <th class="text-muted">OS</th>
+                            <td>{{ $asset->os ?: '-' }}</td>
+                        </tr>
+                        <tr>
+                            <th class="text-muted">IP Address</th>
+                            <td>{{ $asset->ip_address ?: '-' }}</td>
+                        </tr>
+                        <tr>
+                            <th class="text-muted">Last User</th>
+                            <td>
+                                @if($lastUserPerson)
+                                    <x-person-badge :person="$lastUserPerson" :size="20" />
+                                @else
+                                    {{ $asset->last_user ?: '-' }}
+                                @endif
+                            </td>
+                        </tr>
+                        <tr>
+                            <th class="text-muted">Warranty</th>
+                            <td>
+                                @if($asset->warranty_start)
+                                    <span class="text-muted small">System age: {{ $asset->warranty_start->diffForHumans(null, true) }}</span>
+                                @endif
+                                @if($asset->warranty_end)
+                                    @if($asset->warranty_end->isPast())
+                                        <span class="text-danger"><i class="bi bi-x-circle me-1"></i>Expired {{ $asset->warranty_end->toAppTz()->format('M j, Y') }}</span>
+                                    @else
+                                        <span class="text-success"><i class="bi bi-check-circle me-1"></i>Active until {{ $asset->warranty_end->toAppTz()->format('M j, Y') }}</span>
+                                    @endif
+                                @elseif(!$asset->warranty_start)
+                                    <span class="text-muted">-</span>
+                                @endif
+                            </td>
+                        </tr>
+                        <tr>
+                            <th class="text-muted">Client</th>
+                            <td><x-client-badge :client="$asset->client" :size="24" fallback="Unassigned" /></td>
+                        </tr>
+                        @if($asset->contracts->isNotEmpty())
+                        <tr>
+                            <th class="text-muted">Contracts</th>
+                            <td>
+                                @foreach($asset->contracts as $contract)
+                                    <a href="{{ route('contracts.show', $contract) }}" class="badge bg-primary text-decoration-none me-1">
+                                        {{ $contract->name }}
+                                    </a>
+                                @endforeach
+                            </td>
+                        </tr>
+                        @endif
+                    </tbody>
+                </table>
+            </div>
+
+            {{-- Right column: Status & Hardware --}}
+            <div class="col-md-6">
+                <h6 class="text-muted mb-3"><i class="bi bi-cpu me-1"></i>Status & Hardware</h6>
+                <table class="table table-borderless mb-0">
+                    <tbody>
+                        <tr>
+                            <th class="text-muted" style="width: 140px;">Status</th>
+                            <td>
+                                @if($status === 'Online')
+                                    <span class="text-success"><i class="bi bi-circle-fill me-1" style="font-size: 0.5rem; vertical-align: middle;"></i>Online</span>
+                                @elseif($status === 'Offline')
+                                    <span class="text-danger"><i class="bi bi-circle-fill me-1" style="font-size: 0.5rem; vertical-align: middle;"></i>Offline</span>
+                                @else
+                                    <span class="text-muted">Unknown</span>
+                                @endif
+                                @if($asset->last_seen_at)
+                                    <br><small class="text-muted" title="{{ $asset->last_seen_at->toAppTz()->format('Y-m-d H:i T') }}">Last seen {{ $asset->last_seen_at->diffForHumans() }}</small>
+                                @endif
+                            </td>
+                        </tr>
+                        <tr>
+                            <th class="text-muted">Uptime</th>
+                            <td>
+                                @if($asset->last_boot_at)
+                                    @php
+                                        $diff = $asset->last_boot_at->diff(now());
+                                        $parts = [];
+                                        if ($diff->days > 0) $parts[] = $diff->days . 'd';
+                                        if ($diff->h > 0) $parts[] = $diff->h . 'h';
+                                        if (empty($parts)) $parts[] = $diff->i . 'm';
+                                        $uptimeStr = implode(' ', $parts);
+                                    @endphp
+                                    {{ $uptimeStr }}
+                                    @if($asset->needs_reboot)
+                                        <span class="badge bg-warning text-dark ms-2"><i class="bi bi-arrow-clockwise me-1"></i>Reboot needed</span>
+                                    @endif
+                                @else
+                                    <span class="text-muted">-</span>
+                                @endif
+                            </td>
+                        </tr>
+                        <tr>
+                            <th class="text-muted">CPU</th>
+                            <td>{{ $asset->cpu ?: '-' }}</td>
+                        </tr>
+                        <tr>
+                            <th class="text-muted">RAM</th>
+                            <td>{{ $asset->ram_gb ? $asset->ram_gb . ' GB' : '-' }}</td>
+                        </tr>
+                        <tr>
+                            <th class="text-muted">Disk</th>
+                            <td>{{ $asset->disk_summary ?: '-' }}</td>
+                        </tr>
+                        <tr>
+                            <th class="text-muted">RMM</th>
+                            <td>
+                                @if($asset->ninja_id)
+                                    @if($asset->ninja_url)
+                                        <a href="{{ $asset->ninja_url }}" target="_blank" class="text-decoration-none">
+                                            <i class="bi bi-box-arrow-up-right me-1"></i>Ninja
+                                        </a>
+                                    @else
+                                        Ninja
+                                    @endif
+                                @endif
+                                @if($asset->ninja_id && $asset->level_id)
+                                    <span class="text-muted mx-1">|</span>
+                                @endif
+                                @if($asset->level_id)
+                                    @if($asset->level_url)
+                                        <a href="{{ $asset->level_url }}" target="_blank" class="text-decoration-none">
+                                            <i class="bi bi-box-arrow-up-right me-1"></i>Level
+                                        </a>
+                                    @else
+                                        Level
+                                    @endif
+                                @endif
+                                @if($asset->screenconnect_session_id)
+                                    @if($asset->ninja_id || $asset->level_id)
+                                        <span class="text-muted mx-1">|</span>
+                                    @endif
+                                    @php $scUrl = \App\Support\ScreenConnectConfig::sessionUrl($asset->screenconnect_session_id); @endphp
+                                    @if($scUrl)
+                                        <a href="{{ $scUrl }}" target="_blank" class="text-decoration-none">
+                                            <i class="bi bi-display me-1"></i>ScreenConnect
+                                        </a>
+                                    @else
+                                        ScreenConnect
+                                    @endif
+                                @endif
+                                @if($asset->tacticalAsset)
+                                    @if($asset->ninja_id || $asset->level_id || $asset->screenconnect_session_id)
+                                        <span class="text-muted mx-1">|</span>
+                                    @endif
+                                    Tactical
+                                @endif
+                                @if(!$asset->ninja_id && !$asset->level_id && !$asset->screenconnect_session_id && !$asset->tacticalAsset)
+                                    <span class="text-muted">-</span>
+                                @endif
+                            </td>
+                        </tr>
+                        <tr>
+                            <th class="text-muted">Last Synced</th>
+                            <td>
+                                @if($asset->ninja_synced_at)
+                                    {{ $asset->ninja_synced_at->diffForHumans() }}
+                                @elseif($asset->level_synced_at)
+                                    {{ $asset->level_synced_at->diffForHumans() }}
+                                @else
+                                    <span class="text-muted">Never</span>
+                                @endif
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                @if($asset->ninja_id || $asset->level_id)
+                <div class="mt-3 pt-3 border-top">
+                    <form method="POST" action="{{ route('assets.refresh', $asset) }}">
+                        @csrf
+                        <button type="submit" class="btn btn-outline-primary btn-sm">
+                            <i class="bi bi-arrow-clockwise me-1"></i>Refresh from RMM
+                        </button>
+                    </form>
+                </div>
+                @endif
+            </div>
+        </div>
+        {{-- Tactical RMM --}}
+        @if($asset->tacticalAsset)
+        @php $ta = $asset->tacticalAsset; @endphp
+        <div class="card shadow-sm card-static mb-3 mt-4">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-pc-display me-2"></i>Tactical RMM</span>
+                <span class="badge {{ $ta->statusBadgeClass() }}">{{ ucfirst($ta->status) }}</span>
+            </div>
+            <div class="card-body">
+                <table class="table table-borderless table-sm mb-0">
+                    <tbody>
+                        @if($ta->agent_version)
+                        <tr>
+                            <td class="text-muted" style="width:40%">Agent Version</td>
+                            <td>{{ $ta->agent_version }}</td>
+                        </tr>
+                        @endif
+                        @if($ta->last_seen_at)
+                        <tr>
+                            <td class="text-muted">Last Seen</td>
+                            <td>{{ $ta->last_seen_at->diffForHumans() }}</td>
+                        </tr>
+                        @endif
+                        <tr>
+                            <td class="text-muted">Needs Reboot</td>
+                            <td>
+                                @if($ta->needs_reboot)
+                                    <span class="badge bg-warning text-dark"><i class="bi bi-exclamation-triangle me-1"></i>Yes</span>
+                                @else
+                                    <span class="text-success">No</span>
+                                @endif
+                            </td>
+                        </tr>
+                        <tr>
+                            <td class="text-muted">Patches Pending</td>
+                            <td>
+                                @if($ta->has_patches_pending)
+                                    <span class="badge bg-warning text-dark"><i class="bi bi-exclamation-triangle me-1"></i>Yes</span>
+                                @else
+                                    <span class="text-success">No</span>
+                                @endif
+                            </td>
+                        </tr>
+                        @if($ta->os)
+                        <tr>
+                            <td class="text-muted">OS</td>
+                            <td>{{ $ta->os }}</td>
+                        </tr>
+                        @endif
+                        @if($ta->public_ip)
+                        <tr>
+                            <td class="text-muted">Public IP</td>
+                            <td>{{ $ta->public_ip }}</td>
+                        </tr>
+                        @endif
+                        @if($ta->local_ips && count($ta->local_ips) > 0)
+                        <tr>
+                            <td class="text-muted">Local IPs</td>
+                            <td>{{ implode(', ', $ta->local_ips) }}</td>
+                        </tr>
+                        @endif
+                        @if($ta->make_model)
+                        <tr>
+                            <td class="text-muted">Make/Model</td>
+                            <td>{{ $ta->make_model }}</td>
+                        </tr>
+                        @endif
+                        @if($ta->cpu)
+                        <tr>
+                            <td class="text-muted">CPU</td>
+                            <td>{{ $ta->cpu }}</td>
+                        </tr>
+                        @endif
+                        @if($ta->ram_gb)
+                        <tr>
+                            <td class="text-muted">RAM</td>
+                            <td>{{ $ta->ram_gb }} GB</td>
+                        </tr>
+                        @endif
+                        @if($ta->disk_summary)
+                        <tr>
+                            <td class="text-muted">Disk</td>
+                            <td>{{ $ta->disk_summary }}</td>
+                        </tr>
+                        @endif
+                        @if($ta->serial_number)
+                        <tr>
+                            <td class="text-muted">Serial Number</td>
+                            <td>{{ $ta->serial_number }}</td>
+                        </tr>
+                        @endif
+                        @if($ta->synced_at)
+                        <tr>
+                            <td class="text-muted">Synced</td>
+                            <td class="text-muted small">{{ $ta->synced_at->diffForHumans() }}</td>
+                        </tr>
+                        @endif
+                    </tbody>
+                </table>
+            </div>
+            @if(\App\Support\TacticalConfig::apiUrl())
+            <div class="card-footer text-end">
+                <a href="{{ rtrim(\App\Support\TacticalConfig::apiUrl(), '/') }}" target="_blank" class="btn btn-outline-primary btn-sm">
+                    <i class="bi bi-box-arrow-up-right me-1"></i>Open in Tactical RMM
+                </a>
+            </div>
+            @endif
+        </div>
+        @endif
+
+        {{-- Tactical Script Runner --}}
+        @if($asset->tacticalAsset && $asset->tacticalAsset->status === 'online')
+        <div class="card shadow-sm card-static mb-3">
+            <div class="card-header">
+                <i class="bi bi-terminal me-2"></i>Run Script
+            </div>
+            <div class="card-body">
+                <div class="mb-2">
+                    <select class="form-select form-select-sm" id="tacticalScriptSelect">
+                        <option value="">Select a script...</option>
+                        @php
+                            $tacticalScripts = \App\Models\TacticalScript::where('hidden', false)
+                                ->orderBy('category')
+                                ->orderBy('name')
+                                ->get();
+                            $grouped = $tacticalScripts->groupBy('category');
+                        @endphp
+                        @foreach($grouped as $category => $categoryScripts)
+                            <optgroup label="{{ $category ?: 'Uncategorized' }}">
+                                @foreach($categoryScripts as $script)
+                                    <option value="{{ $script->id }}"
+                                            data-timeout="{{ $script->default_timeout }}"
+                                            data-description="{{ e($script->description) }}"
+                                            data-shell="{{ $script->shell }}">
+                                        {{ $script->name }}
+                                    </option>
+                                @endforeach
+                            </optgroup>
+                        @endforeach
+                    </select>
+                </div>
+                <div class="mb-2 small text-muted" id="tacticalScriptDesc" style="display:none;"></div>
+                <div class="row g-2 mb-2">
+                    <div class="col">
+                        <input type="text" class="form-control form-control-sm" id="tacticalScriptArgs"
+                               placeholder="Arguments (optional)">
+                    </div>
+                    <div class="col-auto">
+                        <select class="form-select form-select-sm" id="tacticalScriptTimeout" style="width: 110px;">
+                            <option value="30">30s</option>
+                            <option value="60">60s</option>
+                            <option value="120" selected>120s</option>
+                            <option value="300">5m</option>
+                            <option value="600">10m</option>
+                        </select>
+                    </div>
+                    <div class="col-auto">
+                        <button type="button" class="btn btn-primary btn-sm" id="tacticalRunBtn" disabled
+                                onclick="runTacticalScript()">
+                            <i class="bi bi-play-fill me-1"></i>Run
+                        </button>
+                    </div>
+                </div>
+                <div id="tacticalScriptResult" style="display:none;">
+                    <div class="border rounded p-2 bg-dark text-light small font-monospace" style="max-height: 300px; overflow-y: auto; white-space: pre-wrap;" id="tacticalScriptOutput"></div>
+                    <div class="mt-1 small text-muted" id="tacticalScriptMeta"></div>
+                </div>
+            </div>
+        </div>
+        @endif
+
+        {{-- Users --}}
+        <div class="card shadow-sm card-static mb-3 mt-4">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-people me-2"></i>Users</span>
+            </div>
+            @if($asset->users->isEmpty())
+                <div class="card-body text-muted text-center py-3 small">
+                    No users assigned to this device.
+                </div>
+            @else
+                <div class="table-responsive">
+                    <table class="table table-sm mb-0">
+                        <tbody>
+                            @foreach($asset->users->sortByDesc('pivot.is_primary') as $user)
+                                <tr>
+                                    <td>
+                                        <x-person-badge :person="$user" :size="20" />
+                                        @if($user->pivot->is_primary)
+                                            <span class="badge bg-warning text-dark ms-1">Primary</span>
+                                        @endif
+                                    </td>
+                                    <td class="small text-muted">
+                                        <span class="badge {{ $user->pivot->assignment_source === 'manual' ? 'bg-primary' : 'bg-secondary' }}">
+                                            {{ ucfirst($user->pivot->assignment_source) }}
+                                        </span>
+                                    </td>
+                                    <td class="small text-muted">
+                                        @if($user->pivot->last_seen_at)
+                                            {{ \Carbon\Carbon::parse($user->pivot->last_seen_at)->diffForHumans() }}
+                                        @endif
+                                    </td>
+                                    <td class="text-end text-nowrap">
+                                        @unless($user->pivot->is_primary)
+                                            <form method="POST" action="{{ route('assets.set-primary-user', [$asset, $user]) }}" class="d-inline">
+                                                @csrf
+                                                <button type="submit" class="btn btn-outline-warning btn-sm py-0 px-1" title="Set as primary">
+                                                    <i class="bi bi-star"></i>
+                                                </button>
+                                            </form>
+                                        @endunless
+                                        <form method="POST" action="{{ route('assets.remove-user', [$asset, $user]) }}" class="d-inline"
+                                              onsubmit="return confirm('Remove {{ $user->full_name }} from this device?')">
+                                            @csrf
+                                            @method('DELETE')
+                                            <button type="submit" class="btn btn-outline-danger btn-sm py-0 px-1" title="Remove">
+                                                <i class="bi bi-x"></i>
+                                            </button>
+                                        </form>
+                                    </td>
+                                </tr>
+                            @endforeach
+                        </tbody>
+                    </table>
+                </div>
+            @endif
+            <div class="card-footer">
+                <form method="POST" action="{{ route('assets.add-user', $asset) }}" class="d-flex gap-2">
+                    @csrf
+                    <select name="person_id" class="form-select form-select-sm" required>
+                        <option value="">Add user...</option>
+                        @foreach($clientPeople ?? [] as $p)
+                            <option value="{{ $p->id }}">{{ $p->last_name }}, {{ $p->first_name }}</option>
+                        @endforeach
+                    </select>
+                    <button type="submit" class="btn btn-primary btn-sm text-nowrap">
+                        <i class="bi bi-plus-lg me-1"></i>Add
+                    </button>
+                </form>
+            </div>
+        </div>
+
+    </div>
+
+    {{-- ==================== TAB 2: NETWORK (AJAX) ==================== --}}
+    <div class="tab-pane fade" id="tab-network">
+        <div class="d-flex justify-content-center py-5"><div class="spinner-border text-primary" role="status"></div></div>
+    </div>
+
+    {{-- ==================== TAB 3: STORAGE (AJAX) ==================== --}}
+    <div class="tab-pane fade" id="tab-storage">
+        <div class="d-flex justify-content-center py-5"><div class="spinner-border text-primary" role="status"></div></div>
+    </div>
+
+    {{-- ==================== TAB 4: SOFTWARE (AJAX) ==================== --}}
+    <div class="tab-pane fade" id="tab-software">
+        <div class="d-flex justify-content-center py-5"><div class="spinner-border text-primary" role="status"></div></div>
+    </div>
+
+    {{-- ==================== TAB 5: PATCHES (AJAX) ==================== --}}
+    <div class="tab-pane fade" id="tab-patches">
+        <div class="d-flex justify-content-center py-5"><div class="spinner-border text-primary" role="status"></div></div>
+    </div>
+
+    {{-- ==================== TAB 6: SECURITY ==================== --}}
+    <div class="tab-pane fade p-3" id="tab-security">
+
+        {{-- M365 / Intune --}}
+        @if($asset->m365_device_id)
+        <div class="card shadow-sm mb-3">
+            <div class="card-header"><i class="bi bi-microsoft me-2"></i>M365 / Intune</div>
+            <div class="card-body">
+                @if($asset->m365_synced_at?->lt(now()->subDays(2)))
+                    <div class="alert alert-warning py-1 px-2 small mb-2">
+                        <i class="bi bi-exclamation-triangle me-1"></i>Data may be stale (synced {{ $asset->m365_synced_at->diffForHumans() }})
+                    </div>
+                @endif
+                <table class="table table-borderless mb-0">
+                    <tbody>
+                        <tr>
+                            <th class="text-muted" style="width: 140px;">Compliance</th>
+                            <td>
+                                @if($asset->m365_is_compliant === true)
+                                    <span class="badge bg-success">Compliant</span>
+                                @elseif($asset->m365_compliance_state)
+                                    <span class="badge bg-danger">{{ $asset->m365_compliance_label }}</span>
+                                @else
+                                    <span class="text-muted">-</span>
+                                @endif
+                            </td>
+                        </tr>
+                        @if($asset->m365_enrollment_type)
+                        <tr>
+                            <th class="text-muted">Enrollment</th>
+                            <td>{{ $asset->m365_enrollment_type }}</td>
+                        </tr>
+                        @endif
+                        @if($asset->m365_os_version)
+                        <tr>
+                            <th class="text-muted">OS Version</th>
+                            <td>{{ $asset->m365_os_version }}</td>
+                        </tr>
+                        @endif
+                        @if($asset->m365_device_owner_type)
+                        <tr>
+                            <th class="text-muted">Ownership</th>
+                            <td>{{ ucfirst($asset->m365_device_owner_type) }}</td>
+                        </tr>
+                        @endif
+                        @if($asset->m365_defender_status)
+                        <tr>
+                            <th class="text-muted">Defender</th>
+                            <td>
+                                {{ $asset->m365_defender_status }}
+                                @if($asset->m365_defender_version)
+                                    <span class="text-muted ms-1 small">{{ $asset->m365_defender_version }}</span>
+                                @endif
+                            </td>
+                        </tr>
+                        @endif
+                        @if($asset->m365_last_scan_at)
+                        <tr>
+                            <th class="text-muted">Last Scan</th>
+                            <td>{{ $asset->m365_last_scan_at->diffForHumans() }}</td>
+                        </tr>
+                        @endif
+                        @if($asset->m365_last_sync_at)
+                        <tr>
+                            <th class="text-muted">Last Intune Sync</th>
+                            <td>{{ $asset->m365_last_sync_at->diffForHumans() }}</td>
+                        </tr>
+                        @endif
+                        @if($asset->m365_synced_at)
+                        <tr>
+                            <th class="text-muted">Data as of</th>
+                            <td class="text-muted small">{{ $asset->m365_synced_at->diffForHumans() }}</td>
+                        </tr>
+                        @endif
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        @endif
+
+        {{-- DNS Security (Control D) --}}
+        @if($asset->controld_device_id)
+        <div class="card shadow-sm mb-3">
+            <div class="card-header"><i class="bi bi-shield-lock me-2"></i>DNS Security (Control D)</div>
+            <div class="card-body">
+                <table class="table table-borderless mb-0">
+                    <tbody>
+                        <tr>
+                            <th class="text-muted" style="width: 140px;">Profile</th>
+                            <td>{{ $asset->controld_profile_name ?: '-' }}</td>
+                        </tr>
+                        <tr>
+                            <th class="text-muted">Device Status</th>
+                            <td>
+                                @if($asset->controld_status === 1)
+                                    <span class="badge bg-success">Active</span>
+                                @elseif($asset->controld_status === 0)
+                                    <span class="badge bg-warning text-dark">Pending</span>
+                                @elseif($asset->controld_status !== null)
+                                    <span class="badge bg-danger">Disabled</span>
+                                @else
+                                    <span class="text-muted">-</span>
+                                @endif
+                            </td>
+                        </tr>
+                        <tr>
+                            <th class="text-muted">Agent</th>
+                            <td>
+                                @if($asset->controld_agent_status === 1)
+                                    <span class="badge bg-success">Connected</span>
+                                @elseif($asset->controld_agent_status !== null)
+                                    <span class="badge bg-danger">Disconnected</span>
+                                @else
+                                    <span class="text-muted">-</span>
+                                @endif
+                                @if($asset->controld_agent_version)
+                                    <span class="text-muted ms-1">{{ $asset->controld_agent_version }}</span>
+                                @endif
+                            </td>
+                        </tr>
+                        <tr>
+                            <th class="text-muted">Agent Last Seen</th>
+                            <td>
+                                @if($asset->controld_last_seen_at)
+                                    {{ $asset->controld_last_seen_at->diffForHumans() }}
+                                @else
+                                    <span class="text-muted">-</span>
+                                @endif
+                            </td>
+                        </tr>
+                        <tr>
+                            <th class="text-muted">Synced</th>
+                            <td>
+                                @if($asset->controld_synced_at)
+                                    {{ $asset->controld_synced_at->diffForHumans() }}
+                                @else
+                                    <span class="text-muted">Never</span>
+                                @endif
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+                <div class="mt-3 pt-3 border-top">
+                    <form method="POST" action="{{ route('assets.controld.unlink', $asset) }}" class="d-inline">
+                        @csrf
+                        <button type="submit" class="btn btn-outline-secondary btn-sm"
+                                onclick="return confirm('Remove Control D link from this asset?')">
+                            <i class="bi bi-x-circle me-1"></i>Unlink
+                        </button>
+                    </form>
+                    @if(\App\Support\ControlDConfig::isAnalyticsConfigured())
+                        <button type="button" class="btn btn-outline-primary btn-sm ms-2" id="btnDnsActivity" onclick="loadDnsActivity(1)">
+                            <i class="bi bi-activity me-1"></i>View DNS Activity
+                        </button>
+                    @endif
+                </div>
+            </div>
+        </div>
+
+        {{-- DNS Activity Log (loaded via AJAX) --}}
+        @if(\App\Support\ControlDConfig::isAnalyticsConfigured())
+        <div id="dnsActivityContainer" style="display: none;">
+            <div class="card shadow-sm mb-3">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <span><i class="bi bi-activity me-2"></i>DNS Activity</span>
+                    <div class="btn-group btn-group-sm" id="dnsTimeRange">
+                        <button type="button" class="btn btn-outline-secondary active" data-hours="1">1h</button>
+                        <button type="button" class="btn btn-outline-secondary" data-hours="4">4h</button>
+                        <button type="button" class="btn btn-outline-secondary" data-hours="24">24h</button>
+                    </div>
+                </div>
+                <div class="card-body p-0" id="dnsActivityBody">
+                    <div class="text-center py-4">
+                        <div class="spinner-border spinner-border-sm text-muted" role="status"></div>
+                        <span class="text-muted ms-2">Loading DNS activity...</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+        @endif
+
+        @elseif($controldDevices !== null)
+        <div class="card shadow-sm mb-3">
+            <div class="card-header"><i class="bi bi-shield-lock me-2"></i>DNS Security (Control D)</div>
+            <div class="card-body">
+                @if(count($controldDevices) > 0)
+                    <form method="POST" action="{{ route('assets.controld.link', $asset) }}">
+                        @csrf
+                        <div class="mb-3">
+                            <label for="controld_device_id" class="form-label">Link to Control D Device</label>
+                            <select name="controld_device_id" id="controld_device_id" class="form-select" required>
+                                <option value="">Select a device...</option>
+                                @foreach($controldDevices as $cd)
+                                    <option value="{{ $cd['PK'] }}">
+                                        {{ $cd['name'] ?? $cd['PK'] }}
+                                        @if(isset($cd['profile']['name']))
+                                            &mdash; {{ $cd['profile']['name'] }}
+                                        @endif
+                                        @if(isset($cd['ctrld']['status']) && $cd['ctrld']['status'] === 1)
+                                            (Connected)
+                                        @endif
+                                    </option>
+                                @endforeach
+                            </select>
+                        </div>
+                        <button type="submit" class="btn btn-outline-primary btn-sm">
+                            <i class="bi bi-link-45deg me-1"></i>Link
+                        </button>
+                    </form>
+                @else
+                    <p class="text-muted mb-0">
+                        <i class="bi bi-info-circle me-1"></i>All Control D devices in this organization are already linked to assets.
+                    </p>
+                @endif
+            </div>
+        </div>
+        @endif
+
+        {{-- DNS Security (Zorus) --}}
+        @if($asset->zorus_endpoint_id)
+        <div class="card shadow-sm mb-3">
+            <div class="card-header"><i class="bi bi-shield-check me-2"></i>DNS Security (Zorus)</div>
+            <div class="card-body">
+                <table class="table table-sm table-borderless mb-0">
+                    <tbody>
+                        @if($asset->zorus_group_name)
+                        <tr><td class="text-muted" style="width:40%">Group</td><td>{{ $asset->zorus_group_name }}</td></tr>
+                        @endif
+                        <tr>
+                            <td class="text-muted">Filtering</td>
+                            <td>
+                                @if($asset->zorus_filtering_enabled)
+                                    <span class="badge bg-success">Enabled</span>
+                                @else
+                                    <span class="badge bg-secondary">Disabled</span>
+                                @endif
+                            </td>
+                        </tr>
+                        <tr>
+                            <td class="text-muted">CyberSight</td>
+                            <td>
+                                @if($asset->zorus_cybersight_enabled)
+                                    <span class="badge bg-success">Enabled</span>
+                                @else
+                                    <span class="badge bg-secondary">Disabled</span>
+                                @endif
+                            </td>
+                        </tr>
+                        @if($asset->zorus_agent_version)
+                        <tr><td class="text-muted">Agent Version</td><td>{{ $asset->zorus_agent_version }}</td></tr>
+                        @endif
+                        @if($asset->zorus_agent_state)
+                        <tr>
+                            <td class="text-muted">Agent State</td>
+                            <td>
+                                @if($asset->zorus_agent_state === 'Online')
+                                    <span class="badge bg-success">{{ $asset->zorus_agent_state }}</span>
+                                @else
+                                    <span class="badge bg-warning text-dark">{{ $asset->zorus_agent_state }}</span>
+                                @endif
+                            </td>
+                        </tr>
+                        @endif
+                        @if($asset->zorus_last_seen_at)
+                        <tr><td class="text-muted">Last Seen</td><td>{{ $asset->zorus_last_seen_at->toAppTz()->format('Y-m-d H:i T') }}</td></tr>
+                        @endif
+                        @if($asset->zorus_synced_at)
+                        <tr><td class="text-muted">Synced</td><td>{{ $asset->zorus_synced_at->toAppTz()->format('Y-m-d H:i T') }}</td></tr>
+                        @endif
+                    </tbody>
+                </table>
+            </div>
+            <div class="card-footer text-end">
+                <form method="POST" action="{{ route('assets.zorus.unlink', $asset) }}" class="d-inline"
+                      onsubmit="return confirm('Remove the Zorus link from this asset?')">
+                    @csrf
+                    <button type="submit" class="btn btn-outline-danger btn-sm">
+                        <i class="bi bi-x-circle me-1"></i>Unlink
+                    </button>
+                </form>
+            </div>
+        </div>
+
+        @elseif($zorusEndpoints !== null)
+        <div class="card shadow-sm mb-3">
+            <div class="card-header"><i class="bi bi-shield-check me-2"></i>DNS Security (Zorus)</div>
+            <div class="card-body">
+                @if(count($zorusEndpoints) > 0)
+                    <form method="POST" action="{{ route('assets.zorus.link', $asset) }}">
+                        @csrf
+                        <div class="mb-3">
+                            <label for="zorus_endpoint_id" class="form-label">Link to Zorus Endpoint</label>
+                            <select name="zorus_endpoint_id" id="zorus_endpoint_id" class="form-select" required>
+                                <option value="">Select an endpoint...</option>
+                                @foreach($zorusEndpoints as $ep)
+                                    <option value="{{ $ep['uuid'] }}">
+                                        {{ $ep['name'] ?? $ep['uuid'] }}
+                                        @if($ep['agentState'] ?? false)
+                                            ({{ $ep['agentState'] }})
+                                        @endif
+                                    </option>
+                                @endforeach
+                            </select>
+                        </div>
+                        <button type="submit" class="btn btn-outline-primary btn-sm">
+                            <i class="bi bi-link-45deg me-1"></i>Link
+                        </button>
+                    </form>
+                @else
+                    <p class="text-muted mb-0">
+                        <i class="bi bi-info-circle me-1"></i>All Zorus endpoints for this customer are already linked to assets.
+                    </p>
+                @endif
+            </div>
+        </div>
+        @endif
+
+        {{-- ScreenConnect --}}
+        @if($asset->screenconnect_session_id)
+        <div class="card shadow-sm mb-3">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <div><i class="bi bi-display me-2"></i>ScreenConnect</div>
+                @if($asset->screenconnect_online)
+                    <span class="badge bg-success">Online</span>
+                @elseif($asset->screenconnect_online === false)
+                    <span class="badge bg-secondary">Offline</span>
+                @else
+                    <span class="badge bg-light text-dark">Unknown</span>
+                @endif
+            </div>
+            <div class="card-body">
+                @if($asset->screenconnect_synced_at?->lt(now()->subDays(7)))
+                    <div class="alert alert-warning py-1 px-2 small mb-2">
+                        <i class="bi bi-exclamation-triangle me-1"></i>
+                        No events received since {{ $asset->screenconnect_synced_at->diffForHumans() }}
+                    </div>
+                @endif
+                <table class="table table-borderless table-sm mb-0">
+                    <tbody>
+                        <tr>
+                            <th class="text-muted" style="width: 140px;">Session ID</th>
+                            <td class="font-monospace small">{{ Str::limit($asset->screenconnect_session_id, 20) }}</td>
+                        </tr>
+                        @if($asset->screenconnect_client_version)
+                        <tr>
+                            <th class="text-muted">Agent Version</th>
+                            <td>{{ $asset->screenconnect_client_version }}</td>
+                        </tr>
+                        @endif
+                        <tr>
+                            <th class="text-muted">Last Seen</th>
+                            <td>{{ $asset->screenconnect_last_seen_at?->diffForHumans() ?? '-' }}</td>
+                        </tr>
+                        <tr>
+                            <th class="text-muted">Last Synced</th>
+                            <td>{{ $asset->screenconnect_synced_at?->diffForHumans() ?? '-' }}</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                @php
+                    $scUrl = \App\Support\ScreenConnectConfig::sessionUrl($asset->screenconnect_session_id);
+                    $recentScEvents = \App\Models\ScreenConnectEvent::where('asset_id', $asset->id)
+                        ->orderByDesc('event_time')
+                        ->limit(10)
+                        ->get();
+                @endphp
+
+                @if($scUrl)
+                <div class="mt-2 pt-2 border-top">
+                    <a href="{{ $scUrl }}" target="_blank" class="btn btn-outline-primary btn-sm">
+                        <i class="bi bi-box-arrow-up-right me-1"></i>Open in ScreenConnect
+                    </a>
+                </div>
+                @endif
+
+                @if($recentScEvents->isNotEmpty())
+                <div class="mt-3 pt-3 border-top">
+                    <h6 class="small fw-bold mb-2">Recent Activity</h6>
+                    <div class="small" style="max-height: 200px; overflow-y: auto;">
+                        @foreach($recentScEvents as $evt)
+                            <div class="d-flex justify-content-between py-1 {{ !$loop->last ? 'border-bottom' : '' }}">
+                                <div>
+                                    <span class="badge bg-light text-dark">{{ $evt->event_type }}</span>
+                                    @if($evt->host)
+                                        <span class="text-muted">by {{ $evt->host }}</span>
+                                    @endif
+                                    @if($evt->data)
+                                        <div class="text-muted text-truncate" style="max-width: 300px;"
+                                             title="{{ $evt->data }}">{{ $evt->data }}</div>
+                                    @endif
+                                </div>
+                                <span class="text-muted text-nowrap ms-2"
+                                      title="{{ $evt->event_time?->toAppTz()->format('Y-m-d H:i T') }}">
+                                    {{ $evt->event_time?->diffForHumans() }}
+                                </span>
+                            </div>
+                        @endforeach
+                    </div>
+                </div>
+                @endif
+            </div>
+        </div>
+        @endif
+
+        {{-- MFA Status from resolved person --}}
+        @if($lastUserPerson && $lastUserPerson->mfa_enabled !== null)
+        <div class="card shadow-sm mb-3">
+            <div class="card-header"><i class="bi bi-shield-lock-fill me-2"></i>MFA Status</div>
+            <div class="card-body">
+                <table class="table table-borderless mb-0">
+                    <tbody>
+                        <tr>
+                            <th class="text-muted" style="width: 140px;">User</th>
+                            <td><x-person-badge :person="$lastUserPerson" :size="20" /></td>
+                        </tr>
+                        <tr>
+                            <th class="text-muted">MFA</th>
+                            <td>
+                                @if($lastUserPerson->mfa_enabled)
+                                    <span class="badge bg-success">Enabled</span>
+                                @else
+                                    <span class="badge bg-danger">Disabled</span>
+                                @endif
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        @endif
+
+        @if(!$asset->m365_device_id && !$asset->controld_device_id && $controldDevices === null && !$asset->zorus_endpoint_id && $zorusEndpoints === null && !$asset->screenconnect_session_id)
+            <p class="text-muted">No security integrations linked to this asset.</p>
+        @endif
+    </div>
+
+    {{-- ==================== TAB 7: ALERTS & TICKETS ==================== --}}
+    <div class="tab-pane fade {{ ($activeTab ?? '') === 'tickets' ? 'show active' : '' }} p-3" id="tab-alerts">
+        @if(($activeTab ?? '') === 'tickets')
+            @include('tickets._list', [
+                'listRoute' => 'assets.tickets',
+                'prefilter' => ['asset' => $asset->id, 'asset_id' => $asset->id],
+                'filters' => $ticketFilters,
+                'clients' => $ticketClients,
+                'users' => $ticketUsers,
+                'statuses' => $ticketStatuses,
+                'priorities' => $ticketPriorities,
+                'types' => $ticketTypes,
+                'sources' => $ticketSources,
+            ])
+        @else
+        {{-- Unified Alerts --}}
+        @php
+            $activeAlerts = $asset->activeAlerts;
+            $resolvedAlerts = $asset->alerts()->where('status', 'resolved')->latest('resolved_at')->limit(10)->get();
+        @endphp
+        @if($activeAlerts->isNotEmpty() || $resolvedAlerts->isNotEmpty())
+        <div class="card shadow-sm mb-3 {{ $activeAlerts->isNotEmpty() ? 'border-warning' : '' }}">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span>
+                    <i class="bi bi-bell me-2"></i>Alerts
+                    @if($activeAlerts->isNotEmpty())
+                        <span class="badge bg-danger ms-1">{{ $activeAlerts->count() }} active</span>
+                    @endif
+                </span>
+                <div class="d-flex gap-2">
+                    @if($resolvedAlerts->isNotEmpty())
+                        <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#resolvedAlerts">
+                            Show resolved
+                        </button>
+                    @endif
+                    <a href="{{ route('alerts.index', ['asset_id' => $asset->id]) }}" class="btn btn-sm btn-outline-primary">
+                        View all
+                    </a>
+                </div>
+            </div>
+            <div class="card-body p-0">
+                @if($activeAlerts->isNotEmpty())
+                <table class="table table-sm mb-0">
+                    <thead>
+                        <tr>
+                            <th>Source</th>
+                            <th>Severity</th>
+                            <th>Alert</th>
+                            <th>Message</th>
+                            <th>Fired</th>
+                            <th>Status</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach($activeAlerts as $alert)
+                        <tr>
+                            <td class="text-nowrap">
+                                <i class="bi {{ $alert->source->icon() }} me-1" title="{{ $alert->source->label() }}"></i>
+                                <small class="text-muted">{{ $alert->source->label() }}</small>
+                            </td>
+                            <td>
+                                <span class="badge {{ $alert->severity->badgeClass() }}">{{ $alert->severity->label() }}</span>
+                            </td>
+                            <td>
+                                <a href="#" class="text-decoration-none alert-detail-link"
+                                   data-alert-title="{{ e($alert->title) }}"
+                                   data-alert-message="{{ e($alert->message) }}"
+                                   data-alert-severity="{{ $alert->severity->label() }}"
+                                   data-alert-source="{{ $alert->source->label() }}"
+                                   data-alert-hostname="{{ $alert->hostname ?? $asset->hostname ?? '-' }}"
+                                   data-alert-client="{{ $asset->client?->name ?? '-' }}"
+                                   data-alert-status="{{ $alert->status->label() }}"
+                                   data-alert-fired="{{ $alert->fired_at?->toAppTz()->format('M j, Y g:ia T') ?? '-' }}"
+                                   data-alert-refired="{{ $alert->refired_count }}"
+                                   data-alert-acknowledged="{{ $alert->acknowledged_at?->toAppTz()->format('M j, Y g:ia T') ?? '' }}"
+                                   data-alert-acknowledged-by="{{ $alert->acknowledgedByUser?->name ?? '' }}"
+                                   data-alert-resolved="{{ $alert->resolved_at?->toAppTz()->format('M j, Y g:ia T') ?? '' }}"
+                                   data-alert-source-url="{{ $alert->sourceUrl() ?? '' }}"
+                                   data-alert-metadata="{{ e(json_encode($alert->metadata)) }}"
+                                   title="Click for details">{{ $alert->title }}</a>
+                            </td>
+                            <td class="small">{{ Str::limit($alert->message, 100) }}</td>
+                            <td class="text-nowrap small">{{ $alert->fired_at?->toAppTz()->format('M j, g:i A') }}</td>
+                            <td>
+                                <span class="badge {{ $alert->status->badgeClass() }}">{{ $alert->status->label() }}</span>
+                                @if($alert->ticket_id)
+                                    <a href="{{ route('tickets.show', $alert->ticket_id) }}" class="badge bg-primary text-decoration-none ms-1">
+                                        #{{ $alert->ticket?->display_id }}
+                                    </a>
+                                @endif
+                            </td>
+                            <td class="text-nowrap">
+                                @if($alert->status->value === 'active')
+                                    <form method="POST" action="{{ route('alerts.acknowledge', $alert) }}" class="d-inline">
+                                        @csrf
+                                        <button type="submit" class="btn btn-xs btn-outline-info" title="Acknowledge">
+                                            <i class="bi bi-check"></i>
+                                        </button>
+                                    </form>
+                                @endif
+                                @if(!$alert->ticket_id)
+                                    <form method="POST" action="{{ route('alerts.create-ticket', $alert) }}" class="d-inline">
+                                        @csrf
+                                        <button type="submit" class="btn btn-xs btn-outline-primary" title="Create Ticket">
+                                            <i class="bi bi-ticket-perforated"></i>
+                                        </button>
+                                    </form>
+                                @endif
+                                <form method="POST" action="{{ route('alerts.resolve', $alert) }}" class="d-inline">
+                                    @csrf
+                                    <button type="submit" class="btn btn-xs btn-outline-secondary" title="Resolve"
+                                        onclick="return confirm('Resolve this alert?')">
+                                        <i class="bi bi-x-lg"></i>
+                                    </button>
+                                </form>
+                            </td>
+                        </tr>
+                        @endforeach
+                    </tbody>
+                </table>
+                @else
+                    <p class="text-muted small p-3 mb-0">No active alerts.</p>
+                @endif
+
+                @if($resolvedAlerts->isNotEmpty())
+                <div class="collapse" id="resolvedAlerts">
+                    <hr class="my-0">
+                    <table class="table table-sm mb-0 table-light">
+                        <thead>
+                            <tr>
+                                <th>Source</th>
+                                <th>Severity</th>
+                                <th>Alert</th>
+                                <th>Message</th>
+                                <th>Fired</th>
+                                <th>Resolved</th>
+                                <th>Ticket</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach($resolvedAlerts as $alert)
+                            <tr class="text-muted">
+                                <td class="text-nowrap">
+                                    <i class="bi {{ $alert->source->icon() }} me-1"></i>
+                                    <small>{{ $alert->source->label() }}</small>
+                                </td>
+                                <td>
+                                    <span class="badge {{ $alert->severity->badgeClass() }}">{{ $alert->severity->label() }}</span>
+                                </td>
+                                <td>
+                                    <a href="#" class="text-muted text-decoration-none alert-detail-link"
+                                       data-alert-title="{{ e($alert->title) }}"
+                                       data-alert-message="{{ e($alert->message) }}"
+                                       data-alert-severity="{{ $alert->severity->label() }}"
+                                       data-alert-source="{{ $alert->source->label() }}"
+                                       data-alert-hostname="{{ $alert->hostname ?? $asset->hostname ?? '-' }}"
+                                       data-alert-client="{{ $asset->client?->name ?? '-' }}"
+                                       data-alert-status="{{ $alert->status->label() }}"
+                                       data-alert-fired="{{ $alert->fired_at?->toAppTz()->format('M j, Y g:ia T') ?? '-' }}"
+                                       data-alert-refired="{{ $alert->refired_count }}"
+                                       data-alert-acknowledged="{{ $alert->acknowledged_at?->toAppTz()->format('M j, Y g:ia T') ?? '' }}"
+                                       data-alert-acknowledged-by="{{ $alert->acknowledgedByUser?->name ?? '' }}"
+                                       data-alert-resolved="{{ $alert->resolved_at?->toAppTz()->format('M j, Y g:ia T') ?? '' }}"
+                                       data-alert-source-url="{{ $alert->sourceUrl() ?? '' }}"
+                                       data-alert-metadata="{{ e(json_encode($alert->metadata)) }}"
+                                       title="Click for details">{{ $alert->title }}</a>
+                                </td>
+                                <td class="small">{{ Str::limit($alert->message, 100) }}</td>
+                                <td class="text-nowrap small">{{ $alert->fired_at?->toAppTz()->format('M j, g:i A') }}</td>
+                                <td class="text-nowrap small">{{ $alert->resolved_at?->toAppTz()->format('M j, g:i A') }}</td>
+                                <td>
+                                    @if($alert->ticket_id)
+                                        <a href="{{ route('tickets.show', $alert->ticket_id) }}">
+                                            #{{ $alert->ticket?->display_id }}
+                                        </a>
+                                    @endif
+                                </td>
+                            </tr>
+                            @endforeach
+                        </tbody>
+                    </table>
+                </div>
+                @endif
+            </div>
+        </div>
+        @include('alerts._detail_modal')
+        @else
+            <p class="text-muted small mb-3">No alerts for this device.</p>
+        @endif
+
+        {{-- Recent Tickets --}}
+        @php $recentTickets = $asset->tickets()->with('assignee')->latest('updated_at')->limit(15)->get(); @endphp
+        @if($recentTickets->isNotEmpty())
+        <div class="card shadow-sm">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <div>
+                    <i class="bi bi-ticket-perforated me-2"></i>Recent Tickets
+                </div>
+                <a href="{{ route('assets.tickets', $asset) }}" class="btn btn-outline-primary btn-sm">View all tickets</a>
+            </div>
+            <div class="table-responsive">
+                <table class="table table-hover mb-0">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Subject</th>
+                            <th>Priority</th>
+                            <th>Status</th>
+                            <th>Assignee</th>
+                            <th>Updated</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach($recentTickets as $ticket)
+                            <tr class="cursor-pointer" onclick="window.location='{{ route('tickets.show', $ticket) }}'">
+                                <td class="small text-muted">{{ $ticket->display_id }}</td>
+                                <td>
+                                    <a href="{{ route('tickets.show', $ticket) }}" class="text-decoration-none">
+                                        {{ Str::limit($ticket->subject, 50) }}
+                                    </a>
+                                </td>
+                                <td>
+                                    @if($ticket->priority)
+                                        <span class="badge {{ $ticket->priority->badgeClass() }}">{{ $ticket->priority->label() }}</span>
+                                    @else
+                                        <span class="text-muted">-</span>
+                                    @endif
+                                </td>
+                                <td><span class="badge {{ $ticket->status->badgeClass() }}">{{ $ticket->status->label() }}</span></td>
+                                <td class="small">{{ $ticket->assignee?->name ?? '-' }}</td>
+                                <td class="small">{{ $ticket->updated_at?->diffForHumans() }}</td>
+                            </tr>
+                        @endforeach
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        @else
+            <p class="text-muted">No tickets linked to this asset.</p>
+        @endif
+        @endif
+    </div>
+
+    {{-- ==================== TAB 8: BACKUP ==================== --}}
+    <div class="tab-pane fade p-3" id="tab-backup">
+        @if($asset->client && $asset->client->comet_group_id)
+            <div class="d-flex align-items-center gap-2 mb-3">
+                <form action="{{ route('assets.comet.toggle-backup', $asset) }}" method="POST" class="d-inline">
+                    @csrf
+                    <div class="form-check form-switch">
+                        <input class="form-check-input" type="checkbox"
+                               {{ $asset->comet_backup_enabled ? 'checked' : '' }}
+                               onchange="this.form.submit()">
+                        <label class="form-check-label">
+                            {{ $asset->comet_backup_enabled ? 'Backup enabled' : 'Backup not enabled' }}
+                        </label>
+                    </div>
+                </form>
+            </div>
+        @endif
+        @if($asset->client && $asset->client->servosity_company_id)
+            <div class="d-flex align-items-center gap-2 mb-3">
+                <form action="{{ route('assets.servosity.toggle-backup', $asset) }}" method="POST" class="d-inline">
+                    @csrf
+                    <div class="form-check form-switch">
+                        <input class="form-check-input" type="checkbox"
+                               {{ $asset->servosity_backup_enabled ? 'checked' : '' }}
+                               {{ !$asset->tacticalAsset && !$asset->servosity_backup_enabled ? 'disabled' : '' }}
+                               onchange="this.form.submit()">
+                        <label class="form-check-label">
+                            Servosity: {{ $asset->servosity_backup_enabled ? 'Backup enabled' : 'Backup not enabled' }}
+                            @if(!$asset->tacticalAsset && !$asset->servosity_backup_enabled)
+                                <small class="text-muted">(no Tactical agent linked)</small>
+                            @endif
+                        </label>
+                    </div>
+                </form>
+            </div>
+            @if($asset->servosity_backup_enabled)
+                <div class="card mb-3">
+                    <div class="card-header"><i class="bi bi-cloud-arrow-up me-2"></i>Servosity DR Backup</div>
+                    <div class="card-body">
+                        @if(!$asset->servosity_dr_backup_id)
+                            <div class="d-flex align-items-center text-warning mb-3">
+                                <i class="bi bi-hourglass-split me-2"></i>
+                                <div>
+                                    <strong>Waiting for deployment to complete.</strong>
+                                    <br><small class="text-muted">Servosity One, ScreenConnect, and the backup user will be installed automatically via Tactical. DR backup account will be provisioned once the agent registers (checked hourly).</small>
+                                </div>
+                            </div>
+                        @else
+                            <div class="d-flex align-items-center text-success mb-3">
+                                <i class="bi bi-check-circle me-2"></i>
+                                <strong>DR backup account provisioned</strong>
+                                <small class="text-muted ms-1">(ID: {{ $asset->servosity_dr_backup_id }})</small>
+                            </div>
+                        @endif
+
+                        @if($asset->servosity_backup_password)
+                            <div class="card bg-light mb-3">
+                                <div class="card-body py-2">
+                                    <div class="fw-semibold mb-1">Backup Credential</div>
+                                    <div class="row g-2 small">
+                                        <div class="col-sm-3 text-muted">Username</div>
+                                        <div class="col-sm-9"><code>{{ \App\Support\ServosityConfig::get('credential_username') }}</code></div>
+                                        <div class="col-sm-3 text-muted">Password</div>
+                                        <div class="col-sm-9">
+                                            <code id="servosity-pass" class="user-select-all">{{ $asset->servosity_backup_password }}</code>
+                                            <button type="button" class="btn btn-outline-secondary btn-sm ms-1 py-0 px-1" onclick="navigator.clipboard.writeText(document.getElementById('servosity-pass').textContent)" title="Copy">
+                                                <i class="bi bi-clipboard"></i>
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div class="mt-2 small text-muted">
+                                        A local admin account with this username and password is created automatically on the device.
+                                        Add these credentials to the <strong>Credential & Keys</strong> page in the Servosity portal for this company.
+                                    </div>
+                                    <a href="https://portal.servosity.com" target="_blank" rel="noopener" class="btn btn-outline-primary btn-sm mt-2">
+                                        <i class="bi bi-box-arrow-up-right me-1"></i>Open Servosity Portal
+                                    </a>
+                                </div>
+                            </div>
+                        @endif
+                    </div>
+                </div>
+            @endif
+        @endif
+        @if($asset->comet_device_id)
+            {{-- Comet Backup Storage --}}
+            <div class="card mb-3">
+                <div class="card-header"><i class="bi bi-cloud-arrow-up me-2"></i>Backup Storage (Comet)</div>
+                <div class="card-body">
+                    @if($asset->backup_synced_at)
+                        <div class="row">
+                            <div class="col-md-4">
+                                <strong>Cloud Storage</strong><br>
+                                {{ $asset->backup_cloud_bytes ? \App\Support\Format::bytes($asset->backup_cloud_bytes) : '—' }}
+                            </div>
+                            <div class="col-md-4">
+                                <strong>Local Storage</strong><br>
+                                {{ $asset->backup_local_bytes ? \App\Support\Format::bytes($asset->backup_local_bytes) : '—' }}
+                            </div>
+                            <div class="col-md-4">
+                                <strong>Last Synced</strong><br>
+                                <span title="{{ $asset->backup_synced_at->toAppTz()->format('Y-m-d H:i:s T') }}">
+                                    {{ $asset->backup_synced_at->diffForHumans() }}
+                                </span>
+                            </div>
+                        </div>
+                    @else
+                        <p class="text-muted mb-0">No backup data synced yet.</p>
+                    @endif
+                </div>
+            </div>
+
+            {{-- Comet Backup Jobs --}}
+            @if($cometJobData && !empty($cometJobData['jobs']))
+                <div class="card mb-3">
+                    <div class="card-header">
+                        <i class="bi bi-clock-history me-2"></i>Recent Backup Jobs
+                        @if($cometJobData['last_success'])
+                            <span class="badge bg-success ms-2">Last success: {{ $cometJobData['last_success']['started'] }}</span>
+                        @endif
+                        @if($cometJobData['last_failure'])
+                            <span class="badge bg-danger ms-2">Last failure: {{ $cometJobData['last_failure']['started'] }}</span>
+                        @endif
+                    </div>
+                    <div class="card-body p-0">
+                        <div class="table-responsive">
+                            <table class="table table-sm table-hover mb-0">
+                                <thead>
+                                    <tr>
+                                        <th>Status</th>
+                                        <th>Type</th>
+                                        <th>Started</th>
+                                        <th>Duration</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach($cometJobData['jobs'] as $job)
+                                        <tr>
+                                            <td>
+                                                @php
+                                                    $badgeClass = match($job['status']) {
+                                                        'Completed' => 'bg-success',
+                                                        'Failed' => 'bg-danger',
+                                                        'Warning' => 'bg-warning text-dark',
+                                                        'Running' => 'bg-info',
+                                                        'Cancelled' => 'bg-secondary',
+                                                        default => 'bg-secondary',
+                                                    };
+                                                @endphp
+                                                <span class="badge {{ $badgeClass }}">{{ $job['status'] }}</span>
+                                            </td>
+                                            <td>{{ $job['classification'] }}</td>
+                                            <td>{{ $job['started'] }}</td>
+                                            <td>
+                                                @if($job['duration_seconds'])
+                                                    {{ gmdate('H:i:s', $job['duration_seconds']) }}
+                                                @else
+                                                    —
+                                                @endif
+                                            </td>
+                                        </tr>
+                                    @endforeach
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            @elseif($cometJobData)
+                <div class="card mb-3">
+                    <div class="card-header"><i class="bi bi-clock-history me-2"></i>Recent Backup Jobs</div>
+                    <div class="card-body">
+                        <p class="text-muted mb-0">No recent backup jobs found.</p>
+                    </div>
+                </div>
+            @endif
+        @elseif($asset->ninja_id)
+            {{-- Backup Storage --}}
+            <div class="card shadow-sm mb-3">
+                <div class="card-header"><i class="bi bi-cloud-arrow-up me-2"></i>Backup Storage</div>
+                <div class="card-body">
+                    @if($asset->backup_synced_at)
+                        <table class="table table-borderless mb-0">
+                            <tbody>
+                                <tr>
+                                    <th class="text-muted" style="width: 140px;">Cloud Storage</th>
+                                    <td>
+                                        @if($asset->backup_cloud_bytes !== null)
+                                            {{ $asset->backup_cloud_bytes > 0 ? \App\Support\Format::bytes($asset->backup_cloud_bytes) : '0 B' }}
+                                        @else
+                                            <span class="text-muted">-</span>
+                                        @endif
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <th class="text-muted">Local Storage</th>
+                                    <td>
+                                        @if($asset->backup_local_bytes !== null)
+                                            {{ $asset->backup_local_bytes > 0 ? \App\Support\Format::bytes($asset->backup_local_bytes) : '0 B' }}
+                                        @else
+                                            <span class="text-muted">-</span>
+                                        @endif
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <th class="text-muted">Revisions</th>
+                                    <td>
+                                        @if($asset->backup_revisions_bytes !== null)
+                                            {{ $asset->backup_revisions_bytes > 0 ? \App\Support\Format::bytes($asset->backup_revisions_bytes) : '0 B' }}
+                                        @else
+                                            <span class="text-muted">-</span>
+                                        @endif
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <th class="text-muted">Data as of</th>
+                                    <td>
+                                        {{ $asset->backup_synced_at->diffForHumans() }}
+                                        <br><small class="text-muted">{{ $asset->backup_synced_at->toAppTz()->format('Y-m-d H:i T') }}</small>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    @else
+                        <p class="text-muted mb-0">
+                            <i class="bi bi-shield-x me-1"></i>No backup detected.
+                            <br><small>If this device has backup enabled in NinjaRMM, data will appear after the next sync.</small>
+                        </p>
+                    @endif
+                </div>
+            </div>
+
+            {{-- Backup Jobs --}}
+            @if($backupJobs !== null)
+                @if(!empty($backupJobs['jobs']))
+                @php
+                    $lastSuccess = collect($backupJobs['jobs'])->firstWhere('status', 'COMPLETED');
+                    $lastFailure = collect($backupJobs['jobs'])->firstWhere('status', 'FAILED');
+                @endphp
+                <div class="card shadow-sm mb-3">
+                    <div class="card-header"><i class="bi bi-clock-history me-2"></i>Recent Backup Jobs</div>
+                    <div class="card-body pb-2">
+                        <div class="d-flex gap-4 mb-3">
+                            <div>
+                                <small class="text-muted d-block">Last Successful</small>
+                                @if($lastSuccess && isset($lastSuccess['startTime']))
+                                    <span class="text-success fw-semibold">{{ \Carbon\Carbon::parse($lastSuccess['startTime'])->toAppTz()->format('M j, g:i A') }}</span>
+                                @else
+                                    <span class="text-muted">None</span>
+                                @endif
+                            </div>
+                            <div>
+                                <small class="text-muted d-block">Last Failed</small>
+                                @if($lastFailure && isset($lastFailure['startTime']))
+                                    <span class="text-danger fw-semibold">{{ \Carbon\Carbon::parse($lastFailure['startTime'])->toAppTz()->format('M j, g:i A') }}</span>
+                                @else
+                                    <span class="text-muted">None</span>
+                                @endif
+                            </div>
+                        </div>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="table table-sm table-hover mb-0">
+                            <thead>
+                                <tr>
+                                    <th>Status</th>
+                                    <th>Plan Type</th>
+                                    <th>Started</th>
+                                    <th>Duration</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach($backupJobs['jobs'] as $job)
+                                    <tr>
+                                        <td>
+                                            @switch($job['status'] ?? '')
+                                                @case('COMPLETED')
+                                                    <span class="badge bg-success">Completed</span>
+                                                    @break
+                                                @case('FAILED')
+                                                    <span class="badge bg-danger">Failed</span>
+                                                    @break
+                                                @case('RUNNING')
+                                                    <span class="badge bg-primary"><i class="bi bi-arrow-repeat me-1"></i>Running</span>
+                                                    @break
+                                                @case('PROCESSING')
+                                                    <span class="badge bg-warning text-dark">Processing</span>
+                                                    @break
+                                                @case('CANCELED')
+                                                    <span class="badge bg-secondary">Canceled</span>
+                                                    @break
+                                                @default
+                                                    <span class="badge bg-secondary">{{ $job['status'] ?? 'Unknown' }}</span>
+                                            @endswitch
+                                        </td>
+                                        <td>
+                                            @if(($job['planType'] ?? '') === 'IMAGE')
+                                                <i class="bi bi-hdd me-1" title="Image"></i>Image
+                                            @elseif(($job['planType'] ?? '') === 'FILE_FOLDER')
+                                                <i class="bi bi-folder me-1" title="File/Folder"></i>File/Folder
+                                            @else
+                                                {{ $job['planType'] ?? '-' }}
+                                            @endif
+                                        </td>
+                                        <td>
+                                            @if(isset($job['startTime']))
+                                                {{ \Carbon\Carbon::parse($job['startTime'])->toAppTz()->format('M j, g:i A') }}
+                                            @else
+                                                -
+                                            @endif
+                                        </td>
+                                        <td>
+                                            @if(isset($job['startTime'], $job['endTime']))
+                                                @php
+                                                    $start = \Carbon\Carbon::parse($job['startTime']);
+                                                    $end = \Carbon\Carbon::parse($job['endTime']);
+                                                    $diffMinutes = $start->diffInMinutes($end);
+                                                @endphp
+                                                @if($diffMinutes < 1)
+                                                    < 1 min
+                                                @elseif($diffMinutes < 60)
+                                                    {{ $diffMinutes }} min
+                                                @else
+                                                    {{ floor($diffMinutes / 60) }}h {{ $diffMinutes % 60 }}m
+                                                @endif
+                                            @elseif(($job['status'] ?? '') === 'RUNNING')
+                                                <span class="text-muted">In progress</span>
+                                            @else
+                                                -
+                                            @endif
+                                        </td>
+                                    </tr>
+                                @endforeach
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                @endif
+
+                @if(!empty($backupJobs['integrityChecks']))
+                <div class="card shadow-sm mb-3">
+                    <div class="card-header"><i class="bi bi-shield-check me-2"></i>Integrity Checks</div>
+                    <div class="table-responsive">
+                        <table class="table table-sm table-hover mb-0">
+                            <thead>
+                                <tr>
+                                    <th>Status</th>
+                                    <th>Plan Type</th>
+                                    <th>Started</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach($backupJobs['integrityChecks'] as $check)
+                                    <tr>
+                                        <td>
+                                            @switch($check['status'] ?? '')
+                                                @case('COMPLETED')
+                                                    <span class="badge bg-success">Completed</span>
+                                                    @break
+                                                @case('FAILED')
+                                                    <span class="badge bg-danger">Failed</span>
+                                                    @break
+                                                @case('RUNNING')
+                                                    <span class="badge bg-primary"><i class="bi bi-arrow-repeat me-1"></i>Running</span>
+                                                    @break
+                                                @case('PROCESSING')
+                                                    <span class="badge bg-warning text-dark">Processing</span>
+                                                    @break
+                                                @case('CANCELED')
+                                                    <span class="badge bg-secondary">Canceled</span>
+                                                    @break
+                                                @default
+                                                    <span class="badge bg-secondary">{{ $check['status'] ?? 'Unknown' }}</span>
+                                            @endswitch
+                                        </td>
+                                        <td>
+                                            @if(($check['planType'] ?? '') === 'IMAGE')
+                                                <i class="bi bi-hdd me-1" title="Image"></i>Image
+                                            @elseif(($check['planType'] ?? '') === 'FILE_FOLDER')
+                                                <i class="bi bi-folder me-1" title="File/Folder"></i>File/Folder
+                                            @else
+                                                {{ $check['planType'] ?? '-' }}
+                                            @endif
+                                        </td>
+                                        <td>
+                                            @if(isset($check['startTime']))
+                                                {{ \Carbon\Carbon::parse($check['startTime'])->toAppTz()->format('M j, g:i A') }}
+                                            @else
+                                                -
+                                            @endif
+                                        </td>
+                                    </tr>
+                                @endforeach
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                @endif
+            @elseif($asset->backup_synced_at)
+                <p class="text-muted small mb-0"><i class="bi bi-exclamation-circle me-1"></i>Backup job history unavailable.</p>
+            @endif
+        @else
+            <p class="text-muted">Backup data is only available for NinjaRMM-linked devices.</p>
+        @endif
+    </div>
+
+</div>{{-- end tab-content --}}
+
+{{-- Delete Modal --}}
+@php $assetDeleteName = $asset->hostname ?: $asset->name; @endphp
+<div class="modal fade" id="deleteAssetModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title text-danger"><i class="bi bi-exclamation-triangle me-2"></i>Delete Device</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p>This will soft-delete <strong>{{ $assetDeleteName }}</strong>.</p>
+                <p class="text-muted small">The record can be restored later if needed.</p>
+                <label for="deleteAssetConfirm" class="form-label mt-2">
+                    To confirm, type <code>{{ $assetDeleteName }}</code> below.
+                </label>
+                <input type="text" class="form-control" id="deleteAssetConfirm" autocomplete="off">
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <form method="POST" action="{{ route('assets.destroy', $asset) }}">
+                    @csrf
+                    @method('DELETE')
+                    <button type="submit" class="btn btn-danger" id="deleteAssetBtn" disabled>
+                        <i class="bi bi-trash me-1"></i>Delete Device
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+<script>
+(function() {
+    var expected = @json($assetDeleteName);
+    var input = document.getElementById('deleteAssetConfirm');
+    var btn = document.getElementById('deleteAssetBtn');
+    input?.addEventListener('input', function() {
+        btn.disabled = input.value !== expected;
+    });
+    document.getElementById('deleteAssetModal')?.addEventListener('hidden.bs.modal', function() {
+        input.value = '';
+        btn.disabled = true;
+    });
+})();
+</script>
+
+{{-- Control D DNS Activity JS --}}
+@if($asset->controld_device_id && \App\Support\ControlDConfig::isAnalyticsConfigured())
+<script>
+function loadDnsActivity(hours) {
+    var container = document.getElementById('dnsActivityContainer');
+    var body = document.getElementById('dnsActivityBody');
+    container.style.display = '';
+
+    // Update active button
+    document.querySelectorAll('#dnsTimeRange button').forEach(function(btn) {
+        btn.classList.toggle('active', parseInt(btn.dataset.hours) === hours);
+    });
+
+    body.innerHTML = '<div class="text-center py-4"><div class="spinner-border spinner-border-sm text-muted" role="status"></div><span class="text-muted ms-2">Loading DNS activity...</span></div>';
+
+    fetch('{{ route("assets.controld.activity", $asset) }}?hours=' + hours, {
+        headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+    })
+    .then(function(r) {
+        if (!r.ok) return r.json().then(function(d) { throw new Error(d.error || 'Request failed'); });
+        return r.json();
+    })
+    .then(function(queries) {
+        if (!queries.length) {
+            body.innerHTML = '<div class="text-center py-4 text-muted">No DNS queries found in the last ' + hours + ' hour' + (hours > 1 ? 's' : '') + '.</div>';
+            return;
+        }
+        var html = '<div class="table-responsive"><table class="table table-sm table-hover mb-0">';
+        html += '<thead class="table-light"><tr><th>Time</th><th>Domain</th><th>Action</th><th>Trigger</th><th>Type</th></tr></thead><tbody>';
+        queries.forEach(function(q) {
+            var badge = 'secondary';
+            var label = q.action || 'unknown';
+            if (q.action === 'allowed') badge = 'success';
+            else if (q.action === 'blocked') badge = 'danger';
+            else if (q.action === 'nxdomain') badge = 'warning';
+
+            var time = q.timestamp ? new Date(q.timestamp * 1000).toLocaleTimeString() : '-';
+            html += '<tr>';
+            html += '<td class="text-nowrap small">' + time + '</td>';
+            html += '<td class="small text-break" style="max-width: 400px;">' + (q.domain || '-') + '</td>';
+            html += '<td><span class="badge bg-' + badge + '">' + label + '</span></td>';
+            html += '<td class="small text-muted">' + (q.trigger || '-') + '</td>';
+            html += '<td class="small text-muted">' + (q.type || '-') + '</td>';
+            html += '</tr>';
+        });
+        html += '</tbody></table></div>';
+        if (queries.length >= 100) {
+            html += '<div class="text-center py-2 text-muted small">Showing first 100 queries</div>';
+        }
+        body.innerHTML = html;
+    })
+    .catch(function(err) {
+        body.innerHTML = '<div class="text-center py-4 text-danger"><i class="bi bi-exclamation-triangle me-1"></i>' + err.message + '</div>';
+    });
+}
+
+document.querySelectorAll('#dnsTimeRange button').forEach(function(btn) {
+    btn.addEventListener('click', function() { loadDnsActivity(parseInt(this.dataset.hours)); });
+});
+</script>
+@endif
+
+{{-- AJAX Tab Render Functions + Fetch Handler --}}
+<script>
+// Escape helper
+function esc(str) {
+    if (!str) return '';
+    var div = document.createElement('div');
+    div.textContent = String(str);
+    return div.innerHTML;
+}
+
+function formatBytes(bytes) {
+    if (!bytes) return '0 B';
+    var k = 1024, sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    var i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+}
+
+function renderNetwork(data) {
+    if (data.level_fallback) {
+        return '<div class="p-4"><p class="text-muted mb-1">Limited network data for Level devices.</p>'
+            + '<table class="table table-sm"><tr><th style="width:140px" class="text-muted">IP Address</th><td>'
+            + esc(data.ip_address || '-') + '</td></tr></table></div>';
+    }
+    if (!data.interfaces || !data.interfaces.length) {
+        return '<p class="text-muted p-4">No network interface data available.</p>';
+    }
+    var html = '<div class="table-responsive"><table class="table table-sm table-hover mb-0">'
+        + '<thead><tr><th>Interface</th><th>Status</th><th>MAC Address</th><th>IPv4</th><th>Subnet</th><th>Gateway</th><th>DNS</th><th>Speed</th></tr></thead><tbody>';
+    data.interfaces.forEach(function(iface) {
+        var statusBadge = iface.status === 'Up' || iface.status === 'Connected'
+            ? '<span class="badge bg-success">Connected</span>'
+            : '<span class="badge bg-secondary">' + esc(iface.status || 'Unknown') + '</span>';
+        // Ninja: ipAddress (array), ipv4Address (some APIs)
+        var ipArr = Array.isArray(iface.ipAddress) ? iface.ipAddress : (Array.isArray(iface.ipAddresses) ? iface.ipAddresses : []);
+        var ipv4 = iface.ipv4Address || ipArr.filter(function(ip) { return ip && ip.indexOf(':') === -1; }).join(', ') || '-';
+        // Ninja: dnsServers can be a string or array
+        var dns = Array.isArray(iface.dnsServers) ? iface.dnsServers.join(', ') : (iface.dnsServers || '-');
+        // Ninja: macAddress can be array
+        var mac = Array.isArray(iface.macAddress) ? iface.macAddress.join(', ') : (iface.macAddress || '-');
+        // Ninja: linkSpeed in bps (string), speed in Mbps
+        var speedVal = iface.speed || (iface.linkSpeed ? Math.round(parseInt(iface.linkSpeed) / 1000000) : 0);
+        var speed = speedVal ? (speedVal >= 1000 ? (speedVal/1000) + ' Gbps' : speedVal + ' Mbps') : '-';
+        html += '<tr><td>' + esc(iface.interfaceName || iface.name || iface.description || '-') + '</td>'
+            + '<td>' + statusBadge + '</td>'
+            + '<td><code>' + esc(mac) + '</code></td>'
+            + '<td>' + esc(ipv4) + '</td>'
+            + '<td>' + esc(iface.subnetMask || '-') + '</td>'
+            + '<td>' + esc(iface.gateway || iface.defaultGateway || '-') + '</td>'
+            + '<td class="small">' + esc(dns) + '</td>'
+            + '<td>' + speed + '</td></tr>';
+    });
+    html += '</tbody></table></div>';
+    return html;
+}
+
+function renderStorage(data) {
+    if (data.level_fallback) {
+        return '<div class="p-4"><p class="text-muted mb-1">Limited storage data for Level devices.</p>'
+            + '<pre class="mb-0">' + esc(data.disk_summary || 'No disk data') + '</pre></div>';
+    }
+    var html = '';
+
+    // Physical Disks
+    if (data.disks && data.disks.length) {
+        html += '<h6 class="px-3 pt-3 mb-2"><i class="bi bi-device-hdd me-1"></i>Physical Disks</h6>';
+        html += '<div class="table-responsive"><table class="table table-sm table-hover mb-0">'
+            + '<thead><tr><th>Model</th><th>Capacity</th><th>Type</th><th>Interface</th><th>SMART</th><th>Temp</th></tr></thead><tbody>';
+        data.disks.forEach(function(d) {
+            var cap = d.size ? formatBytes(d.size) : '-';
+            var smartBadge = d.smartStatus === 'OK' || d.smartStatus === 'Healthy'
+                ? '<span class="badge bg-success">Healthy</span>'
+                : '<span class="badge bg-danger">' + esc(d.smartStatus || 'Unknown') + '</span>';
+            var temp = d.temperature ? d.temperature + '\u00B0C' : '-';
+            html += '<tr><td>' + esc(d.model || '-') + '</td><td>' + cap + '</td>'
+                + '<td>' + esc(d.mediaType || '-') + '</td>'
+                + '<td>' + esc(d.interfaceType || '-') + '</td>'
+                + '<td>' + smartBadge + '</td><td>' + temp + '</td></tr>';
+        });
+        html += '</tbody></table></div>';
+    }
+
+    // Logical Volumes
+    if (data.volumes && data.volumes.length) {
+        html += '<h6 class="px-3 pt-3 mb-2"><i class="bi bi-hdd me-1"></i>Volumes</h6>';
+        html += '<div class="table-responsive"><table class="table table-sm table-hover mb-0">'
+            + '<thead><tr><th>Drive</th><th>File System</th><th>Capacity</th><th>Free</th><th>Usage</th></tr></thead><tbody>';
+        data.volumes.forEach(function(v) {
+            var cap = v.capacity ? formatBytes(v.capacity) : '-';
+            var free = v.freeSpace != null ? formatBytes(v.freeSpace) : '-';
+            var pct = (v.capacity && v.freeSpace != null) ? Math.round(((v.capacity - v.freeSpace) / v.capacity) * 100) : null;
+            var bar = pct !== null
+                ? '<div class="progress" style="height:18px;min-width:100px"><div class="progress-bar '
+                    + (pct > 90 ? 'bg-danger' : pct > 75 ? 'bg-warning' : 'bg-success')
+                    + '" style="width:' + pct + '%">' + pct + '%</div></div>'
+                : '-';
+            html += '<tr><td><strong>' + esc(v.name || '-') + '</strong></td><td>' + esc(v.fileSystem || '-') + '</td>'
+                + '<td>' + cap + '</td><td>' + free + '</td><td>' + bar + '</td></tr>';
+        });
+        html += '</tbody></table></div>';
+    }
+
+    return html || '<p class="text-muted p-4">No storage data available.</p>';
+}
+
+function renderSoftware(data) {
+    if (data.level_fallback || data.message) {
+        return '<p class="text-muted p-4">' + esc(data.message || 'Software inventory not available.') + '</p>';
+    }
+    if (!data.software || !data.software.length) {
+        return '<p class="text-muted p-4">No software inventory available.</p>';
+    }
+
+    // Sort by name
+    data.software.sort(function(a, b) { return (a.name || '').localeCompare(b.name || ''); });
+
+    var html = '<div class="p-3 pb-0">'
+        + '<input type="text" class="form-control form-control-sm mb-3" id="softwareSearch" placeholder="Search software..." style="max-width:300px">'
+        + '</div>';
+    html += '<div class="table-responsive"><table class="table table-sm table-hover mb-0" id="softwareTable">'
+        + '<thead><tr><th>Name</th><th>Version</th><th>Vendor</th><th>Installed</th></tr></thead><tbody>';
+    data.software.forEach(function(s) {
+        var installed = s.installDate ? new Date(s.installDate * 1000).toLocaleDateString() : '-';
+        html += '<tr><td>' + esc(s.name || '-') + '</td>'
+            + '<td><code>' + esc(s.version || '-') + '</code></td>'
+            + '<td class="text-muted">' + esc(s.vendor || '-') + '</td>'
+            + '<td class="text-muted">' + installed + '</td></tr>';
+    });
+    html += '</tbody></table></div>';
+    html += '<div class="p-3 text-muted small">' + data.software.length + ' application(s)</div>';
+
+    // After rendering, wire up search filter
+    setTimeout(function() {
+        var input = document.getElementById('softwareSearch');
+        if (input) {
+            input.addEventListener('input', function() {
+                var filter = this.value.toLowerCase();
+                var rows = document.querySelectorAll('#softwareTable tbody tr');
+                rows.forEach(function(row) {
+                    row.style.display = row.textContent.toLowerCase().indexOf(filter) > -1 ? '' : 'none';
+                });
+            });
+        }
+    }, 0);
+
+    return html;
+}
+
+function renderPatches(data) {
+    if (data.level_fallback || data.message) {
+        return '<p class="text-muted p-4">' + esc(data.message || 'Patch data not available.') + '</p>';
+    }
+    if (!data.patches || !data.patches.length) {
+        return '<p class="text-muted p-4">No patch data available.</p>';
+    }
+
+    // Separate pending vs installed
+    var pending = data.patches.filter(function(p) { return p.status !== 'INSTALLED' && p.installDate == null; });
+    var installed = data.patches.filter(function(p) { return p.status === 'INSTALLED' || p.installDate != null; });
+
+    var html = '<div class="p-3 pb-0">'
+        + '<span class="badge bg-warning text-dark me-2">' + pending.length + ' pending</span>'
+        + '<span class="badge bg-success">' + installed.length + ' installed</span>'
+        + '<button class="btn btn-sm btn-outline-secondary ms-3" id="toggleInstalled" type="button">Show installed</button>'
+        + '</div>';
+
+    function patchTable(patches, tableId) {
+        var t = '<div class="table-responsive"><table class="table table-sm table-hover mb-0" id="' + tableId + '">'
+            + '<thead><tr><th>Title</th><th>KB</th><th>Severity</th><th>Security</th><th>Status</th><th>Released</th></tr></thead><tbody>';
+        patches.forEach(function(p) {
+            var sevClass = {'CRITICAL':'bg-danger','IMPORTANT':'bg-warning text-dark','MODERATE':'bg-info text-dark','LOW':'bg-secondary'};
+            var sev = (p.severity || 'UNKNOWN').toUpperCase();
+            var sevBadge = '<span class="badge ' + (sevClass[sev] || 'bg-secondary') + '">' + esc(sev) + '</span>';
+            var secBadge = p.isSecurityUpdate ? '<span class="badge bg-danger">Yes</span>' : '<span class="text-muted">No</span>';
+            var status = p.installDate ? '<span class="badge bg-success">Installed</span>' : '<span class="badge bg-warning text-dark">Pending</span>';
+            var released = p.releaseDate ? new Date(p.releaseDate * 1000).toLocaleDateString() : '-';
+            t += '<tr><td>' + esc(p.title || '-') + '</td>'
+                + '<td><code>' + esc(p.id || '-') + '</code></td>'
+                + '<td>' + sevBadge + '</td>'
+                + '<td>' + secBadge + '</td>'
+                + '<td>' + status + '</td>'
+                + '<td class="text-muted">' + released + '</td></tr>';
+        });
+        t += '</tbody></table></div>';
+        return t;
+    }
+
+    html += '<h6 class="px-3 pt-3 mb-2">Pending Updates</h6>';
+    html += pending.length ? patchTable(pending, 'pendingPatches') : '<p class="text-muted px-3">No pending updates.</p>';
+    html += '<div id="installedSection" style="display:none">';
+    html += '<h6 class="px-3 pt-3 mb-2">Installed Updates</h6>';
+    html += installed.length ? patchTable(installed, 'installedPatches') : '<p class="text-muted px-3">No installed updates recorded.</p>';
+    html += '</div>';
+
+    setTimeout(function() {
+        var btn = document.getElementById('toggleInstalled');
+        if (btn) {
+            btn.addEventListener('click', function() {
+                var sec = document.getElementById('installedSection');
+                var showing = sec.style.display !== 'none';
+                sec.style.display = showing ? 'none' : '';
+                btn.textContent = showing ? 'Show installed' : 'Hide installed';
+            });
+        }
+    }, 0);
+
+    return html;
+}
+
+// AJAX fetch handler for tabs
+(function() {
+    var cache = {};
+    var assetId = {{ $asset->id }};
+    var hasNinja = {{ $asset->ninja_id ? 'true' : 'false' }};
+    var hasLevel = {{ $asset->level_id ? 'true' : 'false' }};
+
+    document.querySelectorAll('[data-ajax-section]').forEach(function(tab) {
+        tab.addEventListener('shown.bs.tab', function() {
+            var section = this.dataset.ajaxSection;
+            var pane = document.querySelector(this.getAttribute('href'));
+            if (!pane || cache[section]) return;
+
+            if (!hasNinja && !hasLevel) {
+                pane.innerHTML = '<p class="text-muted p-4">Asset not linked to an RMM — no live data available.</p>';
+                cache[section] = true;
+                return;
+            }
+
+            // Show spinner (already in the pane from server render)
+            fetch('/assets/' + assetId + '/device-data/' + section, {
+                headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+            })
+            .then(function(r) { return r.ok ? r.json() : Promise.reject(r); })
+            .then(function(data) {
+                if (data.error) {
+                    pane.innerHTML = '<div class="alert alert-warning m-3"><i class="bi bi-exclamation-triangle me-2"></i>' + esc(data.error) + '</div>';
+                } else {
+                    pane.innerHTML = window['render' + section.charAt(0).toUpperCase() + section.slice(1)](data);
+                }
+                cache[section] = true;
+            })
+            .catch(function() {
+                pane.innerHTML = '<div class="alert alert-danger m-3"><i class="bi bi-x-circle me-2"></i>Could not load data. Try refreshing the page.</div>';
+                // Don't cache errors — allow retry
+            });
+        });
+    });
+})();
+</script>
+
+{{-- Tactical Script Runner JS --}}
+@if($asset->tacticalAsset && $asset->tacticalAsset->status === 'online')
+<script>
+(function() {
+    var select = document.getElementById('tacticalScriptSelect');
+    var runBtn = document.getElementById('tacticalRunBtn');
+    var descEl = document.getElementById('tacticalScriptDesc');
+    var timeoutSelect = document.getElementById('tacticalScriptTimeout');
+    if (!select || !runBtn) return;
+
+    select.addEventListener('change', function() {
+        runBtn.disabled = !this.value;
+        var opt = this.options[this.selectedIndex];
+        if (opt && opt.dataset.description) {
+            descEl.textContent = opt.dataset.description;
+            descEl.style.display = '';
+        } else {
+            descEl.style.display = 'none';
+        }
+        if (opt && opt.dataset.timeout) {
+            var t = parseInt(opt.dataset.timeout);
+            var options = timeoutSelect.options;
+            for (var i = 0; i < options.length; i++) {
+                if (parseInt(options[i].value) >= t) {
+                    timeoutSelect.selectedIndex = i;
+                    break;
+                }
+            }
+        }
+    });
+
+    window.runTacticalScript = function() {
+        var scriptId = select.value;
+        if (!scriptId) return;
+
+        runBtn.disabled = true;
+        runBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Running...';
+
+        var resultDiv = document.getElementById('tacticalScriptResult');
+        var outputDiv = document.getElementById('tacticalScriptOutput');
+        var metaDiv = document.getElementById('tacticalScriptMeta');
+        resultDiv.style.display = 'none';
+
+        fetch('{{ route("assets.run-tactical-script", $asset) }}', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content,
+                'Accept': 'application/json',
+            },
+            body: JSON.stringify({
+                script_id: scriptId,
+                args: document.getElementById('tacticalScriptArgs').value,
+                timeout: document.getElementById('tacticalScriptTimeout').value,
+            }),
+        })
+        .then(function(r) { return r.json().then(function(d) { d._status = r.status; return d; }); })
+        .then(function(data) {
+            resultDiv.style.display = '';
+            if (data.error) {
+                outputDiv.className = 'border rounded p-2 bg-danger bg-opacity-10 text-danger small font-monospace';
+                outputDiv.style.cssText = 'max-height: 300px; overflow-y: auto; white-space: pre-wrap;';
+                outputDiv.textContent = data.error;
+                metaDiv.textContent = '';
+            } else {
+                var output = data.stdout || '(no output)';
+                if (data.stderr) output += '\n\nSTDERR:\n' + data.stderr;
+                var isError = data.retcode !== 0 && data.retcode !== null;
+                outputDiv.className = 'border rounded p-2 small font-monospace ' + (isError ? 'bg-danger bg-opacity-10 text-danger' : 'bg-dark text-light');
+                outputDiv.style.cssText = 'max-height: 300px; overflow-y: auto; white-space: pre-wrap;';
+                outputDiv.textContent = output;
+                var meta = 'Return code: ' + (data.retcode ?? 'unknown');
+                if (data.execution_time) meta += ' | Time: ' + data.execution_time + 's';
+                meta += ' | Script: ' + data.script_name;
+                metaDiv.textContent = meta;
+            }
+        })
+        .catch(function(err) {
+            resultDiv.style.display = '';
+            outputDiv.className = 'border rounded p-2 bg-danger bg-opacity-10 text-danger small font-monospace';
+            outputDiv.style.cssText = 'max-height: 300px; overflow-y: auto; white-space: pre-wrap;';
+            outputDiv.textContent = 'Request failed: ' + err.message;
+            metaDiv.textContent = '';
+        })
+        .finally(function() {
+            runBtn.disabled = false;
+            runBtn.innerHTML = '<i class="bi bi-play-fill me-1"></i>Run';
+        });
+    };
+})();
+</script>
+@endif
+@endsection

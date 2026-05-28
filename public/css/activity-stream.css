@@ -1,0 +1,109 @@
+.activity-icon {
+    width: 36px;
+    height: 36px;
+    min-width: 36px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #fff;
+    font-size: 0.9rem;
+}
+.activity-icon-avatar {
+    width: 36px;
+    min-width: 36px;
+}
+.activity-icon-navy { background-color: #1a365d; }
+.activity-icon-blue { background-color: #0d6efd; }
+.activity-icon-purple { background-color: #6f42c1; }
+.activity-icon-teal { background-color: #0d9488; }
+.activity-icon-orange { background-color: #ea580c; }
+
+.text-clamp-2 {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.activity-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.75rem;
+    padding: 0.75rem 1rem;
+    text-decoration: none;
+    color: inherit;
+    border-bottom: 1px solid #f0f0f0;
+    transition: background-color 0.15s;
+}
+.activity-item:hover {
+    background-color: rgba(0,0,0,0.02);
+    color: inherit;
+    text-decoration: none;
+}
+.activity-item:last-child {
+    border-bottom: none;
+}
+.activity-item .activity-content {
+    min-width: 0;
+    flex: 1;
+}
+.activity-item .activity-time {
+    white-space: nowrap;
+    font-size: 0.75rem;
+    color: var(--text-muted, #6b7280);
+    flex-shrink: 0;
+}
+
+.stream-filters {
+    display: flex;
+    gap: 0.375rem;
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    padding: 0.5rem 1rem;
+    border-bottom: 1px solid #e5e7eb;
+    -webkit-overflow-scrolling: touch;
+}
+.stream-filter {
+    padding: 0.25rem 0.75rem;
+    border-radius: 1rem;
+    font-size: 0.75rem;
+    font-weight: 500;
+    white-space: nowrap;
+    cursor: pointer;
+    border: 1px solid #d1d5db;
+    background: #fff;
+    color: #374151;
+    transition: all 0.15s;
+}
+.stream-filter:hover {
+    border-color: #9ca3af;
+}
+.stream-filter.active {
+    background-color: var(--primary, #1a365d);
+    border-color: var(--primary, #1a365d);
+    color: #fff;
+}
+
+.stat-card {
+    transition: transform 0.15s, box-shadow 0.15s;
+}
+.stat-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.1) !important;
+}
+
+.activity-new-banner {
+    display: none;
+    padding: 0.5rem 1rem;
+    background: #eef2ff;
+    border-bottom: 1px solid #c7d2fe;
+    text-align: center;
+    cursor: pointer;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    color: var(--primary, #1a365d);
+}
+.activity-new-banner:hover {
+    background: #e0e7ff;
+}

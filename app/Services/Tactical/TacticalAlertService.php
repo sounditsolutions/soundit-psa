@@ -1,0 +1,240 @@
+<?php
+
+namespace App\Services\Tactical;
+
+use App\Enums\AlertSeverity;
+use App\Enums\AlertSource;
+use App\Models\Alert;
+use App\Models\TacticalAsset;
+use App\Services\AlertService;
+use App\Support\TacticalConfig;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Log;
+
+class TacticalAlertService
+{
+    public function __construct(
+        private readonly AlertService $alertService,
+    ) {}
+
+    /**
+     * Handle an alert failure webhook from Tactical RMM.
+     * Creates or updates a unified Alert record.
+     */
+    public function handleAlertFailure(array $data): ?Alert
+    {
+        $agentId = $data['agent_id'] ?? null;
+        $hostname = $data['hostname'] ?? 'Unknown';
+        $clientName = $data['client_name'] ?? null;
+        $siteName = $data['site_name'] ?? null;
+        $alertMessage = $data['alert_message'] ?? 'Alert triggered';
+        $alertType = $data['alert_type'] ?? 'check';
+        $severity = $data['severity'] ?? null;
+        $checkName = $data['check_name'] ?? null;
+        $checkOutput = $data['check_output'] ?? null;
+        $monitoringType = $data['monitoring_type'] ?? null;
+        $alertId = $data['alert_id'] ?? null;
+        $alertTime = $data['alert_time'] ?? null;
+        $publicIp = $data['public_ip'] ?? null;
+        $loggedInUser = $data['logged_in_user'] ?? null;
+        $operatingSystem = $data['operating_system'] ?? null;
+        $needsReboot = $data['needs_reboot'] ?? null;
+
+        // Check severity threshold — treat null/empty/none as below any threshold
+        $severityLevels = ['error' => 3, 'warning' => 2, 'info' => 1, 'informational' => 1];
+        $normalizedSeverity = strtolower(trim($severity ?? ''));
+        $alertLevel = $severityLevels[$normalizedSeverity] ?? 0;
+        $minLevel = $severityLevels[TacticalConfig::alertMinSeverity()] ?? 2;
+
+        if ($alertLevel < $minLevel) {
+            Log::debug('[Tactical Alert] Below severity threshold, ignoring', [
+                'severity' => $severity,
+                'hostname' => $hostname,
+                'check_name' => $checkName,
+            ]);
+            return null;
+        }
+
+        // Skip transient errors (device waking up, PowerShell not ready, etc.)
+        $transientPatterns = [
+            'The operation could not be completed. A retry should be performed',
+            'fork/exec',
+        ];
+        $alertText = ($alertMessage ?? '') . ' ' . ($checkOutput ?? '');
+        foreach ($transientPatterns as $pattern) {
+            if (stripos($alertText, $pattern) !== false) {
+                Log::debug('[Tactical Alert] Transient error, ignoring', [
+                    'hostname' => $hostname,
+                    'pattern' => $pattern,
+                ]);
+                return null;
+            }
+        }
+
+        // Skip alerts with no check output (transient failures where script didn't run)
+        $normalizedOutput = strtolower(trim($checkOutput ?? ''));
+        if ($alertType === 'check' && ($normalizedOutput === '' || $normalizedOutput === 'none' || $normalizedOutput === 'null')) {
+            Log::debug('[Tactical Alert] Empty check output, ignoring', [
+                'hostname' => $hostname,
+                'check_name' => $checkName,
+            ]);
+            return null;
+        }
+
+        // Skip overdue/availability alerts for workstations (only alert for servers)
+        if ($alertType === 'availability' && strtolower($monitoringType ?? '') !== 'server') {
+            Log::debug('[Tactical Alert] Skipping overdue alert for non-server', [
+                'hostname' => $hostname,
+                'monitoring_type' => $monitoringType,
+            ]);
+            return null;
+        }
+
+        // Resolve tactical asset -> PSA asset -> client
+        $tacticalAsset = $agentId ? TacticalAsset::where('agent_id', $agentId)->first() : null;
+        $asset = $tacticalAsset?->asset;
+        $clientId = $asset?->client_id;
+
+        if (!$clientId) {
+            Log::info('[Tactical Alert] No client match for agent, creating unlinked alert', [
+                'agent_id' => $agentId,
+                'hostname' => $hostname,
+                'client_name' => $clientName,
+            ]);
+        }
+
+        // Map severity to unified AlertSeverity
+        $unifiedSeverity = AlertSeverity::fromVendor(AlertSource::Tactical, $severity);
+
+        // Build title
+        $severityLabel = strtoupper($normalizedSeverity ?: 'UNKNOWN');
+        $checkLabel = $checkName ?? $alertType;
+        $title = "{$severityLabel} - {$checkLabel} on {$hostname}";
+
+        // Build message body
+        $msgLines = [];
+        if ($clientName) $msgLines[] = "Client: {$clientName}";
+        if ($siteName) $msgLines[] = "Site: {$siteName}";
+        if ($operatingSystem) $msgLines[] = "OS: {$operatingSystem}";
+        if ($publicIp) $msgLines[] = "Public IP: {$publicIp}";
+        if ($loggedInUser) $msgLines[] = "Logged-in user: {$loggedInUser}";
+        $msgLines[] = "Alert type: {$alertType}";
+        $msgLines[] = "Severity: {$severityLabel}";
+        if ($checkName) $msgLines[] = "Check: {$checkName}";
+        $msgLines[] = "Message: {$alertMessage}";
+        if ($alertTime) $msgLines[] = "Alert time: {$alertTime}";
+        if ($needsReboot && strtolower($needsReboot) === 'true') $msgLines[] = "Needs reboot: Yes";
+        if ($checkOutput) {
+            $msgLines[] = '';
+            $msgLines[] = 'Check Output:';
+            $msgLines[] = substr($checkOutput, 0, 2000);
+        }
+
+        // source_alert_id: use alert_id if available, otherwise synthesize from hostname+check
+        $sourceAlertId = $alertId ? (string) $alertId : md5("{$hostname}:{$checkLabel}");
+
+        $firedAt = $alertTime ? Carbon::parse($alertTime) : now();
+
+        $alert = $this->alertService->upsert(
+            AlertSource::Tactical,
+            $sourceAlertId,
+            [
+                'asset_id' => $asset?->id,
+                'client_id' => $clientId,
+                'severity' => $unifiedSeverity,
+                'title' => mb_substr($title, 0, 255),
+                'message' => implode("\n", $msgLines),
+                'hostname' => $hostname,
+                'fired_at' => $firedAt,
+                'metadata' => [
+                    'agent_id' => $agentId,
+                    'alert_type' => $alertType,
+                    'monitoring_type' => $monitoringType,
+                    'public_ip' => $publicIp,
+                    'logged_in_user' => $loggedInUser,
+                    'needs_reboot' => $needsReboot,
+                ],
+            ],
+        );
+
+        Log::info('[Tactical Alert] Alert upserted', [
+            'alert_id' => $alert->id,
+            'source_alert_id' => $sourceAlertId,
+            'hostname' => $hostname,
+            'client_id' => $clientId,
+        ]);
+
+        return $alert;
+    }
+
+    /**
+     * Handle an alert resolved webhook from Tactical RMM.
+     * Resolves the matching open Alert record.
+     */
+    public function handleAlertResolved(array $data): ?Alert
+    {
+        $agentId = $data['agent_id'] ?? null;
+        $hostname = $data['hostname'] ?? null;
+        $severity = $data['severity'] ?? null;
+        $checkName = $data['check_name'] ?? null;
+        $alertType = $data['alert_type'] ?? 'check';
+        $alertId = $data['alert_id'] ?? null;
+        $actionStdout = $data['action_stdout'] ?? null;
+        $actionStderr = $data['action_stderr'] ?? null;
+        $actionRetcode = $data['action_retcode'] ?? null;
+
+        // Try matching by alert_id first
+        $alert = null;
+        if ($alertId) {
+            $alert = Alert::where('source', AlertSource::Tactical)
+                ->where('source_alert_id', (string) $alertId)
+                ->whereIn('status', [\App\Enums\AlertStatus::Active, \App\Enums\AlertStatus::Acknowledged, \App\Enums\AlertStatus::Ticketed])
+                ->first();
+        }
+
+        // Fall back to synthesized key for backwards compatibility
+        if (!$alert && $hostname) {
+            $normalizedSeverity = strtolower(trim($severity ?? ''));
+            $checkLabel = $checkName ?? $alertType;
+            $fallbackId = md5("{$hostname}:{$checkLabel}");
+            $alert = Alert::where('source', AlertSource::Tactical)
+                ->where('source_alert_id', $fallbackId)
+                ->whereIn('status', [\App\Enums\AlertStatus::Active, \App\Enums\AlertStatus::Acknowledged, \App\Enums\AlertStatus::Ticketed])
+                ->first();
+        }
+
+        if (!$alert) {
+            Log::debug('[Tactical Alert] No open alert found for resolved event', [
+                'alert_id' => $alertId,
+                'hostname' => $hostname,
+                'check_name' => $checkName,
+            ]);
+            return null;
+        }
+
+        // Build resolution reason with action results if available
+        $reason = "Alert resolved automatically by Tactical RMM.";
+        if ($actionStdout || $actionStderr || $actionRetcode !== null) {
+            $reason .= "\n\nResponse Action Results:";
+            if ($actionRetcode !== null) {
+                $reason .= "\n- Return code: {$actionRetcode}";
+            }
+            if ($actionStdout) {
+                $reason .= "\n\nOutput:\n" . substr($actionStdout, 0, 3000);
+            }
+            if ($actionStderr) {
+                $reason .= "\n\nErrors:\n" . substr($actionStderr, 0, 1000);
+            }
+        }
+
+        $this->alertService->resolve($alert, $reason);
+
+        Log::info('[Tactical Alert] Alert resolved', [
+            'alert_id' => $alert->id,
+            'source_alert_id' => $alertId,
+            'hostname' => $hostname,
+        ]);
+
+        return $alert;
+    }
+}
