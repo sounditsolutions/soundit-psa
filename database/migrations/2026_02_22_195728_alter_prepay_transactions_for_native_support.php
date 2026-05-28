@@ -9,20 +9,27 @@ return new class extends Migration
 {
     public function up(): void
     {
-        // Drop FK first — MariaDB won't drop the unique index while it's backing the FK
-        Schema::table('prepay_transactions', function (Blueprint $table) {
-            $table->dropForeign(['contract_id']);
-            $table->dropUnique(['contract_id', 'halo_id']);
-        });
+        if (DB::getDriverName() !== 'sqlite') {
+            // Drop FK first — MariaDB won't drop the unique index while it's backing the FK
+            Schema::table('prepay_transactions', function (Blueprint $table) {
+                $table->dropForeign(['contract_id']);
+                $table->dropUnique(['contract_id', 'halo_id']);
+            });
 
-        // Make halo_id nullable via raw SQL (avoids doctrine/dbal requirement)
-        DB::statement('ALTER TABLE prepay_transactions MODIFY halo_id INT UNSIGNED NULL');
+            // Make halo_id nullable via raw SQL
+            DB::statement('ALTER TABLE prepay_transactions MODIFY halo_id INT UNSIGNED NULL');
 
-        // Re-add unique + FK (MariaDB allows multiple NULLs in unique indexes)
-        Schema::table('prepay_transactions', function (Blueprint $table) {
-            $table->unique(['contract_id', 'halo_id']);
-            $table->foreign('contract_id')->references('id')->on('contracts')->cascadeOnDelete();
-        });
+            // Re-add unique + FK (MariaDB allows multiple NULLs in unique indexes)
+            Schema::table('prepay_transactions', function (Blueprint $table) {
+                $table->unique(['contract_id', 'halo_id']);
+                $table->foreign('contract_id')->references('id')->on('contracts')->cascadeOnDelete();
+            });
+        } else {
+            // SQLite: just make halo_id nullable via Blueprint change()
+            Schema::table('prepay_transactions', function (Blueprint $table) {
+                $table->unsignedInteger('halo_id')->nullable()->change();
+            });
+        }
 
         // Add new columns for PSA-native transactions
         Schema::table('prepay_transactions', function (Blueprint $table) {
@@ -52,14 +59,20 @@ return new class extends Migration
             );
         }
 
-        Schema::table('prepay_transactions', function (Blueprint $table) {
-            $table->dropUnique(['contract_id', 'halo_id']);
-        });
+        if (DB::getDriverName() !== 'sqlite') {
+            Schema::table('prepay_transactions', function (Blueprint $table) {
+                $table->dropUnique(['contract_id', 'halo_id']);
+            });
 
-        DB::statement('ALTER TABLE prepay_transactions MODIFY halo_id INT UNSIGNED NOT NULL');
+            DB::statement('ALTER TABLE prepay_transactions MODIFY halo_id INT UNSIGNED NOT NULL');
 
-        Schema::table('prepay_transactions', function (Blueprint $table) {
-            $table->unique(['contract_id', 'halo_id']);
-        });
+            Schema::table('prepay_transactions', function (Blueprint $table) {
+                $table->unique(['contract_id', 'halo_id']);
+            });
+        } else {
+            Schema::table('prepay_transactions', function (Blueprint $table) {
+                $table->unsignedInteger('halo_id')->nullable(false)->change();
+            });
+        }
     }
 };
