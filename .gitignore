@@ -24,6 +24,9 @@ Homestead.yaml
 Thumbs.db
 .worktrees/
 
+# Local deploy targets (real infra values — never commit; see scripts/deploy.env.example)
+/scripts/deploy.env
+
 # Dolt database files (added by bd init)
 .dolt/
 *.db
