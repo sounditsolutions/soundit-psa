@@ -50,11 +50,11 @@ class ContractController extends Controller
             ->get(['id', 'name', 'unit_price', 'prepaid_time_minutes']);
 
         return view('contracts.index-all', [
-            'contracts'  => $contracts,
-            'filters'    => $filters,
-            'clients'    => Client::active()->orderBy('name')->get(['id', 'name']),
-            'statuses'   => ContractStatus::cases(),
-            'types'      => ContractType::cases(),
+            'contracts' => $contracts,
+            'filters' => $filters,
+            'clients' => Client::active()->orderBy('name')->get(['id', 'name']),
+            'statuses' => ContractStatus::cases(),
+            'types' => ContractType::cases(),
             'prepaySkus' => $prepaySkus,
         ]);
     }
@@ -433,11 +433,18 @@ class ContractController extends Controller
             'type' => ['required', 'in:credit,debit'],
             'value' => ['required', 'numeric', 'gt:0'],
             'note' => ['required', 'string', 'max:500'],
+            // Optional per-credit expiry override (hours-based credits only).
+            // Blank → fall back to the contract's prepay_expiry_months policy.
+            'expiry_date' => ['nullable', 'date'],
         ]);
 
         if ($validated['type'] === 'credit') {
+            $expiryDate = ! empty($validated['expiry_date']) && ! $contract->prepay_as_amount
+                ? \Illuminate\Support\Carbon::parse($validated['expiry_date'])
+                : null;
+
             $this->prepayService->addManualCredit(
-                $contract, (float) $validated['value'], $validated['note'], auth()->user(),
+                $contract, (float) $validated['value'], $validated['note'], auth()->user(), $expiryDate,
             );
             $label = 'Credit';
         } else {
@@ -488,12 +495,17 @@ class ContractController extends Controller
             'prepay_alert_threshold' => 'nullable|numeric|min:0',
             'prepay_auto_topup_enabled' => 'boolean',
             'prepay_auto_topup_qty' => 'nullable|integer|min:1|max:99',
+            // Expiration policy. Staff-only: this field is deliberately NOT exposed
+            // on the portal updateAlertSettings allowlist — a client must never set
+            // their own forfeiture term. Do not share a FormRequest with the portal.
+            'prepay_expiry_months' => 'nullable|integer|min:1|max:120',
         ]);
 
         $contract->update([
             'prepay_alert_threshold' => $validated['prepay_alert_threshold'] ?: null,
             'prepay_auto_topup_enabled' => $validated['prepay_auto_topup_enabled'] ?? false,
             'prepay_auto_topup_qty' => $validated['prepay_auto_topup_qty'] ?? null,
+            'prepay_expiry_months' => $validated['prepay_expiry_months'] ?: null,
             // Clear notification flag when settings change
             'prepay_alert_notified_at' => null,
         ]);
@@ -515,8 +527,9 @@ class ContractController extends Controller
             'resolution_p4' => 'nullable|numeric|min:0.25',
         ]);
 
-        if (!$request->boolean('sla_enabled')) {
+        if (! $request->boolean('sla_enabled')) {
             $contract->update(['sla_terms' => null]);
+
             return redirect()->route('contracts.show', $contract)->with('success', 'SLA terms removed.');
         }
 
@@ -536,14 +549,14 @@ class ContractController extends Controller
             'p4' => $validated['resolution_p4'] ?? null,
         ], fn ($v) => $v !== null);
 
-        if (!empty($response)) {
+        if (! empty($response)) {
             $terms['response'] = $response;
         }
-        if (!empty($resolution)) {
+        if (! empty($resolution)) {
             $terms['resolution'] = $resolution;
         }
 
-        $contract->update(['sla_terms' => !empty($terms) ? $terms : null]);
+        $contract->update(['sla_terms' => ! empty($terms) ? $terms : null]);
 
         return redirect()->route('contracts.show', $contract)->with('success', 'SLA terms updated.');
     }

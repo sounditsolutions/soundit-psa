@@ -5,8 +5,8 @@ namespace App\Models;
 use App\Enums\BillingPeriod;
 use App\Enums\BillingSource;
 use App\Enums\ContractStatus;
-use App\Enums\TicketPriority;
 use App\Enums\ContractType;
+use App\Enums\TicketPriority;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -37,8 +37,10 @@ class Contract extends Model
         'notes',
         'prepay_total',
         'prepay_used',
+        'prepay_expired',
         'prepay_balance',
         'prepay_as_amount',
+        'prepay_expiry_months',
         'portal_prepay_sku_id',
         'prepay_alert_threshold',
         'prepay_auto_topup_qty',
@@ -63,8 +65,10 @@ class Contract extends Model
             'cancelled_at' => 'datetime',
             'prepay_total' => 'decimal:2',
             'prepay_used' => 'decimal:2',
+            'prepay_expired' => 'decimal:2',
             'prepay_balance' => 'decimal:2',
             'prepay_as_amount' => 'boolean',
+            'prepay_expiry_months' => 'integer',
             'prepay_alert_threshold' => 'decimal:2',
             'prepay_auto_topup_qty' => 'integer',
             'prepay_auto_topup_enabled' => 'boolean',
@@ -89,7 +93,7 @@ class Contract extends Model
 
     public function hasSla(): bool
     {
-        return !empty($this->sla_terms);
+        return ! empty($this->sla_terms);
     }
 
     public function slaResponseHours(TicketPriority $priority): ?int
@@ -211,8 +215,20 @@ class Contract extends Model
         }
 
         return $this->prepay_as_amount
-            ? '$' . number_format($this->prepay_balance, 2)
-            : number_format($this->prepay_balance, 2) . ' hrs';
+            ? '$'.number_format($this->prepay_balance, 2)
+            : number_format($this->prepay_balance, 2).' hrs';
+    }
+
+    /**
+     * Total prepaid hours forfeited to expiration (hours-based prepay only).
+     */
+    public function getPrepayExpiredFormattedAttribute(): string
+    {
+        if (! $this->prepay_expired || $this->prepay_as_amount) {
+            return '-';
+        }
+
+        return number_format($this->prepay_expired, 2).' hrs';
     }
 
     /**
@@ -260,7 +276,7 @@ class Contract extends Model
         }
 
         return $this->prepay_as_amount
-            ? '$' . number_format($this->burn_rate, 2) . '/wk'
-            : number_format($this->burn_rate, 2) . ' hrs/wk';
+            ? '$'.number_format($this->burn_rate, 2).'/wk'
+            : number_format($this->burn_rate, 2).' hrs/wk';
     }
 }
