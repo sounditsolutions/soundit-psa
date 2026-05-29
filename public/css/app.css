@@ -82,25 +82,32 @@ h1, h2, h3, h4, h5, h6 {
     color: var(--primary-dark);
 }
 
-/* ── Cards ── */
+/* ── Cards ──
+   The Flat Rule (DESIGN.md §4): content surfaces are flat at rest and on
+   hover. Depth comes from the 1px border and the canvas/surface tonal step,
+   never from a hover lift, shadow bloom, or accent-border swap. Shadow is
+   reserved for true overlays (modal, dropdown, popover, command palette). */
 .card {
     background: #fff;
     border: 1px solid #e5e7eb;
     border-radius: 12px;
-    transition: all 0.3s ease;
 }
 
-.card:hover {
-    transform: translateY(-4px);
-    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.08);
-    border-color: var(--accent);
+/* Neutralize Bootstrap shadow utilities on content cards. Much of the markup
+   carries `.shadow-sm`; flat-at-rest means depth comes from the border and the
+   canvas/surface tonal step, not a resting shadow. The `.card.shadow-*`
+   selectors outrank the utilities' own `!important` by specificity, so no Blade
+   edits are needed. True overlays (.modal-content, .dropdown-menu, .popover,
+   .toast) are not `.card` and keep their shadows. */
+.card,
+.card.shadow-sm,
+.card.shadow,
+.card.shadow-lg {
+    box-shadow: none !important;
 }
 
-.card-static:hover {
-    transform: none;
-    box-shadow: 0 0.125rem 0.25rem rgba(0, 0, 0, 0.075);
-    border-color: #e5e7eb;
-}
+/* `.card-static` is kept as a no-op for existing markup: cards no longer lift
+   on hover, so there is nothing left to opt out of. */
 
 .card-header {
     background: var(--primary);
