@@ -25,6 +25,7 @@ class PrepayTransaction extends Model
         'invoice_number',
         'invoice_date',
         'expiry_date',
+        'expired_transaction_id',
     ];
 
     protected function casts(): array
@@ -66,11 +67,22 @@ class PrepayTransaction extends Model
         return $this->belongsTo(PhoneCall::class);
     }
 
+    /**
+     * The credit "lot" this Expiration debit forfeits (self-reference).
+     * Null for non-expiration rows.
+     */
+    public function expiredTransaction(): BelongsTo
+    {
+        return $this->belongsTo(self::class, 'expired_transaction_id');
+    }
+
     // ── Scopes ──
 
     /**
-     * Consumption transactions only — excludes deposits and credits.
-     * Used for burn rate calculation and usage reporting.
+     * Consumption transactions only — excludes deposits, credits, and
+     * expirations. Used for burn rate calculation and usage reporting:
+     * forfeited (expired) hours are not work consumed, so they must not
+     * skew the burn rate or days-until-depleted estimate.
      */
     public function scopeConsumption(Builder $query): Builder
     {
@@ -79,6 +91,7 @@ class PrepayTransaction extends Model
                 PrepayTransactionSource::InvoiceDeposit->value,
                 PrepayTransactionSource::InvoiceReversal->value,
                 PrepayTransactionSource::ManualCredit->value,
+                PrepayTransactionSource::Expiration->value,
             ])->orWhereNull('source');
         });
     }
@@ -90,9 +103,9 @@ class PrepayTransaction extends Model
     public function formatValue(bool $asAmount): string
     {
         if ($asAmount) {
-            return $this->amount !== null ? '$' . number_format($this->amount, 2) : '-';
+            return $this->amount !== null ? '$'.number_format($this->amount, 2) : '-';
         }
 
-        return $this->hours !== null ? number_format($this->hours, 2) . ' hrs' : '-';
+        return $this->hours !== null ? number_format($this->hours, 2).' hrs' : '-';
     }
 }

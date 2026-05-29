@@ -249,6 +249,7 @@ Schedule::command('triage:review-open')
             return false;
         }
         cache([$cacheKey => now()], now()->addHours(24));
+
         return true;
     });
 
@@ -256,6 +257,13 @@ Schedule::command('triage:review-open')
 Schedule::command('calls:resolve-recordings')
     ->hourly()
     ->withoutOverlapping(5)
+    ->runInBackground();
+
+// Prepay — forfeit unconsumed remainder of expired prepaid-time credits (daily,
+// before reconcile/billing). No-op until a contract sets prepay_expiry_months.
+Schedule::command('prepay:expire')
+    ->dailyAt('04:10')
+    ->withoutOverlapping()
     ->runInBackground();
 
 // Prepay — check for low balances and trigger alerts/auto-top-ups

@@ -352,6 +352,8 @@ These commands execute automatically based on their schedule:
 | `email:poll` | Hourly | Fallback email poll (catches anything webhooks missed) |
 | `triage:review-open` | Hourly | AI review of open tickets — assesses conversation state, writes recommendation notes. Only runs if triage auto-review is enabled in Settings. |
 | `attachments:clean-orphans` | Daily at 04:00 | Deletes unlinked attachment files older than 24h (orphans from abandoned editor sessions) |
+| `prepay:expire` | Daily at 04:10 | Forfeit the unconsumed remainder of expired prepaid-time credits (no-op until a contract sets an expiration policy). Use `--dry-run` to preview, `--contract=ID` to scope. |
+| `prepay:check-balances` | Hourly | Check prepay contracts for low balances; trigger alerts / auto-top-ups |
 
 **Ad-hoc maintenance commands** (not scheduled — run manually when needed):
 

@@ -11,6 +11,7 @@ enum PrepayTransactionSource: string
     case ManualDebit = 'manual_debit';
     case TicketTime = 'ticket_time';
     case PhoneCallTime = 'phone_call_time';
+    case Expiration = 'expiration';
 
     public function label(): string
     {
@@ -22,6 +23,7 @@ enum PrepayTransactionSource: string
             self::ManualDebit => 'Manual Debit',
             self::TicketTime => 'Ticket Time',
             self::PhoneCallTime => 'Phone Call Time',
+            self::Expiration => 'Expiration',
         };
     }
 

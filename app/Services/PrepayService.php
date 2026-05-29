@@ -6,14 +6,15 @@ use App\Enums\PrepayTransactionSource;
 use App\Models\Contract;
 use App\Models\ContractActivity;
 use App\Models\Invoice;
-use App\Models\PrepayTransaction;
 use App\Models\PhoneCall;
+use App\Models\PrepayTransaction;
 use App\Models\TicketNote;
 use App\Models\User;
+use Carbon\CarbonInterface;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use App\Services\PrepayAlertService;
 
 class PrepayService
 {
@@ -66,6 +67,7 @@ class PrepayService
             'description' => "Auto-deposit from {$invoice->invoice_number} ({$totalMinutes} min)",
             'invoice_number' => $invoice->invoice_number,
             'invoice_date' => $invoice->invoice_date,
+            'expiry_date' => $this->expiryForCredit($contract, $invoice->invoice_date),
         ]);
 
         // Update denormalized balance on contract
@@ -142,13 +144,16 @@ class PrepayService
         float $value,
         string $note,
         ?User $user = null,
+        ?CarbonInterface $expiryDate = null,
     ): PrepayTransaction {
         $this->ensurePrepayInitialized($contract);
 
         $isAmount = $contract->prepay_as_amount;
         $userId = $user?->id ?? Auth::id();
+        // Precedence: explicit override > contract policy > null (never expires).
+        $expiry = $this->expiryForCredit($contract, now(), $expiryDate);
 
-        return DB::transaction(function () use ($contract, $value, $note, $isAmount, $userId) {
+        return DB::transaction(function () use ($contract, $value, $note, $isAmount, $userId, $expiry) {
             $txn = PrepayTransaction::create([
                 'contract_id' => $contract->id,
                 'source' => PrepayTransactionSource::ManualCredit,
@@ -158,6 +163,7 @@ class PrepayService
                 'amount' => $isAmount ? $value : null,
                 'description' => 'Manual credit',
                 'note' => $note,
+                'expiry_date' => $expiry,
             ]);
 
             $contract->increment('prepay_total', $value);
@@ -272,6 +278,7 @@ class PrepayService
         if (! $note->is_billable || ! $note->time_minutes || $note->time_minutes <= 0) {
             // If note is no longer billable/has no time, reverse any existing debit
             $this->reverseDebitForTicketNote($note);
+
             return null;
         }
 
@@ -359,6 +366,7 @@ class PrepayService
         $durationSeconds = $call->effectiveDurationSeconds();
         if (! $call->is_billable || ! $durationSeconds || $durationSeconds <= 0) {
             $this->reverseDebitForPhoneCall($call);
+
             return null;
         }
 
@@ -479,31 +487,77 @@ class PrepayService
         }
 
         DB::transaction(function () use ($contract) {
-            $contract = Contract::lockForUpdate()->find($contract->id);
-
-            $field = $contract->prepay_as_amount ? 'amount' : 'hours';
-
-            $credits = (float) $contract->prepayTransactions()
-                ->where($field, '>', 0)
-                ->sum($field);
-
-            $debits = abs((float) $contract->prepayTransactions()
-                ->where($field, '<', 0)
-                ->sum($field));
-
-            $contract->update([
-                'prepay_total' => $credits,
-                'prepay_used' => $debits,
-                'prepay_balance' => round($credits - $debits, 4),
-            ]);
-
-            Log::info('[Prepay] Balance recalculated from ledger', [
-                'contract_id' => $contract->id,
-                'total' => $credits,
-                'used' => $debits,
-                'balance' => round($credits - $debits, 4),
-            ]);
+            $locked = Contract::lockForUpdate()->find($contract->id);
+            $this->recalculateBalanceLocked($locked);
         });
+    }
+
+    /**
+     * Lock-free recalculation core. The caller MUST already hold a row lock /
+     * open transaction on $contract (the public recalculateBalance() wrapper,
+     * or PrepayExpirationService::expireContract()). Splitting this out avoids a
+     * nested transaction + redundant double-lock when expiration recalculates
+     * inline under its own lock.
+     */
+    public function recalculateBalanceLocked(Contract $contract): void
+    {
+        $field = $contract->prepay_as_amount ? 'amount' : 'hours';
+
+        $credits = (float) $contract->prepayTransactions()
+            ->where($field, '>', 0)
+            ->sum($field);
+
+        $debits = abs((float) $contract->prepayTransactions()
+            ->where($field, '<', 0)
+            ->sum($field));
+
+        // Forfeited (expired) hours are a subset of the debits. Split them out so
+        // prepay_used reflects only work consumption while prepay_expired tracks
+        // forfeiture. Balance is unchanged: total − used − expired == total − |Σ−|.
+        $expired = abs((float) $contract->prepayTransactions()
+            ->where('source', PrepayTransactionSource::Expiration)
+            ->where($field, '<', 0)
+            ->sum($field));
+
+        $consumed = round($debits - $expired, 4);
+
+        $contract->update([
+            'prepay_total' => $credits,
+            'prepay_used' => $consumed,
+            'prepay_expired' => $expired,
+            'prepay_balance' => round($credits - $debits, 4),
+        ]);
+
+        Log::info('[Prepay] Balance recalculated from ledger', [
+            'contract_id' => $contract->id,
+            'total' => $credits,
+            'used' => $consumed,
+            'expired' => $expired,
+            'balance' => round($credits - $debits, 4),
+        ]);
+    }
+
+    /**
+     * Resolve the expiry date for a new credit. Precedence: explicit override >
+     * the contract's prepay_expiry_months policy applied to $base > null (never
+     * expires). Hours-based prepay only — dollar-based credits never expire.
+     */
+    private function expiryForCredit(
+        Contract $contract,
+        CarbonInterface|string|null $base,
+        ?CarbonInterface $explicit = null,
+    ): ?CarbonInterface {
+        if ($explicit !== null) {
+            return $explicit;
+        }
+
+        if ($contract->prepay_as_amount || ! $contract->prepay_expiry_months) {
+            return null;
+        }
+
+        $base = $base ? Carbon::parse($base) : now();
+
+        return $base->copy()->addMonths((int) $contract->prepay_expiry_months);
     }
 
     /**

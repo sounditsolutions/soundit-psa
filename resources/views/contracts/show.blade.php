@@ -483,6 +483,9 @@
                                             <th>Note</th>
                                             <th class="d-none d-md-table-cell">By</th>
                                             <th>Invoice #</th>
+                                            @unless($contract->prepay_as_amount)
+                                                <th>Expires</th>
+                                            @endunless
                                         </tr>
                                     </thead>
                                     <tbody>
@@ -506,6 +509,21 @@
                                                 <td class="small">{{ $txn->note ?? '-' }}</td>
                                                 <td class="small d-none d-md-table-cell">{{ $txn->user?->name ?? '-' }}</td>
                                                 <td class="small">{{ $txn->invoice_number ?? '-' }}</td>
+                                                @unless($contract->prepay_as_amount)
+                                                    <td class="small text-nowrap">
+                                                        @if($txn->expiry_date)
+                                                            @php $isExpired = $txn->expiry_date->isPast(); @endphp
+                                                            <span class="{{ $isExpired ? 'text-muted text-decoration-line-through' : '' }}">
+                                                                {{ $txn->expiry_date->toAppTz()->format('M j, Y') }}
+                                                            </span>
+                                                            @if($isExpired)
+                                                                <span class="text-muted ms-1"><i class="bi bi-x-circle"></i> Expired</span>
+                                                            @endif
+                                                        @else
+                                                            —
+                                                        @endif
+                                                    </td>
+                                                @endunless
                                             </tr>
                                         @endforeach
                                     </tbody>
@@ -662,11 +680,11 @@
                 </div>
             @endif
 
-            {{-- Prepay Alert Settings --}}
+            {{-- Prepay Alert & Expiration Settings --}}
             @if($contract->has_prepay && !$contract->prepay_as_amount)
                 <div class="card shadow-sm mt-3">
                     <div class="card-header">
-                        <i class="bi bi-bell me-2"></i>Low Balance Alerts
+                        <i class="bi bi-bell me-2"></i>Balance Alerts &amp; Expiration
                     </div>
                     <div class="card-body">
                         <form method="POST" action="{{ route('contracts.update-alert-settings', $contract) }}">
@@ -681,6 +699,18 @@
                                        value="{{ $contract->prepay_alert_threshold }}"
                                        min="0" step="0.25" placeholder="Disabled">
                                 <div class="form-text">Leave blank to disable alerts.</div>
+                            </div>
+                            <div class="mb-3">
+                                <label for="prepayExpiryMonths" class="form-label text-muted small">
+                                    Prepaid time expires after (months):
+                                </label>
+                                <input type="number" name="prepay_expiry_months" id="prepayExpiryMonths"
+                                       class="form-control form-control-sm" style="max-width: 150px;"
+                                       value="{{ $contract->prepay_expiry_months }}"
+                                       min="1" max="120" step="1" placeholder="Never">
+                                <div class="form-text">
+                                    Leave blank for no expiration. Applies to credits added from now on (no backfill).
+                                </div>
                             </div>
                             @if($contract->portal_prepay_sku_id)
                                 <div class="mb-3">
@@ -978,6 +1008,13 @@
                         <input type="text" class="form-control" id="adjustNote" name="note"
                                maxlength="500" required placeholder="Reason for adjustment">
                     </div>
+                    @unless($contract->prepay_as_amount)
+                        <div class="mb-3">
+                            <label for="adjustExpiry" class="form-label">Expiry date <span class="text-muted">(credits only)</span></label>
+                            <input type="date" class="form-control" id="adjustExpiry" name="expiry_date">
+                            <div class="form-text">Leave blank to use this contract's expiration policy.</div>
+                        </div>
+                    @endunless
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
