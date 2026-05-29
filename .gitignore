@@ -38,3 +38,9 @@ Thumbs.db
 
 # Impeccable live-mode local session state (not project source)
 .impeccable/live/sessions/
+
+# Gas City
+.beads/*
+!.beads/config.yaml
+!.beads/metadata.json
+!.beads/identity.toml
