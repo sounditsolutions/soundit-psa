@@ -359,6 +359,7 @@ These commands execute automatically based on their schedule:
 |---------|---------|
 | `prepay:reconcile` | Recalculate prepay balances from the transaction ledger. Use `--contract=ID` for a specific contract. |
 | `version:refresh` | Refresh cached version info (commit, branch, update count). Runs automatically during deploy. |
+| `tickets:recalculate-sla` | Recompute ticket SLA deadlines (`response_due_at`, `due_at`) from contract SLA terms. Open tickets only unless `--all`. See "SLA deadline recalculation" below. |
 
 > **Note:** Commands only execute if their respective integration is configured. It's safe to have the cron entry active even before you set up any integrations.
 
@@ -636,6 +637,28 @@ php artisan tickets:backfill-keywords
 php artisan tickets:backfill-keywords --limit=50 --dry-run
 php artisan tickets:backfill-keywords --force        # re-run on already-keyworded tickets
 ```
+
+**SLA deadline recalculation:** Ticket SLA deadlines (`response_due_at`, `due_at`) are stamped at creation from the contract's `sla_terms`, anchored on the open time. After you change a contract's SLA terms — or import tickets that lack deadlines — re-derive them with:
+
+```bash
+# Open tickets only, anchored on each ticket's opened_at (falls back to created_at)
+php artisan tickets:recalculate-sla
+
+# Preview without saving
+php artisan tickets:recalculate-sla --dry-run
+
+# Scope to one client or one ticket
+php artisan tickets:recalculate-sla --client=42
+php artisan tickets:recalculate-sla --ticket=1234
+
+# Include resolved/closed tickets (rewrites historical deadlines — use deliberately)
+php artisan tickets:recalculate-sla --all
+
+# Also null a deadline when the contract no longer defines hours for the ticket's priority
+php artisan tickets:recalculate-sla --clear-missing
+```
+
+Tickets without a contract, or whose contract carries no `sla_terms`, are skipped. The command is idempotent — re-running it without changing terms reports `updated=0`.
 
 ### Mesh Email Security
 
