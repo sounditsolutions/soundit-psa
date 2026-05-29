@@ -35,3 +35,6 @@ Thumbs.db
 # beads exports — Dolt is the source of truth, keep these out of the repo
 .beads/issues.jsonl
 .beads/interactions.jsonl
+
+# Impeccable live-mode local session state (not project source)
+.impeccable/live/sessions/
