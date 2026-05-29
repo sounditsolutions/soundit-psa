@@ -34,6 +34,12 @@
             <a href="{{ route('people.edit', $person) }}" class="btn btn-outline-primary btn-sm">
                 <i class="bi bi-pencil me-1"></i>Edit
             </a>
+            @if(($mergeCandidates ?? collect())->isNotEmpty())
+                <button type="button" class="btn btn-outline-secondary btn-sm" title="Merge a duplicate contact into this one"
+                        data-bs-toggle="modal" data-bs-target="#mergePersonModal">
+                    <i class="bi bi-box-arrow-in-down-left me-1"></i>Merge
+                </button>
+            @endif
             <button type="button" class="btn btn-outline-danger btn-sm" title="Delete contact"
                     data-bs-toggle="modal" data-bs-target="#deletePersonModal">
                 <i class="bi bi-trash"></i>
@@ -489,6 +495,52 @@
         </div>
     </div>
 </div>
+
+{{-- Merge Modal --}}
+@if(($mergeCandidates ?? collect())->isNotEmpty())
+<div class="modal fade" id="mergePersonModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <form method="POST" action="{{ route('people.merge', $person) }}">
+                @csrf
+                <div class="modal-header">
+                    <h5 class="modal-title"><i class="bi bi-box-arrow-in-down-left me-2"></i>Merge Duplicate Contact</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label for="mergeDuplicateSelect" class="form-label">Contact to merge into this one</label>
+                        <select class="form-select" id="mergeDuplicateSelect" name="duplicate_id" required>
+                            <option value="" selected disabled>Choose a contact…</option>
+                            @foreach($mergeCandidates as $candidate)
+                                <option value="{{ $candidate->id }}" data-name="{{ $candidate->fullName }}">{{ $candidate->last_name }}, {{ $candidate->first_name }}@if($candidate->email) — {{ $candidate->email }}@endif@unless($candidate->is_active) (inactive)@endunless @if($candidate->portal_enabled)(portal)@endif</option>
+                            @endforeach
+                        </select>
+                    </div>
+                    <div class="alert alert-warning small py-2 mb-2">
+                        <i class="bi bi-exclamation-triangle me-1"></i><strong>This cannot be undone.</strong>
+                        All tickets, calls, emails, contract &amp; device assignments, and email addresses
+                        from the selected contact move to this contact, and its portal &amp; company-wide
+                        access transfer here too. The selected contact is then removed (soft-deleted).
+                        If they sign in to the portal, their sign-in email changes to
+                        <strong>{{ $person->email ?? 'this contact’s email' }}</strong> — let them know.
+                    </div>
+                    <p class="mb-0" id="mergeDirection" style="display: none;">
+                        Merge <strong id="mergeDuplicateName"></strong> into
+                        <strong>{{ $person->fullName }}</strong> <span class="text-muted">(kept)</span>.
+                    </p>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-warning" id="mergePersonBtn" disabled>
+                        <i class="bi bi-box-arrow-in-down-left me-1"></i>Merge contacts
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+@endif
 @endsection
 
 @push('styles')
@@ -507,6 +559,32 @@
     document.getElementById('deletePersonModal')?.addEventListener('hidden.bs.modal', function() {
         input.value = '';
         btn.disabled = true;
+    });
+})();
+</script>
+<script>
+(function() {
+    var select = document.getElementById('mergeDuplicateSelect');
+    var btn = document.getElementById('mergePersonBtn');
+    var direction = document.getElementById('mergeDirection');
+    var nameEl = document.getElementById('mergeDuplicateName');
+    var modal = document.getElementById('mergePersonModal');
+    if (!select || !btn) return;
+    select.addEventListener('change', function() {
+        var opt = select.options[select.selectedIndex];
+        if (select.value) {
+            btn.disabled = false;
+            if (nameEl) nameEl.textContent = (opt && opt.getAttribute('data-name')) || 'this contact';
+            if (direction) direction.style.display = '';
+        } else {
+            btn.disabled = true;
+            if (direction) direction.style.display = 'none';
+        }
+    });
+    modal?.addEventListener('hidden.bs.modal', function() {
+        select.value = '';
+        btn.disabled = true;
+        if (direction) direction.style.display = 'none';
     });
 })();
 </script>

@@ -92,7 +92,25 @@ class PersonController extends Controller
         return view('people.show', [
             'person' => $person,
             'recentTickets' => $recentTickets,
+            'mergeCandidates' => $this->mergeCandidatesFor($person),
         ]);
+    }
+
+    /**
+     * Other contacts in the same client that could be merged INTO this one.
+     * Includes inactive contacts — CIPP-deactivated duplicates are a prime merge target.
+     */
+    private function mergeCandidatesFor(Person $person)
+    {
+        if (! $person->client_id) {
+            return collect();
+        }
+
+        return Person::where('client_id', $person->client_id)
+            ->where('id', '!=', $person->id)
+            ->orderBy('last_name')
+            ->orderBy('first_name')
+            ->get(['id', 'first_name', 'last_name', 'email', 'is_active', 'portal_enabled']);
     }
 
     public function tickets(Request $request, Person $person)
@@ -124,6 +142,7 @@ class PersonController extends Controller
         return view('people.show', [
             'person' => $person,
             'recentTickets' => $recentTickets,
+            'mergeCandidates' => $this->mergeCandidatesFor($person),
             'activeTab' => 'tickets',
             'tickets' => $tickets,
             'ticketFilters' => $filters,
@@ -156,6 +175,53 @@ class PersonController extends Controller
             ->with('success', 'Contact updated successfully.');
     }
 
+    public function merge(Request $request, Person $person)
+    {
+        // Laravel's bare `exists` rule ignores the SoftDeletes scope, so scope the
+        // candidate to the same client and non-deleted rows. The service enforces
+        // the self-merge and cross-client guards as the inner layer (defense in depth).
+        $validated = $request->validate([
+            'duplicate_id' => [
+                'required',
+                'integer',
+                Rule::exists('people', 'id')->where(fn ($q) => $q
+                    ->where('client_id', $person->client_id)
+                    ->whereNull('deleted_at')),
+            ],
+        ]);
+
+        // findOrFail re-applies the SoftDeletes scope → clean 404 on a tampered id
+        $duplicate = Person::where('client_id', $person->client_id)->findOrFail($validated['duplicate_id']);
+
+        try {
+            $summary = $this->personService->mergePeople($person, $duplicate, auth()->id());
+        } catch (\InvalidArgumentException|\RuntimeException $e) {
+            return redirect()->route('people.show', $person)->with('error', $e->getMessage());
+        }
+
+        $parts = [];
+        foreach ([
+            ['tickets', 'ticket', 'tickets'],
+            ['calls', 'call', 'calls'],
+            ['emails', 'email', 'emails'],
+            ['contracts', 'contract', 'contracts'],
+            ['assets', 'device', 'devices'],
+            ['email_addresses', 'email address', 'email addresses'],
+        ] as [$key, $one, $many]) {
+            if (! empty($summary[$key])) {
+                $parts[] = $summary[$key].' '.($summary[$key] === 1 ? $one : $many);
+            }
+        }
+        $movedText = $parts ? ' Moved '.implode(', ', $parts).'.' : '';
+        $message = "Merged {$duplicate->fullName} into {$person->fullName}.{$movedText}";
+
+        if (! empty($summary['portal_login_email_changed'])) {
+            $message .= " Portal sign-in for the merged contact now uses {$person->email} — let them know.";
+        }
+
+        return redirect()->route('people.show', $person)->with('success', $message);
+    }
+
     public function bulkUpdateType(Request $request)
     {
         $validated = $request->validate([
@@ -173,7 +239,7 @@ class PersonController extends Controller
         $type = PersonType::from($validated['person_type']);
 
         return redirect()->back()
-            ->with('success', count($validated['person_ids']) . " contact(s) set to {$type->label()}.");
+            ->with('success', count($validated['person_ids'])." contact(s) set to {$type->label()}.");
     }
 
     public function activity(Request $request, Person $person)
