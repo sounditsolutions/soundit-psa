@@ -498,14 +498,14 @@
 
 {{-- Merge Modal --}}
 @if(($mergeCandidates ?? collect())->isNotEmpty())
-<div class="modal fade" id="mergePersonModal" tabindex="-1">
+<div class="modal fade" id="mergePersonModal" tabindex="-1" aria-labelledby="mergePersonModalLabel" aria-hidden="true">
     <div class="modal-dialog">
         <div class="modal-content">
             <form method="POST" action="{{ route('people.merge', $person) }}">
                 @csrf
                 <div class="modal-header">
-                    <h5 class="modal-title"><i class="bi bi-box-arrow-in-down-left me-2"></i>Merge Duplicate Contact</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    <h5 class="modal-title" id="mergePersonModalLabel"><i class="bi bi-box-arrow-in-down-left me-2"></i>Merge Duplicate Contact</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
                     <div class="mb-3">
@@ -513,7 +513,19 @@
                         <select class="form-select" id="mergeDuplicateSelect" name="duplicate_id" required>
                             <option value="" selected disabled>Choose a contact…</option>
                             @foreach($mergeCandidates as $candidate)
-                                <option value="{{ $candidate->id }}" data-name="{{ $candidate->fullName }}">{{ $candidate->last_name }}, {{ $candidate->first_name }}@if($candidate->email) — {{ $candidate->email }}@endif@unless($candidate->is_active) (inactive)@endunless @if($candidate->portal_enabled)(portal)@endif</option>
+                                @php
+                                    $candidateLabel = trim($candidate->last_name.', '.$candidate->first_name);
+                                    if ($candidate->email) {
+                                        $candidateLabel .= ' — '.$candidate->email;
+                                    }
+                                    if (! $candidate->is_active) {
+                                        $candidateLabel .= ' (inactive)';
+                                    }
+                                    if ($candidate->portal_enabled) {
+                                        $candidateLabel .= ' (portal)';
+                                    }
+                                @endphp
+                                <option value="{{ $candidate->id }}" data-name="{{ $candidate->fullName }}">{{ $candidateLabel }}</option>
                             @endforeach
                         </select>
                     </div>
@@ -523,7 +535,7 @@
                         from the selected contact move to this contact, and its portal &amp; company-wide
                         access transfer here too. The selected contact is then removed (soft-deleted).
                         If they sign in to the portal, their sign-in email changes to
-                        <strong>{{ $person->email ?? 'this contact’s email' }}</strong> — let them know.
+                        <strong>{{ $person->email ?? "this contact's email" }}</strong> — let them know.
                     </div>
                     <p class="mb-0" id="mergeDirection" style="display: none;">
                         Merge <strong id="mergeDuplicateName"></strong> into
@@ -532,7 +544,7 @@
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                    <button type="submit" class="btn btn-warning" id="mergePersonBtn" disabled>
+                    <button type="submit" class="btn btn-danger" id="mergePersonBtn" disabled>
                         <i class="bi bi-box-arrow-in-down-left me-1"></i>Merge contacts
                     </button>
                 </div>

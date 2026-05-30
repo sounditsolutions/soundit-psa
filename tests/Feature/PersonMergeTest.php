@@ -106,6 +106,24 @@ class PersonMergeTest extends TestCase
         $this->assertNotSoftDeleted('people', ['id' => $survivor->id]);
     }
 
+    public function test_person_show_page_renders_with_merge_modal(): void
+    {
+        // Closes the gap the diff review caught: the redirect-based tests never
+        // render people.show, so a Blade compile/parse error would slip through.
+        // A null-email survivor exercises the modal's "?? fallback" branch.
+        $user = User::factory()->create();
+        $c = $this->client();
+        $survivor = $this->person($c, ['first_name' => 'Keep', 'email' => null]);
+        $this->person($c, ['first_name' => 'Dupe', 'email' => 'dupe@acme.test']);
+
+        $this->actingAs($user)->get(route('people.show', $survivor))
+            ->assertOk()
+            ->assertSee('Merge Duplicate Contact')
+            ->assertSee('This cannot be undone.')
+            ->assertSee('aria-labelledby="mergePersonModalLabel"', false)
+            ->assertSee('aria-label="Close"', false);
+    }
+
     public function test_flash_warns_when_portal_login_email_changes(): void
     {
         $user = User::factory()->create();
