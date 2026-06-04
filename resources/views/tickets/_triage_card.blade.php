@@ -58,7 +58,7 @@
             @endif
         @elseif($triageRun && !$classification)
             <div class="small text-muted mb-2">
-                Stages: {{ implode(', ', $triageRun->stages_completed ?? []) ?: 'None' }}
+                Stages: {{ implode(', ', is_array($triageRun->stages_completed) ? $triageRun->stages_completed : []) ?: 'None' }}
             </div>
         @endif
 
