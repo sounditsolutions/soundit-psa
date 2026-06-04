@@ -25,7 +25,7 @@ class DnsToolkit
      *
      * @param  string  $hostname  The hostname to look up
      * @param  string  $type  One of: A, AAAA, MX, TXT, NS, CNAME, SOA, SRV, PTR
-     * @return array  {records: [...], error?: string}
+     * @return array {records: [...], error?: string}
      */
     public static function lookup(string $hostname, string $type): array
     {
@@ -37,7 +37,7 @@ class DnsToolkit
         }
 
         if (! isset(self::VALID_TYPES[$type])) {
-            return ['error' => 'Invalid record type. Supported: ' . implode(', ', array_keys(self::VALID_TYPES))];
+            return ['error' => 'Invalid record type. Supported: '.implode(', ', array_keys(self::VALID_TYPES))];
         }
 
         // PTR lookups need the IP reversed with .in-addr.arpa or .ip6.arpa suffix
@@ -63,7 +63,7 @@ class DnsToolkit
      * Most common email troubleshooting scenario.
      *
      * @param  string  $domain  The domain (not a specific host — e.g., "example.com" not "mail.example.com")
-     * @return array  {mx: [...], spf: string|null, dmarc: string|null, error?: string}
+     * @return array {mx: [...], spf: string|null, dmarc: string|null, error?: string}
      */
     public static function emailHealth(string $domain): array
     {
@@ -103,7 +103,7 @@ class DnsToolkit
         }
 
         // DMARC (TXT at _dmarc.domain)
-        $dmarc = @dns_get_record('_dmarc.' . $domain, DNS_TXT);
+        $dmarc = @dns_get_record('_dmarc.'.$domain, DNS_TXT);
         if (is_array($dmarc)) {
             foreach ($dmarc as $r) {
                 $value = $r['txt'] ?? '';
@@ -150,7 +150,7 @@ class DnsToolkit
     private static function toPtrName(string $ip): ?string
     {
         if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
-            return implode('.', array_reverse(explode('.', $ip))) . '.in-addr.arpa';
+            return implode('.', array_reverse(explode('.', $ip))).'.in-addr.arpa';
         }
 
         if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6)) {
@@ -161,7 +161,7 @@ class DnsToolkit
             $hex = bin2hex($bin);
             $nibbles = array_reverse(str_split($hex));
 
-            return implode('.', $nibbles) . '.ip6.arpa';
+            return implode('.', $nibbles).'.ip6.arpa';
         }
 
         // Maybe it's already in .in-addr.arpa/.ip6.arpa form

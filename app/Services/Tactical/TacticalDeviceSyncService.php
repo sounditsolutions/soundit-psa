@@ -52,7 +52,7 @@ class TacticalDeviceSyncService
             }
 
             // Map Tactical client+site to PSA client
-            $siteKey = ($agent['client_name'] ?? '') . '|' . ($agent['site_name'] ?? '');
+            $siteKey = ($agent['client_name'] ?? '').'|'.($agent['site_name'] ?? '');
             $psaClientId = $clientMap[$siteKey] ?? null;
 
             if (! $psaClientId) {

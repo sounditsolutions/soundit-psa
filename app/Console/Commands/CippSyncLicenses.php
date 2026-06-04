@@ -17,6 +17,7 @@ class CippSyncLicenses extends Command
     {
         if (! CippConfig::isConfigured()) {
             $this->error('CIPP is not configured. Add credentials in Settings → Integrations.');
+
             return self::FAILURE;
         }
 

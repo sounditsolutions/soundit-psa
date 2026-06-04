@@ -13,7 +13,7 @@ class TacticalClient
 
     public function __construct()
     {
-        $baseUrl = rtrim(TacticalConfig::apiUrl(), '/') . '/';
+        $baseUrl = rtrim(TacticalConfig::apiUrl(), '/').'/';
 
         $this->http = new Client([
             'base_uri' => $baseUrl,
@@ -132,10 +132,10 @@ class TacticalClient
             return \Illuminate\Support\Facades\Cache::remember(
                 'tactical:policies',
                 300,
-                fn () => (new self())->getPolicies(),
+                fn () => (new self)->getPolicies(),
             );
         } catch (\Throwable $e) {
-            Log::warning('[TacticalClient] cachedPolicies failed: ' . $e->getMessage());
+            Log::warning('[TacticalClient] cachedPolicies failed: '.$e->getMessage());
 
             return [];
         }
@@ -154,7 +154,7 @@ class TacticalClient
      * to leave them unset (agent inherits global default behavior).
      *
      * @return array{client_name: string, site_name: string} The accepted
-     *               names, suitable for storing as tactical_site_id.
+     *                                                       names, suitable for storing as tactical_site_id.
      */
     public function createClient(
         string $clientName,
@@ -250,6 +250,7 @@ class TacticalClient
     {
         try {
             $this->getAgents();
+
             return true;
         } catch (TacticalClientException) {
             return false;
@@ -271,7 +272,7 @@ class TacticalClient
      *   - We pick "manual" for Windows and "mac" for mac/linux so we always get JSON back.
      *     Both return the same shape; the "cmd" differs by platform but we only consume "url".
      *
-     * @param  string  $siteId    Format: "ClientName|SiteName" from clients.tactical_site_id
+     * @param  string  $siteId  Format: "ClientName|SiteName" from clients.tactical_site_id
      * @param  string  $platform  One of: 'windows', 'mac', 'linux'
      */
     public function getInstallerInfo(string $siteId, string $platform): ?\App\Services\Portal\InstallerInfo
@@ -333,6 +334,7 @@ class TacticalClient
                 'platform' => $platform,
                 'error' => $e->getMessage(),
             ]);
+
             return null;
         }
 

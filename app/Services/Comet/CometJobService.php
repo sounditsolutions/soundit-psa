@@ -16,7 +16,7 @@ class CometJobService
      */
     public function getRecentJobs(Asset $asset, int $days = 7): array
     {
-        if (!$asset->comet_username) {
+        if (! $asset->comet_username) {
             return ['last_success' => null, 'last_failure' => null, 'jobs' => []];
         }
 
@@ -24,6 +24,7 @@ class CometJobService
             $allJobs = $this->client->getJobsForUser($asset->comet_username);
         } catch (CometClientException $e) {
             Log::warning("[Comet Jobs] Failed to fetch jobs for {$asset->comet_username}: {$e->getMessage()}");
+
             return ['last_success' => null, 'last_failure' => null, 'jobs' => []];
         }
 
@@ -61,10 +62,10 @@ class CometJobService
             ];
 
             // Track last success/failure across all time
-            if ($status === 5000 && (!$lastSuccess || $startTime > $lastSuccess['started_ts'])) {
+            if ($status === 5000 && (! $lastSuccess || $startTime > $lastSuccess['started_ts'])) {
                 $lastSuccess = $formatted + ['started_ts' => $startTime];
             }
-            if ($status === 7002 && (!$lastFailure || $startTime > $lastFailure['started_ts'])) {
+            if ($status === 7002 && (! $lastFailure || $startTime > $lastFailure['started_ts'])) {
                 $lastFailure = $formatted + ['started_ts' => $startTime];
             }
 

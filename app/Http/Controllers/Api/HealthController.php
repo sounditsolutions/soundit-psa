@@ -13,7 +13,8 @@ class HealthController extends Controller
         try {
             DB::connection()->getPdo();
             $dbOk = true;
-        } catch (\Throwable) {}
+        } catch (\Throwable) {
+        }
 
         $storageOk = is_writable(storage_path('framework/cache'))
             && is_writable(storage_path('framework/sessions'))
@@ -22,11 +23,11 @@ class HealthController extends Controller
         $status = ($dbOk && $storageOk) ? 'ok' : 'degraded';
 
         return response()->json([
-            'status'           => $status,
-            'app'              => config('app.name'),
-            'php'              => PHP_VERSION,
-            'laravel'          => app()->version(),
-            'database'         => $dbOk,
+            'status' => $status,
+            'app' => config('app.name'),
+            'php' => PHP_VERSION,
+            'laravel' => app()->version(),
+            'database' => $dbOk,
             'storage_writable' => $storageOk,
         ]);
     }

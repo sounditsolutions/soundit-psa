@@ -9,6 +9,7 @@ use Illuminate\Console\Command;
 class EmailSubscriptionRenew extends Command
 {
     protected $signature = 'email:subscription-renew';
+
     protected $description = 'Ensure the Microsoft Graph webhook subscription for email is active';
 
     public function handle(GraphWebhookManager $manager): int
@@ -18,9 +19,11 @@ class EmailSubscriptionRenew extends Command
         try {
             $manager->ensureSubscription();
             $this->info('Subscription is active.');
+
             return self::SUCCESS;
         } catch (GraphClientException $e) {
-            $this->error('Failed: ' . $e->getMessage());
+            $this->error('Failed: '.$e->getMessage());
+
             return self::FAILURE;
         }
     }

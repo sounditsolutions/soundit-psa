@@ -13,6 +13,7 @@ use Illuminate\Support\Facades\Log;
 class NinjaReconcileAlerts extends Command
 {
     protected $signature = 'ninja:reconcile-alerts {--dry-run : Show what would be resolved without making changes}';
+
     protected $description = 'Reconcile local alert records against NinjaRMM active alerts API';
 
     public function handle(NinjaClient $client, AlertService $alertService): int
@@ -23,21 +24,21 @@ class NinjaReconcileAlerts extends Command
         try {
             $remoteAlerts = $client->get('/v2/alerts', ['pageSize' => 1000]);
         } catch (\Throwable $e) {
-            $this->error('Failed to fetch alerts from NinjaRMM: ' . $e->getMessage());
+            $this->error('Failed to fetch alerts from NinjaRMM: '.$e->getMessage());
 
             return self::FAILURE;
         }
 
         $remoteUids = collect($remoteAlerts)->pluck('uid')->filter()->all();
 
-        $this->info('Active alerts in NinjaRMM: ' . count($remoteUids));
+        $this->info('Active alerts in NinjaRMM: '.count($remoteUids));
 
         // Find local Ninja alerts that are open but no longer in Ninja
         $localActive = Alert::where('source', AlertSource::Ninja)
             ->whereIn('status', [AlertStatus::Active, AlertStatus::Acknowledged, AlertStatus::Ticketed])
             ->get();
 
-        $this->info('Open Ninja alerts in PSA: ' . $localActive->count());
+        $this->info('Open Ninja alerts in PSA: '.$localActive->count());
 
         $stale = $localActive->filter(fn ($alert) => ! in_array($alert->source_alert_id, $remoteUids, true));
 
@@ -47,7 +48,7 @@ class NinjaReconcileAlerts extends Command
             return self::SUCCESS;
         }
 
-        $this->info('Stale alerts to resolve: ' . $stale->count());
+        $this->info('Stale alerts to resolve: '.$stale->count());
 
         foreach ($stale as $alert) {
             $assetInfo = $alert->asset_id ? " on asset #{$alert->asset_id}" : '';

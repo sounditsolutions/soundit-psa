@@ -165,8 +165,8 @@ class TriageToolDefinitions
             [
                 'name' => 'set_ticket_status',
                 'description' => 'Sets the ticket status. Use this to move a ticket through its lifecycle. '
-                    . 'Statuses: new, in_progress, pending_client, pending_third_party, resolved, closed. '
-                    . 'Typical triage flow: move New tickets to in_progress after analysis.',
+                    .'Statuses: new, in_progress, pending_client, pending_third_party, resolved, closed. '
+                    .'Typical triage flow: move New tickets to in_progress after analysis.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -197,7 +197,7 @@ class TriageToolDefinitions
             [
                 'name' => 'set_ticket_category',
                 'description' => 'Sets the ticket category and subcategory. You MUST call this tool to classify the ticket type. '
-                    . 'Categories: ' . self::categoryDescription(),
+                    .'Categories: '.self::categoryDescription(),
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -225,7 +225,7 @@ class TriageToolDefinitions
         $categories = config('tickets.categories', []);
         $parts = [];
         foreach ($categories as $cat => $subs) {
-            $parts[] = "{$cat} (" . implode(', ', $subs) . ')';
+            $parts[] = "{$cat} (".implode(', ', $subs).')';
         }
 
         return implode('; ', $parts);

@@ -20,6 +20,7 @@ class PushInvoiceToBilling implements ShouldQueue
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
     public int $tries = 2;
+
     public int $timeout = 60;
 
     public function __construct(
@@ -30,13 +31,14 @@ class PushInvoiceToBilling implements ShouldQueue
     {
         $invoice = $this->invoice->fresh(['client', 'profile']);
 
-        if (!$invoice || $invoice->status !== InvoiceStatus::Draft) {
+        if (! $invoice || $invoice->status !== InvoiceStatus::Draft) {
             Log::info("[AutoPush] Skipping invoice {$this->invoice->id} — status is no longer Draft");
+
             return;
         }
 
         $mode = $invoice->profile?->auto_push_mode;
-        if (!$mode) {
+        if (! $mode) {
             return;
         }
 
@@ -58,10 +60,11 @@ class PushInvoiceToBilling implements ShouldQueue
                     'None',
                     "Client \"{$client->name}\" is not mapped to QBO or Stripe.",
                 );
+
                 return;
             }
 
-            Log::info("[AutoPush] Invoice {$invoice->invoice_number} pushed to {$backend}" . ($mode === AutoPushMode::PushAndSend ? ' (sent)' : ''));
+            Log::info("[AutoPush] Invoice {$invoice->invoice_number} pushed to {$backend}".($mode === AutoPushMode::PushAndSend ? ' (sent)' : ''));
         } catch (\Throwable $e) {
             Log::error("[AutoPush] Failed to push invoice {$invoice->invoice_number} to {$backend}: {$e->getMessage()}");
 

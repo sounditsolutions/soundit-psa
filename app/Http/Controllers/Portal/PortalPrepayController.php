@@ -158,9 +158,9 @@ class PortalPrepayController extends Controller
         if ($invoice->stripe_invoice_url) {
             $paymentUrl = $invoice->stripe_invoice_url;
         } elseif ($invoice->qbo_invoice_id && PortalConfig::billingUrl()) {
-            $paymentUrl = PortalConfig::billingUrl() . '/portal/pay/?invoiceNumber='
-                . urlencode($invoice->invoice_number)
-                . '&transactionAmount=' . number_format($invoice->total, 2, '.', '');
+            $paymentUrl = PortalConfig::billingUrl().'/portal/pay/?invoiceNumber='
+                .urlencode($invoice->invoice_number)
+                .'&transactionAmount='.number_format($invoice->total, 2, '.', '');
         } elseif ($client?->stripe_customer_id || $client?->qbo_customer_id) {
             $awaitingSync = true;
         }
@@ -220,9 +220,9 @@ class PortalPrepayController extends Controller
         if ($invoice->stripe_invoice_url) {
             $paymentUrl = $invoice->stripe_invoice_url;
         } elseif ($invoice->qbo_invoice_id && PortalConfig::billingUrl()) {
-            $paymentUrl = PortalConfig::billingUrl() . '/portal/pay/?invoiceNumber='
-                . urlencode($invoice->invoice_number)
-                . '&transactionAmount=' . number_format($invoice->total, 2, '.', '');
+            $paymentUrl = PortalConfig::billingUrl().'/portal/pay/?invoiceNumber='
+                .urlencode($invoice->invoice_number)
+                .'&transactionAmount='.number_format($invoice->total, 2, '.', '');
         }
 
         return response()->json([

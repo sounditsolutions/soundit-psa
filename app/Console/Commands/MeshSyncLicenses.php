@@ -17,6 +17,7 @@ class MeshSyncLicenses extends Command
     {
         if (! MeshConfig::isConfigured()) {
             $this->error('Mesh is not configured. Add API key in Settings → Integrations.');
+
             return self::FAILURE;
         }
 

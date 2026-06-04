@@ -7,8 +7,8 @@ use App\Models\Invoice;
 use App\Models\InvoiceLine;
 use App\Models\Sku;
 use App\Models\User;
-use Illuminate\Database\QueryException;
 use App\Services\Qbo\QboSyncService;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\ValidationException;
@@ -41,6 +41,7 @@ class InvoiceService
                     if ($attempt < 1 && $e->errorInfo[1] == 1062) {
                         Log::warning("[Invoice] Invoice number {$invoiceNumber} collision, retrying");
                         $invoiceNumber = $this->billingService->nextInvoiceNumber();
+
                         continue;
                     }
                     throw $e;
@@ -50,7 +51,7 @@ class InvoiceService
             $subtotal = 0;
             $totalCost = 0;
             $sortOrder = 0;
-            $annotation = 'Manual invoice by ' . $user->name . ' on ' . now()->format('Y-m-d');
+            $annotation = 'Manual invoice by '.$user->name.' on '.now()->format('Y-m-d');
 
             foreach ($validated['lines'] as $lineData) {
                 $quantity = (float) $lineData['quantity'];
@@ -111,7 +112,7 @@ class InvoiceService
             $subtotal = 0;
             $totalCost = 0;
             $sortOrder = 0;
-            $editAnnotation = 'Manual edit by ' . $user->name . ' on ' . now()->format('Y-m-d');
+            $editAnnotation = 'Manual edit by '.$user->name.' on '.now()->format('Y-m-d');
 
             foreach ($validated['lines'] as $lineData) {
                 // Skip lines marked for deletion

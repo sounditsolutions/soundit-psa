@@ -20,6 +20,7 @@ class SyncStripeProducts extends Command
     {
         if (! StripeConfig::isConfigured()) {
             $this->error('Stripe is not configured. Add API key in Settings → Integrations.');
+
             return self::FAILURE;
         }
 
@@ -40,7 +41,8 @@ class SyncStripeProducts extends Command
                 $result = $service->importStripeProducts();
                 $this->info("  Created: {$result['created']}, Updated: {$result['updated']}, Skipped: {$result['skipped']}");
             } catch (StripeClientException $e) {
-                $this->error('  Import failed: ' . $e->getMessage());
+                $this->error('  Import failed: '.$e->getMessage());
+
                 return self::FAILURE;
             }
         }

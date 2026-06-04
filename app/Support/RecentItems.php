@@ -12,6 +12,7 @@ class RecentItems
 
     /** Per-request cache to avoid re-querying in sidebar + command palette */
     private static ?Collection $cache = null;
+
     private static ?int $cacheUserId = null;
 
     /**

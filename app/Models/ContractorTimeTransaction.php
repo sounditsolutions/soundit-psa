@@ -44,6 +44,6 @@ class ContractorTimeTransaction extends Model
     {
         $sign = $this->hours >= 0 ? '+' : '';
 
-        return $sign . number_format($this->hours, 2) . ' hrs';
+        return $sign.number_format($this->hours, 2).' hrs';
     }
 }

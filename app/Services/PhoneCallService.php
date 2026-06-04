@@ -8,13 +8,13 @@ use App\Jobs\ResolveCallerFromPeople;
 use App\Models\Person;
 use App\Models\PhoneCall;
 use App\Models\SipEndpoint;
+use App\Models\Ticket;
 use App\Support\PhoneNumber;
 use App\Support\PlivoConfig;
 use GuzzleHttp\Client as GuzzleClient;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use App\Models\Ticket;
 use Illuminate\Support\Facades\Storage;
 
 class PhoneCallService
@@ -68,7 +68,7 @@ class PhoneCallService
             ->where('is_active', true)
             ->first();
 
-        if (!$endpoint && $fromSip) {
+        if (! $endpoint && $fromSip) {
             $endpoint = SipEndpoint::where('sip_uri', 'like', "%{$fromSip}%")
                 ->where('is_active', true)
                 ->first();
@@ -127,7 +127,7 @@ class PhoneCallService
             // Resolve which user answered via SIP endpoint (inbound calls only).
             // Outbound calls already have answered_by set from logOutboundCall().
             // Plivo sends the answering endpoint as DialBLegTo (e.g. sip:user@phone.plivo.com)
-            if (!$call->answered_by) {
+            if (! $call->answered_by) {
                 $sipUri = $data['DialBLegTo'] ?? $data['SipEndpoint'] ?? $data['To'] ?? null;
                 if ($sipUri) {
                     $call->sip_endpoint = $sipUri;
@@ -139,6 +139,7 @@ class PhoneCallService
             }
 
             $call->save();
+
             return $call;
         });
     }
@@ -187,6 +188,7 @@ class PhoneCallService
         return $this->updateCallSafely($callUuid, function (PhoneCall $call) {
             $call->status = CallStatus::Voicemail;
             $call->save();
+
             return $call;
         });
     }
@@ -240,7 +242,7 @@ class PhoneCallService
     {
         $authId = \App\Support\PlivoConfig::get('auth_id');
         $authToken = \App\Support\PlivoConfig::get('auth_token');
-        if (!$authId || !$authToken) {
+        if (! $authId || ! $authToken) {
             return;
         }
 
@@ -260,12 +262,12 @@ class PhoneCallService
             // Pick the longest recording for this call (the actual voicemail, not the stub)
             $best = null;
             foreach ($recordings as $rec) {
-                if (!$best || ($rec['recording_duration_ms'] ?? 0) > ($best['recording_duration_ms'] ?? 0)) {
+                if (! $best || ($rec['recording_duration_ms'] ?? 0) > ($best['recording_duration_ms'] ?? 0)) {
                     $best = $rec;
                 }
             }
 
-            if ($best && !empty($best['recording_url'])) {
+            if ($best && ! empty($best['recording_url'])) {
                 $durationSec = (int) round(($best['recording_duration_ms'] ?? 0) / 1000);
                 $call->recording_url = $best['recording_url'];
                 $call->recording_duration = $durationSec > 0 ? $durationSec : null;
@@ -367,6 +369,7 @@ class PhoneCallService
         if ($candidates->count() === 1) {
             return $candidates->first();
         }
+
         return $this->pickBestPersonCandidate($candidates);
     }
 
@@ -377,12 +380,17 @@ class PhoneCallService
     {
         return $candidates->sortByDesc(function (Person $person) {
             $score = 0;
-            if ($person->is_primary) $score += 100;
-            if ($person->is_active)  $score += 50;
+            if ($person->is_primary) {
+                $score += 100;
+            }
+            if ($person->is_active) {
+                $score += 50;
+            }
             $latest = $person->tickets()->orderByDesc('opened_at')->value('opened_at');
             if ($latest) {
                 $score += max(0, 30 - now()->diffInDays($latest));
             }
+
             return $score;
         })->first();
     }
@@ -461,7 +469,7 @@ class PhoneCallService
     {
         $query = PhoneCall::with(['answeredBy', 'client', 'person', 'ticket'])->orderByDesc('started_at');
 
-        if (!empty($filters['status'])) {
+        if (! empty($filters['status'])) {
             if ($filters['status'] === 'needs-follow-up') {
                 $query->unfollowedUp();
             } else {
@@ -469,19 +477,19 @@ class PhoneCallService
             }
         }
 
-        if (!empty($filters['date_from'])) {
+        if (! empty($filters['date_from'])) {
             $query->whereDate('started_at', '>=', $filters['date_from']);
         }
 
-        if (!empty($filters['date_to'])) {
+        if (! empty($filters['date_to'])) {
             $query->whereDate('started_at', '<=', $filters['date_to']);
         }
 
-        if (!empty($filters['search'])) {
+        if (! empty($filters['search'])) {
             $search = $filters['search'];
             $query->where(function ($q) use ($search) {
                 $q->where('from_number', 'like', "%{$search}%")
-                  ->orWhere('halo_client_name', 'like', "%{$search}%");
+                    ->orWhere('halo_client_name', 'like', "%{$search}%");
             });
         }
 
@@ -494,13 +502,13 @@ class PhoneCallService
     public function getCandidateCallers(PhoneCall $call): Collection
     {
         $normalized = PhoneNumber::normalize($call->from_number);
-        if (!$normalized) {
+        if (! $normalized) {
             return collect();
         }
 
         return Person::where(function ($q) use ($normalized) {
-                $q->where('phone', $normalized)->orWhere('mobile', $normalized);
-            })
+            $q->where('phone', $normalized)->orWhere('mobile', $normalized);
+        })
             ->with('client')
             ->withCount(['tickets as open_ticket_count' => function ($q) {
                 $q->open();
@@ -520,8 +528,9 @@ class PhoneCallService
             return DB::transaction(function () use ($callUuid, $callback) {
                 $call = PhoneCall::where('call_uuid', $callUuid)->lockForUpdate()->first();
 
-                if (!$call) {
+                if (! $call) {
                     Log::warning('PhoneCallService: call not found', ['call_uuid' => $callUuid]);
+
                     return null;
                 }
 
@@ -532,6 +541,7 @@ class PhoneCallService
                 'call_uuid' => $callUuid,
                 'error' => $e->getMessage(),
             ]);
+
             return null;
         }
     }

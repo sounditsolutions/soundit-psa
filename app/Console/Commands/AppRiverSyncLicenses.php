@@ -20,7 +20,7 @@ class AppRiverSyncLicenses extends Command
             return self::FAILURE;
         }
 
-        $client = new AppRiverClient();
+        $client = new AppRiverClient;
         $service = new AppRiverLicenseSyncService($client);
 
         $this->info('Syncing AppRiver subscriptions...');

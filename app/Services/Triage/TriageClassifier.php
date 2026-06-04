@@ -19,10 +19,10 @@ class TriageClassifier
     {
         $context = ContextBuilder::buildForTicket($ticket);
 
-        $system = Prompts::TRIAGE_SYSTEM_PROMPT . "\n\n" . $context;
+        $system = Prompts::TRIAGE_SYSTEM_PROMPT."\n\n".$context;
 
         $userMessage = 'Analyze this ticket\'s client, contracts, and prepaid balances. '
-            . 'Respond with ONLY the JSON classification object.';
+            .'Respond with ONLY the JSON classification object.';
 
         Log::info('[Triage] Running triage classification', ['ticket_id' => $ticket->id]);
 

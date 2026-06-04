@@ -19,11 +19,15 @@ class TacticalScriptSyncService
 
         foreach ($scripts as $script) {
             $scriptId = $script['id'] ?? null;
-            if (!$scriptId) continue;
+            if (! $scriptId) {
+                continue;
+            }
 
             // Skip deprecated scripts
             $category = $script['category'] ?? '';
-            if (strtoupper($category) === 'DEPRECATED') continue;
+            if (strtoupper($category) === 'DEPRECATED') {
+                continue;
+            }
 
             $tacticalScript = TacticalScript::updateOrCreate(
                 ['tactical_script_id' => $scriptId],

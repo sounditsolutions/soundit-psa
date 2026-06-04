@@ -17,9 +17,13 @@ use Illuminate\Support\Facades\Process;
 class VersionService
 {
     private const CACHE_KEY_CURRENT = 'psa_version_current';
+
     private const CACHE_KEY_UPDATES = 'psa_version_updates';
+
     private const CACHE_TTL_CURRENT = 86400;  // 24 hours
+
     private const CACHE_TTL_UPDATES = 3600;   // 1 hour
+
     private const FETCH_THROTTLE_SECONDS = 300; // 5 minutes
 
     /**
@@ -53,7 +57,7 @@ class VersionService
     public function checkForUpdates(): array
     {
         $cached = Cache::get(self::CACHE_KEY_UPDATES);
-        if ($cached && !empty($cached['checked_at']) && empty($cached['error'])) {
+        if ($cached && ! empty($cached['checked_at']) && empty($cached['error'])) {
             $checkedAt = \Carbon\Carbon::parse($cached['checked_at']);
             if ($checkedAt->diffInSeconds(now()) < self::FETCH_THROTTLE_SECONDS) {
                 return $cached;
@@ -66,7 +70,7 @@ class VersionService
             // Fetch latest from origin
             $fetch = Process::path($repoPath)->timeout(30)->run('git fetch origin --quiet');
             if ($fetch->failed()) {
-                return $this->cacheUpdateError('Git fetch failed: ' . trim($fetch->errorOutput()));
+                return $this->cacheUpdateError('Git fetch failed: '.trim($fetch->errorOutput()));
             }
 
             // Count total commits behind
@@ -103,7 +107,7 @@ class VersionService
 
             return $data;
         } catch (\Throwable $e) {
-            Log::warning('[Version] Update check failed: ' . $e->getMessage());
+            Log::warning('[Version] Update check failed: '.$e->getMessage());
 
             return $this->cacheUpdateError($e->getMessage());
         }
@@ -152,7 +156,7 @@ class VersionService
                 'deploy_timestamp' => now()->toDateTimeString(),
             ];
         } catch (\Throwable $e) {
-            Log::warning('[Version] Failed to read git info: ' . $e->getMessage());
+            Log::warning('[Version] Failed to read git info: '.$e->getMessage());
 
             return [
                 'commit_hash' => 'unknown',

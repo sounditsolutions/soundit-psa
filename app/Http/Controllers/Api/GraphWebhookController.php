@@ -38,11 +38,12 @@ class GraphWebhookController extends Controller
             $clientState = $notification['clientState'] ?? null;
             if ($clientState !== $expectedClientState) {
                 Log::warning('[GraphWebhook] clientState mismatch, skipping notification');
+
                 continue;
             }
 
             $resource = $notification['resource'] ?? null;
-            if (!$resource) {
+            if (! $resource) {
                 continue;
             }
 
@@ -56,17 +57,17 @@ class GraphWebhookController extends Controller
 
                 Log::info('[GraphWebhook] Email imported', [
                     'graph_id' => $message['id'] ?? 'unknown',
-                    'subject'  => $message['subject'] ?? '',
+                    'subject' => $message['subject'] ?? '',
                 ]);
             } catch (GraphClientException $e) {
                 Log::error('[GraphWebhook] Failed to fetch message', [
                     'resource' => $resource,
-                    'error'    => $e->getMessage(),
+                    'error' => $e->getMessage(),
                 ]);
             } catch (\Throwable $e) {
                 Log::error('[GraphWebhook] Failed to import message', [
                     'resource' => $resource,
-                    'error'    => $e->getMessage(),
+                    'error' => $e->getMessage(),
                 ]);
             }
         }

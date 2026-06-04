@@ -20,7 +20,7 @@ class ServosityProvisionBackups extends Command
             return self::SUCCESS;
         }
 
-        $service = new ServosityDeploymentService();
+        $service = new ServosityDeploymentService;
         $stats = $service->provisionPendingBackups();
 
         $this->info("Provisioned: {$stats['provisioned']}, Skipped (not ready): {$stats['skipped']}, Failed: {$stats['failed']}");

@@ -14,12 +14,14 @@ use Illuminate\Support\Facades\Log;
 class TacticalReconcileAlerts extends Command
 {
     protected $signature = 'tactical:reconcile-alerts {--dry-run : Show what would be resolved without making changes}';
+
     protected $description = 'Resolve PSA alerts whose Tactical alerts have been resolved (catches missed webhooks)';
 
     public function handle(TacticalClient $client, AlertService $alertService): int
     {
         if (! TacticalConfig::isConfigured()) {
             $this->error('Tactical RMM is not configured.');
+
             return self::FAILURE;
         }
 
@@ -32,6 +34,7 @@ class TacticalReconcileAlerts extends Command
 
         if ($openAlerts->isEmpty()) {
             $this->info('No open Tactical alerts found.');
+
             return self::SUCCESS;
         }
 
@@ -42,6 +45,7 @@ class TacticalReconcileAlerts extends Command
             $remoteAlerts = $client->patch('alerts/', ['timeFilter' => 30]);
         } catch (\Throwable $e) {
             $this->error("Failed to fetch alerts from Tactical RMM: {$e->getMessage()}");
+
             return self::FAILURE;
         }
 
@@ -53,7 +57,7 @@ class TacticalReconcileAlerts extends Command
             }
         }
 
-        $this->info('Fetched ' . count($alertStatus) . ' alert(s) from Tactical RMM.');
+        $this->info('Fetched '.count($alertStatus).' alert(s) from Tactical RMM.');
 
         $resolved = 0;
 

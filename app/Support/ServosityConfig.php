@@ -8,8 +8,11 @@ class ServosityConfig
 {
     // Tactical RMM custom field IDs for Servosity deployment
     public const TACTICAL_SERVOSITY_ONE_URL_FIELD_ID = 31;
+
     public const TACTICAL_SERVOSITY_SC_URL_FIELD_ID = 32;
+
     public const TACTICAL_SERVOSITY_CRED_USER_FIELD_ID = 33;
+
     public const TACTICAL_SERVOSITY_CRED_PASS_FIELD_ID = 34;
 
     public static function get(string $key): ?string
@@ -56,12 +59,12 @@ class ServosityConfig
         $timeCounter = pack('N*', 0, (int) floor(time() / 30));
         $hash = hash_hmac('sha1', $timeCounter, $decoded, true);
 
-        $offset = ord($hash[19]) & 0x0f;
+        $offset = ord($hash[19]) & 0x0F;
         $code = (
-            ((ord($hash[$offset]) & 0x7f) << 24) |
-            ((ord($hash[$offset + 1]) & 0xff) << 16) |
-            ((ord($hash[$offset + 2]) & 0xff) << 8) |
-            (ord($hash[$offset + 3]) & 0xff)
+            ((ord($hash[$offset]) & 0x7F) << 24) |
+            ((ord($hash[$offset + 1]) & 0xFF) << 16) |
+            ((ord($hash[$offset + 2]) & 0xFF) << 8) |
+            (ord($hash[$offset + 3]) & 0xFF)
         ) % 1000000;
 
         return str_pad((string) $code, 6, '0', STR_PAD_LEFT);
@@ -88,7 +91,7 @@ class ServosityConfig
             $bitsLeft += 5;
             if ($bitsLeft >= 8) {
                 $bitsLeft -= 8;
-                $result .= chr(($buffer >> $bitsLeft) & 0xff);
+                $result .= chr(($buffer >> $bitsLeft) & 0xFF);
             }
         }
 

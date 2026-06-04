@@ -16,6 +16,7 @@ class ProcessNinjaWebhook implements ShouldQueue
     use Queueable;
 
     public int $tries = 3;
+
     public array $backoff = [60, 300];
 
     public function __construct(
@@ -26,7 +27,7 @@ class ProcessNinjaWebhook implements ShouldQueue
     {
         $webhook = NinjaWebhook::find($this->webhookId);
 
-        if (!$webhook || !$webhook->isPending()) {
+        if (! $webhook || ! $webhook->isPending()) {
             return;
         }
 
@@ -36,8 +37,9 @@ class ProcessNinjaWebhook implements ShouldQueue
         // --- Device events (NODE_*) ---
 
         if ($type === 'NODE_DELETED') {
-            if (!$deviceId) {
+            if (! $deviceId) {
                 $webhook->markSkipped('No device ID in NODE_DELETED payload');
+
                 return;
             }
 
@@ -51,12 +53,14 @@ class ProcessNinjaWebhook implements ShouldQueue
                 ]);
             }
             $webhook->markProcessed();
+
             return;
         }
 
         if (in_array($type, ['NODE_CREATED', 'NODE_UPDATED', 'NODE_RE_ENROLLED'])) {
-            if (!$deviceId) {
+            if (! $deviceId) {
                 $webhook->markSkipped('No device ID in payload');
+
                 return;
             }
 
@@ -67,6 +71,7 @@ class ProcessNinjaWebhook implements ShouldQueue
                     $sync->syncDeviceDetail($asset);
                 } catch (NinjaClientException $e) {
                     $webhook->markFailed("Failed to sync device detail: {$e->getMessage()}");
+
                     return;
                 }
             } else {
@@ -74,11 +79,13 @@ class ProcessNinjaWebhook implements ShouldQueue
                     $sync->syncDeviceFromWebhook($deviceId);
                 } catch (NinjaClientException $e) {
                     $webhook->markFailed("Failed to fetch new device: {$e->getMessage()}");
+
                     return;
                 }
             }
 
             $webhook->markProcessed();
+
             return;
         }
 
@@ -96,10 +103,12 @@ class ProcessNinjaWebhook implements ShouldQueue
                 }
 
                 $webhook->markProcessed();
+
                 return;
             }
 
             $webhook->markSkipped("Non-condition alert event: {$activityType}");
+
             return;
         }
 
@@ -111,12 +120,14 @@ class ProcessNinjaWebhook implements ShouldQueue
                 'payload' => $webhook->payload,
             ]);
             $webhook->markProcessed();
+
             return;
         }
 
         // --- End User events — not used, just log ---
         if (str_starts_with($type, 'END_USER_') || str_starts_with($type, 'ENDUSER_')) {
             $webhook->markSkipped("End user event ignored: {$type}");
+
             return;
         }
 

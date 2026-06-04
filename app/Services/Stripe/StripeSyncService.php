@@ -248,6 +248,7 @@ class StripeSyncService
         foreach ($invoices as $invoice) {
             if (! $invoice->client->stripe_customer_id) {
                 $results['skipped']++;
+
                 continue;
             }
 
@@ -351,7 +352,7 @@ class StripeSyncService
                 $suffix = 0;
                 while (Sku::withTrashed()->where('sku_code', $skuCode)->exists()) {
                     $suffix++;
-                    $skuCode = Str::limit($baseCode, 44, '') . '-' . $suffix;
+                    $skuCode = Str::limit($baseCode, 44, '').'-'.$suffix;
                 }
 
                 Sku::create([
@@ -411,7 +412,7 @@ class StripeSyncService
 
     public function importInvoicesFromStripe(?callable $onProgress = null, ?string $createdAfter = null): SyncResult
     {
-        $result = new SyncResult();
+        $result = new SyncResult;
         $skipped = 0;
         $maxCreated = 0;
 
@@ -520,6 +521,7 @@ class StripeSyncService
         $stripeCustomerId = $data['customer'] ?? null;
         if (! $stripeCustomerId) {
             Log::info('[StripeImport] Skipping invoice — no customer', ['stripe_id' => $stripeId]);
+
             return null;
         }
 
@@ -529,6 +531,7 @@ class StripeSyncService
                 'stripe_id' => $stripeId,
                 'stripe_customer_id' => $stripeCustomerId,
             ]);
+
             return null;
         }
 

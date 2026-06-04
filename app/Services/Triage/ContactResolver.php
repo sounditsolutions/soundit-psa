@@ -35,7 +35,7 @@ class ContactResolver
         }
 
         // Narrow text for hostname extraction (subject + description only, no notes)
-        $summaryText = ($ticket->subject ?? '') . "\n" . strip_tags($ticket->description ?? '');
+        $summaryText = ($ticket->subject ?? '')."\n".strip_tags($ticket->description ?? '');
 
         // === Strategy 1: Email address matching ===
         $emails = HostnameExtractor::extractEmails($text);
@@ -214,7 +214,7 @@ class ContactResolver
         }
 
         // Try name matching against ticket text
-        $ticketText = strtolower(($ticket->subject ?? '') . ' ' . ($ticket->description ?? ''));
+        $ticketText = strtolower(($ticket->subject ?? '').' '.($ticket->description ?? ''));
         foreach ($people as $person) {
             $name = strtolower($person->full_name);
             if ($name && strlen($name) > 2 && str_contains($ticketText, $name)) {
@@ -248,10 +248,10 @@ class ContactResolver
         try {
             $response = $ai->complete(
                 'You are a hostname extraction assistant.',
-                "Extract the computer hostname or device name from this IT support ticket text. "
-                . "Look for the machine name that the ticket is about (e.g. DESKTOP-ABC123, SHERRI, BASSMAN, ACCOUNTING, PC7, etc.).\n\n"
-                . "Respond with ONLY the hostname in uppercase, or NONE if no hostname is found.\n\n"
-                . "TICKET TEXT:\n{$truncated}",
+                'Extract the computer hostname or device name from this IT support ticket text. '
+                ."Look for the machine name that the ticket is about (e.g. DESKTOP-ABC123, SHERRI, BASSMAN, ACCOUNTING, PC7, etc.).\n\n"
+                ."Respond with ONLY the hostname in uppercase, or NONE if no hostname is found.\n\n"
+                ."TICKET TEXT:\n{$truncated}",
                 100,
             );
 
@@ -359,7 +359,7 @@ class ContactResolver
         }
 
         // flast pattern (first initial + last name)
-        if ($deviceLower === $first[0] . $last) {
+        if ($deviceLower === $first[0].$last) {
             return true;
         }
 

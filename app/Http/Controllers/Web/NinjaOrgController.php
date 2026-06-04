@@ -66,6 +66,7 @@ class NinjaOrgController extends Controller
         try {
             $orgs = $ninja->getOrganizations();
             usort($orgs, fn ($a, $b) => strcasecmp($a['name'] ?? '', $b['name'] ?? ''));
+
             return response()->json($orgs);
         } catch (NinjaClientException) {
             return response()->json([], 503);

@@ -17,7 +17,6 @@ use App\Models\Ticket;
 use App\Models\TicketNote;
 use App\Models\User;
 use App\Support\AppTimezone;
-use App\Services\AttachmentService;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -27,6 +26,7 @@ class TicketService
     public function __construct(
         private readonly NotificationService $notificationService,
     ) {}
+
     public function createTicket(array $data, ?int $createdByUserId): Ticket
     {
         $priority = TicketPriority::from($data['priority']);
@@ -38,7 +38,7 @@ class TicketService
         $data['priority_order'] = $priority->sortOrder();
 
         // Resolve SLA deadlines from contract terms (if any)
-        $contract = !empty($data['contract_id']) ? Contract::find($data['contract_id']) : null;
+        $contract = ! empty($data['contract_id']) ? Contract::find($data['contract_id']) : null;
 
         if (empty($data['due_at'])) {
             $resolutionHours = $contract?->slaResolutionHours($priority);
@@ -64,7 +64,7 @@ class TicketService
     public function updateTicket(Ticket $ticket, array $data): Ticket
     {
         // Convert due_at from app timezone (datetime-local input) to UTC for storage.
-        if (!empty($data['due_at']) && is_string($data['due_at'])) {
+        if (! empty($data['due_at']) && is_string($data['due_at'])) {
             $data['due_at'] = Carbon::createFromFormat('Y-m-d\TH:i', $data['due_at'], AppTimezone::get())->utc();
         }
 
@@ -93,12 +93,11 @@ class TicketService
 
         // Validate transition
         $allowed = $oldStatus->allowedTransitions();
-        if (!in_array($newStatus, $allowed, true)) {
+        if (! in_array($newStatus, $allowed, true)) {
             throw new \InvalidArgumentException(
                 "Cannot transition from {$oldStatus->label()} to {$newStatus->label()}."
             );
         }
-
 
         return DB::transaction(function () use ($ticket, $oldStatus, $newStatus, $changedByUserId, $note, $resolution) {
             // Track pending time
@@ -112,7 +111,7 @@ class TicketService
             // Set closed_at on transition TO closed
             if ($newStatus === TicketStatus::Closed) {
                 $ticket->closed_at = now();
-                if (!$ticket->resolved_at) {
+                if (! $ticket->resolved_at) {
                     $ticket->resolved_at = now();
                 }
             }
@@ -183,7 +182,7 @@ class TicketService
         ]);
 
         // Auto-set responded_at on first public reply
-        if (!$ticket->responded_at && $type === NoteType::Reply && !$isPrivate) {
+        if (! $ticket->responded_at && $type === NoteType::Reply && ! $isPrivate) {
             $ticket->update(['responded_at' => now()]);
         }
 
@@ -210,15 +209,15 @@ class TicketService
     public function addPortalReply(Ticket $ticket, Person $person, string $body): TicketNote
     {
         $note = TicketNote::create([
-            'ticket_id'   => $ticket->id,
-            'author_id'   => null,
+            'ticket_id' => $ticket->id,
+            'author_id' => null,
             'author_name' => $person->full_name,
-            'who_type'    => \App\Enums\WhoType::EndUser,
-            'body'        => $body,
-            'body_html'   => MarkdownRenderer::render($body),
-            'note_type'   => NoteType::Reply,
-            'is_private'  => false,
-            'noted_at'    => now(),
+            'who_type' => \App\Enums\WhoType::EndUser,
+            'body' => $body,
+            'body_html' => MarkdownRenderer::render($body),
+            'note_type' => NoteType::Reply,
+            'is_private' => false,
+            'noted_at' => now(),
         ]);
 
         // Link any uploaded attachments referenced in the body
@@ -234,16 +233,16 @@ class TicketService
             $ticket->update(['status' => TicketStatus::InProgress]);
 
             TicketNote::create([
-                'ticket_id'   => $ticket->id,
-                'author_id'   => null,
+                'ticket_id' => $ticket->id,
+                'author_id' => null,
                 'author_name' => 'System',
-                'who_type'    => \App\Enums\WhoType::System,
-                'body'        => "Status changed from Pending Client to In Progress (client replied via portal)",
-                'note_type'   => NoteType::StatusChange,
-                'is_private'  => true,
+                'who_type' => \App\Enums\WhoType::System,
+                'body' => 'Status changed from Pending Client to In Progress (client replied via portal)',
+                'note_type' => NoteType::StatusChange,
+                'is_private' => true,
                 'status_from' => TicketStatus::PendingClient,
-                'status_to'   => TicketStatus::InProgress,
-                'noted_at'    => now(),
+                'status_to' => TicketStatus::InProgress,
+                'noted_at' => now(),
             ]);
         }
 
@@ -263,19 +262,19 @@ class TicketService
         $contactChanging = $oldContactId !== $newContactId;
 
         // No-op guard
-        if (!$clientChanging && !$contactChanging) {
+        if (! $clientChanging && ! $contactChanging) {
             return;
         }
 
         // Validate new contact belongs to new client (if provided)
         if ($newContactId) {
             $contact = Person::where('id', $newContactId)->where('client_id', $newClientId)->first();
-            if (!$contact) {
+            if (! $contact) {
                 throw new \InvalidArgumentException('Contact does not belong to the selected client.');
             }
         }
 
-        DB::transaction(function () use ($ticket, $newClientId, $newContactId, $oldClientId, $oldContactId, $clientChanging, $contactChanging, $changedByUserId) {
+        DB::transaction(function () use ($ticket, $newClientId, $newContactId, $oldClientId, $clientChanging, $changedByUserId) {
             $changer = User::find($changedByUserId)?->name ?? 'Unknown';
 
             if ($clientChanging) {
@@ -382,7 +381,7 @@ class TicketService
             $secondaryAssets = $secondary->assets()->get();
             $movedAssetCount = 0;
             foreach ($secondaryAssets as $asset) {
-                if (!in_array($asset->id, $primaryAssetIds)) {
+                if (! in_array($asset->id, $primaryAssetIds)) {
                     $primary->assets()->attach($asset->id, ['is_primary' => false]);
                     $movedAssetCount++;
                 }
@@ -390,7 +389,7 @@ class TicketService
             $secondary->assets()->detach();
 
             // Copy contact if primary has none
-            if (!$primary->contact_id && $secondary->contact_id) {
+            if (! $primary->contact_id && $secondary->contact_id) {
                 $primary->contact_id = $secondary->contact_id;
                 $primary->save();
             }
@@ -402,7 +401,7 @@ class TicketService
             $secondary->parent_ticket_id = $primary->id;
             $secondary->status = TicketStatus::Closed;
             $secondary->closed_at = now();
-            if (!$secondary->resolved_at) {
+            if (! $secondary->resolved_at) {
                 $secondary->resolved_at = now();
             }
             $secondary->resolution = "Merged into {$primary->display_id}.";
@@ -413,15 +412,15 @@ class TicketService
 
             $movedParts = [];
             if ($noteCount) {
-                $movedParts[] = "{$noteCount} " . ($noteCount === 1 ? 'note' : 'notes');
+                $movedParts[] = "{$noteCount} ".($noteCount === 1 ? 'note' : 'notes');
             }
             if ($callCount) {
-                $movedParts[] = "{$callCount} " . ($callCount === 1 ? 'call' : 'calls');
+                $movedParts[] = "{$callCount} ".($callCount === 1 ? 'call' : 'calls');
             }
             if ($emailCount) {
-                $movedParts[] = "{$emailCount} " . ($emailCount === 1 ? 'email' : 'emails');
+                $movedParts[] = "{$emailCount} ".($emailCount === 1 ? 'email' : 'emails');
             }
-            $movedSummary = $movedParts ? ' Moved: ' . implode(', ', $movedParts) . '.' : '';
+            $movedSummary = $movedParts ? ' Moved: '.implode(', ', $movedParts).'.' : '';
 
             $primaryNote = "**Ticket merged:** {$secondary->display_id} — *{$secondary->subject}* merged into this ticket by {$merger}.{$movedSummary}";
 
@@ -433,9 +432,9 @@ class TicketService
             if ($secondaryDescription !== '') {
                 $maxLen = 8000;
                 if (mb_strlen($secondaryDescription) > $maxLen) {
-                    $secondaryDescription = mb_substr($secondaryDescription, 0, $maxLen) . "\n\n[truncated]";
+                    $secondaryDescription = mb_substr($secondaryDescription, 0, $maxLen)."\n\n[truncated]";
                 }
-                $quoted = '> ' . str_replace("\n", "\n> ", $secondaryDescription);
+                $quoted = '> '.str_replace("\n", "\n> ", $secondaryDescription);
                 $primaryNote .= "\n\n**Original message from {$secondary->display_id}:**\n\n{$quoted}";
             }
 
@@ -451,9 +450,9 @@ class TicketService
 
             $allParts = $movedParts;
             if ($movedAssetCount) {
-                $allParts[] = "{$movedAssetCount} " . ($movedAssetCount === 1 ? 'asset' : 'assets');
+                $allParts[] = "{$movedAssetCount} ".($movedAssetCount === 1 ? 'asset' : 'assets');
             }
-            $allMovedSummary = $allParts ? ' ' . implode(', ', $allParts) . ' moved.' : '';
+            $allMovedSummary = $allParts ? ' '.implode(', ', $allParts).' moved.' : '';
 
             $secondaryNote = "**Merged into {$primary->display_id}** by {$merger}.{$allMovedSummary}";
             TicketNote::create([
@@ -499,11 +498,11 @@ class TicketService
             ->withCount('triageRuns');
 
         // Status filter
-        if (!empty($filters['show_closed'])) {
+        if (! empty($filters['show_closed'])) {
             // Show all statuses
         } elseif (($filters['status'] ?? '') === 'needs_action') {
             $query->whereIn('status', [TicketStatus::New, TicketStatus::InProgress]);
-        } elseif (!empty($filters['status'])) {
+        } elseif (! empty($filters['status'])) {
             $query->where('status', $filters['status']);
         } else {
             $query->open();
@@ -520,39 +519,39 @@ class TicketService
             }
         }
 
-        if (!empty($filters['priority'])) {
+        if (! empty($filters['priority'])) {
             $query->where('priority', $filters['priority']);
         }
 
-        if (!empty($filters['type'])) {
+        if (! empty($filters['type'])) {
             $query->where('type', $filters['type']);
         }
 
-        if (!empty($filters['client_id'])) {
+        if (! empty($filters['client_id'])) {
             $query->where('client_id', $filters['client_id']);
         }
 
-        if (!empty($filters['contract_id'])) {
+        if (! empty($filters['contract_id'])) {
             $query->where('contract_id', $filters['contract_id']);
         }
 
-        if (!empty($filters['contact_id'])) {
+        if (! empty($filters['contact_id'])) {
             $query->where('contact_id', $filters['contact_id']);
         }
 
-        if (!empty($filters['search'])) {
+        if (! empty($filters['search'])) {
             $query->search($filters['search']);
         }
 
-        if (!empty($filters['overdue'])) {
+        if (! empty($filters['overdue'])) {
             $query->overdue();
         }
 
-        if (!empty($filters['source'])) {
+        if (! empty($filters['source'])) {
             $query->where('source', $filters['source']);
         }
 
-        if (!empty($filters['asset_id'])) {
+        if (! empty($filters['asset_id'])) {
             $query->whereHas('assets', fn ($q) => $q->where('assets.id', $filters['asset_id']));
         }
 
@@ -659,14 +658,14 @@ class TicketService
     private function trackPendingTime(Ticket $ticket, TicketStatus $oldStatus, TicketStatus $newStatus): void
     {
         // Exiting a pending state — accumulate time
-        if ($oldStatus->isPending() && !$newStatus->isPending() && $ticket->pending_since) {
+        if ($oldStatus->isPending() && ! $newStatus->isPending() && $ticket->pending_since) {
             $pendingMinutes = $ticket->pending_since->diffInMinutes(now());
             $ticket->total_pending_minutes += $pendingMinutes;
             $ticket->pending_since = null;
         }
 
         // Entering a pending state — start tracking
-        if ($newStatus->isPending() && !$oldStatus->isPending()) {
+        if ($newStatus->isPending() && ! $oldStatus->isPending()) {
             $ticket->pending_since = now();
         }
     }
@@ -678,9 +677,9 @@ class TicketService
     {
         $query = Ticket::query();
 
-        if (!empty($filters['show_closed'])) {
+        if (! empty($filters['show_closed'])) {
             // Show all statuses
-        } elseif (!empty($filters['status'])) {
+        } elseif (! empty($filters['status'])) {
             $query->where('status', $filters['status']);
         } else {
             $query->open();
@@ -696,39 +695,39 @@ class TicketService
             }
         }
 
-        if (!empty($filters['priority'])) {
+        if (! empty($filters['priority'])) {
             $query->where('priority', $filters['priority']);
         }
 
-        if (!empty($filters['type'])) {
+        if (! empty($filters['type'])) {
             $query->where('type', $filters['type']);
         }
 
-        if (!empty($filters['client_id'])) {
+        if (! empty($filters['client_id'])) {
             $query->where('client_id', $filters['client_id']);
         }
 
-        if (!empty($filters['contract_id'])) {
+        if (! empty($filters['contract_id'])) {
             $query->where('contract_id', $filters['contract_id']);
         }
 
-        if (!empty($filters['contact_id'])) {
+        if (! empty($filters['contact_id'])) {
             $query->where('contact_id', $filters['contact_id']);
         }
 
-        if (!empty($filters['search'])) {
+        if (! empty($filters['search'])) {
             $query->search($filters['search']);
         }
 
-        if (!empty($filters['overdue'])) {
+        if (! empty($filters['overdue'])) {
             $query->overdue();
         }
 
-        if (!empty($filters['source'])) {
+        if (! empty($filters['source'])) {
             $query->where('source', $filters['source']);
         }
 
-        if (!empty($filters['asset_id'])) {
+        if (! empty($filters['asset_id'])) {
             $query->whereHas('assets', fn ($q) => $q->where('assets.id', $filters['asset_id']));
         }
 
@@ -786,7 +785,7 @@ class TicketService
 
     private function checkSlaBreach(Ticket $ticket): void
     {
-        if (!$ticket->due_at || $ticket->sla_breach_recorded_at) {
+        if (! $ticket->due_at || $ticket->sla_breach_recorded_at) {
             return;
         }
 

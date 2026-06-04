@@ -4,7 +4,6 @@ namespace App\Http\Controllers\Portal;
 
 use App\Http\Controllers\Controller;
 use App\Models\Contract;
-use App\Support\PortalConfig;
 use Illuminate\Http\Request;
 use Illuminate\View\View;
 

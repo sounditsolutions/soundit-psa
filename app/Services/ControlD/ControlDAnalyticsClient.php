@@ -18,7 +18,7 @@ class ControlDAnalyticsClient
             'base_uri' => "https://{$this->statsEndpoint}.analytics.controld.com/",
             'timeout' => 30,
             'headers' => [
-                'Authorization' => 'Bearer ' . $this->apiKey,
+                'Authorization' => 'Bearer '.$this->apiKey,
                 'Accept' => 'application/json',
                 'Content-Type' => 'application/json',
             ],
@@ -28,12 +28,12 @@ class ControlDAnalyticsClient
     /**
      * Get DNS activity log for a sub-organization.
      *
-     * @param  string       $orgPk       Sub-organization PK
-     * @param  string       $startTime   RFC3339 timestamp
-     * @param  string       $endTime     RFC3339 timestamp
+     * @param  string  $orgPk  Sub-organization PK
+     * @param  string  $startTime  RFC3339 timestamp
+     * @param  string  $endTime  RFC3339 timestamp
      * @param  string|null  $endpointId  Filter to specific device resolver ID
-     * @param  int          $page        Page number (0-indexed, 100 per page)
-     * @return array        Array of DNS query records
+     * @param  int  $page  Page number (0-indexed, 100 per page)
+     * @return array Array of DNS query records
      */
     public function getActivityLog(
         string $orgPk,

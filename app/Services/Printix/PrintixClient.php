@@ -22,7 +22,7 @@ class PrintixClient
         private readonly CacheInterface $cache,
     ) {
         $this->http = new Client([
-            'base_uri' => self::API_URL . '/',
+            'base_uri' => self::API_URL.'/',
             'timeout' => 30,
         ]);
     }
@@ -102,7 +102,7 @@ class PrintixClient
 
         try {
             $authClient = new Client(['timeout' => 15]);
-            $response = $authClient->post(self::AUTH_URL . '/oauth/token', [
+            $response = $authClient->post(self::AUTH_URL.'/oauth/token', [
                 'form_params' => [
                     'grant_type' => 'client_credentials',
                     'client_id' => $clientId,
@@ -149,6 +149,7 @@ class PrintixClient
                 if ($code === 401 && $attempts < $maxAttempts) {
                     Log::info('[Printix] 401 received, refreshing token and retrying');
                     $this->cache->forget(self::TOKEN_CACHE_KEY);
+
                     continue;
                 }
 

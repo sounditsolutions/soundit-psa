@@ -9,10 +9,10 @@ return new class extends Migration
     public function up(): void
     {
         // Link ticket notes to emails (bidirectional: email.ticket_id + note.email_id)
-        if (!Schema::hasColumn('ticket_notes', 'email_id')) {
+        if (! Schema::hasColumn('ticket_notes', 'email_id')) {
             Schema::table('ticket_notes', function (Blueprint $table) {
                 $table->foreignId('email_id')->nullable()->after('author_id')
-                      ->constrained('emails')->nullOnDelete();
+                    ->constrained('emails')->nullOnDelete();
             });
         }
 

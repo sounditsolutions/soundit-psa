@@ -4,10 +4,10 @@ namespace App\Services\Triage;
 
 use App\Enums\TicketPriority;
 use App\Enums\TicketStatus;
-use App\Models\Ticket;
-use App\Models\TicketNote;
 use App\Models\Asset;
 use App\Models\TacticalAsset;
+use App\Models\Ticket;
+use App\Models\TicketNote;
 use App\Services\Cipp\CippClient;
 use App\Services\Comet\CometClient;
 use App\Services\Comet\CometJobService;
@@ -28,6 +28,7 @@ use Illuminate\Support\Facades\Log;
 class TriageToolExecutor
 {
     private Ticket $ticket;
+
     private int $clientId;
 
     public function __construct(Ticket $ticket)
@@ -257,12 +258,12 @@ class TriageToolExecutor
         // Validate category exists in config
         $validCategories = config('tickets.categories', []);
         if (! array_key_exists($category, $validCategories)) {
-            return ['error' => "Invalid category: {$category}. Valid: " . implode(', ', array_keys($validCategories))];
+            return ['error' => "Invalid category: {$category}. Valid: ".implode(', ', array_keys($validCategories))];
         }
 
         // Validate subcategory if provided
         if ($subcategory && ! in_array($subcategory, $validCategories[$category])) {
-            return ['error' => "Invalid subcategory '{$subcategory}' for {$category}. Valid: " . implode(', ', $validCategories[$category])];
+            return ['error' => "Invalid subcategory '{$subcategory}' for {$category}. Valid: ".implode(', ', $validCategories[$category])];
         }
 
         $updates = ['category' => $category];
@@ -292,11 +293,15 @@ class TriageToolExecutor
         // Normalize: lowercase, strip punctuation, drop very short tokens, dedupe.
         $normalized = [];
         foreach ($keywords as $kw) {
-            if (! is_string($kw)) continue;
+            if (! is_string($kw)) {
+                continue;
+            }
             $clean = mb_strtolower(trim($kw), 'UTF-8');
             $clean = preg_replace('/[^\p{L}\p{N}\s_-]+/u', '', $clean) ?? '';
             $clean = trim((string) $clean);
-            if ($clean === '' || mb_strlen($clean) < 2) continue;
+            if ($clean === '' || mb_strlen($clean) < 2) {
+                continue;
+            }
             $normalized[$clean] = true;
         }
 
@@ -639,6 +644,7 @@ class TriageToolExecutor
                         return true;
                     }
                 }
+
                 return false;
             }));
         }
@@ -746,6 +752,7 @@ class TriageToolExecutor
                         }
                     }
                 }
+
                 return false;
             }));
         }
@@ -876,10 +883,15 @@ class TriageToolExecutor
                 foreach (['principalId', 'consentedBy', 'userId', 'userPrincipalName'] as $key) {
                     $val = $app[$key] ?? null;
                     if (is_string($val) && $val !== '') {
-                        if ($val === $objectId) return true;
-                        if ($upnNeedle && mb_strtolower($val) === $upnNeedle) return true;
+                        if ($val === $objectId) {
+                            return true;
+                        }
+                        if ($upnNeedle && mb_strtolower($val) === $upnNeedle) {
+                            return true;
+                        }
                     }
                 }
+
                 return false;
             }));
         }
@@ -903,6 +915,7 @@ class TriageToolExecutor
                 }
             }
         }
+
         return false;
     }
 
@@ -1128,7 +1141,7 @@ class TriageToolExecutor
         } catch (\Throwable $e) {
             Log::warning('[Triage] Tactical device query failed', ['hostname' => $hostname, 'error' => $e->getMessage()]);
 
-            return ['error' => 'Tactical query failed: ' . mb_substr($e->getMessage(), 0, 200)];
+            return ['error' => 'Tactical query failed: '.mb_substr($e->getMessage(), 0, 200)];
         }
 
         // Format uptime from boot_time
@@ -1139,13 +1152,13 @@ class TriageToolExecutor
                 $diff = $bootTime->diff(now());
                 $parts = [];
                 if ($diff->days > 0) {
-                    $parts[] = $diff->days . 'd';
+                    $parts[] = $diff->days.'d';
                 }
                 if ($diff->h > 0) {
-                    $parts[] = $diff->h . 'h';
+                    $parts[] = $diff->h.'h';
                 }
                 if (empty($parts)) {
-                    $parts[] = $diff->i . 'm';
+                    $parts[] = $diff->i.'m';
                 }
                 $uptime = implode(' ', $parts);
             } catch (\Throwable) {
@@ -1195,7 +1208,7 @@ class TriageToolExecutor
         } catch (\Throwable $e) {
             Log::warning('[Triage] Tactical checks query failed', ['hostname' => $hostname, 'error' => $e->getMessage()]);
 
-            return ['error' => 'Tactical query failed: ' . mb_substr($e->getMessage(), 0, 200)];
+            return ['error' => 'Tactical query failed: '.mb_substr($e->getMessage(), 0, 200)];
         }
 
         return array_map(fn ($c) => [
@@ -1223,7 +1236,7 @@ class TriageToolExecutor
         } catch (\Throwable $e) {
             Log::warning('[Triage] Tactical network query failed', ['hostname' => $hostname, 'error' => $e->getMessage()]);
 
-            return ['error' => 'Tactical query failed: ' . mb_substr($e->getMessage(), 0, 200)];
+            return ['error' => 'Tactical query failed: '.mb_substr($e->getMessage(), 0, 200)];
         }
 
         $networkConfigs = $agent['wmi_detail']['network_config'] ?? [];
@@ -1268,7 +1281,7 @@ class TriageToolExecutor
         } catch (\Throwable $e) {
             Log::warning('[Triage] Tactical software query failed', ['hostname' => $hostname, 'error' => $e->getMessage()]);
 
-            return ['error' => 'Tactical query failed: ' . mb_substr($e->getMessage(), 0, 200)];
+            return ['error' => 'Tactical query failed: '.mb_substr($e->getMessage(), 0, 200)];
         }
 
         // Sort alphabetically, limit to 50
@@ -1298,7 +1311,7 @@ class TriageToolExecutor
         } catch (\Throwable $e) {
             Log::warning('[Triage] Tactical services query failed', ['hostname' => $hostname, 'error' => $e->getMessage()]);
 
-            return ['error' => 'Tactical query failed: ' . mb_substr($e->getMessage(), 0, 200)];
+            return ['error' => 'Tactical query failed: '.mb_substr($e->getMessage(), 0, 200)];
         }
 
         $services = collect($agent['services'] ?? []);
@@ -1345,7 +1358,7 @@ class TriageToolExecutor
         } catch (\Throwable $e) {
             Log::warning('[Triage] Tactical disks query failed', ['hostname' => $hostname, 'error' => $e->getMessage()]);
 
-            return ['error' => 'Tactical query failed: ' . mb_substr($e->getMessage(), 0, 200)];
+            return ['error' => 'Tactical query failed: '.mb_substr($e->getMessage(), 0, 200)];
         }
 
         // Logical volumes
@@ -1392,16 +1405,16 @@ class TriageToolExecutor
     private function executeCometGetBackupStatus(array $input): array
     {
         $hostname = $input['hostname'] ?? null;
-        if (!$hostname) {
+        if (! $hostname) {
             return ['error' => 'hostname is required'];
         }
 
         $asset = $this->resolveCometAsset($hostname);
-        if (!$asset) {
+        if (! $asset) {
             return ['error' => "No Comet-linked asset found for hostname '{$hostname}' in this client"];
         }
 
-        $client = new CometClient();
+        $client = new CometClient;
         $jobService = new CometJobService($client);
         $jobData = $jobService->getRecentJobs($asset, 30);
 
@@ -1425,17 +1438,17 @@ class TriageToolExecutor
     private function executeCometGetBackupJobs(array $input): array
     {
         $hostname = $input['hostname'] ?? null;
-        if (!$hostname) {
+        if (! $hostname) {
             return ['error' => 'hostname is required'];
         }
 
         $asset = $this->resolveCometAsset($hostname);
-        if (!$asset) {
+        if (! $asset) {
             return ['error' => "No Comet-linked asset found for hostname '{$hostname}' in this client"];
         }
 
         $days = $input['days'] ?? 7;
-        $client = new CometClient();
+        $client = new CometClient;
         $jobService = new CometJobService($client);
         $jobData = $jobService->getRecentJobs($asset, $days);
 
@@ -1472,7 +1485,7 @@ class TriageToolExecutor
         ];
 
         if (! isset($diagnosticScripts[$diagnostic])) {
-            return ['error' => "Invalid diagnostic '{$diagnostic}'. Available: " . implode(', ', array_keys($diagnosticScripts))];
+            return ['error' => "Invalid diagnostic '{$diagnostic}'. Available: ".implode(', ', array_keys($diagnosticScripts))];
         }
 
         $resolved = $this->resolveTacticalAgent($hostname);
@@ -1494,7 +1507,7 @@ class TriageToolExecutor
                 'error' => $e->getMessage(),
             ]);
 
-            return ['error' => 'Tactical diagnostic failed: ' . mb_substr($e->getMessage(), 0, 200)];
+            return ['error' => 'Tactical diagnostic failed: '.mb_substr($e->getMessage(), 0, 200)];
         }
 
         return [

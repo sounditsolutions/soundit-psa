@@ -57,7 +57,7 @@ class ClientIntegrationController extends Controller
         // Comet: create a backup user if the group has no user yet
         if ($vendor === 'comet' && CometConfig::isConfigured() && ! $client->comet_backup_user) {
             try {
-                $cometClient = new \App\Services\Comet\CometClient();
+                $cometClient = new \App\Services\Comet\CometClient;
                 $username = \Illuminate\Support\Str::slug($client->name, '-');
                 $password = \Illuminate\Support\Str::random(32);
                 $created = $cometClient->ensureUser($username, $password);
@@ -72,7 +72,7 @@ class ClientIntegrationController extends Controller
                 // If not created (already exists), credentials remain unknown — user must
                 // enter them manually or use "Create Backup User" with a new username
             } catch (\Exception $e) {
-                \Illuminate\Support\Facades\Log::warning('[Comet] Failed to create user on link: ' . $e->getMessage());
+                \Illuminate\Support\Facades\Log::warning('[Comet] Failed to create user on link: '.$e->getMessage());
             }
         }
 
@@ -107,7 +107,7 @@ class ClientIntegrationController extends Controller
         }
 
         try {
-            $cometClient = new \App\Services\Comet\CometClient();
+            $cometClient = new \App\Services\Comet\CometClient;
 
             // Create user group named after the client
             $groupId = $cometClient->createUserGroup($client->name);
@@ -132,7 +132,7 @@ class ClientIntegrationController extends Controller
 
             return back()->with('success', "Comet group \"{$client->name}\" and backup user \"{$username}\" created.");
         } catch (\Exception $e) {
-            return back()->with('error', 'Comet provisioning failed: ' . $e->getMessage());
+            return back()->with('error', 'Comet provisioning failed: '.$e->getMessage());
         }
     }
 
@@ -154,7 +154,7 @@ class ClientIntegrationController extends Controller
         }
 
         try {
-            $cometClient = new \App\Services\Comet\CometClient();
+            $cometClient = new \App\Services\Comet\CometClient;
 
             $username = \Illuminate\Support\Str::slug($client->name, '-');
             $password = \Illuminate\Support\Str::random(32);
@@ -171,7 +171,7 @@ class ClientIntegrationController extends Controller
 
             return back()->with('success', "Backup user \"{$username}\" created and added to group.");
         } catch (\Exception $e) {
-            return back()->with('error', 'Failed to create backup user: ' . $e->getMessage());
+            return back()->with('error', 'Failed to create backup user: '.$e->getMessage());
         }
     }
 
@@ -197,14 +197,14 @@ class ClientIntegrationController extends Controller
         ]);
 
         try {
-            $tacticalClient = new \App\Services\Tactical\TacticalClient();
+            $tacticalClient = new \App\Services\Tactical\TacticalClient;
 
             $existing = collect($tacticalClient->getClients())
                 ->firstWhere('name', $client->name);
 
             if ($existing) {
                 $siteName = $existing['sites'][0]['name'] ?? 'Main';
-                $client->update(['tactical_site_id' => $client->name . '|' . $siteName]);
+                $client->update(['tactical_site_id' => $client->name.'|'.$siteName]);
 
                 return back()->with('success', "Linked to existing Tactical client \"{$client->name}\" (site \"{$siteName}\"). Policy is unchanged on the existing client; edit it in Tactical's UI if needed.");
             }
@@ -215,11 +215,11 @@ class ClientIntegrationController extends Controller
                 $validated['workstation_policy_id'] ?? null,
                 $validated['server_policy_id'] ?? null,
             );
-            $client->update(['tactical_site_id' => $created['client_name'] . '|' . $created['site_name']]);
+            $client->update(['tactical_site_id' => $created['client_name'].'|'.$created['site_name']]);
 
             return back()->with('success', "Tactical client \"{$created['client_name']}\" with site \"{$created['site_name']}\" created and linked.");
         } catch (\App\Services\Tactical\TacticalClientException $e) {
-            return back()->with('error', 'Tactical provisioning failed: ' . $e->getMessage());
+            return back()->with('error', 'Tactical provisioning failed: '.$e->getMessage());
         }
     }
 
@@ -229,17 +229,17 @@ class ClientIntegrationController extends Controller
      */
     private function pushCometCredsToTactical(Client $client): void
     {
-        if (!\App\Support\TacticalConfig::isConfigured() || !$client->tactical_site_id) {
+        if (! \App\Support\TacticalConfig::isConfigured() || ! $client->tactical_site_id) {
             return;
         }
 
         try {
-            $tacticalClient = new \App\Services\Tactical\TacticalClient();
+            $tacticalClient = new \App\Services\Tactical\TacticalClient;
             $tacticalClients = $tacticalClient->getClients();
             $parts = explode('|', $client->tactical_site_id);
             $tacticalClientName = $parts[0] ?? null;
 
-            if (!$tacticalClientName) {
+            if (! $tacticalClientName) {
                 return;
             }
 
@@ -260,12 +260,22 @@ class ClientIntegrationController extends Controller
                 // Add/update Comet fields
                 $found29 = $found30 = false;
                 foreach ($customFields as &$cf) {
-                    if ($cf['field'] === 29) { $cf['string_value'] = $client->comet_backup_user; $found29 = true; }
-                    if ($cf['field'] === 30) { $cf['string_value'] = $client->comet_backup_password; $found30 = true; }
+                    if ($cf['field'] === 29) {
+                        $cf['string_value'] = $client->comet_backup_user;
+                        $found29 = true;
+                    }
+                    if ($cf['field'] === 30) {
+                        $cf['string_value'] = $client->comet_backup_password;
+                        $found30 = true;
+                    }
                 }
                 unset($cf);
-                if (!$found29) $customFields[] = ['field' => 29, 'string_value' => $client->comet_backup_user];
-                if (!$found30) $customFields[] = ['field' => 30, 'string_value' => $client->comet_backup_password];
+                if (! $found29) {
+                    $customFields[] = ['field' => 29, 'string_value' => $client->comet_backup_user];
+                }
+                if (! $found30) {
+                    $customFields[] = ['field' => 30, 'string_value' => $client->comet_backup_password];
+                }
 
                 $tacticalClient->put("clients/{$tc['id']}/", [
                     'client' => ['id' => $tc['id'], 'name' => $tc['name']],
@@ -273,10 +283,11 @@ class ClientIntegrationController extends Controller
                 ]);
 
                 \Illuminate\Support\Facades\Log::info("[Comet] Pushed credentials to Tactical client {$tacticalClientName}");
+
                 return;
             }
         } catch (\Exception $e) {
-            \Illuminate\Support\Facades\Log::warning("[Comet] Failed to push credentials to Tactical: " . $e->getMessage());
+            \Illuminate\Support\Facades\Log::warning('[Comet] Failed to push credentials to Tactical: '.$e->getMessage());
         }
     }
 

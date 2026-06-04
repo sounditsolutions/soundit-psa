@@ -117,6 +117,6 @@ class ResolveCallRecordings extends Command
 
         $cmd = sprintf('php %s calls:transcribe %d > /dev/null 2>&1 &', base_path('artisan'), $call->id);
         Process::run($cmd);
-        $this->line("    → transcription queued");
+        $this->line('    → transcription queued');
     }
 }

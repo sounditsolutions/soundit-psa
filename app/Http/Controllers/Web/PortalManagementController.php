@@ -63,9 +63,9 @@ class PortalManagementController extends Controller
         $companyName = PortalConfig::companyName();
 
         $body = "You've been invited to the {$companyName} client portal.\n\n"
-            . "Click the link below to set your password and get started:\n{$url}\n\n"
-            . "This link will expire in 60 minutes.\n\n"
-            . "Once you've set your password, you can log in at: " . url('/portal/login');
+            ."Click the link below to set your password and get started:\n{$url}\n\n"
+            ."This link will expire in 60 minutes.\n\n"
+            ."Once you've set your password, you can log in at: ".url('/portal/login');
 
         try {
             app(EmailService::class)->sendNew(
@@ -75,7 +75,7 @@ class PortalManagementController extends Controller
                 $person->full_name,
             );
         } catch (\Throwable $e) {
-            return back()->with('error', 'Portal enabled, but the invite email failed to send: ' . $e->getMessage());
+            return back()->with('error', 'Portal enabled, but the invite email failed to send: '.$e->getMessage());
         }
 
         return back()->with('success', "Portal invite sent to {$person->full_name}.");
@@ -134,7 +134,7 @@ class PortalManagementController extends Controller
         try {
             Password::broker('portal')->sendResetLink(['email' => $person->email]);
         } catch (\Throwable $e) {
-            return back()->with('error', 'Failed to send reset email: ' . $e->getMessage());
+            return back()->with('error', 'Failed to send reset email: '.$e->getMessage());
         }
 
         return back()->with('success', "Password reset link sent to {$person->full_name}.");

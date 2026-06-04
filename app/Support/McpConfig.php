@@ -27,7 +27,7 @@ class McpConfig
      */
     public static function rotateStaffToken(): string
     {
-        $token = 'psa-mcp-' . Str::random(48);
+        $token = 'psa-mcp-'.Str::random(48);
         Setting::setEncrypted('mcp_staff_token', $token);
 
         return $token;

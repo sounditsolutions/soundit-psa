@@ -10,6 +10,7 @@ use Illuminate\Support\Str;
 class GraphWebhookManager
 {
     private const SUBSCRIPTION_LIFETIME_MINUTES = 4230; // Graph max for mail
+
     private const RENEWAL_BUFFER_HOURS = 24;
 
     public function __construct(
@@ -25,8 +26,9 @@ class GraphWebhookManager
         $subscriptionId = Setting::getValue('graph_subscription_id');
         $expiry = Setting::getValue('graph_subscription_expiry');
 
-        if (!$subscriptionId || !$expiry) {
+        if (! $subscriptionId || ! $expiry) {
             $this->createSubscription();
+
             return;
         }
 
@@ -50,26 +52,26 @@ class GraphWebhookManager
     public function createSubscription(): array
     {
         $mailbox = Setting::getValue('graph_mailbox');
-        if (!$mailbox) {
+        if (! $mailbox) {
             throw new GraphClientException('No mailbox configured (graph_mailbox setting is empty).');
         }
 
         $clientState = Str::random(40);
         $expiresAt = now()->addMinutes(self::SUBSCRIPTION_LIFETIME_MINUTES)->toIso8601String();
-        $notificationUrl = rtrim(config('app.url'), '/') . '/api/webhooks/graph/mail';
+        $notificationUrl = rtrim(config('app.url'), '/').'/api/webhooks/graph/mail';
 
         try {
             $subscription = $this->graphClient->post('subscriptions', [
-                'changeType'         => 'created',
-                'notificationUrl'    => $notificationUrl,
-                'resource'           => "users/{$mailbox}/mailFolders('inbox')/messages",
+                'changeType' => 'created',
+                'notificationUrl' => $notificationUrl,
+                'resource' => "users/{$mailbox}/mailFolders('inbox')/messages",
                 'expirationDateTime' => $expiresAt,
-                'clientState'        => $clientState,
+                'clientState' => $clientState,
             ]);
         } catch (GraphClientException $e) {
             Log::error('[GraphWebhook] Failed to create subscription', [
                 'mailbox' => $mailbox,
-                'error'   => $e->getMessage(),
+                'error' => $e->getMessage(),
             ]);
             throw $e;
         }
@@ -79,7 +81,7 @@ class GraphWebhookManager
         Setting::setValue('graph_webhook_client_state', $clientState);
 
         Log::info('[GraphWebhook] Subscription created', [
-            'id'      => $subscription['id'],
+            'id' => $subscription['id'],
             'expires' => $subscription['expirationDateTime'],
         ]);
 
@@ -100,7 +102,7 @@ class GraphWebhookManager
         } catch (GraphClientException $e) {
             Log::error('[GraphWebhook] Failed to renew subscription', [
                 'subscription_id' => $subscriptionId,
-                'error'           => $e->getMessage(),
+                'error' => $e->getMessage(),
             ]);
             throw $e;
         }
@@ -108,7 +110,7 @@ class GraphWebhookManager
         Setting::setValue('graph_subscription_expiry', $subscription['expirationDateTime']);
 
         Log::info('[GraphWebhook] Subscription renewed', [
-            'id'      => $subscriptionId,
+            'id' => $subscriptionId,
             'expires' => $subscription['expirationDateTime'],
         ]);
 
@@ -121,7 +123,7 @@ class GraphWebhookManager
     public function deleteSubscription(): void
     {
         $subscriptionId = Setting::getValue('graph_subscription_id');
-        if (!$subscriptionId) {
+        if (! $subscriptionId) {
             return;
         }
 
@@ -130,7 +132,7 @@ class GraphWebhookManager
         } catch (GraphClientException $e) {
             Log::warning('[GraphWebhook] Failed to delete subscription', [
                 'subscription_id' => $subscriptionId,
-                'error'           => $e->getMessage(),
+                'error' => $e->getMessage(),
             ]);
         }
 

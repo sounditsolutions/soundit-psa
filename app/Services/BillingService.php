@@ -12,7 +12,6 @@ use App\Models\InvoiceLine;
 use App\Models\RecurringInvoiceProfile;
 use App\Models\RecurringInvoiceProfileLine;
 use App\Models\Setting;
-use App\Services\NotificationService;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -347,6 +346,7 @@ class BillingService
                             'profile_id' => $profile->id,
                         ]);
                         $invoiceNumber = $this->nextInvoiceNumber();
+
                         continue;
                     }
                     throw $e;
@@ -450,7 +450,7 @@ class BillingService
 
         $last = Invoice::withTrashed()
             ->where('invoice_number', 'like', "{$prefix}-%")
-            ->orderByRaw("CAST(SUBSTRING(invoice_number, ?) AS UNSIGNED) DESC", [strlen($prefix) + 2])
+            ->orderByRaw('CAST(SUBSTRING(invoice_number, ?) AS UNSIGNED) DESC', [strlen($prefix) + 2])
             ->value('invoice_number');
 
         $next = 1;

@@ -77,7 +77,7 @@ class RecurringInvoiceProfile extends Model
             ->where('next_run_date', '<=', today())
             ->whereHas('contract', function (Builder $q) {
                 $q->where('status', ContractStatus::Active)
-                  ->where('billing_source', BillingSource::Psa);
+                    ->where('billing_source', BillingSource::Psa);
             });
     }
 }

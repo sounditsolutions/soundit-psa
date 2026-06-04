@@ -43,7 +43,7 @@ class PreferencesController extends Controller
             'sip_password.required' => 'Password is required for new endpoints.',
         ]);
 
-        $sipUri = 'sip:' . $validated['sip_username'] . '@phone.plivo.com';
+        $sipUri = 'sip:'.$validated['sip_username'].'@phone.plivo.com';
 
         $data = [
             'sip_uri' => $sipUri,
@@ -53,7 +53,7 @@ class PreferencesController extends Controller
         ];
 
         // Only update password if provided
-        if (!empty($validated['sip_password'])) {
+        if (! empty($validated['sip_password'])) {
             $data['sip_password'] = $validated['sip_password'];
         }
 

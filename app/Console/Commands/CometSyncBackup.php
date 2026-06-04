@@ -17,7 +17,7 @@ class CometSyncBackup extends Command
 
     public function handle(): int
     {
-        if (!CometConfig::isConfigured()) {
+        if (! CometConfig::isConfigured()) {
             $this->warn('Comet Backup is not configured. Set comet_server_url, comet_admin_user, and comet_admin_password in Settings.');
 
             return self::FAILURE;
@@ -36,7 +36,7 @@ class CometSyncBackup extends Command
             $this->info('Syncing Comet Backup usage for all mapped clients...');
         }
 
-        $service = new CometBackupSyncService(new CometClient());
+        $service = new CometBackupSyncService(new CometClient);
         $result = $service->syncBackupUsage($clientId, $dryRun);
 
         $this->newLine();

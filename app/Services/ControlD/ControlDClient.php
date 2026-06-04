@@ -17,7 +17,7 @@ class ControlDClient
             'base_uri' => 'https://api.controld.com/',
             'timeout' => 30,
             'headers' => [
-                'Authorization' => 'Bearer ' . ($this->config['api_key'] ?? ''),
+                'Authorization' => 'Bearer '.($this->config['api_key'] ?? ''),
                 'Accept' => 'application/json',
             ],
         ]);

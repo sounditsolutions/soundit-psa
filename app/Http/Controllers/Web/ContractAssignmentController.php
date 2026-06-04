@@ -71,7 +71,7 @@ class ContractAssignmentController extends Controller
     {
         $validated = $request->validate([
             'name' => ['nullable', 'string', 'max:255'],
-            'rule_type' => ['required', 'string', 'in:' . implode(',', array_column(AssignmentRuleType::cases(), 'value'))],
+            'rule_type' => ['required', 'string', 'in:'.implode(',', array_column(AssignmentRuleType::cases(), 'value'))],
             'filter_values' => ['nullable', 'string', 'max:500'],
         ]);
 

@@ -15,6 +15,7 @@ class SummarizeContractDocument implements ShouldQueue
     use Queueable;
 
     public int $tries = 2;
+
     public int $timeout = 300;
 
     public function __construct(
@@ -41,7 +42,7 @@ class SummarizeContractDocument implements ShouldQueue
                 DocumentSummaryStatus::Processing,
                 DocumentSummaryStatus::Completed,
             ])) {
-                Log::debug('[ContractDocument] Skipping — already ' . $doc->summary_status->value, [
+                Log::debug('[ContractDocument] Skipping — already '.$doc->summary_status->value, [
                     'document_id' => $this->documentId,
                 ]);
 

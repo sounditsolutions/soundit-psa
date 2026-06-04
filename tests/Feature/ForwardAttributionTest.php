@@ -35,10 +35,10 @@ class ForwardAttributionTest extends TestCase
         // No assignee_id on purpose: notifyEmailAdded() no-ops without one.
         return Ticket::create([
             'client_id' => $client->id,
-            'subject'   => 'Printer offline',
-            'type'      => TicketType::Incident,
-            'status'    => TicketStatus::New,
-            'priority'  => TicketPriority::P3,
+            'subject' => 'Printer offline',
+            'type' => TicketType::Incident,
+            'status' => TicketStatus::New,
+            'priority' => TicketPriority::P3,
         ]);
     }
 
@@ -47,12 +47,12 @@ class ForwardAttributionTest extends TestCase
         $ticket = $this->makeTicket();
 
         $email = Email::create([
-            'direction'    => 'inbound',
+            'direction' => 'inbound',
             'from_address' => 'charlie@couttspnw.com',
-            'from_name'    => 'Charlie Coutts',
-            'subject'      => "FW: Printer offline [{$ticket->display_id}]",
-            'body_text'    => "FYI\n\nFrom: Jane Doe <jane@acme.com>\nSent: Thursday, May 28, 2026\nTo: Charlie Coutts\nSubject: Printer offline\n\nThe printer is still offline.",
-            'received_at'  => now(),
+            'from_name' => 'Charlie Coutts',
+            'subject' => "FW: Printer offline [{$ticket->display_id}]",
+            'body_text' => "FYI\n\nFrom: Jane Doe <jane@acme.com>\nSent: Thursday, May 28, 2026\nTo: Charlie Coutts\nSubject: Printer offline\n\nThe printer is still offline.",
+            'received_at' => now(),
         ]);
 
         app(EmailService::class)->linkEmailToTicket($email, $ticket);
@@ -73,12 +73,12 @@ class ForwardAttributionTest extends TestCase
         $ticket = $this->makeTicket();
 
         $email = Email::create([
-            'direction'    => 'inbound',
+            'direction' => 'inbound',
             'from_address' => 'jane@acme.com',
-            'from_name'    => 'Jane Doe',
-            'subject'      => "RE: Printer offline [{$ticket->display_id}]",
-            'body_text'    => "Thanks, that worked!",
-            'received_at'  => now(),
+            'from_name' => 'Jane Doe',
+            'subject' => "RE: Printer offline [{$ticket->display_id}]",
+            'body_text' => 'Thanks, that worked!',
+            'received_at' => now(),
         ]);
 
         app(EmailService::class)->linkEmailToTicket($email, $ticket);
@@ -96,12 +96,12 @@ class ForwardAttributionTest extends TestCase
         // branch), but the From: line has no extractable email address, so
         // parseOriginalSender() returns null and we must fall back to the forwarder.
         $email = Email::create([
-            'direction'    => 'inbound',
+            'direction' => 'inbound',
             'from_address' => 'charlie@couttspnw.com',
-            'from_name'    => 'Charlie Coutts',
-            'subject'      => "FW: Printer offline [{$ticket->display_id}]",
-            'body_text'    => "FYI\n\n---------- Forwarded message ---------\nFrom: Jane Doe\nDate: Thursday, May 28, 2026\nSubject: Printer offline\nTo: Charlie Coutts\n\nThe printer is still offline.",
-            'received_at'  => now(),
+            'from_name' => 'Charlie Coutts',
+            'subject' => "FW: Printer offline [{$ticket->display_id}]",
+            'body_text' => "FYI\n\n---------- Forwarded message ---------\nFrom: Jane Doe\nDate: Thursday, May 28, 2026\nSubject: Printer offline\nTo: Charlie Coutts\n\nThe printer is still offline.",
+            'received_at' => now(),
         ]);
 
         app(EmailService::class)->linkEmailToTicket($email, $ticket);
@@ -121,27 +121,27 @@ class ForwardAttributionTest extends TestCase
         $ticket = $this->makeTicket();
 
         $email = Email::create([
-            'direction'      => 'inbound',
-            'from_address'   => 'tech@example.com',
-            'from_name'      => 'Tech Person',
-            'subject'        => "FW: Printer offline [{$ticket->display_id}]",
-            'body_text'      => "FYI\n\nFrom: Jane Doe <jane@acme.com>\nSent: Thursday, May 28, 2026\nTo: Tech Person\nSubject: Printer offline\n\nThe printer is still offline.",
-            'body_html'      => '<p>The printer is still offline.</p>',
+            'direction' => 'inbound',
+            'from_address' => 'tech@example.com',
+            'from_name' => 'Tech Person',
+            'subject' => "FW: Printer offline [{$ticket->display_id}]",
+            'body_text' => "FYI\n\nFrom: Jane Doe <jane@acme.com>\nSent: Thursday, May 28, 2026\nTo: Tech Person\nSubject: Printer offline\n\nThe printer is still offline.",
+            'body_html' => '<p>The printer is still offline.</p>',
             'has_attachments' => true,
-            'received_at'    => now(),
+            'received_at' => now(),
         ]);
 
         // body_html only flows through to the note when an inline attachment is
         // present (see linkEmailToTicket). Pass a predownloaded inline attachment
         // so the HTML provenance branch is exercised.
         $inline = Attachment::create([
-            'filename'          => 'signature.png',
+            'filename' => 'signature.png',
             'original_filename' => 'signature.png',
-            'mime_type'         => 'image/png',
-            'size_bytes'        => 1024,
-            'storage_path'      => 'email-attachments/signature.png',
-            'is_inline'         => true,
-            'content_id'        => null,
+            'mime_type' => 'image/png',
+            'size_bytes' => 1024,
+            'storage_path' => 'email-attachments/signature.png',
+            'is_inline' => true,
+            'content_id' => null,
         ]);
 
         app(EmailService::class)->linkEmailToTicket($email, $ticket, [$inline]);
@@ -156,10 +156,10 @@ class ForwardAttributionTest extends TestCase
         // Rich view: escaped HTML provenance line prepended ahead of the original HTML.
         $provenance = "[Forwarded into {$ticket->display_id} by Tech Person]";
         $this->assertNotNull($note->body_html);
-        $this->assertStringContainsString('<p>' . e($provenance) . '</p>', $note->body_html);
+        $this->assertStringContainsString('<p>'.e($provenance).'</p>', $note->body_html);
         $this->assertStringContainsString('The printer is still offline.', $note->body_html);
         $this->assertTrue(
-            str_starts_with($note->body_html, '<p>' . e($provenance) . '</p>'),
+            str_starts_with($note->body_html, '<p>'.e($provenance).'</p>'),
             'HTML provenance line should be prepended ahead of the original HTML body.',
         );
 
@@ -174,12 +174,12 @@ class ForwardAttributionTest extends TestCase
         // Tech forwarded their own message: inner From: address equals the
         // forwarder's own from_address. No reattribution should occur.
         $email = Email::create([
-            'direction'    => 'inbound',
+            'direction' => 'inbound',
             'from_address' => 'tech@example.com',
-            'from_name'    => 'Tech Person',
-            'subject'      => "FW: Printer offline [{$ticket->display_id}]",
-            'body_text'    => "FYI\n\nFrom: Tech Person <tech@example.com>\nSent: Thursday, May 28, 2026\nTo: Helpdesk\nSubject: Printer offline\n\nNote to self about the printer.",
-            'received_at'  => now(),
+            'from_name' => 'Tech Person',
+            'subject' => "FW: Printer offline [{$ticket->display_id}]",
+            'body_text' => "FYI\n\nFrom: Tech Person <tech@example.com>\nSent: Thursday, May 28, 2026\nTo: Helpdesk\nSubject: Printer offline\n\nNote to self about the printer.",
+            'received_at' => now(),
         ]);
 
         app(EmailService::class)->linkEmailToTicket($email, $ticket);
@@ -202,12 +202,12 @@ class ForwardAttributionTest extends TestCase
         // mixed case. Reattribution must still fire — proving the comparison
         // normalizes case (jane@acme.com != tech@example.com after lowercasing).
         $email = Email::create([
-            'direction'    => 'inbound',
+            'direction' => 'inbound',
             'from_address' => 'tech@example.com',
-            'from_name'    => 'Tech Person',
-            'subject'      => "FW: Printer offline [{$ticket->display_id}]",
-            'body_text'    => "FYI\n\nFrom: Jane Doe <JANE@ACME.COM>\nSent: Thursday, May 28, 2026\nTo: Tech Person\nSubject: Printer offline\n\nThe printer is still offline.",
-            'received_at'  => now(),
+            'from_name' => 'Tech Person',
+            'subject' => "FW: Printer offline [{$ticket->display_id}]",
+            'body_text' => "FYI\n\nFrom: Jane Doe <JANE@ACME.COM>\nSent: Thursday, May 28, 2026\nTo: Tech Person\nSubject: Printer offline\n\nThe printer is still offline.",
+            'received_at' => now(),
         ]);
 
         app(EmailService::class)->linkEmailToTicket($email, $ticket);
@@ -226,12 +226,12 @@ class ForwardAttributionTest extends TestCase
         $ticket = $this->makeTicket();
 
         $email = Email::create([
-            'direction'    => 'inbound',
+            'direction' => 'inbound',
             'from_address' => 'charlie@couttspnw.com',
-            'from_name'    => 'Charlie Coutts',
-            'subject'      => "FW: Printer offline [{$ticket->display_id}]",
-            'body_text'    => "FYI\n\nFrom: Jane Doe <jane@acme.com>\nSent: today\nSubject: Printer offline\n\nstill broken",
-            'received_at'  => now(),
+            'from_name' => 'Charlie Coutts',
+            'subject' => "FW: Printer offline [{$ticket->display_id}]",
+            'body_text' => "FYI\n\nFrom: Jane Doe <jane@acme.com>\nSent: today\nSubject: Printer offline\n\nstill broken",
+            'received_at' => now(),
         ]);
 
         $before = Ticket::count();

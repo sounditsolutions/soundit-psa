@@ -65,7 +65,7 @@ class AlertController extends Controller
     {
         $this->alertService->acknowledge($alert, auth()->user());
 
-        return back()->with('success', 'Alert acknowledged: ' . $alert->title);
+        return back()->with('success', 'Alert acknowledged: '.$alert->title);
     }
 
     public function createTicket(Alert $alert)
@@ -96,9 +96,9 @@ class AlertController extends Controller
 
     public function resolve(Alert $alert)
     {
-        $this->alertService->resolve($alert, 'Manually resolved by ' . auth()->user()->name);
+        $this->alertService->resolve($alert, 'Manually resolved by '.auth()->user()->name);
 
-        return back()->with('success', 'Alert resolved: ' . $alert->title);
+        return back()->with('success', 'Alert resolved: '.$alert->title);
     }
 
     public function bulkAcknowledge(Request $request)

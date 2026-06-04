@@ -122,7 +122,7 @@ class TicketNote extends Model
 
     public function getFormattedTimeAttribute(): ?string
     {
-        if (!$this->time_minutes) {
+        if (! $this->time_minutes) {
             return null;
         }
 

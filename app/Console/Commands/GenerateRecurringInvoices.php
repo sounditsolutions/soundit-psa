@@ -26,6 +26,7 @@ class GenerateRecurringInvoices extends Command
 
         if ($profiles->isEmpty()) {
             $this->info('No profiles due for invoice generation.');
+
             return self::SUCCESS;
         }
 
@@ -38,7 +39,7 @@ class GenerateRecurringInvoices extends Command
             $rows = [];
             foreach ($profiles as $profile) {
                 $preview = $billingService->previewInvoice($profile);
-                $subtotalStr = '$' . number_format($preview['subtotal'], 2);
+                $subtotalStr = '$'.number_format($preview['subtotal'], 2);
                 if (! empty($preview['would_skip'])) {
                     $subtotalStr .= ' (would skip)';
                 }
@@ -46,12 +47,13 @@ class GenerateRecurringInvoices extends Command
                     $profile->contract->client->name,
                     $profile->name,
                     $preview['invoice_date'],
-                    count($preview['lines']) . ' lines',
+                    count($preview['lines']).' lines',
                     $subtotalStr,
                 ];
             }
 
             $this->table(['Client', 'Profile', 'Invoice Date', 'Lines', 'Subtotal'], $rows);
+
             return self::SUCCESS;
         }
 
@@ -67,7 +69,7 @@ class GenerateRecurringInvoices extends Command
                     $result['client'],
                     $result['profile'],
                     $invoice->invoice_number,
-                    '$' . number_format($invoice->subtotal, 2),
+                    '$'.number_format($invoice->subtotal, 2),
                     '<fg=green>Created</>',
                 ];
             } elseif ($result['status'] === 'skipped') {
@@ -88,7 +90,7 @@ class GenerateRecurringInvoices extends Command
                     $result['profile'],
                     '-',
                     '-',
-                    '<fg=red>Error: ' . $result['error'] . '</>',
+                    '<fg=red>Error: '.$result['error'].'</>',
                 ];
             }
         }

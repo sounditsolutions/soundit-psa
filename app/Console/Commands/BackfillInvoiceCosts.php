@@ -6,7 +6,6 @@ use App\Models\Invoice;
 use App\Models\InvoiceLine;
 use App\Models\Sku;
 use Illuminate\Console\Command;
-use Illuminate\Support\Facades\DB;
 
 class BackfillInvoiceCosts extends Command
 {
@@ -64,6 +63,7 @@ class BackfillInvoiceCosts extends Command
 
         if ($lines->isEmpty()) {
             $this->info('No invoice lines need cost backfilling.');
+
             return;
         }
 

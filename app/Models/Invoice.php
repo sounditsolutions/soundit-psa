@@ -107,7 +107,7 @@ class Invoice extends Model
 
     public function getFormattedTotalAttribute(): string
     {
-        return '$' . number_format((float) $this->total, 2);
+        return '$'.number_format((float) $this->total, 2);
     }
 
     public function getDisplayNumberAttribute(): string
@@ -117,7 +117,7 @@ class Invoice extends Model
 
     public function getIsEditableAttribute(): bool
     {
-        if (!in_array($this->status, [InvoiceStatus::Draft, InvoiceStatus::Synced, InvoiceStatus::Posted])) {
+        if (! in_array($this->status, [InvoiceStatus::Draft, InvoiceStatus::Synced, InvoiceStatus::Posted])) {
             return false;
         }
 

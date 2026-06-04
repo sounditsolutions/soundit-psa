@@ -16,6 +16,7 @@ class MeshTest extends Command
     {
         if (! MeshConfig::isConfigured()) {
             $this->error('Mesh is not configured. Add API key in Settings → Integrations.');
+
             return self::FAILURE;
         }
 
@@ -39,6 +40,7 @@ class MeshTest extends Command
         }
 
         $this->error('Failed to connect to Mesh API. Check your API key and base URL.');
+
         return self::FAILURE;
     }
 }

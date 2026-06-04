@@ -29,17 +29,17 @@ class PhoneNumber
 
         // 11-digit starting with 1 — US with country code, no +
         if (str_starts_with($cleaned, '1') && strlen($cleaned) === 11) {
-            return '+' . $cleaned;
+            return '+'.$cleaned;
         }
 
         // 10-digit — assume US local number, prepend +1
         if (strlen($cleaned) === 10) {
-            return '+1' . $cleaned;
+            return '+1'.$cleaned;
         }
 
         // Fallback: return with + prefix if it looks like a valid-length number
         if (strlen($cleaned) >= 10 && strlen($cleaned) <= 15) {
-            return '+' . $cleaned;
+            return '+'.$cleaned;
         }
 
         return null;
@@ -65,6 +65,7 @@ class PhoneNumber
         // US number: +1 followed by 10 digits
         if (str_starts_with($normalized, '+1') && strlen($normalized) === 12) {
             $local = substr($normalized, 2);
+
             return sprintf('(%s) %s-%s', substr($local, 0, 3), substr($local, 3, 3), substr($local, 6, 4));
         }
 

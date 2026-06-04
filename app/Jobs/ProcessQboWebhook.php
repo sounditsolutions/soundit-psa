@@ -14,6 +14,7 @@ class ProcessQboWebhook implements ShouldQueue
     use Queueable;
 
     public int $tries = 3;
+
     public array $backoff = [60, 300];
 
     public function __construct(
@@ -32,7 +33,8 @@ class ProcessQboWebhook implements ShouldQueue
         $invoice = Invoice::where('qbo_invoice_id', $webhook->entity_id)->first();
 
         if (! $invoice) {
-            $webhook->markSkipped('No matching local invoice for QBO ID ' . $webhook->entity_id);
+            $webhook->markSkipped('No matching local invoice for QBO ID '.$webhook->entity_id);
+
             return;
         }
 

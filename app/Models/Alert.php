@@ -98,13 +98,17 @@ class Alert extends Model
     private function tacticalUrl(): ?string
     {
         $agentId = $this->metadata['agent_id'] ?? null;
-        if (!$agentId) return null;
+        if (! $agentId) {
+            return null;
+        }
 
         // Tactical's web console is hosted separately from its API. We store
         // the console URL in settings so operators can point to their own
         // deployment without code changes.
         $consoleUrl = rtrim(\App\Models\Setting::getValue('tactical_console_url') ?? '', '/');
-        if (!$consoleUrl) return null;
+        if (! $consoleUrl) {
+            return null;
+        }
 
         return "{$consoleUrl}/#/agents/{$agentId}";
     }
@@ -112,9 +116,12 @@ class Alert extends Model
     private function ninjaUrl(): ?string
     {
         $deviceId = $this->metadata['ninja_device_id'] ?? null;
-        if (!$deviceId) return null;
+        if (! $deviceId) {
+            return null;
+        }
         $ninjaUrl = \App\Models\Setting::getValue('ninja_instance_url') ?? 'https://app.ninjarmm.com';
-        return rtrim($ninjaUrl, '/') . '/#/deviceDashboard/' . $deviceId . '/overview';
+
+        return rtrim($ninjaUrl, '/').'/#/deviceDashboard/'.$deviceId.'/overview';
     }
 
     private function huntressUrl(): ?string
@@ -123,12 +130,14 @@ class Alert extends Model
         if (str_starts_with($this->source_alert_id, 'http')) {
             return $this->source_alert_id;
         }
+
         return null;
     }
 
     private function cometUrl(): ?string
     {
         $serverUrl = \App\Support\CometConfig::serverUrl();
+
         return $serverUrl ? rtrim($serverUrl, '/') : null;
     }
 }

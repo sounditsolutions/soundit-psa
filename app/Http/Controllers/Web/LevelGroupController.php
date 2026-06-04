@@ -61,6 +61,7 @@ class LevelGroupController extends Controller
         try {
             $groups = $level->getGroups();
             usort($groups, fn ($a, $b) => strcasecmp($a['name'] ?? '', $b['name'] ?? ''));
+
             return response()->json($groups);
         } catch (LevelClientException) {
             return response()->json([], 503);

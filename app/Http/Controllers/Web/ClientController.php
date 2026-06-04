@@ -390,7 +390,7 @@ class ClientController extends Controller
             ->get(['id', 'name']);
 
         // Include the current reseller even if inactive, so the dropdown doesn't silently clear it
-        if ($client->reseller_id && !$resellerCandidates->contains('id', $client->reseller_id)) {
+        if ($client->reseller_id && ! $resellerCandidates->contains('id', $client->reseller_id)) {
             $reseller = Client::find($client->reseller_id, ['id', 'name']);
             if ($reseller) {
                 $resellerCandidates->push($reseller)->sortBy('name')->values();

@@ -17,9 +17,13 @@ use Illuminate\Support\Facades\Log;
 class TriagePipeline
 {
     private AiClient $ai;
+
     private bool $isManual = false;
+
     private array $stagesCompleted = [];
+
     private array $stageResults = [];
+
     private array $errors = [];
 
     public function __construct(

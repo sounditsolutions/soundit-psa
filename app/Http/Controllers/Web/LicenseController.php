@@ -170,7 +170,7 @@ class LicenseController extends Controller
 
             Log::error("[AppRiver] Seat update failed: {$e->getMessage()}");
 
-            return back()->with('error', 'Failed to update seat count: ' . $e->getMessage());
+            return back()->with('error', 'Failed to update seat count: '.$e->getMessage());
         }
     }
 

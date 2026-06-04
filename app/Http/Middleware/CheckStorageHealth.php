@@ -19,9 +19,9 @@ class CheckStorageHealth
         $warnings = [];
 
         $dirs = [
-            'framework/cache'    => storage_path('framework/cache'),
+            'framework/cache' => storage_path('framework/cache'),
             'framework/sessions' => storage_path('framework/sessions'),
-            'logs'               => storage_path('logs'),
+            'logs' => storage_path('logs'),
         ];
 
         foreach ($dirs as $label => $path) {

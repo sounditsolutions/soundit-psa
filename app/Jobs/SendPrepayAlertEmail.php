@@ -15,6 +15,7 @@ class SendPrepayAlertEmail implements ShouldQueue
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
     public int $tries = 2;
+
     public int $timeout = 60;
 
     public function __construct(
@@ -74,9 +75,9 @@ class SendPrepayAlertEmail implements ShouldQueue
         } elseif ($this->alertType === 'auto_topup') {
             $lines[] = "A prepaid time invoice has been automatically generated for {$ctx['contract']}.";
             $lines[] = '';
-            $lines[] = 'Hours: ' . ($ctx['hours'] ?? '?') . 'h';
-            $lines[] = 'Amount: $' . number_format($ctx['amount'] ?? 0, 2);
-            $lines[] = 'Invoice: #' . ($ctx['invoice_number'] ?? '?');
+            $lines[] = 'Hours: '.($ctx['hours'] ?? '?').'h';
+            $lines[] = 'Amount: $'.number_format($ctx['amount'] ?? 0, 2);
+            $lines[] = 'Invoice: #'.($ctx['invoice_number'] ?? '?');
             $lines[] = '';
             $lines[] = 'Please pay this invoice to add the hours to your balance.';
         }

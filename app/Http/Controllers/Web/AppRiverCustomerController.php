@@ -7,7 +7,6 @@ use App\Models\Client;
 use App\Models\License;
 use App\Services\AppRiver\AppRiverClient;
 use App\Services\AppRiver\AppRiverClientException;
-use App\Support\AppRiverConfig;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -21,7 +20,7 @@ class AppRiverCustomerController extends Controller
         }
 
         try {
-            $client = new AppRiverClient();
+            $client = new AppRiverClient;
 
             $customers = $client->getCustomers();
         } catch (AppRiverClientException $e) {
@@ -86,7 +85,7 @@ class AppRiverCustomerController extends Controller
         }
 
         try {
-            $client = new AppRiverClient();
+            $client = new AppRiverClient;
 
             $customers = $client->getCustomers();
         } catch (AppRiverClientException $e) {

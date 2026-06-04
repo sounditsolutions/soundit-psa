@@ -2,7 +2,6 @@
 
 namespace App\Console\Commands;
 
-use App\Enums\TicketStatus;
 use App\Jobs\RunTriagePipeline;
 use App\Models\Ticket;
 use App\Support\AiConfig;

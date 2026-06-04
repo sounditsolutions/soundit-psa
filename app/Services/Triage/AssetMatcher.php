@@ -72,7 +72,7 @@ class AssetMatcher
         }
 
         // === Strategy 4: Hostname from ticket text ===
-        $summaryText = ($ticket->subject ?? '') . "\n" . ($ticket->description ?? '');
+        $summaryText = ($ticket->subject ?? '')."\n".($ticket->description ?? '');
         $hostnames = HostnameExtractor::extractHostnames($summaryText);
         if ($hostnames) {
             foreach ($hostnames as $hostname) {
@@ -235,7 +235,7 @@ class AssetMatcher
         $assets = Asset::where('client_id', $clientId)
             ->where(function ($q) use ($searchTerm) {
                 $q->where('hostname', 'like', "%{$searchTerm}%")
-                  ->orWhere('name', 'like', "%{$searchTerm}%");
+                    ->orWhere('name', 'like', "%{$searchTerm}%");
             })
             ->get();
 

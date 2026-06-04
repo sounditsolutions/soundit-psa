@@ -14,7 +14,7 @@ class AuthController extends Controller
 {
     public function redirectToMicrosoft()
     {
-        if (!config('services.microsoft.tenant')) {
+        if (! config('services.microsoft.tenant')) {
             return redirect()->route('login')->withErrors([
                 'sso' => 'Microsoft SSO is not configured. Set MICROSOFT_TENANT_ID in the environment.',
             ]);
@@ -43,6 +43,7 @@ class AuthController extends Controller
                 'actual' => $actualTenant,
                 'email' => $microsoftUser->getEmail(),
             ]);
+
             return redirect()->route('login')->withErrors([
                 'sso' => 'Your Microsoft account is not authorized for this application.',
             ]);
@@ -51,12 +52,12 @@ class AuthController extends Controller
         $user = User::updateOrCreate(
             ['email' => $microsoftUser->getEmail()],
             [
-                'name'         => $microsoftUser->getName(),
+                'name' => $microsoftUser->getName(),
                 'microsoft_id' => $microsoftUser->getId(),
             ]
         );
 
-        if (!$user->is_active) {
+        if (! $user->is_active) {
             Log::warning('[Auth] Inactive user attempted login', [
                 'email' => $user->email,
                 'user_id' => $user->id,

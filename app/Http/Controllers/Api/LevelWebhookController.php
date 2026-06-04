@@ -21,6 +21,7 @@ class LevelWebhookController extends Controller
         // Deduplicate by event_id
         if ($eventId && LevelWebhook::where('event_id', $eventId)->exists()) {
             Log::info('[Level Webhook] Duplicate event ignored', ['event_id' => $eventId]);
+
             return response()->json(['status' => 'ok']);
         }
 

@@ -38,6 +38,7 @@ class PrepayAlertService
             if ($contract->prepay_alert_notified_at) {
                 $contract->update(['prepay_alert_notified_at' => null]);
             }
+
             return;
         }
 
@@ -75,6 +76,7 @@ class PrepayAlertService
             Log::warning('[PrepayAlert] Auto top-up skipped — no portal prepay SKU', [
                 'contract_id' => $contract->id,
             ]);
+
             return;
         }
 
@@ -88,6 +90,7 @@ class PrepayAlertService
             Log::info('[PrepayAlert] Auto top-up skipped — unpaid invoice exists', [
                 'contract_id' => $contract->id,
             ]);
+
             return;
         }
 

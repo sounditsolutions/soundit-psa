@@ -27,7 +27,7 @@ class PhoneDirectoryController extends Controller
             $needle = PhoneNumber::normalize($search) ?: $search;
             $query->where(function ($q) use ($needle, $search) {
                 $q->where('phone_number', 'like', "%{$needle}%")
-                  ->orWhere('label', 'like', "%{$search}%");
+                    ->orWhere('label', 'like', "%{$search}%");
             });
         }
 

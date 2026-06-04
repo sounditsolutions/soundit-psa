@@ -15,6 +15,7 @@ class TranscribePhoneCall implements ShouldQueue
     use Queueable;
 
     public int $tries = 2;
+
     public int $timeout = 600;
 
     public function __construct(
@@ -27,8 +28,9 @@ class TranscribePhoneCall implements ShouldQueue
         $call = DB::transaction(function () {
             $call = PhoneCall::where('id', $this->callId)->lockForUpdate()->first();
 
-            if (!$call) {
+            if (! $call) {
                 Log::warning('[Transcription] Call not found', ['call_id' => $this->callId]);
+
                 return null;
             }
 
@@ -37,16 +39,17 @@ class TranscribePhoneCall implements ShouldQueue
                 TranscriptionStatus::Processing,
                 TranscriptionStatus::Completed,
             ])) {
-                Log::debug('[Transcription] Skipping — already ' . $call->transcription_status->value, [
+                Log::debug('[Transcription] Skipping — already '.$call->transcription_status->value, [
                     'call_id' => $this->callId,
                 ]);
+
                 return null;
             }
 
             return $call;
         });
 
-        if (!$call) {
+        if (! $call) {
             return;
         }
 

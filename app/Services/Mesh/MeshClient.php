@@ -14,7 +14,7 @@ class MeshClient
         private readonly array $config,
     ) {
         $this->http = new Client([
-            'base_uri' => rtrim($this->config['base_url'] ?? 'https://hub-us.emailsecurity.app', '/') . '/',
+            'base_uri' => rtrim($this->config['base_url'] ?? 'https://hub-us.emailsecurity.app', '/').'/',
             'timeout' => 90,
         ]);
     }
@@ -34,6 +34,7 @@ class MeshClient
     {
         try {
             $this->get('api/customers/', ['_size' => 1]);
+
             return true;
         } catch (MeshClientException) {
             return false;

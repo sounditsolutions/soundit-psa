@@ -23,7 +23,7 @@ class MeshLicenseSyncService
             ->where('is_active', true)
             ->get();
 
-        $result = new SyncResult();
+        $result = new SyncResult;
 
         foreach ($clients as $client) {
             try {
@@ -50,6 +50,7 @@ class MeshLicenseSyncService
 
         if (empty($customerData)) {
             Log::warning("[MeshSync] Empty response for client {$client->name} (mesh_customer_id: {$client->mesh_customer_id})");
+
             return;
         }
 
@@ -60,6 +61,7 @@ class MeshLicenseSyncService
 
         if ($licensesBilled <= 0) {
             Log::info("[MeshSync] Client {$client->name}: 0 licenses billed, skipping");
+
             return;
         }
 

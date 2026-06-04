@@ -324,13 +324,13 @@ class T2TController extends Controller
 
     private function logRequest(string $endpoint, Request $request): void
     {
-        Log::info('[T2T] ' . $endpoint, [
+        Log::info('[T2T] '.$endpoint, [
             'query' => $request->query(),
             'ip' => $request->ip(),
         ]);
 
         if (config('app.debug')) {
-            Log::debug('[T2T] Request body: ' . $endpoint, [
+            Log::debug('[T2T] Request body: '.$endpoint, [
                 'body' => $request->all(),
             ]);
         }

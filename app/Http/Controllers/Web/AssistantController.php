@@ -78,7 +78,7 @@ class AssistantController extends Controller
             'message' => 'required|string|max:10000',
         ]);
 
-        $service = new AssistantService();
+        $service = new AssistantService;
 
         try {
             $result = $service->sendMessage($conversation, $validated['message']);
@@ -131,7 +131,7 @@ class AssistantController extends Controller
             return response()->json(['error' => 'Save as note is only available in ticket context'], 422);
         }
 
-        $service = new AssistantService();
+        $service = new AssistantService;
         $note = $service->saveAsNote($message, $ticket, auth()->id());
 
         return response()->json([

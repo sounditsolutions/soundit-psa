@@ -14,7 +14,7 @@ class VerifyPlivoWebhookSecret
         $secret = PlivoConfig::get('webhook_secret');
 
         // If no secret is configured, allow all requests (dev mode)
-        if (!$secret) {
+        if (! $secret) {
             return $next($request);
         }
 

@@ -24,7 +24,7 @@ class HuntressLicenseSyncService
             ->get()
             ->keyBy('huntress_organization_id');
 
-        $result = new SyncResult();
+        $result = new SyncResult;
 
         if ($clients->isEmpty()) {
             Log::info('[HuntressSync] No clients mapped to Huntress organizations');

@@ -71,6 +71,6 @@ class SettingsSeeder extends Seeder
             )
         );
 
-        $this->command->info('Settings: ' . count($keys) . ' keys registered (existing values preserved).');
+        $this->command->info('Settings: '.count($keys).' keys registered (existing values preserved).');
     }
 }

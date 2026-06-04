@@ -40,12 +40,12 @@ class CometBackupSyncService
     /**
      * Sync Comet Backup usage into assets and upsert license counts.
      *
-     * @param int|null $clientId  Restrict sync to a single client (by PSA client ID).
-     * @param bool     $dryRun    Log changes without writing to the database.
+     * @param  int|null  $clientId  Restrict sync to a single client (by PSA client ID).
+     * @param  bool  $dryRun  Log changes without writing to the database.
      */
     public function syncBackupUsage(?int $clientId = null, bool $dryRun = false): SyncResult
     {
-        $result = new SyncResult();
+        $result = new SyncResult;
 
         // Load mapped clients (those with comet_group_id set)
         $clientQuery = Client::whereNotNull('comet_group_id');
@@ -87,8 +87,9 @@ class CometBackupSyncService
             $groupId = $profile->GroupID ?? null;
 
             // Skip users not belonging to a mapped group
-            if (!$groupId || !$orgToClient->has($groupId)) {
+            if (! $groupId || ! $orgToClient->has($groupId)) {
                 $skipped++;
+
                 continue;
             }
 
@@ -121,7 +122,7 @@ class CometBackupSyncService
             $deviceAssets = [];
             foreach ($profile->Devices as $deviceId => $device) {
                 $hostname = $device->FriendlyName;
-                if (!$hostname) {
+                if (! $hostname) {
                     continue;
                 }
 
@@ -131,11 +132,11 @@ class CometBackupSyncService
                     ->whereRaw('LOWER(hostname) = ?', [mb_strtolower($hostname)])
                     ->first();
 
-                if (!$asset) {
+                if (! $asset) {
                     Log::debug("[CometBackupSync] No asset matched for device '{$hostname}' (client: {$client->name})");
                 } else {
                     try {
-                        if (!$dryRun) {
+                        if (! $dryRun) {
                             $asset->update([
                                 'comet_username' => $username,
                                 'comet_device_id' => $deviceId,
@@ -149,6 +150,7 @@ class CometBackupSyncService
                         $result->updated++;
                     } catch (\Throwable $e) {
                         $result->recordError("Device '{$hostname}' (id: {$deviceId}): {$e->getMessage()}");
+
                         continue;
                     }
                 }
@@ -163,7 +165,7 @@ class CometBackupSyncService
             foreach ($profile->Sources as $sourceId => $source) {
                 $engine = $source->Engine ?? null;
                 $ownerDevice = $source->OwnerDevice ?? null;
-                if (!$engine || !$ownerDevice) {
+                if (! $engine || ! $ownerDevice) {
                     continue;
                 }
 
@@ -172,10 +174,10 @@ class CometBackupSyncService
 
             // Also count devices that have no sources yet (registered but no protection items configured)
             foreach ($profile->Devices as $deviceId => $device) {
-                if (!($device->FriendlyName ?? null)) {
+                if (! ($device->FriendlyName ?? null)) {
                     continue;
                 }
-                if (!isset($deviceEngines[$deviceId])) {
+                if (! isset($deviceEngines[$deviceId])) {
                     // Device exists but has no protection items — count as untyped
                     $deviceEngines[$deviceId] = [];
                 }
@@ -204,7 +206,7 @@ class CometBackupSyncService
         }
 
         // Stale cleanup: null out comet fields for assets with comet_device_id not seen this run
-        if (!empty($seenDeviceIds) && !$dryRun) {
+        if (! empty($seenDeviceIds) && ! $dryRun) {
             $staleQuery = Asset::whereNotNull('comet_device_id')
                 ->whereNotIn('comet_device_id', $seenDeviceIds);
 
@@ -234,7 +236,7 @@ class CometBackupSyncService
         }
 
         // Only upsert license counts on full (non-client-scoped) syncs to avoid partial zeroing
-        if ($clientId === null && !$dryRun) {
+        if ($clientId === null && ! $dryRun) {
             $this->syncLicenseCounts($engineCounts, $clientCloudBytes, $result);
             $result->deactivated += License::deactivateOrphaned('comet', 'comet_group_id');
         }
@@ -280,7 +282,7 @@ class CometBackupSyncService
                 foreach ($deviceTypes as $deviceType => $count) {
                     $skuId = "{$engineShort}_{$deviceType}";
                     $label = $this->engineLabel($engineShort);
-                    $name = "Comet {$label} — " . ucfirst($deviceType);
+                    $name = "Comet {$label} — ".ucfirst($deviceType);
 
                     $type = LicenseType::updateOrCreate(
                         ['vendor' => 'comet', 'vendor_sku_id' => $skuId],

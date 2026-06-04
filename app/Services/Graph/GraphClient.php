@@ -16,9 +16,11 @@ use Illuminate\Support\Facades\Log;
 class GraphClient
 {
     private const TOKEN_CACHE_KEY = 'graph_api_token';
+
     private const TOKEN_SAFETY_MARGIN = 60; // seconds before expiry to refresh
 
     private Client $http;
+
     private Client $authHttp;
 
     public function __construct(
@@ -27,12 +29,12 @@ class GraphClient
     ) {
         $this->http = new Client([
             'base_uri' => 'https://graph.microsoft.com/v1.0/',
-            'timeout'  => $this->config['request_timeout'],
+            'timeout' => $this->config['request_timeout'],
         ]);
 
         $this->authHttp = new Client([
             'base_uri' => 'https://login.microsoftonline.com/',
-            'timeout'  => $this->config['token_timeout'],
+            'timeout' => $this->config['token_timeout'],
         ]);
     }
 
@@ -140,6 +142,7 @@ class GraphClient
     {
         try {
             $this->getToken();
+
             return true;
         } catch (GraphClientException) {
             return false;
@@ -199,7 +202,7 @@ class GraphClient
         $token = $this->getToken();
 
         $options['headers'] = array_merge($options['headers'] ?? [], [
-            'Authorization' => 'Bearer ' . $token,
+            'Authorization' => 'Bearer '.$token,
         ]);
 
         $maxRetries = 3;
@@ -207,6 +210,7 @@ class GraphClient
         for ($attempt = 0; $attempt <= $maxRetries; $attempt++) {
             try {
                 $response = $this->http->request($method, $endpoint, $options);
+
                 return $response;
             } catch (GuzzleException $e) {
                 $statusCode = method_exists($e, 'getResponse') && $e->getResponse()
@@ -217,7 +221,8 @@ class GraphClient
                 if ($statusCode === 401 && $attempt === 0) {
                     $this->cache->forget(self::TOKEN_CACHE_KEY);
                     $freshToken = $this->getToken();
-                    $options['headers']['Authorization'] = 'Bearer ' . $freshToken;
+                    $options['headers']['Authorization'] = 'Bearer '.$freshToken;
+
                     continue;
                 }
 
@@ -228,11 +233,12 @@ class GraphClient
 
                     Log::warning('[GraphClient] Rate limited, backing off', [
                         'endpoint' => $endpoint,
-                        'attempt'  => $attempt + 1,
+                        'attempt' => $attempt + 1,
                         'wait_seconds' => $waitSeconds,
                     ]);
 
                     sleep($waitSeconds);
+
                     continue;
                 }
 
@@ -253,7 +259,7 @@ class GraphClient
 
         try {
             $response = (new Client(['timeout' => $this->config['request_timeout']]))->request($method, $url, [
-                'headers' => ['Authorization' => 'Bearer ' . $token],
+                'headers' => ['Authorization' => 'Bearer '.$token],
             ]);
         } catch (GuzzleException $e) {
             $this->throwFromGuzzle($e, $method, $url);
@@ -292,10 +298,10 @@ class GraphClient
         try {
             $response = $this->authHttp->post("{$tenantId}/oauth2/v2.0/token", [
                 'form_params' => [
-                    'grant_type'    => 'client_credentials',
-                    'client_id'     => $this->config['client_id'],
+                    'grant_type' => 'client_credentials',
+                    'client_id' => $this->config['client_id'],
                     'client_secret' => $this->config['client_secret'],
-                    'scope'         => 'https://graph.microsoft.com/.default',
+                    'scope' => 'https://graph.microsoft.com/.default',
                 ],
             ]);
         } catch (GuzzleException $e) {
@@ -303,14 +309,14 @@ class GraphClient
                 'error' => $e->getMessage(),
             ]);
             throw new GraphClientException(
-                'Failed to obtain Graph API token: ' . $e->getMessage(),
+                'Failed to obtain Graph API token: '.$e->getMessage(),
             );
         }
 
         $data = json_decode((string) $response->getBody(), true);
         $token = $data['access_token'] ?? null;
 
-        if (!$token) {
+        if (! $token) {
             throw new GraphClientException(
                 'Graph API token response did not contain access_token',
             );
@@ -326,7 +332,6 @@ class GraphClient
      * Convert a Guzzle exception into a GraphClientException.
      *
      * @throws GraphClientException
-     * @return never
      */
     private function throwFromGuzzle(GuzzleException $e, string $method, string $endpoint): never
     {
@@ -339,10 +344,10 @@ class GraphClient
         }
 
         Log::error('Graph API request failed', [
-            'method'   => $method,
+            'method' => $method,
             'endpoint' => $endpoint,
-            'status'   => $statusCode,
-            'error'    => $e->getMessage(),
+            'status' => $statusCode,
+            'error' => $e->getMessage(),
         ]);
 
         throw new GraphClientException(

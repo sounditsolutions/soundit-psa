@@ -17,6 +17,6 @@ class Format
         $power = floor(log($bytes, 1024));
         $power = min($power, count($units) - 1);
 
-        return round($bytes / (1024 ** $power), $precision) . ' ' . $units[$power];
+        return round($bytes / (1024 ** $power), $precision).' '.$units[$power];
     }
 }

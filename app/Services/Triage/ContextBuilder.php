@@ -23,13 +23,21 @@ use Illuminate\Support\Facades\Log;
 class ContextBuilder
 {
     private const MAX_TICKET_BODY = 5_000;
+
     private const MAX_NOTES = 10;
+
     private const MAX_NOTE_LENGTH = 2_000;
+
     private const MAX_CONTRACT_LENGTH = 1_000;
+
     private const MAX_ASSET_LENGTH = 700;
+
     private const MAX_SITE_NOTES_LENGTH = 3_000;
+
     private const MAX_DOC_SUMMARY_LENGTH = 2_000;
+
     private const MAX_DOC_SUMMARIES = 3;
+
     private const MAX_AI_IMAGES = 10;
 
     /**
@@ -153,14 +161,14 @@ class ContextBuilder
 
             $body = strip_tags($note->body ?? '');
             if (strlen($body) > $maxNoteChars) {
-                $body = substr($body, 0, $maxNoteChars) . ' [TRUNCATED]';
+                $body = substr($body, 0, $maxNoteChars).' [TRUNCATED]';
             }
 
             $visibility = $note->is_private ? 'PRIVATE' : 'PUBLIC';
             $entry = "### [{$sender}] {$type} by {$author} ({$date}) [{$visibility}]\n";
             $entry .= self::formatEmailRecipients($note);
             if ($body) {
-                $entry .= $body . "\n";
+                $entry .= $body."\n";
             }
 
             // Enforce total character budget (truncate oldest notes first by stopping when over)
@@ -193,7 +201,7 @@ class ContextBuilder
                 $role = $msg->role === 'user' ? $techName : 'AI Assistant';
                 $body = strip_tags($msg->content ?? '');
                 if (strlen($body) > $maxNoteChars) {
-                    $body = substr($body, 0, $maxNoteChars) . ' [TRUNCATED]';
+                    $body = substr($body, 0, $maxNoteChars).' [TRUNCATED]';
                 }
 
                 if ($totalChars + strlen($body) > $maxTotalChars) {
@@ -230,13 +238,15 @@ class ContextBuilder
         // Ticket description + client context as text
         $descText = self::buildTicketSection($ticket);
         if ($ticket->client) {
-            $descText .= "\n\n" . self::buildClientSection($ticket);
+            $descText .= "\n\n".self::buildClientSection($ticket);
         }
         $blocks[] = ['type' => 'text', 'text' => $descText];
 
         // Ticket description images
         foreach ($ticket->attachments->filter(fn ($a) => $a->isImage()) as $att) {
-            if ($imageCount >= self::MAX_AI_IMAGES) break;
+            if ($imageCount >= self::MAX_AI_IMAGES) {
+                break;
+            }
             $base64 = $attachmentService->resizeImageForAi($att);
             if ($base64) {
                 $blocks[] = [
@@ -260,7 +270,7 @@ class ContextBuilder
 
             $body = strip_tags($note->body ?? '');
             if (strlen($body) > self::MAX_NOTE_LENGTH) {
-                $body = substr($body, 0, self::MAX_NOTE_LENGTH) . ' [TRUNCATED]';
+                $body = substr($body, 0, self::MAX_NOTE_LENGTH).' [TRUNCATED]';
             }
 
             $recipients = self::formatEmailRecipients($note);
@@ -270,7 +280,9 @@ class ContextBuilder
             // Note images
             if ($imageCount < self::MAX_AI_IMAGES) {
                 foreach ($note->attachments->filter(fn ($a) => $a->isImage()) as $att) {
-                    if ($imageCount >= self::MAX_AI_IMAGES) break;
+                    if ($imageCount >= self::MAX_AI_IMAGES) {
+                        break;
+                    }
                     $base64 = $attachmentService->resizeImageForAi($att);
                     if ($base64) {
                         $blocks[] = [
@@ -294,7 +306,7 @@ class ContextBuilder
     {
         $body = $ticket->description ?? '';
         if (strlen($body) > self::MAX_TICKET_BODY) {
-            $body = substr($body, 0, self::MAX_TICKET_BODY) . "\n[TRUNCATED]";
+            $body = substr($body, 0, self::MAX_TICKET_BODY)."\n[TRUNCATED]";
         }
 
         // Strip HTML for cleaner AI input
@@ -302,12 +314,12 @@ class ContextBuilder
 
         $lines = [
             '## Ticket',
-            'ID: ' . $ticket->display_id,
-            'Subject: ' . $ticket->subject,
-            'Type: ' . $ticket->type->value,
-            'Status: ' . $ticket->status->value,
-            'Priority: ' . $ticket->priority->value,
-            'Source: ' . $ticket->source->value,
+            'ID: '.$ticket->display_id,
+            'Subject: '.$ticket->subject,
+            'Type: '.$ticket->type->value,
+            'Status: '.$ticket->status->value,
+            'Priority: '.$ticket->priority->value,
+            'Source: '.$ticket->source->value,
         ];
 
         if ($ticket->category) {
@@ -340,8 +352,8 @@ class ContextBuilder
         if ($client->phone) {
             $lines[] = "Phone: {$client->phone}";
         }
-        if (!empty($client->notes) && trim($client->notes) !== '') {
-            $lines[] = "Notes:\n" . trim($client->notes);
+        if (! empty($client->notes) && trim($client->notes) !== '') {
+            $lines[] = "Notes:\n".trim($client->notes);
         }
 
         $sec = $client->securitySnapshot();
@@ -369,7 +381,7 @@ class ContextBuilder
     private static function buildSiteNotesSection(Ticket $ticket): ?string
     {
         $notes = $ticket->client?->site_notes;
-        if (!$notes || trim($notes) === '') {
+        if (! $notes || trim($notes) === '') {
             return null;
         }
 
@@ -381,10 +393,10 @@ class ContextBuilder
             if ($lastNewline !== false && $lastNewline > self::MAX_SITE_NOTES_LENGTH * 0.8) {
                 $cut = substr($cut, 0, $lastNewline);
             }
-            $notes = $cut . "\n[TRUNCATED]";
+            $notes = $cut."\n[TRUNCATED]";
         }
 
-        return "## Client Site Notes\nEnvironment documentation maintained by technicians:\n" . $notes;
+        return "## Client Site Notes\nEnvironment documentation maintained by technicians:\n".$notes;
     }
 
     private static function buildContactSection(Ticket $ticket): string
@@ -401,12 +413,12 @@ class ContextBuilder
 
         $additionalEmails = $contact->additionalEmailAddresses()->limit(3)->pluck('email');
         if ($additionalEmails->isNotEmpty()) {
-            $lines[] = "Additional emails: " . $additionalEmails->implode(', ');
+            $lines[] = 'Additional emails: '.$additionalEmails->implode(', ');
         }
 
         // M365 enrichment data
         if ($contact->mfa_enabled !== null) {
-            $lines[] = 'MFA: ' . ($contact->mfa_enabled ? 'Enabled' : 'NOT REGISTERED');
+            $lines[] = 'MFA: '.($contact->mfa_enabled ? 'Enabled' : 'NOT REGISTERED');
         }
         if ($contact->m365_user_type === 'Guest') {
             $lines[] = 'M365 User Type: Guest';
@@ -423,8 +435,8 @@ class ContextBuilder
             $lastSeen = $contact->last_sign_in_at?->diffForHumans() ?? 'unknown';
             $lines[] = "Account flagged INACTIVE by CIPP (last sign-in: {$lastSeen})";
         }
-        if (!empty($contact->notes) && trim($contact->notes) !== '') {
-            $lines[] = "Notes:\n" . trim($contact->notes);
+        if (! empty($contact->notes) && trim($contact->notes) !== '') {
+            $lines[] = "Notes:\n".trim($contact->notes);
         }
 
         return implode("\n", $lines);
@@ -453,9 +465,9 @@ class ContextBuilder
 
         foreach ($contracts as $contract) {
             $info = "- {$contract->name} (ID: {$contract->id})";
-            $info .= ' | Type: ' . $contract->type->value;
-            $info .= ' | Status: ' . $contract->status->value;
-            $info .= ' | Billing: ' . $contract->billing_source->value;
+            $info .= ' | Type: '.$contract->type->value;
+            $info .= ' | Status: '.$contract->status->value;
+            $info .= ' | Billing: '.$contract->billing_source->value;
 
             if ($contract->has_prepay) {
                 $info .= " | Prepay Balance: {$contract->prepay_balance_formatted}";
@@ -475,7 +487,7 @@ class ContextBuilder
 
             // Truncate if too long
             if (strlen($info) > self::MAX_CONTRACT_LENGTH) {
-                $info = substr($info, 0, self::MAX_CONTRACT_LENGTH) . '...';
+                $info = substr($info, 0, self::MAX_CONTRACT_LENGTH).'...';
             }
 
             $lines[] = $info;
@@ -489,10 +501,10 @@ class ContextBuilder
                     if ($lastNewline !== false && $lastNewline > self::MAX_DOC_SUMMARY_LENGTH * 0.8) {
                         $cut = substr($cut, 0, $lastNewline);
                     }
-                    $summary = $cut . "\n[TRUNCATED]";
+                    $summary = $cut."\n[TRUNCATED]";
                 }
                 $lines[] = "  Contract Terms Summary ({$doc->original_filename}):";
-                $lines[] = '  ' . str_replace("\n", "\n  ", $summary);
+                $lines[] = '  '.str_replace("\n", "\n  ", $summary);
             }
         }
 
@@ -520,14 +532,20 @@ class ContextBuilder
             if ($asset->ip_address) {
                 $info .= " | IP: {$asset->ip_address}";
             }
-            $info .= ' | Status: ' . $asset->statusBadge;
+            $info .= ' | Status: '.$asset->statusBadge;
             if ($asset->last_boot_at) {
                 $diff = $asset->last_boot_at->diff(now());
                 $parts = [];
-                if ($diff->days > 0) $parts[] = $diff->days . 'd';
-                if ($diff->h > 0) $parts[] = $diff->h . 'h';
-                if (empty($parts)) $parts[] = $diff->i . 'm';
-                $info .= ' | Uptime: ' . implode(' ', $parts);
+                if ($diff->days > 0) {
+                    $parts[] = $diff->days.'d';
+                }
+                if ($diff->h > 0) {
+                    $parts[] = $diff->h.'h';
+                }
+                if (empty($parts)) {
+                    $parts[] = $diff->i.'m';
+                }
+                $info .= ' | Uptime: '.implode(' ', $parts);
             }
             if ($asset->needs_reboot) {
                 $info .= ' | NEEDS REBOOT';
@@ -538,7 +556,7 @@ class ContextBuilder
             }
             if ($asset->warranty_end) {
                 $expired = $asset->warranty_end->isPast();
-                $info .= ' | Warranty: ' . ($expired ? 'EXPIRED ' . $asset->warranty_end->format('Y-m-d') : 'until ' . $asset->warranty_end->format('Y-m-d'));
+                $info .= ' | Warranty: '.($expired ? 'EXPIRED '.$asset->warranty_end->format('Y-m-d') : 'until '.$asset->warranty_end->format('Y-m-d'));
             }
             if ($asset->ninja_id) {
                 $info .= " | NinjaRMM ID: {$asset->ninja_id}";
@@ -552,8 +570,8 @@ class ContextBuilder
                 }
             }
             if ($asset->zorus_endpoint_id) {
-                $info .= ' | DNS Filtering: ' . ($asset->zorus_filtering_enabled ? 'Enabled' : 'Disabled') . ' (Zorus)';
-                $info .= ' | CyberSight: ' . ($asset->zorus_cybersight_enabled ? 'Enabled' : 'Disabled');
+                $info .= ' | DNS Filtering: '.($asset->zorus_filtering_enabled ? 'Enabled' : 'Disabled').' (Zorus)';
+                $info .= ' | CyberSight: '.($asset->zorus_cybersight_enabled ? 'Enabled' : 'Disabled');
             }
             if ($asset->m365_device_id) {
                 $compliance = $asset->m365_is_compliant ? 'Compliant' : ($asset->m365_compliance_state ?? 'Unknown');
@@ -566,9 +584,9 @@ class ContextBuilder
             // Active alerts (unified — all sources)
             $activeAlerts = $asset->activeAlerts;
             if ($activeAlerts->count() > 0) {
-                $info .= ' | Active Alerts: ' . $activeAlerts->count();
+                $info .= ' | Active Alerts: '.$activeAlerts->count();
                 foreach ($activeAlerts->take(3) as $alert) {
-                    $info .= "\n  - [{$alert->severity->label()}] {$alert->title}: " . mb_substr($alert->message ?? '', 0, 200);
+                    $info .= "\n  - [{$alert->severity->label()}] {$alert->title}: ".mb_substr($alert->message ?? '', 0, 200);
                 }
             }
 
@@ -578,7 +596,7 @@ class ContextBuilder
                 if ($tacticalAsset) {
                     $info .= " | Tactical: {$tacticalAsset->status}";
                     if ($tacticalAsset->last_seen_at) {
-                        $info .= ' (seen ' . $tacticalAsset->last_seen_at->diffForHumans() . ')';
+                        $info .= ' (seen '.$tacticalAsset->last_seen_at->diffForHumans().')';
                     }
                     if ($tacticalAsset->make_model) {
                         $info .= " | Model: {$tacticalAsset->make_model}";
@@ -596,11 +614,11 @@ class ContextBuilder
                     // Fetch live check summary if Tactical is configured
                     if (TacticalConfig::isConfigured()) {
                         try {
-                            $client = new \App\Services\Tactical\TacticalClient();
+                            $client = new \App\Services\Tactical\TacticalClient;
                             $checks = $client->getAgentChecks($tacticalAsset->agent_id);
                             $failing = collect($checks)->filter(fn ($c) => ($c['check_result']['status'] ?? '') === 'failing');
                             if ($failing->isNotEmpty()) {
-                                $info .= ' | Failing checks: ' . $failing->count();
+                                $info .= ' | Failing checks: '.$failing->count();
                                 foreach ($failing->take(3) as $fc) {
                                     $stdout = substr($fc['check_result']['stdout'] ?? '', 0, 150);
                                     $info .= "\n  - [FAILING] {$fc['name']}: {$stdout}";
@@ -617,20 +635,20 @@ class ContextBuilder
             if ($asset->comet_device_id && $asset->backup_synced_at) {
                 $info .= "\n  Backup (Comet):";
                 if ($asset->backup_cloud_bytes) {
-                    $info .= "\n    Cloud storage: " . \App\Support\Format::bytes($asset->backup_cloud_bytes);
+                    $info .= "\n    Cloud storage: ".\App\Support\Format::bytes($asset->backup_cloud_bytes);
                 }
-                $info .= "\n    Last synced: " . $asset->backup_synced_at->diffForHumans();
+                $info .= "\n    Last synced: ".$asset->backup_synced_at->diffForHumans();
 
                 // Check last job status
                 try {
-                    $cometClient = new CometClient();
+                    $cometClient = new CometClient;
                     $jobService = new CometJobService($cometClient);
                     $jobData = $jobService->getRecentJobs($asset, 3);
                     if ($jobData['last_success']) {
-                        $info .= "\n    Last successful backup: " . $jobData['last_success']['started'];
+                        $info .= "\n    Last successful backup: ".$jobData['last_success']['started'];
                     }
-                    if ($jobData['last_failure'] && (!$jobData['last_success'] || $jobData['last_failure']['started'] > $jobData['last_success']['started'])) {
-                        $info .= "\n    ⚠ Last backup FAILED: " . $jobData['last_failure']['started'];
+                    if ($jobData['last_failure'] && (! $jobData['last_success'] || $jobData['last_failure']['started'] > $jobData['last_success']['started'])) {
+                        $info .= "\n    ⚠ Last backup FAILED: ".$jobData['last_failure']['started'];
                     }
                     $daysSinceBackup = $jobData['last_success']
                         ? now()->diffInDays(\Carbon\Carbon::parse($jobData['last_success']['started']))
@@ -643,12 +661,12 @@ class ContextBuilder
                 }
             }
 
-            if (!empty($asset->notes) && trim($asset->notes) !== '') {
-                $info .= "\n  Notes: " . trim($asset->notes);
+            if (! empty($asset->notes) && trim($asset->notes) !== '') {
+                $info .= "\n  Notes: ".trim($asset->notes);
             }
 
             if (strlen($info) > self::MAX_ASSET_LENGTH) {
-                $info = substr($info, 0, self::MAX_ASSET_LENGTH) . '...';
+                $info = substr($info, 0, self::MAX_ASSET_LENGTH).'...';
             }
 
             $lines[] = $info;
@@ -668,7 +686,7 @@ class ContextBuilder
 
             $body = strip_tags($note->body ?? '');
             if (strlen($body) > self::MAX_NOTE_LENGTH) {
-                $body = substr($body, 0, self::MAX_NOTE_LENGTH) . ' [TRUNCATED]';
+                $body = substr($body, 0, self::MAX_NOTE_LENGTH).' [TRUNCATED]';
             }
 
             $lines[] = "### {$type} by {$author} ({$date})";
@@ -701,9 +719,9 @@ class ContextBuilder
             return null;
         }
 
-        $content = "## Call Summary\n" . $call->call_summary;
+        $content = "## Call Summary\n".$call->call_summary;
         if ($call->next_steps) {
-            $content .= "\n\n## Next Steps\n" . $call->next_steps;
+            $content .= "\n\n## Next Steps\n".$call->next_steps;
         }
 
         $lines = ['## Phone Call'];
@@ -717,7 +735,7 @@ class ContextBuilder
         }
 
         if (strlen($content) > self::MAX_TICKET_BODY) {
-            $content = substr($content, 0, self::MAX_TICKET_BODY) . "\n[TRUNCATED]";
+            $content = substr($content, 0, self::MAX_TICKET_BODY)."\n[TRUNCATED]";
         }
 
         $lines[] = '';
@@ -768,7 +786,7 @@ class ContextBuilder
             return null;
         }
 
-        return "## Available Integrations for This Client\n" . implode("\n", $available);
+        return "## Available Integrations for This Client\n".implode("\n", $available);
     }
 
     /**
@@ -782,15 +800,15 @@ class ContextBuilder
 
         $parts = [];
         if ($note->email->from_address) {
-            $parts[] = 'From: ' . ($note->email->from_name ?: $note->email->from_address);
+            $parts[] = 'From: '.($note->email->from_name ?: $note->email->from_address);
         }
         if ($note->email->to_recipients) {
-            $parts[] = 'To: ' . collect($note->email->to_recipients)->map(fn ($r) => $r['name'] ?? $r['address'])->join(', ');
+            $parts[] = 'To: '.collect($note->email->to_recipients)->map(fn ($r) => $r['name'] ?? $r['address'])->join(', ');
         }
         if ($note->email->cc_recipients) {
-            $parts[] = 'Cc: ' . collect($note->email->cc_recipients)->map(fn ($r) => $r['name'] ?? $r['address'])->join(', ');
+            $parts[] = 'Cc: '.collect($note->email->cc_recipients)->map(fn ($r) => $r['name'] ?? $r['address'])->join(', ');
         }
 
-        return $parts ? implode(' | ', $parts) . "\n" : '';
+        return $parts ? implode(' | ', $parts)."\n" : '';
     }
 }

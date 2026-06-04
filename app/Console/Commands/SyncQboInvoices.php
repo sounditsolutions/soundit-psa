@@ -17,8 +17,9 @@ class SyncQboInvoices extends Command
 
     public function handle(QboClient $qboClient, QboSyncService $syncService): int
     {
-        if (!$qboClient->isConnected()) {
+        if (! $qboClient->isConnected()) {
             $this->error('Not connected to QuickBooks Online. Go to Settings → Integrations to connect.');
+
             return self::FAILURE;
         }
 
@@ -26,7 +27,7 @@ class SyncQboInvoices extends Command
         $pullStatus = $this->option('pull-status');
 
         // Default: do both
-        if (!$pushDrafts && !$pullStatus) {
+        if (! $pushDrafts && ! $pullStatus) {
             $pushDrafts = true;
             $pullStatus = true;
         }
@@ -43,7 +44,7 @@ class SyncQboInvoices extends Command
                     $hasErrors = true;
                 }
             } catch (QboClientException $e) {
-                $this->error('  Push failed: ' . $e->getMessage());
+                $this->error('  Push failed: '.$e->getMessage());
                 $hasErrors = true;
             }
         }
@@ -55,7 +56,7 @@ class SyncQboInvoices extends Command
                 $updated = $syncService->syncAllUnpaidInvoices();
                 $this->info("  Checked {$updated} invoice(s).");
             } catch (QboClientException $e) {
-                $this->error('  Pull failed: ' . $e->getMessage());
+                $this->error('  Pull failed: '.$e->getMessage());
                 $hasErrors = true;
             }
         }

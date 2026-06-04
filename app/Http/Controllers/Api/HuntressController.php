@@ -102,7 +102,7 @@ class HuntressController extends Controller
         // Parse CW-style conditions: name LIKE '%term%', id IN (1,2)
         $conditions = $request->query('conditions', '');
         if (preg_match('/name\s+LIKE\s+\'%(.+?)%\'/i', $conditions, $m)) {
-            $query->where('name', 'like', '%' . trim($m[1]) . '%');
+            $query->where('name', 'like', '%'.trim($m[1]).'%');
         }
         if (preg_match('/id\s+IN\s*\(([0-9,\s]+)\)/i', $conditions, $m)) {
             $ids = array_map('intval', explode(',', $m[1]));
@@ -207,13 +207,13 @@ class HuntressController extends Controller
 
     private function logRequest(string $endpoint, Request $request): void
     {
-        Log::info('[Huntress CW] ' . $endpoint, [
+        Log::info('[Huntress CW] '.$endpoint, [
             'query' => $request->query(),
             'ip' => $request->ip(),
         ]);
 
         if (config('app.debug')) {
-            Log::debug('[Huntress CW] Request body: ' . $endpoint, [
+            Log::debug('[Huntress CW] Request body: '.$endpoint, [
                 'body' => $request->all(),
             ]);
         }

@@ -52,6 +52,7 @@ class TacticalAlertService
                 'hostname' => $hostname,
                 'check_name' => $checkName,
             ]);
+
             return null;
         }
 
@@ -60,13 +61,14 @@ class TacticalAlertService
             'The operation could not be completed. A retry should be performed',
             'fork/exec',
         ];
-        $alertText = ($alertMessage ?? '') . ' ' . ($checkOutput ?? '');
+        $alertText = ($alertMessage ?? '').' '.($checkOutput ?? '');
         foreach ($transientPatterns as $pattern) {
             if (stripos($alertText, $pattern) !== false) {
                 Log::debug('[Tactical Alert] Transient error, ignoring', [
                     'hostname' => $hostname,
                     'pattern' => $pattern,
                 ]);
+
                 return null;
             }
         }
@@ -78,6 +80,7 @@ class TacticalAlertService
                 'hostname' => $hostname,
                 'check_name' => $checkName,
             ]);
+
             return null;
         }
 
@@ -87,6 +90,7 @@ class TacticalAlertService
                 'hostname' => $hostname,
                 'monitoring_type' => $monitoringType,
             ]);
+
             return null;
         }
 
@@ -95,7 +99,7 @@ class TacticalAlertService
         $asset = $tacticalAsset?->asset;
         $clientId = $asset?->client_id;
 
-        if (!$clientId) {
+        if (! $clientId) {
             Log::info('[Tactical Alert] No client match for agent, creating unlinked alert', [
                 'agent_id' => $agentId,
                 'hostname' => $hostname,
@@ -113,17 +117,33 @@ class TacticalAlertService
 
         // Build message body
         $msgLines = [];
-        if ($clientName) $msgLines[] = "Client: {$clientName}";
-        if ($siteName) $msgLines[] = "Site: {$siteName}";
-        if ($operatingSystem) $msgLines[] = "OS: {$operatingSystem}";
-        if ($publicIp) $msgLines[] = "Public IP: {$publicIp}";
-        if ($loggedInUser) $msgLines[] = "Logged-in user: {$loggedInUser}";
+        if ($clientName) {
+            $msgLines[] = "Client: {$clientName}";
+        }
+        if ($siteName) {
+            $msgLines[] = "Site: {$siteName}";
+        }
+        if ($operatingSystem) {
+            $msgLines[] = "OS: {$operatingSystem}";
+        }
+        if ($publicIp) {
+            $msgLines[] = "Public IP: {$publicIp}";
+        }
+        if ($loggedInUser) {
+            $msgLines[] = "Logged-in user: {$loggedInUser}";
+        }
         $msgLines[] = "Alert type: {$alertType}";
         $msgLines[] = "Severity: {$severityLabel}";
-        if ($checkName) $msgLines[] = "Check: {$checkName}";
+        if ($checkName) {
+            $msgLines[] = "Check: {$checkName}";
+        }
         $msgLines[] = "Message: {$alertMessage}";
-        if ($alertTime) $msgLines[] = "Alert time: {$alertTime}";
-        if ($needsReboot && strtolower($needsReboot) === 'true') $msgLines[] = "Needs reboot: Yes";
+        if ($alertTime) {
+            $msgLines[] = "Alert time: {$alertTime}";
+        }
+        if ($needsReboot && strtolower($needsReboot) === 'true') {
+            $msgLines[] = 'Needs reboot: Yes';
+        }
         if ($checkOutput) {
             $msgLines[] = '';
             $msgLines[] = 'Check Output:';
@@ -193,7 +213,7 @@ class TacticalAlertService
         }
 
         // Fall back to synthesized key for backwards compatibility
-        if (!$alert && $hostname) {
+        if (! $alert && $hostname) {
             $normalizedSeverity = strtolower(trim($severity ?? ''));
             $checkLabel = $checkName ?? $alertType;
             $fallbackId = md5("{$hostname}:{$checkLabel}");
@@ -203,27 +223,28 @@ class TacticalAlertService
                 ->first();
         }
 
-        if (!$alert) {
+        if (! $alert) {
             Log::debug('[Tactical Alert] No open alert found for resolved event', [
                 'alert_id' => $alertId,
                 'hostname' => $hostname,
                 'check_name' => $checkName,
             ]);
+
             return null;
         }
 
         // Build resolution reason with action results if available
-        $reason = "Alert resolved automatically by Tactical RMM.";
+        $reason = 'Alert resolved automatically by Tactical RMM.';
         if ($actionStdout || $actionStderr || $actionRetcode !== null) {
             $reason .= "\n\nResponse Action Results:";
             if ($actionRetcode !== null) {
                 $reason .= "\n- Return code: {$actionRetcode}";
             }
             if ($actionStdout) {
-                $reason .= "\n\nOutput:\n" . substr($actionStdout, 0, 3000);
+                $reason .= "\n\nOutput:\n".substr($actionStdout, 0, 3000);
             }
             if ($actionStderr) {
-                $reason .= "\n\nErrors:\n" . substr($actionStderr, 0, 1000);
+                $reason .= "\n\nErrors:\n".substr($actionStderr, 0, 1000);
             }
         }
 

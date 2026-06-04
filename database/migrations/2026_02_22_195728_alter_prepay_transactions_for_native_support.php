@@ -55,7 +55,7 @@ return new class extends Migration
         if ($hasNativeRecords) {
             throw new RuntimeException(
                 'Cannot revert: PSA-native prepay transactions exist (halo_id IS NULL). '
-                . 'Delete them first or this migration is forward-only.'
+                .'Delete them first or this migration is forward-only.'
             );
         }
 

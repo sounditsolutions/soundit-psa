@@ -15,6 +15,7 @@ class ProcessLevelWebhook implements ShouldQueue
     use Queueable;
 
     public int $tries = 3;
+
     public array $backoff = [60, 300];
 
     public function __construct(
@@ -25,7 +26,7 @@ class ProcessLevelWebhook implements ShouldQueue
     {
         $webhook = LevelWebhook::find($this->webhookId);
 
-        if (!$webhook || !$webhook->isPending()) {
+        if (! $webhook || ! $webhook->isPending()) {
             return;
         }
 
@@ -45,13 +46,15 @@ class ProcessLevelWebhook implements ShouldQueue
                 ]);
             }
             $webhook->markProcessed();
+
             return;
         }
 
         // --- Device created / updated ---
         if (in_array($type, ['device_created', 'device_updated'])) {
-            if (!$deviceId) {
+            if (! $deviceId) {
                 $webhook->markSkipped('No device ID in payload');
+
                 return;
             }
 
@@ -59,14 +62,16 @@ class ProcessLevelWebhook implements ShouldQueue
             $groupId = $data['group_id'] ?? null;
             $client = $groupId ? Client::where('level_group_id', $groupId)->first() : null;
 
-            if (!$client) {
+            if (! $client) {
                 // Device belongs to an unmapped group — log and skip
                 $webhook->markSkipped("Group {$groupId} not mapped to a client");
+
                 return;
             }
 
             $sync->upsertDeviceFromData($data, $client);
             $webhook->markProcessed();
+
             return;
         }
 
@@ -77,6 +82,7 @@ class ProcessLevelWebhook implements ShouldQueue
                 'device_id' => $deviceId,
             ]);
             $webhook->markProcessed();
+
             return;
         }
 
@@ -87,6 +93,7 @@ class ProcessLevelWebhook implements ShouldQueue
                 'payload' => $webhook->payload,
             ]);
             $webhook->markProcessed();
+
             return;
         }
 

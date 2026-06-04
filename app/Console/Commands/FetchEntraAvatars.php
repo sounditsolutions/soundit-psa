@@ -21,6 +21,7 @@ class FetchEntraAvatars extends Command
 
         if ($users->isEmpty()) {
             $this->info('No eligible users found.');
+
             return self::SUCCESS;
         }
 

@@ -22,9 +22,11 @@ class ServosityProvisionAsset implements ShouldQueue
     use Dispatchable, InteractsWithQueue, Queueable;
 
     public int $tries = 0;            // Unlimited retries
+
     public int $timeout = 120;        // Per-attempt timeout
 
     private const INITIAL_DELAY = 30;     // seconds
+
     private const MAX_DELAY = 3600;       // 1 hour
 
     public function __construct(
@@ -40,7 +42,7 @@ class ServosityProvisionAsset implements ShouldQueue
             return;
         }
 
-        $service = new ServosityDeploymentService();
+        $service = new ServosityDeploymentService;
         $result = $service->provisionSingleAsset($asset);
 
         if ($result === 'provisioned') {
@@ -49,6 +51,7 @@ class ServosityProvisionAsset implements ShouldQueue
                 'hostname' => $asset->hostname,
                 'attempt' => $this->attempts(),
             ]);
+
             return;
         }
 
@@ -56,7 +59,7 @@ class ServosityProvisionAsset implements ShouldQueue
         $delay = min(self::INITIAL_DELAY * (2 ** ($this->attempts() - 1)), self::MAX_DELAY);
 
         if ($result === 'failed') {
-            Log::warning('[Servosity] Provision attempt failed, retrying in ' . $delay . 's', [
+            Log::warning('[Servosity] Provision attempt failed, retrying in '.$delay.'s', [
                 'asset_id' => $asset->id,
                 'hostname' => $asset->hostname,
                 'attempt' => $this->attempts(),

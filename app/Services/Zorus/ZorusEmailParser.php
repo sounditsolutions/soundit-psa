@@ -114,6 +114,7 @@ class ZorusEmailParser
     {
         if (preg_match('/End user reason:\s*(.+)$/mi', $body, $matches)) {
             $reason = trim($matches[1]);
+
             return ($reason !== '' && strtolower($reason) !== 'no reason provided') ? $reason : null;
         }
 
@@ -166,19 +167,19 @@ class ZorusEmailParser
         $lines = ['**Zorus Domain Unblock Request**'];
 
         if ($parsed['company_name']) {
-            $lines[] = '- Company: ' . $parsed['company_name'];
+            $lines[] = '- Company: '.$parsed['company_name'];
         }
         if ($parsed['hostname']) {
-            $lines[] = '- Device: ' . $parsed['hostname'];
+            $lines[] = '- Device: '.$parsed['hostname'];
         }
         if ($parsed['blocked_url']) {
-            $lines[] = '- Blocked URL: ' . $parsed['blocked_url'];
+            $lines[] = '- Blocked URL: '.$parsed['blocked_url'];
         }
         if ($parsed['reason']) {
-            $lines[] = '- End user reason: ' . $parsed['reason'];
+            $lines[] = '- End user reason: '.$parsed['reason'];
         }
         if ($parsed['portal_url']) {
-            $lines[] = '- [Approve/Deny in Zorus Portal](' . $parsed['portal_url'] . ')';
+            $lines[] = '- [Approve/Deny in Zorus Portal]('.$parsed['portal_url'].')';
         }
 
         return implode("\n", $lines);

@@ -12,6 +12,7 @@ class QboClient
     private Client $http;
 
     private const AUTH_URL = 'https://appcenter.intuit.com/connect/oauth2';
+
     private const TOKEN_URL = 'https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer';
 
     private const BASE_URLS = [
@@ -37,7 +38,7 @@ class QboClient
             'state' => $state,
         ]);
 
-        return self::AUTH_URL . '?' . $params;
+        return self::AUTH_URL.'?'.$params;
     }
 
     public function exchangeCode(string $code, string $realmId): void
@@ -53,13 +54,13 @@ class QboClient
                     'redirect_uri' => route('auth.qbo.callback'),
                 ],
                 'headers' => [
-                    'Authorization' => 'Basic ' . base64_encode($clientId . ':' . $clientSecret),
+                    'Authorization' => 'Basic '.base64_encode($clientId.':'.$clientSecret),
                     'Accept' => 'application/json',
                 ],
             ]);
         } catch (GuzzleException $e) {
             Log::error('[QboClient] Token exchange failed', ['error' => $e->getMessage()]);
-            throw new QboClientException('Failed to exchange authorization code: ' . $e->getMessage());
+            throw new QboClientException('Failed to exchange authorization code: '.$e->getMessage());
         }
 
         $data = json_decode((string) $response->getBody(), true);
@@ -109,7 +110,7 @@ class QboClient
         $url = $this->buildUrl($path);
 
         $options['headers'] = array_merge($options['headers'] ?? [], [
-            'Authorization' => 'Bearer ' . $token,
+            'Authorization' => 'Bearer '.$token,
             'Accept' => 'application/json',
             'Content-Type' => 'application/json',
         ]);
@@ -127,7 +128,8 @@ class QboClient
                 if ($statusCode === 401 && $attempt === 0) {
                     $this->refreshToken();
                     $freshToken = $this->getAccessToken();
-                    $options['headers']['Authorization'] = 'Bearer ' . $freshToken;
+                    $options['headers']['Authorization'] = 'Bearer '.$freshToken;
+
                     continue;
                 }
 
@@ -164,7 +166,7 @@ class QboClient
 
         $token = Setting::getEncrypted('qbo_access_token');
 
-        if (!$token) {
+        if (! $token) {
             throw new QboClientException('QBO access token not found. Please reconnect to QuickBooks.');
         }
 
@@ -177,7 +179,7 @@ class QboClient
         $clientId = Setting::getEncrypted('qbo_client_id');
         $clientSecret = Setting::getEncrypted('qbo_client_secret');
 
-        if (!$refreshToken) {
+        if (! $refreshToken) {
             $this->disconnect();
             throw new QboClientException('QBO refresh token not found. Please reconnect to QuickBooks.');
         }
@@ -189,7 +191,7 @@ class QboClient
                     'refresh_token' => $refreshToken,
                 ],
                 'headers' => [
-                    'Authorization' => 'Basic ' . base64_encode($clientId . ':' . $clientSecret),
+                    'Authorization' => 'Basic '.base64_encode($clientId.':'.$clientSecret),
                     'Accept' => 'application/json',
                 ],
             ]);
@@ -205,7 +207,7 @@ class QboClient
                         'refresh_token' => $refreshToken,
                     ],
                     'headers' => [
-                        'Authorization' => 'Basic ' . base64_encode($clientId . ':' . $clientSecret),
+                        'Authorization' => 'Basic '.base64_encode($clientId.':'.$clientSecret),
                         'Accept' => 'application/json',
                     ],
                 ]);
@@ -228,13 +230,13 @@ class QboClient
         $environment = Setting::getValue('qbo_environment', 'sandbox');
         $realmId = Setting::getValue('qbo_realm_id');
 
-        if (!$realmId) {
+        if (! $realmId) {
             throw new QboClientException('QBO Realm ID not set. Please reconnect to QuickBooks.');
         }
 
         $baseUrl = self::BASE_URLS[$environment] ?? self::BASE_URLS['sandbox'];
 
-        return $baseUrl . $realmId . '/' . ltrim($path, '/');
+        return $baseUrl.$realmId.'/'.ltrim($path, '/');
     }
 
     private function guardEnvironment(): void
@@ -244,14 +246,13 @@ class QboClient
         if ($qboEnvironment === 'production' && app()->environment() !== 'production') {
             throw new QboClientException(
                 'Cannot access production QBO from non-production environment. '
-                . 'Current APP_ENV: ' . app()->environment()
+                .'Current APP_ENV: '.app()->environment()
             );
         }
     }
 
     /**
      * @throws QboClientException
-     * @return never
      */
     private function throwFromGuzzle(GuzzleException $e, string $method, string $path): never
     {
@@ -276,7 +277,7 @@ class QboClient
         $faultErrors = $responseBody['Fault']['Error'] ?? [];
         if ($faultErrors) {
             $messages = array_map(fn ($err) => $err['Message'] ?? $err['Detail'] ?? '', $faultErrors);
-            $detail .= ' — ' . implode('; ', array_filter($messages));
+            $detail .= ' — '.implode('; ', array_filter($messages));
         }
 
         throw new QboClientException(

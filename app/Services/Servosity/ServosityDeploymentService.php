@@ -30,6 +30,7 @@ class ServosityDeploymentService
      * command handles Phase 2 (DR account creation) once the agent is ready.
      *
      * @return array Summary of what was provisioned
+     *
      * @throws \RuntimeException If provisioning fails
      */
     public function enableBackup(Asset $asset): array
@@ -219,7 +220,7 @@ class ServosityDeploymentService
                             'name' => $asset->hostname,
                             'username' => ServosityConfig::get('credential_username'),
                             'domain' => '',
-                            'notes' => 'Local admin password: ' . $asset->servosity_backup_password,
+                            'notes' => 'Local admin password: '.$asset->servosity_backup_password,
                             'locked' => false,
                         ]);
                     } catch (ServosityClientException $e) {
@@ -325,15 +326,17 @@ class ServosityDeploymentService
                 'asset_id' => $asset->id,
                 'hostname' => $asset->hostname,
             ]);
+
             return;
         }
 
         if (! TacticalConfig::isConfigured()) {
             Log::warning('[Servosity] Tactical not configured, skipping field push');
+
             return;
         }
 
-        $tactical = new TacticalClient();
+        $tactical = new TacticalClient;
         $agentId = $tacticalAsset->agent_id;
 
         $fields = [

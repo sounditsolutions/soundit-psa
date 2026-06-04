@@ -76,7 +76,7 @@ class AppRiverOAuthController extends Controller
             $client->exchangeCode($code);
         } catch (AppRiverClientException $e) {
             return redirect()->route('settings.integrations')
-                ->with('error', 'Failed to connect to AppRiver: ' . $e->getMessage());
+                ->with('error', 'Failed to connect to AppRiver: '.$e->getMessage());
         }
 
         return redirect()->route('settings.integrations')

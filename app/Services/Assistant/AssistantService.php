@@ -19,8 +19,11 @@ use Illuminate\Support\Facades\Log;
 class AssistantService
 {
     private const MAX_HISTORY_CHARS = 80_000;
+
     private const MAX_ROUNDS = 10;
+
     private const WALL_CLOCK_SECONDS = 120;
+
     private const TOKEN_BUDGET_PER_TURN = 200_000;
 
     /**
@@ -106,7 +109,7 @@ class AssistantService
         };
 
         // Run AI with tools
-        $ai = new AiClient();
+        $ai = new AiClient;
         $response = $ai->runChatWithTools(
             system: $system,
             messages: $apiMessages,
@@ -153,7 +156,7 @@ class AssistantService
      */
     public function saveAsNote(AssistantMessage $message, Ticket $ticket, int $userId): TicketNote
     {
-        $body = "**AI Assistant:**\n\n" . $message->content;
+        $body = "**AI Assistant:**\n\n".$message->content;
 
         return TicketNote::create([
             'ticket_id' => $ticket->id,
@@ -180,7 +183,7 @@ PROMPT;
         if ($conversation->context_type === 'ticket') {
             $ticket = $conversation->resolveTicket();
             if ($ticket) {
-                $prompt .= "\n\n" . ContextBuilder::buildForTicket($ticket);
+                $prompt .= "\n\n".ContextBuilder::buildForTicket($ticket);
 
                 // Include most recent AI triage note if available
                 $triageNote = $ticket->notes()
@@ -191,9 +194,9 @@ PROMPT;
                 if ($triageNote) {
                     $body = strip_tags($triageNote->body ?? '');
                     if (strlen($body) > 3000) {
-                        $body = substr($body, 0, 3000) . ' [TRUNCATED]';
+                        $body = substr($body, 0, 3000).' [TRUNCATED]';
                     }
-                    $prompt .= "\n\n## AI Triage Assessment\nThe AI triage pipeline previously assessed this ticket:\n" . $body;
+                    $prompt .= "\n\n## AI Triage Assessment\nThe AI triage pipeline previously assessed this ticket:\n".$body;
                 }
             }
         } elseif ($conversation->context_type === 'client') {
@@ -209,9 +212,9 @@ PROMPT;
                 if ($client->site_notes) {
                     $notes = $client->site_notes;
                     if (strlen($notes) > 3000) {
-                        $notes = substr($notes, 0, 3000) . "\n[TRUNCATED]";
+                        $notes = substr($notes, 0, 3000)."\n[TRUNCATED]";
                     }
-                    $prompt .= "\n\n## Client Site Notes\n" . $notes;
+                    $prompt .= "\n\n## Client Site Notes\n".$notes;
                 }
             }
         } else {

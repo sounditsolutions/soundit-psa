@@ -16,20 +16,23 @@ class StripeTest extends Command
     {
         if (! StripeConfig::isConfigured()) {
             $this->error('Stripe is not configured. Add API key in Settings → Integrations.');
+
             return self::FAILURE;
         }
 
         $this->info('Testing Stripe API connection...');
-        $this->info('Mode: ' . StripeConfig::get('mode'));
+        $this->info('Mode: '.StripeConfig::get('mode'));
 
         $client = new StripeClient(['secret_key' => StripeConfig::get('secret_key')]);
 
         if ($client->isHealthy()) {
             $this->info('Connected to Stripe successfully!');
+
             return self::SUCCESS;
         }
 
         $this->error('Failed to connect to Stripe. Check your API key.');
+
         return self::FAILURE;
     }
 }

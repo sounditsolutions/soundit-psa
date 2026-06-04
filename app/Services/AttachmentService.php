@@ -181,7 +181,7 @@ class AttachmentService
      */
     public function downloadEmailAttachments(Email $email, GraphClient $graph, string $mailbox): array
     {
-        if (!$email->graph_id) {
+        if (! $email->graph_id) {
             return [];
         }
 
@@ -193,6 +193,7 @@ class AttachmentService
                 'graph_id' => $email->graph_id,
                 'error' => $e->getMessage(),
             ]);
+
             return [];
         }
 
@@ -205,7 +206,7 @@ class AttachmentService
             }
 
             $contentBytes = $ga['contentBytes'] ?? null;
-            if (!$contentBytes) {
+            if (! $contentBytes) {
                 continue;
             }
 
@@ -235,12 +236,12 @@ class AttachmentService
     public function resizeImageForAi(Attachment $attachment): ?string
     {
         $content = $this->getContent($attachment);
-        if (!$content) {
+        if (! $content) {
             return null;
         }
 
         $image = @imagecreatefromstring($content);
-        if (!$image) {
+        if (! $image) {
             return null;
         }
 
@@ -311,7 +312,7 @@ class AttachmentService
 
         // Re-attach extension if present
         if ($extension !== '') {
-            return $slug . '.' . Str::lower($extension);
+            return $slug.'.'.Str::lower($extension);
         }
 
         return $slug;

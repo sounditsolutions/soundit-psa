@@ -2,6 +2,4 @@
 
 namespace App\Services\Comet;
 
-class CometClientException extends \RuntimeException
-{
-}
+class CometClientException extends \RuntimeException {}

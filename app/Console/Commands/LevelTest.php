@@ -9,6 +9,7 @@ use Illuminate\Console\Command;
 class LevelTest extends Command
 {
     protected $signature = 'level:test';
+
     protected $description = 'Test Level RMM API connectivity';
 
     public function handle(LevelClient $level): int
@@ -18,7 +19,7 @@ class LevelTest extends Command
         try {
             $groups = $level->getGroups();
             $this->info('Connected successfully!');
-            $this->info('Groups found: ' . count($groups));
+            $this->info('Groups found: '.count($groups));
 
             if (count($groups) <= 10) {
                 foreach ($groups as $group) {
@@ -30,12 +31,13 @@ class LevelTest extends Command
                     $deviceCount = $group['device_count'] ?? 0;
                     $this->line("  - [{$group['id']}] {$group['name']} ({$deviceCount} devices)");
                 }
-                $this->line('  ... and ' . (count($groups) - 5) . ' more');
+                $this->line('  ... and '.(count($groups) - 5).' more');
             }
 
             return self::SUCCESS;
         } catch (LevelClientException $e) {
-            $this->error('Connection failed: ' . $e->getMessage());
+            $this->error('Connection failed: '.$e->getMessage());
+
             return self::FAILURE;
         }
     }

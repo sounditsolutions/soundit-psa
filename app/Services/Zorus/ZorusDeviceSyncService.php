@@ -114,6 +114,7 @@ class ZorusDeviceSyncService
                 Log::debug("[ZorusSync] No asset match for endpoint '{$endpointName}' (UUID: {$endpointUuid})", [
                     'client' => $client->name,
                 ]);
+
                 continue;
             }
 

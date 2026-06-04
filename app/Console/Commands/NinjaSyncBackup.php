@@ -9,6 +9,7 @@ use Illuminate\Console\Command;
 class NinjaSyncBackup extends Command
 {
     protected $signature = 'ninja:sync-backup';
+
     protected $description = 'Sync backup storage usage and license counts from NinjaRMM';
 
     public function handle(NinjaBackupSyncService $sync): int

@@ -23,6 +23,7 @@ class CloseResolvedTickets extends Command
 
         if ($days <= 0) {
             $this->info('Auto-close disabled (auto_close_resolved_days = 0).');
+
             return self::SUCCESS;
         }
 
@@ -34,7 +35,8 @@ class CloseResolvedTickets extends Command
             ->get();
 
         if ($tickets->isEmpty()) {
-            $this->info('No resolved tickets older than ' . $days . ' days.');
+            $this->info('No resolved tickets older than '.$days.' days.');
+
             return self::SUCCESS;
         }
 
@@ -46,6 +48,7 @@ class CloseResolvedTickets extends Command
             if ($dryRun) {
                 $this->info("Would close #{$ticket->display_id}: {$ticket->subject} (resolved {$ticket->resolved_at->diffForHumans()})");
                 $closed++;
+
                 continue;
             }
 
@@ -64,7 +67,7 @@ class CloseResolvedTickets extends Command
         }
 
         $verb = $dryRun ? 'Would close' : 'Closed';
-        $this->info("{$verb} {$closed} ticket(s)." . ($errors ? " {$errors} error(s)." : ''));
+        $this->info("{$verb} {$closed} ticket(s).".($errors ? " {$errors} error(s)." : ''));
 
         if (! $dryRun && $closed > 0) {
             Log::info("[AutoClose] Closed {$closed} resolved tickets (threshold: {$days} days)");

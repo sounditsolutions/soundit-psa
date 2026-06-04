@@ -42,7 +42,8 @@ class ScreenConnectConfig
         if (! $base) {
             return null;
         }
-        return rtrim($base, '/') . '/Host#Access/All%20Machines/' . $sessionId;
+
+        return rtrim($base, '/').'/Host#Access/All%20Machines/'.$sessionId;
     }
 
     public static function generateSecret(): string

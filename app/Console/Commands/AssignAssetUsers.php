@@ -21,8 +21,9 @@ class AssignAssetUsers extends Command
 
         if ($clientId) {
             $client = Client::find($clientId);
-            if (!$client) {
+            if (! $client) {
                 $this->error("Client {$clientId} not found.");
+
                 return 1;
             }
             $this->info("Scoping to client: {$client->name}");

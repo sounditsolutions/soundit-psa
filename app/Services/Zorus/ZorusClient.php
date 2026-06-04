@@ -17,7 +17,7 @@ class ZorusClient
             'base_uri' => 'https://developer.zorustech.com/',
             'timeout' => 30,
             'headers' => [
-                'Authorization' => 'Impersonation ' . ($this->config['api_key'] ?? ''),
+                'Authorization' => 'Impersonation '.($this->config['api_key'] ?? ''),
                 'Zorus-Api-Version' => '1.0',
                 'Accept' => 'application/json',
                 'Content-Type' => 'application/json',

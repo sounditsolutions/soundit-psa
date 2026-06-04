@@ -25,7 +25,7 @@ class NinjaBackupSyncService
      */
     public function syncBackupUsage(): SyncResult
     {
-        $result = new SyncResult();
+        $result = new SyncResult;
 
         // Load mapped ninja_org_ids so we can filter the global response
         $mappedOrgIds = Client::whereNotNull('ninja_org_id')
@@ -66,14 +66,15 @@ class NinjaBackupSyncService
 
         foreach ($backupRecords as $record) {
             $ninjaDeviceId = $record['id'] ?? $record['deviceId'] ?? null;
-            if (!$ninjaDeviceId) {
+            if (! $ninjaDeviceId) {
                 continue;
             }
 
             $asset = $assets->get($ninjaDeviceId);
-            if (!$asset) {
+            if (! $asset) {
                 // Device not in our mapped assets — skip silently (shared instance)
                 $skipped++;
+
                 continue;
             }
 
@@ -118,7 +119,7 @@ class NinjaBackupSyncService
 
         // Clear stale backup data: assets that had backup previously but are no longer
         // in the API response. Set to NULL (not 0) — NULL = no backup, 0 = empty backup.
-        if (!empty($seenNinjaIds)) {
+        if (! empty($seenNinjaIds)) {
             $staleAssets = Asset::whereNotNull('ninja_id')
                 ->whereNotNull('backup_synced_at')
                 ->whereNotIn('ninja_id', $seenNinjaIds)
@@ -263,6 +264,7 @@ class NinjaBackupSyncService
                 $devices = $this->ninja->getOrganizationDevices((int) $client->ninja_org_id);
             } catch (\Throwable $e) {
                 Log::warning("[NinjaBackupSync] Failed to fetch RMM devices for {$client->name}: {$e->getMessage()}");
+
                 continue;
             }
 

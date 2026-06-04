@@ -9,6 +9,7 @@ use Illuminate\Console\Command;
 class BackfillEmailBodyText extends Command
 {
     protected $signature = 'emails:backfill-text';
+
     protected $description = 'Backfill body_text from body_html for existing emails';
 
     public function handle(EmailService $emailService): int
@@ -19,6 +20,7 @@ class BackfillEmailBodyText extends Command
 
         if ($total === 0) {
             $this->info('No emails need backfilling.');
+
             return self::SUCCESS;
         }
 

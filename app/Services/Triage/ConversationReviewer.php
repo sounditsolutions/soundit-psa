@@ -56,7 +56,7 @@ class ConversationReviewer
 
         // Build conversation history for AI review
         $context = ContextBuilder::buildForTicket($ticket);
-        $system = Prompts::REVIEW_SYSTEM_PROMPT . "\n\n" . $context;
+        $system = Prompts::REVIEW_SYSTEM_PROMPT."\n\n".$context;
 
         Log::info('[Triage] Running conversation review', ['ticket_id' => $ticket->id]);
 
@@ -236,7 +236,7 @@ class ConversationReviewer
         $label = $labels[$result->assessment] ?? $result->assessment;
 
         $note = "AI Review: {$label} ({$result->confidenceScore}% confidence)\n"
-            . "Reasoning: {$result->reasoning}";
+            ."Reasoning: {$result->reasoning}";
 
         if ($actionTaken) {
             $note .= "\n\nAction taken: Ticket auto-closed.";

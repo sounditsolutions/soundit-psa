@@ -128,6 +128,7 @@ class TicketController extends Controller
                 if ($item instanceof \App\Models\AssistantConversation) {
                     return $item->created_at;
                 }
+
                 return $item->noted_at;
             })
             ->values();
@@ -137,7 +138,7 @@ class TicketController extends Controller
             ? $ticket->client->people()->active()->orderBy('first_name')->get(['id', 'first_name', 'last_name'])
             : collect();
 
-        \App\Support\RecentItems::track(auth()->id(), 'ticket', $ticket->id, $ticket->display_id . ' ' . \Illuminate\Support\Str::limit($ticket->subject, 30), route('tickets.show', $ticket));
+        \App\Support\RecentItems::track(auth()->id(), 'ticket', $ticket->id, $ticket->display_id.' '.\Illuminate\Support\Str::limit($ticket->subject, 30), route('tickets.show', $ticket));
 
         $defaultBillable = app(TicketService::class)->defaultBillable($ticket);
 
@@ -509,7 +510,7 @@ class TicketController extends Controller
         $timeout = (int) $request->input('timeout');
 
         try {
-            $client = new \App\Services\Tactical\TacticalClient();
+            $client = new \App\Services\Tactical\TacticalClient;
             $result = $client->runScript(
                 $asset->tacticalAsset->agent_id,
                 $script->tactical_script_id,
@@ -523,14 +524,14 @@ class TicketController extends Controller
 
             // Post output as a private ticket note
             $noteBody = "**Script Executed:** {$script->name}\n"
-                . "**Device:** " . ($asset->hostname ?? $asset->name) . "\n"
-                . "**Return Code:** " . ($retcode ?? 'unknown') . "\n";
+                .'**Device:** '.($asset->hostname ?? $asset->name)."\n"
+                .'**Return Code:** '.($retcode ?? 'unknown')."\n";
 
             if ($stdout) {
-                $noteBody .= "\n**Output:**\n```\n" . substr($stdout, 0, 5000) . "\n```";
+                $noteBody .= "\n**Output:**\n```\n".substr($stdout, 0, 5000)."\n```";
             }
             if ($stderr) {
-                $noteBody .= "\n**Errors:**\n```\n" . substr($stderr, 0, 2000) . "\n```";
+                $noteBody .= "\n**Errors:**\n```\n".substr($stderr, 0, 2000)."\n```";
             }
 
             $this->ticketService->addNote(
@@ -556,7 +557,7 @@ class TicketController extends Controller
             ]);
         } catch (\Throwable $e) {
             return response()->json([
-                'error' => 'Script execution failed: ' . $e->getMessage(),
+                'error' => 'Script execution failed: '.$e->getMessage(),
             ], 500);
         }
     }

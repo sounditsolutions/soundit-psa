@@ -29,7 +29,7 @@ class PlivoWebhookController extends Controller
      */
     private function resolveRecordingAfterEnd(?PhoneCall $call): void
     {
-        if (!$call || $call->recording_url || !$call->duration || $call->duration < 1) {
+        if (! $call || $call->recording_url || ! $call->duration || $call->duration < 1) {
             return;
         }
 
@@ -52,15 +52,16 @@ class PlivoWebhookController extends Controller
 
         // Strip non-digit/+ chars, require valid phone pattern
         $destination = preg_replace('/[^\d+]/', '', $destination ?? '');
-        if (!preg_match('/^\+?1?\d{10,15}$/', $destination)) {
+        if (! preg_match('/^\+?1?\d{10,15}$/', $destination)) {
             Log::warning('Invalid outbound destination', ['raw' => $request->input('ForwardTo') ?? $request->input('To')]);
+
             return response('<?xml version="1.0"?><Response><Hangup/></Response>', 200,
                 ['Content-Type' => 'application/xml']);
         }
 
         // Normalize: ensure country code for US numbers
         if (strlen(ltrim($destination, '+')) === 10) {
-            $destination = '1' . ltrim($destination, '+');
+            $destination = '1'.ltrim($destination, '+');
         }
 
         // Log outbound call before returning XML (non-blocking — don't let DB errors break the call)
@@ -75,13 +76,13 @@ class PlivoWebhookController extends Controller
         }
 
         $callerId = PlivoConfig::get('did_number');
-        $callbackUrl = url('/api/plivo/' . PlivoConfig::get('webhook_secret') . '/webhook');
+        $callbackUrl = url('/api/plivo/'.PlivoConfig::get('webhook_secret').'/webhook');
 
         $xml = '<?xml version="1.0" encoding="UTF-8"?>';
         $xml .= '<Response>';
-        $xml .= '<Record startOnDialAnswer="true" redirect="false" maxLength="14400" callbackUrl="' . htmlspecialchars($callbackUrl) . '" callbackMethod="POST" />';
-        $xml .= '<Dial callerId="' . htmlspecialchars($callerId) . '" callbackUrl="' . htmlspecialchars($callbackUrl) . '">';
-        $xml .= '<Number>' . htmlspecialchars($destination) . '</Number>';
+        $xml .= '<Record startOnDialAnswer="true" redirect="false" maxLength="14400" callbackUrl="'.htmlspecialchars($callbackUrl).'" callbackMethod="POST" />';
+        $xml .= '<Dial callerId="'.htmlspecialchars($callerId).'" callbackUrl="'.htmlspecialchars($callbackUrl).'">';
+        $xml .= '<Number>'.htmlspecialchars($destination).'</Number>';
         $xml .= '</Dial>';
         $xml .= '</Response>';
 
@@ -128,6 +129,7 @@ class PlivoWebhookController extends Controller
             Log::info('[PlivoResolveCaller] Missing From — returning unknown', [
                 'call_uuid' => $callUuid,
             ]);
+
             return response()->json($payload);
         }
 
@@ -143,6 +145,7 @@ class PlivoWebhookController extends Controller
                 'call_uuid' => $callUuid,
                 'from' => $from,
             ]);
+
             return response()->json($payload);
         }
 
@@ -155,6 +158,7 @@ class PlivoWebhookController extends Controller
                 'from' => $from,
                 'label' => $directoryEntry->label,
             ]);
+
             return response()->json($payload);
         }
 
@@ -166,6 +170,7 @@ class PlivoWebhookController extends Controller
                 'from' => $from,
                 'error' => $e->getMessage(),
             ]);
+
             return response()->json($payload);
         }
 
@@ -174,6 +179,7 @@ class PlivoWebhookController extends Controller
                 'call_uuid' => $callUuid,
                 'from' => $from,
             ]);
+
             return response()->json($payload);
         }
 
@@ -224,7 +230,7 @@ class PlivoWebhookController extends Controller
         // have a status like "in-progress", so we can't rely on an empty
         // status to trigger creation.
         $existing = PhoneCall::where('call_uuid', $callUuid)->exists();
-        if (!$existing) {
+        if (! $existing) {
             $this->phoneCallService->logIncomingCall($request->all());
         }
 
@@ -280,7 +286,7 @@ class PlivoWebhookController extends Controller
                 $minDuration = TranscriptionConfig::minDurationSeconds();
                 if ($recordingDuration >= $minDuration) {
                     $call = $call ?? PhoneCall::where('call_uuid', $callUuid)->first();
-                    if ($call && !$call->isTranscribed() && !$call->isTranscribing()) {
+                    if ($call && ! $call->isTranscribed() && ! $call->isTranscribing()) {
                         $call->update(['transcription_status' => \App\Enums\TranscriptionStatus::Pending]);
                         // Delay 15s — Plivo's CDN needs time to finalize the MP3 after the callback fires
                         $cmd = sprintf('sleep 15 && php %s calls:transcribe %d > /dev/null 2>&1 &', base_path('artisan'), $call->id);
@@ -296,12 +302,13 @@ class PlivoWebhookController extends Controller
         if ($dialAction === 'hangup') {
             // Use DialBLegDuration as fallback for Duration
             $data = $request->all();
-            if (!isset($data['Duration']) && isset($data['DialBLegDuration'])) {
+            if (! isset($data['Duration']) && isset($data['DialBLegDuration'])) {
                 $data['Duration'] = $data['DialBLegDuration'];
             }
 
             $call = $this->phoneCallService->handleCallEnded($callUuid, $data);
             $this->resolveRecordingAfterEnd($call);
+
             return response('OK', 200);
         }
 
@@ -309,12 +316,14 @@ class PlivoWebhookController extends Controller
         if (in_array($callStatus, ['completed', 'busy', 'failed', 'timeout', 'no-answer', 'cancel'])) {
             $call = $this->phoneCallService->handleCallEnded($callUuid, $request->all());
             $this->resolveRecordingAfterEnd($call);
+
             return response('OK', 200);
         }
 
         // Call answered — via DialAction or CallStatus
         if ($dialAction === 'answer' || in_array($callStatus, ['in-progress', 'answered'])) {
             $this->phoneCallService->handleCallAnswered($callUuid, $request->all());
+
             return response('OK', 200);
         }
 

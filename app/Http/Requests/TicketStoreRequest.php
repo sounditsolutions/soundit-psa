@@ -41,7 +41,7 @@ class TicketStoreRequest extends FormRequest
 
             if ($category && $subcategory) {
                 $validSubs = config("tickets.categories.{$category}", []);
-                if (!in_array($subcategory, $validSubs, true)) {
+                if (! in_array($subcategory, $validSubs, true)) {
                     $validator->errors()->add('subcategory', 'Invalid subcategory for the selected category.');
                 }
             }

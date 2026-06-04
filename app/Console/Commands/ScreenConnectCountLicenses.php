@@ -13,12 +13,14 @@ use Illuminate\Support\Facades\Log;
 class ScreenConnectCountLicenses extends Command
 {
     protected $signature = 'screenconnect:count-licenses';
+
     protected $description = 'Count ScreenConnect Access agents per client and update license records';
 
     public function handle(): int
     {
         if (! ScreenConnectConfig::isConfigured()) {
             $this->error('ScreenConnect is not configured.');
+
             return self::FAILURE;
         }
 

@@ -88,7 +88,9 @@ class PrepayBackfillFromHalo extends Command
         // Pre-compute CSV totals per halo contract for verification
         $csvTotals = [];
         foreach ($csvRows as $haloId => $rows) {
-            if ($haloId <= 0) continue;
+            if ($haloId <= 0) {
+                continue;
+            }
             $csvTotals[$haloId] = round($rows->sum('prepay_hours'), 2);
         }
 

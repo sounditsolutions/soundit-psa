@@ -24,6 +24,7 @@ class SyncStripeInvoices extends Command
     {
         if (! StripeConfig::isConfigured()) {
             $this->error('Stripe is not configured. Add API key in Settings → Integrations.');
+
             return self::FAILURE;
         }
 
@@ -79,7 +80,7 @@ class SyncStripeInvoices extends Command
                     $hasErrors = true;
                 }
             } catch (StripeClientException $e) {
-                $this->error('  Import failed: ' . $e->getMessage());
+                $this->error('  Import failed: '.$e->getMessage());
                 $hasErrors = true;
             }
         }
@@ -93,7 +94,7 @@ class SyncStripeInvoices extends Command
                     $hasErrors = true;
                 }
             } catch (StripeClientException $e) {
-                $this->error('  Push failed: ' . $e->getMessage());
+                $this->error('  Push failed: '.$e->getMessage());
                 $hasErrors = true;
             }
         }
@@ -104,7 +105,7 @@ class SyncStripeInvoices extends Command
                 $updated = $service->syncAllUnpaidInvoices();
                 $this->info("  Checked {$updated} invoice(s).");
             } catch (StripeClientException $e) {
-                $this->error('  Pull failed: ' . $e->getMessage());
+                $this->error('  Pull failed: '.$e->getMessage());
                 $hasErrors = true;
             }
         }

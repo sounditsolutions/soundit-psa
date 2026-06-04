@@ -32,6 +32,7 @@ class SyncQboItems extends Command
                 $this->info("Import complete: {$result['created']} created, {$result['updated']} updated, {$result['skipped']} unchanged.");
             } catch (QboClientException $e) {
                 $this->error("QBO import failed: {$e->getMessage()}");
+
                 return self::FAILURE;
             }
         }
