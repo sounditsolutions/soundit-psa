@@ -8,6 +8,7 @@ use App\Enums\TicketType;
 use App\Models\Asset;
 use App\Models\Client;
 use App\Models\Person;
+use App\Models\PhoneCall;
 use App\Models\Ticket;
 use App\Models\TicketNote;
 use App\Services\Cipp\CippClient;
@@ -55,6 +56,7 @@ class AssistantToolExecutor
             'list_my_tickets' => $this->listMyTickets($input),
             'list_open_tickets' => $this->listOpenTickets($input),
             'get_ticket_detail' => $this->getTicketDetail($input),
+            'get_ticket_calls' => $this->getTicketCalls($input),
             'get_queue_stats' => $this->getQueueStats(),
 
             // PSA tools (client-scoped)
@@ -236,6 +238,11 @@ class AssistantToolExecutor
             ->limit(10)
             ->get();
 
+        $calls = PhoneCall::where('ticket_id', $ticketId)
+            ->orderBy('started_at')
+            ->limit(20)
+            ->get();
+
         return [
             'id' => $ticket->id,
             'display_id' => $ticket->display_id,
@@ -256,6 +263,65 @@ class AssistantToolExecutor
                 'author' => $n->author?->name ?? $n->author_name ?? 'System',
                 'body' => mb_substr(strip_tags($n->body ?? ''), 0, 500),
                 'date' => $n->noted_at?->toDateTimeString(),
+            ])->toArray(),
+            // Compact call summary; full transcripts via get_ticket_calls.
+            'calls' => $calls->map(fn (PhoneCall $c) => [
+                'id' => $c->id,
+                'direction' => $c->direction?->value,
+                'status' => $c->status?->value,
+                'date' => $c->started_at?->toDateTimeString(),
+                'duration_seconds' => $c->duration,
+                'is_billable' => $c->is_billable,
+                'charge_classification' => $c->charge_classification?->value,
+                'sentiment_score' => $c->sentiment_score,
+                'summary' => $c->call_summary
+                    ? mb_substr($c->call_summary, 0, 500)
+                    : ($c->transcription_summary ? mb_substr($c->transcription_summary, 0, 500) : null),
+                'has_transcript' => $c->isTranscribed() && ($c->cleaned_transcript || $c->transcription),
+            ])->toArray(),
+        ];
+    }
+
+    private function getTicketCalls(array $input): array
+    {
+        $ticketId = $input['ticket_id'] ?? null;
+        if (! $ticketId) {
+            return ['error' => 'ticket_id is required'];
+        }
+
+        $ticket = Ticket::find($ticketId);
+        if (! $ticket) {
+            return ['error' => 'Ticket not found'];
+        }
+
+        $calls = PhoneCall::where('ticket_id', $ticketId)
+            ->with('person')
+            ->orderBy('started_at')
+            ->limit(20)
+            ->get();
+
+        return [
+            'ticket_id' => (int) $ticketId,
+            'display_id' => $ticket->display_id,
+            'call_count' => $calls->count(),
+            'calls' => $calls->map(fn (PhoneCall $c) => [
+                'id' => $c->id,
+                'direction' => $c->direction?->value,
+                'status' => $c->status?->value,
+                'from' => $c->from_number,
+                'to' => $c->to_number,
+                'contact' => $c->person?->fullName,
+                'date' => $c->started_at?->toDateTimeString(),
+                'duration_seconds' => $c->duration,
+                'is_billable' => $c->is_billable,
+                'charge_classification' => $c->charge_classification?->value,
+                'sentiment_score' => $c->sentiment_score,
+                'call_summary' => $c->call_summary,
+                'next_steps' => $c->next_steps,
+                'coaching_notes' => $c->coaching_notes,
+                'transcript' => ($t = $c->cleaned_transcript ?: $c->transcription)
+                    ? mb_substr($t, 0, 10000)
+                    : null,
             ])->toArray(),
         ];
     }
