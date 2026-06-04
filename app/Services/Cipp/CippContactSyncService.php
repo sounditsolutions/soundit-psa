@@ -104,7 +104,7 @@ class CippContactSyncService
                 $person = $this->syncUser($client, $userData, $objectId, $dryRun);
                 if ($person) {
                     $seenPersonIds[] = $person->id;
-                    $displayName = trim(($userData['givenName'] ?? $userData['GivenName'] ?? '') . ' ' . ($userData['surname'] ?? $userData['Surname'] ?? ''))
+                    $displayName = trim(($userData['givenName'] ?? $userData['GivenName'] ?? '').' '.($userData['surname'] ?? $userData['Surname'] ?? ''))
                         ?: ($userData['displayName'] ?? $userData['DisplayName'] ?? 'Unknown');
                     $email = $userData['mail'] ?? $userData['Mail'] ?? '';
 
@@ -260,7 +260,7 @@ class CippContactSyncService
     private function filterByGroup(array $users, string $tenantDomain, string $groupId): array
     {
         if (count($users) > 200) {
-            Log::warning("[CippContactSync] Tenant {$tenantDomain} has " . count($users) . ' users — skipping group filter (cap: 200)');
+            Log::warning("[CippContactSync] Tenant {$tenantDomain} has ".count($users).' users — skipping group filter (cap: 200)');
 
             return $users;
         }
@@ -290,7 +290,7 @@ class CippContactSyncService
             }
         }
 
-        Log::info("[CippContactSync] Group filter: " . count($filtered) . '/' . count($users) . " users matched group {$groupId}");
+        Log::info('[CippContactSync] Group filter: '.count($filtered).'/'.count($users)." users matched group {$groupId}");
 
         return $filtered;
     }

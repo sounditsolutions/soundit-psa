@@ -8,18 +8,18 @@ class AiConfig
 {
     private const DEFAULTS = [
         'anthropic' => 'claude-sonnet-4-6',
-        'openai'    => 'gpt-4o',
+        'openai' => 'gpt-4o',
     ];
 
     private static array $map = [
         'provider' => ['ai_provider', 'services.ai.provider', false],
-        'api_key'  => ['ai_api_key', 'services.ai.api_key', true],
-        'model'    => ['ai_model', 'services.ai.model', false],
+        'api_key' => ['ai_api_key', 'services.ai.api_key', true],
+        'model' => ['ai_model', 'services.ai.model', false],
     ];
 
     public static function get(string $key): ?string
     {
-        if (!isset(self::$map[$key])) {
+        if (! isset(self::$map[$key])) {
             return config("services.ai.{$key}");
         }
 

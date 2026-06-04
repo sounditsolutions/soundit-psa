@@ -16,6 +16,7 @@ class CippTest extends Command
     {
         if (! CippConfig::isConfigured()) {
             $this->error('CIPP is not configured. Add credentials in Settings → Integrations.');
+
             return self::FAILURE;
         }
 
@@ -36,10 +37,12 @@ class CippTest extends Command
             $tenants = $client->listTenants();
             $count = is_array($tenants) ? count($tenants) : 0;
             $this->info("Connected to CIPP! Found {$count} tenant(s).");
+
             return self::SUCCESS;
         }
 
         $this->error('Failed to connect to CIPP. Check your credentials.');
+
         return self::FAILURE;
     }
 }

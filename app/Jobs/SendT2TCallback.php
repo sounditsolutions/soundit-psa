@@ -14,7 +14,9 @@ class SendT2TCallback implements ShouldQueue
     use Queueable;
 
     public int $tries = 2;
+
     public int $timeout = 30;
+
     public array $backoff = [10, 60];
 
     public function __construct(
@@ -54,7 +56,7 @@ class SendT2TCallback implements ShouldQueue
             'notes' => '',
         ];
 
-        $url = $this->callbackUrl . '?' . http_build_query($queryParams);
+        $url = $this->callbackUrl.'?'.http_build_query($queryParams);
 
         try {
             $client = new GuzzleClient(['timeout' => 15]);

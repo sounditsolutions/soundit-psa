@@ -18,10 +18,10 @@ class ServosityClient
         $baseUrl = rtrim($this->config['base_url'] ?? 'https://api.servosity.com', '/');
 
         $this->http = new Client([
-            'base_uri' => $baseUrl . '/api/v1/',
+            'base_uri' => $baseUrl.'/api/v1/',
             'timeout' => 15,
             'headers' => [
-                'Authorization' => 'Token ' . ($this->config['api_token'] ?? ''),
+                'Authorization' => 'Token '.($this->config['api_token'] ?? ''),
                 'Accept' => 'application/json',
             ],
         ]);
@@ -168,8 +168,8 @@ class ServosityClient
     /**
      * Create a DR backup account.
      *
-     * @param array{company: int, device_name: string, product_type: string} $data
-     *   product_type: DR_DESKTOP, DR_SERVER, or DR_LINUX
+     * @param  array{company: int, device_name: string, product_type: string}  $data
+     *                                                                                product_type: DR_DESKTOP, DR_SERVER, or DR_LINUX
      */
     public function createDrBackup(array $data): array
     {
@@ -179,7 +179,7 @@ class ServosityClient
     /**
      * Create a credential entry for a company.
      *
-     * @param array{company: int, name: string, username: string, password: string, domain: string} $data
+     * @param  array{company: int, name: string, username: string, password: string, domain: string}  $data
      */
     public function createCredential(array $data): array
     {
@@ -207,7 +207,7 @@ class ServosityClient
     /**
      * Link an agent session to a company and/or backup account.
      *
-     * @param array{agent_session_id: string, company_id?: int, dr_backup_id?: int} $data
+     * @param  array{agent_session_id: string, company_id?: int, dr_backup_id?: int}  $data
      */
     public function agentLogin(array $data): array
     {

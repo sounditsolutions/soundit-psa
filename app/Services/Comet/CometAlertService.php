@@ -14,13 +14,19 @@ use Illuminate\Support\Facades\Log;
 class CometAlertService
 {
     private const STATUS_SUCCESS = 5000;
+
     private const STATUS_RUNNING = 6001;
+
     private const STATUS_WARNING = 7001;
+
     private const STATUS_ERROR = 7002;
+
     private const STATUS_CANCELLED = 7005;
 
     private const CLASS_BACKUP = 4;
+
     private const CLASS_RESTORE = 5;
+
     private const CLASS_RETENTION = 7;
 
     public function __construct(
@@ -29,8 +35,9 @@ class CometAlertService
 
     public function handleJobFailure(array $data): ?Alert
     {
-        if (!CometConfig::alertsEnabled()) {
+        if (! CometConfig::alertsEnabled()) {
             Log::debug('[Comet Alert] Alerts disabled, ignoring');
+
             return null;
         }
 
@@ -45,18 +52,20 @@ class CometAlertService
 
         if ($status !== self::STATUS_ERROR) {
             Log::debug('[Comet Alert] Non-error status, ignoring', ['status' => $status]);
+
             return null;
         }
 
         if ($classification !== self::CLASS_BACKUP) {
             Log::debug('[Comet Alert] Non-backup classification, ignoring', ['classification' => $classification]);
+
             return null;
         }
 
         $asset = $deviceId ? Asset::where('comet_device_id', $deviceId)->first() : null;
         $clientId = $asset?->client_id;
 
-        if (!$clientId) {
+        if (! $clientId) {
             Log::info('[Comet Alert] No client match for device, creating unlinked alert', [
                 'username' => $username,
                 'device_id' => $deviceId,
@@ -72,13 +81,13 @@ class CometAlertService
         // Build message
         $msgLines = ["Device: {$hostname}", "Job type: {$jobType}", 'Status: Failed'];
         if ($startTime) {
-            $msgLines[] = 'Started: ' . date('Y-m-d H:i:s', $startTime);
+            $msgLines[] = 'Started: '.date('Y-m-d H:i:s', $startTime);
         }
         if ($endTime) {
-            $msgLines[] = 'Ended: ' . date('Y-m-d H:i:s', $endTime);
+            $msgLines[] = 'Ended: '.date('Y-m-d H:i:s', $endTime);
         }
         if ($totalSize) {
-            $msgLines[] = 'Total size: ' . number_format($totalSize / (1024 ** 3), 2) . ' GB';
+            $msgLines[] = 'Total size: '.number_format($totalSize / (1024 ** 3), 2).' GB';
         }
         if ($fileErrors) {
             $msgLines[] = '';
@@ -136,7 +145,7 @@ class CometAlertService
             ->latest()
             ->first();
 
-        if (!$alert) {
+        if (! $alert) {
             return null;
         }
 

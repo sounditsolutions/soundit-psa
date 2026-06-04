@@ -4,9 +4,11 @@ namespace App\Console\Commands;
 
 use App\Models\Attachment;
 use Illuminate\Console\Command;
+
 class CleanOrphanAttachments extends Command
 {
     protected $signature = 'attachments:clean-orphans';
+
     protected $description = 'Delete unlinked attachments older than 24 hours';
 
     public function handle(): int

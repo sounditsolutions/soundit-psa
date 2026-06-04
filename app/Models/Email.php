@@ -42,13 +42,13 @@ class Email extends Model
     protected function casts(): array
     {
         return [
-            'direction'     => EmailDirection::class,
+            'direction' => EmailDirection::class,
             'to_recipients' => 'array',
             'cc_recipients' => 'array',
             'has_attachments' => 'boolean',
-            'is_read'       => 'boolean',
-            'received_at'   => 'datetime',
-            'dismissed_at'  => 'datetime',
+            'is_read' => 'boolean',
+            'received_at' => 'datetime',
+            'dismissed_at' => 'datetime',
         ];
     }
 
@@ -94,7 +94,7 @@ class Email extends Model
     public function scopeUnread(Builder $query): Builder
     {
         return $query->where('direction', EmailDirection::Inbound)
-                     ->where('is_read', false);
+            ->where('is_read', false);
     }
 
     public function scopeInbound(Builder $query): Builder
@@ -129,16 +129,16 @@ class Email extends Model
 
     public function scopeSearch(Builder $query, ?string $term): Builder
     {
-        if (!$term) {
+        if (! $term) {
             return $query;
         }
 
         return $query->where(function (Builder $q) use ($term) {
             $q->where('subject', 'like', "%{$term}%")
-              ->orWhere('from_address', 'like', "%{$term}%")
-              ->orWhere('from_name', 'like', "%{$term}%")
-              ->orWhere('body_text', 'like', "%{$term}%")
-              ->orWhere('body_preview', 'like', "%{$term}%");
+                ->orWhere('from_address', 'like', "%{$term}%")
+                ->orWhere('from_name', 'like', "%{$term}%")
+                ->orWhere('body_text', 'like', "%{$term}%")
+                ->orWhere('body_preview', 'like', "%{$term}%");
         });
     }
 
@@ -166,7 +166,7 @@ class Email extends Model
     public function primaryRecipientDisplay(): string
     {
         $first = $this->to_recipients[0] ?? null;
-        if (!$first) {
+        if (! $first) {
             return '—';
         }
 

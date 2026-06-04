@@ -59,7 +59,7 @@ class GeneralSettingsController extends Controller
         $prefix = config('billing.invoice_prefix', 'INV');
 
         return redirect()->route('settings.general')
-            ->with('success', "Invoice numbering will continue from {$prefix}-" . sprintf('%05d', $validated['next_number']) . ".");
+            ->with('success', "Invoice numbering will continue from {$prefix}-".sprintf('%05d', $validated['next_number']).'.');
     }
 
     public function updateBillingSkipZero(Request $request)

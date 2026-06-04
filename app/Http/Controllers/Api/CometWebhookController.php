@@ -29,6 +29,7 @@ class CometWebhookController extends Controller
 
                 if ($status === 7002) {
                     $alert = $this->alertService->handleJobFailure($jobData);
+
                     return response()->json([
                         'status' => 'processed',
                         'alert_id' => $alert?->id,
@@ -37,6 +38,7 @@ class CometWebhookController extends Controller
 
                 if ($status === 5000) {
                     $alert = $this->alertService->handleJobSuccess($jobData);
+
                     return response()->json([
                         'status' => 'processed',
                         'alert_id' => $alert?->id,
@@ -44,16 +46,19 @@ class CometWebhookController extends Controller
                 }
 
                 Log::debug('[Comet Webhook] Ignoring job status', ['status' => $status]);
+
                 return response()->json(['status' => 'ignored']);
             }
 
             Log::debug('[Comet Webhook] Ignoring event type', ['type' => $type]);
+
             return response()->json(['status' => 'ignored']);
 
         } catch (\Exception $e) {
             Log::error('[Comet Webhook] Error processing webhook', [
                 'error' => $e->getMessage(),
             ]);
+
             return response()->json(['status' => 'error', 'message' => $e->getMessage()], 500);
         }
     }

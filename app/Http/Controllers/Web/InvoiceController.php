@@ -14,8 +14,8 @@ use App\Models\Sku;
 use App\Services\InvoiceService;
 use App\Services\Qbo\QboClientException;
 use App\Services\Qbo\QboSyncService;
-use App\Services\Stripe\StripeClientException;
 use App\Services\Stripe\StripeClient;
+use App\Services\Stripe\StripeClientException;
 use App\Services\Stripe\StripeSyncService;
 use App\Support\StripeConfig;
 use Illuminate\Http\Request;
@@ -114,7 +114,7 @@ class InvoiceController extends Controller
             $qboBase = $qboEnv === 'sandbox'
                 ? 'https://app.sandbox.qbo.intuit.com'
                 : 'https://app.qbo.intuit.com';
-            $qboViewUrl = $qboBase . '/app/invoice?txnId=' . $invoice->qbo_invoice_id;
+            $qboViewUrl = $qboBase.'/app/invoice?txnId='.$invoice->qbo_invoice_id;
         }
 
         $stripeDashboardUrl = null;
@@ -123,7 +123,7 @@ class InvoiceController extends Controller
             $stripeBase = $stripeMode === 'live'
                 ? 'https://dashboard.stripe.com/invoices/'
                 : 'https://dashboard.stripe.com/test/invoices/';
-            $stripeDashboardUrl = $stripeBase . $invoice->stripe_invoice_id;
+            $stripeDashboardUrl = $stripeBase.$invoice->stripe_invoice_id;
         }
 
         return view('invoices.show', [
@@ -167,7 +167,7 @@ class InvoiceController extends Controller
             $syncService->pushInvoiceToQbo($invoice);
         } catch (QboClientException $e) {
             return redirect()->route('invoices.show', $invoice)
-                ->with('error', 'QBO sync failed: ' . $e->getMessage());
+                ->with('error', 'QBO sync failed: '.$e->getMessage());
         }
 
         return redirect()->route('invoices.show', $invoice)
@@ -180,7 +180,7 @@ class InvoiceController extends Controller
             $syncService->syncInvoiceStatusFromQbo($invoice);
         } catch (QboClientException $e) {
             return redirect()->route('invoices.show', $invoice)
-                ->with('error', 'QBO sync failed: ' . $e->getMessage());
+                ->with('error', 'QBO sync failed: '.$e->getMessage());
         }
 
         return redirect()->route('invoices.show', $invoice)
@@ -199,7 +199,7 @@ class InvoiceController extends Controller
             $service->pushInvoiceToStripe($invoice, $sendEmail);
         } catch (StripeClientException $e) {
             return redirect()->route('invoices.show', $invoice)
-                ->with('error', 'Stripe sync failed: ' . $e->getMessage());
+                ->with('error', 'Stripe sync failed: '.$e->getMessage());
         }
 
         $msg = $sendEmail
@@ -221,7 +221,7 @@ class InvoiceController extends Controller
             $service->syncInvoiceStatusFromStripe($invoice);
         } catch (StripeClientException $e) {
             return redirect()->route('invoices.show', $invoice)
-                ->with('error', 'Stripe sync failed: ' . $e->getMessage());
+                ->with('error', 'Stripe sync failed: '.$e->getMessage());
         }
 
         return redirect()->route('invoices.show', $invoice)
@@ -243,7 +243,7 @@ class InvoiceController extends Controller
             $client->sendInvoice($invoice->stripe_invoice_id);
         } catch (StripeClientException $e) {
             return redirect()->route('invoices.show', $invoice)
-                ->with('error', 'Failed to send email: ' . $e->getMessage());
+                ->with('error', 'Failed to send email: '.$e->getMessage());
         }
 
         return redirect()->route('invoices.show', $invoice)
@@ -266,7 +266,7 @@ class InvoiceController extends Controller
             $result = $service->importInvoicesFromStripe();
         } catch (\Throwable $e) {
             return redirect()->route('invoices.index')
-                ->with('error', 'Stripe invoice import failed: ' . $e->getMessage());
+                ->with('error', 'Stripe invoice import failed: '.$e->getMessage());
         }
 
         $skipped = $result->deactivated;
@@ -304,6 +304,7 @@ class InvoiceController extends Controller
                     case 'push':
                         if (! in_array($invoice->status, [InvoiceStatus::Draft, InvoiceStatus::PendingSync])) {
                             $skipped++;
+
                             continue 2;
                         }
                         if ($invoice->client?->stripe_customer_id && $stripeSyncService && ! $invoice->stripe_invoice_id) {
@@ -320,6 +321,7 @@ class InvoiceController extends Controller
                     case 'post':
                         if ($invoice->status !== InvoiceStatus::Draft) {
                             $skipped++;
+
                             continue 2;
                         }
                         $invoice->update(['status' => InvoiceStatus::Posted]);
@@ -329,6 +331,7 @@ class InvoiceController extends Controller
                     case 'void':
                         if ($invoice->status === InvoiceStatus::Void) {
                             $skipped++;
+
                             continue 2;
                         }
                         $invoice->update(['status' => InvoiceStatus::Void]);
@@ -359,7 +362,7 @@ class InvoiceController extends Controller
         }
 
         return redirect()->route('invoices.index')
-            ->with($failed > 0 ? 'warning' : 'success', implode(', ', $parts) . '.');
+            ->with($failed > 0 ? 'warning' : 'success', implode(', ', $parts).'.');
     }
 
     public function void(Invoice $invoice, QboSyncService $syncService)

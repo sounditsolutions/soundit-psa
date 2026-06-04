@@ -9,7 +9,6 @@ use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\SoftDeletes;
-use App\Models\Person;
 
 class Asset extends Model
 {
@@ -178,15 +177,15 @@ class Asset extends Model
 
     public function scopeSearch(Builder $query, ?string $term): Builder
     {
-        if (!$term) {
+        if (! $term) {
             return $query;
         }
 
         return $query->where(function (Builder $q) use ($term) {
             $q->where('name', 'like', "%{$term}%")
-              ->orWhere('hostname', 'like', "%{$term}%")
-              ->orWhere('serial_number', 'like', "%{$term}%")
-              ->orWhere('ip_address', 'like', "%{$term}%");
+                ->orWhere('hostname', 'like', "%{$term}%")
+                ->orWhere('serial_number', 'like', "%{$term}%")
+                ->orWhere('ip_address', 'like', "%{$term}%");
         });
     }
 
@@ -206,7 +205,7 @@ class Asset extends Model
             return $this->rmm_online ? 'Online' : 'Offline';
         }
 
-        if (!$this->last_seen_at) {
+        if (! $this->last_seen_at) {
             return 'Unknown';
         }
 
@@ -260,7 +259,7 @@ class Asset extends Model
      */
     public function resolveLastUserPerson(): ?Person
     {
-        if (!$this->last_user || !$this->client_id) {
+        if (! $this->last_user || ! $this->client_id) {
             return null;
         }
 
@@ -277,19 +276,25 @@ class Asset extends Model
         $scope = Person::where('client_id', $this->client_id);
 
         // Match by CIPP UPN (e.g., username@domain.com)
-        $match = (clone $scope)->where('cipp_upn', 'like', $username . '@%')->first();
-        if ($match) return $match;
+        $match = (clone $scope)->where('cipp_upn', 'like', $username.'@%')->first();
+        if ($match) {
+            return $match;
+        }
 
         // Match by email
-        $match = (clone $scope)->where('email', 'like', $username . '@%')->first();
-        if ($match) return $match;
+        $match = (clone $scope)->where('email', 'like', $username.'@%')->first();
+        if ($match) {
+            return $match;
+        }
 
         // Match by full name (case-insensitive)
         $match = (clone $scope)->whereRaw(
             "LOWER(CONCAT(first_name, ' ', last_name)) = ?",
             [strtolower($raw)]
         )->first();
-        if ($match) return $match;
+        if ($match) {
+            return $match;
+        }
 
         return null;
     }

@@ -29,7 +29,7 @@ class TacticalConfig
 
     public static function isConfigured(): bool
     {
-        return !empty(self::get('api_url')) && !empty(self::get('api_key'));
+        return ! empty(self::get('api_url')) && ! empty(self::get('api_key'));
     }
 
     public static function isEnabled(): bool

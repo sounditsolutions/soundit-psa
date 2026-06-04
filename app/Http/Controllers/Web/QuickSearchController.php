@@ -27,7 +27,7 @@ class QuickSearchController extends Controller
         $q = trim($request->input('q', ''));
 
         if (mb_strlen($q) >= 2) {
-            $like = '%' . $q . '%';
+            $like = '%'.$q.'%';
 
             $clients = Client::where('name', 'like', $like)
                 ->orderBy('name')
@@ -41,26 +41,26 @@ class QuickSearchController extends Controller
                 ]);
 
             $tickets = Ticket::where(function ($q2) use ($q, $like) {
-                    $q2->where('subject', 'like', $like);
-                    if (is_numeric($q)) {
-                        $q2->orWhere('id', $q);
-                    }
-                })
+                $q2->where('subject', 'like', $like);
+                if (is_numeric($q)) {
+                    $q2->orWhere('id', $q);
+                }
+            })
                 ->orderByDesc('updated_at')
                 ->limit(5)
                 ->get(['id', 'subject'])
                 ->map(fn ($t) => [
-                    'label' => $t->display_id . ' ' . \Illuminate\Support\Str::limit($t->subject, 40),
+                    'label' => $t->display_id.' '.\Illuminate\Support\Str::limit($t->subject, 40),
                     'url' => route('tickets.show', $t),
                     'type' => 'ticket',
                     'icon' => 'bi-ticket-perforated',
                 ]);
 
             $people = Person::where(function ($q2) use ($like) {
-                    $q2->where('first_name', 'like', $like)
-                       ->orWhere('last_name', 'like', $like)
-                       ->orWhereRaw("CONCAT(first_name, ' ', last_name) LIKE ?", [$like]);
-                })
+                $q2->where('first_name', 'like', $like)
+                    ->orWhere('last_name', 'like', $like)
+                    ->orWhereRaw("CONCAT(first_name, ' ', last_name) LIKE ?", [$like]);
+            })
                 ->orderBy('first_name')
                 ->limit(5)
                 ->get(['id', 'first_name', 'last_name'])
@@ -72,9 +72,9 @@ class QuickSearchController extends Controller
                 ]);
 
             $assets = Asset::where(function ($q2) use ($like) {
-                    $q2->where('hostname', 'like', $like)
-                       ->orWhere('name', 'like', $like);
-                })
+                $q2->where('hostname', 'like', $like)
+                    ->orWhere('name', 'like', $like);
+            })
                 ->orderBy('hostname')
                 ->limit(5)
                 ->get(['id', 'hostname', 'name'])

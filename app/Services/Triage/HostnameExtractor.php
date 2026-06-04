@@ -98,7 +98,7 @@ class HostnameExtractor
 
         // Pattern 3: Known-prefix bare — PC12, SRVSQL01, DESKTOPJOHN
         $prefixPattern = implode('|', self::BARE_HOSTNAME_PREFIXES);
-        if (preg_match_all('/\b(?:' . $prefixPattern . ')[A-Z0-9]+\b/', $upperText, $m)) {
+        if (preg_match_all('/\b(?:'.$prefixPattern.')[A-Z0-9]+\b/', $upperText, $m)) {
             $matches = array_merge($matches, $m[0]);
         }
 

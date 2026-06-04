@@ -43,7 +43,7 @@ class PortalTicketController extends Controller
         // 'all' = no status filter
 
         if ($search = $request->query('search')) {
-            $query->where('subject', 'like', '%' . $search . '%');
+            $query->where('subject', 'like', '%'.$search.'%');
         }
 
         $tickets = $query->latest('updated_at')->paginate(25)->withQueryString();
@@ -141,16 +141,16 @@ class PortalTicketController extends Controller
         ]);
 
         TicketNote::create([
-            'ticket_id'   => $ticket->id,
-            'author_id'   => null,
+            'ticket_id' => $ticket->id,
+            'author_id' => null,
             'author_name' => 'System',
-            'who_type'    => WhoType::System,
-            'body'        => "Confirmed resolved by {$person->full_name} via portal.",
-            'note_type'   => NoteType::StatusChange,
-            'is_private'  => true,
+            'who_type' => WhoType::System,
+            'body' => "Confirmed resolved by {$person->full_name} via portal.",
+            'note_type' => NoteType::StatusChange,
+            'is_private' => true,
             'status_from' => TicketStatus::Resolved,
-            'status_to'   => TicketStatus::Closed,
-            'noted_at'    => now(),
+            'status_to' => TicketStatus::Closed,
+            'noted_at' => now(),
         ]);
 
         return redirect()->route('portal.tickets.show', $ticket)
@@ -178,16 +178,16 @@ class PortalTicketController extends Controller
         ]);
 
         TicketNote::create([
-            'ticket_id'   => $ticket->id,
-            'author_id'   => null,
+            'ticket_id' => $ticket->id,
+            'author_id' => null,
             'author_name' => 'System',
-            'who_type'    => WhoType::System,
-            'body'        => "Reopened by {$person->full_name} via portal: still an issue.",
-            'note_type'   => NoteType::StatusChange,
-            'is_private'  => true,
+            'who_type' => WhoType::System,
+            'body' => "Reopened by {$person->full_name} via portal: still an issue.",
+            'note_type' => NoteType::StatusChange,
+            'is_private' => true,
             'status_from' => TicketStatus::Resolved,
-            'status_to'   => TicketStatus::InProgress,
-            'noted_at'    => now(),
+            'status_to' => TicketStatus::InProgress,
+            'noted_at' => now(),
         ]);
 
         // Also add their explanation as a public reply
@@ -220,7 +220,7 @@ class PortalTicketController extends Controller
 
         return response()->json([
             'url' => route('portal.attachments.show', [$attachment->id, $attachment->filename]),
-            'markdown' => "![{$attachment->original_filename}](" . route('portal.attachments.show', [$attachment->id, $attachment->filename]) . ")",
+            'markdown' => "![{$attachment->original_filename}](".route('portal.attachments.show', [$attachment->id, $attachment->filename]).')',
             'id' => $attachment->id,
         ]);
     }

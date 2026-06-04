@@ -89,7 +89,7 @@ class ActivityStreamService
 
         $items = collect();
         foreach ($activeSources as $type => $method) {
-            $items = $items->concat($this->{$method . 'Since'}($since));
+            $items = $items->concat($this->{$method.'Since'}($since));
         }
 
         return $items
@@ -146,7 +146,7 @@ class ActivityStreamService
             ->whereNull('email_id');
 
         // Dashboard: public notes only. Client/person scoped: include private notes for staff context.
-        if (!$clientId && !$personId) {
+        if (! $clientId && ! $personId) {
             $query->where('is_private', false);
         }
 

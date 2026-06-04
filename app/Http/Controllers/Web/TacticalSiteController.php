@@ -25,7 +25,7 @@ class TacticalSiteController extends Controller
             $clientName = $tc['name'] ?? 'Unknown';
             foreach ($tc['sites'] ?? [] as $site) {
                 $siteName = $site['name'] ?? 'Default';
-                $siteKey = $clientName . '|' . $siteName;
+                $siteKey = $clientName.'|'.$siteName;
                 $sites[] = [
                     'client_name' => $clientName,
                     'site_name' => $siteName,

@@ -27,7 +27,9 @@ use Illuminate\Support\Facades\Log;
 class McpStaffController extends Controller
 {
     private const PROTOCOL_VERSION = '2025-03-26';
+
     private const SERVER_NAME = 'PSA Staff';
+
     private const SERVER_VERSION = '1.0.0';
 
     public function handle(Request $request): JsonResponse
@@ -97,7 +99,7 @@ class McpStaffController extends Controller
             'id' => $id,
             'result' => [
                 'protocolVersion' => $params['protocolVersion'] ?? self::PROTOCOL_VERSION,
-                'capabilities' => ['tools' => new \stdClass()],
+                'capabilities' => ['tools' => new \stdClass],
                 'serverInfo' => [
                     'name' => self::SERVER_NAME,
                     'version' => self::SERVER_VERSION,
@@ -141,7 +143,7 @@ class McpStaffController extends Controller
         $clientIdOptionalFor = ['find_persons', 'find_assets'];
 
         $translated = array_map(function ($t) use ($generalNames, $clientIdOptionalFor) {
-            $schema = $t['input_schema'] ?? ['type' => 'object', 'properties' => new \stdClass()];
+            $schema = $t['input_schema'] ?? ['type' => 'object', 'properties' => new \stdClass];
             $isClientScoped = ! isset($generalNames[$t['name']]);
 
             if ($isClientScoped) {

@@ -43,7 +43,7 @@ class AttachmentController extends Controller
             abort(404);
         }
 
-        if (!Storage::disk('local')->exists($attachment->storage_path)) {
+        if (! Storage::disk('local')->exists($attachment->storage_path)) {
             abort(404);
         }
 
@@ -54,7 +54,7 @@ class AttachmentController extends Controller
             $attachment->original_filename,
             [
                 'Content-Type' => $attachment->mime_type,
-                'Content-Disposition' => "{$disposition}; filename=\"" . str_replace(['"', "\r", "\n"], '', $attachment->original_filename) . "\"",
+                'Content-Disposition' => "{$disposition}; filename=\"".str_replace(['"', "\r", "\n"], '', $attachment->original_filename).'"',
             ],
         );
     }

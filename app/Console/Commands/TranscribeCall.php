@@ -12,6 +12,7 @@ use Illuminate\Support\Facades\Log;
 class TranscribeCall extends Command
 {
     protected $signature = 'calls:transcribe {call : The phone call ID}';
+
     protected $description = 'Transcribe a phone call recording (runs without timeout constraints)';
 
     public function handle(TranscriptionService $service): int
@@ -24,11 +25,13 @@ class TranscribeCall extends Command
 
             if (! $call) {
                 $this->error("Call #{$callId} not found.");
+
                 return null;
             }
 
             if ($call->transcription_status === TranscriptionStatus::Processing) {
                 $this->warn("Call #{$callId} is already being transcribed.");
+
                 return null;
             }
 

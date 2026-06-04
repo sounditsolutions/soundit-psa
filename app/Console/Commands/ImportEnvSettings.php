@@ -35,12 +35,14 @@ class ImportEnvSettings extends Command
     {
         if ($value === null || $value === '') {
             $this->line("  <comment>skip</comment> {$key} — no value in config");
+
             return 0;
         }
 
         $existing = Setting::getValue($key);
-        if ($existing !== null && !$force) {
+        if ($existing !== null && ! $force) {
             $this->line("  <comment>skip</comment> {$key} — already set (use --force to overwrite)");
+
             return 0;
         }
 
@@ -52,6 +54,7 @@ class ImportEnvSettings extends Command
 
         $display = $encrypt ? str_repeat('*', 8) : $value;
         $this->line("  <info>saved</info> {$key} = {$display}");
+
         return 1;
     }
 }

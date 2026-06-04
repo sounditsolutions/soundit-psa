@@ -12,7 +12,7 @@ class AssetService
         $query = Asset::query()->with(['client', 'users' => fn ($q) => $q->wherePivot('is_primary', true)]);
 
         // Include soft-deleted assets if requested
-        if (!empty($filters['show_deleted'])) {
+        if (! empty($filters['show_deleted'])) {
             $query->withTrashed();
         }
 
@@ -20,7 +20,7 @@ class AssetService
         // When show_deleted is on, include inactive trashed records automatically
         // (Ninja sets is_active=false alongside soft-delete)
         if (empty($filters['show_inactive'])) {
-            if (!empty($filters['show_deleted'])) {
+            if (! empty($filters['show_deleted'])) {
                 $query->where(fn ($q) => $q->where('assets.is_active', true)->orWhereNotNull('assets.deleted_at'));
             } else {
                 $query->where('assets.is_active', true);
@@ -28,22 +28,22 @@ class AssetService
         }
 
         // Search
-        if (!empty($filters['search'])) {
+        if (! empty($filters['search'])) {
             $query->search($filters['search']);
         }
 
         // Client
-        if (!empty($filters['client_id'])) {
+        if (! empty($filters['client_id'])) {
             $query->where('assets.client_id', $filters['client_id']);
         }
 
         // Asset type
-        if (!empty($filters['asset_type'])) {
+        if (! empty($filters['asset_type'])) {
             $query->where('asset_type', $filters['asset_type']);
         }
 
         // Status (rmm_online column)
-        if (!empty($filters['status'])) {
+        if (! empty($filters['status'])) {
             match ($filters['status']) {
                 'online' => $query->where('rmm_online', true),
                 'offline' => $query->where('rmm_online', false),
@@ -53,7 +53,7 @@ class AssetService
         }
 
         // RMM linkage
-        if (!empty($filters['rmm'])) {
+        if (! empty($filters['rmm'])) {
             if ($filters['rmm'] === 'linked') {
                 $query->where(fn ($q) => $q->whereNotNull('ninja_id')->orWhereNotNull('level_id'));
             } elseif ($filters['rmm'] === 'unlinked') {
@@ -62,7 +62,7 @@ class AssetService
         }
 
         // User assignment
-        if (!empty($filters['user_assignment'])) {
+        if (! empty($filters['user_assignment'])) {
             if ($filters['user_assignment'] === 'unassigned') {
                 $query->whereDoesntHave('users');
             } elseif ($filters['user_assignment'] === 'assigned') {
@@ -104,7 +104,6 @@ class AssetService
 
         return $query->paginate(50)->withQueryString();
     }
-
 
     public function createAsset(array $data): Asset
     {

@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\Log;
 class NinjaClient
 {
     private const TOKEN_CACHE_KEY = 'ninja_api_token';
+
     private const TOKEN_SAFETY_MARGIN = 60; // seconds before expiry to refresh
 
     private Client $http;
@@ -20,7 +21,7 @@ class NinjaClient
     ) {
         $this->http = new Client([
             'base_uri' => rtrim($this->config['base_url'] ?? 'https://app.ninjarmm.com', '/'),
-            'timeout'  => $this->config['request_timeout'] ?? 30,
+            'timeout' => $this->config['request_timeout'] ?? 30,
         ]);
     }
 
@@ -41,6 +42,7 @@ class NinjaClient
     {
         try {
             $this->getToken();
+
             return true;
         } catch (NinjaClientException) {
             return false;
@@ -353,7 +355,7 @@ class NinjaClient
         $token = $this->getToken();
 
         $options['headers'] = array_merge($options['headers'] ?? [], [
-            'Authorization' => 'Bearer ' . $token,
+            'Authorization' => 'Bearer '.$token,
         ]);
 
         $maxRetries = 3;
@@ -371,7 +373,8 @@ class NinjaClient
                 if ($statusCode === 401 && $attempt === 0) {
                     $this->cache->forget(self::TOKEN_CACHE_KEY);
                     $freshToken = $this->getToken();
-                    $options['headers']['Authorization'] = 'Bearer ' . $freshToken;
+                    $options['headers']['Authorization'] = 'Bearer '.$freshToken;
+
                     continue;
                 }
 
@@ -387,6 +390,7 @@ class NinjaClient
                     ]);
 
                     sleep($waitSeconds);
+
                     continue;
                 }
 
@@ -425,17 +429,17 @@ class NinjaClient
         $clientId = $this->config['client_id'] ?? null;
         $clientSecret = $this->config['client_secret'] ?? null;
 
-        if (!$clientId || !$clientSecret) {
+        if (! $clientId || ! $clientSecret) {
             throw new NinjaClientException('NinjaRMM API credentials not configured');
         }
 
         try {
             $response = $this->http->post('/ws/oauth/token', [
                 'form_params' => [
-                    'grant_type'    => 'client_credentials',
-                    'client_id'     => $clientId,
+                    'grant_type' => 'client_credentials',
+                    'client_id' => $clientId,
                     'client_secret' => $clientSecret,
-                    'scope'         => $this->config['scope'] ?? 'monitoring',
+                    'scope' => $this->config['scope'] ?? 'monitoring',
                 ],
                 'timeout' => $this->config['token_timeout'] ?? 10,
             ]);
@@ -444,14 +448,14 @@ class NinjaClient
                 'error' => $e->getMessage(),
             ]);
             throw new NinjaClientException(
-                'Failed to obtain NinjaRMM API token: ' . $e->getMessage(),
+                'Failed to obtain NinjaRMM API token: '.$e->getMessage(),
             );
         }
 
         $data = json_decode((string) $response->getBody(), true);
         $token = $data['access_token'] ?? null;
 
-        if (!$token) {
+        if (! $token) {
             throw new NinjaClientException(
                 'NinjaRMM API token response did not contain access_token',
             );
@@ -467,7 +471,6 @@ class NinjaClient
      * Convert a Guzzle exception into a NinjaClientException.
      *
      * @throws NinjaClientException
-     * @return never
      */
     private function throwFromGuzzle(GuzzleException $e, string $method, string $endpoint): never
     {
@@ -480,10 +483,10 @@ class NinjaClient
         }
 
         Log::error('NinjaRMM API request failed', [
-            'method'   => $method,
+            'method' => $method,
             'endpoint' => $endpoint,
-            'status'   => $statusCode,
-            'error'    => $e->getMessage(),
+            'status' => $statusCode,
+            'error' => $e->getMessage(),
         ]);
 
         throw new NinjaClientException(

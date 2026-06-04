@@ -4,13 +4,12 @@ namespace App\Http\Controllers\Web;
 
 use App\Enums\CallStatus;
 use App\Enums\NoteType;
+use App\Enums\TicketPriority;
 use App\Enums\TicketSource;
 use App\Enums\TicketStatus;
 use App\Enums\TicketType;
-use App\Enums\TicketPriority;
 use App\Enums\TranscriptionStatus;
 use App\Http\Controllers\Controller;
-use Illuminate\Support\Facades\Process;
 use App\Models\Asset;
 use App\Models\Client;
 use App\Models\Person;
@@ -23,10 +22,11 @@ use App\Services\PhoneCallService;
 use App\Services\TicketService;
 use App\Support\AiConfig;
 use App\Support\TranscriptionConfig;
-use Illuminate\Support\Facades\Log;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Process;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rule;
 
@@ -68,10 +68,10 @@ class CallController extends Controller
             $recentTickets = Ticket::where('client_id', $call->client_id)
                 ->where(function ($q) {
                     $q->open()
-                      ->orWhere(function ($q2) {
-                          $q2->whereIn('status', [TicketStatus::Resolved, TicketStatus::Closed])
-                             ->where('updated_at', '>=', now()->subDays(7));
-                      });
+                        ->orWhere(function ($q2) {
+                            $q2->whereIn('status', [TicketStatus::Resolved, TicketStatus::Closed])
+                                ->where('updated_at', '>=', now()->subDays(7));
+                        });
                 })
                 ->orderByDesc('updated_at')
                 ->limit(20)
@@ -103,7 +103,7 @@ class CallController extends Controller
             ->orderByDesc('started_at')
             ->first();
 
-        if (!$call) {
+        if (! $call) {
             return response()->json(['call' => null]);
         }
 
@@ -114,10 +114,10 @@ class CallController extends Controller
             $recentTickets = Ticket::where('client_id', $call->client_id)
                 ->where(function ($q) {
                     $q->open()
-                      ->orWhere(function ($q2) {
-                          $q2->whereIn('status', [TicketStatus::Resolved, TicketStatus::Closed])
-                             ->where('updated_at', '>=', now()->subDays(7));
-                      });
+                        ->orWhere(function ($q2) {
+                            $q2->whereIn('status', [TicketStatus::Resolved, TicketStatus::Closed])
+                                ->where('updated_at', '>=', now()->subDays(7));
+                        });
                 })
                 ->orderByDesc('updated_at')
                 ->limit(5)
@@ -248,19 +248,19 @@ class CallController extends Controller
         $suggestions = $this->buildTicketSuggestions($call);
 
         return view('calls.create-ticket', [
-            'call'                => $call,
-            'defaultSubject'      => $suggestions['subject'],
-            'defaultDescription'  => $suggestions['description'],
-            'defaultType'         => $suggestions['type'],
-            'defaultPriority'     => $suggestions['priority'],
-            'defaultAssetId'      => $suggestions['asset_id'],
-            'defaultCategory'     => $suggestions['category'],
-            'defaultSubcategory'  => $suggestions['subcategory'],
-            'clients'        => Client::active()->orderBy('name')->get(['id', 'name']),
-            'users'          => User::active()->orderBy('name')->get(['id', 'name']),
-            'types'          => TicketType::cases(),
-            'priorities'     => TicketPriority::cases(),
-            'categories'     => config('tickets.categories', []),
+            'call' => $call,
+            'defaultSubject' => $suggestions['subject'],
+            'defaultDescription' => $suggestions['description'],
+            'defaultType' => $suggestions['type'],
+            'defaultPriority' => $suggestions['priority'],
+            'defaultAssetId' => $suggestions['asset_id'],
+            'defaultCategory' => $suggestions['category'],
+            'defaultSubcategory' => $suggestions['subcategory'],
+            'clients' => Client::active()->orderBy('name')->get(['id', 'name']),
+            'users' => User::active()->orderBy('name')->get(['id', 'name']),
+            'types' => TicketType::cases(),
+            'priorities' => TicketPriority::cases(),
+            'categories' => config('tickets.categories', []),
         ]);
     }
 
@@ -269,17 +269,17 @@ class CallController extends Controller
         $categoryKeys = array_keys(config('tickets.categories', []));
 
         $validated = $request->validate([
-            'subject'     => ['required', 'string', 'max:255'],
+            'subject' => ['required', 'string', 'max:255'],
             'description' => ['nullable', 'string'],
-            'client_id'   => ['required', 'exists:clients,id'],
-            'contact_id'  => ['nullable', 'exists:people,id'],
-            'asset_id'    => ['nullable', 'exists:assets,id'],
-            'type'        => ['required', Rule::enum(TicketType::class)],
-            'priority'    => ['required', Rule::enum(TicketPriority::class)],
-            'category'    => ['nullable', 'string', 'max:100', Rule::in($categoryKeys)],
+            'client_id' => ['required', 'exists:clients,id'],
+            'contact_id' => ['nullable', 'exists:people,id'],
+            'asset_id' => ['nullable', 'exists:assets,id'],
+            'type' => ['required', Rule::enum(TicketType::class)],
+            'priority' => ['required', Rule::enum(TicketPriority::class)],
+            'category' => ['nullable', 'string', 'max:100', Rule::in($categoryKeys)],
             'subcategory' => ['nullable', 'string', 'max:100'],
             'assignee_id' => ['nullable', 'exists:users,id'],
-            'due_at'      => ['nullable', 'date'],
+            'due_at' => ['nullable', 'date'],
         ]);
 
         $validated['source'] = TicketSource::Phone->value;
@@ -305,6 +305,7 @@ class CallController extends Controller
 
         if ($ticket === null) {
             $call->refresh();
+
             return redirect()->route('tickets.show', $call->ticket_id)
                 ->with('info', 'This call is already linked to a ticket.');
         }
@@ -347,7 +348,7 @@ class CallController extends Controller
         }
 
         return redirect()->route('calls.show', $call)
-            ->with('success', 'Call linked to ticket ' . ($ticket?->display_id ?? $validated['ticket_id']));
+            ->with('success', 'Call linked to ticket '.($ticket?->display_id ?? $validated['ticket_id']));
     }
 
     public function unlinkTicket(PhoneCall $call): RedirectResponse
@@ -383,11 +384,11 @@ class CallController extends Controller
 
     public function transcribe(PhoneCall $call): RedirectResponse
     {
-        if (!$call->recording_url) {
+        if (! $call->recording_url) {
             return redirect()->back()->with('error', 'No recording available for this call.');
         }
 
-        if (!TranscriptionConfig::isConfigured()) {
+        if (! TranscriptionConfig::isConfigured()) {
             return redirect()->back()->with('error', 'Transcription is not configured. Add an OpenAI API key in Settings > Integrations.');
         }
 
@@ -439,19 +440,19 @@ class CallController extends Controller
 
     public function appendTranscriptionToTicket(PhoneCall $call): RedirectResponse
     {
-        if (!$call->call_summary) {
+        if (! $call->call_summary) {
             return redirect()->back()->with('error', 'No transcription summary available.');
         }
 
-        if (!$call->ticket_id) {
+        if (! $call->ticket_id) {
             return redirect()->back()->with('error', 'This call is not linked to a ticket.');
         }
 
         $call->load('ticket');
 
-        $content = "## Call Summary\n" . $call->call_summary;
+        $content = "## Call Summary\n".$call->call_summary;
         if ($call->next_steps) {
-            $content .= "\n\n## Next Steps\n" . $call->next_steps;
+            $content .= "\n\n## Next Steps\n".$call->next_steps;
         }
 
         $this->ticketService->addNote(
@@ -505,17 +506,17 @@ class CallController extends Controller
 
         $assetMenu = $assets->map(fn ($a) => ($a->hostname ?: $a->name))->filter()->values()->all();
 
-        $system = "You are pre-filling fields on a helpdesk ticket form from a phone call. "
-            . "Respond with JSON only — no prose, no markdown fences. "
-            . "Schema: {subject, type, priority, category, subcategory, asset}.\n\n"
-            . "Field rules:\n"
-            . "- subject: 6-10 word descriptive summary, no caller name, no period.\n"
-            . "- type: one of " . json_encode(array_map(fn ($t) => $t->value, TicketType::cases())) . ".\n"
-            . "- priority: one of [p1,p2,p3,p4]. p1=critical/outage, p2=major impact/urgent, p3=normal, p4=minor.\n"
-            . "- category + subcategory: pick from menu below, or null for either. Subcategory must belong to the chosen category.\n"
-            . "- asset: pick the exact hostname from the asset menu if the call clearly references one device, else null.\n\n"
-            . "Categories menu: " . json_encode($categories) . "\n"
-            . "Asset menu for this client: " . json_encode($assetMenu);
+        $system = 'You are pre-filling fields on a helpdesk ticket form from a phone call. '
+            .'Respond with JSON only — no prose, no markdown fences. '
+            ."Schema: {subject, type, priority, category, subcategory, asset}.\n\n"
+            ."Field rules:\n"
+            ."- subject: 6-10 word descriptive summary, no caller name, no period.\n"
+            .'- type: one of '.json_encode(array_map(fn ($t) => $t->value, TicketType::cases())).".\n"
+            ."- priority: one of [p1,p2,p3,p4]. p1=critical/outage, p2=major impact/urgent, p3=normal, p4=minor.\n"
+            ."- category + subcategory: pick from menu below, or null for either. Subcategory must belong to the chosen category.\n"
+            ."- asset: pick the exact hostname from the asset menu if the call clearly references one device, else null.\n\n"
+            .'Categories menu: '.json_encode($categories)."\n"
+            .'Asset menu for this client: '.json_encode($assetMenu);
 
         try {
             $result = app(AiClient::class)->completeJson($system, "Call content:\n{$source}", 400);
@@ -524,6 +525,7 @@ class CallController extends Controller
                 'call_id' => $call->id,
                 'error' => $e->getMessage(),
             ]);
+
             return $defaults;
         }
 
@@ -563,8 +565,7 @@ class CallController extends Controller
         // Asset — match hostname back to ID
         $assetHint = $result['asset'] ?? null;
         if (is_string($assetHint) && $assetHint !== '') {
-            $match = $assets->first(fn ($a) =>
-                strcasecmp($a->hostname ?? '', $assetHint) === 0
+            $match = $assets->first(fn ($a) => strcasecmp($a->hostname ?? '', $assetHint) === 0
                 || strcasecmp($a->name ?? '', $assetHint) === 0
             );
             if ($match) {
@@ -583,7 +584,8 @@ class CallController extends Controller
         if ($call->client) {
             return "{$call->client->name} (inbound call)";
         }
-        return 'Call from ' . \App\Support\PhoneNumber::format($call->from_number);
+
+        return 'Call from '.\App\Support\PhoneNumber::format($call->from_number);
     }
 
     private function buildCallerSuffix(PhoneCall $call): string
@@ -597,6 +599,7 @@ class CallController extends Controller
         if ($call->person) {
             return $call->person->fullName;
         }
+
         return '';
     }
 }

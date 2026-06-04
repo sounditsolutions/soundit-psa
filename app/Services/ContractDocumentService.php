@@ -16,6 +16,7 @@ use Smalot\PdfParser\Parser as PdfParser;
 class ContractDocumentService
 {
     private const MAX_EXTRACTED_TEXT = 50_000;
+
     private const MIN_EXTRACTED_TEXT = 50;
 
     private const CONTRACT_SUMMARY_PROMPT = <<<'PROMPT'
@@ -93,7 +94,7 @@ PROMPT;
     public function extractText(string $absolutePath): ?string
     {
         try {
-            $parser = new PdfParser();
+            $parser = new PdfParser;
             $pdf = $parser->parseFile($absolutePath);
             $text = $pdf->getText();
 
@@ -134,7 +135,7 @@ PROMPT;
             $contract = $document->contract()->with('profiles.lines')->first();
             $userContent = $this->buildUserContent($document, $contract);
 
-            $aiClient = new AiClient();
+            $aiClient = new AiClient;
             $response = $aiClient->complete(
                 self::CONTRACT_SUMMARY_PROMPT,
                 $userContent,
@@ -189,10 +190,10 @@ PROMPT;
     {
         $lines = [
             "Contract: {$contract->name}",
-            'Type: ' . $contract->type->label(),
-            'Status: ' . $contract->status->label(),
-            'Start: ' . $contract->start_date->format('Y-m-d'),
-            'End: ' . ($contract->end_date?->format('Y-m-d') ?? 'None'),
+            'Type: '.$contract->type->label(),
+            'Status: '.$contract->status->label(),
+            'Start: '.$contract->start_date->format('Y-m-d'),
+            'End: '.($contract->end_date?->format('Y-m-d') ?? 'None'),
         ];
 
         // Recurring profile line items (definitive source of billed services)
@@ -211,7 +212,7 @@ PROMPT;
             if ($lastNewline !== false && $lastNewline > self::MAX_EXTRACTED_TEXT * 0.8) {
                 $cut = substr($cut, 0, $lastNewline);
             }
-            $docText = $cut . "\n[TRUNCATED — document exceeded " . number_format(self::MAX_EXTRACTED_TEXT) . ' characters]';
+            $docText = $cut."\n[TRUNCATED — document exceeded ".number_format(self::MAX_EXTRACTED_TEXT).' characters]';
         }
         $lines[] = '';
         $lines[] = "<document_text filename=\"{$document->original_filename}\">";
@@ -222,11 +223,11 @@ PROMPT;
 
         // For re-summarization, include existing summary
         if ($document->ai_summary) {
-            return "The existing summary for this contract may be incomplete or outdated. "
-                . "Generate an improved summary using the contract document and recurring profile data below. "
-                . "Incorporate any valid information from the existing summary.\n\n"
-                . "EXISTING SUMMARY:\n{$document->ai_summary}\n\n"
-                . "CONTRACT DATA:\n{$content}";
+            return 'The existing summary for this contract may be incomplete or outdated. '
+                .'Generate an improved summary using the contract document and recurring profile data below. '
+                ."Incorporate any valid information from the existing summary.\n\n"
+                ."EXISTING SUMMARY:\n{$document->ai_summary}\n\n"
+                ."CONTRACT DATA:\n{$content}";
         }
 
         return "Generate a concise summary for this contract:\n\n{$content}";

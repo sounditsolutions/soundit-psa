@@ -25,7 +25,7 @@ class QboController extends Controller
         $expectedState = session('qbo_oauth_state');
         $receivedState = $request->query('state');
 
-        if (!$expectedState || $expectedState !== $receivedState) {
+        if (! $expectedState || $expectedState !== $receivedState) {
             \Illuminate\Support\Facades\Log::warning('[QBO OAuth] State mismatch', [
                 'expected' => $expectedState,
                 'received' => $receivedState,
@@ -51,7 +51,7 @@ class QboController extends Controller
         $code = $request->query('code');
         $realmId = $request->query('realmId');
 
-        if (!$code || !$realmId) {
+        if (! $code || ! $realmId) {
             return redirect()->route('settings.integrations')
                 ->with('error', 'QuickBooks authorization was cancelled or failed.');
         }
@@ -60,7 +60,7 @@ class QboController extends Controller
             $qboClient->exchangeCode($code, $realmId);
         } catch (QboClientException $e) {
             return redirect()->route('settings.integrations')
-                ->with('error', 'Failed to connect to QuickBooks: ' . $e->getMessage());
+                ->with('error', 'Failed to connect to QuickBooks: '.$e->getMessage());
         }
 
         return redirect()->route('settings.integrations')
@@ -92,6 +92,7 @@ class QboController extends Controller
     {
         try {
             $customers = $syncService->fetchQboCustomers();
+
             return response()->json($customers);
         } catch (QboClientException) {
             return response()->json([], 503);

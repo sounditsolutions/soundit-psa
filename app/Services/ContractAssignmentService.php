@@ -5,7 +5,6 @@ namespace App\Services;
 use App\Models\Asset;
 use App\Models\Contract;
 use App\Models\ContractActivity;
-use App\Models\ContractAssignmentRule;
 use App\Models\License;
 use App\Models\Person;
 use Illuminate\Support\Collection;

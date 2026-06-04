@@ -10,6 +10,7 @@ use Illuminate\Console\Command;
 class EmailReprocessUnmatched extends Command
 {
     protected $signature = 'emails:reprocess-unmatched';
+
     protected $description = 'Run the inbound processing pipeline on unlinked emails to match them to tickets';
 
     public function handle(EmailService $emailService): int
@@ -20,6 +21,7 @@ class EmailReprocessUnmatched extends Command
 
         if ($total === 0) {
             $this->info('No unlinked inbound emails found.');
+
             return self::SUCCESS;
         }
 

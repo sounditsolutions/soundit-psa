@@ -27,12 +27,12 @@ return new class extends Migration
             ->orderBy('id')
             ->each(function ($ticket) {
                 DB::table('ticket_asset')->insertOrIgnore([
-                    'ticket_id'     => $ticket->id,
-                    'asset_id'      => $ticket->asset_id,
-                    'is_primary'    => true,
+                    'ticket_id' => $ticket->id,
+                    'asset_id' => $ticket->asset_id,
+                    'is_primary' => true,
                     'halo_asset_id' => null,
-                    'created_at'    => now(),
-                    'updated_at'    => now(),
+                    'created_at' => now(),
+                    'updated_at' => now(),
                 ]);
             });
 

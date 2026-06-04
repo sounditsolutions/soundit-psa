@@ -210,7 +210,7 @@ class Ticket extends Model
 
     public function scopeSearch(Builder $query, ?string $term): Builder
     {
-        if (!$term) {
+        if (! $term) {
             return $query;
         }
 
@@ -233,6 +233,7 @@ class Ticket extends Model
 
             if (empty($tokens)) {
                 $outer->orWhere('subject', 'like', "%{$term}%");
+
                 return;
             }
 
@@ -251,7 +252,7 @@ class Ticket extends Model
                                     ->whereColumn('ticket_asset.ticket_id', 'tickets.id')
                                     ->where(function ($a) use ($token) {
                                         $a->where('assets.hostname', 'like', "%{$token}%")
-                                          ->orWhere('assets.name', 'like', "%{$token}%");
+                                            ->orWhere('assets.name', 'like', "%{$token}%");
                                     });
                             });
                     });
@@ -292,12 +293,12 @@ class Ticket extends Model
 
     public function isOverdue(): bool
     {
-        return $this->due_at && now()->gt($this->due_at) && !$this->resolved_at;
+        return $this->due_at && now()->gt($this->due_at) && ! $this->resolved_at;
     }
 
     public function isResponseOverdue(): bool
     {
-        return $this->response_due_at && !$this->responded_at && now()->gt($this->response_due_at);
+        return $this->response_due_at && ! $this->responded_at && now()->gt($this->response_due_at);
     }
 
     public function isSlaBreach(): bool

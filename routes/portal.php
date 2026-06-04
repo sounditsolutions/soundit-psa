@@ -81,11 +81,11 @@ Route::middleware(['portal.enabled', 'portal.auth', 'portal.scope'])->group(func
                 ->where('client_id', $clientId)->exists();
         }
 
-        if (!$allowed) {
+        if (! $allowed) {
             abort(403);
         }
 
-        if (!\Illuminate\Support\Facades\Storage::disk('local')->exists($attachment->storage_path)) {
+        if (! \Illuminate\Support\Facades\Storage::disk('local')->exists($attachment->storage_path)) {
             abort(404);
         }
 
@@ -96,7 +96,7 @@ Route::middleware(['portal.enabled', 'portal.auth', 'portal.scope'])->group(func
             $attachment->original_filename,
             [
                 'Content-Type' => $attachment->mime_type,
-                'Content-Disposition' => "{$disposition}; filename=\"" . str_replace(['"', "\r", "\n"], '', $attachment->original_filename) . "\"",
+                'Content-Disposition' => "{$disposition}; filename=\"".str_replace(['"', "\r", "\n"], '', $attachment->original_filename).'"',
             ],
         );
     })->name('portal.attachments.show');

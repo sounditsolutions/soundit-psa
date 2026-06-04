@@ -4,7 +4,6 @@ namespace App\Services\Ninja;
 
 use App\Enums\AlertSeverity;
 use App\Enums\AlertSource;
-use App\Enums\AlertStatus;
 use App\Models\Alert;
 use App\Models\Asset;
 use App\Services\AlertService;
@@ -52,7 +51,7 @@ class NinjaAlertService
 
         $hostname = $asset?->hostname ?? "Device #{$deviceId}";
         $unifiedSeverity = AlertSeverity::fromVendor(AlertSource::Ninja, $severity);
-        $title = ($conditionName ?: 'Alert') . " on {$hostname}";
+        $title = ($conditionName ?: 'Alert')." on {$hostname}";
 
         $alert = $this->alertService->upsert(
             AlertSource::Ninja,

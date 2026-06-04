@@ -69,7 +69,7 @@ class HuntressConfig
     public static function generateApiKey(): array
     {
         return [
-            'host' => preg_replace('#^https?://#', '', rtrim(config('app.url'), '/') . '/api/huntress'),
+            'host' => preg_replace('#^https?://#', '', rtrim(config('app.url'), '/').'/api/huntress'),
             'company_id' => 'SoundPSA',
             'public_key' => bin2hex(random_bytes(8)),
             'private_key' => bin2hex(random_bytes(16)),

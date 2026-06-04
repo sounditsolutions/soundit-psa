@@ -10,6 +10,7 @@ use Illuminate\Console\Command;
 class EmailTestConnection extends Command
 {
     protected $signature = 'email:test-connection';
+
     protected $description = 'Test Microsoft Graph API connectivity and mailbox access';
 
     public function handle(GraphClient $graph): int
@@ -17,20 +18,23 @@ class EmailTestConnection extends Command
         $this->info('Testing Microsoft Graph API connection...');
 
         try {
-            if (!$graph->isHealthy()) {
+            if (! $graph->isHealthy()) {
                 $this->error('Failed to authenticate with Graph API.');
+
                 return self::FAILURE;
             }
             $this->info('Authentication successful.');
         } catch (GraphClientException $e) {
-            $this->error('Authentication failed: ' . $e->getMessage());
+            $this->error('Authentication failed: '.$e->getMessage());
+
             return self::FAILURE;
         }
 
         $mailbox = Setting::getValue('graph_mailbox');
-        if (!$mailbox) {
+        if (! $mailbox) {
             $this->warn('No mailbox configured (graph_mailbox setting is empty).');
             $this->warn('Set it in Settings > Integrations > Microsoft Graph.');
+
             return self::SUCCESS;
         }
 
@@ -38,7 +42,7 @@ class EmailTestConnection extends Command
 
         try {
             $messages = $graph->get("users/{$mailbox}/mailFolders/inbox/messages", [
-                '$top'    => 1,
+                '$top' => 1,
                 '$select' => 'id,subject,from,receivedDateTime',
             ]);
 
@@ -60,7 +64,7 @@ class EmailTestConnection extends Command
 
             return self::SUCCESS;
         } catch (GraphClientException $e) {
-            $this->error('Mailbox access failed: ' . $e->getMessage());
+            $this->error('Mailbox access failed: '.$e->getMessage());
 
             if ($e->getHttpStatus() === 403) {
                 $this->warn('Ensure Mail.Read application permission is granted with admin consent.');

@@ -215,7 +215,7 @@ class T2TFieldMapper
             'identifier' => $identifier,
             'name' => $name,
             '_info' => [
-                'company_href' => self::apiBaseUrl() . '/company/companies/' . $id,
+                'company_href' => self::apiBaseUrl().'/company/companies/'.$id,
             ],
         ];
     }

@@ -157,19 +157,19 @@ class Person extends Authenticatable
 
     public function scopeSearch(Builder $query, ?string $term): Builder
     {
-        if (!$term) {
+        if (! $term) {
             return $query;
         }
 
         return $query->where(function (Builder $q) use ($term) {
             $q->where('first_name', 'like', "%{$term}%")
-              ->orWhere('last_name', 'like', "%{$term}%")
-              ->orWhere('email', 'like', "%{$term}%")
-              ->orWhere('phone', 'like', "%{$term}%")
-              ->orWhere('phone_display', 'like', "%{$term}%")
-              ->orWhere('mobile', 'like', "%{$term}%")
-              ->orWhere('mobile_display', 'like', "%{$term}%")
-              ->orWhereHas('emailAddresses', fn (Builder $eq) => $eq->where('email', 'like', "%{$term}%"));
+                ->orWhere('last_name', 'like', "%{$term}%")
+                ->orWhere('email', 'like', "%{$term}%")
+                ->orWhere('phone', 'like', "%{$term}%")
+                ->orWhere('phone_display', 'like', "%{$term}%")
+                ->orWhere('mobile', 'like', "%{$term}%")
+                ->orWhere('mobile_display', 'like', "%{$term}%")
+                ->orWhereHas('emailAddresses', fn (Builder $eq) => $eq->where('email', 'like', "%{$term}%"));
         });
     }
 
@@ -179,7 +179,7 @@ class Person extends Authenticatable
 
         return $query->where(function (Builder $q) use ($normalized) {
             $q->whereRaw('LOWER(email) = ?', [$normalized])
-              ->orWhereHas('emailAddresses', fn (Builder $eq) => $eq->where('email', $normalized));
+                ->orWhereHas('emailAddresses', fn (Builder $eq) => $eq->where('email', $normalized));
         });
     }
 
@@ -190,7 +190,7 @@ class Person extends Authenticatable
 
         return $query->where(function (Builder $q) use ($pattern) {
             $q->whereRaw('LOWER(email) LIKE ?', [$pattern])
-              ->orWhereHas('emailAddresses', fn (Builder $eq) => $eq->where('email', 'like', $pattern));
+                ->orWhereHas('emailAddresses', fn (Builder $eq) => $eq->where('email', 'like', $pattern));
         });
     }
 
@@ -205,9 +205,9 @@ class Person extends Authenticatable
 
         $companyName = \App\Support\PortalConfig::companyName();
         $body = "You are receiving this email because we received a password reset request for your {$companyName} portal account.\n\n"
-            . "Click the link below to reset your password:\n{$url}\n\n"
-            . "This link will expire in 60 minutes.\n\n"
-            . "If you did not request a password reset, no further action is required.";
+            ."Click the link below to reset your password:\n{$url}\n\n"
+            ."This link will expire in 60 minutes.\n\n"
+            .'If you did not request a password reset, no further action is required.';
 
         app(\App\Services\EmailService::class)->sendNew(
             $this->email,

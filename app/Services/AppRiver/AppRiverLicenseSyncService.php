@@ -134,7 +134,7 @@ class AppRiverLicenseSyncService
             ]);
         } catch (\Throwable $e) {
             // Async update may not have applied yet — update optimistically
-            Log::info("[AppRiver] Re-fetch after seat update returned stale data, updating optimistically");
+            Log::info('[AppRiver] Re-fetch after seat update returned stale data, updating optimistically');
 
             $license->update([
                 'quantity' => $newQuantity,

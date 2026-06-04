@@ -23,7 +23,7 @@ class McpRotateStaffToken extends Command
 
         $token = McpConfig::rotateStaffToken();
 
-        $url = rtrim(config('app.url'), '/') . '/api/mcp/staff';
+        $url = rtrim(config('app.url'), '/').'/api/mcp/staff';
 
         $this->info('Staff MCP token generated. Configure the Teams bot with:');
         $this->newLine();

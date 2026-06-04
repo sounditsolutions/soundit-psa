@@ -17,7 +17,7 @@ class VersionRefresh extends Command
 
         $current = $service->refreshCurrent();
         $this->info("Version: {$current['commit_short']} ({$current['branch']})");
-        $this->info("Commit date: " . ($current['commit_date'] ?? 'unknown'));
+        $this->info('Commit date: '.($current['commit_date'] ?? 'unknown'));
 
         $updates = $service->checkForUpdates();
         if ($updates['error']) {

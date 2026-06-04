@@ -21,10 +21,11 @@ class LevelSyncService
      */
     public function syncDevicesForClient(Client $client, ?array &$serverCounts = null, ?array &$workstationCounts = null): SyncResult
     {
-        $result = new SyncResult();
+        $result = new SyncResult;
 
-        if (!$client->level_group_id) {
+        if (! $client->level_group_id) {
             $result->recordError("Client {$client->name} has no level_group_id");
+
             return $result;
         }
 
@@ -32,6 +33,7 @@ class LevelSyncService
             $devices = $this->level->getDevices($client->level_group_id);
         } catch (LevelClientException $e) {
             $result->recordError("Failed to fetch devices for group {$client->level_group_id}: {$e->getMessage()}");
+
             return $result;
         }
 
@@ -50,7 +52,7 @@ class LevelSyncService
         foreach ($devices as $device) {
             try {
                 $levelId = $device['id'] ?? null;
-                if (!$levelId) {
+                if (! $levelId) {
                     continue;
                 }
 
@@ -64,7 +66,7 @@ class LevelSyncService
 
         // Orphan detection: soft-delete local assets no longer in Level
         $remoteIds = collect($devices)->pluck('id')->filter()->all();
-        if (!empty($remoteIds)) {
+        if (! empty($remoteIds)) {
             $orphans = Asset::where('client_id', $client->id)
                 ->whereNotNull('level_id')
                 ->whereNotIn('level_id', $remoteIds)
@@ -94,14 +96,14 @@ class LevelSyncService
     public function upsertDeviceFromData(array $device, Client $client): bool
     {
         $levelId = $device['id'] ?? null;
-        if (!$levelId) {
+        if (! $levelId) {
             throw new \InvalidArgumentException('Device data missing "id" field');
         }
 
         // Match by level_id first, then serial_number
         $asset = Asset::withTrashed()->where('level_id', $levelId)->first();
 
-        if (!$asset && !empty($device['serial_number'])) {
+        if (! $asset && ! empty($device['serial_number'])) {
             $asset = Asset::withTrashed()
                 ->where('serial_number', $device['serial_number'])
                 ->whereNull('level_id')
@@ -111,7 +113,7 @@ class LevelSyncService
         $hostname = $device['hostname'] ?? null;
         $existing = (bool) $asset;
 
-        $serialNumber = !empty($device['serial_number']) ? $device['serial_number'] : null;
+        $serialNumber = ! empty($device['serial_number']) ? $device['serial_number'] : null;
 
         $lastSeen = $this->resolveLastSeen($device);
 
@@ -122,7 +124,7 @@ class LevelSyncService
             'hostname' => $hostname,
             'name' => $hostname ?: ($asset?->name ?? 'Unknown'),
             'os' => $device['operating_system']['full_operating_system'] ?? null,
-            'rmm_online' => !empty($device['online']),
+            'rmm_online' => ! empty($device['online']),
             'ip_address' => $this->resolveIpAddress($device),
             'last_user' => $device['last_logged_in_user'] ?? null,
             'cpu' => $this->resolveCpu($device),
@@ -131,7 +133,7 @@ class LevelSyncService
             'level_url' => "https://app.level.io/devices/{$levelId}",
             'is_active' => true,
             'level_synced_at' => now(),
-            'last_boot_at' => !empty($device['last_reboot_time'])
+            'last_boot_at' => ! empty($device['last_reboot_time'])
                 ? Carbon::parse($device['last_reboot_time'])
                 : ($asset?->last_boot_at),
             'deleted_at' => null,
@@ -158,7 +160,7 @@ class LevelSyncService
      */
     public function syncDeviceDetail(Asset $asset): void
     {
-        if (!$asset->level_id) {
+        if (! $asset->level_id) {
             return;
         }
 
@@ -184,7 +186,7 @@ class LevelSyncService
             'disk_summary' => $this->resolveDiskSummary($device),
             'ip_address' => $this->resolveIpAddress($device),
             'last_user' => $device['last_logged_in_user'] ?? $asset->last_user,
-            'rmm_online' => !empty($device['online']),
+            'rmm_online' => ! empty($device['online']),
             'level_synced_at' => now(),
         ];
 
@@ -200,7 +202,7 @@ class LevelSyncService
      */
     public function syncAllDevices(?callable $onProgress = null): SyncResult
     {
-        $result = new SyncResult();
+        $result = new SyncResult;
         $clients = Client::whereNotNull('level_group_id')->get();
         $total = $clients->count();
 
@@ -283,11 +285,11 @@ class LevelSyncService
      */
     private function resolveLastSeen(array $device): ?Carbon
     {
-        if (!empty($device['online'])) {
+        if (! empty($device['online'])) {
             return now();
         }
 
-        if (!empty($device['last_reboot_time'])) {
+        if (! empty($device['last_reboot_time'])) {
             try {
                 return Carbon::parse($device['last_reboot_time']);
             } catch (\Throwable) {
@@ -307,7 +309,7 @@ class LevelSyncService
 
         foreach ($interfaces as $iface) {
             $ips = $iface['ip_addresses'] ?? [];
-            if (!empty($ips[0])) {
+            if (! empty($ips[0])) {
                 return $ips[0];
             }
         }
@@ -393,7 +395,7 @@ class LevelSyncService
         $platform = $device['platform'] ?? null;
         $role = $device['role'] ?? null;
 
-        if (!$platform && !$role) {
+        if (! $platform && ! $role) {
             return null;
         }
 

@@ -20,6 +20,7 @@ class BackfillTicketKeywords extends Command
     {
         if (! AiConfig::isConfigured()) {
             $this->error('AI is not configured.');
+
             return self::FAILURE;
         }
 
@@ -53,13 +54,16 @@ class BackfillTicketKeywords extends Command
 
         if ($total === 0) {
             $this->info('No tickets to process.');
+
             return self::SUCCESS;
         }
 
-        $this->info("Backfilling keywords on {$total} tickets" . ($this->option('dry-run') ? ' (dry-run)' : ''));
+        $this->info("Backfilling keywords on {$total} tickets".($this->option('dry-run') ? ' (dry-run)' : ''));
 
         $bar = $this->output->createProgressBar($total);
-        $ok = 0; $skip = 0; $fail = 0;
+        $ok = 0;
+        $skip = 0;
+        $fail = 0;
 
         foreach ($tickets as $ticket) {
             $userMsg = $this->buildContext($ticket);
@@ -72,12 +76,13 @@ class BackfillTicketKeywords extends Command
                 if (empty($normalized)) {
                     $skip++;
                     $bar->advance();
+
                     continue;
                 }
 
                 if ($this->option('dry-run')) {
                     $bar->clear();
-                    $this->line("T-{$ticket->id}: " . implode(', ', $normalized));
+                    $this->line("T-{$ticket->id}: ".implode(', ', $normalized));
                     $bar->display();
                 } else {
                     $ticket->update(['search_keywords' => implode(' ', $normalized)]);
@@ -86,7 +91,7 @@ class BackfillTicketKeywords extends Command
             } catch (\Throwable $e) {
                 $fail++;
                 $bar->clear();
-                $this->warn("T-{$ticket->id}: " . $e->getMessage());
+                $this->warn("T-{$ticket->id}: ".$e->getMessage());
                 $bar->display();
             }
 
@@ -129,25 +134,25 @@ TXT;
         $ticket->loadMissing('assets:id,hostname,name');
 
         $parts = [];
-        $parts[] = "Subject: " . ($ticket->subject ?? '');
+        $parts[] = 'Subject: '.($ticket->subject ?? '');
 
         if ($ticket->category) {
-            $parts[] = "Category: {$ticket->category}" . ($ticket->subcategory ? " / {$ticket->subcategory}" : '');
+            $parts[] = "Category: {$ticket->category}".($ticket->subcategory ? " / {$ticket->subcategory}" : '');
         }
 
         $description = trim(strip_tags($ticket->description ?? ''));
         if ($description !== '') {
-            $parts[] = "Description:\n" . mb_substr($description, 0, 2000);
+            $parts[] = "Description:\n".mb_substr($description, 0, 2000);
         }
 
         $resolution = trim(strip_tags($ticket->resolution ?? ''));
         if ($resolution !== '') {
-            $parts[] = "Resolution:\n" . mb_substr($resolution, 0, 1000);
+            $parts[] = "Resolution:\n".mb_substr($resolution, 0, 1000);
         }
 
         $assetLabels = $ticket->assets->map(fn ($a) => $a->hostname ?: $a->name)->filter()->take(10)->values()->all();
         if (! empty($assetLabels)) {
-            $parts[] = "Linked assets: " . implode(', ', $assetLabels);
+            $parts[] = 'Linked assets: '.implode(', ', $assetLabels);
         }
 
         return implode("\n\n", $parts);
@@ -161,11 +166,15 @@ TXT;
     {
         $out = [];
         foreach ($keywords as $kw) {
-            if (! is_string($kw)) continue;
+            if (! is_string($kw)) {
+                continue;
+            }
             $clean = mb_strtolower(trim($kw), 'UTF-8');
             $clean = preg_replace('/[^\p{L}\p{N}\s_-]+/u', '', $clean) ?? '';
             $clean = trim((string) $clean);
-            if ($clean === '' || mb_strlen($clean) < 2) continue;
+            if ($clean === '' || mb_strlen($clean) < 2) {
+                continue;
+            }
             $out[$clean] = true;
         }
 

@@ -18,13 +18,13 @@ use App\Services\Stripe\StripeClient;
 use App\Services\Stripe\StripeSyncService;
 use App\Services\Zorus\ZorusClient;
 use App\Support\CippConfig;
+use App\Support\CometConfig;
 use App\Support\ControlDConfig;
 use App\Support\HuntressConfig;
 use App\Support\LevelConfig;
 use App\Support\MeshConfig;
 use App\Support\ServosityConfig;
 use App\Support\StripeConfig;
-use App\Support\CometConfig;
 use App\Support\ZorusConfig;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -68,7 +68,7 @@ class ClientIntegrationService
 
         foreach ($registry as $vendor => $config) {
             try {
-                if (! ($config['configCheck'])()){
+                if (! ($config['configCheck'])()) {
                     continue;
                 }
 
@@ -129,7 +129,7 @@ class ClientIntegrationService
     {
         $config = $this->getVendorConfig($vendor);
 
-        return Cache::remember("integration_entities_{$vendor}", 60, function () use ($client, $vendor, $config) {
+        return Cache::remember("integration_entities_{$vendor}", 60, function () use ($client, $config) {
             $entities = ($config['fetchEntities'])();
 
             // Normalize to [{id, name}]
@@ -426,7 +426,7 @@ class ClientIntegrationService
                 'licenseVendor' => 'comet',
                 'configCheck' => fn () => CometConfig::isConfigured(),
                 'fetchEntities' => function () {
-                    $client = new \App\Services\Comet\CometClient();
+                    $client = new \App\Services\Comet\CometClient;
                     $groups = $client->getUserGroups();
 
                     return array_map(fn ($id, $group) => [

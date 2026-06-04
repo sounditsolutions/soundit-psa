@@ -43,7 +43,7 @@ class ReplyDraftService
         // Build user message
         $userMessage = $this->buildUserMessage($ticket, $context, $conversation, $instructions, $techName);
 
-        $aiClient = new AiClient();
+        $aiClient = new AiClient;
         $result = $aiClient->completeJson(ReplyDraftPrompts::SYSTEM_PROMPT, $userMessage, self::MAX_TOKENS);
 
         $draft = $this->cleanDraft($result['draft'] ?? '');
@@ -81,7 +81,7 @@ class ReplyDraftService
         $contactName = $ticket->contact?->first_name ?? $ticket->contact?->full_name ?? 'there';
 
         $parts = [
-            "Generate a client-facing reply for this ticket.",
+            'Generate a client-facing reply for this ticket.',
             "CONTACT FIRST NAME: {$contactName}",
         ];
 
@@ -143,7 +143,7 @@ class ReplyDraftService
             $allEmails = $person->allEmailAddresses();
             $primary = $person->email;
             $extras = array_filter($allEmails, fn ($e) => $e !== mb_strtolower($primary));
-            $extraStr = $extras ? ' (also: ' . implode(', ', $extras) . ')' : '';
+            $extraStr = $extras ? ' (also: '.implode(', ', $extras).')' : '';
             $lines[] = "- {$label} <{$person->email}>{$marker}{$extraStr}";
         }
 

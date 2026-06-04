@@ -152,7 +152,7 @@ class PhoneCall extends Model
     public function needsFollowUp(): bool
     {
         return in_array($this->status, [CallStatus::Missed, CallStatus::Voicemail])
-            && !$this->isFollowedUp();
+            && ! $this->isFollowedUp();
     }
 
     public function isTranscribed(): bool

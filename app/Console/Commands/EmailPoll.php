@@ -8,6 +8,7 @@ use Illuminate\Console\Command;
 class EmailPoll extends Command
 {
     protected $signature = 'email:poll {--since= : Import emails received since this date (ISO 8601)}';
+
     protected $description = 'Poll the shared mailbox for new emails via Microsoft Graph API';
 
     public function handle(EmailService $emailService): int
@@ -27,6 +28,7 @@ class EmailPoll extends Command
             foreach ($result->errorMessages as $error) {
                 $this->error("  - {$error}");
             }
+
             return self::FAILURE;
         }
 

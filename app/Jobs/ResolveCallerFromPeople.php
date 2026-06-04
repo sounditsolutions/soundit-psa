@@ -41,6 +41,7 @@ class ResolveCallerFromPeople implements ShouldQueue
                 'person_id' => $person->id,
                 'client' => $person->client?->name,
             ]);
+
             return;
         }
 

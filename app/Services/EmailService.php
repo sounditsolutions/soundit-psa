@@ -18,12 +18,12 @@ use App\Models\Setting;
 use App\Models\Ticket;
 use App\Models\TicketNote;
 use App\Models\User;
-use App\Services\Graph\GraphClient;
-use App\Support\AiConfig;
-use App\Services\Graph\GraphClientException;
 use App\Services\Email\ForwardedEmailParser;
+use App\Services\Graph\GraphClient;
+use App\Services\Graph\GraphClientException;
 use App\Services\Mesh\MeshEmailParser;
 use App\Services\Zorus\ZorusEmailParser;
+use App\Support\AiConfig;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -50,11 +50,12 @@ class EmailService
      */
     public function pollMailbox(?string $sinceDate = null): SyncResult
     {
-        $result = new SyncResult();
+        $result = new SyncResult;
 
         $mailbox = Setting::getValue('graph_mailbox');
-        if (!$mailbox) {
+        if (! $mailbox) {
             $result->recordError('No mailbox configured (graph_mailbox setting is empty).');
+
             return $result;
         }
 
@@ -68,13 +69,14 @@ class EmailService
 
         try {
             $messages = $this->graphClient->getMailboxMessages($mailbox, [
-                '$select'  => self::GRAPH_SELECT_FIELDS,
-                '$filter'  => "receivedDateTime ge {$sinceFormatted}",
+                '$select' => self::GRAPH_SELECT_FIELDS,
+                '$filter' => "receivedDateTime ge {$sinceFormatted}",
                 '$orderby' => 'receivedDateTime asc',
-                '$top'     => 50,
+                '$top' => 50,
             ]);
         } catch (GraphClientException $e) {
-            $result->recordError('Graph API error: ' . $e->getMessage());
+            $result->recordError('Graph API error: '.$e->getMessage());
+
             return $result;
         }
 
@@ -84,7 +86,7 @@ class EmailService
         foreach ($messages as $msg) {
             try {
                 $graphId = $msg['id'] ?? null;
-                if (!$graphId) {
+                if (! $graphId) {
                     continue;
                 }
 
@@ -127,20 +129,20 @@ class EmailService
 
                 $lastSuccessfulReceivedAt = $msg['receivedDateTime'] ?? $lastSuccessfulReceivedAt;
             } catch (\Throwable $e) {
-                $result->recordError("Failed to import message {$graphId}: " . $e->getMessage());
+                $result->recordError("Failed to import message {$graphId}: ".$e->getMessage());
                 Log::error('[EmailService] Failed to import email', [
                     'graph_id' => $graphId ?? 'unknown',
-                    'error'    => $e->getMessage(),
+                    'error' => $e->getMessage(),
                 ]);
             }
         }
 
         // Only advance the poll cursor on success
-        if ($result->errors === 0 && !$hitPageLimit && $lastSuccessfulReceivedAt) {
+        if ($result->errors === 0 && ! $hitPageLimit && $lastSuccessfulReceivedAt) {
             Setting::setValue('graph_last_poll_at', $lastSuccessfulReceivedAt);
         } elseif ($hitPageLimit) {
             Log::warning('[EmailService] Hit page limit during poll — not advancing cursor', [
-                'since'   => $sinceFormatted,
+                'since' => $sinceFormatted,
                 'imported' => $result->created,
             ]);
             // Advance to last successful message so next run picks up from there
@@ -162,7 +164,7 @@ class EmailService
     public function importSingleMessage(array $msg): ?Email
     {
         $graphId = $msg['id'] ?? null;
-        if (!$graphId) {
+        if (! $graphId) {
             return null;
         }
 
@@ -216,6 +218,7 @@ class EmailService
         if ($this->isAutoReply($email)) {
             $email->update(['dismissed_at' => now()]);
             Log::info('[EmailService] Auto-dismissed auto-reply email', ['email_id' => $email->id]);
+
             return;
         }
 
@@ -224,9 +227,10 @@ class EmailService
         if ($ticket) {
             $this->linkEmailToTicket($email, $ticket);
             Log::info('[EmailService] Email matched to existing ticket', [
-                'email_id'  => $email->id,
+                'email_id' => $email->id,
                 'ticket_id' => $ticket->id,
             ]);
+
             return;
         }
 
@@ -245,6 +249,7 @@ class EmailService
                     'score' => $spamResult['score'],
                     'reason' => $spamResult['reason'],
                 ]);
+
                 return;
             }
         }
@@ -322,7 +327,7 @@ class EmailService
      * Only called when client_id and person_id are both null, so known contacts
      * are never affected.
      *
-     * @return array{method: string, score: int|float, reason: string}|null  Null = not spam
+     * @return array{method: string, score: int|float, reason: string}|null Null = not spam
      */
     private function evaluateSpam(Email $email): ?array
     {
@@ -462,7 +467,7 @@ Respond with a JSON object only. No markdown fences.
 PROMPT;
 
         try {
-            $ai = new \App\Services\Ai\AiClient();
+            $ai = new \App\Services\Ai\AiClient;
             $result = $ai->completeJson(
                 'You are a spam detection assistant. Respond only with the requested JSON.',
                 $prompt,
@@ -485,6 +490,7 @@ PROMPT;
                 'email_id' => $email->id,
                 'error' => $e->getMessage(),
             ]);
+
             return null;
         }
     }
@@ -604,26 +610,26 @@ PROMPT;
                 $sender = ForwardedEmailParser::parseOriginalSender($email);
                 if ($sender && $sender['email'] !== strtolower($email->from_address)) {
                     $authorName = $sender['name'] ?? $sender['email'];
-                    $forwarder  = $email->from_name ?? $email->from_address;
+                    $forwarder = $email->from_name ?? $email->from_address;
                     $provenance = "[Forwarded into {$ticket->display_id} by {$forwarder}]";
-                    $body = $provenance . "\n\n" . ($body !== '' ? $body : '[see attachments]');
+                    $body = $provenance."\n\n".($body !== '' ? $body : '[see attachments]');
                     if ($bodyHtml !== null) {
-                        $bodyHtml = '<p>' . e($provenance) . '</p>' . $bodyHtml;
+                        $bodyHtml = '<p>'.e($provenance).'</p>'.$bodyHtml;
                     }
                 }
             }
 
             $note = TicketNote::create([
-                'ticket_id'   => $ticket->id,
-                'author_id'   => null,
+                'ticket_id' => $ticket->id,
+                'author_id' => null,
                 'author_name' => $authorName,
-                'who_type'    => WhoType::EndUser,
-                'email_id'    => $email->id,
-                'body'        => $body ?: '[see attachments]',
-                'body_html'   => $bodyHtml,
-                'note_type'   => NoteType::Reply,
-                'is_private'  => false,
-                'noted_at'    => $email->received_at,
+                'who_type' => WhoType::EndUser,
+                'email_id' => $email->id,
+                'body' => $body ?: '[see attachments]',
+                'body_html' => $bodyHtml,
+                'note_type' => NoteType::Reply,
+                'is_private' => false,
+                'noted_at' => $email->received_at,
             ]);
 
             // Link attachments to the note
@@ -644,8 +650,8 @@ PROMPT;
                 // Use email->received_at (not now()) so webhook delivery delays don't inflate SLA pending time
                 $elapsed = (int) $ticket->pending_since->diffInMinutes($email->received_at);
                 $ticket->update([
-                    'status'                => TicketStatus::InProgress,
-                    'pending_since'         => null,
+                    'status' => TicketStatus::InProgress,
+                    'pending_since' => null,
                     'total_pending_minutes' => (int) $ticket->total_pending_minutes + $elapsed,
                 ]);
             } else {
@@ -654,14 +660,14 @@ PROMPT;
             }
 
             TicketNote::create([
-                'ticket_id'   => $ticket->id,
-                'author_id'   => null,
+                'ticket_id' => $ticket->id,
+                'author_id' => null,
                 'author_name' => 'System',
-                'who_type'    => WhoType::System,
-                'body'        => 'Client replied via email — status updated to In Progress.',
-                'note_type'   => NoteType::StatusChange,
-                'is_private'  => true,
-                'noted_at'    => now(),
+                'who_type' => WhoType::System,
+                'body' => 'Client replied via email — status updated to In Progress.',
+                'note_type' => NoteType::StatusChange,
+                'is_private' => true,
+                'noted_at' => now(),
             ]);
         }
     }
@@ -689,7 +695,7 @@ PROMPT;
             if ($existing) {
                 $this->linkEmailToTicket($email, $existing);
                 Log::info('[EmailService] Linked duplicate vendor request to existing ticket', [
-                    'email_id'  => $email->id,
+                    'email_id' => $email->id,
                     'ticket_id' => $existing->id,
                     'type' => $isMeshDeliveryRequest ? 'Mesh' : 'Zorus',
                 ]);
@@ -699,18 +705,18 @@ PROMPT;
         }
 
         $subject = trim(preg_replace('/^(Re:|Fwd?:)\s*/i', '', $email->subject ?? ''));
-        if (!$subject) {
-            $subject = 'Email from ' . ($email->from_name ?? $email->from_address);
+        if (! $subject) {
+            $subject = 'Email from '.($email->from_name ?? $email->from_address);
         }
         $subject = Str::limit($subject, 250); // Guard against DB truncation on long subjects
 
         // Vendor requests get enriched ticket data
         $ticketData = [
-            'subject'    => $subject,
-            'client_id'  => $email->client_id,
+            'subject' => $subject,
+            'client_id' => $email->client_id,
             'contact_id' => $email->person_id,
-            'priority'   => TicketPriority::P3->value,
-            'source'     => TicketSource::Email->value,
+            'priority' => TicketPriority::P3->value,
+            'source' => TicketSource::Email->value,
         ];
 
         if ($isMeshDeliveryRequest) {
@@ -759,7 +765,7 @@ PROMPT;
             if ($mailbox) {
                 $emailAttachments = $attachmentService->downloadEmailAttachments($email, $graph, $mailbox);
 
-                if (!empty($emailAttachments)) {
+                if (! empty($emailAttachments)) {
                     $hasInline = collect($emailAttachments)->contains(fn ($a) => $a->is_inline);
                     if ($hasInline && $email->body_html) {
                         $descHtml = $attachmentService->replaceCidReferences($email->body_html, $emailAttachments);
@@ -777,7 +783,7 @@ PROMPT;
         $this->linkEmailToTicket($email, $ticket, $emailAttachments ?? []);
 
         Log::info('[EmailService] Auto-created ticket from email', [
-            'email_id'  => $email->id,
+            'email_id' => $email->id,
             'ticket_id' => $ticket->id,
             'mesh_delivery_request' => $isMeshDeliveryRequest,
         ]);
@@ -804,6 +810,7 @@ PROMPT;
         $user = User::where('email', $fromAddress)->first();
         if ($user) {
             $email->update(['user_id' => $user->id]);
+
             return $email;
         }
 
@@ -814,11 +821,12 @@ PROMPT;
                 'person_id' => $person->id,
                 'client_id' => $person->client_id,
             ]);
+
             return $email;
         }
 
         $domain = $email->fromDomain();
-        if (!$domain || in_array(strtolower($domain), self::FREE_EMAIL_DOMAINS)) {
+        if (! $domain || in_array(strtolower($domain), self::FREE_EMAIL_DOMAINS)) {
             return $email; // Can't resolve free email domains
         }
 
@@ -829,6 +837,7 @@ PROMPT;
 
         if ($client) {
             $email->update(['client_id' => $client->id]);
+
             return $email;
         }
 
@@ -839,6 +848,7 @@ PROMPT;
 
         if ($personWithDomain) {
             $email->update(['client_id' => $personWithDomain->client_id]);
+
             return $email;
         }
 
@@ -936,8 +946,8 @@ PROMPT;
         // Strategy 2: hostname → asset → client (fallback if API lookup fails)
         if (! $client && $hostname) {
             $asset = \App\Models\Asset::where(fn ($q) => $q
-                    ->whereRaw('LOWER(hostname) = ?', [strtolower($hostname)])
-                    ->orWhereRaw('LOWER(name) = ?', [strtolower($hostname)]))
+                ->whereRaw('LOWER(hostname) = ?', [strtolower($hostname)])
+                ->orWhereRaw('LOWER(name) = ?', [strtolower($hostname)]))
                 ->whereHas('client', fn ($q) => $q->whereNotNull('zorus_customer_id'))
                 ->first();
 
@@ -953,6 +963,7 @@ PROMPT;
                 'company_name' => $companyName,
                 'hostname' => $hostname,
             ]);
+
             return $email;
         }
 
@@ -1025,11 +1036,11 @@ PROMPT;
         }
 
         // Direction filter (when not using a preset)
-        if (!$preset && !empty($filters['direction'])) {
+        if (! $preset && ! empty($filters['direction'])) {
             $query->where('direction', $filters['direction']);
         }
 
-        if (!empty($filters['search'])) {
+        if (! empty($filters['search'])) {
             $query->search($filters['search']);
         }
 
@@ -1037,24 +1048,24 @@ PROMPT;
             $query->where('is_read', (bool) $filters['is_read']);
         }
 
-        if (!empty($filters['date_from'])) {
+        if (! empty($filters['date_from'])) {
             $query->where('received_at', '>=', $filters['date_from']);
         }
 
-        if (!empty($filters['date_to'])) {
+        if (! empty($filters['date_to'])) {
             $query->where('received_at', '<=', Carbon::parse($filters['date_to'])->endOfDay());
         }
 
-        if (!empty($filters['client_id'])) {
+        if (! empty($filters['client_id'])) {
             $query->where('client_id', $filters['client_id']);
         }
 
-        if (!empty($filters['no_client'])) {
+        if (! empty($filters['no_client'])) {
             $query->noClient();
         }
 
         // Default to last 7 days only for "all" view with no date/search filters
-        if ($preset === 'all' || (!$preset && empty($filters['direction']))) {
+        if ($preset === 'all' || (! $preset && empty($filters['direction']))) {
             if (empty($filters['date_from']) && empty($filters['date_to']) && empty($filters['search'])) {
                 $query->where('received_at', '>=', now()->subDays(7));
             }
@@ -1114,7 +1125,7 @@ PROMPT;
     public function sendReply(Email $original, string $bodyText, ?array $cc = null): Email
     {
         $mailbox = Setting::getValue('graph_mailbox');
-        if (!$mailbox) {
+        if (! $mailbox) {
             throw new GraphClientException('No mailbox configured (graph_mailbox setting is empty).');
         }
 
@@ -1153,7 +1164,7 @@ PROMPT;
                     'body' => ['contentType' => 'HTML', 'content' => $bodyHtml],
                     'toRecipients' => [['emailAddress' => [
                         'address' => $original->from_address,
-                        'name'    => $original->from_name,
+                        'name' => $original->from_name,
                     ]]],
                 ],
             ];
@@ -1169,27 +1180,27 @@ PROMPT;
 
         // Store outbound record only after successful send
         return Email::create([
-            'graph_id'            => null,
-            'direction'           => 'outbound',
-            'from_address'        => strtolower($mailbox),
-            'from_name'           => null,
-            'to_recipients'       => [['name' => $original->from_name, 'address' => $original->from_address]],
-            'cc_recipients'       => $cc ? array_map(fn ($a) => ['address' => strtolower(trim($a))], $cc) : null,
-            'subject'             => $replySubject,
-            'body_preview'        => mb_substr($bodyText, 0, 500),
-            'body_text'           => $bodyText,
-            'body_html'           => $bodyHtml,
-            'conversation_id'     => $original->conversation_id,
+            'graph_id' => null,
+            'direction' => 'outbound',
+            'from_address' => strtolower($mailbox),
+            'from_name' => null,
+            'to_recipients' => [['name' => $original->from_name, 'address' => $original->from_address]],
+            'cc_recipients' => $cc ? array_map(fn ($a) => ['address' => strtolower(trim($a))], $cc) : null,
+            'subject' => $replySubject,
+            'body_preview' => mb_substr($bodyText, 0, 500),
+            'body_text' => $bodyText,
+            'body_html' => $bodyHtml,
+            'conversation_id' => $original->conversation_id,
             'internet_message_id' => null,
-            'in_reply_to'         => $original->internet_message_id,
-            'has_attachments'     => false,
-            'importance'          => 'normal',
-            'received_at'         => now(),
-            'is_read'             => true,
-            'client_id'           => $original->client_id,
-            'person_id'           => $original->person_id,
-            'user_id'             => $original->user_id,
-            'ticket_id'           => $original->ticket_id,
+            'in_reply_to' => $original->internet_message_id,
+            'has_attachments' => false,
+            'importance' => 'normal',
+            'received_at' => now(),
+            'is_read' => true,
+            'client_id' => $original->client_id,
+            'person_id' => $original->person_id,
+            'user_id' => $original->user_id,
+            'ticket_id' => $original->ticket_id,
         ]);
     }
 
@@ -1199,7 +1210,7 @@ PROMPT;
     public function sendNew(string $to, string $subject, string $bodyText, ?string $toName = null, ?array $cc = null, ?int $userId = null): Email
     {
         $mailbox = Setting::getValue('graph_mailbox');
-        if (!$mailbox) {
+        if (! $mailbox) {
             throw new GraphClientException('No mailbox configured (graph_mailbox setting is empty).');
         }
 
@@ -1211,7 +1222,7 @@ PROMPT;
                 'body' => ['contentType' => 'HTML', 'content' => $bodyHtml],
                 'toRecipients' => [['emailAddress' => [
                     'address' => strtolower(trim($to)),
-                    'name'    => $toName,
+                    'name' => $toName,
                 ]]],
             ],
         ];
@@ -1227,26 +1238,26 @@ PROMPT;
         $resolved = $this->resolveRecipient(strtolower(trim($to)));
 
         return Email::create([
-            'graph_id'            => null,
-            'direction'           => 'outbound',
-            'from_address'        => strtolower($mailbox),
-            'from_name'           => null,
-            'to_recipients'       => [['name' => $toName, 'address' => strtolower(trim($to))]],
-            'cc_recipients'       => $cc ? array_map(fn ($a) => ['address' => strtolower(trim($a))], $cc) : null,
-            'subject'             => $subject,
-            'body_preview'        => mb_substr($bodyText, 0, 500),
-            'body_text'           => $bodyText,
-            'body_html'           => $bodyHtml,
-            'conversation_id'     => null,
+            'graph_id' => null,
+            'direction' => 'outbound',
+            'from_address' => strtolower($mailbox),
+            'from_name' => null,
+            'to_recipients' => [['name' => $toName, 'address' => strtolower(trim($to))]],
+            'cc_recipients' => $cc ? array_map(fn ($a) => ['address' => strtolower(trim($a))], $cc) : null,
+            'subject' => $subject,
+            'body_preview' => mb_substr($bodyText, 0, 500),
+            'body_text' => $bodyText,
+            'body_html' => $bodyHtml,
+            'conversation_id' => null,
             'internet_message_id' => null,
-            'in_reply_to'         => null,
-            'has_attachments'     => false,
-            'importance'          => 'normal',
-            'received_at'         => now(),
-            'is_read'             => true,
-            'client_id'           => $resolved['client_id'],
-            'person_id'           => $resolved['person_id'],
-            'user_id'             => $resolved['user_id'],
+            'in_reply_to' => null,
+            'has_attachments' => false,
+            'importance' => 'normal',
+            'received_at' => now(),
+            'is_read' => true,
+            'client_id' => $resolved['client_id'],
+            'person_id' => $resolved['person_id'],
+            'user_id' => $resolved['user_id'],
         ]);
     }
 
@@ -1261,17 +1272,18 @@ PROMPT;
         $mailbox = Setting::getValue('graph_mailbox');
         $toEmail = $toEmail ?: $ticket->contact?->email;
 
-        if (!$mailbox || !$toEmail) {
+        if (! $mailbox || ! $toEmail) {
             Log::info('[EmailService] Skipping ticket reply email', [
                 'ticket_id' => $ticket->id,
-                'reason'    => !$mailbox ? 'no graph_mailbox configured' : 'no contact email',
+                'reason' => ! $mailbox ? 'no graph_mailbox configured' : 'no contact email',
             ]);
+
             return null;
         }
 
         // Use "Re:" only for email-sourced tickets — other sources are first contact
-        $prefix   = $ticket->source === TicketSource::Email ? 'Re: ' : '';
-        $subject  = $prefix . '[' . $ticket->display_id . '] ' . $ticket->subject;
+        $prefix = $ticket->source === TicketSource::Email ? 'Re: ' : '';
+        $subject = $prefix.'['.$ticket->display_id.'] '.$ticket->subject;
         $bodyHtml = $this->buildHtmlBody($note->body, $note->author_id);
 
         // Resolve TO recipient name from contacts if possible
@@ -1283,11 +1295,11 @@ PROMPT;
         $payload = [
             'message' => [
                 'subject' => $subject,
-                'body'    => ['contentType' => 'HTML', 'content' => $bodyHtml],
+                'body' => ['contentType' => 'HTML', 'content' => $bodyHtml],
                 'toRecipients' => [[
                     'emailAddress' => [
                         'address' => strtolower(trim($toEmail)),
-                        'name'    => $toName,
+                        'name' => $toName,
                     ],
                 ]],
             ],
@@ -1309,33 +1321,33 @@ PROMPT;
         // Record outbound email — graph_id is NULL (Graph returns 202 with no body)
         try {
             return Email::create([
-                'graph_id'            => null,
-                'direction'           => 'outbound',
-                'from_address'        => strtolower($mailbox),
-                'from_name'           => null,
-                'to_recipients'       => [['address' => strtolower(trim($toEmail)), 'name' => $toName ?: null]],
-                'cc_recipients'       => $ccRecipientsData,
-                'subject'             => $subject,
-                'body_preview'        => mb_substr($note->body, 0, 500),
-                'body_text'           => $note->body,
-                'body_html'           => $bodyHtml,
-                'conversation_id'     => null,
+                'graph_id' => null,
+                'direction' => 'outbound',
+                'from_address' => strtolower($mailbox),
+                'from_name' => null,
+                'to_recipients' => [['address' => strtolower(trim($toEmail)), 'name' => $toName ?: null]],
+                'cc_recipients' => $ccRecipientsData,
+                'subject' => $subject,
+                'body_preview' => mb_substr($note->body, 0, 500),
+                'body_text' => $note->body,
+                'body_html' => $bodyHtml,
+                'conversation_id' => null,
                 'internet_message_id' => null,
-                'in_reply_to'         => null,
-                'has_attachments'     => false,
-                'importance'          => 'normal',
-                'received_at'         => now(),
-                'is_read'             => true,
-                'client_id'           => $ticket->client_id,
-                'person_id'           => $ticket->contact_id,
-                'ticket_id'           => $ticket->id,
+                'in_reply_to' => null,
+                'has_attachments' => false,
+                'importance' => 'normal',
+                'received_at' => now(),
+                'is_read' => true,
+                'client_id' => $ticket->client_id,
+                'person_id' => $ticket->contact_id,
+                'ticket_id' => $ticket->id,
             ]);
         } catch (\Throwable $e) {
             Log::error('[EmailService] Email sent but record creation failed', [
                 'ticket_id' => $ticket->id,
-                'to'        => $toEmail,
-                'subject'   => $subject,
-                'error'     => $e->getMessage(),
+                'to' => $toEmail,
+                'subject' => $subject,
+                'error' => $e->getMessage(),
             ]);
             throw $e;
         }
@@ -1353,6 +1365,7 @@ PROMPT;
         $user = User::where('email', $address)->first();
         if ($user) {
             $result['user_id'] = $user->id;
+
             return $result;
         }
 
@@ -1361,12 +1374,13 @@ PROMPT;
         if ($person) {
             $result['person_id'] = $person->id;
             $result['client_id'] = $person->client_id;
+
             return $result;
         }
 
         $parts = explode('@', $address);
         $domain = $parts[1] ?? null;
-        if (!$domain || in_array(strtolower($domain), self::FREE_EMAIL_DOMAINS)) {
+        if (! $domain || in_array(strtolower($domain), self::FREE_EMAIL_DOMAINS)) {
             return $result;
         }
 
@@ -1377,6 +1391,7 @@ PROMPT;
 
         if ($client) {
             $result['client_id'] = $client->id;
+
             return $result;
         }
 
@@ -1387,6 +1402,7 @@ PROMPT;
 
         if ($personWithDomain) {
             $result['client_id'] = $personWithDomain->client_id;
+
             return $result;
         }
 
@@ -1401,7 +1417,7 @@ PROMPT;
     private function buildHtmlBody(string $text, ?int $userId = null): string
     {
         $style = 'font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 14px; line-height: 1.6; color: #374151;';
-        $html = '<div style="' . $style . '">' . MarkdownRenderer::render($text) . '</div>';
+        $html = '<div style="'.$style.'">'.MarkdownRenderer::render($text).'</div>';
 
         // User signature takes priority, fall back to global
         $signature = null;
@@ -1411,8 +1427,8 @@ PROMPT;
         $signature = $signature ?: Setting::getValue('email_signature');
 
         if ($signature) {
-            $sigStyle = $style . ' color: #6b7280; font-size: 13px;';
-            $html .= '<br><div style="' . $sigStyle . '">' . MarkdownRenderer::render($signature) . '</div>';
+            $sigStyle = $style.' color: #6b7280; font-size: 13px;';
+            $html .= '<br><div style="'.$sigStyle.'">'.MarkdownRenderer::render($signature).'</div>';
         }
 
         return $html;
@@ -1436,20 +1452,20 @@ PROMPT;
 
         return [
             'internet_message_id' => $msg['internetMessageId'] ?? null,
-            'conversation_id'     => $msg['conversationId'] ?? null,
-            'in_reply_to'         => $inReplyTo,
-            'direction'           => 'inbound',
-            'from_address'        => strtolower($from['address'] ?? ''),
-            'from_name'           => $from['name'] ?? null,
-            'to_recipients'       => $this->mapRecipients($msg['toRecipients'] ?? []),
-            'cc_recipients'       => $this->mapRecipients($msg['ccRecipients'] ?? []),
-            'subject'             => $msg['subject'] ?? '(no subject)',
-            'body_preview'        => mb_substr($msg['bodyPreview'] ?? '', 0, 500),
-            'body_text'           => $this->extractPlainText($msg['body']['content'] ?? null),
-            'body_html'           => $msg['body']['content'] ?? null,
-            'has_attachments'     => $msg['hasAttachments'] ?? false,
-            'importance'          => strtolower($msg['importance'] ?? 'normal'),
-            'received_at'         => $msg['receivedDateTime'] ?? now(),
+            'conversation_id' => $msg['conversationId'] ?? null,
+            'in_reply_to' => $inReplyTo,
+            'direction' => 'inbound',
+            'from_address' => strtolower($from['address'] ?? ''),
+            'from_name' => $from['name'] ?? null,
+            'to_recipients' => $this->mapRecipients($msg['toRecipients'] ?? []),
+            'cc_recipients' => $this->mapRecipients($msg['ccRecipients'] ?? []),
+            'subject' => $msg['subject'] ?? '(no subject)',
+            'body_preview' => mb_substr($msg['bodyPreview'] ?? '', 0, 500),
+            'body_text' => $this->extractPlainText($msg['body']['content'] ?? null),
+            'body_html' => $msg['body']['content'] ?? null,
+            'has_attachments' => $msg['hasAttachments'] ?? false,
+            'importance' => strtolower($msg['importance'] ?? 'normal'),
+            'received_at' => $msg['receivedDateTime'] ?? now(),
         ];
     }
 
@@ -1458,7 +1474,7 @@ PROMPT;
      */
     public function extractPlainText(?string $html): ?string
     {
-        if (!$html) {
+        if (! $html) {
             return null;
         }
 
@@ -1468,6 +1484,7 @@ PROMPT;
             Log::warning('[EmailService] Failed to extract plain text from email', [
                 'error' => $e->getMessage(),
             ]);
+
             return strip_tags($html);
         }
     }
@@ -1482,7 +1499,7 @@ PROMPT;
         }
 
         return array_map(fn ($r) => [
-            'name'    => $r['emailAddress']['name'] ?? null,
+            'name' => $r['emailAddress']['name'] ?? null,
             'address' => strtolower($r['emailAddress']['address'] ?? ''),
         ], $recipients);
     }

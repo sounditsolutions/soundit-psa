@@ -7,9 +7,9 @@ use App\Enums\QuantityType;
 use App\Http\Controllers\Controller;
 use App\Models\Client;
 use App\Models\Contract;
+use App\Models\LicenseType;
 use App\Models\RecurringInvoiceProfile;
 use App\Models\RecurringInvoiceProfileLine;
-use App\Models\LicenseType;
 use App\Models\Sku;
 use App\Services\BillingService;
 use Illuminate\Database\Eloquent\Builder;
@@ -54,11 +54,11 @@ class RecurringProfileController extends Controller
 
         return view('profiles.index', [
             'profiles' => $profiles,
-            'filters'  => $filters,
-            'sort'     => $sort,
-            'dir'      => $dir,
-            'clients'  => Client::active()->orderBy('name')->get(['id', 'name']),
-            'skus'     => Sku::active()->orderBy('name')->get(['id', 'name']),
+            'filters' => $filters,
+            'sort' => $sort,
+            'dir' => $dir,
+            'clients' => Client::active()->orderBy('name')->get(['id', 'name']),
+            'skus' => Sku::active()->orderBy('name')->get(['id', 'name']),
             'quantityTypes' => QuantityType::cases(),
         ]);
     }
@@ -313,11 +313,12 @@ class RecurringProfileController extends Controller
             $result = $billingService->generateInvoice($profile);
         } catch (\Throwable $e) {
             return redirect()->route('profiles.show', $profile)
-                ->with('error', 'Invoice generation failed: ' . $e->getMessage());
+                ->with('error', 'Invoice generation failed: '.$e->getMessage());
         }
 
         if ($result['status'] === 'skipped') {
             $reason = $result['reason'] === 'exists' ? 'Invoice already exists for this date.' : 'Nothing to bill.';
+
             return redirect()->route('profiles.show', $profile)
                 ->with('warning', "Skipped: {$reason}");
         }

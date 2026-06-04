@@ -22,10 +22,11 @@ class NinjaSyncService
      */
     public function syncDevicesForClient(Client $client): SyncResult
     {
-        $result = new SyncResult();
+        $result = new SyncResult;
 
-        if (!$client->ninja_org_id) {
+        if (! $client->ninja_org_id) {
             $result->recordError("Client {$client->name} has no ninja_org_id");
+
             return $result;
         }
 
@@ -33,20 +34,21 @@ class NinjaSyncService
             $devices = $this->ninja->getOrganizationDevices($client->ninja_org_id);
         } catch (NinjaClientException $e) {
             $result->recordError("Failed to fetch devices for org {$client->ninja_org_id}: {$e->getMessage()}");
+
             return $result;
         }
 
         foreach ($devices as $device) {
             try {
                 $ninjaId = $device['id'] ?? null;
-                if (!$ninjaId) {
+                if (! $ninjaId) {
                     continue;
                 }
 
                 // Match by ninja_id first, then serial_number
                 $asset = Asset::withTrashed()->where('ninja_id', $ninjaId)->first();
 
-                if (!$asset && !empty($device['system']['serialNumber'])) {
+                if (! $asset && ! empty($device['system']['serialNumber'])) {
                     $asset = Asset::withTrashed()
                         ->where('serial_number', $device['system']['serialNumber'])
                         ->whereNull('ninja_id')
@@ -70,7 +72,7 @@ class NinjaSyncService
                 ];
 
                 if ($asset) {
-                    if ($mappedType && (!$asset->asset_type || $asset->asset_type === 'Unknown')) {
+                    if ($mappedType && (! $asset->asset_type || $asset->asset_type === 'Unknown')) {
                         $baseData['asset_type'] = $mappedType;
                     }
                     $asset->update($baseData);
@@ -93,7 +95,7 @@ class NinjaSyncService
 
         // Orphan detection: soft-delete local assets no longer in Ninja
         $remoteIds = collect($devices)->pluck('id')->filter()->all();
-        if (!empty($remoteIds)) {
+        if (! empty($remoteIds)) {
             $orphans = Asset::where('client_id', $client->id)
                 ->whereNotNull('ninja_id')
                 ->whereNotIn('ninja_id', $remoteIds)
@@ -120,7 +122,7 @@ class NinjaSyncService
      */
     public function syncDeviceDetail(Asset $asset): void
     {
-        if (!$asset->ninja_id) {
+        if (! $asset->ninja_id) {
             return;
         }
 
@@ -143,13 +145,14 @@ class NinjaSyncService
             if ($throw) {
                 throw $e;
             }
+
             return;
         }
 
         // Parse processors
         $processors = $detail['_processors'] ?? [];
         $cpu = null;
-        if (!empty($processors)) {
+        if (! empty($processors)) {
             $proc = $processors[0];
             $name = $proc['name'] ?? 'Unknown CPU';
             $cores = $proc['coreCount'] ?? null;
@@ -188,7 +191,7 @@ class NinjaSyncService
         $lastContact = isset($detail['lastContact']) ? Carbon::createFromTimestamp($detail['lastContact']) : null;
 
         // Parse OS boot/reboot data
-        $lastBootAt = !empty($detail['os']['lastBootTime'])
+        $lastBootAt = ! empty($detail['os']['lastBootTime'])
             ? Carbon::createFromTimestamp((int) $detail['os']['lastBootTime'])
             : null;
         $needsReboot = isset($detail['os']['needsReboot']) ? (bool) $detail['os']['needsReboot'] : null;
@@ -214,7 +217,7 @@ class NinjaSyncService
      */
     public function syncAllDevices(?callable $onProgress = null): SyncResult
     {
-        $result = new SyncResult();
+        $result = new SyncResult;
         $clients = Client::whereNotNull('ninja_org_id')->get();
         $total = $clients->count();
 
@@ -245,7 +248,8 @@ class NinjaSyncService
         try {
             $records = $this->ninja->getCustomFields();
         } catch (NinjaClientException $e) {
-            Log::warning('[NinjaSync] Failed to fetch custom fields for warranty sync: ' . $e->getMessage());
+            Log::warning('[NinjaSync] Failed to fetch custom fields for warranty sync: '.$e->getMessage());
+
             return;
         }
 
@@ -255,7 +259,7 @@ class NinjaSyncService
             ->chunk(200, function ($assets) use ($lookup) {
                 foreach ($assets as $asset) {
                     $record = $lookup->get($asset->ninja_id);
-                    if (!$record) {
+                    if (! $record) {
                         continue;
                     }
 
@@ -272,7 +276,7 @@ class NinjaSyncService
                         $updates['warranty_start'] = $purchaseDate->toDateString();
                     }
 
-                    if (!empty($updates)) {
+                    if (! empty($updates)) {
                         $asset->update($updates);
                     }
                 }
@@ -291,6 +295,7 @@ class NinjaSyncService
                 'ninja_id' => $asset->ninja_id,
                 'error' => $e->getMessage(),
             ]);
+
             return;
         }
 
@@ -306,7 +311,7 @@ class NinjaSyncService
             $updates['warranty_start'] = $purchaseDate->toDateString();
         }
 
-        if (!empty($updates)) {
+        if (! empty($updates)) {
             $asset->update($updates);
         }
     }
@@ -316,7 +321,7 @@ class NinjaSyncService
      */
     private function parseNinjaTimestamp($value): ?Carbon
     {
-        if (!$value || !is_numeric($value)) {
+        if (! $value || ! is_numeric($value)) {
             return null;
         }
 
@@ -345,7 +350,7 @@ class NinjaSyncService
      */
     public function getBackupJobData(Asset $asset): ?array
     {
-        if (!$asset->ninja_id) {
+        if (! $asset->ninja_id) {
             return null;
         }
 
@@ -419,12 +424,12 @@ class NinjaSyncService
         $junkValues = ['standard', 'default string', 'to be filled by o.e.m.', 'none', 'not specified', 'system serial number'];
 
         $bios = trim($detail['system']['biosSerialNumber'] ?? '');
-        if ($bios !== '' && !in_array(strtolower($bios), $junkValues, true)) {
+        if ($bios !== '' && ! in_array(strtolower($bios), $junkValues, true)) {
             return $bios;
         }
 
         $serial = trim($detail['system']['serialNumber'] ?? '');
-        if ($serial !== '' && !in_array(strtolower($serial), $junkValues, true)) {
+        if ($serial !== '' && ! in_array(strtolower($serial), $junkValues, true)) {
             return $serial;
         }
 

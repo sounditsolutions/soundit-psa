@@ -73,9 +73,9 @@ class StripeCustomerController extends Controller
         $service = new StripeSyncService($client);
         $result = $service->autoMatchClients();
 
-        $msg = count($result['matched']) . ' matched, '
-            . count($result['unmatched']) . ' unmatched, '
-            . count($result['ambiguous']) . ' ambiguous.';
+        $msg = count($result['matched']).' matched, '
+            .count($result['unmatched']).' unmatched, '
+            .count($result['ambiguous']).' ambiguous.';
 
         return redirect()->route('settings.stripe-customers.index')
             ->with('success', "Auto-match complete: {$msg}");

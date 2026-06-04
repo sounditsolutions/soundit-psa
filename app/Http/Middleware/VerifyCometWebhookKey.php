@@ -14,8 +14,9 @@ class VerifyCometWebhookKey
     {
         $storedKey = CometConfig::get('comet_webhook_key');
 
-        if (!$storedKey) {
+        if (! $storedKey) {
             Log::warning('[Comet Webhook] No webhook key configured');
+
             return response()->json(['error' => 'Webhook not configured'], 401);
         }
 
@@ -26,14 +27,15 @@ class VerifyCometWebhookKey
             $providedKey = substr($authHeader, 7);
         }
 
-        if (!$providedKey) {
+        if (! $providedKey) {
             $providedKey = $request->header('X-Webhook-Key');
         }
 
-        if (!$providedKey || !hash_equals($storedKey, $providedKey)) {
+        if (! $providedKey || ! hash_equals($storedKey, $providedKey)) {
             Log::warning('[Comet Webhook] Invalid webhook key', [
                 'ip' => $request->ip(),
             ]);
+
             return response()->json(['error' => 'Unauthorized'], 401);
         }
 

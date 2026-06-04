@@ -21,12 +21,12 @@ class AppRiverClient
         $baseUrl = rtrim($this->config['base_url'] ?? self::defaultBaseUrl(), '/');
 
         $this->http = new Client([
-            'base_uri' => $baseUrl . self::API_PREFIX,
+            'base_uri' => $baseUrl.self::API_PREFIX,
             'timeout' => 30,
         ]);
 
         $this->authHttp = new Client([
-            'base_uri' => $baseUrl . '/',
+            'base_uri' => $baseUrl.'/',
             'timeout' => 15,
         ]);
     }
@@ -49,7 +49,7 @@ class AppRiverClient
             'scope' => 'SecureCloud.Platform',
         ]);
 
-        return $baseUrl . '/auth/authorize?' . $params;
+        return $baseUrl.'/auth/authorize?'.$params;
     }
 
     /**

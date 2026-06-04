@@ -15,7 +15,7 @@ class LevelClient
     ) {
         $this->http = new Client([
             'base_uri' => rtrim($this->config['base_url'] ?? 'https://api.level.io', '/'),
-            'timeout'  => $this->config['request_timeout'] ?? 30,
+            'timeout' => $this->config['request_timeout'] ?? 30,
         ]);
     }
 
@@ -36,6 +36,7 @@ class LevelClient
     {
         try {
             $this->get('/v2/devices', ['limit' => 1]);
+
             return true;
         } catch (LevelClientException) {
             return false;
@@ -61,14 +62,14 @@ class LevelClient
             $response = $this->get('/v2/groups', $params);
 
             $groups = $response['data'] ?? $response;
-            if (!is_array($groups) || empty($groups)) {
+            if (! is_array($groups) || empty($groups)) {
                 break;
             }
 
             $allGroups = array_merge($allGroups, $groups);
 
             $hasMore = $response['has_more'] ?? false;
-            if (!$hasMore) {
+            if (! $hasMore) {
                 break;
             }
 
@@ -115,7 +116,7 @@ class LevelClient
             $response = $this->get('/v2/devices', $params);
 
             $devices = $response['data'] ?? $response;
-            if (!is_array($devices) || empty($devices)) {
+            if (! is_array($devices) || empty($devices)) {
                 break;
             }
 
@@ -123,7 +124,7 @@ class LevelClient
 
             // Check for cursor-based pagination
             $hasMore = $response['has_more'] ?? false;
-            if (!$hasMore) {
+            if (! $hasMore) {
                 break;
             }
 
@@ -171,7 +172,7 @@ class LevelClient
      * The /graphql `installKey` resolver is user-session-only (rejects server-side API
      * keys with UNAUTHENTICATED), so we construct the key deterministically instead.
      *
-     * @param  string  $groupId   base64-encoded Relay gid from clients.level_group_id
+     * @param  string  $groupId  base64-encoded Relay gid from clients.level_group_id
      * @param  string  $platform  One of: 'windows', 'mac', 'linux'
      */
     public function getInstallerInfo(string $groupId, string $platform): ?\App\Services\Portal\InstallerInfo
@@ -196,15 +197,16 @@ class LevelClient
             Log::warning('[LevelClient] Could not extract numeric group id from level_group_id', [
                 'group_id' => $groupId,
             ]);
+
             return null;
         }
 
         $key = "{$accountToken}:{$numericId}";
 
         $script = "-ExecutionPolicy Bypass; \$env:LEVEL_API_KEY = '{$key}'; "
-            . 'Set-ExecutionPolicy RemoteSigned -Scope Process -Force; '
-            . '[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; '
-            . 'iwr -useb https://downloads.level.io/install_windows.ps1 | iex';
+            .'Set-ExecutionPolicy RemoteSigned -Scope Process -Force; '
+            .'[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; '
+            .'iwr -useb https://downloads.level.io/install_windows.ps1 | iex';
 
         return new \App\Services\Portal\InstallerInfo(
             downloadUrl: 'https://downloads.level.io/install_windows.ps1',
@@ -241,7 +243,7 @@ class LevelClient
     {
         $apiKey = $this->config['api_key'] ?? null;
 
-        if (!$apiKey) {
+        if (! $apiKey) {
             throw new LevelClientException('Level API key not configured');
         }
 
@@ -273,6 +275,7 @@ class LevelClient
                     ]);
 
                     sleep($waitSeconds);
+
                     continue;
                 }
 
@@ -302,7 +305,6 @@ class LevelClient
      * Convert a Guzzle exception into a LevelClientException.
      *
      * @throws LevelClientException
-     * @return never
      */
     private function throwFromGuzzle(GuzzleException $e, string $method, string $endpoint): never
     {
@@ -315,10 +317,10 @@ class LevelClient
         }
 
         Log::error('Level API request failed', [
-            'method'   => $method,
+            'method' => $method,
             'endpoint' => $endpoint,
-            'status'   => $statusCode,
-            'error'    => $e->getMessage(),
+            'status' => $statusCode,
+            'error' => $e->getMessage(),
         ]);
 
         throw new LevelClientException(

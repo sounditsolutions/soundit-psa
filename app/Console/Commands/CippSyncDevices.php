@@ -64,7 +64,7 @@ class CippSyncDevices extends Command
         }
 
         $prefix = $dryRun ? '[DRY RUN] Would: ' : 'Done: ';
-        $this->info($prefix . $result->summary());
+        $this->info($prefix.$result->summary());
 
         if ($result->errors > 0) {
             foreach ($result->errorMessages as $msg) {

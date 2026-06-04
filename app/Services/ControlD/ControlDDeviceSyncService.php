@@ -79,6 +79,7 @@ class ControlDDeviceSyncService
                 Log::debug("[ControlDSync] No asset match for device '{$deviceName}' (PK: {$devicePk})", [
                     'client' => $client->name,
                 ]);
+
                 continue;
             }
 

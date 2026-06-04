@@ -14,8 +14,9 @@ class VerifyTacticalWebhookKey
     {
         $configuredKey = TacticalConfig::get('webhook_key');
 
-        if (!$configuredKey) {
+        if (! $configuredKey) {
             Log::warning('[Tactical Webhook] Webhook key not configured');
+
             return response()->json(['error' => 'Webhook not configured'], 401);
         }
 
@@ -27,12 +28,13 @@ class VerifyTacticalWebhookKey
             $providedKey = substr($authHeader, 7);
         }
 
-        if (!$providedKey) {
+        if (! $providedKey) {
             $providedKey = $request->header('X-Webhook-Key');
         }
 
-        if (!$providedKey || !hash_equals($configuredKey, $providedKey)) {
+        if (! $providedKey || ! hash_equals($configuredKey, $providedKey)) {
             Log::warning('[Tactical Webhook] Invalid webhook key', ['ip' => $request->ip()]);
+
             return response()->json(['error' => 'Unauthorized'], 401);
         }
 

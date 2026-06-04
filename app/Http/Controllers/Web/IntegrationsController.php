@@ -10,26 +10,26 @@ use App\Services\Level\LevelClient;
 use App\Services\Ninja\NinjaBackupSyncService;
 use App\Services\Ninja\NinjaClient;
 use App\Support\AiConfig;
-use App\Support\AppTimezone;
-use App\Support\LevelConfig;
-use App\Support\CippConfig;
-use App\Support\MeshConfig;
-use App\Support\StripeConfig;
-use App\Support\PlivoConfig;
-use App\Support\HuntressConfig;
-use App\Support\ControlDConfig;
-use App\Support\ServosityConfig;
 use App\Support\AppRiverConfig;
-use App\Support\ZorusConfig;
+use App\Support\AppTimezone;
+use App\Support\CippConfig;
+use App\Support\ControlDConfig;
+use App\Support\HuntressConfig;
+use App\Support\LevelConfig;
+use App\Support\MeshConfig;
+use App\Support\PlivoConfig;
 use App\Support\PrintixConfig;
 use App\Support\ScreenConnectConfig;
-use App\Support\TacticalConfig;
+use App\Support\ServosityConfig;
+use App\Support\StripeConfig;
 use App\Support\T2TConfig;
+use App\Support\TacticalConfig;
 use App\Support\TranscriptionConfig;
-use Illuminate\Support\Carbon;
+use App\Support\ZorusConfig;
 use GuzzleHttp\Client as GuzzleClient;
 use Illuminate\Contracts\Cache\Repository as CacheInterface;
 use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 
@@ -162,7 +162,7 @@ class IntegrationsController extends Controller
 
         // Huntress CW Compat (Incident Tickets)
         $huntressCwConfigured = HuntressConfig::isCwCompatConfigured();
-        $huntressCwHost = preg_replace('#^https?://#', '', rtrim(config('app.url'), '/') . '/api/huntress');
+        $huntressCwHost = preg_replace('#^https?://#', '', rtrim(config('app.url'), '/').'/api/huntress');
         $huntressCwCompanyId = 'SoundPSA';
         $huntressCwPublicKey = Setting::getValue('huntress_cw_public_key', '');
         $huntressCwSystemUserId = HuntressConfig::get('system_user_id');
@@ -182,7 +182,7 @@ class IntegrationsController extends Controller
         $t2tSystemUserId = T2TConfig::get('system_user_id');
         $t2tCallbackUrl = Setting::getValue('t2t_callback_url');
         $t2tUsers = \App\Models\User::active()->orderBy('name')->get(['id', 'name', 'is_active']);
-        if ($t2tSystemUserId && !$t2tUsers->contains('id', (int) $t2tSystemUserId)) {
+        if ($t2tSystemUserId && ! $t2tUsers->contains('id', (int) $t2tSystemUserId)) {
             $inactive = \App\Models\User::find($t2tSystemUserId, ['id', 'name', 'is_active']);
             if ($inactive) {
                 $t2tUsers->push($inactive)->sortBy('name')->values();
@@ -288,10 +288,10 @@ class IntegrationsController extends Controller
         ];
 
         $request->validate([
-            'integration' => ['required', 'string', 'in:' . implode(',', $allowed)],
+            'integration' => ['required', 'string', 'in:'.implode(',', $allowed)],
         ]);
 
-        $key = $request->input('integration') . '_enabled';
+        $key = $request->input('integration').'_enabled';
         $enabled = $request->has('enabled') ? '1' : '0';
 
         Setting::setValue($key, $enabled);
@@ -300,7 +300,7 @@ class IntegrationsController extends Controller
         $state = $enabled === '1' ? 'enabled' : 'disabled';
 
         return redirect()->route('settings.integrations')
-            ->with('success', ucfirst($label) . " integration {$state}.");
+            ->with('success', ucfirst($label)." integration {$state}.");
     }
 
     // --- QBO ---
@@ -332,11 +332,11 @@ class IntegrationsController extends Controller
         }
         Setting::setValue('qbo_environment', $validated['environment']);
 
-        if (!empty($validated['client_secret'])) {
+        if (! empty($validated['client_secret'])) {
             Setting::setEncrypted('qbo_client_secret', $validated['client_secret']);
         }
 
-        if (!empty($validated['webhook_verifier_token'])) {
+        if (! empty($validated['webhook_verifier_token'])) {
             Setting::setEncrypted('qbo_webhook_verifier_token', $validated['webhook_verifier_token']);
         }
 
@@ -355,6 +355,7 @@ class IntegrationsController extends Controller
         if ($request->has('auto_push_invoices') && ! $request->has('secret_key')) {
             Setting::setValue('stripe_auto_push_invoices', $request->input('auto_push_invoices'));
             $label = $request->input('auto_push_invoices') === '1' ? 'enabled' : 'disabled';
+
             return redirect()->route('settings.integrations')
                 ->with('success', "Auto-push invoices to Stripe {$label}.");
         }
@@ -386,6 +387,7 @@ class IntegrationsController extends Controller
 
             if ($client->isHealthy()) {
                 Setting::setValue('stripe_connected_at', now()->toDateTimeString());
+
                 return response()->json(['success' => true, 'message' => 'Connected to Stripe!']);
             }
 
@@ -406,7 +408,7 @@ class IntegrationsController extends Controller
 
         Setting::setValue('ninja_client_id', $validated['client_id']);
 
-        if (!empty($validated['client_secret'])) {
+        if (! empty($validated['client_secret'])) {
             Setting::setEncrypted('ninja_client_secret', $validated['client_secret']);
         }
 
@@ -421,7 +423,7 @@ class IntegrationsController extends Controller
         $clientId = Setting::getValue('ninja_client_id');
         $clientSecret = Setting::getEncrypted('ninja_client_secret');
 
-        if (!$clientId || !$clientSecret) {
+        if (! $clientId || ! $clientSecret) {
             return response()->json(['success' => false, 'message' => 'Credentials not configured.']);
         }
 
@@ -434,6 +436,7 @@ class IntegrationsController extends Controller
 
         if ($ninja->isHealthy()) {
             Setting::setValue('ninja_connected_at', now()->toDateTimeString());
+
             return response()->json(['success' => true, 'message' => 'Connected to NinjaRMM successfully!']);
         }
 
@@ -450,13 +453,13 @@ class IntegrationsController extends Controller
             'install_account_token' => 'nullable|string|min:1|max:500',
         ]);
 
-        if (!empty($validated['api_key'])) {
+        if (! empty($validated['api_key'])) {
             Setting::setEncrypted('level_api_key', $validated['api_key']);
         }
-        if (!empty($validated['webhook_secret'])) {
+        if (! empty($validated['webhook_secret'])) {
             Setting::setEncrypted('level_webhook_secret', $validated['webhook_secret']);
         }
-        if (!empty($validated['install_account_token'])) {
+        if (! empty($validated['install_account_token'])) {
             Setting::setEncrypted('level_install_account_token', $validated['install_account_token']);
         }
 
@@ -468,7 +471,7 @@ class IntegrationsController extends Controller
     {
         $apiKey = LevelConfig::get('api_key');
 
-        if (!$apiKey) {
+        if (! $apiKey) {
             return response()->json(['success' => false, 'message' => 'API key not configured.']);
         }
 
@@ -484,10 +487,11 @@ class IntegrationsController extends Controller
 
             if ($response->getStatusCode() === 200) {
                 Setting::setValue('level_connected_at', now()->toDateTimeString());
+
                 return response()->json(['success' => true, 'message' => 'Connected to Level RMM successfully!']);
             }
         } catch (\Throwable $e) {
-            return response()->json(['success' => false, 'message' => 'Could not connect to Level: ' . $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Could not connect to Level: '.$e->getMessage()]);
         }
 
         return response()->json(['success' => false, 'message' => 'Could not connect to Level RMM. Check API key.']);
@@ -533,7 +537,7 @@ class IntegrationsController extends Controller
     public function updateGraphSignature(Request $request)
     {
         $validated = $request->validate([
-            'email_signature'   => 'nullable|string|max:2000',
+            'email_signature' => 'nullable|string|max:2000',
             'email_auto_ticket' => 'boolean',
         ]);
 
@@ -548,11 +552,11 @@ class IntegrationsController extends Controller
     {
         $mailbox = Setting::getValue('graph_mailbox');
 
-        if (!$mailbox) {
+        if (! $mailbox) {
             return response()->json(['success' => false, 'message' => 'Mailbox address not configured.']);
         }
 
-        if (!$graph->isHealthy()) {
+        if (! $graph->isHealthy()) {
             return response()->json(['success' => false, 'message' => 'Could not authenticate with Microsoft Graph. Check Entra app registration.']);
         }
 
@@ -562,7 +566,7 @@ class IntegrationsController extends Controller
                 '$top' => 1,
             ]);
         } catch (\Throwable $e) {
-            return response()->json(['success' => false, 'message' => 'Auth OK but cannot read mailbox: ' . $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Auth OK but cannot read mailbox: '.$e->getMessage()]);
         }
 
         // Activate webhook subscription so emails flow in immediately
@@ -576,6 +580,7 @@ class IntegrationsController extends Controller
         }
 
         Setting::setValue('graph_connected_at', now()->toDateTimeString());
+
         return response()->json(['success' => true, 'message' => "Connected! Can read mailbox {$mailbox}.{$webhookMessage}"]);
     }
 
@@ -585,8 +590,8 @@ class IntegrationsController extends Controller
     {
         $validated = $request->validate([
             'provider' => 'required|in:anthropic,openai',
-            'api_key'  => 'nullable|string|min:1|max:500',
-            'model'    => 'nullable|string|max:100',
+            'api_key' => 'nullable|string|min:1|max:500',
+            'model' => 'nullable|string|max:100',
             'reply_guidelines' => 'nullable|string|max:2000',
         ]);
 
@@ -594,7 +599,7 @@ class IntegrationsController extends Controller
         Setting::setValue('ai_model', $validated['model'] ?: null);
         Setting::setValue('ai_reply_guidelines', $validated['reply_guidelines'] ?: null);
 
-        if (!empty($validated['api_key'])) {
+        if (! empty($validated['api_key'])) {
             Setting::setEncrypted('ai_api_key', $validated['api_key']);
         }
 
@@ -608,7 +613,7 @@ class IntegrationsController extends Controller
         $apiKey = AiConfig::get('api_key');
         $model = AiConfig::model();
 
-        if (!$apiKey) {
+        if (! $apiKey) {
             return response()->json(['success' => false, 'message' => 'API key not configured.']);
         }
 
@@ -618,26 +623,26 @@ class IntegrationsController extends Controller
             if ($provider === 'anthropic') {
                 $response = $client->post('https://api.anthropic.com/v1/messages', [
                     'headers' => [
-                        'x-api-key'         => $apiKey,
-                        'anthropic-version'  => '2023-06-01',
-                        'Content-Type'       => 'application/json',
+                        'x-api-key' => $apiKey,
+                        'anthropic-version' => '2023-06-01',
+                        'Content-Type' => 'application/json',
                     ],
                     'json' => [
-                        'model'      => $model,
+                        'model' => $model,
                         'max_tokens' => 16,
-                        'messages'   => [['role' => 'user', 'content' => 'Hi']],
+                        'messages' => [['role' => 'user', 'content' => 'Hi']],
                     ],
                 ]);
             } else {
                 $response = $client->post('https://api.openai.com/v1/chat/completions', [
                     'headers' => [
                         'Authorization' => "Bearer {$apiKey}",
-                        'Content-Type'  => 'application/json',
+                        'Content-Type' => 'application/json',
                     ],
                     'json' => [
-                        'model'      => $model,
+                        'model' => $model,
                         'max_tokens' => 16,
-                        'messages'   => [['role' => 'user', 'content' => 'Hi']],
+                        'messages' => [['role' => 'user', 'content' => 'Hi']],
                     ],
                 ]);
             }
@@ -645,10 +650,11 @@ class IntegrationsController extends Controller
             if ($response->getStatusCode() === 200) {
                 Setting::setValue('ai_connected_at', now()->toDateTimeString());
                 $providerLabel = $provider === 'anthropic' ? 'Anthropic' : 'OpenAI';
+
                 return response()->json(['success' => true, 'message' => "Connected to {$providerLabel}! Model: {$model}"]);
             }
         } catch (\Throwable $e) {
-            return response()->json(['success' => false, 'message' => 'Connection failed: ' . $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Connection failed: '.$e->getMessage()]);
         }
 
         return response()->json(['success' => false, 'message' => 'Could not connect. Check API key and model.']);
@@ -664,7 +670,7 @@ class IntegrationsController extends Controller
             'min_seconds' => 'nullable|integer|min:0|max:3600',
         ]);
 
-        if (!empty($validated['openai_api_key'])) {
+        if (! empty($validated['openai_api_key'])) {
             Setting::setEncrypted('openai_api_key', $validated['openai_api_key']);
         }
 
@@ -679,7 +685,7 @@ class IntegrationsController extends Controller
     {
         $apiKey = TranscriptionConfig::whisperApiKey();
 
-        if (!$apiKey) {
+        if (! $apiKey) {
             return response()->json(['success' => false, 'message' => 'No OpenAI API key configured for Whisper.']);
         }
 
@@ -695,7 +701,7 @@ class IntegrationsController extends Controller
                 return response()->json(['success' => true, 'message' => 'Whisper API key is valid! Transcription ready.']);
             }
         } catch (\Throwable $e) {
-            return response()->json(['success' => false, 'message' => 'Whisper API test failed: ' . $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Whisper API test failed: '.$e->getMessage()]);
         }
 
         return response()->json(['success' => false, 'message' => 'Could not verify Whisper API key.']);
@@ -740,6 +746,7 @@ class IntegrationsController extends Controller
 
             if ($response->getStatusCode() === 200) {
                 Setting::setValue('mesh_connected_at', now()->toDateTimeString());
+
                 return response()->json(['success' => true, 'message' => 'Connected to Mesh Email Security!']);
             }
 
@@ -893,7 +900,7 @@ class IntegrationsController extends Controller
         $artisan = base_path('artisan');
         \Illuminate\Support\Facades\Process::path(base_path())
             ->timeout(600)
-            ->start("php {$artisan} cipp:sync-contacts 2>&1 >> " . storage_path('logs/laravel.log') . ' &');
+            ->start("php {$artisan} cipp:sync-contacts 2>&1 >> ".storage_path('logs/laravel.log').' &');
 
         return back()->with('success', 'CIPP contact sync started in the background. Check the People page shortly for results.');
     }
@@ -935,7 +942,7 @@ class IntegrationsController extends Controller
         $artisan = base_path('artisan');
         \Illuminate\Support\Facades\Process::path(base_path())
             ->timeout(600)
-            ->start("php {$artisan} cipp:sync-devices 2>&1 >> " . storage_path('logs/laravel.log') . ' &');
+            ->start("php {$artisan} cipp:sync-devices 2>&1 >> ".storage_path('logs/laravel.log').' &');
 
         return back()->with('success', 'Intune device sync started in the background. Check asset detail pages for results.');
     }
@@ -1285,7 +1292,6 @@ class IntegrationsController extends Controller
         }
     }
 
-
     // --- Zorus ---
 
     public function updateZorus(Request $request)
@@ -1392,7 +1398,7 @@ class IntegrationsController extends Controller
         }
 
         try {
-            $client = new \App\Services\AppRiver\AppRiverClient();
+            $client = new \App\Services\AppRiver\AppRiverClient;
 
             // Hit the API to verify the token works
             $customers = $client->get('customers', ['limit' => 1]);
@@ -1431,10 +1437,10 @@ class IntegrationsController extends Controller
         Setting::setValue('plivo_did_number', $validated['did_number']);
         Setting::setValue('plivo_app_id', $validated['app_id']);
 
-        if (!empty($validated['auth_token'])) {
+        if (! empty($validated['auth_token'])) {
             Setting::setEncrypted('plivo_auth_token', $validated['auth_token']);
         }
-        if (!empty($validated['webhook_secret'])) {
+        if (! empty($validated['webhook_secret'])) {
             Setting::setEncrypted('plivo_webhook_secret', $validated['webhook_secret']);
         }
 
@@ -1447,7 +1453,7 @@ class IntegrationsController extends Controller
         $authId = PlivoConfig::get('auth_id');
         $authToken = PlivoConfig::get('auth_token');
 
-        if (!$authId || !$authToken) {
+        if (! $authId || ! $authToken) {
             return response()->json(['success' => false, 'message' => 'Credentials not configured.']);
         }
 
@@ -1459,10 +1465,11 @@ class IntegrationsController extends Controller
 
             if ($response->getStatusCode() === 200) {
                 Setting::setValue('plivo_connected_at', now()->toDateTimeString());
+
                 return response()->json(['success' => true, 'message' => 'Connected to Plivo successfully!']);
             }
         } catch (\Throwable $e) {
-            return response()->json(['success' => false, 'message' => 'Could not connect to Plivo: ' . $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Could not connect to Plivo: '.$e->getMessage()]);
         }
 
         return response()->json(['success' => false, 'message' => 'Could not connect to Plivo. Check credentials.']);
@@ -1512,7 +1519,7 @@ class IntegrationsController extends Controller
     public function updateAvatars(Request $request)
     {
         $validated = $request->validate([
-            'gravatar_default' => ['required', 'string', 'in:' . implode(',', array_keys(\App\Support\AvatarHelper::GRAVATAR_DEFAULTS))],
+            'gravatar_default' => ['required', 'string', 'in:'.implode(',', array_keys(\App\Support\AvatarHelper::GRAVATAR_DEFAULTS))],
         ]);
 
         Setting::setValue('gravatar_default', $validated['gravatar_default']);
@@ -1633,7 +1640,7 @@ class IntegrationsController extends Controller
         }
 
         try {
-            $client = new \App\Services\Tactical\TacticalClient();
+            $client = new \App\Services\Tactical\TacticalClient;
 
             if ($client->isHealthy()) {
                 Setting::setValue('tactical_connected_at', now()->toDateTimeString());
@@ -1654,7 +1661,7 @@ class IntegrationsController extends Controller
         }
 
         try {
-            $client = new \App\Services\Tactical\TacticalClient();
+            $client = new \App\Services\Tactical\TacticalClient;
             $service = new \App\Services\Tactical\TacticalDeviceSyncService($client);
             $result = $service->syncDevices();
 
@@ -1673,7 +1680,7 @@ class IntegrationsController extends Controller
         }
 
         try {
-            $client = new \App\Services\Tactical\TacticalClient();
+            $client = new \App\Services\Tactical\TacticalClient;
             $service = new \App\Services\Tactical\TacticalScriptSyncService($client);
             $stats = $service->syncScripts();
 
@@ -1730,7 +1737,7 @@ class IntegrationsController extends Controller
     public function autoConfigureComet(Request $request)
     {
         $token = $request->input('comet_account_token');
-        if (!$token) {
+        if (! $token) {
             return response()->json(['success' => false, 'message' => 'Account API token is required']);
         }
 
@@ -1744,21 +1751,21 @@ class IntegrationsController extends Controller
             Setting::setEncrypted('comet_admin_password', $config['admin_password']);
 
             // Verify the discovered credentials actually work
-            $serverUrl = rtrim($config['server_url'], '/') . '/';
+            $serverUrl = rtrim($config['server_url'], '/').'/';
             $server = new \Comet\Server($serverUrl, $config['admin_user'], $config['admin_password']);
             $version = $server->AdminMetaVersion();
             Setting::setValue('comet_connected_at', now()->toDateTimeString());
 
             // Auto-configure webhook on the Comet server
             $webhookKey = \App\Support\CometConfig::get('comet_webhook_key');
-            if (!$webhookKey) {
+            if (! $webhookKey) {
                 $webhookKey = \App\Support\CometConfig::generateWebhookKey();
             }
 
             $webhookMessage = '';
             try {
                 // Get existing webhooks so we don't overwrite them
-                $getResponse = (new \GuzzleHttp\Client(['timeout' => 15]))->post($serverUrl . 'api/v1/admin/meta/webhook-options/get', [
+                $getResponse = (new \GuzzleHttp\Client(['timeout' => 15]))->post($serverUrl.'api/v1/admin/meta/webhook-options/get', [
                     'form_params' => [
                         'Username' => $config['admin_user'],
                         'AuthType' => 'Password',
@@ -1774,14 +1781,14 @@ class IntegrationsController extends Controller
                 $existingWebhooks['psa-webhook'] = [
                     'URL' => url('/api/webhooks/comet'),
                     'CustomHeaders' => [
-                        'Authorization' => 'Bearer ' . $webhookKey,
+                        'Authorization' => 'Bearer '.$webhookKey,
                     ],
                     'Level' => 'full',
                     'WhiteListedEventTypes' => [],
                 ];
 
                 // Save back to Comet server
-                (new \GuzzleHttp\Client(['timeout' => 15]))->post($serverUrl . 'api/v1/admin/meta/webhook-options/set', [
+                (new \GuzzleHttp\Client(['timeout' => 15]))->post($serverUrl.'api/v1/admin/meta/webhook-options/set', [
                     'form_params' => [
                         'Username' => $config['admin_user'],
                         'AuthType' => 'Password',
@@ -1791,13 +1798,13 @@ class IntegrationsController extends Controller
                 ]);
                 $webhookMessage = ' Webhook configured automatically.';
             } catch (\Exception $e) {
-                \Illuminate\Support\Facades\Log::warning('[Comet] Failed to auto-configure webhook: ' . $e->getMessage());
+                \Illuminate\Support\Facades\Log::warning('[Comet] Failed to auto-configure webhook: '.$e->getMessage());
                 $webhookMessage = ' Webhook setup failed — configure manually.';
             }
 
             return response()->json([
                 'success' => true,
-                'message' => "Connected to {$config['server_name']} (v" . ($version->Version ?? 'unknown') . ").{$webhookMessage}",
+                'message' => "Connected to {$config['server_name']} (v".($version->Version ?? 'unknown').").{$webhookMessage}",
                 'server_url' => $config['server_url'],
             ]);
         } catch (\Exception $e) {
@@ -1807,35 +1814,36 @@ class IntegrationsController extends Controller
 
     public function testComet()
     {
-        if (!\App\Support\CometConfig::isConfigured()) {
+        if (! \App\Support\CometConfig::isConfigured()) {
             return response()->json(['success' => false, 'message' => 'Comet is not configured']);
         }
 
         try {
             $server = new \Comet\Server(
-                rtrim(\App\Support\CometConfig::serverUrl(), '/') . '/',
+                rtrim(\App\Support\CometConfig::serverUrl(), '/').'/',
                 \App\Support\CometConfig::get('comet_admin_user'),
                 \App\Support\CometConfig::get('comet_admin_password')
             );
             $version = $server->AdminMetaVersion();
 
             Setting::setValue('comet_connected_at', now()->toDateTimeString());
+
             return response()->json([
                 'success' => true,
-                'message' => 'Connected to Comet server (v' . ($version->Version ?? 'unknown') . ')',
+                'message' => 'Connected to Comet server (v'.($version->Version ?? 'unknown').')',
             ]);
         } catch (\Exception $e) {
-            return response()->json(['success' => false, 'message' => 'Connection failed: ' . $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Connection failed: '.$e->getMessage()]);
         }
     }
 
     public function syncCometBackup()
     {
-        if (!\App\Support\CometConfig::isConfigured()) {
+        if (! \App\Support\CometConfig::isConfigured()) {
             return back()->with('error', 'Comet is not configured.');
         }
 
-        $client = new \App\Services\Comet\CometClient();
+        $client = new \App\Services\Comet\CometClient;
         $service = new \App\Services\Comet\CometBackupSyncService($client);
         $result = $service->syncBackupUsage();
 

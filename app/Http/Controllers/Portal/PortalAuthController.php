@@ -163,9 +163,9 @@ class PortalAuthController extends Controller
 
                 $companyName = PortalConfig::companyName();
                 $body = "You requested access to the {$companyName} client portal.\n\n"
-                    . "Click the link below to verify your email and set your password:\n{$url}\n\n"
-                    . "This link will expire in 60 minutes.\n\n"
-                    . "If you did not request this, you can safely ignore this email.";
+                    ."Click the link below to verify your email and set your password:\n{$url}\n\n"
+                    ."This link will expire in 60 minutes.\n\n"
+                    .'If you did not request this, you can safely ignore this email.';
 
                 try {
                     app(EmailService::class)->sendNew(

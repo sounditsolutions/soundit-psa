@@ -26,7 +26,7 @@ class NotificationService
     public function notifyTicketCreated(Ticket $ticket): void
     {
         $ticket->loadMissing('client');
-        $context = ($ticket->client?->name ?? 'Unknown client') . ' — ' . ($ticket->source?->label() ?? 'Manual');
+        $context = ($ticket->client?->name ?? 'Unknown client').' — '.($ticket->source?->label() ?? 'Manual');
 
         $users = User::where('is_active', true)->whereNotNull('email')->get();
 
@@ -53,7 +53,7 @@ class NotificationService
      */
     public function notifyNoteAdded(Ticket $ticket, TicketNote $note, int $authorUserId): void
     {
-        if (!$ticket->assignee_id || $ticket->assignee_id === $authorUserId) {
+        if (! $ticket->assignee_id || $ticket->assignee_id === $authorUserId) {
             return;
         }
 
@@ -85,7 +85,7 @@ class NotificationService
      */
     public function notifyEmailAdded(Ticket $ticket, Email $email): void
     {
-        if (!$ticket->assignee_id) {
+        if (! $ticket->assignee_id) {
             return;
         }
 
@@ -98,7 +98,7 @@ class NotificationService
             NotificationEventType::TicketEmailAdded->value,
             $ticket->id,
             null,
-            Str::limit(($email->from_name ?? $email->from_address) . ': ' . $email->body_preview, 200),
+            Str::limit(($email->from_name ?? $email->from_address).': '.$email->body_preview, 200),
         );
     }
 
@@ -147,7 +147,7 @@ class NotificationService
      */
     public function notifyPriorityChanged(Ticket $ticket, TicketPriority $oldPriority, TicketPriority $newPriority, int $changedByUserId): void
     {
-        if (!$ticket->assignee_id || $ticket->assignee_id === $changedByUserId) {
+        if (! $ticket->assignee_id || $ticket->assignee_id === $changedByUserId) {
             return;
         }
 
@@ -204,7 +204,7 @@ class NotificationService
             NotificationEventType::TicketPortalReply->value,
             $ticket->id,
             null,
-            \Illuminate\Support\Str::limit($person->full_name . ' (portal): ' . $note->body, 200),
+            \Illuminate\Support\Str::limit($person->full_name.' (portal): '.$note->body, 200),
         );
     }
 

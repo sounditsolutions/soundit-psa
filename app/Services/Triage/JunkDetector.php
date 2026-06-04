@@ -220,7 +220,7 @@ class JunkDetector
         }
 
         // Content mentions active security incidents
-        $combinedText = ($ticket->subject ?? '') . ' ' . ($ticket->description ?? '');
+        $combinedText = ($ticket->subject ?? '').' '.($ticket->description ?? '');
         if (self::hasSecurityContent($combinedText)) {
             return true;
         }
@@ -306,7 +306,7 @@ class JunkDetector
                 return new JunkResult(
                     isJunk: true,
                     confidence: 'high',
-                    reason: 'Subject indicates auto-reply: ' . mb_substr($subjectLower, 0, 80),
+                    reason: 'Subject indicates auto-reply: '.mb_substr($subjectLower, 0, 80),
                     pattern: 'auto_reply',
                 );
             }
@@ -354,7 +354,7 @@ class JunkDetector
                 return new JunkResult(
                     isJunk: true,
                     confidence: 'high',
-                    reason: 'Subject indicates bounce/NDR: ' . mb_substr($subjectLower, 0, 80),
+                    reason: 'Subject indicates bounce/NDR: '.mb_substr($subjectLower, 0, 80),
                     pattern: 'bounce',
                 );
             }
@@ -497,7 +497,7 @@ class JunkDetector
         }
 
         foreach (self::MONITORING_ALLOWLIST as $allowed) {
-            if ($domain === $allowed || str_ends_with($domain, '.' . $allowed)) {
+            if ($domain === $allowed || str_ends_with($domain, '.'.$allowed)) {
                 return true;
             }
         }

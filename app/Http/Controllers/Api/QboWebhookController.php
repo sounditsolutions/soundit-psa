@@ -18,7 +18,8 @@ class QboWebhookController extends Controller
 
         foreach ($payload['eventNotifications'] ?? [] as $notification) {
             if ($notification['realmId'] !== $ourRealmId) {
-                Log::debug('[QBO Webhook] Skipping notification for realm ' . $notification['realmId']);
+                Log::debug('[QBO Webhook] Skipping notification for realm '.$notification['realmId']);
+
                 continue;
             }
 
@@ -34,7 +35,8 @@ class QboWebhookController extends Controller
                     ->exists();
 
                 if ($exists) {
-                    Log::debug('[QBO Webhook] Dedup: skipping duplicate for entity ' . $entity['id']);
+                    Log::debug('[QBO Webhook] Dedup: skipping duplicate for entity '.$entity['id']);
+
                     continue;
                 }
 

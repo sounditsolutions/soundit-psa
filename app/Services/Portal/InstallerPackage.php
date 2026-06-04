@@ -10,8 +10,8 @@ final class InstallerPackage
 {
     /**
      * @param  array<string, InstallerInfo>  $platforms  Keyed by platform slug
-     *        ('windows', 'mac', 'linux'). Missing keys mean the RMM doesn't
-     *        support that platform.
+     *                                                   ('windows', 'mac', 'linux'). Missing keys mean the RMM doesn't
+     *                                                   support that platform.
      */
     public function __construct(
         public readonly string $clientName,

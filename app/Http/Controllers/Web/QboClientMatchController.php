@@ -13,7 +13,7 @@ class QboClientMatchController extends Controller
 {
     public function index(QboClient $qboClient, QboSyncService $syncService)
     {
-        if (!$qboClient->isConnected()) {
+        if (! $qboClient->isConnected()) {
             return redirect()->route('settings.integrations')
                 ->with('error', 'Connect to QuickBooks first.');
         }
@@ -74,7 +74,7 @@ class QboClientMatchController extends Controller
             $result = $syncService->autoMatchClients();
         } catch (QboClientException $e) {
             return redirect()->route('settings.qbo-clients.index')
-                ->with('error', 'Could not fetch QBO customers: ' . $e->getMessage());
+                ->with('error', 'Could not fetch QBO customers: '.$e->getMessage());
         }
 
         $matchedCount = count($result['matched']);

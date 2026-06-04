@@ -190,15 +190,15 @@ class Client extends Model
 
     public function scopeSearch(Builder $query, ?string $term): Builder
     {
-        if (!$term) {
+        if (! $term) {
             return $query;
         }
 
         return $query->where(function (Builder $q) use ($term) {
             $q->where('name', 'like', "%{$term}%")
-              ->orWhere('phone', 'like', "%{$term}%")
-              ->orWhere('phone_display', 'like', "%{$term}%")
-              ->orWhere('email', 'like', "%{$term}%");
+                ->orWhere('phone', 'like', "%{$term}%")
+                ->orWhere('phone_display', 'like', "%{$term}%")
+                ->orWhere('email', 'like', "%{$term}%");
         });
     }
 
@@ -211,7 +211,7 @@ class Client extends Model
 
     public function getCredentialsRenderedAttribute(): ?string
     {
-        if (!$this->credentials) {
+        if (! $this->credentials) {
             return null;
         }
 
@@ -241,7 +241,7 @@ class Client extends Model
      * Return a list of RMM slugs this client has mapped.
      * Used to populate the primary-RMM dropdown and to pick a default.
      *
-     * @return array<int, string>  e.g. ['ninja', 'level'] or ['tactical']
+     * @return array<int, string> e.g. ['ninja', 'level'] or ['tactical']
      */
     public function availableRmms(): array
     {

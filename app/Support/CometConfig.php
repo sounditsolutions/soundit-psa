@@ -44,7 +44,7 @@ class CometConfig
 
     public static function alertsEnabled(): bool
     {
-        if (!self::isConfigured()) {
+        if (! self::isConfigured()) {
             return false;
         }
 
@@ -64,6 +64,7 @@ class CometConfig
      * Uses the account API token to find the hosted instance and retrieve admin creds.
      *
      * @return array{server_url: string, admin_user: string, admin_password: string, server_name: string}
+     *
      * @throws \RuntimeException
      */
     public static function autoConfigureFromPortal(string $accountToken): array
@@ -72,7 +73,7 @@ class CometConfig
 
         // List hosted instances — response includes admin credentials directly
         $response = $http->post('api/v1/hosted_comet/list', [
-            'headers' => ['Authorization' => 'Bearer ' . $accountToken],
+            'headers' => ['Authorization' => 'Bearer '.$accountToken],
             'form_params' => [],
         ]);
         $body = json_decode((string) $response->getBody(), true);
@@ -90,13 +91,13 @@ class CometConfig
         $adminUser = $instance['admin_username'] ?? null;
         $adminPassword = $instance['admin_password'] ?? null;
 
-        if (!$serverUrl || !$adminUser || !$adminPassword) {
-            throw new \RuntimeException('Could not retrieve server credentials from Comet portal. Response keys: ' . implode(', ', array_keys($instance)));
+        if (! $serverUrl || ! $adminUser || ! $adminPassword) {
+            throw new \RuntimeException('Could not retrieve server credentials from Comet portal. Response keys: '.implode(', ', array_keys($instance)));
         }
 
         // Ensure URL has protocol
-        if (!str_starts_with($serverUrl, 'http')) {
-            $serverUrl = 'https://' . $serverUrl;
+        if (! str_starts_with($serverUrl, 'http')) {
+            $serverUrl = 'https://'.$serverUrl;
         }
 
         return [

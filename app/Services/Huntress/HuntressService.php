@@ -70,7 +70,7 @@ class HuntressService
         $duplicate = null;
         if ($incidentReportUrl) {
             $duplicate = Ticket::where('source', TicketSource::Huntress->value)
-                ->where('description', 'like', '%' . $incidentReportUrl . '%')
+                ->where('description', 'like', '%'.$incidentReportUrl.'%')
                 ->first();
         } else {
             // Fallback: same client + subject hash within 15-min window
@@ -92,7 +92,7 @@ class HuntressService
         }
 
         // source_alert_id for the unified Alert — use incident report URL if extracted, else synthesize
-        $alertSourceId = $incidentReportUrl ?? md5($subject . ($client?->id ?? ''));
+        $alertSourceId = $incidentReportUrl ?? md5($subject.($client?->id ?? ''));
         $parsedSeverity = $parsed['severity'];
 
         // Link asset by hostname match if available
@@ -128,7 +128,7 @@ class HuntressService
             'source' => TicketSource::Huntress->value,
         ];
 
-        $ticket = DB::transaction(function () use ($ticketData, $assetId, $client, $systemUserId) {
+        $ticket = DB::transaction(function () use ($ticketData, $assetId, $systemUserId) {
             $ticket = $this->ticketService->createTicket($ticketData, $systemUserId);
 
             // Attach asset if found

@@ -62,13 +62,13 @@ class TicketNoteController extends Controller
 
         // Track flash message type and text so status change can happen regardless of email outcome
         $flashType = 'success';
-        $flashMessage = ucfirst($type->label()) . ' added.';
+        $flashMessage = ucfirst($type->label()).' added.';
 
-        if ($note->note_type === NoteType::Reply && !$note->is_private) {
+        if ($note->note_type === NoteType::Reply && ! $note->is_private) {
             $toEmail = trim($request->input('to_email', '')) ?: $ticket->contact?->email;
             $ccEmails = $this->parseCcEmails($request->input('cc_emails'));
 
-            if (!$toEmail) {
+            if (! $toEmail) {
                 $flashType = 'warning';
                 $flashMessage = 'Reply added, but no recipient email provided — the client was not notified.';
             } else {
@@ -79,9 +79,9 @@ class TicketNoteController extends Controller
                         $note->update(['email_id' => $email->id]);
                         $recipients = $toEmail;
                         if ($ccEmails) {
-                            $recipients .= ' (cc: ' . implode(', ', $ccEmails) . ')';
+                            $recipients .= ' (cc: '.implode(', ', $ccEmails).')';
                         }
-                        $flashMessage = 'Reply added and emailed to ' . $recipients . '.';
+                        $flashMessage = 'Reply added and emailed to '.$recipients.'.';
                     } else {
                         $flashType = 'warning';
                         $flashMessage = 'Reply added, but email is not configured — the client was not notified.';
@@ -89,8 +89,8 @@ class TicketNoteController extends Controller
                 } catch (\Throwable $e) {
                     Log::warning('[TicketNote] Failed to send reply email', [
                         'ticket' => $ticket->id,
-                        'note'   => $note->id,
-                        'error'  => $e->getMessage(),
+                        'note' => $note->id,
+                        'error' => $e->getMessage(),
                     ]);
                     $flashType = 'warning';
                     $flashMessage = 'Reply added, but email delivery failed — the client was not notified. Please send manually.';
@@ -112,7 +112,7 @@ class TicketNoteController extends Controller
                     $flashMessage .= " Status changed to {$newStatus->label()}.";
                 } catch (\InvalidArgumentException $e) {
                     $flashType = 'warning';
-                    $flashMessage .= ' Status change failed: ' . $e->getMessage();
+                    $flashMessage .= ' Status change failed: '.$e->getMessage();
                 }
             }
         }
@@ -196,7 +196,7 @@ class TicketNoteController extends Controller
 
     private function parseCcEmails(?string $input): array
     {
-        if (!$input) {
+        if (! $input) {
             return [];
         }
 

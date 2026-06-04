@@ -283,10 +283,10 @@ class T2TService
             $contact = $contactId ? Person::find($contactId) : null;
             $noteBody = 'Submitted via HelpDesk Button';
             if ($contact) {
-                $noteBody .= ' by ' . $contact->full_name;
+                $noteBody .= ' by '.$contact->full_name;
             }
             if ($hostname) {
-                $noteBody .= ' from ' . $hostname;
+                $noteBody .= ' from '.$hostname;
             }
             $noteBody .= '.';
 
@@ -294,9 +294,9 @@ class T2TService
             if ($userMessage !== '') {
                 $maxLen = 8000;
                 if (mb_strlen($userMessage) > $maxLen) {
-                    $userMessage = mb_substr($userMessage, 0, $maxLen) . "\n\n[truncated]";
+                    $userMessage = mb_substr($userMessage, 0, $maxLen)."\n\n[truncated]";
                 }
-                $quoted = '> ' . str_replace("\n", "\n> ", $userMessage);
+                $quoted = '> '.str_replace("\n", "\n> ", $userMessage);
                 $noteBody .= "\n\n**Message:**\n\n{$quoted}";
             }
 

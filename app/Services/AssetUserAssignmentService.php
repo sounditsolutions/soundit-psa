@@ -37,7 +37,7 @@ class AssetUserAssignmentService
     public function assignForAsset(Asset $asset, bool $dryRun = false): string
     {
         $lastUser = trim($asset->last_user);
-        if (!$lastUser) {
+        if (! $lastUser) {
             return 'no_match';
         }
 
@@ -48,7 +48,7 @@ class AssetUserAssignmentService
         $person = $this->matchByUpnOrEmail($lastUser, $username, $clientId);
 
         // Tier 2: Name-based fuzzy match
-        if (!$person) {
+        if (! $person) {
             $result = $this->matchByName($username, $clientId);
             if ($result === 'ambiguous') {
                 return 'ambiguous';
@@ -56,7 +56,7 @@ class AssetUserAssignmentService
             $person = $result;
         }
 
-        if (!$person) {
+        if (! $person) {
             return 'no_match';
         }
 
@@ -67,15 +67,16 @@ class AssetUserAssignmentService
             ->first();
 
         if ($existing) {
-            if (!$dryRun) {
+            if (! $dryRun) {
                 DB::table('asset_person')
                     ->where('id', $existing->id)
                     ->update(['last_seen_at' => now(), 'updated_at' => now()]);
             }
+
             return 'already_linked';
         }
 
-        if (!$dryRun) {
+        if (! $dryRun) {
             DB::table('asset_person')->insert([
                 'asset_id' => $asset->id,
                 'person_id' => $person->id,
@@ -104,6 +105,7 @@ class AssetUserAssignmentService
         if (str_contains($lastUser, '@')) {
             return Str::before($lastUser, '@');
         }
+
         return $lastUser;
     }
 
@@ -115,16 +117,20 @@ class AssetUserAssignmentService
                 ->where(fn ($q) => $q->whereRaw('LOWER(cipp_upn) = ?', [strtolower($lastUser)])
                     ->orWhereRaw('LOWER(email) = ?', [strtolower($lastUser)]))
                 ->first();
-            if ($person) return $person;
+            if ($person) {
+                return $person;
+            }
         }
 
-        if (!str_contains($lastUser, '@')) {
+        if (! str_contains($lastUser, '@')) {
             $person = Person::where('client_id', $clientId)
                 ->where('is_active', true)
-                ->where(fn ($q) => $q->whereRaw('LOWER(cipp_upn) LIKE ?', [strtolower($username) . '@%'])
-                    ->orWhereRaw('LOWER(email) LIKE ?', [strtolower($username) . '@%']))
+                ->where(fn ($q) => $q->whereRaw('LOWER(cipp_upn) LIKE ?', [strtolower($username).'@%'])
+                    ->orWhereRaw('LOWER(email) LIKE ?', [strtolower($username).'@%']))
                 ->first();
-            if ($person) return $person;
+            if ($person) {
+                return $person;
+            }
         }
 
         return null;
@@ -149,16 +155,17 @@ class AssetUserAssignmentService
 
             if ($firstName && $username === $firstName) {
                 $matches[] = $person;
+
                 continue;
             }
 
             if ($firstName && $lastName) {
                 $patterns = [
-                    $firstName[0] . $lastName,
-                    $firstName . '.' . $lastName,
-                    $firstName . $lastName,
-                    $lastName . $firstName[0],
-                    $firstName . '_' . $lastName,
+                    $firstName[0].$lastName,
+                    $firstName.'.'.$lastName,
+                    $firstName.$lastName,
+                    $lastName.$firstName[0],
+                    $firstName.'_'.$lastName,
                 ];
 
                 if (in_array($username, $patterns, true)) {
@@ -167,8 +174,13 @@ class AssetUserAssignmentService
             }
         }
 
-        if (count($matches) === 1) return $matches[0];
-        if (count($matches) > 1) return 'ambiguous';
+        if (count($matches) === 1) {
+            return $matches[0];
+        }
+        if (count($matches) > 1) {
+            return 'ambiguous';
+        }
+
         return null;
     }
 }

@@ -38,7 +38,7 @@ class EmailController extends Controller
         $filters = $request->only(['search', 'is_read', 'date_from', 'date_to', 'client_id', 'no_client', 'preset', 'direction']);
 
         // Default to needs_attention preset when no query params
-        if (!$request->hasAny(['preset', 'search', 'is_read', 'date_from', 'date_to', 'client_id', 'no_client', 'direction'])) {
+        if (! $request->hasAny(['preset', 'search', 'is_read', 'date_from', 'date_to', 'client_id', 'no_client', 'direction'])) {
             $filters['preset'] = 'needs_attention';
         }
 
@@ -48,11 +48,11 @@ class EmailController extends Controller
         $noClientCount = Email::inbound()->noClient()->notDismissed()->noTicket()->count();
 
         return view('emails.index', [
-            'emails'              => $emails,
-            'filters'             => $filters,
+            'emails' => $emails,
+            'filters' => $filters,
             'needsAttentionCount' => $needsAttentionCount,
-            'noClientCount'       => $noClientCount,
-            'clients'             => Client::active()->orderBy('name')->get(['id', 'name']),
+            'noClientCount' => $noClientCount,
+            'clients' => Client::active()->orderBy('name')->get(['id', 'name']),
         ]);
     }
 
@@ -104,13 +104,13 @@ class EmailController extends Controller
         $email->load(['client', 'person', 'user', 'ticket']);
 
         // Mark as read
-        if (!$email->is_read) {
+        if (! $email->is_read) {
             $email->update(['is_read' => true]);
         }
 
         // Fetch open local tickets for this client (for manual link list)
         $openTickets = collect();
-        if ($email->client_id && !$email->ticket_id) {
+        if ($email->client_id && ! $email->ticket_id) {
             $openTickets = Ticket::where('client_id', $email->client_id)
                 ->open()
                 ->orderByDesc('updated_at')
@@ -121,25 +121,25 @@ class EmailController extends Controller
         // Client list + domain-based suggestion for unresolved senders
         $clients = collect();
         $suggestedClientId = null;
-        if (!$email->client_id) {
+        if (! $email->client_id) {
             $clients = Client::active()->orderBy('name')->get(['id', 'name']);
             $domain = Str::after($email->from_address, '@');
-            if ($domain && !in_array(strtolower($domain), self::FREE_EMAIL_DOMAINS)) {
+            if ($domain && ! in_array(strtolower($domain), self::FREE_EMAIL_DOMAINS)) {
                 $suggestedClientId = Person::whereEmailDomain($domain)
                     ->whereNotNull('client_id')
                     ->value('client_id');
-                if (!$suggestedClientId) {
+                if (! $suggestedClientId) {
                     $suggestedClientId = Client::active()
-                        ->where('website', 'like', '%' . $domain . '%')
+                        ->where('website', 'like', '%'.$domain.'%')
                         ->value('id');
                 }
             }
         }
 
         return view('emails.show', [
-            'email'             => $email,
-            'openTickets'       => $openTickets,
-            'clients'           => $clients,
+            'email' => $email,
+            'openTickets' => $openTickets,
+            'clients' => $clients,
             'suggestedClientId' => $suggestedClientId,
         ]);
     }
@@ -148,7 +148,7 @@ class EmailController extends Controller
     {
         $request->validate([
             'body' => ['required', 'string'],
-            'cc'   => ['nullable', 'string'],
+            'cc' => ['nullable', 'string'],
         ]);
 
         $cc = $request->input('cc')
@@ -159,7 +159,7 @@ class EmailController extends Controller
             $this->emailService->sendReply($email, $request->input('body'), $cc);
         } catch (GraphClientException $e) {
             return redirect()->route('emails.show', $email)
-                ->with('error', 'Failed to send reply: ' . $e->getMessage())
+                ->with('error', 'Failed to send reply: '.$e->getMessage())
                 ->withInput();
         }
 
@@ -170,21 +170,21 @@ class EmailController extends Controller
     public function compose(Request $request)
     {
         return view('emails.compose', [
-            'to'        => $request->query('to', ''),
-            'toName'    => $request->query('to_name', ''),
-            'subject'   => $request->query('subject', ''),
-            'clientId'  => $request->query('client_id'),
+            'to' => $request->query('to', ''),
+            'toName' => $request->query('to_name', ''),
+            'subject' => $request->query('subject', ''),
+            'clientId' => $request->query('client_id'),
         ]);
     }
 
     public function send(Request $request)
     {
         $request->validate([
-            'to'      => ['required', 'email'],
+            'to' => ['required', 'email'],
             'to_name' => ['nullable', 'string', 'max:255'],
             'subject' => ['required', 'string', 'max:255'],
-            'body'    => ['required', 'string'],
-            'cc'      => ['nullable', 'string'],
+            'body' => ['required', 'string'],
+            'cc' => ['nullable', 'string'],
         ]);
 
         $cc = $request->input('cc')
@@ -202,7 +202,7 @@ class EmailController extends Controller
             );
         } catch (GraphClientException $e) {
             return redirect()->route('emails.compose')
-                ->with('error', 'Failed to send email: ' . $e->getMessage())
+                ->with('error', 'Failed to send email: '.$e->getMessage())
                 ->withInput();
         }
 
@@ -220,11 +220,11 @@ class EmailController extends Controller
         $email->load(['client', 'person']);
 
         return view('emails.create-ticket', [
-            'email'      => $email,
-            'clients'    => Client::active()->orderBy('name')->get(['id', 'name']),
-            'users'      => User::active()->orderBy('name')->get(['id', 'name']),
-            'types'      => TicketType::cases(),
-            'priorities'  => TicketPriority::cases(),
+            'email' => $email,
+            'clients' => Client::active()->orderBy('name')->get(['id', 'name']),
+            'users' => User::active()->orderBy('name')->get(['id', 'name']),
+            'types' => TicketType::cases(),
+            'priorities' => TicketPriority::cases(),
             'categories' => config('tickets.categories', []),
         ]);
     }
@@ -244,7 +244,7 @@ class EmailController extends Controller
         $this->emailService->linkEmailToTicket($email, $ticket);
 
         return redirect()->route('emails.show', $email)
-            ->with('success', 'Email linked to ticket ' . $ticket->display_id . '.');
+            ->with('success', 'Email linked to ticket '.$ticket->display_id.'.');
     }
 
     public function unlinkTicket(Email $email)
@@ -270,17 +270,17 @@ class EmailController extends Controller
         $categoryKeys = array_keys(config('tickets.categories', []));
 
         $validated = $request->validate([
-            'subject'     => ['required', 'string', 'max:255'],
+            'subject' => ['required', 'string', 'max:255'],
             'description' => ['nullable', 'string'],
-            'client_id'   => ['required', 'exists:clients,id'],
-            'contact_id'  => ['nullable', 'exists:people,id'],
-            'asset_id'    => ['nullable', 'exists:assets,id'],
-            'type'        => ['required', \Illuminate\Validation\Rule::enum(TicketType::class)],
-            'priority'    => ['required', \Illuminate\Validation\Rule::enum(TicketPriority::class)],
-            'category'    => ['nullable', 'string', 'max:100', \Illuminate\Validation\Rule::in($categoryKeys)],
+            'client_id' => ['required', 'exists:clients,id'],
+            'contact_id' => ['nullable', 'exists:people,id'],
+            'asset_id' => ['nullable', 'exists:assets,id'],
+            'type' => ['required', \Illuminate\Validation\Rule::enum(TicketType::class)],
+            'priority' => ['required', \Illuminate\Validation\Rule::enum(TicketPriority::class)],
+            'category' => ['nullable', 'string', 'max:100', \Illuminate\Validation\Rule::in($categoryKeys)],
             'subcategory' => ['nullable', 'string', 'max:100'],
             'assignee_id' => ['nullable', 'exists:users,id'],
-            'due_at'      => ['nullable', 'date'],
+            'due_at' => ['nullable', 'date'],
         ]);
 
         $validated['source'] = TicketSource::Email->value;
@@ -324,13 +324,13 @@ class EmailController extends Controller
 
         // Verify contact belongs to the new client
         if ($newContactId && $newClientId) {
-            if (!Person::where('id', $newContactId)->where('client_id', $newClientId)->exists()) {
+            if (! Person::where('id', $newContactId)->where('client_id', $newClientId)->exists()) {
                 $newContactId = null;
             }
         }
 
         // Auto-resolve contact from sender email if not explicitly provided
-        if ($newClientId && !$newContactId) {
+        if ($newClientId && ! $newContactId) {
             $newContactId = Person::where('client_id', $newClientId)
                 ->whereEmailMatch($email->from_address)
                 ->value('id');
@@ -349,11 +349,12 @@ class EmailController extends Controller
             ]);
         }
 
-        if (!$newClientId) {
+        if (! $newClientId) {
             return back()->with('success', 'Client assignment cleared.');
         }
 
         $clientName = Client::find($newClientId)?->name ?? 'Unknown';
+
         return back()->with('success', "Email reassigned to {$clientName}.");
     }
 
@@ -375,14 +376,14 @@ class EmailController extends Controller
     public function createContact(Request $request, Email $email)
     {
         $validated = $request->validate([
-            'client_id'  => 'sometimes|required|exists:clients,id',
+            'client_id' => 'sometimes|required|exists:clients,id',
             'first_name' => 'nullable|string|max:100',
-            'last_name'  => 'nullable|string|max:100',
-            'email'      => 'required|email|max:255',
+            'last_name' => 'nullable|string|max:100',
+            'email' => 'required|email|max:255',
         ]);
 
         $clientId = $email->client_id ?? $validated['client_id'] ?? null;
-        if (!$clientId) {
+        if (! $clientId) {
             return back()->with('error', 'A client must be selected.');
         }
 
@@ -392,11 +393,11 @@ class EmailController extends Controller
                 ->first();
 
             $person = $existing ?? $this->personService->createPerson([
-                'client_id'  => $clientId,
+                'client_id' => $clientId,
                 'first_name' => $validated['first_name'],
-                'last_name'  => $validated['last_name'],
-                'email'      => $validated['email'],
-                'is_active'  => true,
+                'last_name' => $validated['last_name'],
+                'email' => $validated['email'],
+                'is_active' => true,
             ]);
 
             // Backfill: link all unresolved emails from this address
@@ -437,7 +438,7 @@ class EmailController extends Controller
             Email::where('from_address', $email->from_address)
                 ->where(function ($q) use ($person) {
                     $q->whereNull('person_id')
-                      ->orWhere('client_id', $person->client_id);
+                        ->orWhere('client_id', $person->client_id);
                 })
                 ->update([
                     'person_id' => $person->id,

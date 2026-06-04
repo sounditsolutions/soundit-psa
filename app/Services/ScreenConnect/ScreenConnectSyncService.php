@@ -5,7 +5,6 @@ namespace App\Services\ScreenConnect;
 use App\Models\Asset;
 use App\Models\Client;
 use App\Models\ScreenConnectEvent;
-use Illuminate\Support\Facades\Log;
 
 class ScreenConnectSyncService
 {
@@ -215,7 +214,7 @@ class ScreenConnectSyncService
         if (! empty($payload['guest_logged_on_user'])) {
             $user = $payload['guest_logged_on_user'];
             if (! empty($payload['guest_logged_on_domain'])) {
-                $user = $payload['guest_logged_on_domain'] . '\\' . $user;
+                $user = $payload['guest_logged_on_domain'].'\\'.$user;
             }
             $asset->last_user = $user;
         }

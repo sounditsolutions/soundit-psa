@@ -9,7 +9,9 @@ use Illuminate\Support\Facades\Log;
 class AiClient
 {
     private GuzzleClient $http;
+
     private int $cumulativeInputTokens = 0;
+
     private int $cumulativeOutputTokens = 0;
 
     public function __construct(?string $modelOverride = null)
@@ -192,7 +194,7 @@ class AiClient
 
             // Collect text from this response
             if ($response->text !== '') {
-                $finalText .= ($finalText !== '' ? "\n" : '') . $response->text;
+                $finalText .= ($finalText !== '' ? "\n" : '').$response->text;
             }
 
             // If no tool calls, we're done
@@ -226,7 +228,7 @@ class AiClient
 
                     // Truncate oversized results
                     if (strlen($resultStr) > 50_000) {
-                        $resultStr = substr($resultStr, 0, 50_000) . "\n\n[TRUNCATED — result exceeded 50,000 characters]";
+                        $resultStr = substr($resultStr, 0, 50_000)."\n\n[TRUNCATED — result exceeded 50,000 characters]";
                     }
                 } catch (\Throwable $e) {
                     $resultStr = json_encode(['error' => $e->getMessage()]);

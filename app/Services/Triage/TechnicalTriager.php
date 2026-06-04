@@ -25,7 +25,7 @@ class TechnicalTriager
         Ticket $ticket,
         AiClient $ai,
         ?TriageClassification $classification = null,
-        \App\Services\TicketService $ticketService = null,
+        ?\App\Services\TicketService $ticketService = null,
     ): array {
         $ticket->loadMissing(['client', 'contact', 'assets', 'attachments', 'notes.attachments']);
 
@@ -34,24 +34,24 @@ class TechnicalTriager
         // Add classification context if available
         if ($classification) {
             $context .= "\n\n## Triage Classification\n";
-            $context .= 'Client type: ' . $classification->clientType . "\n";
-            $context .= 'Active contract: ' . ($classification->hasActiveContract ? 'Yes' : 'No') . "\n";
-            $context .= 'Work covered: ' . ($classification->workCoveredByManaged ? 'Yes' : 'No') . "\n";
+            $context .= 'Client type: '.$classification->clientType."\n";
+            $context .= 'Active contract: '.($classification->hasActiveContract ? 'Yes' : 'No')."\n";
+            $context .= 'Work covered: '.($classification->workCoveredByManaged ? 'Yes' : 'No')."\n";
             if ($classification->hasPrepaidTime) {
-                $context .= 'Prepaid balance: ' . $classification->prepaidBalance . "\n";
+                $context .= 'Prepaid balance: '.$classification->prepaidBalance."\n";
             }
-            $context .= 'Reasoning: ' . $classification->reasoning . "\n";
+            $context .= 'Reasoning: '.$classification->reasoning."\n";
         }
 
-        $system = Prompts::TECHNICAL_TRIAGE_SYSTEM_PROMPT . "\n\n" . $context;
+        $system = Prompts::TECHNICAL_TRIAGE_SYSTEM_PROMPT."\n\n".$context;
 
         // Check if ticket has images for multimodal context
         $hasImages = $ticket->attachments->contains(fn ($a) => $a->isImage())
             || $ticket->notes->flatMap(fn ($n) => $n->attachments)->contains(fn ($a) => $a->isImage());
 
         $userPrompt = 'Analyze this ticket and provide your technical assessment. '
-            . 'Search for similar past tickets, check device health if relevant, '
-            . 'and set the appropriate priority.';
+            .'Search for similar past tickets, check device health if relevant, '
+            .'and set the appropriate priority.';
 
         if ($hasImages && AiConfig::provider() === 'anthropic') {
             $multimodalBlocks = ContextBuilder::buildMultimodalContent($ticket);

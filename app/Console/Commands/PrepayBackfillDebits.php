@@ -23,7 +23,7 @@ class PrepayBackfillDebits extends Command
         $dryRun = $this->option('dry-run');
         $since = $this->option('since');
 
-        $this->info(($dryRun ? '[DRY RUN] ' : '') . "Backfilling prepay debits for notes since {$since}...");
+        $this->info(($dryRun ? '[DRY RUN] ' : '')."Backfilling prepay debits for notes since {$since}...");
 
         // Find all prepay contracts (hours-based)
         $contracts = Contract::whereNotNull('prepay_balance')
@@ -70,6 +70,7 @@ class PrepayBackfillDebits extends Command
                 if (! $isBillable) {
                     $contractSkipped++;
                     $totalSkipped++;
+
                     continue;
                 }
 
@@ -115,6 +116,7 @@ class PrepayBackfillDebits extends Command
         // Display summary table
         if (empty($contractSummaries)) {
             $this->info('No billable time found to backfill.');
+
             return self::SUCCESS;
         }
 
@@ -133,7 +135,7 @@ class PrepayBackfillDebits extends Command
         );
 
         $this->newLine();
-        $this->info("Total: {$totalNotes} notes examined, {$totalBillable} billable (" . round($totalHours, 2) . "h), {$totalSkipped} skipped (covered by managed services)");
+        $this->info("Total: {$totalNotes} notes examined, {$totalBillable} billable (".round($totalHours, 2)."h), {$totalSkipped} skipped (covered by managed services)");
 
         if ($dryRun) {
             $this->warn('No changes made. Run without --dry-run to apply.');

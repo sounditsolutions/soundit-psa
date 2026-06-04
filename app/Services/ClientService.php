@@ -43,7 +43,7 @@ class ClientService
         // Concurrent edit detection
         if ($expectedUpdatedAt && $client->site_notes_updated_at) {
             $expected = \Carbon\Carbon::parse($expectedUpdatedAt);
-            if (!$expected->equalTo($client->site_notes_updated_at)) {
+            if (! $expected->equalTo($client->site_notes_updated_at)) {
                 $editor = $client->siteNotesUpdatedBy?->name ?? 'someone';
                 throw new \RuntimeException(
                     "Site notes were updated by {$editor} at {$client->site_notes_updated_at->diffForHumans()} while you were editing. Please reload and try again."
@@ -74,7 +74,7 @@ class ClientService
         // Concurrent edit detection
         if ($expectedUpdatedAt && $client->credentials_updated_at) {
             $expected = \Carbon\Carbon::parse($expectedUpdatedAt);
-            if (!$expected->equalTo($client->credentials_updated_at)) {
+            if (! $expected->equalTo($client->credentials_updated_at)) {
                 $editor = $client->credentialsUpdatedBy?->name ?? 'someone';
                 throw new \RuntimeException(
                     "Credentials were updated by {$editor} at {$client->credentials_updated_at->diffForHumans()} while you were editing. Please reload and try again."
@@ -121,7 +121,7 @@ class ClientService
 
     private function normalizePhone(array &$data): void
     {
-        if (!empty($data['phone'])) {
+        if (! empty($data['phone'])) {
             $data['phone_display'] = PhoneNumber::format($data['phone']);
             $data['phone'] = PhoneNumber::normalize($data['phone']);
         } else {

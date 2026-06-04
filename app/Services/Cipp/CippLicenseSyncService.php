@@ -23,7 +23,7 @@ class CippLicenseSyncService
             ->where('is_active', true)
             ->get();
 
-        $result = new SyncResult();
+        $result = new SyncResult;
 
         foreach ($clients as $client) {
             try {
@@ -50,6 +50,7 @@ class CippLicenseSyncService
 
         if (empty($licenses) || ! is_array($licenses)) {
             Log::info("[CippSync] No licenses returned for {$client->name} ({$client->cipp_tenant_domain})");
+
             return;
         }
 

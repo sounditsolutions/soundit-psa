@@ -37,6 +37,7 @@ class StripeClient
     {
         try {
             $this->get('/v1/balance');
+
             return true;
         } catch (StripeClientException) {
             return false;
@@ -192,7 +193,7 @@ class StripeClient
     private function request(string $method, string $endpoint, array $options = []): array
     {
         $options['headers'] = [
-            'Authorization' => 'Bearer ' . ($this->config['secret_key'] ?? ''),
+            'Authorization' => 'Bearer '.($this->config['secret_key'] ?? ''),
             'Stripe-Version' => '2024-12-18.acacia',
         ];
 
@@ -215,6 +216,7 @@ class StripeClient
                     }
                     Log::info("[StripeClient] Rate limited, retrying in {$retryAfter}s");
                     sleep($retryAfter);
+
                     continue;
                 }
 

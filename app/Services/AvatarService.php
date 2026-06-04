@@ -13,6 +13,7 @@ class AvatarService
     public const ENTRA_AVATAR_TTL_DAYS = 7;
 
     private const AVATAR_SIZE = 200;
+
     private const JPEG_QUALITY = 85;
 
     public function __construct(
@@ -54,7 +55,7 @@ class AvatarService
 
     public function fetchEntraPhoto(User $user): ?string
     {
-        if (!$user->microsoft_id) {
+        if (! $user->microsoft_id) {
             return null;
         }
 
@@ -71,9 +72,10 @@ class AvatarService
         try {
             $photoData = $this->graph->getRaw("users/{$user->microsoft_id}/photo/\$value");
 
-            if (!$photoData) {
+            if (! $photoData) {
                 // User has no photo in Entra — update TTL so we don't retry immediately
                 $user->update(['entra_avatar_fetched_at' => now()]);
+
                 return null;
             }
 

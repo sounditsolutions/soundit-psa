@@ -2,7 +2,6 @@
 
 namespace App\Services;
 
-use App\Enums\AlertSeverity;
 use App\Enums\AlertSource;
 use App\Enums\AlertStatus;
 use App\Enums\NoteType;
@@ -147,7 +146,7 @@ class AlertService
             'ticket_id' => $ticket?->id,
         ]);
 
-        Log::info("[Alert] Ticket created from alert", [
+        Log::info('[Alert] Ticket created from alert', [
             'alert_id' => $alert->id,
             'ticket_id' => $ticket?->id,
         ]);
@@ -240,7 +239,7 @@ class AlertService
             }
         }
 
-        Log::info("[Alert] Resolved", [
+        Log::info('[Alert] Resolved', [
             'alert_id' => $alert->id,
             'source' => $alert->source->value,
             'title' => $alert->title,

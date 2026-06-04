@@ -2,19 +2,19 @@
 
 namespace App\Http\Controllers\Web;
 
-use App\Http\Controllers\Controller;
-use App\Http\Requests\AssetStoreRequest;
-use App\Http\Requests\AssetUpdateRequest;
 use App\Enums\TicketPriority;
 use App\Enums\TicketSource;
 use App\Enums\TicketStatus;
 use App\Enums\TicketType;
+use App\Http\Controllers\Controller;
+use App\Http\Requests\AssetStoreRequest;
+use App\Http\Requests\AssetUpdateRequest;
 use App\Models\Asset;
 use App\Models\Client;
+use App\Models\Person;
 use App\Models\Ticket;
 use App\Models\User;
 use App\Services\AssetService;
-use App\Services\TicketService;
 use App\Services\ControlD\ControlDAnalyticsClient;
 use App\Services\ControlD\ControlDClient;
 use App\Services\ControlD\ControlDClientException;
@@ -23,19 +23,19 @@ use App\Services\Level\LevelClient;
 use App\Services\Level\LevelClientException;
 use App\Services\Level\LevelSyncService;
 use App\Services\Ninja\NinjaClient;
-use App\Services\Zorus\ZorusClient;
-use App\Services\Zorus\ZorusClientException;
-use App\Support\ZorusConfig;
 use App\Services\Ninja\NinjaClientException;
 use App\Services\Ninja\NinjaSyncService;
 use App\Services\Servosity\ServosityDeploymentService;
+use App\Services\TicketService;
+use App\Services\Zorus\ZorusClient;
+use App\Services\Zorus\ZorusClientException;
 use App\Support\ControlDConfig;
+use App\Support\ZorusConfig;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use App\Models\Person;
 
 class AssetController extends Controller
 {
@@ -173,7 +173,7 @@ class AssetController extends Controller
         $cometJobData = null;
         if ($asset->comet_device_id) {
             try {
-                $cometJobService = new \App\Services\Comet\CometJobService(new \App\Services\Comet\CometClient());
+                $cometJobService = new \App\Services\Comet\CometJobService(new \App\Services\Comet\CometClient);
                 $cometJobData = $cometJobService->getRecentJobs($asset);
             } catch (\Exception $e) {
                 // Silently fail — job data is optional
@@ -300,7 +300,7 @@ class AssetController extends Controller
 
     public function refresh(Asset $asset, NinjaSyncService $ninjaSync, LevelSyncService $levelSync)
     {
-        if (!$asset->ninja_id && !$asset->level_id) {
+        if (! $asset->ninja_id && ! $asset->level_id) {
             return redirect()->route('assets.show', $asset)
                 ->with('error', 'This asset is not linked to any RMM.');
         }
@@ -313,7 +313,7 @@ class AssetController extends Controller
                 $sources[] = 'NinjaRMM';
             } catch (NinjaClientException $e) {
                 return redirect()->route('assets.show', $asset)
-                    ->with('error', 'Could not refresh from NinjaRMM: ' . $e->getMessage());
+                    ->with('error', 'Could not refresh from NinjaRMM: '.$e->getMessage());
             }
         }
 
@@ -323,12 +323,12 @@ class AssetController extends Controller
                 $sources[] = 'Level';
             } catch (LevelClientException $e) {
                 return redirect()->route('assets.show', $asset)
-                    ->with('error', 'Could not refresh from Level: ' . $e->getMessage());
+                    ->with('error', 'Could not refresh from Level: '.$e->getMessage());
             }
         }
 
         return redirect()->route('assets.show', $asset)
-            ->with('success', 'Device data refreshed from ' . implode(' and ', $sources) . '.');
+            ->with('success', 'Device data refreshed from '.implode(' and ', $sources).'.');
     }
 
     public function linkControlD(Request $request, Asset $asset)
@@ -366,7 +366,7 @@ class AssetController extends Controller
         $syncService->updateAssetFromDevice($asset, $device);
 
         return redirect()->route('assets.show', $asset)
-            ->with('success', 'Linked to Control D device: ' . ($device['name'] ?? $deviceId));
+            ->with('success', 'Linked to Control D device: '.($device['name'] ?? $deviceId));
     }
 
     public function unlinkControlD(Asset $asset)
@@ -491,7 +491,7 @@ class AssetController extends Controller
         $syncService->updateAssetFromEndpoint($asset, $endpoint);
 
         return redirect()->route('assets.show', $asset)
-            ->with('success', 'Linked to Zorus endpoint: ' . ($endpoint['name'] ?? $endpointId));
+            ->with('success', 'Linked to Zorus endpoint: '.($endpoint['name'] ?? $endpointId));
     }
 
     public function unlinkZorus(Asset $asset)
@@ -518,7 +518,7 @@ class AssetController extends Controller
 
     public function toggleCometBackup(Request $request, Asset $asset)
     {
-        $enabling = !$asset->comet_backup_enabled;
+        $enabling = ! $asset->comet_backup_enabled;
         $asset->update(['comet_backup_enabled' => $enabling]);
 
         // Redirect back to whichever page the toggle was on (client or asset detail)
@@ -528,9 +528,9 @@ class AssetController extends Controller
         $tacticalAsset = $asset->tacticalAsset;
 
         // If no Tactical link, try to find and link the agent by hostname
-        if (!$tacticalAsset && \App\Support\TacticalConfig::isConfigured() && $asset->hostname) {
+        if (! $tacticalAsset && \App\Support\TacticalConfig::isConfigured() && $asset->hostname) {
             try {
-                $tacticalClient = new \App\Services\Tactical\TacticalClient();
+                $tacticalClient = new \App\Services\Tactical\TacticalClient;
                 $agents = $tacticalClient->getAgents();
                 foreach ($agents as $agent) {
                     if (strcasecmp($agent['hostname'] ?? '', $asset->hostname) === 0) {
@@ -549,24 +549,25 @@ class AssetController extends Controller
                     }
                 }
             } catch (\Exception $e) {
-                Log::warning("[Comet] Failed to auto-link Tactical agent for {$asset->hostname}: " . $e->getMessage());
+                Log::warning("[Comet] Failed to auto-link Tactical agent for {$asset->hostname}: ".$e->getMessage());
             }
         }
 
         if ($tacticalAsset && \App\Support\TacticalConfig::isConfigured()) {
             try {
-                $tacticalClient = new \App\Services\Tactical\TacticalClient();
+                $tacticalClient = new \App\Services\Tactical\TacticalClient;
                 $tacticalClient->setAgentCustomField(
                     $tacticalAsset->agent_id,
                     \App\Support\CometConfig::TACTICAL_TOKEN_FIELD_ID,
                     $enabling ? 'yes' : ''
                 );
             } catch (\Exception $e) {
-                Log::warning("[Comet] Failed to update Tactical flag for {$asset->hostname}: " . $e->getMessage());
+                Log::warning("[Comet] Failed to update Tactical flag for {$asset->hostname}: ".$e->getMessage());
             }
         }
 
         $status = $asset->comet_backup_enabled ? 'enabled' : 'disabled';
+
         return redirect($redirectTo)->with('success', "Comet backup {$status} for {$asset->hostname}.");
     }
 
@@ -577,10 +578,10 @@ class AssetController extends Controller
         // Disabling — simple path
         if ($asset->servosity_backup_enabled) {
             try {
-                $service = new ServosityDeploymentService();
+                $service = new ServosityDeploymentService;
                 $service->disableBackup($asset);
             } catch (\Exception $e) {
-                Log::warning("[Servosity] Failed to disable backup for {$asset->hostname}: " . $e->getMessage());
+                Log::warning("[Servosity] Failed to disable backup for {$asset->hostname}: ".$e->getMessage());
                 $asset->update(['servosity_backup_enabled' => false]);
             }
 
@@ -596,7 +597,7 @@ class AssetController extends Controller
         $tacticalAsset = $asset->tacticalAsset;
         if (! $tacticalAsset && \App\Support\TacticalConfig::isConfigured() && $asset->hostname) {
             try {
-                $tacticalClient = new \App\Services\Tactical\TacticalClient();
+                $tacticalClient = new \App\Services\Tactical\TacticalClient;
                 $agents = $tacticalClient->getAgents();
                 foreach ($agents as $agent) {
                     if (strcasecmp($agent['hostname'] ?? '', $asset->hostname) === 0) {
@@ -611,7 +612,7 @@ class AssetController extends Controller
                     }
                 }
             } catch (\Exception $e) {
-                Log::warning("[Servosity] Failed to auto-link Tactical agent: " . $e->getMessage());
+                Log::warning('[Servosity] Failed to auto-link Tactical agent: '.$e->getMessage());
             }
         }
 
@@ -620,12 +621,12 @@ class AssetController extends Controller
         }
 
         try {
-            $service = new ServosityDeploymentService();
+            $service = new ServosityDeploymentService;
             $service->enableBackup($asset);
 
             // Trigger Tactical deploy script immediately (fire-and-forget)
             try {
-                $tactical = new \App\Services\Tactical\TacticalClient();
+                $tactical = new \App\Services\Tactical\TacticalClient;
                 $tactical->runScriptAsync(
                     $asset->tacticalAsset->agent_id,
                     218,  // Deploy: Servosity Backup
@@ -638,7 +639,7 @@ class AssetController extends Controller
                     600,
                 );
             } catch (\Exception $e) {
-                Log::warning("[Servosity] Failed to trigger immediate deploy: " . $e->getMessage());
+                Log::warning('[Servosity] Failed to trigger immediate deploy: '.$e->getMessage());
             }
 
             // Dispatch retry job: checks every 30s for 30 min until provisioned
@@ -647,8 +648,9 @@ class AssetController extends Controller
 
             return redirect($redirectTo)->with('success', "Servosity backup enabled for {$asset->hostname}. Installing now — DR account will be provisioned automatically.");
         } catch (\Exception $e) {
-            Log::error("[Servosity] Failed to enable backup for {$asset->hostname}: " . $e->getMessage());
-            return redirect($redirectTo)->with('error', "Failed to enable Servosity backup: " . $e->getMessage());
+            Log::error("[Servosity] Failed to enable backup for {$asset->hostname}: ".$e->getMessage());
+
+            return redirect($redirectTo)->with('error', 'Failed to enable Servosity backup: '.$e->getMessage());
         }
     }
 
@@ -710,7 +712,7 @@ class AssetController extends Controller
 
         $asset->load('tacticalAsset');
 
-        if (!$asset->tacticalAsset || $asset->tacticalAsset->status !== 'online') {
+        if (! $asset->tacticalAsset || $asset->tacticalAsset->status !== 'online') {
             return response()->json(['error' => 'Device is not online or has no Tactical agent.'], 422);
         }
 
@@ -719,7 +721,7 @@ class AssetController extends Controller
         $timeout = (int) $request->input('timeout');
 
         try {
-            $client = new \App\Services\Tactical\TacticalClient();
+            $client = new \App\Services\Tactical\TacticalClient;
             $result = $client->runScript(
                 $asset->tacticalAsset->agent_id,
                 $script->tactical_script_id,
@@ -743,7 +745,7 @@ class AssetController extends Controller
             ]);
         } catch (\Throwable $e) {
             return response()->json([
-                'error' => 'Script execution failed: ' . $e->getMessage(),
+                'error' => 'Script execution failed: '.$e->getMessage(),
             ], 500);
         }
     }
@@ -775,9 +777,15 @@ class AssetController extends Controller
         if ($asset->last_boot_at) {
             $diff = $asset->last_boot_at->diff(now());
             $parts = [];
-            if ($diff->days > 0) $parts[] = $diff->days . 'd';
-            if ($diff->h > 0) $parts[] = $diff->h . 'h';
-            if (empty($parts)) $parts[] = $diff->i . 'm';
+            if ($diff->days > 0) {
+                $parts[] = $diff->days.'d';
+            }
+            if ($diff->h > 0) {
+                $parts[] = $diff->h.'h';
+            }
+            if (empty($parts)) {
+                $parts[] = $diff->i.'m';
+            }
             $uptime = implode(' ', $parts);
         }
 
@@ -804,7 +812,7 @@ class AssetController extends Controller
             'uptime' => $uptime,
             'needs_reboot' => $asset->needs_reboot,
             'contract' => $contract
-                ? ($contract->contract_number . ' - ' . $contract->name)
+                ? ($contract->contract_number.' - '.$contract->name)
                 : null,
             'warranty_start' => $asset->warranty_start?->format('Y-m-d'),
             'warranty_end' => $asset->warranty_end?->format('Y-m-d'),
@@ -841,9 +849,9 @@ class AssetController extends Controller
                 $device = app(LevelClient::class)->getDevice($asset->level_id);
 
                 $asset->update([
-                    'rmm_online' => !empty($device['online']),
-                    'last_seen_at' => !empty($device['online']) ? now() : $asset->last_seen_at,
-                    'last_boot_at' => !empty($device['last_reboot_time'])
+                    'rmm_online' => ! empty($device['online']),
+                    'last_seen_at' => ! empty($device['online']) ? now() : $asset->last_seen_at,
+                    'last_boot_at' => ! empty($device['last_reboot_time'])
                         ? Carbon::parse($device['last_reboot_time'])
                         : $asset->last_boot_at,
                 ]);
@@ -859,7 +867,7 @@ class AssetController extends Controller
     public function deviceData(Asset $asset, string $section)
     {
         $allowedSections = ['network', 'storage', 'software', 'patches'];
-        if (!in_array($section, $allowedSections)) {
+        if (! in_array($section, $allowedSections)) {
             return response()->json(['error' => 'Invalid section'], 422);
         }
 
@@ -892,6 +900,7 @@ class AssetController extends Controller
             };
         } catch (\Throwable $e) {
             Log::debug("[AssetController] Device data fetch failed: {$e->getMessage()}");
+
             return ['error' => 'Could not fetch data from RMM. Try again in a moment.'];
         }
     }

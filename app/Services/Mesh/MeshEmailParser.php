@@ -105,7 +105,7 @@ class MeshEmailParser
     private static function extractField(string $body, string $label): ?string
     {
         // Match "Label: value" where value extends to end of line
-        if (preg_match('/^' . preg_quote($label, '/') . ':\s*(.+)$/mi', $body, $matches)) {
+        if (preg_match('/^'.preg_quote($label, '/').':\s*(.+)$/mi', $body, $matches)) {
             return trim($matches[1]);
         }
 
@@ -150,25 +150,25 @@ class MeshEmailParser
         $lines = ['**Mesh Email Delivery Request**'];
 
         if ($parsed['recipient']) {
-            $lines[] = '- Requested by: ' . $parsed['recipient'];
+            $lines[] = '- Requested by: '.$parsed['recipient'];
         }
         if ($parsed['sender']) {
-            $lines[] = '- Quarantined email from: ' . $parsed['sender'];
+            $lines[] = '- Quarantined email from: '.$parsed['sender'];
         }
         if ($parsed['original_subject']) {
-            $lines[] = '- Original subject: ' . $parsed['original_subject'];
+            $lines[] = '- Original subject: '.$parsed['original_subject'];
         }
         if ($parsed['category']) {
-            $lines[] = '- Category: ' . $parsed['category'];
+            $lines[] = '- Category: '.$parsed['category'];
         }
         if ($parsed['queue_id']) {
-            $lines[] = '- Queue ID: ' . $parsed['queue_id'];
+            $lines[] = '- Queue ID: '.$parsed['queue_id'];
         }
         if ($parsed['date']) {
-            $lines[] = '- Date: ' . $parsed['date'];
+            $lines[] = '- Date: '.$parsed['date'];
         }
         if ($parsed['portal_url']) {
-            $lines[] = '- [View in Mesh Portal](' . $parsed['portal_url'] . ')';
+            $lines[] = '- [View in Mesh Portal]('.$parsed['portal_url'].')';
         }
 
         return implode("\n", $lines);

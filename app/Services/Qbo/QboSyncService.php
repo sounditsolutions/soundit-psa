@@ -21,7 +21,7 @@ class QboSyncService
 
     public function fetchQboCustomers(): array
     {
-        $result = $this->qboClient->query("SELECT * FROM Customer MAXRESULTS 1000");
+        $result = $this->qboClient->query('SELECT * FROM Customer MAXRESULTS 1000');
 
         return collect($result['QueryResponse']['Customer'] ?? [])
             ->map(fn ($c) => [
@@ -60,7 +60,7 @@ class QboSyncService
 
             $matches = collect($qboCustomers)->filter(function ($qc) use ($normalizedName, $alreadyMappedQboIds) {
                 return $this->normalizeName($qc['DisplayName']) === $normalizedName
-                    && !$alreadyMappedQboIds->has($qc['Id']);
+                    && ! $alreadyMappedQboIds->has($qc['Id']);
             });
 
             if ($matches->count() === 1) {
@@ -115,6 +115,7 @@ class QboSyncService
                 // Skip if nothing changed
                 if ($existing->qbo_sync_hash === $hash && ! $existing->trashed()) {
                     $skipped++;
+
                     continue;
                 }
 
@@ -137,7 +138,7 @@ class QboSyncService
                 $suffix = 0;
                 while (Sku::withTrashed()->where('sku_code', $skuCode)->exists()) {
                     $suffix++;
-                    $skuCode = Str::limit($baseCode, 44, '') . '-' . $suffix;
+                    $skuCode = Str::limit($baseCode, 44, '').'-'.$suffix;
                 }
 
                 Sku::create([
@@ -236,8 +237,9 @@ class QboSyncService
 
         return Cache::remember('qbo:accounts', now()->addHours(6), function () {
             $resp = $this->qboClient->query(
-                "SELECT Id, Name, AccountType, AccountSubType FROM Account WHERE Active = true ORDERBY Name MAXRESULTS 500"
+                'SELECT Id, Name, AccountType, AccountSubType FROM Account WHERE Active = true ORDERBY Name MAXRESULTS 500'
             );
+
             return $resp['QueryResponse']['Account'] ?? [];
         });
     }
@@ -292,6 +294,7 @@ class QboSyncService
 
         $id = (string) $accounts[0]['Id'];
         Setting::setValue('qbo_default_income_account_id', $id);
+
         return $id;
     }
 
@@ -314,6 +317,7 @@ class QboSyncService
             if (! empty($accounts)) {
                 $id = (string) $accounts[0]['Id'];
                 Setting::setValue('qbo_default_expense_account_id', $id);
+
                 return $id;
             }
         }
@@ -330,7 +334,7 @@ class QboSyncService
         $invoice->loadMissing(['client', 'lines']);
 
         // Validate client has QBO customer linked
-        if (!$invoice->client->qbo_customer_id) {
+        if (! $invoice->client->qbo_customer_id) {
             $error = "Client \"{$invoice->client->name}\" has no QBO customer linked. Go to Settings → QBO Client Matching.";
             $invoice->update(['qbo_sync_error' => $error]);
             throw new QboClientException($error);
@@ -398,7 +402,7 @@ class QboSyncService
 
     public function syncInvoiceStatusFromQbo(Invoice $invoice): void
     {
-        if (!$invoice->qbo_invoice_id) {
+        if (! $invoice->qbo_invoice_id) {
             return;
         }
 
@@ -420,7 +424,7 @@ class QboSyncService
         // Detect this before updating totals — QBO zeroes out amounts on void,
         // and we must preserve the original totals for reporting/audit.
         if (($qboInvoice['PrivateNote'] ?? '') === 'Voided') {
-            Log::info('[QboSync] Void detected for invoice #' . $invoice->invoice_number, [
+            Log::info('[QboSync] Void detected for invoice #'.$invoice->invoice_number, [
                 'invoice_id' => $invoice->id,
             ]);
             $invoice->update([
@@ -464,7 +468,7 @@ class QboSyncService
         $psaLines = $invoice->lines()->orderBy('sort_order')->get();
 
         if ($qboLines->count() !== $psaLines->count()) {
-            Log::warning('[QboSync] Line count mismatch for invoice #' . $invoice->invoice_number, [
+            Log::warning('[QboSync] Line count mismatch for invoice #'.$invoice->invoice_number, [
                 'qbo_lines' => $qboLines->count(),
                 'psa_lines' => $psaLines->count(),
             ]);
@@ -488,7 +492,7 @@ class QboSyncService
 
     public function voidInvoiceInQbo(Invoice $invoice): void
     {
-        if (!$invoice->qbo_invoice_id) {
+        if (! $invoice->qbo_invoice_id) {
             return;
         }
 
@@ -580,9 +584,10 @@ class QboSyncService
         $results = ['pushed' => 0, 'skipped' => 0, 'errors' => 0];
 
         foreach ($invoices as $invoice) {
-            if (!$invoice->client->qbo_customer_id) {
+            if (! $invoice->client->qbo_customer_id) {
                 Log::warning("[QboSync] Skipping invoice {$invoice->invoice_number}: client has no QBO customer ID");
                 $results['skipped']++;
+
                 continue;
             }
 

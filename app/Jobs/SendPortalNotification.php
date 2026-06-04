@@ -21,7 +21,9 @@ class SendPortalNotification implements ShouldQueue
     use Queueable;
 
     public int $tries = 2;
+
     public int $timeout = 30;
+
     public array $backoff = [10, 60];
 
     public function __construct(
@@ -114,7 +116,7 @@ class SendPortalNotification implements ShouldQueue
 
         if ($this->eventType === 'status_resolved') {
             $lines[] = 'If the issue is fixed, you can confirm it resolved in the portal.';
-            $lines[] = "If the issue persists, you can reopen the ticket from the portal.";
+            $lines[] = 'If the issue persists, you can reopen the ticket from the portal.';
         } elseif ($this->eventType === 'status_pending_client') {
             $lines[] = 'Please reply via the portal to continue.';
         }

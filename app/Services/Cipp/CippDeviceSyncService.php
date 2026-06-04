@@ -6,7 +6,6 @@ use App\Models\Asset;
 use App\Models\Client;
 use App\Services\SyncResult;
 use Carbon\Carbon;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 
 class CippDeviceSyncService
@@ -136,6 +135,7 @@ class CippDeviceSyncService
                 Log::debug("[CippDeviceSync] No asset match for device '{$deviceName}' (ID: {$deviceId})", [
                     'client' => $client->name,
                 ]);
+
                 continue;
             }
 
@@ -148,12 +148,13 @@ class CippDeviceSyncService
                     'name' => $deviceName,
                     'email' => $asset->hostname ?? '',
                 ];
+
                 continue;
             }
 
             // Find Defender data by device ID or name
             $defender = $defenderByDeviceId[$deviceId]
-                ?? $defenderByDeviceId['name:' . mb_strtolower($deviceName ?? '')] ?? null;
+                ?? $defenderByDeviceId['name:'.mb_strtolower($deviceName ?? '')] ?? null;
 
             $this->updateAssetFromDevice($asset, $device, $defender);
             $matchedAssetIds[] = $asset->id;

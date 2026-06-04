@@ -11,7 +11,7 @@ class CometClient
 
     public function __construct()
     {
-        $url = rtrim(CometConfig::serverUrl(), '/') . '/';
+        $url = rtrim(CometConfig::serverUrl(), '/').'/';
         $user = CometConfig::get('comet_admin_user');
         $password = CometConfig::get('comet_admin_password');
 
@@ -98,6 +98,7 @@ class CometClient
     {
         try {
             $result = $this->server->AdminUserGroupsNew($name);
+
             return $result->UserGroupID;
         } catch (\Exception $e) {
             Log::error("[Comet] createUserGroup({$name}) failed: {$e->getMessage()}");
@@ -152,10 +153,12 @@ class CometClient
     {
         try {
             $this->server->AdminAddUser($username, $password, 1); // StoreRecoveryCode=1
+
             return true;
         } catch (\Exception $e) {
             // User likely already exists — don't delete (could destroy backup data)
             Log::warning("[Comet] User {$username} may already exist: {$e->getMessage()}");
+
             return false;
         }
     }
@@ -166,8 +169,9 @@ class CometClient
     public function createInstallToken(string $username, string $password): string
     {
         try {
-            $serverUrl = rtrim(CometConfig::serverUrl(), '/') . '/';
+            $serverUrl = rtrim(CometConfig::serverUrl(), '/').'/';
             $result = $this->server->AdminCreateInstallToken($username, $password, $serverUrl);
+
             return $result->InstallToken->Token;
         } catch (\Exception $e) {
             Log::error("[Comet] createInstallToken failed: {$e->getMessage()}");
@@ -205,6 +209,7 @@ class CometClient
     {
         try {
             $this->server->AdminMetaVersion();
+
             return true;
         } catch (\Exception) {
             return false;

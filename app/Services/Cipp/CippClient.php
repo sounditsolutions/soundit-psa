@@ -18,7 +18,7 @@ class CippClient
         private readonly CacheInterface $cache,
     ) {
         $this->http = new Client([
-            'base_uri' => rtrim($this->config['api_url'] ?? '', '/') . '/',
+            'base_uri' => rtrim($this->config['api_url'] ?? '', '/').'/',
             'timeout' => 60,
         ]);
     }
@@ -38,6 +38,7 @@ class CippClient
     {
         try {
             $this->get('api/ListTenants');
+
             return true;
         } catch (CippClientException) {
             return false;
@@ -225,6 +226,7 @@ class CippClient
                 if ($code === 401 && $attempts < $maxAttempts) {
                     Log::info('[CippClient] 401 received, refreshing token and retrying');
                     $this->cache->forget(self::TOKEN_CACHE_KEY);
+
                     continue;
                 }
 
@@ -236,6 +238,7 @@ class CippClient
                     }
                     Log::info("[CippClient] Rate limited on {$endpoint}, retrying in {$retryAfter}s");
                     sleep($retryAfter);
+
                     continue;
                 }
 

@@ -13,6 +13,7 @@ use Illuminate\Support\Facades\Process;
 class ResolveCallRecording extends Command
 {
     protected $signature = 'calls:resolve-recording {call : The phone call ID}';
+
     protected $description = 'Resolve a missing recording from Plivo API for a single call';
 
     public function handle(PhoneCallService $phoneCallService): int
@@ -40,6 +41,7 @@ class ResolveCallRecording extends Command
             Log::warning('[PhoneCall] No recording found on Plivo API after call end', [
                 'call_id' => $call->id,
             ]);
+
             return self::FAILURE;
         }
 

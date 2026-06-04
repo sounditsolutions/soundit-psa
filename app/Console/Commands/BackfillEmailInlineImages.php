@@ -86,6 +86,7 @@ class BackfillEmailInlineImages extends Command
 
                 if (! $ticket) {
                     $report['no_destination']++;
+
                     continue;
                 }
 
@@ -102,6 +103,7 @@ class BackfillEmailInlineImages extends Command
 
                 if ($existingAttachmentCount > 0) {
                     $report['already_fixed']++;
+
                     continue;
                 }
 
@@ -116,6 +118,7 @@ class BackfillEmailInlineImages extends Command
                         $destAttachableId,
                         mb_substr($email->subject ?? '(no subject)', 0, 60),
                     ));
+
                     continue;
                 }
 
@@ -124,6 +127,7 @@ class BackfillEmailInlineImages extends Command
                 if (empty($attachments)) {
                     $this->line("  email #{$email->id}: Graph returned no attachments — skipped (purged?)");
                     $report['graph_no_attachments']++;
+
                     continue;
                 }
 

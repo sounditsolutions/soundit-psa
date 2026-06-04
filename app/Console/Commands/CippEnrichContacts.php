@@ -2,9 +2,9 @@
 
 namespace App\Console\Commands;
 
+use App\Models\Client;
 use App\Services\Cipp\CippClient;
 use App\Services\Cipp\CippContactEnrichmentService;
-use App\Models\Client;
 use App\Support\CippConfig;
 use Illuminate\Console\Command;
 use Illuminate\Contracts\Cache\Repository as CacheInterface;

@@ -6,7 +6,6 @@ use App\Enums\CallStatus;
 use App\Enums\ChargeClassification;
 use App\Enums\TranscriptionStatus;
 use App\Models\PhoneCall;
-use App\Services\NotificationService;
 use App\Support\AiConfig;
 use App\Support\PlivoConfig;
 use App\Support\TranscriptionConfig;
@@ -115,12 +114,12 @@ TEMPLATE;
     public function transcribe(PhoneCall $call): void
     {
         // Guard: skip if already transcribed or no recording
-        if ($call->isTranscribed() || !$call->recording_url) {
+        if ($call->isTranscribed() || ! $call->recording_url) {
             return;
         }
 
         $apiKey = TranscriptionConfig::whisperApiKey();
-        if (!$apiKey) {
+        if (! $apiKey) {
             throw new \RuntimeException('OpenAI API key not configured for Whisper transcription');
         }
 
@@ -136,7 +135,7 @@ TEMPLATE;
 
             $needsChunking = $fileSize > self::MAX_WHISPER_SIZE;
 
-            if ($needsChunking && !$this->isFfmpegAvailable()) {
+            if ($needsChunking && ! $this->isFfmpegAvailable()) {
                 throw new \RuntimeException(
                     sprintf('Recording too large for Whisper (%.1f MB) and ffmpeg is not available for splitting',
                         $fileSize / 1024 / 1024)
@@ -309,18 +308,19 @@ TEMPLATE;
                         'delay' => $delay,
                     ]);
                     sleep($delay);
+
                     continue;
                 }
                 throw $e;
             }
         }
 
-        if ($lastException && (!file_exists($tempFile) || filesize($tempFile) === 0)) {
+        if ($lastException && (! file_exists($tempFile) || filesize($tempFile) === 0)) {
             @unlink($tempFile);
             throw $lastException;
         }
 
-        if (!file_exists($tempFile) || filesize($tempFile) === 0) {
+        if (! file_exists($tempFile) || filesize($tempFile) === 0) {
             @unlink($tempFile);
             throw new \RuntimeException('Downloaded recording is empty (0 bytes)');
         }
@@ -404,7 +404,7 @@ TEMPLATE;
             $prompt .= sprintf(
                 $template,
                 $directionText ?: 'Call direction is unknown.',
-                $participants ? implode("\n", $participants) . "\n" : "No participant information available.\n"
+                $participants ? implode("\n", $participants)."\n" : "No participant information available.\n"
             );
         }
 
@@ -596,7 +596,7 @@ TEMPLATE;
         $chunks = [];
         for ($i = 0; $i < $chunkCount; $i++) {
             $startTime = $i * self::CHUNK_DURATION;
-            $chunkPath = sys_get_temp_dir() . '/psa_chunk_' . uniqid() . '_' . $i . '.mp3';
+            $chunkPath = sys_get_temp_dir().'/psa_chunk_'.uniqid().'_'.$i.'.mp3';
 
             $cmd = sprintf(
                 'ffmpeg -y -i %s -ss %d -t %d -c copy %s 2>/dev/null',
@@ -607,7 +607,7 @@ TEMPLATE;
             );
             exec($cmd, $_, $exitCode);
 
-            if ($exitCode !== 0 || !file_exists($chunkPath) || filesize($chunkPath) === 0) {
+            if ($exitCode !== 0 || ! file_exists($chunkPath) || filesize($chunkPath) === 0) {
                 // Clean up any chunks created so far
                 foreach ($chunks as $c) {
                     @unlink($c);
@@ -632,16 +632,16 @@ TEMPLATE;
      */
     private function buildEnergyProfiles(string $filePath): ?array
     {
-        $leftEnergyFile = sys_get_temp_dir() . '/psa_energy_left_' . uniqid() . '.txt';
-        $rightEnergyFile = sys_get_temp_dir() . '/psa_energy_right_' . uniqid() . '.txt';
+        $leftEnergyFile = sys_get_temp_dir().'/psa_energy_left_'.uniqid().'.txt';
+        $rightEnergyFile = sys_get_temp_dir().'/psa_energy_right_'.uniqid().'.txt';
 
         try {
             $cmd = sprintf(
                 'ffmpeg -i %s -filter_complex '
-                . '"channelsplit=channel_layout=stereo[left][right];'
-                . '[left]astats=metadata=1:reset=1,ametadata=print:key=lavfi.astats.Overall.RMS_level:file=%s[l];'
-                . '[right]astats=metadata=1:reset=1,ametadata=print:key=lavfi.astats.Overall.RMS_level:file=%s[r]" '
-                . '-map "[l]" -f null /dev/null -map "[r]" -f null /dev/null 2>/dev/null',
+                .'"channelsplit=channel_layout=stereo[left][right];'
+                .'[left]astats=metadata=1:reset=1,ametadata=print:key=lavfi.astats.Overall.RMS_level:file=%s[l];'
+                .'[right]astats=metadata=1:reset=1,ametadata=print:key=lavfi.astats.Overall.RMS_level:file=%s[r]" '
+                .'-map "[l]" -f null /dev/null -map "[r]" -f null /dev/null 2>/dev/null',
                 escapeshellarg($filePath),
                 escapeshellarg($leftEnergyFile),
                 escapeshellarg($rightEnergyFile)
@@ -696,10 +696,10 @@ TEMPLATE;
             $speaker = ($leftEnergy >= $rightEnergy) ? $leftLabel : $rightLabel;
 
             if ($speaker === $currentSpeaker) {
-                $currentText .= ' ' . $w['word'];
+                $currentText .= ' '.$w['word'];
             } else {
                 if ($currentSpeaker !== null) {
-                    $lines[] = "{$currentSpeaker}: " . trim($currentText);
+                    $lines[] = "{$currentSpeaker}: ".trim($currentText);
                 }
                 $currentSpeaker = $speaker;
                 $currentText = $w['word'];
@@ -707,7 +707,7 @@ TEMPLATE;
         }
 
         if ($currentSpeaker !== null) {
-            $lines[] = "{$currentSpeaker}: " . trim($currentText);
+            $lines[] = "{$currentSpeaker}: ".trim($currentText);
         }
 
         return implode("\n\n", $lines);
@@ -768,7 +768,6 @@ TEMPLATE;
 
         return $profile;
     }
-
 
     /**
      * Resolve speaker labels for left and right audio channels based on call direction.
@@ -909,7 +908,7 @@ TEMPLATE;
      */
     private function parseSection(string $analysis, string $heading): ?string
     {
-        if (preg_match('/##\s*' . preg_quote($heading, '/') . '\s*\n(.*?)(?=\n##|\z)/si', $analysis, $m)) {
+        if (preg_match('/##\s*'.preg_quote($heading, '/').'\s*\n(.*?)(?=\n##|\z)/si', $analysis, $m)) {
             $text = trim($m[1]);
 
             return $text !== '' ? $text : null;

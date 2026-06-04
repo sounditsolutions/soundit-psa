@@ -45,6 +45,7 @@ class PrepayOrderService
                     if ($attempt < 1 && $e->errorInfo[1] == 1062) {
                         Log::warning("[PrepayOrder] Invoice number {$invoiceNumber} collision, retrying");
                         $invoiceNumber = $this->billingService->nextInvoiceNumber();
+
                         continue;
                     }
                     throw $e;
@@ -165,6 +166,7 @@ class PrepayOrderService
                     if ($attempt < 1 && $e->errorInfo[1] == 1062) {
                         Log::warning("[PrepayOrder] Invoice number {$invoiceNumber} collision, retrying");
                         $invoiceNumber = $this->billingService->nextInvoiceNumber();
+
                         continue;
                     }
                     throw $e;
