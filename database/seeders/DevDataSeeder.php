@@ -1206,11 +1206,15 @@ class DevDataSeeder extends Seeder
             'recording_duration' => 47,
             'recording_url' => 'https://example.com/recordings/demo-vm-1.mp3',
             'transcription' => "Hey, it's Theo at Crestmont. My VPN keeps dropping every ten minutes or so. It connects fine, I can get to email and the file server, and then it just disconnects. I have to reconnect, and ten minutes later it does it again. I'm working from home today so I really need it to stay up. Can someone call me back? Thanks.",
+            'cleaned_transcript' => "**Caller (Theo Larsen, Crestmont Architects):** Hey, it's Theo at Crestmont. My VPN keeps dropping every ten minutes or so. It connects fine — I can get to email and the file server — and then it just disconnects. I have to reconnect, and ten minutes later it does it again. I'm working from home today, so I really need it to stay up. Can someone call me back? Thanks.",
             'transcription_summary' => 'Caller: Theo Larsen, Crestmont Architects. VPN connects but disconnects every ~10 minutes. Working from home, needs callback.',
-            'call_summary' => 'Theo at Crestmont reports VPN disconnects every 10 minutes after a successful connect. Working from home, needs urgent callback.',
+            'call_summary' => 'Theo at Crestmont reports his VPN disconnects roughly every 10 minutes after connecting successfully. He can reach email and the file server, then the session drops and he has to reconnect. Working from home and needs a callback.',
+            'next_steps' => "- Call Theo back at the number on file.\n- Check the firewall VPN profile for an aggressive idle-timeout / dead-peer-detection setting.\n- Confirm whether other Crestmont remote users are affected.",
+            'sentiment_score' => 5,
+            'charge_classification' => 'no_charge',
             'transcription_status' => 'completed',
             'transcribed_at' => $vmTime->copy()->addMinutes(2),
-            'is_billable' => true,
+            'is_billable' => false,
         ]);
 
         // Inbound answered
@@ -1230,7 +1234,18 @@ class DevDataSeeder extends Seeder
             'ended_at' => $callTime->copy()->addMinutes(7)->addSeconds(15),
             'duration' => 427,
             'recording_duration' => 425,
-            'is_billable' => true,
+            'recording_url' => 'https://example.com/recordings/demo-call-green-pwd.mp3',
+            'transcription' => "Priya: Thanks for calling BlueTier, this is Priya. Lori: Hi Priya, it's Lori at Acme Dental. I'm locked out of my Microsoft 365 account, it won't take my password no matter what I try. Priya: No problem, I can help with that. Before I reset anything, let me verify a couple of details with you. Okay, thanks, that all checks out. I'm sending a password reset now. You'll get a prompt to set a new password and re-register your authenticator. Lori: Okay, doing it now. Oh, it worked, I'm back in. Thank you so much. Priya: Glad that did it. One thing I'd recommend, we can turn on self-service password reset so you can do this yourself next time without waiting on us. Lori: That would be great. Priya: I'll make a note on the ticket and we'll get that set up. Anything else? Lori: No, that's everything, thanks Priya.",
+            'cleaned_transcript' => "**Agent (Priya Shah):** Thanks for calling BlueTier, this is Priya.\n**Caller (Lori Bennett, Acme Dental):** Hi Priya, it's Lori at Acme Dental. I'm locked out of my Microsoft 365 account — it won't take my password no matter what I try.\n**Agent:** No problem, I can help with that. Before I reset anything, let me verify a couple of details with you... Okay, thanks, that all checks out. I'm sending a password reset now — you'll get a prompt to set a new password and re-register your authenticator.\n**Caller:** Okay, doing it now. Oh — it worked, I'm back in. Thank you so much.\n**Agent:** Glad that did it. One thing I'd recommend: we can turn on self-service password reset so you can do this yourself next time without waiting on us.\n**Caller:** That would be great.\n**Agent:** I'll make a note on the ticket and we'll get that set up. Anything else?\n**Caller:** No, that's everything — thanks, Priya.",
+            'transcription_summary' => 'Lori Bennett (Acme Dental) was locked out of Microsoft 365. Priya verified identity, issued a reset, and Lori regained access on the call. SSPR recommended as a follow-up.',
+            'call_summary' => "Caller was locked out of her Microsoft 365 account. Agent verified the caller's identity, issued a password reset, and confirmed access was restored while still on the call. Agent recommended enabling self-service password reset (SSPR) to prevent repeat lockout calls.",
+            'next_steps' => "- Enable self-service password reset (SSPR) for Acme Dental users.\n- Confirm MFA / authenticator re-registered successfully.",
+            'sentiment_score' => 8,
+            'charge_classification' => 'no_charge',
+            'coaching_notes' => "Strong call. Priya verified the caller's identity before resetting the password — good security hygiene — and proactively recommended SSPR to deflect future tickets. Opportunity: open a follow-up task for the SSPR rollout so the recommendation doesn't get lost.",
+            'transcription_status' => 'completed',
+            'transcribed_at' => $callTime->copy()->addMinutes(9),
+            'is_billable' => false,
         ]);
 
         // Outbound callback
@@ -1250,7 +1265,18 @@ class DevDataSeeder extends Seeder
             'ended_at' => $ob->copy()->addMinutes(14)->addSeconds(40),
             'duration' => 868,
             'recording_duration' => 866,
-            'is_billable' => true,
+            'recording_url' => 'https://example.com/recordings/demo-call-crest-vpn.mp3',
+            'transcription' => "Priya: Hi Theo, it's Priya at BlueTier returning your call about the VPN. Theo: Oh great, thanks for calling back. Yeah, it keeps dropping every ten minutes or so. Priya: That pattern usually points to an idle-timeout or dead-peer-detection setting on the firewall rather than your connection itself. Let me pull up your VPN profile. Okay, I can see the session idle-timeout is set pretty aggressively. I'm increasing that and enabling keep-alives now. Theo: Okay. Priya: Can you reconnect and stay on with me for a few minutes so we can confirm it holds? Theo: Sure, reconnecting now. Priya: Great, I see you connected. Theo: Yeah, it's been steady for a few minutes now, no drop. Priya: Good. Let's keep an eye on it through the afternoon. If it drops again, call me back and I'll escalate to a firmware check on the firewall. I'll leave the ticket open until end of day. Theo: Sounds good, thank you.",
+            'cleaned_transcript' => "**Agent (Priya Shah):** Hi Theo, it's Priya at BlueTier returning your call about the VPN.\n**Caller (Theo Larsen, Crestmont Architects):** Oh great, thanks for calling back. Yeah, it keeps dropping every ten minutes or so.\n**Agent:** That pattern usually points to an idle-timeout or dead-peer-detection setting on the firewall rather than your connection itself. Let me pull up your VPN profile... Okay, I can see the session idle-timeout is set pretty aggressively. I'm increasing that and enabling keep-alives now.\n**Caller:** Okay.\n**Agent:** Can you reconnect and stay on with me for a few minutes so we can confirm it holds?\n**Caller:** Sure, reconnecting now.\n**Agent:** Great, I see you connected.\n**Caller:** Yeah, it's been steady for a few minutes now — no drop.\n**Agent:** Good. Let's keep an eye on it through the afternoon. If it drops again, call me back and I'll escalate to a firmware check on the firewall. I'll leave the ticket open until end of day.\n**Caller:** Sounds good, thank you.",
+            'transcription_summary' => "Priya returned Theo's call about VPN disconnects. She traced it to an aggressive idle-timeout on the firewall VPN profile, raised the timeout, enabled keep-alives, and verified the connection held during the call.",
+            'call_summary' => "Agent returned the customer's call about VPN sessions dropping every ~10 minutes. Diagnosed an aggressive idle-timeout / dead-peer-detection setting on the firewall VPN profile, increased the idle-timeout, and enabled keep-alives. Had the customer reconnect and confirmed the connection stayed up during the call. Ticket left open to monitor through end of day.",
+            'next_steps' => "- Monitor Theo's VPN stability through end of day.\n- If drops recur, check the firewall firmware version and escalate.\n- Resolve the ticket if the connection is stable by EOD.",
+            'sentiment_score' => 7,
+            'charge_classification' => 'no_charge',
+            'coaching_notes' => 'Good diagnostic reasoning — tied the symptom directly to idle-timeout/DPD instead of guessing. Kept the customer on the line to verify the fix held, which is excellent. Opportunity: document the firewall setting change in the asset notes so the next tech has the history.',
+            'transcription_status' => 'completed',
+            'transcribed_at' => $ob->copy()->addMinutes(16),
+            'is_billable' => false,
         ]);
 
         // Missed
@@ -1264,6 +1290,33 @@ class DevDataSeeder extends Seeder
             'client_id' => $this->ctx['clients']['vandelay'],
             'started_at' => $miss,
             'ended_at' => $miss->copy()->addSeconds(22),
+        ]);
+
+        // Transcribed voicemail with NO linked ticket — use this to demo "Create Ticket from Call" live.
+        $newVm = now()->subHours(2);
+        PhoneCall::create([
+            'call_uuid' => (string) Str::uuid(),
+            'direction' => 'inbound',
+            'from_number' => '+12065550148',
+            'to_number' => '+15550203300',
+            'status' => 'voicemail',
+            'client_id' => $this->ctx['clients']['brightside'],
+            'person_id' => $this->ctx['people_by_name']['brightside:Tess'],
+            'started_at' => $newVm,
+            'ended_at' => $newVm->copy()->addSeconds(54),
+            'duration' => 54,
+            'recording_duration' => 53,
+            'recording_url' => 'https://example.com/recordings/demo-vm-brightside.mp3',
+            'transcription' => "Hi, this is Tess Nakamura at Brightside Marketing. We've got a new designer, Jordan, starting next Monday and I want to make sure they're ready to go on day one. They'll need a laptop set up, Adobe Creative Cloud installed, and a Microsoft 365 account with their email. Can someone get that going before the weekend? Let me know what you need from me. Thanks!",
+            'cleaned_transcript' => "**Caller (Tess Nakamura, Brightside Marketing):** Hi, this is Tess Nakamura at Brightside Marketing. We've got a new designer, Jordan, starting next Monday and I want to make sure they're ready to go on day one. They'll need a laptop set up, Adobe Creative Cloud installed, and a Microsoft 365 account with their email. Can someone get that going before the weekend? Let me know what you need from me. Thanks!",
+            'transcription_summary' => 'Tess Nakamura (Brightside Marketing) requesting new-hire onboarding for a designer (Jordan) starting Monday: laptop build, Adobe Creative Cloud, and an M365 account/mailbox. Wants it ready before the weekend.',
+            'call_summary' => 'Caller is requesting new-hire onboarding for a designer starting next Monday. Needs a laptop provisioned, Adobe Creative Cloud installed, and a Microsoft 365 account with email created. Asked that everything be ready before the weekend.',
+            'next_steps' => "- Confirm the new hire's full name and start date with Tess.\n- Provision a laptop and install Adobe Creative Cloud.\n- Create the M365 account and mailbox, assign a license.\n- Schedule the work to complete before the weekend.",
+            'sentiment_score' => 7,
+            'charge_classification' => 'billable',
+            'transcription_status' => 'completed',
+            'transcribed_at' => $newVm->copy()->addMinutes(3),
+            'is_billable' => true,
         ]);
     }
 
