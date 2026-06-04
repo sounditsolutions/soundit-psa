@@ -124,7 +124,21 @@ class AssistantToolDefinitions
             ],
             [
                 'name' => 'get_ticket_detail',
-                'description' => 'Get details and recent notes for any ticket by ID. Use to inspect a specific ticket.',
+                'description' => 'Get details, recent notes, and a summary of any linked phone calls for a ticket by ID. Use to inspect a specific ticket. For full call transcripts, follow up with get_ticket_calls.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'ticket_id' => [
+                            'type' => 'integer',
+                            'description' => 'The ticket ID',
+                        ],
+                    ],
+                    'required' => ['ticket_id'],
+                ],
+            ],
+            [
+                'name' => 'get_ticket_calls',
+                'description' => 'Get the phone calls linked to a ticket, including each call\'s direction, sentiment, billing classification, summary, next steps, coaching notes, and full transcript. Use whenever the user asks about phone calls, voicemails, what a caller said, or call transcripts/summaries for a ticket.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [

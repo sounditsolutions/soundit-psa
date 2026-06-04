@@ -8,6 +8,7 @@ use App\Enums\TicketType;
 use App\Models\Asset;
 use App\Models\Client;
 use App\Models\Person;
+use App\Models\PhoneCall;
 use App\Models\Ticket;
 use App\Models\TicketNote;
 use App\Services\Cipp\CippClient;
@@ -24,8 +25,11 @@ use Illuminate\Support\Facades\Log;
 class AssistantToolExecutor
 {
     private ?Ticket $ticket;
+
     private ?int $clientId;
+
     private ?Client $client;
+
     private ?int $userId;
 
     public function __construct(?Ticket $ticket = null, ?int $clientId = null, ?int $userId = null)
@@ -55,6 +59,7 @@ class AssistantToolExecutor
             'list_my_tickets' => $this->listMyTickets($input),
             'list_open_tickets' => $this->listOpenTickets($input),
             'get_ticket_detail' => $this->getTicketDetail($input),
+            'get_ticket_calls' => $this->getTicketCalls($input),
             'get_queue_stats' => $this->getQueueStats(),
 
             // PSA tools (client-scoped)
@@ -184,7 +189,7 @@ class AssistantToolExecutor
         $query = Ticket::whereIn('status', $openStatuses);
 
         if ($input['assignee'] ?? null) {
-            $query->whereHas('assignee', fn ($q) => $q->where('name', 'like', '%' . $input['assignee'] . '%'));
+            $query->whereHas('assignee', fn ($q) => $q->where('name', 'like', '%'.$input['assignee'].'%'));
         }
 
         if ($input['priority'] ?? null) {
@@ -236,6 +241,11 @@ class AssistantToolExecutor
             ->limit(10)
             ->get();
 
+        $calls = PhoneCall::where('ticket_id', $ticketId)
+            ->orderBy('started_at')
+            ->limit(20)
+            ->get();
+
         return [
             'id' => $ticket->id,
             'display_id' => $ticket->display_id,
@@ -256,6 +266,65 @@ class AssistantToolExecutor
                 'author' => $n->author?->name ?? $n->author_name ?? 'System',
                 'body' => mb_substr(strip_tags($n->body ?? ''), 0, 500),
                 'date' => $n->noted_at?->toDateTimeString(),
+            ])->toArray(),
+            // Compact call summary; full transcripts via get_ticket_calls.
+            'calls' => $calls->map(fn (PhoneCall $c) => [
+                'id' => $c->id,
+                'direction' => $c->direction?->value,
+                'status' => $c->status?->value,
+                'date' => $c->started_at?->toDateTimeString(),
+                'duration_seconds' => $c->duration,
+                'is_billable' => $c->is_billable,
+                'charge_classification' => $c->charge_classification?->value,
+                'sentiment_score' => $c->sentiment_score,
+                'summary' => $c->call_summary
+                    ? mb_substr($c->call_summary, 0, 500)
+                    : ($c->transcription_summary ? mb_substr($c->transcription_summary, 0, 500) : null),
+                'has_transcript' => $c->isTranscribed() && ($c->cleaned_transcript || $c->transcription),
+            ])->toArray(),
+        ];
+    }
+
+    private function getTicketCalls(array $input): array
+    {
+        $ticketId = $input['ticket_id'] ?? null;
+        if (! $ticketId) {
+            return ['error' => 'ticket_id is required'];
+        }
+
+        $ticket = Ticket::find($ticketId);
+        if (! $ticket) {
+            return ['error' => 'Ticket not found'];
+        }
+
+        $calls = PhoneCall::where('ticket_id', $ticketId)
+            ->with('person')
+            ->orderBy('started_at')
+            ->limit(20)
+            ->get();
+
+        return [
+            'ticket_id' => (int) $ticketId,
+            'display_id' => $ticket->display_id,
+            'call_count' => $calls->count(),
+            'calls' => $calls->map(fn (PhoneCall $c) => [
+                'id' => $c->id,
+                'direction' => $c->direction?->value,
+                'status' => $c->status?->value,
+                'from' => $c->from_number,
+                'to' => $c->to_number,
+                'contact' => $c->person?->fullName,
+                'date' => $c->started_at?->toDateTimeString(),
+                'duration_seconds' => $c->duration,
+                'is_billable' => $c->is_billable,
+                'charge_classification' => $c->charge_classification?->value,
+                'sentiment_score' => $c->sentiment_score,
+                'call_summary' => $c->call_summary,
+                'next_steps' => $c->next_steps,
+                'coaching_notes' => $c->coaching_notes,
+                'transcript' => ($t = $c->cleaned_transcript ?: $c->transcription)
+                    ? mb_substr($t, 0, 10000)
+                    : null,
             ])->toArray(),
         ];
     }
@@ -1023,10 +1092,15 @@ class AssistantToolExecutor
                 foreach (['userId', 'UserId', 'userPrincipalName', 'UserPrincipalName', 'initiatedBy'] as $key) {
                     if (isset($e[$key])) {
                         $val = mb_strtolower((string) $e[$key]);
-                        if ($val === mb_strtolower($resolved)) return true;
-                        if ($upnNeedle && $val === $upnNeedle) return true;
+                        if ($val === mb_strtolower($resolved)) {
+                            return true;
+                        }
+                        if ($upnNeedle && $val === $upnNeedle) {
+                            return true;
+                        }
                     }
                 }
+
                 return false;
             }));
         }
@@ -1054,8 +1128,12 @@ class AssistantToolExecutor
             : 2;
 
         $params = ['TenantFilter' => $tenantDomain, 'days' => $days];
-        if ($sender) $params['sender'] = $sender;
-        if ($recipient) $params['recipient'] = $recipient;
+        if ($sender) {
+            $params['sender'] = $sender;
+        }
+        if ($recipient) {
+            $params['recipient'] = $recipient;
+        }
 
         try {
             $messages = app(CippClient::class)->get('api/ListMessageTrace', $params);
@@ -1118,13 +1196,18 @@ class AssistantToolExecutor
             $entries = array_values(array_filter($entries, function ($e) use ($needle) {
                 foreach (['RecipientAddress', 'recipientAddress', 'recipients'] as $key) {
                     $val = $e[$key] ?? null;
-                    if (is_string($val) && mb_strtolower($val) === $needle) return true;
+                    if (is_string($val) && mb_strtolower($val) === $needle) {
+                        return true;
+                    }
                     if (is_array($val)) {
                         foreach ($val as $r) {
-                            if (is_string($r) && mb_strtolower($r) === $needle) return true;
+                            if (is_string($r) && mb_strtolower($r) === $needle) {
+                                return true;
+                            }
                         }
                     }
                 }
+
                 return false;
             }));
         }
@@ -1210,10 +1293,15 @@ class AssistantToolExecutor
                 foreach (['principalId', 'consentedBy', 'userId', 'userPrincipalName'] as $key) {
                     $val = $app[$key] ?? null;
                     if (is_string($val) && $val !== '') {
-                        if ($val === $objectId) return true;
-                        if ($upnNeedle && mb_strtolower($val) === $upnNeedle) return true;
+                        if ($val === $objectId) {
+                            return true;
+                        }
+                        if ($upnNeedle && mb_strtolower($val) === $upnNeedle) {
+                            return true;
+                        }
                     }
                 }
+
                 return false;
             }));
         }
@@ -1237,6 +1325,7 @@ class AssistantToolExecutor
                 }
             }
         }
+
         return false;
     }
 }
