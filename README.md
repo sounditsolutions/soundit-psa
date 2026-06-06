@@ -83,6 +83,12 @@ Sound PSA is a **standalone MSP PSA** — not a wrapper or companion app. Each m
 
 See **[docs/INSTALL.md](docs/INSTALL.md)** for the full installation guide.
 
+### Docker Compose
+
+Docker Compose local setup is available in **[docs/DOCKER.md](docs/DOCKER.md)**. A production-style Compose example is documented there as an optional reference; the existing VPS/Nginx deployment guide remains the main deployment path unless maintainers decide otherwise.
+
+### Manual Composer Setup
+
 ```bash
 cd ~/repos/soundit-psa
 composer install

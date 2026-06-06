@@ -1,0 +1,83 @@
+services:
+  app:
+    restart: unless-stopped
+    env_file: !reset []
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      APP_DEBUG: ${APP_DEBUG:-false}
+      APP_URL: ${APP_URL}
+      DB_CONNECTION: ${DB_CONNECTION:-mariadb}
+      DB_HOST: ${DB_HOST:-db}
+      DB_PORT: ${DB_PORT:-3306}
+      DB_DATABASE: ${DB_DATABASE}
+      DB_USERNAME: ${DB_USERNAME}
+      DB_PASSWORD: ${DB_PASSWORD}
+      QUEUE_CONNECTION: ${QUEUE_CONNECTION:-database}
+      CACHE_STORE: ${CACHE_STORE:-file}
+      SESSION_DRIVER: ${SESSION_DRIVER:-file}
+      MAIL_MAILER: ${MAIL_MAILER:-log}
+    volumes: !override
+      - .env.production:/var/www/html/.env
+
+  nginx:
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-80}:80"
+    volumes: !reset []
+    configs:
+      - source: nginx_default_conf
+        target: /etc/nginx/conf.d/default.conf
+
+  db:
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+
+  queue:
+    restart: unless-stopped
+    env_file: !reset []
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      APP_DEBUG: ${APP_DEBUG:-false}
+      APP_URL: ${APP_URL}
+      DB_CONNECTION: ${DB_CONNECTION:-mariadb}
+      DB_HOST: ${DB_HOST:-db}
+      DB_PORT: ${DB_PORT:-3306}
+      DB_DATABASE: ${DB_DATABASE}
+      DB_USERNAME: ${DB_USERNAME}
+      DB_PASSWORD: ${DB_PASSWORD}
+      QUEUE_CONNECTION: ${QUEUE_CONNECTION:-database}
+      CACHE_STORE: ${CACHE_STORE:-file}
+      SESSION_DRIVER: ${SESSION_DRIVER:-file}
+      MAIL_MAILER: ${MAIL_MAILER:-log}
+    profiles: !reset []
+    volumes: !override
+      - .env.production:/var/www/html/.env
+
+  scheduler:
+    restart: unless-stopped
+    env_file: !reset []
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      APP_DEBUG: ${APP_DEBUG:-false}
+      APP_URL: ${APP_URL}
+      DB_CONNECTION: ${DB_CONNECTION:-mariadb}
+      DB_HOST: ${DB_HOST:-db}
+      DB_PORT: ${DB_PORT:-3306}
+      DB_DATABASE: ${DB_DATABASE}
+      DB_USERNAME: ${DB_USERNAME}
+      DB_PASSWORD: ${DB_PASSWORD}
+      QUEUE_CONNECTION: ${QUEUE_CONNECTION:-database}
+      CACHE_STORE: ${CACHE_STORE:-file}
+      SESSION_DRIVER: ${SESSION_DRIVER:-file}
+      MAIL_MAILER: ${MAIL_MAILER:-log}
+    profiles: !reset []
+    volumes: !override
+      - .env.production:/var/www/html/.env
+
+configs:
+  nginx_default_conf:
+    file: ./docker/nginx/default.conf
