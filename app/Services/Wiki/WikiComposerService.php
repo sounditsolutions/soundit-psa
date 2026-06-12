@@ -10,7 +10,11 @@ class WikiComposerService
 {
     public function __construct(private readonly WikiPageService $pages) {}
 
-    /** Recompose one marked section from its facts. Returns true when the page changed. */
+    /**
+     * Recompose one marked section from its facts. Returns true when the page changed.
+     *
+     * @param  WikiPage  $page  Must be freshly loaded; body_md is read directly for the change guard.
+     */
     public function composeSection(WikiPage $page, string $anchor): bool
     {
         $facts = $page->facts()

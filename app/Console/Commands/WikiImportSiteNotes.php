@@ -6,6 +6,7 @@ use App\Enums\WikiAuthorType;
 use App\Models\Client;
 use App\Models\WikiPage;
 use App\Services\Wiki\WikiPageService;
+use App\Services\Wiki\WikiSections;
 use App\Services\Wiki\WikiSkeletonService;
 use Illuminate\Console\Command;
 
@@ -28,8 +29,14 @@ class WikiImportSiteNotes extends Command
                     return;
                 }
 
+                if (array_key_exists('imported-site-notes', WikiSections::split($notes->body_md))) {
+                    $this->warn("Skipping {$client->name}: 'Imported site notes' section already exists.");
+
+                    return;
+                }
+
                 $body = rtrim($notes->body_md)."\n\n## Imported site notes\n\n".trim($client->site_notes)."\n";
-                $pages->updateBody($notes, $body, WikiAuthorType::System, null, 'Imported from clients.site_notes');
+                $notes = $pages->updateBody($notes, $body, WikiAuthorType::System, null, 'Imported from clients.site_notes');
                 $notes->update(['meta' => array_merge($notes->meta ?? [], [
                     'site_notes_imported_at' => now()->toIso8601String(),
                 ])]);
