@@ -40,6 +40,7 @@ use App\Http\Controllers\Web\TacticalSiteController;
 use App\Http\Controllers\Web\TicketController;
 use App\Http\Controllers\Web\TicketNoteController;
 use App\Http\Controllers\Web\TimeReportController;
+use App\Http\Controllers\Web\WikiController;
 use Illuminate\Support\Facades\Route;
 
 // Public legal pages (required by Intuit for QBO production app)
@@ -565,6 +566,12 @@ Route::middleware('auth')->group(function () {
     // About
     Route::get('/about', [AboutController::class, 'index'])->name('about');
     Route::post('/about/check-updates', [AboutController::class, 'checkForUpdates'])->name('about.check-updates');
+
+    // Wiki
+    Route::get('/wiki/{slug}', [WikiController::class, 'show'])
+        ->where('slug', '.*')->name('wiki.show');
+    Route::get('/clients/{client}/wiki/{slug}', [WikiController::class, 'clientShow'])
+        ->where('slug', '.*')->name('clients.wiki.show');
 
     // AI Assistant
     Route::post('/assistant/conversations', [AssistantController::class, 'createConversation'])->name('assistant.create');
