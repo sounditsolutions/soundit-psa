@@ -1,0 +1,38 @@
+<?php
+
+namespace App\Services\Wiki;
+
+use App\Enums\WikiAuthorType;
+use App\Enums\WikiFactStatus;
+use App\Models\WikiPage;
+
+class WikiComposerService
+{
+    public function __construct(private readonly WikiPageService $pages) {}
+
+    /** Recompose one marked section from its facts. Returns true when the page changed. */
+    public function composeSection(WikiPage $page, string $anchor): bool
+    {
+        $facts = $page->facts()
+            ->where('section_anchor', $anchor)
+            ->whereNot('status', WikiFactStatus::Retired->value)
+            ->orderBy('subject_key')
+            ->get();
+
+        $content = $facts->isEmpty()
+            ? '_No facts recorded yet._'
+            : $facts->map(fn ($fact) => '- '.$fact->statement)->implode("\n");
+
+        $newBody = WikiSections::spliceMarkers($page->body_md, $anchor, $content);
+        if ($newBody === $page->body_md) {
+            return false;
+        }
+
+        $this->pages->updateBody(
+            $page, $newBody, WikiAuthorType::System, null,
+            "Recomposed '{$anchor}' from facts",
+        );
+
+        return true;
+    }
+}
