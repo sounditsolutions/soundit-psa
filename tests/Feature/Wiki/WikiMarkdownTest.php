@@ -42,6 +42,16 @@ class WikiMarkdownTest extends TestCase
         $this->assertStringNotContainsString('<script>', $html);
     }
 
+    public function test_render_handles_dollar_signs_in_titles(): void
+    {
+        $target = WikiPage::factory()->create(['slug' => 'pricing', 'title' => 'Cost $50 Plan']);
+        $page = WikiPage::factory()->create(['body_md' => 'See [[pricing]].']);
+
+        $html = app(WikiMarkdown::class)->render($page);
+
+        $this->assertStringContainsString('Cost $50 Plan</a>', $html);
+    }
+
     public function test_unresolved_wikilink_renders_as_plain_text(): void
     {
         $page = WikiPage::factory()->create(['body_md' => 'See [[nowhere|missing page]].']);

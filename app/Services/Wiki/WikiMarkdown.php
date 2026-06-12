@@ -26,9 +26,11 @@ class WikiMarkdown
                 : $label; // unresolved: plain text; wiki_links records the dead link
 
             // Replace both [[t]] and [[t|label]] occurrences of this target.
-            $markdown = preg_replace(
+            // Callback form: closure return values are not backreference-interpreted,
+            // so $/\ in titles or labels pass through literally.
+            $markdown = preg_replace_callback(
                 '/\[\[\s*'.preg_quote($link['target'], '/').'\s*(\|[^\]]*)?\]\]/',
-                $replacement,
+                fn () => $replacement,
                 $markdown
             );
         }
