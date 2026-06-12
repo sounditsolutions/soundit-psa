@@ -57,7 +57,7 @@ class WikiPageServiceTest extends TestCase
     {
         WikiPage::factory()->create(['slug' => 'dup']);
 
-        $this->expectException(\InvalidArgumentException::class);
+        $this->expectException(\RuntimeException::class);
 
         $this->service()->create([
             'scope' => WikiScope::Global,
@@ -88,7 +88,7 @@ class WikiPageServiceTest extends TestCase
         $this->assertTrue($deviation->parent->is($globalRunbook));
 
         // Invalid: deviation chained under a deviation (depth > 1).
-        $this->expectException(\InvalidArgumentException::class);
+        $this->expectException(\RuntimeException::class);
         $this->service()->create([
             'scope' => WikiScope::Client,
             'client_id' => $client->id,
@@ -98,5 +98,27 @@ class WikiPageServiceTest extends TestCase
             'parent_page_id' => $deviation->id,
             'body_md' => '',
         ], WikiAuthorType::Human, null);
+    }
+
+    public function test_archive_sets_flag_and_writes_revision(): void
+    {
+        $page = WikiPage::factory()->create();
+
+        $this->service()->archive($page, WikiAuthorType::Human, null);
+
+        $this->assertTrue($page->fresh()->is_archived);
+        $this->assertSame('Archived', $page->fresh()->revisions->first()->change_summary);
+    }
+
+    public function test_update_body_with_unchanged_links_is_safe(): void
+    {
+        WikiPage::factory()->create(['slug' => 'x', 'title' => 'X']);
+        $page = WikiPage::factory()->create(['body_md' => 'see [[x]]']);
+        $this->service()->rebuildLinks($page);
+
+        $this->service()->updateBody($page, 'still see [[x]]', WikiAuthorType::Human, null, 'reword');
+
+        $this->assertSame(['x'], WikiLink::where('from_page_id', $page->id)->pluck('target_slug')->all());
+        $this->assertCount(1, $page->fresh()->revisions); // factory page had no create-revision; updateBody wrote one
     }
 }

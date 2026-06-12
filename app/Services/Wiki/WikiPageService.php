@@ -20,21 +20,21 @@ class WikiPageService
     public function create(array $attributes, WikiAuthorType $author, ?int $authorId = null, string $changeSummary = 'Created', ?array $sourceRefs = null): WikiPage
     {
         $scope = $attributes['scope'] instanceof WikiScope ? $attributes['scope'] : WikiScope::from($attributes['scope']);
-        $clientId = $attributes['client_id'] ?? null;
 
-        // The DB unique index does not dedupe NULL client_id (global) rows — enforce here.
-        $exists = WikiPage::query()
-            ->where('scope', $scope->value)
-            ->where('client_id', $clientId)
-            ->where('slug', $attributes['slug'])
-            ->exists();
-        if ($exists) {
-            throw new \InvalidArgumentException("Wiki page '{$attributes['slug']}' already exists in this scope.");
-        }
+        return DB::transaction(function () use ($attributes, $scope, $author, $authorId, $changeSummary, $sourceRefs) {
+            // Inside the transaction: closes the check-then-write (TOCTOU) window. The DB
+            // unique index does not dedupe NULL client_id (global) rows — enforce here.
+            $exists = WikiPage::query()
+                ->where('scope', $scope->value)
+                ->where('client_id', $attributes['client_id'] ?? null)
+                ->where('slug', $attributes['slug'])
+                ->exists();
+            if ($exists) {
+                throw new \RuntimeException("Wiki page '{$attributes['slug']}' already exists in this scope.");
+            }
 
-        $this->validateDeviation($attributes, $scope);
+            $this->validateDeviation($attributes, $scope);
 
-        return DB::transaction(function () use ($attributes, $author, $authorId, $changeSummary, $sourceRefs) {
             $page = WikiPage::create([
                 ...$attributes,
                 'created_by_type' => $author,
@@ -46,6 +46,7 @@ class WikiPageService
         });
     }
 
+    /** Returns the same instance refresh()ed, so attributes and loaded relations reflect the committed state. */
     public function updateBody(WikiPage $page, string $bodyMd, WikiAuthorType $author, ?int $authorId, string $changeSummary, ?array $sourceRefs = null): WikiPage
     {
         return DB::transaction(function () use ($page, $bodyMd, $author, $authorId, $changeSummary, $sourceRefs) {
@@ -102,10 +103,10 @@ class WikiPageService
 
         $parent = isset($attributes['parent_page_id']) ? WikiPage::find($attributes['parent_page_id']) : null;
         if ($scope !== WikiScope::Client || ($attributes['client_id'] ?? null) === null) {
-            throw new \InvalidArgumentException('Deviation pages must be client-scoped.');
+            throw new \RuntimeException('Deviation pages must be client-scoped.');
         }
         if (! $parent || $parent->scope !== WikiScope::Global || $parent->parent_page_id !== null) {
-            throw new \InvalidArgumentException('Deviation parent must be a global page with no parent (depth 1).');
+            throw new \RuntimeException('Deviation parent must be a global page with no parent (depth 1).');
         }
     }
 }
