@@ -104,7 +104,7 @@ Status columns are strings backed by PHP enums, following codebase convention
 | parent_page_id | FK wiki_pages, nullable | deviation → the global page it overrides |
 | body_md | longtext | markdown with `[[wikilink]]` syntax |
 | meta | json, nullable | composition metadata (section anchors, etc.) |
-| is_archived | bool default false | |
+| is_archived | bool default false | deliberate non-`SoftDeletes`: archived pages stay queryable and linkable (history, backlinks), they are only excluded from indexes/search by default |
 | created_by_type | string:10 | `ai` \| `human` \| `system` |
 | timestamps | | |
 
@@ -128,12 +128,19 @@ Unique `(scope, client_id, slug)`. Index `(client_id, kind)`. FULLTEXT `(title, 
 | confidence | decimal(3,2), nullable | extractor confidence; null for sync/human |
 | last_affirmed_at | datetime | bumped on reaffirmation |
 | confirmed_by | FK users, nullable | |
-| disputed_with_fact_id | FK wiki_facts, nullable | pairs the two sides of a dispute |
+| disputed_with_fact_id | FK wiki_facts, nullable, indexed | pairs the two sides of a dispute |
 | superseded_by_fact_id | FK wiki_facts, nullable | set on retire-by-supersession |
 | dismissed_evidence | json, nullable | source refs a human dismissed; AI must not re-raise a challenge from only these |
 | timestamps | | |
 
-Index `(client_id, status)`, `(page_id, section_anchor)`. FULLTEXT `(statement)`.
+Index `(client_id, status)`, `(page_id, section_anchor)`, `(client_id, subject_key)`. FULLTEXT
+`(statement)`.
+
+**Merge concurrency:** dedup-by-subject_key cannot be a unique constraint (disputes require two
+rows for one subject_key), so the merge stage enforces it transactionally: within one DB
+transaction it takes `SELECT … FOR UPDATE` on the existing rows for `(client_id, subject_key)`
+and then reaffirms / disputes / inserts. Two concurrent mining jobs extracting the same subject
+serialize on that lock instead of double-inserting.
 
 **`wiki_page_revisions`** — id, page_id FK, body_md, meta, author_type (`ai`/`human`/`system`),
 author_id nullable, change_summary string, source_refs json nullable, created_at. Every page
@@ -144,9 +151,11 @@ target_slug string, anchor_text nullable, created_at. Unique `(from_page_id, tar
 Rebuilt on each page save; powers backlinks, orphan and dead-link lint.
 
 **`wiki_runs`** — observability ledger mirroring `triage_runs`: id, run_type (`mine_ticket`,
-`sync_facts`, `maintain`, `backfill`), subject_type/subject_id, status (`pending`, `running`,
-`completed`, `failed`, `quarantined`), stages_completed json, stage_results json, errors json,
-ai_tokens_used json, triggered_by, timestamps.
+`sync_facts`, `maintain`, `backfill`), subject_type/subject_id, **source_content_hash**
+(string:64, nullable; unique `(subject_type, subject_id, source_content_hash)` — the
+idempotency key from §5.3, enforced at the DB layer, not just in PHP), status (`pending`,
+`running`, `completed`, `failed`, `quarantined`), stages_completed json, stage_results json,
+errors json, ai_tokens_used json, triggered_by, timestamps.
 
 ### 4.2 Fact lifecycle
 
@@ -194,12 +203,18 @@ and an ignored queue means no documentation at all). Trust is carried per-claim 
 - Human-authored content is also fact-indexed: when a human writes or edits wiki content, a
   lightweight extraction derives human-sourced facts from it (born `confirmed`). The prose
   remains the canonical rendering; the derived facts are the claim index that lets the
-  dispute mechanism cover human claims uniformly.
+  dispute mechanism cover human claims uniformly. This extraction path runs the same
+  three-layer redaction cycle as mining (§5.2) — a credential pasted into a human note is
+  never stored as a fact, even a pinned one.
+- "AI never rewrites human content" is a code-level guard in the compose stage (human-authored
+  sections are skipped; only addenda may be attached), not a prompt instruction.
 - When AI evidence contradicts a human note, it attaches a dated, source-linked **addendum**
   beneath the note and pairs the claims as `disputed`. The human resolves: **accept** (AI
   version becomes current; the human note is marked superseded, preserved in history),
   **dismiss** (note becomes `pinned`; the dismissed evidence refs are recorded and may not be
-  re-raised alone), or **edit**.
+  re-raised alone), or **edit**. Dismissal semantics are a subset check: a new challenge is
+  suppressed only if its evidence refs are a subset of `dismissed_evidence`; any genuinely new
+  evidence may re-raise.
 - Reader-safety escalation: when the contradicting source is structured sync (machine ground
   truth — RMM reports 32 GB, note says 16 GB), the stale human claim renders dimmed/struck
   with "superseded by sync, pending review." Words are never destroyed; the page just stops
@@ -210,9 +225,14 @@ and an ignored queue means no documentation at all). Trust is carried per-claim 
 - Global runbooks live at `global:runbooks/<procedure>`.
 - A client deviation is a `kind=deviation` page in client scope with `parent_page_id` set to
   the global page. It contains **only the delta** ("follows standard onboarding except…").
-- Merged view, most specific wins: rendering or retrieving a runbook in a client context
-  returns the global content with the client's deviations applied inline and visibly marked.
-  Requesting a client slug that doesn't exist falls back to the global page.
+  Depth is exactly one: a model-layer validator enforces that `parent_page_id` always points
+  to a `scope=global` page that itself has no parent — no deviation chains.
+- Merged view, most specific wins, **section-level granularity**: the unit of override is the
+  `##` section, joined by section anchor. A deviation section whose anchor matches a global
+  section replaces that section wholesale (rendered with a "client deviation" marker); a
+  deviation section with a new anchor is appended under a marked deviations area. Global
+  sections without a matching deviation render unchanged. Requesting a client slug that
+  doesn't exist falls back to the global page.
 - Wikilink resolution is scoped the same way: client pages resolve `[[slug]]` within client
   scope first, then global.
 
@@ -258,23 +278,36 @@ Each run is recorded in `wiki_runs` (status, per-stage results, errors, tokens).
    - *Post-write scanner:* the same corpus + entropy scan runs over composed output. Any hit
      **quarantines the run** (`status=quarantined`, nothing published, surfaced in health).
    Pages may state where a credential lives ("M365 GA creds in Keeper"), never the value.
+   **Known gaps, documented for operators:** conversationally phrased low-entropy passwords
+   ("set the WiFi to Summer2026!"), secrets dictated character-by-character in call
+   transcripts, and base32 TOTP seeds may evade pattern and entropy detection. The corpus
+   includes context-aware patterns (`password … is`, `credentials are`) to narrow this, and
+   the limits are stated in the settings UI so MSPs mining call transcripts know them.
 3. **Extract.** One `AiClient::completeJson` call returns candidate facts — each with
    `subject_key`, statement, target page/section, volatility, confidence — plus optional
    runbook-deviation, cross-client pattern, or known-issue candidates. The prompt instructs a
    documentation-worthiness filter: most tickets yield zero facts, and that is the correct
    output for routine work. Candidates below a confidence floor are discarded.
-4. **Merge.** Per candidate, by `subject_key`: subject keys are normalized deterministically
-   before matching (lowercased, canonical entity resolution against known clients/assets) so
-   extractor wording drift cannot defeat dedup. Consistent with an existing fact → reaffirm
+4. **Merge.** Before anything is stored, every candidate `statement` passes two deterministic
+   write-time filters: the redaction corpus + entropy scan (per-statement, not only on
+   composed pages), and an **injection-scaffolding filter** (patterns like "ignore previous
+   instructions", "system:", role-play markers) — either hit quarantines the run. Ticket text
+   is untrusted input, and the wiki is a persistence layer that would otherwise let one ticket
+   poison every future triage run for that client; this filter is a hard control, not prompt
+   guidance. Then, per candidate, by `subject_key`: subject keys are normalized
+   deterministically before matching (lowercased, canonical entity resolution against known
+   clients/assets) so extractor wording drift cannot defeat dedup. Consistent with an existing
+   fact → reaffirm
    (bump `last_affirmed_at`); inconsistent → create + pair as `disputed` (§4.2); new → insert
    `unverified`. Pinned facts are never auto-superseded; challenges to them go through the
    addendum path (§4.4) and respect `dismissed_evidence`.
 5. **Compose.** Recompose only the affected page sections. Composition is template-first:
    fact-backed sections render deterministically (structured lists/tables from their facts,
    no AI call). A small `AiClient` prose-glue call is used only for narrative sections
-   (known-issues, history, patterns) when mining produces them. Write the revision, rebuild
-   `wiki_links`, mark the client's hot summary stale. Compose + revision write is
-   transactional — a page is never left half-written.
+   (known-issues, history, patterns) when mining produces them. Write the revision and rebuild
+   `wiki_links` synchronously in the same DB transaction as the page write (no dispatched job —
+   backlink counts are never stale between saves), and mark the client's hot summary stale.
+   Compose + revision write is transactional — a page is never left half-written.
 
 ### 5.3 Budgets and idempotency
 
@@ -290,8 +323,16 @@ Three tiers, so token cost stays flat as the wiki grows:
 
 1. **Hot summary (always injected, zero retrieval cost).** Each client's `overview` page is
    AI-maintained under a token budget (~500–800 tokens): environment one-liner, stack, active
-   quirks, open disputes. Triage's `ContextBuilder` injects it where `site_notes` is injected
-   today; the Assistant receives it for any client-scoped conversation.
+   quirks, open disputes. Because it is auto-injected into **every** triage run, its
+   composition is trust-tiered: guidance-bearing sections (active quirks, "how we work with
+   this client") are composed only from `confirmed` and sync-sourced facts; `unverified`
+   facts may appear only as clearly-marked informational bullets. Triage's `ContextBuilder`
+   injects it where `site_notes` is injected today; the Assistant receives it for any
+   client-scoped conversation. **Transition rules (no regression window):** wiki disabled →
+   `site_notes` injected exactly as today; wiki enabled but the client's overview is empty →
+   `site_notes` still injected as fallback; overview exists → it replaces `site_notes` for
+   that client. The `clients.site_notes` column is retained and deprecated; dropping it is a
+   follow-up decision after Phase 5, not part of this feature.
 2. **Index.** `wiki_list_pages(client_id?)` — titles, kinds, freshness. Cheap orientation.
 3. **Deep read.**
    - `wiki_search(query, client_id?)` — MariaDB FULLTEXT over facts and pages, client scope
@@ -300,8 +341,21 @@ Three tiers, so token cost stays flat as the wiki grows:
 
 **Tool surface:** all three tools are added to `AssistantToolExecutor`, which means the
 Assistant chat, the MCP server (and through it Teams), and the technical-triage agentic loop
-get them in one move. Results annotate every fact with status (`verified` / `unverified` /
-`disputed` — disputed facts are served with both sides), so AI consumers can weigh claims.
+get them in one move. Two hard rules on this surface:
+
+- **Structured serving.** Facts are serialized to AI consumers as delimited structured
+  records — e.g. `WIKI_FACT | subject: asset:DC01:ram | status: unverified | claim: "…"` —
+  never as prose woven into the prompt. The syntactic boundary between fact content (data)
+  and the surrounding prompt (instructions) stays explicit, which is the second half of the
+  injection defense alongside the write-time filter (§5.2).
+- **Cross-client isolation at the query layer.** `client_id = null` returns global scope
+  only — never any client-scoped fact. A session scoped to client X can reach global content
+  plus client-X content and nothing else. This is a `WHERE` clause
+  (`client_id = ? OR scope = 'global'`), enforced in the tool implementation exactly as the
+  existing executor tools enforce client scoping — never a prompt instruction.
+
+Results annotate every fact with status (`verified` / `unverified` / `disputed` — disputed
+facts are served with both sides), so AI consumers can weigh claims.
 
 **The loop closes itself:** triage reads wiki facts → the ticket gets worked → close mining
 reaffirms or contradicts what was read. Day-to-day ticket flow is the wiki's verification
@@ -337,8 +391,40 @@ middleware); no new roles — PSA's users are generalists.
 - **Edit** — markdown editor for human-owned content; humans may create pages of any kind.
 - **Search** — global + client scope, fact- and page-level results.
 
+The client wiki is reachable from the client detail page (tab or sidebar entry) — no context
+switch to a separate URL tree.
+
 Deferred to v1.x: ticket-detail sidebar showing the client overview and facts matching the
 ticket (high value, but separable).
+
+### 8.1 Binding interaction-design requirements (from UX review)
+
+These bind the implementer; they are requirements, not suggestions.
+
+1. **Provenance is progressive disclosure.** The default page view renders clean markdown. A
+   section-level summary line ("3 unverified · 1 disputed") is the ambient signal; per-fact
+   badges appear on hover or via an explicit "Show provenance" toggle. Every visible badge
+   pairs color with a text or icon label — never color alone.
+2. **Superseded treatment holds WCAG AA.** "Dimmed" means muted-ink (#6b7280) or darker on
+   white — ≥4.5:1 at body size. Strikethrough is always paired with the textual
+   "(superseded by sync, pending review)" label, never used alone.
+3. **Fact actions are right-sized.** Confirm = one click, no modal. Retire = inline
+   mini-confirm ("Retire? Yes / Cancel"). Correct = inline edit, in place. All three use
+   secondary/outline styling (outline-danger for retire) — never the accent fill; these are
+   hygiene actions, not the page's call to action.
+4. **Health counters are secondary, never a nag.** The needs-review list sits below the
+   content index in muted/neutral styling (`badge bg-secondary` at rest), zero-states are
+   silent, and no page leads with "you have N items to review."
+5. **AI addenda are distinct without reading as broken.** Flat tonal container (1px #e5e7eb
+   border, #f8fafc background, 8px radius, no shadow), small "AI note" label with robot icon
+   matching the existing AiTriage note treatment, inline source attribution, small
+   outline-styled accept/dismiss/edit inside the block. Never a full-width alert-warning/
+   alert-danger — this is a system of record, not an error state.
+
+Advisory (carry into implementation, non-binding): fact actions must be keyboard-reachable
+(consider a "review mode" rather than inline tab-stops at every fact); revision diffs pair
+color with +/− markers; deviation blocks use a left-border + "Client deviation" label; search
+is the primary affordance at the top of `/wiki`.
 
 ## 9. Configuration and open-source posture
 
@@ -348,7 +434,7 @@ Settings follow the established `Setting::settingOrConfig()` pattern via a new
 | Key | Default | Purpose |
 |-----|---------|---------|
 | `wiki_enabled` | off | master switch; everything no-ops when off |
-| `wiki_auto_mine` | on (when enabled) | mine on ticket close |
+| `wiki_auto_mine` | off | mine on ticket close — explicit opt-in so enabling the wiki never starts AI spend silently; the settings UI shows an estimated daily cost range next to the toggle |
 | `wiki_model` | null | model override; falls back to `AiConfig::model()` |
 | `wiki_max_tokens_per_run` | 50k | per mining run |
 | `wiki_daily_token_limit` | 500k | all wiki AI usage, separate from triage's pool |
@@ -362,9 +448,14 @@ Settings follow the established `Setting::settingOrConfig()` pattern via a new
   constraints it already has today.
 - **Zero new infrastructure:** MariaDB FULLTEXT, existing queue and scheduler. No vector DB,
   no desktop app, no file sync, nothing beyond the stack an OSS adopter already deploys.
+  Search degrades to a `LIKE`-based path when FULLTEXT is unavailable (SQLite local dev),
+  selected by connection driver, so the wiki stays testable without MariaDB.
 - **`wiki:export`** — one-way Obsidian-compatible vault dump: folders by scope/kind,
   frontmatter carrying provenance summary, `[[wikilinks]]` intact. Doubles as the plain-text
-  egress/backup story (data ownership for OSS users).
+  egress/backup story (data ownership for OSS users). Default output path is non-web-accessible
+  (`storage/app/wiki-exports/`, never under `storage/app/public/`). Frontmatter provenance is
+  identifiers only (fact status, source ticket/run IDs, timestamps) — no source ticket content
+  is reproduced in frontmatter.
 - Single-tenant-per-deployment, consistent with PSA's model. Skeleton and prompts ship as
   sane defaults; per-deployment prompt customization is a v1.x candidate.
 
@@ -382,9 +473,11 @@ Settings follow the established `Setting::settingOrConfig()` pattern via a new
 
 ## 11. Testing strategy
 
-- **Unit (no AI):** redaction corpus (secret patterns, high-entropy strings, near-misses);
-  cascade merge resolution; subject-key dedup; contradiction pairing; staleness computation;
-  dismissed-evidence suppression.
+- **Unit (no AI):** redaction corpus (secret patterns, high-entropy strings, near-misses,
+  context-aware conversational forms); injection-scaffolding filter corpus; cascade merge
+  resolution (section-level override, depth-1 validation); subject-key dedup including the
+  concurrent-merge locking path; contradiction pairing; staleness computation;
+  dismissed-evidence subset semantics; LIKE-fallback search parity on SQLite.
 - **Pipeline (fake `AiClient`, canned JSON fixtures):** mine → merge → compose end-to-end;
   idempotent re-runs (same ticket twice → no duplicates); dispute creation; pinned-fact
   protection; quarantine path; budget deferral.
@@ -404,16 +497,24 @@ Settings follow the established `Setting::settingOrConfig()` pattern via a new
 | 4 | Retrieval tools + triage/Assistant/MCP integration, hot-summary injection | The compounding payoff: triage gets smarter |
 | 5 | Maintenance loop, health surfacing, verification UX polish, `wiki:export`, `wiki:backfill` | Self-maintaining at steady state, populated history |
 
+Phases 1 and 2 ship as a single delivery: Phase 1 alone is a modest standalone (a better
+`site_notes`), Phase 2 is the unlock, and they share the schema. The split remains useful as
+plan structure, not as separate releases.
+
 v1.x candidates (explicitly out of v1): ticket sidebar, auto-promote facts after K independent
 reaffirmations, vault import / two-way sync, embeddings rerank, encrypted credentials module,
 portal exposure, per-deployment prompt customization.
 
 ## 13. Risks and mitigations
 
-- **Prompt injection via ticket content.** Ticket text is untrusted input. Mitigations:
-  extraction output is schema-validated structured JSON; facts born `unverified`; redaction
-  scanner on output; wiki content is served to AI consumers as data-with-status, not
-  instructions — the same posture triage already takes toward ticket bodies.
+- **Prompt injection via ticket content.** Ticket text is untrusted input, and the wiki is a
+  persistence layer — one ticket could otherwise poison every future triage run for a client.
+  Hard controls, both deterministic: the write-time injection-scaffolding filter over fact
+  statements (§5.2, quarantine on hit) and structured fact serving at retrieval (§6 — facts
+  are delimited data records, never prose woven into the prompt). Layered with: schema-
+  validated extraction output, facts born `unverified`, the trust-tiered hot summary
+  (guidance sections composed from `confirmed`/sync facts only), and per-statement redaction
+  scanning at merge time.
 - **Hallucinated facts compounding through the loop.** Tiered autonomy: unverified badges,
   per-claim provenance, dispute mechanics, confidence floor at extraction, and the
   reaffirm/contradict cycle from real ticket flow. Disputed facts are always served two-sided.
