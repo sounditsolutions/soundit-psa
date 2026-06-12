@@ -15,7 +15,7 @@ class WikiSkeletonService
     /** @return array<string, array{title: string, kind: WikiPageKind, body: string}> */
     public static function blueprint(): array
     {
-        $factsBlock = fn (string $anchor) => "<!-- wiki:facts:{$anchor}:start -->\n_No facts recorded yet._\n<!-- wiki:facts:{$anchor}:end -->";
+        $factsBlock = fn (string $anchor) => WikiSections::markerBlock($anchor, '_No facts recorded yet._');
 
         return [
             'overview' => ['title' => 'Overview', 'kind' => WikiPageKind::Overview,
@@ -49,14 +49,20 @@ class WikiSkeletonService
             if (in_array($slug, $existing, true)) {
                 continue;
             }
-            $this->pages->create([
-                'scope' => WikiScope::Client,
-                'client_id' => $client->id,
-                'slug' => $slug,
-                'title' => $def['title'],
-                'kind' => $def['kind'],
-                'body_md' => $def['body'],
-            ], WikiAuthorType::System, null, 'Skeleton seeded');
+
+            try {
+                $this->pages->create([
+                    'scope' => WikiScope::Client,
+                    'client_id' => $client->id,
+                    'slug' => $slug,
+                    'title' => $def['title'],
+                    'kind' => $def['kind'],
+                    'body_md' => $def['body'],
+                ], WikiAuthorType::System, null, 'Skeleton seeded');
+            } catch (\RuntimeException $e) {
+                // Concurrent seed: another request created this page between our pluck and create — skip.
+                continue;
+            }
         }
     }
 }

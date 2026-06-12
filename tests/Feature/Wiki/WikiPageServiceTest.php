@@ -100,6 +100,36 @@ class WikiPageServiceTest extends TestCase
         ], WikiAuthorType::Human, null);
     }
 
+    public function test_rejects_second_deviation_for_same_parent_and_client(): void
+    {
+        $client = Client::factory()->create();
+        $globalRunbook = WikiPage::factory()->create([
+            'slug' => 'runbooks/onboarding', 'kind' => WikiPageKind::Runbook,
+        ]);
+        $this->service()->create([
+            'scope' => WikiScope::Client,
+            'client_id' => $client->id,
+            'slug' => 'runbooks/onboarding',
+            'title' => 'Onboarding (deviation)',
+            'kind' => WikiPageKind::Deviation,
+            'parent_page_id' => $globalRunbook->id,
+            'body_md' => "## Steps\n\nExcept step 3.\n",
+        ], WikiAuthorType::Human, null);
+
+        // Different slug, same parent + client: cascade would pick first() arbitrarily.
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('A deviation for this runbook already exists for this client.');
+        $this->service()->create([
+            'scope' => WikiScope::Client,
+            'client_id' => $client->id,
+            'slug' => 'runbooks/onboarding-alt',
+            'title' => 'Onboarding (second deviation)',
+            'kind' => WikiPageKind::Deviation,
+            'parent_page_id' => $globalRunbook->id,
+            'body_md' => '',
+        ], WikiAuthorType::Human, null);
+    }
+
     public function test_archive_sets_flag_and_writes_revision(): void
     {
         $page = WikiPage::factory()->create();

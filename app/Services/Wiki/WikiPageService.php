@@ -108,5 +108,16 @@ class WikiPageService
         if (! $parent || $parent->scope !== WikiScope::Global || $parent->parent_page_id !== null) {
             throw new \RuntimeException('Deviation parent must be a global page with no parent (depth 1).');
         }
+
+        // One deviation per (client, parent): the cascade resolves with first(), so a
+        // second deviation for the same runbook would make the merged view arbitrary.
+        $duplicate = WikiPage::query()
+            ->where('kind', WikiPageKind::Deviation->value)
+            ->where('client_id', $attributes['client_id'])
+            ->where('parent_page_id', $parent->id)
+            ->exists();
+        if ($duplicate) {
+            throw new \RuntimeException('A deviation for this runbook already exists for this client.');
+        }
     }
 }

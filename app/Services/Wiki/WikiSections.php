@@ -67,6 +67,12 @@ class WikiSections
         return self::join($sections);
     }
 
+    /** Canonical fact-block markers used by the skeleton and the composer. */
+    public static function markerBlock(string $anchor, string $content): string
+    {
+        return "<!-- wiki:facts:{$anchor}:start -->\n".rtrim($content)."\n<!-- wiki:facts:{$anchor}:end -->";
+    }
+
     /**
      * Replace content between <!-- wiki:facts:{anchor}:start/end --> markers.
      * If the markers are missing, append them (with content) at the end of that section.
@@ -75,7 +81,7 @@ class WikiSections
     {
         $start = "<!-- wiki:facts:{$anchor}:start -->";
         $end = "<!-- wiki:facts:{$anchor}:end -->";
-        $block = $start."\n".rtrim($content)."\n".$end;
+        $block = self::markerBlock($anchor, $content);
 
         $hasStart = str_contains($markdown, $start);
         $hasEnd = str_contains($markdown, $end);

@@ -38,6 +38,28 @@ class WikiCascadeServiceTest extends TestCase
         $this->assertEqualsCanonicalizing(['hardware', 'vpn'], $merged['deviation_anchors']);
     }
 
+    public function test_merged_view_drops_deviation_preamble(): void
+    {
+        $client = Client::factory()->create();
+        $global = WikiPage::factory()->create([
+            'slug' => 'runbooks/hardware',
+            'kind' => WikiPageKind::Runbook,
+            'body_md' => "## Hardware\n\nStandard laptop.\n",
+        ]);
+        WikiPage::factory()->forClient($client)->create([
+            'slug' => 'runbooks/hardware',
+            'kind' => WikiPageKind::Deviation,
+            'parent_page_id' => $global->id,
+            'body_md' => "Some preamble prose.\n\n## Hardware\n\nMac only.\n",
+        ]);
+
+        $merged = app(WikiCascadeService::class)->mergedView($global, $client->id);
+
+        // Contract: deviation preamble is ignored; deltas live in ## sections only.
+        $this->assertStringContainsString('Mac only.', $merged['body_md']);
+        $this->assertStringNotContainsString('Some preamble prose.', $merged['body_md']);
+    }
+
     public function test_merged_view_without_deviation_returns_global_body(): void
     {
         $client = Client::factory()->create();
