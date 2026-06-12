@@ -9,11 +9,20 @@ class WikiSections
     /**
      * Split markdown into ## sections. Key '' holds the preamble before the first ##.
      *
+     * Round-trip contract: for newline-terminated input, join(split($md)) === $md
+     * byte-for-byte. Input without a trailing newline is normalized to gain
+     * exactly one.
+     *
      * @return array<string, array{heading: string, content: string}>
      */
     public static function split(string $markdown): array
     {
         $lines = explode("\n", $markdown);
+        if (end($lines) === '') {
+            // A newline-terminated doc explodes into a trailing '' element;
+            // drop it so join() doesn't grow the doc by one "\n" per round trip.
+            array_pop($lines);
+        }
         $sections = ['' => ['heading' => '', 'content' => '']];
         $current = '';
 
@@ -68,10 +77,21 @@ class WikiSections
         $end = "<!-- wiki:facts:{$anchor}:end -->";
         $block = $start."\n".rtrim($content)."\n".$end;
 
-        if (str_contains($markdown, $start) && str_contains($markdown, $end)) {
+        $hasStart = str_contains($markdown, $start);
+        $hasEnd = str_contains($markdown, $end);
+
+        if ($hasStart && $hasEnd) {
             $pattern = '/'.preg_quote($start, '/').'.*?'.preg_quote($end, '/').'/s';
 
             return preg_replace($pattern, $block, $markdown, 1);
+        }
+
+        if ($hasStart || $hasEnd) {
+            // Orphaned marker (crash mid-write, manual edit): strip every stray
+            // marker before appending a fresh pair, otherwise the next splice
+            // would pair the orphan with the new block's counterpart and
+            // swallow the human content in between.
+            $markdown = str_replace([$start."\n", $end."\n", $start, $end], '', $markdown);
         }
 
         $sections = self::split($markdown);

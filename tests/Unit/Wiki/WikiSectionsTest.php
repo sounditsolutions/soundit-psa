@@ -53,4 +53,21 @@ class WikiSectionsTest extends TestCase
     {
         $this->assertSame('known-issues', WikiSections::anchorFor('Known Issues'));
     }
+
+    public function test_join_split_round_trip_is_identity_for_newline_terminated_docs(): void
+    {
+        $this->assertSame($this->md, WikiSections::join(WikiSections::split($this->md)));
+    }
+
+    public function test_splice_self_heals_orphaned_start_marker(): void
+    {
+        $md = "## Assets\n\n<!-- wiki:facts:assets:start -->\norphan content\n\nhuman text after\n";
+
+        $out = WikiSections::spliceMarkers($md, 'assets', "fresh\n");
+
+        $this->assertSame(1, substr_count($out, '<!-- wiki:facts:assets:start -->'));
+        $this->assertSame(1, substr_count($out, '<!-- wiki:facts:assets:end -->'));
+        $this->assertStringContainsString('human text after', $out);
+        $this->assertStringContainsString("<!-- wiki:facts:assets:start -->\nfresh\n<!-- wiki:facts:assets:end -->", $out);
+    }
 }

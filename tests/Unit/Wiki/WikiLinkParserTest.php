@@ -32,4 +32,11 @@ class WikiLinkParserTest extends TestCase
     {
         $this->assertSame([], (new WikiLinkParser)->parse('no links here'));
     }
+
+    public function test_dedup_keeps_first_occurrence_label(): void
+    {
+        $links = (new WikiLinkParser)->parse('[[a|First]] and [[a|Second]]');
+
+        $this->assertSame([['target' => 'a', 'label' => 'First']], $links);
+    }
 }
