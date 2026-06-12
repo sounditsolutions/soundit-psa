@@ -105,5 +105,8 @@ class CippTenantSecuritySyncService
             $client->update($updates);
             $result->updated++;
         }
+
+        // Wiki Phase 2: deterministic environment facts from this sync (never breaks the sync).
+        app(\App\Services\Wiki\SyncFactWriter::class)->safeWriteM365Facts($client);
     }
 }
