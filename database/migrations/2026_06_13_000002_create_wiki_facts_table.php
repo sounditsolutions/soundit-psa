@@ -33,7 +33,6 @@ return new class extends Migration
             $table->index(['client_id', 'status']);
             $table->index(['page_id', 'section_anchor']);
             $table->index(['client_id', 'subject_key']);
-            $table->index('subject_key');
         });
 
         if (in_array(DB::connection()->getDriverName(), ['mysql', 'mariadb'], true)) {

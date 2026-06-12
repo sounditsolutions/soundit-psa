@@ -17,9 +17,7 @@ return new class extends Migration
             $table->foreignId('author_id')->nullable()->constrained('users')->nullOnDelete();
             $table->string('change_summary', 255);
             $table->json('source_refs')->nullable();
-            $table->timestamps(); // rows are immutable; updated_at is never touched after insert
-
-            $table->index('page_id');
+            $table->timestamps(); // revision rows are written once; the model disables UPDATED_AT
         });
     }
 

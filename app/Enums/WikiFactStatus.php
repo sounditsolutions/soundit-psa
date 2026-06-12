@@ -11,17 +11,22 @@ enum WikiFactStatus: string
 
     public function label(): string
     {
-        return ucfirst($this->value);
+        return match ($this) {
+            self::Unverified => 'Unverified',
+            self::Confirmed => 'Confirmed',
+            self::Disputed => 'Disputed',
+            self::Retired => 'Retired',
+        };
     }
 
     // §8.1: badges must pair color with text — callers render label() text inside the badge.
     public function badgeClass(): string
     {
         return match ($this) {
-            self::Unverified => 'badge bg-secondary',
-            self::Confirmed => 'badge bg-success',
-            self::Disputed => 'badge bg-warning text-dark',
-            self::Retired => 'badge bg-light text-muted border',
+            self::Unverified => 'bg-secondary',
+            self::Confirmed => 'bg-success',
+            self::Disputed => 'bg-warning text-dark',
+            self::Retired => 'bg-light text-muted border',
         };
     }
 }
