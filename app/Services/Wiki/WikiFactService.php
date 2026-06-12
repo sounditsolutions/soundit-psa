@@ -14,7 +14,17 @@ class WikiFactService
 {
     /**
      * Upsert a deterministic sync-sourced fact (spec §5.1 trigger 1).
-     * Row-locked on (client_id, subject_key) per spec §4.1 merge concurrency.
+     *
+     * Locking: lockForUpdate on (client_id, subject_key) serializes concurrent
+     * writers when a non-retired row already exists. For a brand-new subject_key
+     * (no existing row), InnoDB gap locks do NOT prevent two concurrent
+     * transactions from each reading empty and each inserting — yielding
+     * duplicate confirmed rows. Current risk: negligible (the scheduler runs one
+     * SyncFactWriter per client at a time). If Phase-3 mining parallelizes
+     * writers per client, add a named advisory lock —
+     * GET_LOCK('wiki_fact:{clientId}:{subjectKey}', 5) — around this
+     * transaction, or add a maintenance-sweep dedup. Do NOT add a unique index
+     * on (client_id, subject_key): disputes intentionally require two rows.
      */
     public function upsertSyncFact(
         WikiPage $page,

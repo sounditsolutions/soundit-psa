@@ -11,6 +11,7 @@ use App\Services\Wiki\WikiFactService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
+/** @see WikiFactService::upsertSyncFact() — the empty-subject gap-lock race cannot be exercised on SQLite; see the service docblock. */
 class WikiFactServiceTest extends TestCase
 {
     use RefreshDatabase;
