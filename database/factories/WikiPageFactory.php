@@ -27,6 +27,10 @@ class WikiPageFactory extends Factory
             'meta' => null,
             'is_archived' => false,
             'created_by_type' => WikiAuthorType::System,
+            // Back-date so optimistic concurrency tests can distinguish the factory
+            // timestamp from an update timestamp (SQLite has second granularity).
+            'updated_at' => now()->subSeconds(5),
+            'created_at' => now()->subSeconds(5),
         ];
     }
 

@@ -2,13 +2,18 @@
 
 namespace App\Http\Controllers\Web;
 
+use App\Enums\WikiAuthorType;
 use App\Enums\WikiFactStatus;
+use App\Enums\WikiScope;
 use App\Http\Controllers\Controller;
+use App\Http\Requests\WikiPageStoreRequest;
+use App\Http\Requests\WikiPageUpdateRequest;
 use App\Models\Client;
 use App\Models\WikiFact;
 use App\Models\WikiPage;
 use App\Services\Wiki\WikiCascadeService;
 use App\Services\Wiki\WikiMarkdown;
+use App\Services\Wiki\WikiPageService;
 use App\Services\Wiki\WikiSkeletonService;
 use Illuminate\Http\Request;
 
@@ -130,31 +135,69 @@ class WikiController extends Controller
         ];
     }
 
-    // ── Implemented in Task 16 ──
     public function create(Request $request)
     {
-        abort(404);
+        $client = $request->filled('client_id') ? Client::findOrFail($request->integer('client_id')) : null;
+
+        return view('wiki.create', ['client' => $client, 'kinds' => \App\Enums\WikiPageKind::cases()]);
     }
 
-    public function store()
+    public function store(WikiPageStoreRequest $request, WikiPageService $pages)
     {
-        abort(404);
+        $data = $request->validated();
+        $clientId = $data['client_id'] ?? null;
+
+        try {
+            $page = $pages->create([
+                'scope' => $clientId ? WikiScope::Client : WikiScope::Global,
+                'client_id' => $clientId,
+                'slug' => $data['slug'],
+                'title' => $data['title'],
+                'kind' => $data['kind'],
+                'parent_page_id' => $data['parent_page_id'] ?? null,
+                'body_md' => $data['body_md'] ?? '',
+            ], WikiAuthorType::Human, auth()->id());
+        } catch (\RuntimeException $e) {
+            return back()->withInput()->with('error', $e->getMessage());
+        }
+
+        return redirect($this->pageUrl($page))->with('success', 'Page created.');
     }
 
     public function edit(WikiPage $page)
     {
-        abort(404);
+        return view('wiki.edit', ['page' => $page]);
     }
 
-    public function update(WikiPage $page)
+    public function update(WikiPage $page, WikiPageUpdateRequest $request, WikiPageService $pages)
     {
-        abort(404);
+        $data = $request->validated();
+
+        // Optimistic concurrency, same pattern as ClientService::updateSiteNotes.
+        if ($page->updated_at->toIso8601String() !== $data['expected_updated_at']) {
+            return back()->withInput()->with('error', 'This page changed while you were editing. Review and retry.');
+        }
+
+        if (isset($data['title'])) {
+            $page->update(['title' => $data['title']]);
+        }
+        $pages->updateBody($page, $data['body_md'], WikiAuthorType::Human, auth()->id(),
+            $data['change_summary'] ?: 'Edited');
+
+        return redirect($this->pageUrl($page))->with('success', 'Page updated.');
     }
 
     // ── Implemented in Task 17 ──
     public function history(WikiPage $page)
     {
         abort(404);
+    }
+
+    private function pageUrl(WikiPage $page): string
+    {
+        return $page->client_id
+            ? route('clients.wiki.show', [$page->client_id, $page->slug])
+            : route('wiki.show', $page->slug);
     }
 
     // ── Implemented in Task 18 ──
