@@ -14,8 +14,8 @@ class AssistantToolDefinitions
     public static function getTools(bool $hasClient): array
     {
         if (! $hasClient) {
-            // General assistant also gets DNS tools
-            return array_merge(self::generalTools(), TriageToolDefinitions::dnsTools());
+            // General assistant also gets DNS tools + wiki retrieval (global-scoped when no client)
+            return array_merge(self::generalTools(), TriageToolDefinitions::dnsTools(), TriageToolDefinitions::wikiTools());
         }
 
         $tools = self::psaTools();
@@ -38,6 +38,9 @@ class AssistantToolDefinitions
 
         // DNS tools — always available in client context too
         $tools = array_merge($tools, TriageToolDefinitions::dnsTools());
+
+        // Wiki retrieval tools — single-owner schemas live in TriageToolDefinitions
+        $tools = array_merge($tools, TriageToolDefinitions::wikiTools());
 
         return $tools;
     }
