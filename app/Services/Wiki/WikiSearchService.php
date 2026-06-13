@@ -73,6 +73,8 @@ class WikiSearchService
                 }
             })
             ->where(fn ($q) => $this->textMatch($q, ['statement'], $query))
+            // Eager-loaded for WikiRetrieval::disputeCounter() — keep it, or dispute
+            // serialization degrades to an N+1 lazy load per disputed fact.
             ->with('disputedWith')
             ->limit($limit)->get();
 

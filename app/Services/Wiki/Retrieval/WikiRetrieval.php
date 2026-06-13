@@ -140,16 +140,20 @@ class WikiRetrieval
     /**
      * JSON-encode a free-text value: embedded quotes/newlines become inert. Additionally
      * neutralize the two record-grammar tokens the serializer owns — the field separator
-     * `|` and the `key: ` field marker (colon-space) — so a value can never reconstruct a
-     * fake field or a fake `WIKI_FACT | subject: …` record. JSON quoting alone keeps a value
-     * structurally inert to a JSON parser, but a downstream prompt reads the line as flat
-     * text, so the delimiter tokens must not survive verbatim inside a value (spec §6 rule 1).
+     * `|` and the serializer's own field markers (`subject:`/`status:`/`source:`/`claim:`/
+     * `disputed_by:` followed by space) — so a value can never reconstruct a fake field or a
+     * fake `WIKI_FACT | subject: …` record. JSON quoting alone keeps a value structurally
+     * inert to a JSON parser, but a downstream prompt reads the line as flat text, so the
+     * delimiter tokens must not survive verbatim inside a value (spec §6 rule 1). Only OUR
+     * field-name colons are collapsed — arbitrary prose colons ("ratio is 3: 1", "Note: x")
+     * are left intact.
      */
     private function encode(string $s): string
     {
         $s = $this->stripSeparators($s);
-        $s = str_replace('|', '/', $s);          // field separator: values cannot forge a new field
-        $s = preg_replace('/:\s+/', ':', $s) ?? $s; // collapse the `key: ` field-marker token
+        $s = str_replace('|', '/', $s); // field separator: values cannot forge a new field
+        // Collapse only the serializer's own `<field>: ` markers, not arbitrary colons.
+        $s = preg_replace('/\b(subject|status|source|claim|disputed_by):\s+/iu', '$1:', $s) ?? $s;
 
         return json_encode($s, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
     }
