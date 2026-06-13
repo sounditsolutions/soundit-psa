@@ -44,6 +44,7 @@ Sound PSA is a **standalone MSP PSA** — not a wrapper or companion app. Each m
 | `app/Services/Mesh/MeshClient.php` | Mesh Email Security API client (license sync) |
 | `app/Services/Cipp/CippClient.php` | CIPP/M365 API client (OAuth2, license sync) |
 | `app/Services/Halo/HaloSyncService.php` | Halo PSA transition sync (clients, assets, contracts, tickets) |
+| `app/Services/Wiki/` | Client Wiki — auto-maintained environment documentation (enable with the `wiki_enabled` setting; spec: docs/superpowers/specs/2026-06-12-client-wiki-design.md) |
 
 ### Core entities
 
