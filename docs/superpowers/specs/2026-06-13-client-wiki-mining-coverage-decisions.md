@@ -51,3 +51,18 @@ Reference architecture (already shipped, Phase 3): `App\Jobs\MineTicketKnowledge
 ## Phase 5 planning implications
 
 The Phase 5 plan should include: `wiki:backfill` (Decision 1) and a stale-open-ticket maintenance sweep (Decision 2), both reusing `MineTicketKnowledge`. Neither changes the Phase 4 security prerequisite: spec §6 structured-serving must land before any task wires the wiki into triage/Assistant/MCP AI context, since both backfill and the stale-sweep increase the volume of mined facts in the store while the write-time scan remains the sole injection layer until §6 exists.
+
+---
+
+## Decision 3 — Mine on Resolved (and resolution-edit), not only Closed
+
+**Date:** 2026-06-13
+**Status:** Accepted (implemented)
+
+**Decision:** The wiki mining trigger fires when a ticket reaches **Resolved OR Closed** with a non-empty resolution, and also when the **resolution is added/edited while already in a terminal status** (the resolve-first-write-the-resolution-later path).
+
+**Rationale:** Confirmed from real MSP usage — the terminal action is almost always **Resolved**; "Closed" is rare (auto-close happens later, or never). Close-only mining left the wiki stale for the common workflow. Idempotency (the run hash is keyed on `ticket_id | resolution`) means the later auto-close with the same resolution does **not** re-mine, while editing the resolution **does** re-mine (captures the correction). Supersedes the Phase-3 close-only trigger.
+
+**Implementation:** `TicketObserver::updated()` — the top-level `wasChanged('status')` early-return was removed (so resolution-only edits are seen); T2T retains its own status-change guard; mining fires on `terminal && (status-changed || resolution-changed) && filled(resolution) && autoMineEnabled()`.
+
+**Related UX gap (backlog, not this change):** the Resolve action does not require/prompt for a resolution, so facts aren't captured until one is entered — a candidate finding for the QA agent.
