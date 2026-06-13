@@ -29,4 +29,14 @@ class LineDiffTest extends TestCase
 
         $this->assertSame([['type' => 'same', 'line' => 'x'], ['type' => 'same', 'line' => 'y']], $diff);
     }
+
+    public function test_oversized_inputs_short_circuit(): void
+    {
+        $old = str_repeat("line\n", 2001);
+        $new = str_repeat("other\n", 2001);
+
+        $diff = LineDiff::diff($old, $new);
+
+        $this->assertSame([['type' => 'same', 'line' => '(diff too large to display)']], $diff);
+    }
 }

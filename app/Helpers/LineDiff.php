@@ -16,6 +16,12 @@ class LineDiff
         $n = count($a);
         $m = count($b);
 
+        // The LCS table is O(n·m) PHP array cells; thousands of lines would
+        // allocate hundreds of MB. History views cap rather than OOM.
+        if (max($n, $m) > 2000) {
+            return [['type' => 'same', 'line' => '(diff too large to display)']];
+        }
+
         // LCS length table.
         $lcs = array_fill(0, $n + 1, array_fill(0, $m + 1, 0));
         for ($i = $n - 1; $i >= 0; $i--) {

@@ -140,7 +140,8 @@ class WikiController extends Controller
     {
         $client = $request->filled('client_id') ? Client::findOrFail($request->integer('client_id')) : null;
 
-        return view('wiki.create', ['client' => $client, 'kinds' => \App\Enums\WikiPageKind::cases()]);
+        // Deviations need a parent picker (future work) and overview pages are skeleton-owned; the service still validates as the real guard.
+        return view('wiki.create', ['client' => $client, 'kinds' => array_values(array_filter(\App\Enums\WikiPageKind::cases(), fn ($k) => ! in_array($k, [\App\Enums\WikiPageKind::Deviation, \App\Enums\WikiPageKind::Overview], true)))]);
     }
 
     public function store(WikiPageStoreRequest $request, WikiPageService $pages)
@@ -190,7 +191,7 @@ class WikiController extends Controller
 
     public function history(WikiPage $page)
     {
-        $revisions = $page->revisions()->with('author')->get();
+        $revisions = $page->revisions()->with('author')->take(50)->get();
 
         // Diff each revision against its predecessor (revisions are ordered newest-first).
         $diffs = [];

@@ -20,5 +20,6 @@
             </div>
         </div>
     @endforeach
+    @if ($revisions->count() === 50)<p class="text-muted small">Showing the 50 most recent revisions.</p>@endif
 </div>
 @endsection
