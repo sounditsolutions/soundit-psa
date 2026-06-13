@@ -10,6 +10,8 @@ use App\Support\WikiConfig;
  * TriageToolExecutor. Requires the using class to expose `protected ?int $clientId`
  * (Assistant: nullable; Triage: always set from the ticket). A null clientId is
  * VALID here — it means global-only (spec §6), unlike other client-scoped tools.
+ *
+ * @property ?int $clientId The using class must expose this (global-only when null).
  */
 trait HandlesWikiTools
 {
