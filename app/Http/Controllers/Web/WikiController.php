@@ -57,7 +57,9 @@ class WikiController extends Controller
         }
 
         // A deviation page viewed in client context renders merged with its parent (default on).
-        if ($page->parent_page_id && $request->boolean('merged', true)) {
+        // Orphan guard: parent_page_id is nullOnDelete, so a missing parent normally
+        // implies a null FK — the ->parent check is belt-and-braces for broken data.
+        if ($page->parent_page_id && $request->boolean('merged', true) && $page->parent) {
             $merged = $cascade->mergedView($page->parent, $client->id);
 
             return view('wiki.show', [

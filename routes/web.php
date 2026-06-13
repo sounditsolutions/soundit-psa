@@ -568,6 +568,7 @@ Route::middleware('auth')->group(function () {
     Route::post('/about/check-updates', [AboutController::class, 'checkForUpdates'])->name('about.check-updates');
 
     // Client Wiki (spec docs/superpowers/specs/2026-06-12-client-wiki-design.md §8)
+    // search and CRUD live at /wiki-search and /wiki-pages/* to stay ahead of the wiki/{slug} catch-all
     Route::get('/wiki', [WikiController::class, 'index'])->name('wiki.index');
     Route::get('/wiki-search', [WikiController::class, 'search'])->name('wiki.search');
     Route::get('/wiki-pages/create', [WikiController::class, 'create'])->name('wiki.create');

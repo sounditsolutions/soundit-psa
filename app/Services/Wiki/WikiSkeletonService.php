@@ -43,9 +43,18 @@ class WikiSkeletonService
 
     public function ensureForClient(Client $client): void
     {
+        $blueprint = self::blueprint();
+
+        // Warm-path short-circuit: one indexed count replaces the pluck once seeding
+        // is complete. Exact — slugs are unique per (scope, client_id), so count of
+        // blueprint slugs === blueprint size means every skeleton page exists.
+        if (WikiPage::forClient($client->id)->whereIn('slug', array_keys($blueprint))->count() === count($blueprint)) {
+            return;
+        }
+
         $existing = WikiPage::forClient($client->id)->pluck('slug')->all();
 
-        foreach (self::blueprint() as $slug => $def) {
+        foreach ($blueprint as $slug => $def) {
             if (in_array($slug, $existing, true)) {
                 continue;
             }

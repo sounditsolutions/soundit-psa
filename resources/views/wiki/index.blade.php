@@ -14,7 +14,7 @@
         @if ($client)<input type="hidden" name="client_id" value="{{ $client->id }}">@endif
         <div class="input-group">
             <span class="input-group-text"><i class="bi bi-search"></i></span>
-            <input type="search" name="q" class="form-control" placeholder="Search the wiki…" autofocus>
+            <input type="search" name="q" class="form-control" placeholder="Search the wiki…" aria-label="Search the wiki" autofocus>
         </div>
     </form>
 
