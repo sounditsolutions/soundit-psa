@@ -14,8 +14,13 @@ class WikiRedactor
         '/-----BEGIN [A-Z ]+-----.*?-----END [A-Z ]+-----/s',
         // connection strings with embedded credentials
         '/\b[a-z][a-z0-9+.-]*:\/\/[^\s:@\/]+:[^\s@\/]+@[^\s]+/i',
-        // keyword = / : value forms (password, pass, pwd, secret, token, api key, license)
-        '/\b(?:password|passwd|pass|pwd|secret|api[_\s-]?key|access[_\s-]?key|auth[_\s-]?token|token|license[_\s-]?key)\s*(?:is|was|[:=])\s*\S+/i',
+        // keyword = / : value forms (password, pass, pwd, pw, secret, token, api key, license).
+        // NOTE: the bare `token` keyword is a known false-positive class (also matches "token is
+        // expired", "token was rotated", etc.). Accepted: this is PRE-AI input redaction, so the
+        // AI still sees the surrounding context (only the value is gone, the sentence shape
+        // remains); and the alternative — requiring an auth_/access_ prefix — would under-catch
+        // real bare "token: <value>" forms that ticket authors commonly write. Do not narrow it.
+        '/\b(?:password|passwd|pass|pwd|pw|secret|api[_\s-]?key|access[_\s-]?key|auth[_\s-]?token|token|license[_\s-]?key)\s*(?:is|was|[:=])\s*\S+/i',
         // conversational: "set the X password to VALUE", "credentials are user / pass"
         '/\b(?:password|passphrase|pin)\s+(?:to|is now|set to)\s+\S+/i',
         '/\bcredentials?\s+(?:are|is)\s+\S+(?:\s*\/\s*\S+)?/i',
@@ -28,7 +33,10 @@ class WikiRedactor
         // or a trailing =) so plain alphanumeric serials/GUIDs (which lack them) survive.
         // Documented residual gap (accepted v1): base32 TOTP seeds.
         '/\b[A-Za-z0-9+\/_-]{24,}[+\/]+[A-Za-z0-9+\/_-]*={0,2}\b/',
-        '/\b[A-Za-z0-9+\/_-]{32,}={1,2}\b/',
+        // Padding boundary: a trailing \b after '=' (a non-word char) only matches when a WORD
+        // char follows the padding, so padded tokens at end-of-string or before whitespace (the
+        // common case) escaped. Use a non-word lookahead so EOL/whitespace match too.
+        '/\b[A-Za-z0-9+\/_-]{32,}={1,2}(?!\w)/',
     ];
 
     private const INJECTION_PATTERNS = [

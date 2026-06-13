@@ -26,6 +26,13 @@ class WikiRedactorTest extends TestCase
         $this->assertStringContainsString('[REDACTED:credential]', $out);
     }
 
+    public function test_redacts_pw_shorthand(): void
+    {
+        // Common ticket shorthand for "password".
+        $this->assertStringContainsString('[REDACTED:credential]', $this->redactor->redact('reset pw: temp1234'));
+        $this->assertStringNotContainsString('temp1234', $this->redactor->redact('reset pw: temp1234'));
+    }
+
     public function test_redacts_conversational_password_phrases(): void
     {
         $in = 'I set the WiFi password to Summer2026! for them. The admin credentials are admin / Hunter2.';
@@ -59,6 +66,16 @@ class WikiRedactorTest extends TestCase
     {
         // A real base64 secret (has +/ and =) must still be caught.
         $in = 'aws secret AKIAIOSFODNN7/EXAMPLEkey+withSlashAndPlus123=';
+
+        $this->assertStringContainsString('[REDACTED:credential]', $this->redactor->redact($in));
+    }
+
+    public function test_redacts_base64_padding_at_end_of_string(): void
+    {
+        // Padding (==) at end-of-string, no trailing word char, no embedded +//.
+        // The trailing \b in the b64_pad rule only fires before a word char, so
+        // this end-of-line case (the common one) must match via a non-word lookahead.
+        $in = 'aws key AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==';
 
         $this->assertStringContainsString('[REDACTED:credential]', $this->redactor->redact($in));
     }
