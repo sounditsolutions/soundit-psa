@@ -113,4 +113,24 @@ class WikiToolsMcpTest extends TestCase
 
         $this->assertStringContainsString('CLIENT-FortiGate-note', $text);
     }
+
+    /**
+     * The actual leak vector the hardened cast closes: leading-numeric garbage.
+     * "<id>abc" under a bare `(int)` cast resolves to a REAL client id (e.g.
+     * "5abc" -> 5) and would leak that client's facts; is_numeric("<id>abc")
+     * is false, so the hardened cast collapses it to null (global-only). The
+     * 0 / "garbage" cases above can't distinguish the two casts (both -> 0,
+     * which matches no client) — this one can, so it pins the invariant.
+     */
+    public function test_leading_numeric_garbage_does_not_leak_a_real_client(): void
+    {
+        $client = Client::factory()->create();
+        $this->seedFacts($client);
+
+        // "<id>abc" -> bare (int) would resolve to this real client id and leak it.
+        $text = $this->callWikiSearch($client->id.'abc');
+
+        $this->assertStringContainsString('GLOBAL-FortiGate-note', $text);     // global still served
+        $this->assertStringNotContainsString('CLIENT-FortiGate-note', $text);  // client NOT leaked
+    }
 }
