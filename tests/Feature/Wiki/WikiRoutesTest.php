@@ -89,7 +89,13 @@ class WikiRoutesTest extends TestCase
     public function test_history_shows_revision_diff(): void
     {
         $user = User::factory()->create();
-        $page = WikiPage::factory()->create(['body_md' => 'v1']);
+        $page = app(\App\Services\Wiki\WikiPageService::class)->create([
+            'scope' => \App\Enums\WikiScope::Global,
+            'slug' => 'history-demo',
+            'title' => 'History demo',
+            'kind' => \App\Enums\WikiPageKind::Note,
+            'body_md' => 'v1',
+        ], \App\Enums\WikiAuthorType::Human, $user->id);
         app(\App\Services\Wiki\WikiPageService::class)
             ->updateBody($page, 'v2', \App\Enums\WikiAuthorType::Human, $user->id, 'Edited');
 
