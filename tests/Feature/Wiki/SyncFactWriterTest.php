@@ -126,6 +126,22 @@ class SyncFactWriterTest extends TestCase
         $this->assertGreaterThan(0, $retired);
     }
 
+    public function test_spaced_hostname_facts_survive_the_retirement_sweep(): void
+    {
+        Setting::setValue('wiki_enabled', '1');
+        $client = Client::factory()->create();
+        Asset::factory()->create([
+            'client_id' => $client->id, 'hostname' => 'FRONT DESK',
+            'os' => 'Windows 11 Pro', 'ram_gb' => 16, 'asset_type' => 'Workstation',
+        ]);
+
+        app(SyncFactWriter::class)->writeAssetFacts($client);
+
+        $facts = WikiFact::where('client_id', $client->id)->get();
+        $this->assertTrue($facts->isNotEmpty());
+        $this->assertTrue($facts->every(fn ($f) => $f->status === \App\Enums\WikiFactStatus::Confirmed));
+    }
+
     public function test_null_hostname_assets_are_skipped(): void
     {
         Setting::setValue('wiki_enabled', '1');

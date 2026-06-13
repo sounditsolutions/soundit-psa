@@ -54,12 +54,12 @@ class SyncFactWriter
                 ->select(['id', 'client_id', 'hostname', 'os', 'cpu', 'ram_gb', 'asset_type', 'serial_number', 'ip_address'])
                 ->get();
             foreach ($assets as $asset) {
+                $host = trim((string) $asset->hostname);
                 // Skip assets with no hostname — strtolower(null) is deprecated and
                 // an empty subject key would collide across all unnamed assets.
-                if (trim((string) $asset->hostname) === '') {
+                if ($host === '') {
                     continue;
                 }
-                $host = $asset->hostname;
                 $key = strtolower($host);
                 // ram_gb is cast decimal:2 → string "32.00"; cast to int for display.
                 $ramDisplay = $asset->ram_gb !== null ? (int) $asset->ram_gb : null;
@@ -73,8 +73,10 @@ class SyncFactWriter
                 ]);
                 foreach ($map as $subjectKey => $statement) {
                     $volatility = str_ends_with($subjectKey, ':ip') ? WikiFactVolatility::Volatile : WikiFactVolatility::Durable;
-                    $this->facts->upsertSyncFact($infra, 'assets', $subjectKey, $statement, $volatility, [['type' => 'sync', 'id' => 'assets']]);
-                    $seenKeys[] = $subjectKey;
+                    $fact = $this->facts->upsertSyncFact($infra, 'assets', $subjectKey, $statement, $volatility, [['type' => 'sync', 'id' => 'assets']]);
+                    // Collect the STORED key — upsertSyncFact normalizes (spaces → '-',
+                    // lowercase), so the raw key would never match the sweep below.
+                    $seenKeys[] = $fact->subject_key;
                     $count++;
                 }
             }
@@ -117,6 +119,8 @@ class SyncFactWriter
 
             // Subjects absent from this sync no longer exist at the source —
             // retire their facts (pinned facts are left for the challenge path).
+            // These keys are static lowercase no-whitespace strings, so they equal
+            // their normalizeSubjectKey() form — raw keys are safe to sweep with here.
             $seenKeys = array_keys($counts);
             WikiFact::query()
                 ->where('page_id', $m365->id)
