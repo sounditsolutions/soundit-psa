@@ -27,6 +27,18 @@
 - **Per-client serialization via `WithoutOverlapping` job middleware** (file cache lock; single-VPS deployment) — this preserves the documented `WikiFactService` gap-lock assumption (one writer per client at a time; see its docblock). Do NOT parallelize mining per client without revisiting that docblock.
 - **`AiClient` becomes container-resolved in wiki code** (its constructor arg is optional, so `app(AiClient::class)` works) — that is what makes the pipeline testable with `$this->mock(AiClient::class)`. Triage's `new AiClient(...)` style is untouched.
 
+## Security posture & the Phase 4 prerequisite (read before implementing)
+
+Phase 3 mines **untrusted ticket text into persistent wiki facts**. The spec (§13) calls for *two* hard injection controls: a write-time filter AND structured serving at retrieval (§6). **Phase 3 ships only the first** — §6 structured-serving is Phase 4. The security review confirmed (by tracing every merged AI consumer) that this is **safe for now** because *no merged code reads wiki facts or page bodies into an AI prompt today*: triage and the Assistant inject `clients.site_notes`, not the wiki; the §6 retrieval tools (`wiki_search`, `wiki_get_page`, hot-summary injection) do not exist yet. So a mined injection-laden fact lands in a staff-facing page that no AI consumer reads — the write-time `scan()` quarantine is the primary defense this interval.
+
+This safety is **conditional**. Three invariants MUST hold; violating any one flips the posture to unsafe:
+
+1. **`overview` stays out of `WikiFactExtractor::TARGETS`** (the one page §6 earmarks for AI injection). Enforced + commented in Task 4.
+2. **No task in this PR repoints `ContextBuilder` (or any AI consumer) at wiki content.** The spec §4.6 `site_notes`→overview transition is Phase 4. Verify the diff touches no triage/assistant/MCP context-building code.
+3. **`scan()` is hardened to cover every AI-emitted free-text field** (statement AND subject_key) — it has no structured-serving safety net this phase.
+
+> **PHASE 4 BLOCKER (carry into the Phase 4 plan):** the §6 structured-serving boundary MUST be implemented and merged *before* any task wires triage / Assistant / MCP to read wiki facts or page bodies. Mining is already populating the store; the moment a retrieval path reads it into an AI prompt without §6, every mined fact becomes a potential injection carrier. Do not move the triage context-injection point off `site_notes` until §6 lands.
+
 ## File structure (locked)
 
 ```
@@ -213,7 +225,7 @@ Append to `resources/views/settings/general.blade.php` following the existing `.
                 <input class="form-check-input" type="checkbox" id="wiki_auto_mine" name="wiki_auto_mine" value="1"
                        @checked((bool) \App\Models\Setting::getValue('wiki_auto_mine'))>
                 <label class="form-check-label" for="wiki_auto_mine">
-                    Mine closed tickets into wiki facts (spends AI tokens)
+                    Mine closed tickets into wiki facts (spends AI tokens; requires the module enabled above)
                 </label>
             </div>
             <div class="row g-3">
@@ -319,11 +331,37 @@ class WikiRedactorTest extends TestCase
         $this->assertStringNotContainsString('eyJhbGciOiJIUzI1NiIs', $out);
     }
 
+    public function test_redacts_base64_distinctive_secret(): void
+    {
+        // A real base64 secret (has +/ and =) must still be caught.
+        $in = 'aws secret AKIAIOSFODNN7/EXAMPLEkey+withSlashAndPlus123=';
+
+        $this->assertStringContainsString('[REDACTED:credential]', $this->redactor->redact($in));
+    }
+
     public function test_leaves_normal_prose_untouched(): void
     {
         $in = "Replaced the FortiGate 60F. DC01 has 32 GB RAM. Onboarding follows the standard runbook except step 3.";
 
         $this->assertSame($in, $this->redactor->redact($in));
+    }
+
+    /**
+     * Security review C1 (the contract): durable identifiers the wiki exists to
+     * capture — plain-alphanumeric serials, GUIDs, RMM/asset IDs, long FQDNs — must
+     * survive redaction. They lack base64-distinctive chars, so the entropy rule
+     * must not touch them.
+     */
+    public function test_preserves_durable_identifiers(): void
+    {
+        foreach ([
+            'Replaced unit, serial ABCD1234EFGH5678IJKL9012MNOP3456 installed',
+            'Asset GUID 550e8400e29b41d4a716446655440000 in Ninja',
+            'Ninja device id abcdefghijklmnopqrstuvwxyz012345 syncing',
+            'Host server01.corp.internal.acme-managed-services.example.com online',
+        ] as $in) {
+            $this->assertSame($in, $this->redactor->redact($in), "over-redacted: {$in}");
+        }
     }
 
     public function test_scan_flags_secrets_in_output(): void
@@ -391,9 +429,16 @@ class WikiRedactor
         // conversational: "set the X password to VALUE", "credentials are user / pass"
         '/\b(?:password|passphrase|pin)\s+(?:to|is now|set to)\s+\S+/i',
         '/\bcredentials?\s+(?:are|is)\s+\S+(?:\s*\/\s*\S+)?/i',
-        // JWT-shaped and long base64/hex runs (high entropy)
+        // JWT-shaped tokens (three base64url segments)
         '/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}(?:\.[A-Za-z0-9_-]+)?/',
-        '/\b[A-Za-z0-9+\/_-]{32,}={0,2}\b/',
+        // Long base64-DISTINCTIVE runs only. Security review C1: the old rule
+        // /[A-Za-z0-9+\/_-]{32,}={0,2}/ also ate 32-char hardware serials, unhyphenated
+        // GUIDs, and RMM/asset IDs — the exact durable identifiers the wiki captures —
+        // silently corrupting real facts. Require a base64-distinctive character (+, /,
+        // or a trailing =) so plain alphanumeric serials/GUIDs (which lack them) survive.
+        // Documented residual gap (accepted v1): base32 TOTP seeds.
+        '/\b[A-Za-z0-9+\/_-]{24,}[+\/]+[A-Za-z0-9+\/_-]*={0,2}\b/',
+        '/\b[A-Za-z0-9+\/_-]{32,}={1,2}\b/',
     ];
 
     private const INJECTION_PATTERNS = [
@@ -451,7 +496,7 @@ class WikiRedactor
 
 - [ ] **Step 3: Run, iterate on corpus until all tests pass**
 
-Run: `php artisan test --filter=WikiRedactorTest` — PASS (9 tests). If a pattern over- or under-matches a fixture, fix the PATTERN (the fixtures are the contract). The generic base64/hex rule will hit some long hostnames/serials — if `test_leaves_normal_prose_untouched` fails because of it, tighten the rule (require at least one `+`, `/`, `=`, or mixed-case-and-digit composition) rather than deleting it; document the chosen heuristic in a comment.
+Run: `php artisan test --filter=WikiRedactorTest` — PASS (12 tests). The fixtures are the contract — fix the PATTERN, never the fixture. Both directions are now pinned: `test_preserves_durable_identifiers` (serials/GUIDs/RMM-IDs/FQDNs survive — security C1) and `test_redacts_base64_distinctive_secret` (real base64 secrets still caught). If you must adjust the entropy rule, keep both green; the base64-distinctive-character heuristic is deliberate (plain alphanumeric IDs lack `+`/`/`/`=`, real base64 secrets have them).
 
 - [ ] **Step 4: Commit**
 
@@ -589,12 +634,29 @@ class WikiTicketContext
         if ($triage && is_array($triage->stage_results)) {
             $technical = $triage->stage_results['technical_triage'] ?? null;
             if (is_array($technical) || is_string($technical)) {
-                $parts[] = "TRIAGE ANALYSIS:\n".$this->clip(is_string($technical) ? $technical : json_encode($technical), self::MAX_NOTE_LENGTH);
+                // Security review M1: flatten arrays to a readable decoded string, NOT json_encode —
+                // JSON escaping (\/, @ for @) would slip connection-strings/PEM past the redact()
+                // patterns, which assume literal '/' and '@'. flattenValues() yields plain text.
+                $technicalText = is_string($technical) ? $technical : $this->flattenValues($technical);
+                $parts[] = "TRIAGE ANALYSIS:\n".$this->clip($technicalText, self::MAX_NOTE_LENGTH);
             }
         }
 
         // Redact the whole assembled context — the AI never sees raw secrets (spec §5.2 layer 1).
         return $this->redactor->redact(implode("\n\n", $parts));
+    }
+
+    /** Recursively flatten a nested array's scalar values into newline-joined plain text. */
+    private function flattenValues(array $data): string
+    {
+        $out = [];
+        array_walk_recursive($data, function ($value) use (&$out) {
+            if (is_scalar($value)) {
+                $out[] = (string) $value;
+            }
+        });
+
+        return implode("\n", $out);
     }
 
     private function clip(string $text, int $max): string
@@ -702,7 +764,16 @@ use App\Services\Ai\AiClient;
 
 class WikiFactExtractor
 {
-    /** Spec: client pages mined in Phase 3 — page slug => allowed section anchors. */
+    /**
+     * Spec: client pages mined in Phase 3 — page slug => allowed section anchors.
+     *
+     * SECURITY (exposure-window condition 1): 'overview' is DELIBERATELY ABSENT and must
+     * stay absent. It is the one page the spec (§6) earmarks for AI hot-summary injection;
+     * mining into it would make any injection-laden fact a live attack vector the moment
+     * Phase 4's retrieval wiring lands. Mining writes only to staff-facing environment
+     * pages that no AI consumer reads in Phase 3 (see the Phase-4 prerequisite note in the
+     * plan header). Do NOT add 'overview' here.
+     */
     public const TARGETS = [
         'network' => ['topology', 'equipment'],
         'infrastructure' => ['assets'],
@@ -1244,6 +1315,23 @@ class MineTicketKnowledgeTest extends TestCase
         $this->assertSame(WikiRunStatus::Quarantined, $run->status);
         $this->assertSame(0, WikiFact::count()); // nothing published
         $this->assertNotEmpty($run->errors);
+        // Security review H1: the caught secret must NOT be echoed into the run's errors.
+        $this->assertStringNotContainsString('Hunter2', json_encode($run->errors));
+    }
+
+    public function test_quarantines_on_secret_in_subject_key(): void
+    {
+        $ticket = $this->ticket();
+        $this->mockAi(['facts' => [[
+            'page' => 'network', 'anchor' => 'equipment',
+            'subject_key' => 'network:password-is-Hunter2', // secret laundered into the key
+            'statement' => 'Edge device replaced', 'volatility' => 'durable', 'confidence' => 0.9,
+        ]]]);
+
+        (new MineTicketKnowledge($ticket->id))->handle();
+
+        $this->assertSame(WikiRunStatus::Quarantined, WikiRun::first()->status);
+        $this->assertSame(0, WikiFact::count());
     }
 
     public function test_quarantines_on_injection_scaffolding(): void
@@ -1367,8 +1455,11 @@ class MineTicketKnowledge implements ShouldQueue
             return;
         }
 
-        // Idempotency (spec §5.3): ticket + content hash, enforced by the DB unique index.
-        $hash = hash('sha256', $ticket->id.'|'.$ticket->resolution.'|'.($ticket->updated_at?->timestamp ?? 0));
+        // Idempotency (spec §5.3): ticket + RESOLUTION content hash, enforced by the DB unique index.
+        // Security review M2: do NOT include updated_at — any note/tag/reopen touch would change it
+        // and re-mine the same resolution, a token/cost vector. Key on resolution content alone so
+        // only a genuine resolution edit re-mines.
+        $hash = hash('sha256', $ticket->id.'|'.$ticket->resolution);
         $already = WikiRun::where('subject_type', 'ticket')
             ->where('subject_id', $ticket->id)
             ->where('source_content_hash', $hash)
@@ -1389,6 +1480,13 @@ class MineTicketKnowledge implements ShouldQueue
         $redactor = app(WikiRedactor::class);
         $stages = [];
 
+        // Architecture review: wire the wiki_model setting into the AI call path so it is
+        // not dead config. The extractor resolves AiClient from the container; rebind it to
+        // the wiki model when one is configured. Tests bind a mock AiClient, which still wins.
+        if (WikiConfig::model() !== \App\Support\AiConfig::model()) {
+            app()->bind(\App\Services\Ai\AiClient::class, fn () => new \App\Services\Ai\AiClient(WikiConfig::model()));
+        }
+
         try {
             $context = app(WikiTicketContext::class)->build($ticket); // gather + redact (layer 1)
             $stages[] = 'gather';
@@ -1398,12 +1496,28 @@ class MineTicketKnowledge implements ShouldQueue
 
             // Write-time filters (spec §5.2 layer 3 + injection + marker guard):
             // ANY violation quarantines the whole run — nothing publishes.
+            // Security review H2: scan EVERY AI-emitted free-text field, not just statement.
+            // page/anchor are whitelist-bounded by the extractor (safe); subject_key is
+            // length-validated free text and would otherwise reach storage + dedup + the
+            // future §6 structured `subject:` record unscanned.
             foreach ($extraction['facts'] as $candidate) {
-                if ($redactor->scan($candidate['statement']) !== []) {
+                $violations = array_merge(
+                    $redactor->scan($candidate['statement']),
+                    $redactor->scan($candidate['subject_key']),
+                );
+                if ($violations !== []) {
                     $run->update([
                         'status' => WikiRunStatus::Quarantined,
                         'stages_completed' => $stages,
-                        'errors' => [['stage' => 'merge', 'message' => 'statement failed redaction/injection scan: '.substr($candidate['statement'], 0, 80)]],
+                        // Security review H1: NEVER echo the offending text — that would write the
+                        // very secret quarantine caught into wiki_runs.errors (a persisted,
+                        // staff-readable column). Record class + pattern + subject_key only.
+                        'errors' => [[
+                            'stage' => 'merge',
+                            'message' => 'candidate failed write-time scan',
+                            'violation_classes' => array_values(array_unique(array_column($violations, 'class'))),
+                            'subject_key' => $candidate['subject_key'],
+                        ]],
                         'ai_tokens_used' => $extraction['tokens'],
                     ]);
 
@@ -1562,19 +1676,42 @@ Run — FAIL.
 
 - [ ] **Step 2: Implement**
 
-In `app/Observers/TicketObserver.php`, ADD to the existing `updated()` method (do not disturb the T2T webhook logic; if `updated()` doesn't exist, create it following the observer's existing style):
+**CRITICAL (architecture review):** the merged `updated()` has a top-level early return for non-T2T tickets:
 
 ```php
-        // Wiki Phase 3: mine closed tickets into wiki facts (spec §5.1 trigger 2).
-        if ($ticket->wasChanged('status')
-            && $ticket->status === TicketStatus::Closed
-            && filled($ticket->resolution)
-            && \App\Support\WikiConfig::autoMineEnabled()) {
-            \App\Jobs\MineTicketKnowledge::dispatch($ticket->id);
-        }
+public function updated(Ticket $ticket): void
+{
+    if ($ticket->source !== TicketSource::HelpdeskButton) {
+        return;  // ← ALL normal tickets exit here
+    }
+    // … T2T callback logic …
+}
 ```
 
-Verify TicketObserver is registered for the Ticket model (it is — `created()` already fires RunTriagePipeline; check the registration in AppServiceProvider or the `#[ObservedBy]` attribute and confirm `updated` events flow).
+Naively appending the mining snippet leaves it **dead for every non-HelpdeskButton ticket** — which is every manually/auto/triage-closed ticket the trigger is supposed to catch. You MUST restructure the method so both behaviors are inlined past any early return. Read the actual merged body first and preserve its exact T2T condition; the shape is:
+
+```php
+public function updated(Ticket $ticket): void
+{
+    // T2T callback — HelpdeskButton source only (preserve the existing condition exactly
+    // as merged; the version below is illustrative, match the real guards/config calls).
+    if ($ticket->source === TicketSource::HelpdeskButton
+        && $ticket->wasChanged('status')
+        && /* existing T2T callback_url / enabled guard */ true) {
+        // … existing T2T dispatch, unchanged …
+    }
+
+    // Wiki Phase 3: mine closed tickets into wiki facts (spec §5.1 trigger 2).
+    if ($ticket->wasChanged('status')
+        && $ticket->status === TicketStatus::Closed
+        && filled($ticket->resolution)
+        && \App\Support\WikiConfig::autoMineEnabled()) {
+        \App\Jobs\MineTicketKnowledge::dispatch($ticket->id);
+    }
+}
+```
+
+Verify TicketObserver is registered for the Ticket model (it is — `created()` already fires RunTriagePipeline; confirmed registered via `AppServiceProvider::boot()`, `updated` events flow). The trigger test (Step 1) creates a non-T2T ticket, so it fails loudly if the early-return swallows mining — keep that test as the guard against regressing this restructure.
 
 - [ ] **Step 3: Run, pass, commit**
 
@@ -1665,6 +1802,19 @@ class WikiFactActionsTest extends TestCase
         $new = WikiFact::where('statement', 'DC01 runs Windows Server 2025')->first();
         $this->assertTrue($new->pinned);
         $this->assertSame('human', $new->source_type->value);
+    }
+
+    public function test_correct_rejects_a_credential(): void
+    {
+        // Security review M3 / spec §4.4: a human correction carrying a secret is refused.
+        $this->actingAs($this->user)
+            ->from("/clients/{$this->fact->client_id}/wiki/infrastructure")
+            ->patch("/wiki-facts/{$this->fact->id}/correct", ['statement' => 'DC01 admin password is Hunter2'])
+            ->assertRedirect()
+            ->assertSessionHas('error');
+
+        $this->assertSame(WikiFactStatus::Unverified, $this->fact->fresh()->status); // unchanged
+        $this->assertSame(0, WikiFact::where('statement', 'like', '%Hunter2%')->count());
     }
 
     public function test_dispute_resolution_routes(): void
@@ -1763,9 +1913,20 @@ class WikiFactController extends Controller implements HasMiddleware
         return $this->backToPage($fact, 'Fact retired.');
     }
 
-    public function correct(WikiFact $fact, WikiFactCorrectRequest $request, WikiFactService $facts, WikiComposerService $composer)
+    public function correct(WikiFact $fact, WikiFactCorrectRequest $request, WikiFactService $facts, WikiComposerService $composer, \App\Services\Wiki\Mining\WikiRedactor $redactor)
     {
-        $facts->correct($fact, $request->validated('statement'), auth()->id());
+        $statement = $request->validated('statement');
+
+        // Security review M3: spec §4.4 requires even human-authored content to be
+        // credential-scanned — a tech typing "DC01 admin pw is Hunter2" must not persist a
+        // secret as a pinned confirmed fact. Reject on a credential hit (injection scanning
+        // is skipped here: the human author is trusted, only secret-at-rest is the concern).
+        $hits = collect($redactor->scan($statement))->where('class', 'credential');
+        if ($hits->isNotEmpty()) {
+            return back()->with('error', 'Remove the credential from the statement before saving — secrets are not stored in the wiki.');
+        }
+
+        $facts->correct($fact, $statement, auth()->id());
         $composer->composeSection($fact->page->fresh(), $fact->section_anchor);
 
         return $this->backToPage($fact, 'Fact corrected.');
@@ -1898,6 +2059,10 @@ class WikiProvenancePanelTest extends TestCase
             ->assertSee('Accept')
             ->assertSee('Dismiss')
             ->assertDontSee('alert-danger'); // §8.1 item 5: never an error-state block
+
+        // Architecture review: the pair must render the challenge block EXACTLY ONCE
+        // (not once per side). This is the assertion the original plan lacked.
+        $this->assertSame(1, substr_count($response->getContent(), 'AI challenge'));
     }
 
     public function test_panel_absent_when_page_has_no_facts(): void
@@ -1935,11 +2100,21 @@ And pass `'facts' => collect()` in the two cascade/merged-view `view('wiki.show'
 {{-- §8.1 item 1: provenance on demand. item 3: right-sized actions. item 5: addendum blocks. --}}
 @if ($facts->isNotEmpty())
 <details class="card mt-3">
-    <summary class="card-header small text-uppercase text-muted" style="cursor: pointer;">
+    {{-- UX review (WCAG AA): text-muted (#6b7280) on the navy .card-header is 2.76:1 — fails 4.5:1.
+         Drop text-muted; the card-header's own color meets contrast. --}}
+    <summary class="card-header small text-uppercase" style="cursor: pointer;">
         Show provenance ({{ $facts->count() }})
     </summary>
     <div class="card-body p-2">
-        @php($challengers = $facts->where('status', \App\Enums\WikiFactStatus::Disputed)->whereNotNull('disputed_with_fact_id')->keyBy('disputed_with_fact_id'))
+        {{-- Architecture review: BOTH sides of a dispute have status=Disputed and a non-null
+             disputed_with_fact_id, so keying the whole disputed set double-renders the AI-challenge
+             block (once per side, roles inverted). Scope $challengers to the MINED (Ticket-sourced)
+             side only — that is the genuine challenger. --}}
+        @php($challengers = $facts
+            ->filter(fn ($f) => $f->status === \App\Enums\WikiFactStatus::Disputed
+                && $f->source_type === \App\Enums\WikiFactSource::Ticket
+                && $f->disputed_with_fact_id !== null)
+            ->keyBy('disputed_with_fact_id'))
         @foreach ($facts as $fact)
             @if ($fact->status === \App\Enums\WikiFactStatus::Disputed && $challengers->has($fact->id))
                 @php($challenger = $challengers->get($fact->id))
@@ -2094,9 +2269,10 @@ show.blade.php button group, after History — inline mini-confirm via `<details
 
 - [ ] **Step 3: Finish line**
 
-- `php artisan test 2>&1 | tail -4` → ALL green (expect ~170 tests).
+- `php artisan test 2>&1 | tail -4` → ALL green (expect ~175 tests).
 - `./vendor/bin/pint` → clean.
 - `php artisan route:list 2>/dev/null | grep -c wiki` → 15 routes (10 + 4 fact actions + archive; settings POST excluded from the grep? count and state actual).
+- **Product review P2:** confirm the wiki index already surfaces unverified/disputed health counts (shipped in Phase 2 — `WikiController::healthCounts` + the index view's muted badge row). Mined unverified facts now make these counts non-zero, so eyeball that the index shows them for a client with mined facts. No new code expected; if the counts don't render, that is a Phase 2 regression to fix here.
 - Close psa-33jj: `gc bd close psa-33jj --reason "Settings UI shipped in Phase 3 Task 1"` — note: run from the town root, or leave for the coordinator and say so in the report.
 
 ```bash
@@ -2116,6 +2292,8 @@ gh pr create --repo sounditsolutions/soundit-psa --base main \
 ## Notes for reviewers
 - Mining never supersedes: sync remains ground truth; mined facts dispute (spec §4.2)
 - Deferred by design: global pattern/vendor mining and AI prose-glue (Phase 5), human-prose fact-indexing (Phase 4)
+- Security posture (plan review): write-time scan() is the SOLE injection layer this phase; §6 structured-serving is a hard Phase 4 prerequisite before any wiki→AI retrieval wiring. No merged AI consumer reads wiki content today, so the exposure window is closed. overview stays out of mining TARGETS; ContextBuilder is untouched.
+- No per-fact tenancy on fact-action endpoints is intentional: single-tenant product, generalist staff, no roles (spec §8). Any authenticated staff user may act on any client's facts; there is no tenancy boundary to violate, so this is not an IDOR.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)"
 ```
@@ -2129,3 +2307,20 @@ gh pr create --repo sounditsolutions/soundit-psa --base main \
 - Prompt-injection posture (spec §13): layer order is gather-redact → extraction prompt rule → per-statement scan-or-quarantine; the §6 structured-serving half arrives with Phase 4's retrieval tools.
 - Known deliberate gaps for later phases: hot-summary regeneration after mining (Phase 4 — overview is AI-composed there), staleness/maintenance sweep (Phase 5), wiki:backfill (Phase 5).
 - The budget test's strict `$this->mock(AiClient::class)` with no expectations will fail the test if any AI call happens — that IS the assertion.
+
+## Plan review amendments (PR #14, all four personas)
+
+Product APPROVE, UX/Architecture REVISE, Security approve-with-changes — all folded in:
+- **Architecture BLOCKER** — T7 `updated()` shown as a full restructured body (the merged early-return for non-T2T tickets would have made mining dead code).
+- **Architecture MEDIUM** — `wiki_model` now wired into the mining AI path (T6 rebinds `AiClient`); no longer dead config.
+- **Architecture LOW** — provenance `$challengers` scoped to the mined (Ticket-sourced) side; exactly-once assertion added (T9).
+- **UX P1 (WCAG AA)** — `text-muted` removed from the provenance `<summary>` header (was 2.76:1 on navy).
+- **Product P2** — mining toggle label hints the master-switch dependency (T1); index health-count verification added to the finish checklist (T10).
+- **Security C1 (Critical)** — entropy regex constrained to base64-distinctive runs; `test_preserves_durable_identifiers` (serials/GUIDs/RMM-IDs/FQDNs) pins the contract (T2).
+- **Security H1** — quarantine errors record class/pattern/subject_key, never the offending statement substring (T6).
+- **Security H2** — write-time `scan()` covers `subject_key`, not just `statement`; subject-key quarantine test added (T6).
+- **Security H3** — single-injection-layer posture documented; §6 structured-serving made an explicit Phase 4 blocker (plan header + reviewer notes).
+- **Security M1** — triage `stage_results` flattened to plain text before redaction (json_encode escaping no longer slips secrets past patterns) (T3).
+- **Security M2** — idempotency hash keyed on resolution content alone, not `updated_at` (no re-mine on incidental ticket touches) (T6).
+- **Security M3** — human `correct()` credential-scans and rejects on hit (spec §4.4); rejection test added (T8).
+- **Security exposure-window** — `overview` lock comment on `TARGETS` (T4); ContextBuilder-untouched invariant stated.
