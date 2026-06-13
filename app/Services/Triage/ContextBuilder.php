@@ -4,7 +4,10 @@ namespace App\Services\Triage;
 
 use App\Enums\NoteType;
 use App\Enums\WhoType;
+use App\Enums\WikiPageKind;
+use App\Models\Client;
 use App\Models\Ticket;
+use App\Models\WikiPage;
 use App\Services\AttachmentService;
 use App\Services\Comet\CometClient;
 use App\Services\Comet\CometJobService;
@@ -13,6 +16,7 @@ use App\Support\CometConfig;
 use App\Support\ControlDConfig;
 use App\Support\MeshConfig;
 use App\Support\TacticalConfig;
+use App\Support\WikiConfig;
 use App\Support\ZorusConfig;
 use Illuminate\Support\Facades\Log;
 
@@ -33,6 +37,8 @@ class ContextBuilder
     private const MAX_ASSET_LENGTH = 700;
 
     private const MAX_SITE_NOTES_LENGTH = 3_000;
+
+    private const MIN_OVERVIEW_CHARS = 200; // below this, keep human site_notes (don't displace curated text)
 
     private const MAX_DOC_SUMMARY_LENGTH = 2_000;
 
@@ -380,23 +386,55 @@ class ContextBuilder
 
     private static function buildSiteNotesSection(Ticket $ticket): ?string
     {
-        $notes = $ticket->client?->site_notes;
+        return $ticket->client ? self::clientEnvironmentSection($ticket->client) : null;
+    }
+
+    /**
+     * Spec §4.6 always-injected client context. Prefers the composed wiki overview
+     * (wiki on, overview composed, and substantial enough); otherwise falls back to
+     * clients.site_notes. Returns null only when both are empty.
+     */
+    public static function clientEnvironmentSection(Client $client): ?string
+    {
+        $overview = WikiConfig::isEnabled() ? self::composedOverviewBody($client) : null;
+        if ($overview !== null) {
+            return "## Client Environment Overview\nAI-maintained from this client's wiki:\n".self::clip($overview);
+        }
+
+        $notes = $client->site_notes;
         if (! $notes || trim($notes) === '') {
             return null;
         }
 
         // Use raw markdown (not HTML) — preserves structural formatting for the AI
-        if (strlen($notes) > self::MAX_SITE_NOTES_LENGTH) {
-            // Truncate at last newline before limit to avoid cutting mid-line
-            $cut = substr($notes, 0, self::MAX_SITE_NOTES_LENGTH);
-            $lastNewline = strrpos($cut, "\n");
-            if ($lastNewline !== false && $lastNewline > self::MAX_SITE_NOTES_LENGTH * 0.8) {
-                $cut = substr($cut, 0, $lastNewline);
-            }
-            $notes = $cut."\n[TRUNCATED]";
+        return "## Client Site Notes\nEnvironment documentation maintained by technicians:\n".self::clip($notes);
+    }
+
+    /** A real, substantial composed overview, or null. "Composed" = meta.composed_at set. */
+    private static function composedOverviewBody(Client $client): ?string
+    {
+        $page = WikiPage::active()->forClient($client->id)->where('kind', WikiPageKind::Overview->value)->first();
+        if (! $page || empty($page->meta['composed_at'])) {
+            return null;
+        }
+        $body = trim($page->body_md);
+
+        return strlen($body) >= self::MIN_OVERVIEW_CHARS ? $page->body_md : null;
+    }
+
+    private static function clip(string $text): string
+    {
+        if (strlen($text) <= self::MAX_SITE_NOTES_LENGTH) {
+            return $text;
+        }
+        // Truncate at last newline before limit to avoid cutting mid-line
+        $cut = substr($text, 0, self::MAX_SITE_NOTES_LENGTH);
+        $nl = strrpos($cut, "\n");
+        if ($nl !== false && $nl > self::MAX_SITE_NOTES_LENGTH * 0.8) {
+            $cut = substr($cut, 0, $nl);
         }
 
-        return "## Client Site Notes\nEnvironment documentation maintained by technicians:\n".$notes;
+        return $cut."\n[TRUNCATED]";
     }
 
     private static function buildContactSection(Ticket $ticket): string

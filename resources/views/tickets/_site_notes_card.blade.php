@@ -13,7 +13,25 @@
             $plainText = strip_tags($ticket->client->site_notes_html);
             $isLong = strlen($plainText) > 300;
             $preview = Str::limit($plainText, 300);
+
+            // §4.6: when the wiki is on and this client's overview is composed, AI triage
+            // reads that overview instead of these notes — tell staff so the two don't drift.
+            $overviewComposed = false;
+            if (\App\Support\WikiConfig::isEnabled()) {
+                $overviewPage = \App\Models\WikiPage::active()
+                    ->forClient($ticket->client->id)
+                    ->where('kind', \App\Enums\WikiPageKind::Overview->value)
+                    ->first();
+                $overviewComposed = ! empty($overviewPage?->meta['composed_at']);
+            }
         @endphp
+        @if($overviewComposed)
+            <div class="small text-muted mb-2">
+                <i class="bi bi-info-circle me-1"></i>AI triage now reads this client's
+                <a href="{{ route('clients.wiki.show', [$ticket->client, 'overview']) }}">wiki overview</a>.
+                These site notes remain editable.
+            </div>
+        @endif
         <div class="small text-muted">{{ $preview }}</div>
         @if($isLong)
             <a class="small text-decoration-none" data-bs-toggle="collapse" href="#fullSiteNotes" role="button"
