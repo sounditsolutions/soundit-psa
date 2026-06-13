@@ -67,6 +67,32 @@ class WikiProvenancePanelTest extends TestCase
         $this->assertSame(1, substr_count($response->getContent(), 'AI challenge'));
     }
 
+    public function test_live_challenger_is_not_duplicated_as_a_standalone_row(): void
+    {
+        // In a LIVE dispute the challenger is shown INSIDE the incumbent's AI-challenge
+        // block. It must NOT also render as a standalone normal row — that row's Confirm
+        // action would set the challenger Confirmed while the incumbent stays Disputed,
+        // corrupting the pair into a half-resolved state. Assert the challenger statement
+        // appears exactly once (the block's "Suggests:" line) and there is one block.
+        $user = User::factory()->create();
+        $client = Client::factory()->create();
+        $page = WikiPage::factory()->forClient($client)->create(['slug' => 'infrastructure']);
+        $service = app(\App\Services\Wiki\WikiFactService::class);
+        $service->upsertSyncFact($page, 'assets', 'asset:dc01:ram', 'DC01 has 32 GB RAM',
+            \App\Enums\WikiFactVolatility::Durable, [['type' => 'sync', 'id' => 'ninja']]);
+        $service->upsertMinedFact($page, 'assets', 'asset:dc01:ram', 'DC01 has 16 GB RAM',
+            \App\Enums\WikiFactVolatility::Durable, [['type' => 'ticket', 'id' => 7]], 0.8);
+
+        $content = $this->actingAs($user)->get("/clients/{$client->id}/wiki/infrastructure")
+            ->assertOk()
+            ->getContent();
+
+        $this->assertSame(1, substr_count($content, 'AI challenge'));
+        // Exactly once: in the block's "Suggests:" line, never as a second standalone row
+        // (a standalone row would print it again in the row text and the correct-form value).
+        $this->assertSame(1, substr_count($content, 'DC01 has 16 GB RAM'));
+    }
+
     public function test_orphaned_disputed_fact_stays_visible_and_actionable(): void
     {
         // A Disputed fact whose challenger was independently retired (challenger no

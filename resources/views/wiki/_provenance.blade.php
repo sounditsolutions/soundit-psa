@@ -16,6 +16,7 @@
                 && $f->source_type === \App\Enums\WikiFactSource::Ticket
                 && $f->disputed_with_fact_id !== null)
             ->keyBy('disputed_with_fact_id'))
+        @php($factsById = $facts->keyBy('id'))
         @foreach ($facts as $fact)
             @if ($fact->status === \App\Enums\WikiFactStatus::Disputed && $challengers->has($fact->id))
                 @php($challenger = $challengers->get($fact->id))
@@ -37,12 +38,19 @@
                         <button class="btn btn-outline-danger btn-sm">Dismiss</button>
                     </form>
                 </div>
+            @elseif ($fact->status === \App\Enums\WikiFactStatus::Disputed
+                && $fact->source_type === \App\Enums\WikiFactSource::Ticket
+                && $factsById->has($fact->disputed_with_fact_id))
+                {{-- Live challenger side: already rendered INSIDE its incumbent's AI-challenge
+                     block above (the incumbent IS in $facts). Skip it here — rendering it as a
+                     standalone row would expose a Confirm action that sets only the challenger
+                     Confirmed while the incumbent stays Disputed, corrupting the pair. --}}
             @else
                 {{-- Non-disputed facts AND orphaned-disputed facts (status=Disputed but the
-                     challenger was independently retired, so it isn't in $challengers) render
-                     as a normal row. The orphaned case would otherwise fall through both
-                     branches and silently vanish, stranding the fact with no way to resolve it.
-                     The "Disputed" badge signals the stale state; the actions let staff clear it. --}}
+                     partner was independently retired, so it is absent from $facts) render as a
+                     normal row. The orphaned case would otherwise fall through every branch and
+                     silently vanish, stranding the fact with no way to resolve it. The "Disputed"
+                     badge signals the stale state; the actions let staff clear it. --}}
                 <div class="d-flex align-items-start justify-content-between gap-2 py-1 border-bottom">
                     <div class="small">
                         {{ $fact->statement }}
