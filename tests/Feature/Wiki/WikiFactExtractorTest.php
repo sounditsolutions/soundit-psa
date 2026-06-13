@@ -57,4 +57,35 @@ class WikiFactExtractorTest extends TestCase
 
         $this->assertSame([], $result['facts']);
     }
+
+    public function test_salvages_combined_page_anchor_into_separate_fields(): void
+    {
+        // The exact real-world drift that discarded every fact: the model put the pair in
+        // "page" and a device slug in "anchor". Normalization must split it and accept.
+        $this->mockAi(['facts' => [
+            ['page' => 'network/equipment', 'anchor' => 'sonicwall-nsa2700', 'subject_key' => 'network:sonicwall-nsa2700',
+                'statement' => 'Client edge firewall is a SonicWall NSa 2700', 'volatility' => 'volatile', 'confidence' => 0.9],
+        ]]);
+
+        $result = app(WikiFactExtractor::class)->extract('CONTEXT');
+
+        $this->assertCount(1, $result['facts']);
+        $this->assertSame('network', $result['facts'][0]['page']);
+        $this->assertSame('equipment', $result['facts'][0]['anchor']); // model's invented anchor replaced by the real section
+        $this->assertSame(0, $result['discarded']);
+    }
+
+    public function test_records_discard_details_for_diagnosability(): void
+    {
+        $this->mockAi(['facts' => [
+            ['page' => 'wormhole', 'anchor' => 'x', 'subject_key' => 'k', 'statement' => 's', 'volatility' => 'durable', 'confidence' => 0.9],
+        ]]);
+
+        $result = app(WikiFactExtractor::class)->extract('CONTEXT');
+
+        $this->assertSame(0, count($result['facts']));
+        $this->assertCount(1, $result['discardedDetails']);
+        $this->assertSame('wormhole', $result['discardedDetails'][0]['page']);
+        $this->assertStringContainsString('not an allowed page', $result['discardedDetails'][0]['reason']);
+    }
 }

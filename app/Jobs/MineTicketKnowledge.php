@@ -276,6 +276,9 @@ class MineTicketKnowledge implements ShouldQueue
                 'stage_results' => [
                     'facts_extracted' => count($candidates),
                     'facts_discarded_by_extractor' => $extraction['discarded'],
+                    // Per-candidate discard reasons (page/anchor/confidence/reason) so a
+                    // zero-fact run is diagnosable from the ledger, not silent.
+                    'discarded_details' => $extraction['discardedDetails'] ?? [],
                     'touched_anchors' => array_map(fn ($a) => array_keys($a), $touchedAnchors),
                 ],
                 'ai_tokens_used' => $extraction['tokens'],
