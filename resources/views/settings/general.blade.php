@@ -233,6 +233,53 @@
                 @endif
             </div>
         </div>
+
+        {{-- Client Wiki --}}
+        <div class="card card-static shadow-sm mt-4">
+            <div class="card-header">
+                <i class="bi bi-journal-text me-2"></i>Client Wiki
+            </div>
+            <div class="card-body">
+                <p class="text-muted small mb-3">
+                    Auto-maintained client environment documentation. The master switch controls the whole module;
+                    mining additionally spends AI tokens on each closed ticket (roughly $2–8/day at the default
+                    budgets, depending on ticket volume and model).
+                </p>
+                <form method="POST" action="{{ route('settings.general.wiki') }}">
+                    @csrf
+                    <div class="form-check form-switch mb-2">
+                        <input class="form-check-input" type="checkbox" id="wiki_enabled" name="wiki_enabled" value="1"
+                               @checked(\App\Support\WikiConfig::isEnabled())>
+                        <label class="form-check-label" for="wiki_enabled">Enable the Client Wiki module</label>
+                    </div>
+                    <div class="form-check form-switch mb-3">
+                        <input class="form-check-input" type="checkbox" id="wiki_auto_mine" name="wiki_auto_mine" value="1"
+                               @checked((bool) \App\Models\Setting::getValue('wiki_auto_mine'))>
+                        <label class="form-check-label" for="wiki_auto_mine">
+                            Mine closed tickets into wiki facts (spends AI tokens; requires the module enabled above)
+                        </label>
+                    </div>
+                    <div class="row g-3">
+                        <div class="col-md-4">
+                            <label class="form-label" for="wiki_model">Model override</label>
+                            <input class="form-control" id="wiki_model" name="wiki_model"
+                                   value="{{ \App\Models\Setting::getValue('wiki_model') }}" placeholder="(uses AI default)">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label" for="wiki_max_tokens_per_run">Tokens per mining run</label>
+                            <input type="number" class="form-control" id="wiki_max_tokens_per_run" name="wiki_max_tokens_per_run"
+                                   value="{{ \App\Support\WikiConfig::maxTokensPerRun() }}">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label" for="wiki_daily_token_limit">Daily token ceiling</label>
+                            <input type="number" class="form-control" id="wiki_daily_token_limit" name="wiki_daily_token_limit"
+                                   value="{{ \App\Support\WikiConfig::dailyTokenLimit() }}">
+                        </div>
+                    </div>
+                    <button type="submit" class="btn btn-primary mt-3">Save Wiki Settings</button>
+                </form>
+            </div>
+        </div>
     </div>
 </div>
 @endsection

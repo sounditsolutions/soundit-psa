@@ -16,6 +16,13 @@
         <div class="btn-group">
             <a href="{{ route('wiki.edit', $page) }}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-pencil"></i> Edit</a>
             <a href="{{ route('wiki.history', $page) }}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-clock-history"></i> History</a>
+            <details class="d-inline-block">
+                <summary class="btn btn-outline-danger btn-sm"><i class="bi bi-archive"></i> Archive</summary>
+                <form method="POST" action="{{ route('wiki.archive', $page) }}" class="d-inline">
+                    @csrf
+                    <button class="btn btn-outline-danger btn-sm">Confirm archive</button>
+                </form>
+            </details>
         </div>
     </div>
 
@@ -49,6 +56,7 @@
                     </ul>
                 </div>
             @endif
+            @include('wiki._provenance', ['facts' => $facts])
         </div>
     </div>
 </div>

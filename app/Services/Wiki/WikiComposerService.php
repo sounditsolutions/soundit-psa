@@ -25,7 +25,14 @@ class WikiComposerService
 
         $content = $facts->isEmpty()
             ? '_No facts recorded yet._'
-            : $facts->map(fn ($fact) => '- '.$fact->statement)->implode("\n");
+            : $facts->map(function ($fact) {
+                $line = '- '.$fact->statement;
+                if ($fact->status === WikiFactStatus::Disputed) {
+                    $line .= ' *(disputed)*';
+                }
+
+                return $line;
+            })->implode("\n");
 
         $newBody = WikiSections::spliceMarkers($page->body_md, $anchor, $content);
         if ($newBody === $page->body_md) {

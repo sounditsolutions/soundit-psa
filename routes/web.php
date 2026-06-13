@@ -41,6 +41,7 @@ use App\Http\Controllers\Web\TicketController;
 use App\Http\Controllers\Web\TicketNoteController;
 use App\Http\Controllers\Web\TimeReportController;
 use App\Http\Controllers\Web\WikiController;
+use App\Http\Controllers\Web\WikiFactController;
 use Illuminate\Support\Facades\Route;
 
 // Public legal pages (required by Intuit for QBO production app)
@@ -254,6 +255,7 @@ Route::middleware('auth')->group(function () {
     Route::post('/settings/general/billing-types', [GeneralSettingsController::class, 'updateBillingTypes'])->name('settings.general.billing-types');
     Route::post('/settings/general/billing-numbering', [GeneralSettingsController::class, 'updateBillingNumbering'])->name('settings.general.billing-numbering');
     Route::post('/settings/general/billing-skip-zero', [GeneralSettingsController::class, 'updateBillingSkipZero'])->name('settings.general.billing-skip-zero');
+    Route::post('/settings/general/wiki', [GeneralSettingsController::class, 'updateWiki'])->name('settings.general.wiki');
 
     // Settings — Staff
     Route::get('/settings/staff', [StaffController::class, 'index'])->name('settings.staff.index');
@@ -569,6 +571,10 @@ Route::middleware('auth')->group(function () {
 
     // Client Wiki (spec docs/superpowers/specs/2026-06-12-client-wiki-design.md §8)
     // search and CRUD live at /wiki-search and /wiki-pages/* to stay ahead of the wiki/{slug} catch-all
+    Route::post('/wiki-facts/{fact}/confirm', [WikiFactController::class, 'confirm'])->name('wiki.facts.confirm');
+    Route::post('/wiki-facts/{fact}/retire', [WikiFactController::class, 'retire'])->name('wiki.facts.retire');
+    Route::patch('/wiki-facts/{fact}/correct', [WikiFactController::class, 'correct'])->name('wiki.facts.correct');
+    Route::post('/wiki-facts/{fact}/resolve', [WikiFactController::class, 'resolve'])->name('wiki.facts.resolve');
     Route::get('/wiki', [WikiController::class, 'index'])->name('wiki.index');
     Route::get('/wiki-search', [WikiController::class, 'search'])->name('wiki.search');
     Route::get('/wiki-pages/create', [WikiController::class, 'create'])->name('wiki.create');
@@ -576,6 +582,7 @@ Route::middleware('auth')->group(function () {
     Route::get('/wiki-pages/{page}/edit', [WikiController::class, 'edit'])->name('wiki.edit');
     Route::patch('/wiki-pages/{page}', [WikiController::class, 'update'])->name('wiki.update');
     Route::get('/wiki-pages/{page}/history', [WikiController::class, 'history'])->name('wiki.history');
+    Route::post('/wiki-pages/{page}/archive', [WikiController::class, 'archive'])->name('wiki.archive');
     Route::get('/wiki/{slug}', [WikiController::class, 'show'])
         ->where('slug', '.*')->name('wiki.show');
     Route::get('/clients/{client}/wiki', [WikiController::class, 'clientIndex'])->name('clients.wiki.index');

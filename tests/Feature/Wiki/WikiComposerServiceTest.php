@@ -40,6 +40,24 @@ class WikiComposerServiceTest extends TestCase
         $this->assertStringNotContainsString('_No facts recorded yet._', $body);
     }
 
+    public function test_disputed_fact_gets_disputed_suffix(): void
+    {
+        $client = Client::factory()->create();
+        app(WikiSkeletonService::class)->ensureForClient($client);
+        $page = WikiPage::forClient($client->id)->where('slug', 'infrastructure')->first();
+
+        WikiFact::factory()->create([
+            'client_id' => $client->id, 'page_id' => $page->id, 'section_anchor' => 'assets',
+            'subject_key' => 'asset:dc01:ram', 'statement' => 'DC01 has 16 GB RAM',
+            'status' => WikiFactStatus::Disputed,
+        ]);
+
+        app(WikiComposerService::class)->composeSection($page, 'assets');
+
+        $body = $page->fresh()->body_md;
+        $this->assertStringContainsString('- DC01 has 16 GB RAM *(disputed)*', $body);
+    }
+
     public function test_no_write_when_content_unchanged(): void
     {
         $client = Client::factory()->create();

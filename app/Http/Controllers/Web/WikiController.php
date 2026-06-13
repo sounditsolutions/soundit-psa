@@ -73,6 +73,7 @@ class WikiController extends Controller implements HasMiddleware
                 'sectionSummaries' => [],
                 'backlinks' => $global->backlinks()->with('fromPage')->get(),
                 'deviationAnchors' => $merged['deviation_anchors'],
+                'facts' => collect(),
             ]);
         }
 
@@ -88,6 +89,7 @@ class WikiController extends Controller implements HasMiddleware
                 'sectionSummaries' => [],
                 'backlinks' => $page->backlinks()->with('fromPage')->get(),
                 'deviationAnchors' => $merged['deviation_anchors'],
+                'facts' => collect(),
             ]);
         }
 
@@ -103,6 +105,10 @@ class WikiController extends Controller implements HasMiddleware
             'sectionSummaries' => $this->sectionSummaries($page),
             'backlinks' => $page->backlinks()->with('fromPage')->get(),
             'deviationAnchors' => [],
+            'facts' => $page->facts()
+                ->whereNot('status', \App\Enums\WikiFactStatus::Retired->value)
+                ->orderBy('section_anchor')->orderBy('subject_key')
+                ->get(),
         ]);
     }
 
@@ -222,6 +228,16 @@ class WikiController extends Controller implements HasMiddleware
         return $page->client_id
             ? route('clients.wiki.show', [$page->client_id, $page->slug])
             : route('wiki.show', $page->slug);
+    }
+
+    public function archive(WikiPage $page, WikiPageService $pages)
+    {
+        $pages->archive($page, WikiAuthorType::Human, auth()->id());
+
+        return redirect($page->client_id
+            ? route('clients.wiki.index', $page->client_id)
+            : route('wiki.index')
+        )->with('success', 'Page archived.');
     }
 
     public function search(Request $request, WikiSearchService $searcher)
