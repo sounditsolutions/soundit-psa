@@ -31,4 +31,18 @@ class QaTargetGuardTest extends TestCase
         $this->expectException(\RuntimeException::class);
         $guard->assertAllowed('not-a-url');
     }
+
+    public function test_rejects_backslash_userinfo_bypass(): void
+    {
+        $guard = new QaTargetGuard(['soundit-dev']);
+        $this->expectException(\RuntimeException::class);
+        $guard->assertAllowed('https://evil.com\\@soundit-dev/dashboard');
+    }
+
+    public function test_rejects_schemeless_url(): void
+    {
+        $guard = new QaTargetGuard(['soundit-dev']);
+        $this->expectException(\RuntimeException::class);
+        $guard->assertAllowed('//soundit-dev/path');
+    }
 }

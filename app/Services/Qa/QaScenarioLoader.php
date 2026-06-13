@@ -15,7 +15,13 @@ class QaScenarioLoader
         return $out;
     }
 
-    /** @return array<int,QaScenario> */
+    /**
+     * Note: `## ` at line-start inside fenced code blocks is NOT ignored — it is
+     * treated as a scenario heading. Scenario .md files must not put `## ` at the
+     * start of a line inside a code fence.
+     *
+     * @return array<int,QaScenario>
+     */
     public function parse(string $markdown): array
     {
         $blocks = preg_split('/^## /m', $markdown);
