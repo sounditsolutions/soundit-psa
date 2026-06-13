@@ -15,6 +15,7 @@ use App\Services\Wiki\Mining\WikiTicketContext;
 use App\Services\Wiki\WikiComposerService;
 use App\Services\Wiki\WikiFactService;
 use App\Services\Wiki\WikiSkeletonService;
+use App\Support\AiConfig;
 use App\Support\WikiConfig;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
@@ -97,12 +98,12 @@ class MineTicketKnowledge implements ShouldQueue
         // Rebind in the container so WikiFactExtractor (resolved via DI) uses the
         // wiki-configured model rather than the global default. Must be outside the
         // try block so the binding is active for everything resolved inside it.
-        // In tests, $this->mock(AiClient::class) registers a Mockery binding that we
-        // must not override — only rebind when the container doesn't already hold a mock.
-        $wikiModel = WikiConfig::model();
-        $existingBinding = app()->bound(AiClient::class) ? app(AiClient::class) : null;
-        if (! ($existingBinding instanceof \Mockery\MockInterface)) {
-            app()->bind(AiClient::class, fn () => new AiClient($wikiModel));
+        // The guard compares the wiki model to the global default: when they differ
+        // a dedicated client is bound; when they match (including in tests, which
+        // never set wiki_model) the rebind is skipped, leaving any test-bound mock
+        // instance untouched — app()->instance() outranks app()->bind().
+        if (WikiConfig::model() !== AiConfig::model()) {
+            app()->bind(AiClient::class, fn () => new AiClient(WikiConfig::model()));
         }
 
         // ── Budget check: sum today's wiki mine_ticket token usage ────────────
