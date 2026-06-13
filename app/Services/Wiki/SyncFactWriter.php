@@ -37,6 +37,7 @@ class SyncFactWriter
         }
     }
 
+    /** @return WikiRun|null Null only when the wiki is disabled; failures throw (callers use the safe* wrappers). */
     public function writeAssetFacts(Client $client): ?WikiRun
     {
         if (! WikiConfig::isEnabled()) {
@@ -45,7 +46,10 @@ class SyncFactWriter
 
         return $this->run($client, function (WikiPage $infra) use ($client) {
             $count = 0;
-            foreach ($client->assets()->get() as $asset) {
+            $assets = $client->assets()
+                ->select(['id', 'client_id', 'hostname', 'os', 'cpu', 'ram_gb', 'asset_type', 'serial_number', 'ip_address'])
+                ->get();
+            foreach ($assets as $asset) {
                 $host = $asset->hostname;
                 $key = strtolower($host);
                 // ram_gb is cast decimal:2 → string "32.00"; cast to int for display.
@@ -71,6 +75,7 @@ class SyncFactWriter
         }, 'infrastructure');
     }
 
+    /** @return WikiRun|null Null only when the wiki is disabled; failures throw (callers use the safe* wrappers). */
     public function writeM365Facts(Client $client): ?WikiRun
     {
         if (! WikiConfig::isEnabled()) {

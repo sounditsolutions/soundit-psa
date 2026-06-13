@@ -13,7 +13,8 @@ class AssetFactory extends Factory
         return [
             'client_id' => Client::factory(),
             'name' => fake()->bothify('HOST-##'),
-            'hostname' => strtoupper(fake()->bothify('HOST-##')),
+            // unique(): hostnames feed wiki fact subject keys — collisions would collapse them.
+            'hostname' => strtoupper(fake()->unique()->bothify('HOST-####')),
             'os' => 'Windows 11 Pro',
             'ram_gb' => 16,
             'asset_type' => 'Workstation',

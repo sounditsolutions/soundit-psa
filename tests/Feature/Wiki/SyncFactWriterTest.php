@@ -71,6 +71,19 @@ class SyncFactWriterTest extends TestCase
         $this->assertSame('M365 tenant has 1 mail transport rule', $facts['m365:transport-rules']);
     }
 
+    public function test_writes_facts_for_many_assets_in_one_run(): void
+    {
+        Setting::setValue('wiki_enabled', '1');
+        $client = Client::factory()->create();
+        Asset::factory()->count(50)->create(['client_id' => $client->id]);
+
+        $run = app(SyncFactWriter::class)->writeAssetFacts($client);
+
+        $this->assertSame(WikiRunStatus::Completed, $run->status);
+        $this->assertSame(150, $run->stage_results['infrastructure']['facts_written']); // type/os/ram per factory asset (cpu/serial/ip are null)
+        $this->assertSame(150, WikiFact::where('client_id', $client->id)->count());
+    }
+
     public function test_safe_wrapper_swallows_exceptions(): void
     {
         Setting::setValue('wiki_enabled', '1');
