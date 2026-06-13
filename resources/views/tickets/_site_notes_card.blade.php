@@ -16,14 +16,9 @@
 
             // §4.6: when the wiki is on and this client's overview is composed, AI triage
             // reads that overview instead of these notes — tell staff so the two don't drift.
-            $overviewComposed = false;
-            if (\App\Support\WikiConfig::isEnabled()) {
-                $overviewPage = \App\Models\WikiPage::active()
-                    ->forClient($ticket->client->id)
-                    ->where('kind', \App\Enums\WikiPageKind::Overview->value)
-                    ->first();
-                $overviewComposed = ! empty($overviewPage?->meta['composed_at']);
-            }
+            // One source of truth for the "composed?" predicate (see ContextBuilder).
+            $overviewComposed = \App\Support\WikiConfig::isEnabled()
+                && \App\Services\Triage\ContextBuilder::hasComposedOverview($ticket->client);
         @endphp
         @if($overviewComposed)
             <div class="small text-muted mb-2">

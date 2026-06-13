@@ -410,16 +410,40 @@ class ContextBuilder
         return "## Client Site Notes\nEnvironment documentation maintained by technicians:\n".self::clip($notes);
     }
 
-    /** A real, substantial composed overview, or null. "Composed" = meta.composed_at set. */
+    /**
+     * Whether this client's wiki overview has been AI-composed at least once
+     * ("composed" = meta.composed_at set). The single source of truth for the
+     * composed predicate, shared by composedOverviewBody() and the staff
+     * site-notes card so the two can't drift. Note: this is the bare "composed?"
+     * check — the substance floor that gates *injection* lives in
+     * composedOverviewBody(), so the staff pointer shows whenever an overview is
+     * composed, floor or not.
+     */
+    public static function hasComposedOverview(Client $client): bool
+    {
+        return self::isComposed(self::overviewPage($client));
+    }
+
+    /** A real, substantial composed overview body (trimmed), or null. */
     private static function composedOverviewBody(Client $client): ?string
     {
-        $page = WikiPage::active()->forClient($client->id)->where('kind', WikiPageKind::Overview->value)->first();
-        if (! $page || empty($page->meta['composed_at'])) {
+        $page = self::overviewPage($client);
+        if (! self::isComposed($page)) {
             return null;
         }
         $body = trim($page->body_md);
 
-        return strlen($body) >= self::MIN_OVERVIEW_CHARS ? $page->body_md : null;
+        return strlen($body) >= self::MIN_OVERVIEW_CHARS ? $body : null;
+    }
+
+    private static function overviewPage(Client $client): ?WikiPage
+    {
+        return WikiPage::active()->forClient($client->id)->where('kind', WikiPageKind::Overview->value)->first();
+    }
+
+    private static function isComposed(?WikiPage $page): bool
+    {
+        return $page !== null && ! empty($page->meta['composed_at']);
     }
 
     private static function clip(string $text): string
