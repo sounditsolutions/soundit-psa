@@ -102,6 +102,38 @@ class MineTicketKnowledgeTest extends TestCase
         $this->assertSame(1, WikiRun::count()); // still just 1
     }
 
+    public function test_failed_run_with_same_hash_does_not_block_a_fresh_run(): void
+    {
+        $this->enableWiki();
+        $client = Client::factory()->create();
+        $ticket = $this->makeClosedTicketWithResolution($client, 'Fixed the firewall.');
+        app(WikiSkeletonService::class)->ensureForClient($client);
+        $this->mockAiNoFacts();
+
+        // A prior attempt crashed mid-pipeline and was marked Failed with this hash.
+        $hash = hash('sha256', $ticket->id.'|'.$ticket->resolution);
+        $failedRun = WikiRun::create([
+            'run_type' => 'mine_ticket',
+            'subject_type' => 'ticket',
+            'subject_id' => $ticket->id,
+            'source_content_hash' => $hash,
+            'status' => WikiRunStatus::Failed,
+            'errors' => [['stage' => 'pipeline', 'message' => 'crashed']],
+            'triggered_by' => 'auto',
+        ]);
+
+        // A fresh run must NOT be blocked by the Failed run — it re-processes.
+        MineTicketKnowledge::dispatchSync($ticket->id);
+
+        // The Failed row is re-driven to Completed (reused via the idempotency key, not
+        // duplicated — the unique (subject_type, subject_id, hash) index forbids a second
+        // row). The key assertion: the run did NOT skip; it completed.
+        $this->assertSame(1, WikiRun::count());
+        $failedRun->refresh();
+        $this->assertSame(WikiRunStatus::Completed, $failedRun->status);
+        $this->assertNull($failedRun->errors); // stale failure cleared on re-drive
+    }
+
     // ── budget-defer test ─────────────────────────────────────────────────────
 
     public function test_defers_when_daily_budget_exhausted(): void

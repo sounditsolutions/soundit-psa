@@ -240,10 +240,16 @@ class WikiFactService
      */
     public function resolveDispute(WikiFact $challenger, string $action, User $user): void
     {
+        if (! in_array($action, ['accept', 'dismiss'], true)) {
+            throw new \RuntimeException("Unknown dispute resolution '{$action}'.");
+        }
+
+        if ($challenger->disputed_with_fact_id === null) {
+            throw new \RuntimeException("Fact {$challenger->id} is not part of a dispute.");
+        }
+
         DB::transaction(function () use ($challenger, $action, $user) {
-            $incumbent = $challenger->disputed_with_fact_id
-                ? WikiFact::lockForUpdate()->find($challenger->disputed_with_fact_id)
-                : null;
+            $incumbent = WikiFact::lockForUpdate()->find($challenger->disputed_with_fact_id);
 
             if ($action === 'accept') {
                 // Challenger wins.
@@ -259,7 +265,7 @@ class WikiFactService
                         'superseded_by_fact_id' => $challenger->id,
                     ]);
                 }
-            } elseif ($action === 'dismiss') {
+            } else { // 'dismiss'
                 // Challenger dismissed; incumbent survives, pinned.
                 $existingDismissed = (array) ($incumbent?->dismissed_evidence ?? []);
                 $newDismissed = array_merge($existingDismissed, (array) ($challenger->source_refs ?? []));
@@ -282,11 +288,12 @@ class WikiFactService
 
     /**
      * Returns true iff every ref in $evidence appears in $dismissed (by type+id match).
-     * Empty $dismissed is never a subset superset — returns false.
+     * Empty $evidence never vacuously counts as a subset (a no-evidence challenge must
+     * not be suppressed), and empty $dismissed never matches — both return false.
      */
     public static function isSubsetOfDismissed(array $evidence, array $dismissed): bool
     {
-        if (empty($dismissed)) {
+        if ($evidence === [] || $dismissed === []) {
             return false;
         }
 

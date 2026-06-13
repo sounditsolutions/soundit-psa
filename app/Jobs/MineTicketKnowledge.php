@@ -35,13 +35,18 @@ class MineTicketKnowledge implements ShouldQueue
         private readonly string $triggeredBy = 'auto',
     ) {}
 
-    /** Per-client WithoutOverlapping — prevents two mine jobs for the same client running simultaneously. */
+    /**
+     * Per-client WithoutOverlapping — prevents two mine jobs for the same client
+     * running simultaneously. expireAfter(900) is mandatory: without it a crashed
+     * worker would hold the lock forever and silently drop all future mining for
+     * that client. releaseAfter(120) re-queues a blocked job instead of failing it.
+     */
     public function middleware(): array
     {
         $ticket = Ticket::find($this->ticketId);
         $clientId = $ticket?->client_id ?? $this->ticketId;
 
-        return [new WithoutOverlapping("wiki:mine:client:{$clientId}")];
+        return [(new WithoutOverlapping("wiki-mine-client-{$clientId}"))->releaseAfter(120)->expireAfter(900)];
     }
 
     public function handle(
@@ -80,9 +85,15 @@ class MineTicketKnowledge implements ShouldQueue
         // This prevents re-running on non-content updates (status changes, assignments).
         $contentHash = hash('sha256', $ticket->id.'|'.$ticket->resolution);
 
+        // Only terminal-success and quarantine states block a re-run. A Failed or
+        // still-Running row must NOT block: a mid-pipeline crash leaves partial facts,
+        // and the queue retry (or a later trigger) needs to re-process — the reaffirm
+        // path makes re-mining idempotent. Quarantined stays blocking: it is a
+        // deliberate security terminal state, never to be silently re-attempted.
         $alreadyRan = WikiRun::where('subject_type', 'ticket')
             ->where('subject_id', $ticket->id)
             ->where('source_content_hash', $contentHash)
+            ->whereIn('status', [WikiRunStatus::Completed->value, WikiRunStatus::Quarantined->value])
             ->exists();
 
         if ($alreadyRan) {
@@ -136,14 +147,25 @@ class MineTicketKnowledge implements ShouldQueue
         }
 
         // ── Open the wiki_runs ledger entry ───────────────────────────────────
-        $run = WikiRun::create([
-            'run_type' => WikiRunType::MineTicket,
-            'subject_type' => 'ticket',
-            'subject_id' => $ticket->id,
-            'source_content_hash' => $contentHash,
-            'status' => WikiRunStatus::Running,
-            'triggered_by' => $this->triggeredBy,
-        ]);
+        // updateOrCreate on the idempotency tuple: a prior Failed or Running row for
+        // this same hash (a crashed/retried attempt — which the gate above deliberately
+        // does NOT treat as blocking) is reset to Running and re-driven, rather than
+        // colliding with the unique (subject_type, subject_id, source_content_hash) index.
+        $run = WikiRun::updateOrCreate(
+            [
+                'subject_type' => 'ticket',
+                'subject_id' => $ticket->id,
+                'source_content_hash' => $contentHash,
+            ],
+            [
+                'run_type' => WikiRunType::MineTicket,
+                'status' => WikiRunStatus::Running,
+                'triggered_by' => $this->triggeredBy,
+                'errors' => null,
+                'stages_completed' => null,
+                'stage_results' => null,
+            ],
+        );
 
         try {
             // ── Stage 1: Gather — build bounded, pre-redacted context ────────

@@ -325,4 +325,40 @@ class WikiFactServiceTest extends TestCase
     {
         $this->assertFalse(WikiFactService::isSubsetOfDismissed([['type' => 'ticket', 'id' => 1]], []));
     }
+
+    public function test_is_subset_of_dismissed_returns_false_for_empty_new_refs(): void
+    {
+        // Empty new refs must NOT vacuously count as a subset — a challenge with no
+        // evidence should never be suppressed by the dismissed-evidence guard.
+        $this->assertFalse(WikiFactService::isSubsetOfDismissed([], [['type' => 'ticket', 'id' => 1]]));
+    }
+
+    public function test_resolve_dispute_rejects_unknown_action(): void
+    {
+        [, $page] = $this->setUpPage();
+        $user = User::factory()->create();
+        $service = app(WikiFactService::class);
+
+        $incumbent = $service->upsertMinedFact($page, 'assets', 'asset:dc01:ram', 'DC01 has 16 GB RAM',
+            WikiFactVolatility::Durable, [['type' => 'ticket', 'id' => 1]], 0.9);
+        $challenger = $service->upsertMinedFact($page, 'assets', 'asset:dc01:ram', 'DC01 has 32 GB RAM',
+            WikiFactVolatility::Durable, [['type' => 'ticket', 'id' => 2]], 0.85);
+
+        $this->expectException(\RuntimeException::class);
+        $service->resolveDispute($challenger, 'bogus', $user);
+    }
+
+    public function test_resolve_dispute_rejects_non_disputed_fact(): void
+    {
+        [, $page] = $this->setUpPage();
+        $user = User::factory()->create();
+        $service = app(WikiFactService::class);
+
+        // A plain unverified fact that is not part of any dispute.
+        $fact = $service->upsertMinedFact($page, 'assets', 'asset:dc01:ram', 'DC01 has 32 GB RAM',
+            WikiFactVolatility::Durable, [['type' => 'ticket', 'id' => 1]], 0.9);
+
+        $this->expectException(\RuntimeException::class);
+        $service->resolveDispute($fact, 'accept', $user);
+    }
 }
