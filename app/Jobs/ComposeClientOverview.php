@@ -15,6 +15,13 @@ use Illuminate\Queue\Middleware\WithoutOverlapping;
  * dontRelease() drops a blocked duplicate rather than re-queueing it — the composer's
  * content-hash skip makes a dropped recompose harmless (the next fact-changing mine
  * re-enqueues, and an unchanged fact set would no-op anyway).
+ *
+ * expireAfter(300) is mandatory (mirrors MineTicketKnowledge): without it a
+ * hard-killed worker (OOM/SIGKILL) between lock-acquire and release would orphan the
+ * wiki-overview:<clientId> lock forever on the persistent cache store, silently
+ * dropping every future overview recompose for that client. The content-hash skip
+ * can't rescue that — the lock stops handle() from running at all. 5 min is ample:
+ * a compose is one AI call capped at 1,200 output tokens.
  */
 class ComposeClientOverview implements ShouldQueue
 {
@@ -24,7 +31,7 @@ class ComposeClientOverview implements ShouldQueue
 
     public function middleware(): array
     {
-        return [(new WithoutOverlapping('wiki-overview:'.$this->clientId))->dontRelease()];
+        return [(new WithoutOverlapping('wiki-overview:'.$this->clientId))->dontRelease()->expireAfter(300)];
     }
 
     public function handle(WikiOverviewComposer $composer): void

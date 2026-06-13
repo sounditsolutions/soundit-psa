@@ -6,6 +6,9 @@ use App\Models\Client;
 use App\Services\Wiki\WikiOverviewComposer;
 use Illuminate\Console\Command;
 
+/**
+ * Admin/backfill: recompose the hot-summary overview synchronously for one client or all.
+ */
 class WikiOverviewCommand extends Command
 {
     protected $signature = 'wiki:overview {client? : Client id} {--all : Recompose every client}';
