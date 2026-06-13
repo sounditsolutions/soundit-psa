@@ -8,4 +8,5 @@ enum WikiRunType: string
     case SyncFacts = 'sync_facts';
     case Maintain = 'maintain';
     case Backfill = 'backfill';
+    case Compose = 'compose';
 }

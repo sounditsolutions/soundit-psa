@@ -10,6 +10,14 @@ use App\Models\WikiPage;
 
 class WikiSkeletonService
 {
+    /**
+     * Seed body for the `overview` page. The WikiOverviewComposer replaces this once
+     * facts exist; until then it is the sentinel that means "no hot summary yet" — the
+     * triage/Assistant injection point (§4.6) treats a body still equal to this as
+     * absent and falls back to site_notes.
+     */
+    public const OVERVIEW_PLACEHOLDER_BODY = "_Hot summary — maintained automatically once mining is enabled._\n";
+
     public function __construct(private readonly WikiPageService $pages) {}
 
     /** @return array<string, array{title: string, kind: WikiPageKind, body: string}> */
@@ -19,7 +27,7 @@ class WikiSkeletonService
 
         return [
             'overview' => ['title' => 'Overview', 'kind' => WikiPageKind::Overview,
-                'body' => "_Hot summary — maintained automatically once mining is enabled._\n"],
+                'body' => self::OVERVIEW_PLACEHOLDER_BODY],
             'network' => ['title' => 'Network', 'kind' => WikiPageKind::Environment,
                 'body' => "## Topology\n\n## Equipment\n\n"],
             'infrastructure' => ['title' => 'Infrastructure', 'kind' => WikiPageKind::Environment,

@@ -16,6 +16,7 @@ use App\Services\Wiki\WikiComposerService;
 use App\Services\Wiki\WikiFactService;
 use App\Services\Wiki\WikiSkeletonService;
 use App\Support\AiConfig;
+use App\Support\WikiBudget;
 use App\Support\WikiConfig;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
@@ -117,23 +118,14 @@ class MineTicketKnowledge implements ShouldQueue
             app()->bind(AiClient::class, fn () => new AiClient(WikiConfig::model()));
         }
 
-        // ── Budget check: sum today's wiki mine_ticket token usage ────────────
-        $dailyLimit = WikiConfig::dailyTokenLimit();
-        $tokensUsedToday = WikiRun::where('run_type', WikiRunType::MineTicket->value)
-            ->whereDate('created_at', today())
-            ->whereNotNull('ai_tokens_used')
-            ->get()
-            ->sum(function (WikiRun $run) {
-                $t = $run->ai_tokens_used ?? [];
-
-                return ((int) ($t['input'] ?? 0)) + ((int) ($t['output'] ?? 0));
-            });
-
-        if ($tokensUsedToday >= $dailyLimit) {
+        // ── Budget check: shared daily pool across ALL wiki AI usage (spec §5.3) ─
+        // WikiBudget sums every run_type (mining + overview compose), so mining and
+        // hot-summary composition can't independently blow the cap — they share it.
+        if (WikiBudget::dailyLimitReached()) {
             Log::info('[MineTicketKnowledge] Daily budget exhausted — deferring', [
                 'ticket_id' => $ticket->id,
-                'tokens_today' => $tokensUsedToday,
-                'limit' => $dailyLimit,
+                'tokens_today' => WikiBudget::tokensUsedToday(),
+                'limit' => WikiConfig::dailyTokenLimit(),
             ]);
 
             // Release back to queue with a 1-hour delay so it retries tomorrow.
