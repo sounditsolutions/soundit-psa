@@ -15,6 +15,7 @@ use App\Models\WikiPage;
 use App\Services\Wiki\WikiCascadeService;
 use App\Services\Wiki\WikiMarkdown;
 use App\Services\Wiki\WikiPageService;
+use App\Services\Wiki\WikiSearchService;
 use App\Services\Wiki\WikiSkeletonService;
 use Illuminate\Http\Request;
 
@@ -210,9 +211,16 @@ class WikiController extends Controller
             : route('wiki.show', $page->slug);
     }
 
-    // ── Implemented in Task 18 ──
-    public function search(Request $request)
+    public function search(Request $request, WikiSearchService $searcher)
     {
-        abort(404);
+        $query = trim((string) $request->query('q', ''));
+        $clientId = $request->filled('client_id') ? $request->integer('client_id') : null;
+        $client = $clientId ? Client::find($clientId) : null;
+
+        $results = $query === ''
+            ? ['pages' => collect(), 'facts' => collect()]
+            : $searcher->search($query, $clientId);
+
+        return view('wiki.search', ['query' => $query, 'client' => $client, 'results' => $results]);
     }
 }
