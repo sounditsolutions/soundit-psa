@@ -1522,13 +1522,18 @@ git commit -m "feat(wiki): inject AI overview at the triage/assistant context po
 | Tier 1 hot summary — trust-tiered (confirmed\|sync), budgeted, idempotent | Task 4 | Done |
 | Shared daily budget (§5.3) across mining + overview | Task 4 (`WikiBudget`) | Done |
 | Overview populated as tickets close (fact-changing only) | Task 5 | Done |
-| Injection swap + no-regression fallback + substance floor | Task 6 | Done |
+| Injection swap + no-regression fallback + substance floor | Task 6 | Done (+ inject-point body scan) |
 | Staff card ↔ AI overview consistency | Task 6 | Done (pointer) |
-| §13 injection defense | Tasks 1 (serving + body scan) + 4 (output scan, optional input filter) | **Partial — documented residual gaps** |
+| Always-injected overview is content-scanned at the inject point (closes the human-edit bypass) | Task 6 | Done + bypass test |
+| §13 injection defense | Tasks 1 (serving + body scan) + 4 (output scan, optional input filter) + 6 (inject-point scan) | **Partial — documented residual gaps** |
+
+**Inject-point hardening (Task 6):** the always-injected client overview is now scanned at the read point (`ContextBuilder::composedOverviewBody` runs `WikiRedactor::scan` after the substance floor; a hit falls back to `site_notes`). This closes the human-edit bypass — the composer scans what it writes, but the overview body is editable afterward without clearing `composed_at`, so a hand-edited body could otherwise reach every triage + Assistant prompt unscanned. The defense holds regardless of provenance (AI compose OR human edit), mirroring `WikiRetrieval::safeEnvelope` for `wiki_get_page`. A bypass test pins it.
 
 **Residual gaps (explicit, not silently covered):**
 - `wiki_get_page` serves human-authored page prose that *passes* `scan()`; `scan()` is a finite corpus (paraphrased injections can evade it). The body scan is a mitigation, not a proof. A stronger control (fencing all page bodies as untrusted data, or extending `scan()`) is a Phase-5 candidate.
 - Served facts are not re-scanned for injection at retrieval time (they were scanned at mining write-time); a fact written before the merge-time filter, or via the human-fact path (§4.4), is served without a fresh injection check. Track for Phase 5.
 - The overview's "unverified-never-guidance" rule is structural in the digest + scanned on output; if input-statement injection-filtering is not enabled (Task 4 Step 3 note), the paraphrase-evasion residual remains — the Task 4 test pins whichever choice is made.
+- The `site_notes` fallback (wiki off, or overview absent/thin/scan-failed) is still injected **unscanned** — this is unchanged Phase-3 behavior for human-curated legacy notes and was deliberately left out of scope; only the overview path is scanned at the inject point.
+- `WikiController::update` still permits human edits of Overview-kind pages (asymmetric with `create()`, which excludes Overview from manual creation), and `WikiPageService::updateBody` does not clear `composed_at` on edit. A Phase-5 consideration (guard/clear-on-edit); the inject-point scan above defends the security concern regardless of this asymmetry.
 
 Deferred to Phase 5 (out of scope here): nightly maintenance loop & stale-only regen (§7), health counters, §8.1 verification-UX polish (psa-7ph7/psa-ux48/psa-s5bf), `wiki:export`, `wiki:backfill`, mining-side N+1 cleanup, `retire()`-actor audit, SQL-side budget aggregation.

@@ -11,6 +11,7 @@ use App\Models\WikiPage;
 use App\Services\AttachmentService;
 use App\Services\Comet\CometClient;
 use App\Services\Comet\CometJobService;
+use App\Services\Wiki\Mining\WikiRedactor;
 use App\Support\CippConfig;
 use App\Support\CometConfig;
 use App\Support\ControlDConfig;
@@ -424,7 +425,7 @@ class ContextBuilder
         return self::isComposed(self::overviewPage($client));
     }
 
-    /** A real, substantial composed overview body (trimmed), or null. */
+    /** A real, substantial, content-safe composed overview body (trimmed), or null. */
     private static function composedOverviewBody(Client $client): ?string
     {
         $page = self::overviewPage($client);
@@ -432,8 +433,21 @@ class ContextBuilder
             return null;
         }
         $body = trim($page->body_md);
+        if (strlen($body) < self::MIN_OVERVIEW_CHARS) {
+            return null;
+        }
 
-        return strlen($body) >= self::MIN_OVERVIEW_CHARS ? $body : null;
+        // Defend the always-injected surface (§6/§13): the composer scans what it
+        // writes, but the overview body is human-editable afterward (the wiki Edit
+        // page does not clear composed_at), so a hand-edited body could reach every
+        // triage + Assistant prompt unscanned. Scan here regardless of provenance —
+        // same posture WikiRetrieval::safeEnvelope applies to wiki_get_page. On a hit,
+        // return null so injection falls back to site_notes.
+        if (app(WikiRedactor::class)->scan($body) !== []) {
+            return null;
+        }
+
+        return $body;
     }
 
     private static function overviewPage(Client $client): ?WikiPage

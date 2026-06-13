@@ -82,7 +82,7 @@ class WikiRetrieval
     }
 
     /** Spec §6 rule 1 — one record per fact; one record per DISPUTE PAIR, two-sided. */
-    public function serializeFacts(iterable $facts): string
+    private function serializeFacts(iterable $facts): string
     {
         $lines = [];
         $emitted = []; // pair keys already serialized
@@ -158,7 +158,13 @@ class WikiRetrieval
         return json_encode($s, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
     }
 
-    /** A bare scalar field (subject_key, slug): delimiter- and separator-safe, unquoted. */
+    /**
+     * A bare scalar field (subject_key, slug): delimiter- and separator-safe, unquoted.
+     * Unlike encode(), this does NOT collapse the serializer's `<field>: ` markers — that
+     * asymmetry is acceptable: `|` is already swapped, so a scalar can never forge a new
+     * field or a `WIKI_FACT | …` record. A stray "subject:" surviving in a subject_key/slug
+     * is cosmetic only, not a grammar break (and these keys are slug-like to begin with).
+     */
     private function scalar(string $s): string
     {
         return str_replace(['|', '"'], ['/', "'"], $this->stripSeparators($s));

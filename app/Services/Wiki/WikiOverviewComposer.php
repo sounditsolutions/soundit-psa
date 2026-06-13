@@ -130,7 +130,7 @@ PROMPT;
     }
 
     /** Trust-tier by the prompt's rule: guidance = confirmed OR source=sync. */
-    public function factDigest($facts): string
+    private function factDigest($facts): string
     {
         $guidance = $unverified = $disputed = [];
         foreach ($facts as $fact) {
