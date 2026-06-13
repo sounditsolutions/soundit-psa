@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Web;
 use App\Enums\WikiAuthorType;
 use App\Enums\WikiFactStatus;
 use App\Enums\WikiScope;
+use App\Helpers\LineDiff;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\WikiPageStoreRequest;
 use App\Http\Requests\WikiPageUpdateRequest;
@@ -187,10 +188,18 @@ class WikiController extends Controller
         return redirect($this->pageUrl($page))->with('success', 'Page updated.');
     }
 
-    // ── Implemented in Task 17 ──
     public function history(WikiPage $page)
     {
-        abort(404);
+        $revisions = $page->revisions()->with('author')->get();
+
+        // Diff each revision against its predecessor (revisions are ordered newest-first).
+        $diffs = [];
+        foreach ($revisions as $index => $revision) {
+            $previous = $revisions[$index + 1] ?? null;
+            $diffs[$revision->id] = LineDiff::diff($previous?->body_md ?? '', $revision->body_md);
+        }
+
+        return view('wiki.history', ['page' => $page, 'revisions' => $revisions, 'diffs' => $diffs]);
     }
 
     private function pageUrl(WikiPage $page): string

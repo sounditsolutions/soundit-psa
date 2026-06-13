@@ -149,6 +149,6 @@ class WikiPageServiceTest extends TestCase
         $this->service()->updateBody($page, 'still see [[x]]', WikiAuthorType::Human, null, 'reword');
 
         $this->assertSame(['x'], WikiLink::where('from_page_id', $page->id)->pluck('target_slug')->all());
-        $this->assertCount(1, $page->fresh()->revisions); // factory page had no create-revision; updateBody wrote one
+        $this->assertCount(2, $page->fresh()->revisions); // baseline revision + the edit revision
     }
 }

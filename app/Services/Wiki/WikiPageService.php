@@ -50,6 +50,12 @@ class WikiPageService
     public function updateBody(WikiPage $page, string $bodyMd, WikiAuthorType $author, ?int $authorId, string $changeSummary, ?array $sourceRefs = null): WikiPage
     {
         return DB::transaction(function () use ($page, $bodyMd, $author, $authorId, $changeSummary, $sourceRefs) {
+            // Bootstrap revision history for pages created outside the service (e.g. via factory,
+            // import, or seeder). Without a baseline revision the diff view has no "before" state.
+            if (! $page->revisions()->exists()) {
+                $this->writeRevision($page, WikiAuthorType::System, null, 'Initial content');
+            }
+
             $page->update(['body_md' => $bodyMd]);
             $this->writeRevision($page, $author, $authorId, $changeSummary, $sourceRefs);
             $this->rebuildLinks($page); // spec §5.2: synchronous, same transaction

@@ -85,4 +85,18 @@ class WikiRoutesTest extends TestCase
             ->assertSee('Mac only.')
             ->assertDontSee('Standard laptop.');
     }
+
+    public function test_history_shows_revision_diff(): void
+    {
+        $user = User::factory()->create();
+        $page = WikiPage::factory()->create(['body_md' => 'v1']);
+        app(\App\Services\Wiki\WikiPageService::class)
+            ->updateBody($page, 'v2', \App\Enums\WikiAuthorType::Human, $user->id, 'Edited');
+
+        $this->actingAs($user)->get("/wiki-pages/{$page->id}/history")
+            ->assertOk()
+            ->assertSee('Edited')
+            ->assertSee('+ v2')
+            ->assertSee('− v1');
+    }
 }
