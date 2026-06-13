@@ -13,6 +13,7 @@
 //     {"type": "goto", "path": "/clients/6/wiki"},
 //     {"type": "click", "selector": "text=Infrastructure"},
 //     {"type": "fill", "selector": "input[name=q]", "value": "FortiGate"},
+//     {"type": "selectOption", "selector": "#client_id", "value": "Acme Corp"},
 //     {"type": "expectText", "text": "SonicWall"},
 //     {"type": "snapshot"},
 //     {"type": "screenshot", "name": "infra"}
@@ -104,6 +105,16 @@ async function run(job) {
           case 'fill':
             await page.fill(action.selector, action.value, { timeout: 10000 });
             break;
+          case 'selectOption': {
+            // Drive native <select> controls. A bare string matches an option by
+            // value OR visible label; {label}/{index} select explicitly.
+            const target = action.label != null ? { label: action.label }
+              : action.index != null ? { index: action.index }
+              : action.value;
+            const selected = await page.selectOption(action.selector, target, { timeout: 10000 });
+            step.detail = `selected ${JSON.stringify(selected)}`;
+            break;
+          }
           case 'expectText': {
             const body = await page.textContent('body');
             if (!body || !body.includes(action.text)) {
@@ -123,7 +134,9 @@ async function run(job) {
             break;
           }
           case 'snapshot':
-            result.snapshot = (await page.accessibility.snapshot()) ?? null;
+            // page.accessibility was removed in modern Playwright; the locator
+            // ariaSnapshot (YAML role tree) is the supported page-reading primitive.
+            result.snapshot = await page.locator('body').ariaSnapshot();
             break;
           case 'screenshot': {
             const path = `${screenDir}/${scenario}-${action.name || i}.png`;
