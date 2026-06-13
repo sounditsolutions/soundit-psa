@@ -41,6 +41,7 @@ use App\Http\Controllers\Web\TicketController;
 use App\Http\Controllers\Web\TicketNoteController;
 use App\Http\Controllers\Web\TimeReportController;
 use App\Http\Controllers\Web\WikiController;
+use App\Http\Controllers\Web\WikiFactController;
 use Illuminate\Support\Facades\Route;
 
 // Public legal pages (required by Intuit for QBO production app)
@@ -570,6 +571,10 @@ Route::middleware('auth')->group(function () {
 
     // Client Wiki (spec docs/superpowers/specs/2026-06-12-client-wiki-design.md §8)
     // search and CRUD live at /wiki-search and /wiki-pages/* to stay ahead of the wiki/{slug} catch-all
+    Route::post('/wiki-facts/{fact}/confirm', [WikiFactController::class, 'confirm'])->name('wiki.facts.confirm');
+    Route::post('/wiki-facts/{fact}/retire', [WikiFactController::class, 'retire'])->name('wiki.facts.retire');
+    Route::post('/wiki-facts/{fact}/correct', [WikiFactController::class, 'correct'])->name('wiki.facts.correct');
+    Route::post('/wiki-facts/{fact}/resolve', [WikiFactController::class, 'resolve'])->name('wiki.facts.resolve');
     Route::get('/wiki', [WikiController::class, 'index'])->name('wiki.index');
     Route::get('/wiki-search', [WikiController::class, 'search'])->name('wiki.search');
     Route::get('/wiki-pages/create', [WikiController::class, 'create'])->name('wiki.create');
