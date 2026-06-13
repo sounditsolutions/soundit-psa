@@ -36,12 +36,8 @@ class TicketObserver
 
     public function updated(Ticket $ticket): void
     {
-        if (! $ticket->wasChanged('status')) {
-            return;
-        }
-
-        // T2T callback — only for HelpdeskButton tickets
-        if ($ticket->source === TicketSource::HelpdeskButton) {
+        // T2T callback — only for HelpdeskButton tickets, on a status change.
+        if ($ticket->source === TicketSource::HelpdeskButton && $ticket->wasChanged('status')) {
             $callbackUrl = T2TConfig::get('callback_url');
 
             if ($callbackUrl) {
@@ -49,9 +45,17 @@ class TicketObserver
             }
         }
 
-        // Wiki mining — fires for ALL close paths (spec §5.1 trigger 2)
+        // Wiki mining (spec §5.1 trigger 2; mining-coverage Decision 3): fire when the ticket
+        // reaches a terminal state (Resolved or Closed) with a resolution, OR when the
+        // resolution is added/edited while already terminal (resolve-first-write-later).
+        // Idempotency (hash on resolution text) means a later auto-close does not re-mine,
+        // and editing the resolution does re-mine (captures the correction).
+        $isTerminal = in_array($ticket->status, [TicketStatus::Resolved, TicketStatus::Closed], true);
+        $becameTerminalOrResolutionChanged = $ticket->wasChanged('status') || $ticket->wasChanged('resolution');
+
         if (
-            $ticket->status === TicketStatus::Closed
+            $isTerminal
+            && $becameTerminalOrResolutionChanged
             && filled($ticket->resolution)
             && WikiConfig::autoMineEnabled()
         ) {

@@ -94,4 +94,59 @@ class WikiMiningTriggerTest extends TestCase
 
         Bus::assertNotDispatched(MineTicketKnowledge::class);
     }
+
+    public function test_dispatches_mining_when_ticket_resolved_with_resolution(): void
+    {
+        Bus::fake();
+        $this->enableAutoMine();
+
+        $ticket = Ticket::factory()->create([
+            'source' => TicketSource::Manual,
+            'status' => TicketStatus::InProgress,
+            'resolution' => null,
+        ]);
+
+        // The terminal action in real MSP usage: Resolved (not Closed) with a resolution.
+        $ticket->update([
+            'status' => TicketStatus::Resolved,
+            'resolution' => 'Replaced FortiClient; disabled DTLS.',
+        ]);
+
+        Bus::assertDispatched(MineTicketKnowledge::class);
+    }
+
+    public function test_dispatches_mining_when_resolution_added_while_already_resolved(): void
+    {
+        $this->enableAutoMine();
+
+        $ticket = Ticket::factory()->create([
+            'source' => TicketSource::Manual,
+            'status' => TicketStatus::InProgress,
+            'resolution' => null,
+        ]);
+        // Resolve first with no resolution → no dispatch yet (covered below).
+        $ticket->update(['status' => TicketStatus::Resolved]);
+
+        Bus::fake(); // only observe what happens when the resolution is added later
+
+        $ticket->update(['resolution' => 'Root cause: DNS. Switched to Control D.']);
+
+        Bus::assertDispatched(MineTicketKnowledge::class);
+    }
+
+    public function test_no_dispatch_when_resolved_without_resolution(): void
+    {
+        Bus::fake();
+        $this->enableAutoMine();
+
+        $ticket = Ticket::factory()->create([
+            'source' => TicketSource::Manual,
+            'status' => TicketStatus::InProgress,
+            'resolution' => null,
+        ]);
+
+        $ticket->update(['status' => TicketStatus::Resolved]); // no resolution text
+
+        Bus::assertNotDispatched(MineTicketKnowledge::class);
+    }
 }
