@@ -14,7 +14,7 @@ class WikiFactCorrectRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'statement' => ['required', 'string', 'max:2000'],
+            'statement' => ['required', 'string', 'max:300'],
         ];
     }
 }

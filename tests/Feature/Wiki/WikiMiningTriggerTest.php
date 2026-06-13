@@ -75,4 +75,23 @@ class WikiMiningTriggerTest extends TestCase
 
         Bus::assertNotDispatched(MineTicketKnowledge::class);
     }
+
+    public function test_no_dispatch_when_auto_mine_off(): void
+    {
+        Setting::setValue('wiki_enabled', '1'); // master on, mining off
+        Bus::fake();
+
+        $ticket = Ticket::factory()->create([
+            'source' => TicketSource::Manual,
+            'status' => TicketStatus::InProgress,
+            'resolution' => null,
+        ]);
+
+        $ticket->update([
+            'status' => TicketStatus::Closed,
+            'resolution' => 'Fixed.',
+        ]);
+
+        Bus::assertNotDispatched(MineTicketKnowledge::class);
+    }
 }
