@@ -230,6 +230,16 @@ class WikiController extends Controller implements HasMiddleware
             : route('wiki.show', $page->slug);
     }
 
+    public function archive(WikiPage $page, WikiPageService $pages)
+    {
+        $pages->archive($page, WikiAuthorType::Human, auth()->id());
+
+        return redirect($page->client_id
+            ? route('clients.wiki.index', $page->client_id)
+            : route('wiki.index')
+        )->with('success', 'Page archived.');
+    }
+
     public function search(Request $request, WikiSearchService $searcher)
     {
         $query = trim((string) $request->query('q', ''));

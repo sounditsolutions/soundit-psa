@@ -582,6 +582,7 @@ Route::middleware('auth')->group(function () {
     Route::get('/wiki-pages/{page}/edit', [WikiController::class, 'edit'])->name('wiki.edit');
     Route::patch('/wiki-pages/{page}', [WikiController::class, 'update'])->name('wiki.update');
     Route::get('/wiki-pages/{page}/history', [WikiController::class, 'history'])->name('wiki.history');
+    Route::post('/wiki-pages/{page}/archive', [WikiController::class, 'archive'])->name('wiki.archive');
     Route::get('/wiki/{slug}', [WikiController::class, 'show'])
         ->where('slug', '.*')->name('wiki.show');
     Route::get('/clients/{client}/wiki', [WikiController::class, 'clientIndex'])->name('clients.wiki.index');
