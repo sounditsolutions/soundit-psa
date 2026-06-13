@@ -49,6 +49,7 @@
                     </ul>
                 </div>
             @endif
+            @include('wiki._provenance', ['facts' => $facts])
         </div>
     </div>
 </div>

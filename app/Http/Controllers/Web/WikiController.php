@@ -73,6 +73,7 @@ class WikiController extends Controller implements HasMiddleware
                 'sectionSummaries' => [],
                 'backlinks' => $global->backlinks()->with('fromPage')->get(),
                 'deviationAnchors' => $merged['deviation_anchors'],
+                'facts' => collect(),
             ]);
         }
 
@@ -88,6 +89,7 @@ class WikiController extends Controller implements HasMiddleware
                 'sectionSummaries' => [],
                 'backlinks' => $page->backlinks()->with('fromPage')->get(),
                 'deviationAnchors' => $merged['deviation_anchors'],
+                'facts' => collect(),
             ]);
         }
 
@@ -103,6 +105,10 @@ class WikiController extends Controller implements HasMiddleware
             'sectionSummaries' => $this->sectionSummaries($page),
             'backlinks' => $page->backlinks()->with('fromPage')->get(),
             'deviationAnchors' => [],
+            'facts' => $page->facts()
+                ->whereNot('status', \App\Enums\WikiFactStatus::Retired->value)
+                ->orderBy('section_anchor')->orderBy('subject_key')
+                ->get(),
         ]);
     }
 
