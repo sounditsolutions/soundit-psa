@@ -281,6 +281,17 @@ class MineTicketKnowledge implements ShouldQueue
                 'run_id' => $run->id,
                 'facts' => count($candidates),
             ]);
+
+            // ── Eager overview recompose — fact-changing mines only ───────────
+            // $touchedAnchors is non-empty exactly when upsertMinedFact actually
+            // wrote/changed at least one fact (it's keyed only for non-null upserts
+            // at Stage 4). A routine zero-fact close leaves it empty and MUST NOT
+            // enqueue a recompose — that gate is what keeps idle closes from spending
+            // AI tokens. The composer's content-hash skip is the backstop if a
+            // recompose is ever enqueued without a net fact change.
+            if ($touchedAnchors !== []) {
+                ComposeClientOverview::dispatch($ticket->client_id);
+            }
         } catch (\Throwable $e) {
             $run->update([
                 'status' => WikiRunStatus::Failed,

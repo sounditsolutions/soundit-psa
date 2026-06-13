@@ -4,6 +4,7 @@ namespace Tests\Feature\Wiki;
 
 use App\Enums\WikiFactStatus;
 use App\Enums\WikiRunStatus;
+use App\Jobs\ComposeClientOverview;
 use App\Jobs\MineTicketKnowledge;
 use App\Models\Client;
 use App\Models\Setting;
@@ -13,6 +14,7 @@ use App\Models\WikiRun;
 use App\Services\Ai\AiClient;
 use App\Services\Wiki\WikiSkeletonService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Bus;
 use Tests\TestCase;
 
 class MineTicketKnowledgeTest extends TestCase
@@ -315,5 +317,57 @@ class MineTicketKnowledgeTest extends TestCase
         $this->assertSame(WikiFactStatus::Unverified, $fact->status);
         $this->assertSame('network:edge-firewall', $fact->subject_key);
         $this->assertSame('Edge firewall is a FortiGate 60F', $fact->statement);
+    }
+
+    // ── eager overview recompose dispatch (fact-changing mines only) ──────────
+
+    public function test_fact_changing_mine_dispatches_overview_recompose(): void
+    {
+        // Fake ONLY ComposeClientOverview so MineTicketKnowledge still runs its handle().
+        Bus::fake([ComposeClientOverview::class]);
+        $this->enableWiki();
+        $client = Client::factory()->create();
+        $ticket = $this->makeClosedTicketWithResolution($client, 'Replaced the FortiGate 60F firewall.');
+        app(WikiSkeletonService::class)->ensureForClient($client);
+
+        $mock = $this->mock(AiClient::class);
+        $mock->shouldReceive('completeJson')->andReturn(['facts' => [
+            [
+                'page' => 'network',
+                'anchor' => 'equipment',
+                'subject_key' => 'network:edge-firewall',
+                'statement' => 'Edge firewall is a FortiGate 60F',
+                'volatility' => 'durable',
+                'confidence' => 0.9,
+            ],
+        ]]);
+        $mock->shouldReceive('cumulativeInputTokens')->andReturn(500);
+        $mock->shouldReceive('cumulativeOutputTokens')->andReturn(100);
+        $mock->shouldReceive('cumulativeTotalTokens')->andReturn(600);
+
+        MineTicketKnowledge::dispatchSync($ticket->id);
+
+        $this->assertSame(WikiRunStatus::Completed, WikiRun::first()->status);
+        Bus::assertDispatched(
+            ComposeClientOverview::class,
+            fn (ComposeClientOverview $job) => $job->clientId === $client->id,
+        );
+    }
+
+    public function test_zero_fact_mine_does_not_dispatch_overview_recompose(): void
+    {
+        Bus::fake([ComposeClientOverview::class]);
+        $this->enableWiki();
+        $client = Client::factory()->create();
+        $ticket = $this->makeClosedTicketWithResolution($client, 'Routine maintenance, no new info.');
+        app(WikiSkeletonService::class)->ensureForClient($client);
+        $this->mockAiNoFacts();
+
+        MineTicketKnowledge::dispatchSync($ticket->id);
+
+        // Mine completed cleanly, but with no fact changes it must NOT spend more AI
+        // tokens on a recompose.
+        $this->assertSame(WikiRunStatus::Completed, WikiRun::first()->status);
+        Bus::assertNotDispatched(ComposeClientOverview::class);
     }
 }
