@@ -34,6 +34,11 @@
             <a href="{{ route('clients.portal', $client) }}" class="btn btn-outline-secondary btn-sm">
                 <i class="bi bi-person-lines-fill me-1"></i>Portal
             </a>
+            @if (\App\Support\WikiConfig::isEnabled())
+            <a href="{{ route('clients.wiki.index', $client) }}" class="btn btn-outline-secondary btn-sm">
+                <i class="bi bi-journal-text"></i> Wiki
+            </a>
+            @endif
             <a href="{{ route('clients.edit', $client) }}" class="btn btn-outline-primary btn-sm">
                 <i class="bi bi-pencil me-1"></i>Edit
             </a>

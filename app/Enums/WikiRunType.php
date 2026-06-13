@@ -1,0 +1,11 @@
+<?php
+
+namespace App\Enums;
+
+enum WikiRunType: string
+{
+    case MineTicket = 'mine_ticket';
+    case SyncFacts = 'sync_facts';
+    case Maintain = 'maintain';
+    case Backfill = 'backfill';
+}

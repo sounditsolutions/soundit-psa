@@ -113,6 +113,9 @@ class NinjaSyncService
             }
         }
 
+        // Wiki Phase 2: deterministic environment facts from this sync (never breaks the sync).
+        app(\App\Services\Wiki\SyncFactWriter::class)->safeWriteAssetFacts($client);
+
         return $result;
     }
 
