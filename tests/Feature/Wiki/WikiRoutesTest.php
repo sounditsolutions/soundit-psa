@@ -3,6 +3,7 @@
 namespace Tests\Feature\Wiki;
 
 use App\Models\Client;
+use App\Models\Setting;
 use App\Models\User;
 use App\Models\WikiFact;
 use App\Models\WikiPage;
@@ -13,6 +14,12 @@ class WikiRoutesTest extends TestCase
 {
     use RefreshDatabase;
 
+    protected function setUp(): void
+    {
+        parent::setUp();
+        Setting::setValue('wiki_enabled', '1');
+    }
+
     private function user(): User
     {
         return User::factory()->create();
@@ -21,6 +28,13 @@ class WikiRoutesTest extends TestCase
     public function test_routes_require_auth(): void
     {
         $this->get('/wiki')->assertRedirect();
+    }
+
+    public function test_wiki_routes_404_when_disabled(): void
+    {
+        Setting::setValue('wiki_enabled', '0');
+
+        $this->actingAs($this->user())->get('/wiki')->assertNotFound();
     }
 
     public function test_global_index_lists_pages_grouped_by_kind(): void

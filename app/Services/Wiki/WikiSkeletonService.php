@@ -68,8 +68,10 @@ class WikiSkeletonService
                     'kind' => $def['kind'],
                     'body_md' => $def['body'],
                 ], WikiAuthorType::System, null, 'Skeleton seeded');
-            } catch (\RuntimeException $e) {
+            } catch (\RuntimeException|\Illuminate\Database\QueryException $e) {
                 // Concurrent seed: another request created this page between our pluck and create — skip.
+                // QueryException is thrown when the competing insert commits mid-transaction
+                // and the unique index rejects our insert at the database level.
                 continue;
             }
         }

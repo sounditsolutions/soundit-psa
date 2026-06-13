@@ -93,4 +93,63 @@ class SyncFactWriterTest extends TestCase
 
         $this->assertTrue(true);
     }
+
+    public function test_stale_asset_facts_are_retired_when_asset_removed(): void
+    {
+        Setting::setValue('wiki_enabled', '1');
+        $client = Client::factory()->create();
+        $asset = Asset::factory()->create([
+            'client_id' => $client->id,
+            'hostname' => 'DC01',
+            'os' => 'Windows Server 2022',
+            'ram_gb' => 32,
+            'asset_type' => 'Server',
+        ]);
+
+        // First sync — facts are written.
+        app(SyncFactWriter::class)->writeAssetFacts($client);
+        $this->assertGreaterThan(0, WikiFact::where('client_id', $client->id)->where('status', 'confirmed')->count());
+
+        // Remove the asset, then re-sync.
+        $asset->forceDelete();
+        app(SyncFactWriter::class)->writeAssetFacts($client);
+
+        // All the old asset facts should now be retired.
+        $active = WikiFact::where('client_id', $client->id)
+            ->whereNot('status', 'retired')
+            ->count();
+        $this->assertSame(0, $active);
+
+        $retired = WikiFact::where('client_id', $client->id)
+            ->where('status', 'retired')
+            ->count();
+        $this->assertGreaterThan(0, $retired);
+    }
+
+    public function test_null_hostname_assets_are_skipped(): void
+    {
+        Setting::setValue('wiki_enabled', '1');
+        $client = Client::factory()->create();
+        Asset::factory()->create([
+            'client_id' => $client->id,
+            'hostname' => 'NORMAL01',
+            'os' => 'Windows 11 Pro',
+            'ram_gb' => 16,
+            'asset_type' => 'Workstation',
+        ]);
+        Asset::factory()->create([
+            'client_id' => $client->id,
+            'hostname' => null,
+            'os' => 'Windows 11 Pro',
+            'ram_gb' => 16,
+            'asset_type' => 'Workstation',
+        ]);
+
+        app(SyncFactWriter::class)->writeAssetFacts($client);
+
+        $facts = WikiFact::where('client_id', $client->id)->get();
+        // Only the normal asset's facts should exist — null hostname is skipped.
+        $this->assertGreaterThan(0, $facts->count());
+        $this->assertTrue($facts->every(fn ($f) => str_starts_with($f->subject_key, 'asset:normal01:')));
+    }
 }

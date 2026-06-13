@@ -31,6 +31,7 @@ class WikiSearchService
 
         $facts = WikiFact::query()
             ->whereNot('status', WikiFactStatus::Retired->value)
+            ->whereHas('page', fn ($q) => $q->where('is_archived', false))
             ->when($clientId !== null, fn ($q) => $q->where(
                 fn ($qq) => $qq->where('client_id', $clientId)->orWhereNull('client_id')
             ))

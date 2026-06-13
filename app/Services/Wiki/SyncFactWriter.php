@@ -2,10 +2,13 @@
 
 namespace App\Services\Wiki;
 
+use App\Enums\WikiFactSource;
+use App\Enums\WikiFactStatus;
 use App\Enums\WikiFactVolatility;
 use App\Enums\WikiRunStatus;
 use App\Enums\WikiRunType;
 use App\Models\Client;
+use App\Models\WikiFact;
 use App\Models\WikiPage;
 use App\Models\WikiRun;
 use App\Support\WikiConfig;
@@ -46,10 +49,16 @@ class SyncFactWriter
 
         return $this->run($client, function (WikiPage $infra) use ($client) {
             $count = 0;
+            $seenKeys = [];
             $assets = $client->assets()
                 ->select(['id', 'client_id', 'hostname', 'os', 'cpu', 'ram_gb', 'asset_type', 'serial_number', 'ip_address'])
                 ->get();
             foreach ($assets as $asset) {
+                // Skip assets with no hostname — strtolower(null) is deprecated and
+                // an empty subject key would collide across all unnamed assets.
+                if (trim((string) $asset->hostname) === '') {
+                    continue;
+                }
                 $host = $asset->hostname;
                 $key = strtolower($host);
                 // ram_gb is cast decimal:2 → string "32.00"; cast to int for display.
@@ -65,9 +74,21 @@ class SyncFactWriter
                 foreach ($map as $subjectKey => $statement) {
                     $volatility = str_ends_with($subjectKey, ':ip') ? WikiFactVolatility::Volatile : WikiFactVolatility::Durable;
                     $this->facts->upsertSyncFact($infra, 'assets', $subjectKey, $statement, $volatility, [['type' => 'sync', 'id' => 'assets']]);
+                    $seenKeys[] = $subjectKey;
                     $count++;
                 }
             }
+
+            // Subjects absent from this sync no longer exist at the source —
+            // retire their facts (pinned facts are left for the challenge path).
+            WikiFact::query()
+                ->where('page_id', $infra->id)
+                ->where('section_anchor', 'assets')
+                ->where('source_type', WikiFactSource::Sync->value)
+                ->whereNot('status', WikiFactStatus::Retired->value)
+                ->where('pinned', false)
+                ->whereNotIn('subject_key', $seenKeys)
+                ->update(['status' => WikiFactStatus::Retired->value]);
 
             $this->composer->composeSection($infra->fresh(), 'assets');
 
@@ -93,6 +114,18 @@ class SyncFactWriter
             foreach ($counts as $subjectKey => $statement) {
                 $this->facts->upsertSyncFact($m365, 'security-posture', $subjectKey, $statement, WikiFactVolatility::Volatile, [['type' => 'sync', 'id' => 'cipp']]);
             }
+
+            // Subjects absent from this sync no longer exist at the source —
+            // retire their facts (pinned facts are left for the challenge path).
+            $seenKeys = array_keys($counts);
+            WikiFact::query()
+                ->where('page_id', $m365->id)
+                ->where('section_anchor', 'security-posture')
+                ->where('source_type', WikiFactSource::Sync->value)
+                ->whereNot('status', WikiFactStatus::Retired->value)
+                ->where('pinned', false)
+                ->whereNotIn('subject_key', $seenKeys)
+                ->update(['status' => WikiFactStatus::Retired->value]);
 
             $this->composer->composeSection($m365->fresh(), 'security-posture');
 

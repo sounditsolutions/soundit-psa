@@ -89,7 +89,9 @@ class WikiSections
         if ($hasStart && $hasEnd) {
             $pattern = '/'.preg_quote($start, '/').'.*?'.preg_quote($end, '/').'/s';
 
-            return preg_replace($pattern, $block, $markdown, 1);
+            // Use preg_replace_callback so $block is treated as a literal string —
+            // preg_replace() interprets $0, \1, etc. in the replacement as backreferences.
+            return preg_replace_callback($pattern, fn () => $block, $markdown, 1);
         }
 
         if ($hasStart || $hasEnd) {

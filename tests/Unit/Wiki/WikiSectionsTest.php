@@ -70,4 +70,15 @@ class WikiSectionsTest extends TestCase
         $this->assertStringContainsString('human text after', $out);
         $this->assertStringContainsString("<!-- wiki:facts:assets:start -->\nfresh\n<!-- wiki:facts:assets:end -->", $out);
     }
+
+    public function test_splice_treats_dollar_sequences_as_literals(): void
+    {
+        $md = "## Assets\n\n<!-- wiki:facts:assets:start -->\nold\n<!-- wiki:facts:assets:end -->\n";
+
+        $out = WikiSections::spliceMarkers($md, 'assets', "- SRV \$0 has 8 GB RAM\n");
+
+        $this->assertStringContainsString('- SRV $0 has 8 GB RAM', $out);
+        $this->assertSame(1, substr_count($out, '<!-- wiki:facts:assets:start -->'));
+        $this->assertStringNotContainsString('old', $out);
+    }
 }

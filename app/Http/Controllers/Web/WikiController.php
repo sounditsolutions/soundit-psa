@@ -17,10 +17,23 @@ use App\Services\Wiki\WikiMarkdown;
 use App\Services\Wiki\WikiPageService;
 use App\Services\Wiki\WikiSearchService;
 use App\Services\Wiki\WikiSkeletonService;
+use App\Support\WikiConfig;
 use Illuminate\Http\Request;
+use Illuminate\Routing\Controllers\HasMiddleware;
 
-class WikiController extends Controller
+class WikiController extends Controller implements HasMiddleware
 {
+    /**
+     * Spec §9: wiki_enabled is the master switch — the module 404s when off.
+     * Laravel 12 controllers use HasMiddleware with a static middleware() method.
+     */
+    public static function middleware(): array
+    {
+        return [
+            fn ($request, $next) => WikiConfig::isEnabled() ? $next($request) : abort(404),
+        ];
+    }
+
     public function index()
     {
         $pages = WikiPage::active()->globalScope()->orderBy('kind')->orderBy('title')->get()->groupBy(fn ($p) => $p->kind->value);

@@ -3,6 +3,7 @@
 namespace Tests\Feature\Wiki;
 
 use App\Models\Client;
+use App\Models\Setting;
 use App\Models\User;
 use App\Models\WikiPage;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -11,6 +12,12 @@ use Tests\TestCase;
 class WikiPageEditingTest extends TestCase
 {
     use RefreshDatabase;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        Setting::setValue('wiki_enabled', '1');
+    }
 
     public function test_store_creates_global_page_with_revision(): void
     {
