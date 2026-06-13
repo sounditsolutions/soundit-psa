@@ -82,6 +82,25 @@ class GeneralSettingsController extends Controller
             ->with('success', 'Billing asset type mappings saved.');
     }
 
+    public function updateWiki(Request $request)
+    {
+        $validated = $request->validate([
+            'wiki_enabled' => ['nullable', 'boolean'],
+            'wiki_auto_mine' => ['nullable', 'boolean'],
+            'wiki_model' => ['nullable', 'string', 'max:100'],
+            'wiki_max_tokens_per_run' => ['nullable', 'integer', 'min:1000', 'max:200000'],
+            'wiki_daily_token_limit' => ['nullable', 'integer', 'min:10000', 'max:5000000'],
+        ]);
+
+        Setting::setValue('wiki_enabled', $request->boolean('wiki_enabled') ? '1' : '0');
+        Setting::setValue('wiki_auto_mine', $request->boolean('wiki_auto_mine') ? '1' : '0');
+        Setting::setValue('wiki_model', $validated['wiki_model'] ?? '');
+        Setting::setValue('wiki_max_tokens_per_run', (string) ($validated['wiki_max_tokens_per_run'] ?? 50000));
+        Setting::setValue('wiki_daily_token_limit', (string) ($validated['wiki_daily_token_limit'] ?? 500000));
+
+        return redirect()->route('settings.general')->with('success', 'Wiki settings updated.');
+    }
+
     private function getSettingArray(string $key, array $fallback): array
     {
         $json = Setting::getValue($key);

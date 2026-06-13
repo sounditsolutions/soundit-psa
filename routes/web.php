@@ -254,6 +254,7 @@ Route::middleware('auth')->group(function () {
     Route::post('/settings/general/billing-types', [GeneralSettingsController::class, 'updateBillingTypes'])->name('settings.general.billing-types');
     Route::post('/settings/general/billing-numbering', [GeneralSettingsController::class, 'updateBillingNumbering'])->name('settings.general.billing-numbering');
     Route::post('/settings/general/billing-skip-zero', [GeneralSettingsController::class, 'updateBillingSkipZero'])->name('settings.general.billing-skip-zero');
+    Route::post('/settings/general/wiki', [GeneralSettingsController::class, 'updateWiki'])->name('settings.general.wiki');
 
     // Settings — Staff
     Route::get('/settings/staff', [StaffController::class, 'index'])->name('settings.staff.index');
