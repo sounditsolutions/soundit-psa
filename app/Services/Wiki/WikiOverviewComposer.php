@@ -91,6 +91,9 @@ PROMPT;
         }
 
         // updateBody writes body_md only; meta is a separate write on the same model.
+        // Consequence: the revision row updateBody persists snapshots the PRIOR meta
+        // (before composed_hash/composed_at are set). Intentional and safe — overview
+        // revisions are body-only history and nothing consumes revision.meta.
         $this->pages->updateBody($overview, $body, WikiAuthorType::Ai, null, 'Recomposed hot-summary overview');
         $overview->update(['meta' => array_merge($overview->meta ?? [], [
             'composed_hash' => $hash, 'composed_at' => now()->toIso8601String(),
@@ -134,7 +137,12 @@ PROMPT;
             $line = '- '.$fact->subject_key.': '.$fact->statement;
             $guidanceEligible = $fact->status === WikiFactStatus::Confirmed || $fact->source_type === WikiFactSource::Sync;
             if ($fact->status === WikiFactStatus::Disputed) {
-                $disputed[] = $line.($fact->disputedWith ? ' (vs: '.$fact->disputedWith->statement.')' : '');
+                // Only cite a LIVE counter — never leak a retired counter's statement into
+                // the prompt (consistent with WikiRetrieval::disputeCounter dropping retired
+                // counters). Full bidirectional resolution isn't needed here.
+                $counter = $fact->disputedWith;
+                $citeCounter = $counter && $counter->status !== WikiFactStatus::Retired;
+                $disputed[] = $line.($citeCounter ? ' (vs: '.$counter->statement.')' : '');
             } elseif ($guidanceEligible) {
                 $guidance[] = $line;
             } else {

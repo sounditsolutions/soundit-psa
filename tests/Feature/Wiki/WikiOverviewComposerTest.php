@@ -65,9 +65,12 @@ class WikiOverviewComposerTest extends TestCase
 
         app(WikiOverviewComposer::class)->compose($client);
 
-        $overview = WikiPage::forClient($client->id)->where('kind', WikiPageKind::Overview->value)->first();
-        $this->assertStringContainsString('DC01 on Server 2022', $overview->body_md);
-        $this->assertArrayHasKey('composed_at', $overview->fresh()->meta);
+        $fresh = WikiPage::forClient($client->id)->where('kind', WikiPageKind::Overview->value)->first();
+        $this->assertStringContainsString('DC01 on Server 2022', $fresh->body_md);
+        $this->assertArrayHasKey('composed_at', $fresh->meta);
+        // Lock the WRITE side of the skip mechanism: the digest hash is persisted.
+        $this->assertArrayHasKey('composed_hash', $fresh->meta);
+        $this->assertNotEmpty($fresh->meta['composed_hash']);
         $run = WikiRun::where('run_type', 'compose')->where('subject_id', $client->id)->first();
         $this->assertSame(['input' => 900, 'output' => 400], $run->ai_tokens_used);
     }
@@ -161,5 +164,35 @@ class WikiOverviewComposerTest extends TestCase
 
         $this->assertStringContainsString('DC01 runs Windows Server 2022', $digest);
         $this->assertStringNotContainsString('Ignore previous instructions', $digest);
+    }
+
+    // ── early-return branch coverage ──────────────────────────────────────────
+
+    public function test_zero_facts_creates_no_run_and_leaves_placeholder(): void
+    {
+        // Overview page seeded but NO facts → nothing to compose: no AI call, no run,
+        // placeholder body untouched.
+        $client = $this->clientWithFacts([]);
+        $this->mock(AiClient::class)->shouldReceive('completeJson')->never();
+
+        app(WikiOverviewComposer::class)->compose($client);
+
+        $this->assertSame(0, WikiRun::where('run_type', 'compose')->count());
+        $this->assertSame(WikiSkeletonService::OVERVIEW_PLACEHOLDER_BODY,
+            WikiPage::forClient($client->id)->where('kind', WikiPageKind::Overview->value)->first()->body_md);
+    }
+
+    public function test_no_op_when_wiki_disabled(): void
+    {
+        // Master switch off → composer is inert even with facts present.
+        $client = $this->clientWithFacts([
+            ['subject_key' => 'asset:dc01:os', 'statement' => 'DC01 runs Windows Server 2022', 'status' => WikiFactStatus::Confirmed, 'source_type' => WikiFactSource::Sync],
+        ]);
+        Setting::setValue('wiki_enabled', '0');
+        $this->mock(AiClient::class)->shouldReceive('completeJson')->never();
+
+        app(WikiOverviewComposer::class)->compose($client);
+
+        $this->assertSame(0, WikiRun::where('run_type', 'compose')->count());
     }
 }
