@@ -209,12 +209,13 @@ PROMPT;
                 if ($client->phone) {
                     $prompt .= "\nPhone: {$client->phone}";
                 }
-                if ($client->site_notes) {
-                    $notes = $client->site_notes;
-                    if (strlen($notes) > 3000) {
-                        $notes = substr($notes, 0, 3000)."\n[TRUNCATED]";
-                    }
-                    $prompt .= "\n\n## Client Site Notes\n".$notes;
+
+                // Always-injected client environment context (§4.6): composed wiki
+                // overview when live, else clients.site_notes — via the shared resolver
+                // so chat and triage tell the same story.
+                $env = ContextBuilder::clientEnvironmentSection($client);
+                if ($env) {
+                    $prompt .= "\n\n".$env;
                 }
             }
         } else {

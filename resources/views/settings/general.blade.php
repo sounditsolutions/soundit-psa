@@ -241,9 +241,10 @@
             </div>
             <div class="card-body">
                 <p class="text-muted small mb-3">
-                    Auto-maintained client environment documentation. The master switch controls the whole module;
-                    mining additionally spends AI tokens on each closed ticket (roughly $2–8/day at the default
-                    budgets, depending on ticket volume and model).
+                    Auto-maintained client environment documentation. The master switch controls the whole module.
+                    Mining spends AI tokens on each closed ticket, and a short hot-summary is recomposed after
+                    tickets that change facts — both draw from one shared daily token budget (set below). Expect
+                    roughly $2–8/day at the default budgets; the daily ceiling is a hard cap on total wiki AI spend.
                 </p>
                 <form method="POST" action="{{ route('settings.general.wiki') }}">
                     @csrf

@@ -17,6 +17,7 @@ use App\Services\Level\LevelClient;
 use App\Services\Mesh\MeshClient;
 use App\Services\Ninja\NinjaClient;
 use App\Services\Tactical\TacticalClient;
+use App\Services\Wiki\HandlesWikiTools;
 use App\Support\ControlDConfig;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
@@ -27,9 +28,12 @@ use Illuminate\Support\Facades\Log;
  */
 class TriageToolExecutor
 {
+    use HandlesWikiTools;
+
     private Ticket $ticket;
 
-    private int $clientId;
+    // Read by HandlesWikiTools; always set from the ticket (triage wiki scope is never global-only).
+    protected int $clientId;
 
     public function __construct(Ticket $ticket)
     {
@@ -123,6 +127,11 @@ class TriageToolExecutor
             // DNS tools (always available, no client scope required)
             'dns_lookup' => \App\Services\Dns\DnsToolkit::lookup($input['hostname'] ?? '', $input['type'] ?? ''),
             'dns_email_health' => \App\Services\Dns\DnsToolkit::emailHealth($input['domain'] ?? ''),
+
+            // Wiki retrieval tools (client-scoped + global; spec §6)
+            'wiki_list_pages' => $this->wikiListPages(),
+            'wiki_search' => $this->wikiSearch($input),
+            'wiki_get_page' => $this->wikiGetPage($input),
 
             default => ['error' => "Unknown tool: {$toolName}"],
         };

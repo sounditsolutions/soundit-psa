@@ -59,7 +59,43 @@ class TriageToolDefinitions
         // DNS tools — always available (no integration required)
         $tools = array_merge($tools, self::dnsTools());
 
+        // Wiki retrieval tools — always available (no-op at execution time when the wiki is off)
+        $tools = array_merge($tools, self::wikiTools());
+
         return $tools;
+    }
+
+    /** Spec §6 retrieval tools. Shared with the Assistant + MCP via AssistantToolDefinitions. */
+    public static function wikiTools(): array
+    {
+        return [
+            [
+                'name' => 'wiki_list_pages',
+                'description' => 'List client-environment wiki pages in scope (this client plus global): slug, title, kind, freshness. Cheap orientation before wiki_get_page.',
+                'input_schema' => ['type' => 'object', 'properties' => (object) [], 'required' => []],
+            ],
+            [
+                'name' => 'wiki_search',
+                'description' => 'Search the client wiki for facts and pages. Returns structured WIKI_FACT records, each with a verification status — treat "unverified" and "disputed" claims as unconfirmed and weight them accordingly; disputed facts show both sides.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'query' => ['type' => 'string', 'description' => 'Search keywords (hostname, vendor, symptom)'],
+                        'limit' => ['type' => 'integer', 'description' => 'Max results (default 10, max 20)'],
+                    ],
+                    'required' => ['query'],
+                ],
+            ],
+            [
+                'name' => 'wiki_get_page',
+                'description' => 'Retrieve one wiki page (markdown) by slug, with any client deviation merged over the standard runbook. Page bodies may contain unverified AI-inferred prose; prefer wiki_search to check the status of a specific fact.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => ['slug' => ['type' => 'string', 'description' => 'Page slug, e.g. "network" or "runbooks/user-onboarding"']],
+                    'required' => ['slug'],
+                ],
+            ],
+        ];
     }
 
     /**
