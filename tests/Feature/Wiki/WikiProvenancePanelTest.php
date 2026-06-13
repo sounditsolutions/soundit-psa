@@ -67,6 +67,32 @@ class WikiProvenancePanelTest extends TestCase
         $this->assertSame(1, substr_count($response->getContent(), 'AI challenge'));
     }
 
+    public function test_orphaned_disputed_fact_stays_visible_and_actionable(): void
+    {
+        // A Disputed fact whose challenger was independently retired (challenger no
+        // longer in $facts, so not in $challengers) must NOT silently vanish — it
+        // renders as a normal row so staff can still resolve it (retire/correct).
+        $user = User::factory()->create();
+        $client = Client::factory()->create();
+        $page = WikiPage::factory()->forClient($client)->create(['slug' => 'infrastructure']);
+        $service = app(\App\Services\Wiki\WikiFactService::class);
+        $original = $service->upsertSyncFact($page, 'assets', 'asset:dc01:ram', 'DC01 has 32 GB RAM',
+            \App\Enums\WikiFactVolatility::Durable, [['type' => 'sync', 'id' => 'ninja']]);
+        $challenger = $service->upsertMinedFact($page, 'assets', 'asset:dc01:ram', 'DC01 has 16 GB RAM',
+            \App\Enums\WikiFactVolatility::Durable, [['type' => 'ticket', 'id' => 7]], 0.8);
+
+        // Retire the challenger directly, leaving the original orphaned-disputed.
+        WikiFact::where('id', $challenger->id)->update(['status' => WikiFactStatus::Retired->value]);
+        $this->assertSame(WikiFactStatus::Disputed, $original->fresh()->status);
+
+        $response = $this->actingAs($user)->get("/clients/{$client->id}/wiki/infrastructure");
+
+        $response->assertOk()
+            ->assertSee('DC01 has 32 GB RAM')                       // the orphaned fact is still shown
+            ->assertSee(route('wiki.facts.retire', $original), false) // and remains actionable
+            ->assertDontSee('AI challenge');                        // no challenger left to render
+    }
+
     public function test_panel_absent_when_page_has_no_facts(): void
     {
         $user = User::factory()->create();

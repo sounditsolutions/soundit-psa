@@ -37,7 +37,12 @@
                         <button class="btn btn-outline-danger btn-sm">Dismiss</button>
                     </form>
                 </div>
-            @elseif ($fact->status !== \App\Enums\WikiFactStatus::Disputed)
+            @else
+                {{-- Non-disputed facts AND orphaned-disputed facts (status=Disputed but the
+                     challenger was independently retired, so it isn't in $challengers) render
+                     as a normal row. The orphaned case would otherwise fall through both
+                     branches and silently vanish, stranding the fact with no way to resolve it.
+                     The "Disputed" badge signals the stale state; the actions let staff clear it. --}}
                 <div class="d-flex align-items-start justify-content-between gap-2 py-1 border-bottom">
                     <div class="small">
                         {{ $fact->statement }}
