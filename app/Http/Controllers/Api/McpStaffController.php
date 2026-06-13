@@ -138,9 +138,10 @@ class McpStaffController extends Controller
         $allTools = array_values($merged);
 
         // find_persons / find_assets accept an OPTIONAL client_id — they
-        // cross-client search when omitted. All other client-scoped tools
-        // require it.
-        $clientIdOptionalFor = ['find_persons', 'find_assets'];
+        // cross-client search when omitted. The wiki tools accept an optional
+        // client_id too: omitting it scopes to GLOBAL-only content (spec §6).
+        // All other client-scoped tools require it.
+        $clientIdOptionalFor = ['find_persons', 'find_assets', 'wiki_list_pages', 'wiki_search', 'wiki_get_page'];
 
         $translated = array_map(function ($t) use ($generalNames, $clientIdOptionalFor) {
             $schema = $t['input_schema'] ?? ['type' => 'object', 'properties' => new \stdClass];
@@ -193,7 +194,12 @@ class McpStaffController extends Controller
         // Extract client_id from the arguments — this is how client-scoped
         // tools get their context in the MCP world. Strip it before dispatch
         // so it doesn't get passed to tools that don't expect it.
-        $clientId = isset($arguments['client_id']) ? (int) $arguments['client_id'] : null;
+        //
+        // Isolation control (spec §6): only a positive, numeric client_id is
+        // honored. Anything malformed — 0, negative, non-numeric "garbage" —
+        // collapses to null (GLOBAL-only scope), never a `client_id = 0` query.
+        $clientId = (isset($arguments['client_id']) && is_numeric($arguments['client_id']) && (int) $arguments['client_id'] > 0)
+            ? (int) $arguments['client_id'] : null;
         unset($arguments['client_id']);
 
         // Service-account identity. The triage system user is repurposed here —

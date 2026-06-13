@@ -16,6 +16,7 @@ use App\Services\Level\LevelClient;
 use App\Services\Mesh\MeshClient;
 use App\Services\Ninja\NinjaClient;
 use App\Services\TicketService;
+use App\Services\Wiki\HandlesWikiTools;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -24,9 +25,12 @@ use Illuminate\Support\Facades\Log;
  */
 class AssistantToolExecutor
 {
+    use HandlesWikiTools;
+
     private ?Ticket $ticket;
 
-    private ?int $clientId;
+    // Read by HandlesWikiTools; nullable here means global-only wiki scope (spec §6).
+    protected ?int $clientId;
 
     private ?Client $client;
 
@@ -116,6 +120,11 @@ class AssistantToolExecutor
             // DNS tools (always available, no client scope required)
             'dns_lookup' => \App\Services\Dns\DnsToolkit::lookup($input['hostname'] ?? '', $input['type'] ?? ''),
             'dns_email_health' => \App\Services\Dns\DnsToolkit::emailHealth($input['domain'] ?? ''),
+
+            // Wiki retrieval tools (§6; null clientId → global-only, not an error)
+            'wiki_list_pages' => $this->wikiListPages(),
+            'wiki_search' => $this->wikiSearch($input),
+            'wiki_get_page' => $this->wikiGetPage($input),
 
             default => ['error' => "Unknown tool: {$toolName}"],
         };
