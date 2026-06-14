@@ -50,39 +50,60 @@
                      partner was independently retired, so it is absent from $facts) render as a
                      normal row. The orphaned case would otherwise fall through every branch and
                      silently vanish, stranding the fact with no way to resolve it. The "Disputed"
-                     badge signals the stale state; the actions let staff clear it. --}}
-                <div class="d-flex align-items-start justify-content-between gap-2 py-1 border-bottom">
-                    <div class="small">
-                        {{ $fact->statement }}
+                     badge signals the stale state; the actions let staff clear it.
+
+                     NOTE: $facts excludes Retired (controller: whereNot('status', Retired)).
+                     psa-ux48: statement gets its OWN full-width line — badge above, statement
+                     below, source refs below that, action buttons in a row beneath. The
+                     Correct/Retire <details> editors open full-width in their own block. --}}
+                <div class="wiki-fact mb-3 pb-2 border-bottom">
+                    {{-- Badge on its own line (above statement) --}}
+                    <div class="mb-1">
                         <span class="badge {{ $fact->status->badgeClass() }}">{{ $fact->status->label() }}</span>
-                        <span class="text-muted">
-                            {{ collect($fact->source_refs)->map(fn ($r) => ($r['type'] ?? '?').' #'.($r['id'] ?? '?'))->implode(', ') }}
-                        </span>
                     </div>
-                    <div class="text-nowrap">
+                    {{-- Statement: own full-width line — no badge crowding --}}
+                    <div class="wiki-fact-statement small mb-1">{{ $fact->statement }}</div>
+                    {{-- Source refs --}}
+                    <div class="small text-muted mb-2">
+                        {{ collect($fact->source_refs)->map(fn ($r) => ($r['type'] ?? '?').' #'.($r['id'] ?? '?'))->implode(', ') }}
+                    </div>
+                    {{-- Inline action buttons (Confirm only — Correct/Retire summaries here,
+                         but their expanded forms open below in wiki-fact-editors). --}}
+                    <div class="wiki-fact-actions d-flex flex-wrap gap-2 align-items-center">
                         @if ($fact->status === \App\Enums\WikiFactStatus::Unverified)
                             <form method="POST" action="{{ route('wiki.facts.confirm', $fact) }}" class="d-inline">
                                 @csrf
                                 <button class="btn btn-outline-secondary btn-sm" title="Confirm">Confirm</button>
                             </form>
                         @endif
-                        <details class="d-inline-block">
-                            <summary class="btn btn-outline-secondary btn-sm">Correct</summary>
-                            <form method="POST" action="{{ route('wiki.facts.correct', $fact) }}" class="mt-1">
+                        <button class="btn btn-outline-secondary btn-sm"
+                                type="button"
+                                data-bs-toggle="collapse"
+                                data-bs-target="#correct-{{ $fact->id }}"
+                                aria-expanded="false">Correct</button>
+                        <button class="btn btn-outline-danger btn-sm"
+                                type="button"
+                                data-bs-toggle="collapse"
+                                data-bs-target="#retire-{{ $fact->id }}"
+                                aria-expanded="false">Retire</button>
+                    </div>
+                    {{-- Full-width editors — open below the action row, not inside it --}}
+                    <div class="wiki-fact-editors">
+                        <div id="correct-{{ $fact->id }}" class="collapse mt-2">
+                            <form method="POST" action="{{ route('wiki.facts.correct', $fact) }}">
                                 @csrf
                                 @method('PATCH')
                                 <input name="statement" class="form-control form-control-sm mb-1" value="{{ $fact->statement }}" maxlength="300">
                                 <button class="btn btn-outline-secondary btn-sm">Save</button>
                             </form>
-                        </details>
-                        <details class="d-inline-block">
-                            <summary class="btn btn-outline-danger btn-sm">Retire</summary>
-                            <span class="small">Retire?</span>
+                        </div>
+                        <div id="retire-{{ $fact->id }}" class="collapse mt-2">
+                            <span class="small">Retire this fact?</span>
                             <form method="POST" action="{{ route('wiki.facts.retire', $fact) }}" class="d-inline">
                                 @csrf
-                                <button class="btn btn-outline-danger btn-sm">Yes</button>
+                                <button class="btn btn-outline-danger btn-sm">Yes, retire</button>
                             </form>
-                        </details>
+                        </div>
                     </div>
                 </div>
             @endif

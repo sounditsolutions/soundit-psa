@@ -67,14 +67,14 @@ class WikiController extends Controller implements HasMiddleware
             $global = WikiPage::active()->globalScope()->where('slug', $slug)->firstOrFail();
             $merged = $cascade->mergedView($global, $client->id);
 
-            return view('wiki.show', [
+            return view('wiki.show', array_merge($this->pageNavVars($global, $client), [
                 'page' => $global, 'client' => $client,
                 'html' => $renderer->render($global, $merged['body_md']),
                 'sectionSummaries' => [],
                 'backlinks' => $global->backlinks()->with('fromPage')->get(),
                 'deviationAnchors' => $merged['deviation_anchors'],
                 'facts' => collect(),
-            ]);
+            ]));
         }
 
         // A deviation page viewed in client context renders merged with its parent (default on).
@@ -83,14 +83,14 @@ class WikiController extends Controller implements HasMiddleware
         if ($page->parent_page_id && $request->boolean('merged', true) && $page->parent) {
             $merged = $cascade->mergedView($page->parent, $client->id);
 
-            return view('wiki.show', [
+            return view('wiki.show', array_merge($this->pageNavVars($page, $client), [
                 'page' => $page, 'client' => $client,
                 'html' => $renderer->render($page, $merged['body_md']),
                 'sectionSummaries' => [],
                 'backlinks' => $page->backlinks()->with('fromPage')->get(),
                 'deviationAnchors' => $merged['deviation_anchors'],
                 'facts' => collect(),
-            ]);
+            ]));
         }
 
         return $this->renderShow($page, $client, $renderer);
@@ -98,7 +98,7 @@ class WikiController extends Controller implements HasMiddleware
 
     private function renderShow(WikiPage $page, ?Client $client, WikiMarkdown $renderer)
     {
-        return view('wiki.show', [
+        return view('wiki.show', array_merge($this->pageNavVars($page, $client), [
             'page' => $page,
             'client' => $client,
             'html' => $renderer->render($page),
@@ -109,7 +109,49 @@ class WikiController extends Controller implements HasMiddleware
                 ->whereNot('status', \App\Enums\WikiFactStatus::Retired->value)
                 ->orderBy('section_anchor')->orderBy('subject_key')
                 ->get(),
-        ]);
+        ]));
+    }
+
+    /**
+     * psa-7ph7: variables for the _page_nav partial (siblings, index link, search).
+     * Shared by renderShow() and the cascade fallback paths in clientShow().
+     *
+     * @return array{siblings: array<int, array{title:string,url:string,active:bool}>, indexUrl: string, searchAction: string, searchClientId: int|null}
+     */
+    private function pageNavVars(WikiPage $page, ?Client $client): array
+    {
+        return [
+            'siblings' => $this->pageSiblings($page, $client),
+            'indexUrl' => $client ? route('clients.wiki.index', $client) : route('wiki.index'),
+            'searchAction' => route('wiki.search'),
+            'searchClientId' => $client?->id,
+        ];
+    }
+
+    /**
+     * psa-7ph7: sibling pages in the same scope, ordered by kind/title, current page flagged active.
+     *
+     * @return array<int, array{title: string, url: string, active: bool}>
+     */
+    private function pageSiblings(WikiPage $page, ?Client $client): array
+    {
+        $query = $client
+            ? WikiPage::active()->forClient($client->id)
+            : WikiPage::active()->globalScope();
+
+        return $query
+            ->orderBy('kind')
+            ->orderBy('title')
+            ->get()
+            ->map(fn ($p) => [
+                'title' => $p->title,
+                'url' => $client
+                    ? route('clients.wiki.show', [$client, $p->slug])
+                    : route('wiki.show', $p->slug),
+                'active' => $p->id === $page->id,
+            ])
+            ->values()
+            ->all();
     }
 
     /**
