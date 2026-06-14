@@ -127,9 +127,10 @@ class TicketService
                 $ticket->resolved_at = null;
             }
 
-            // Set resolution text
+            // Set resolution text; a human-provided resolution always clears the AI-drafted marker
             if ($resolution) {
                 $ticket->resolution = $resolution;
+                $ticket->resolution_ai_drafted = false;
             }
 
             $ticket->status = $newStatus;

@@ -56,7 +56,11 @@
         @if($ticket->resolution)
             <div class="card card-static shadow-sm mb-3 border-start border-3 border-success">
                 <div class="card-body">
-                    <label class="form-label small text-muted mb-1">Resolution</label>
+                    <label class="form-label small text-muted mb-1">Resolution
+                        @if($ticket->resolution_ai_drafted)
+                            <span class="badge bg-info ms-2">AI-drafted · review</span>
+                        @endif
+                    </label>
                     <div class="note-body">{!! App\Helpers\MarkdownRenderer::render($ticket->resolution) !!}</div>
                 </div>
             </div>

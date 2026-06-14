@@ -19,6 +19,7 @@ class TicketFactory extends Factory
             'subject' => fake()->sentence(6),
             'description' => fake()->paragraph(),
             'resolution' => null,
+            'resolution_ai_drafted' => false,
             'source' => TicketSource::Manual->value,
             'type' => TicketType::Incident->value,
             'status' => TicketStatus::Closed->value,
