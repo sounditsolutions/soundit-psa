@@ -4,6 +4,7 @@ namespace App\Observers;
 
 use App\Enums\TicketSource;
 use App\Enums\TicketStatus;
+use App\Jobs\GenerateTicketResolution;
 use App\Jobs\MineTicketKnowledge;
 use App\Jobs\RunTriagePipeline;
 use App\Jobs\SendT2TCallback;
@@ -60,6 +61,20 @@ class TicketObserver
             && WikiConfig::autoMineEnabled()
         ) {
             MineTicketKnowledge::dispatch($ticket->id);
+        }
+
+        // Auto-fallback: if a ticket reaches a terminal state with NO resolution, queue a job
+        // to AI-draft one so the wiki mining loop always has something to mine (spec §T4).
+        // Keyed on wasChanged('status') — the status *transition* — so when the job later
+        // writes `resolution` (status unchanged), this branch does NOT re-fire → no loop.
+        // The mining branch above uses wasChanged('resolution'), so it DOES fire on that save.
+        if (
+            $isTerminal
+            && $ticket->wasChanged('status')
+            && empty($ticket->resolution)
+            && WikiConfig::autoMineEnabled()
+        ) {
+            GenerateTicketResolution::dispatch($ticket->id);
         }
     }
 }
