@@ -113,7 +113,10 @@ class WikiController extends Controller implements HasMiddleware
     }
 
     /**
-     * §8.1.1: ambient per-section counts ("3 unverified · 1 disputed"), zero-state silent.
+     * §8.1.1: ambient per-section counts ("3 unverified · 1 disputed · 2 stale"), zero-state silent.
+     *
+     * Staleness is a computed predicate (not a status), so stale facts are fetched via
+     * WikiFact::stale() per page and merged into the per-anchor parts separately.
      *
      * @return array<string, string>
      */
@@ -124,35 +127,52 @@ class WikiController extends Controller implements HasMiddleware
             ->get()
             ->groupBy('section_anchor');
 
+        // Staleness is computed — cannot be folded into the whereIn above.
+        $staleByAnchor = WikiFact::stale()
+            ->where('page_id', $page->id)
+            ->get()
+            ->groupBy('section_anchor');
+
+        // Union of all anchors that have any counts worth showing.
+        $allAnchors = $rows->keys()->merge($staleByAnchor->keys())->unique();
+
         $summaries = [];
-        foreach ($rows as $anchor => $facts) {
+        foreach ($allAnchors as $anchor) {
             $parts = [];
+            $facts = $rows->get($anchor, collect());
             $unverified = $facts->where('status', WikiFactStatus::Unverified)->count();
             $disputed = $facts->where('status', WikiFactStatus::Disputed)->count();
+            $stale = $staleByAnchor->get($anchor, collect())->count();
+
             if ($unverified) {
                 $parts[] = "{$unverified} unverified";
             }
             if ($disputed) {
                 $parts[] = "{$disputed} disputed";
             }
-            $summaries[$anchor] = implode(' · ', $parts);
+            if ($stale) {
+                $parts[] = "{$stale} stale";
+            }
+
+            if ($parts) {
+                $summaries[$anchor] = implode(' · ', $parts);
+            }
         }
 
         return $summaries;
     }
 
-    /** @return array{unverified: int, disputed: int} */
+    /** @return array{unverified: int, disputed: int, stale: int} */
     private function healthCounts(?int $clientId): array
     {
-        $query = WikiFact::query()->when(
-            $clientId,
-            fn ($q) => $q->where('client_id', $clientId),
-            fn ($q) => $q->whereNull('client_id'),
-        );
+        $scope = fn ($q) => $clientId
+            ? $q->where('client_id', $clientId)
+            : $q->whereNull('client_id');
 
         return [
-            'unverified' => (clone $query)->where('status', WikiFactStatus::Unverified->value)->count(),
-            'disputed' => (clone $query)->where('status', WikiFactStatus::Disputed->value)->count(),
+            'unverified' => WikiFact::where('status', WikiFactStatus::Unverified->value)->tap($scope)->count(),
+            'disputed' => WikiFact::where('status', WikiFactStatus::Disputed->value)->tap($scope)->count(),
+            'stale' => WikiFact::stale()->tap($scope)->count(),
         ];
     }
 
