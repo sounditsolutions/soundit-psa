@@ -277,3 +277,12 @@ Schedule::command('attachments:clean-orphans')
     ->dailyAt('04:00')
     ->withoutOverlapping()
     ->runInBackground();
+
+// Wiki — nightly maintenance sweeps (staleness/contradiction/link-lint/open-ticket/stale-only regen)
+// withoutOverlapping(60): 60-minute overlap-lock guard for a scheduled command.
+// NOT ->expireAfter() — that is queue-middleware-only and throws BadMethodCallException on Schedule events.
+Schedule::command('wiki:maintain')
+    ->dailyAt('03:00')
+    ->withoutOverlapping(60)
+    ->runInBackground()
+    ->when(fn () => \App\Support\WikiConfig::maintenanceEnabled());

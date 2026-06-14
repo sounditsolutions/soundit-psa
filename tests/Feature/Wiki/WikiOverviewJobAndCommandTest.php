@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Wiki;
 
+use App\Enums\WikiComposeOutcome;
 use App\Jobs\ComposeClientOverview;
 use App\Models\Client;
 use App\Models\Setting;
@@ -24,7 +25,8 @@ class WikiOverviewJobAndCommandTest extends TestCase
     {
         $client = Client::factory()->create();
         $this->mock(WikiOverviewComposer::class, fn (MockInterface $m) => $m->shouldReceive('compose')->once()
-            ->with(\Mockery::on(fn ($c) => $c->id === $client->id)));
+            ->with(\Mockery::on(fn ($c) => $c->id === $client->id))
+            ->andReturn(WikiComposeOutcome::Composed));
         (new ComposeClientOverview($client->id))->handle(app(WikiOverviewComposer::class));
     }
 
@@ -38,7 +40,8 @@ class WikiOverviewJobAndCommandTest extends TestCase
     public function test_command_all_composes_every_client(): void
     {
         Client::factory()->count(3)->create();
-        $this->mock(WikiOverviewComposer::class, fn (MockInterface $m) => $m->shouldReceive('compose')->times(3));
+        $this->mock(WikiOverviewComposer::class, fn (MockInterface $m) => $m->shouldReceive('compose')->times(3)
+            ->andReturn(WikiComposeOutcome::Composed));
         $this->artisan('wiki:overview', ['--all' => true])->assertExitCode(0);
     }
 
@@ -47,7 +50,8 @@ class WikiOverviewJobAndCommandTest extends TestCase
         $target = Client::factory()->create();
         Client::factory()->create(); // a second client that must NOT be composed
         $this->mock(WikiOverviewComposer::class, fn (MockInterface $m) => $m->shouldReceive('compose')->once()
-            ->with(\Mockery::on(fn ($c) => $c->id === $target->id)));
+            ->with(\Mockery::on(fn ($c) => $c->id === $target->id))
+            ->andReturn(WikiComposeOutcome::Composed));
         $this->artisan('wiki:overview', ['client' => $target->id])->assertExitCode(0);
     }
 
