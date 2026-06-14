@@ -2,6 +2,23 @@
 
 @section('content')
 <div class="container-fluid">
+    {{-- psa-7ph7: breadcrumb with CLICKABLE segments — scope → index → current.
+         This is the ONLY back-to-index affordance (no redundant in-card back-link). --}}
+    <nav aria-label="breadcrumb" class="mb-2">
+        <ol class="breadcrumb">
+            @if ($client)
+                <li class="breadcrumb-item">
+                    <a href="{{ route('clients.wiki.index', $client) }}">{{ $client->name }} — Wiki</a>
+                </li>
+            @else
+                <li class="breadcrumb-item">
+                    <a href="{{ route('wiki.index') }}">Wiki</a>
+                </li>
+            @endif
+            <li class="breadcrumb-item active" aria-current="page">{{ $page->title }}</li>
+        </ol>
+    </nav>
+
     <div class="d-flex align-items-center justify-content-between mb-3">
         <div>
             <h1 class="h3 mb-0">{{ $page->title }}</h1>
@@ -40,6 +57,15 @@
             <div class="card"><div class="card-body wiki-content">{!! $html !!}</div></div>
         </div>
         <div class="col-lg-3">
+            {{-- psa-7ph7: page nav partial — always present (index link, sibling list, search).
+                 Rendered first so it appears above the conditional backlinks card. --}}
+            @include('wiki._page_nav', [
+                'siblings'       => $siblings,
+                'indexUrl'       => $indexUrl,
+                'searchAction'   => $searchAction,
+                'searchClientId' => $searchClientId ?? null,
+            ])
+
             @if ($backlinks->isNotEmpty())
                 <div class="card">
                     <div class="card-header small text-uppercase text-muted">Linked from</div>

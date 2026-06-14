@@ -67,14 +67,14 @@ class WikiController extends Controller implements HasMiddleware
             $global = WikiPage::active()->globalScope()->where('slug', $slug)->firstOrFail();
             $merged = $cascade->mergedView($global, $client->id);
 
-            return view('wiki.show', [
+            return view('wiki.show', array_merge($this->pageNavVars($global, $client), [
                 'page' => $global, 'client' => $client,
                 'html' => $renderer->render($global, $merged['body_md']),
                 'sectionSummaries' => [],
                 'backlinks' => $global->backlinks()->with('fromPage')->get(),
                 'deviationAnchors' => $merged['deviation_anchors'],
                 'facts' => collect(),
-            ]);
+            ]));
         }
 
         // A deviation page viewed in client context renders merged with its parent (default on).
@@ -83,14 +83,14 @@ class WikiController extends Controller implements HasMiddleware
         if ($page->parent_page_id && $request->boolean('merged', true) && $page->parent) {
             $merged = $cascade->mergedView($page->parent, $client->id);
 
-            return view('wiki.show', [
+            return view('wiki.show', array_merge($this->pageNavVars($page, $client), [
                 'page' => $page, 'client' => $client,
                 'html' => $renderer->render($page, $merged['body_md']),
                 'sectionSummaries' => [],
                 'backlinks' => $page->backlinks()->with('fromPage')->get(),
                 'deviationAnchors' => $merged['deviation_anchors'],
                 'facts' => collect(),
-            ]);
+            ]));
         }
 
         return $this->renderShow($page, $client, $renderer);
@@ -98,7 +98,7 @@ class WikiController extends Controller implements HasMiddleware
 
     private function renderShow(WikiPage $page, ?Client $client, WikiMarkdown $renderer)
     {
-        return view('wiki.show', [
+        return view('wiki.show', array_merge($this->pageNavVars($page, $client), [
             'page' => $page,
             'client' => $client,
             'html' => $renderer->render($page),
@@ -109,11 +109,56 @@ class WikiController extends Controller implements HasMiddleware
                 ->whereNot('status', \App\Enums\WikiFactStatus::Retired->value)
                 ->orderBy('section_anchor')->orderBy('subject_key')
                 ->get(),
-        ]);
+        ]));
     }
 
     /**
-     * §8.1.1: ambient per-section counts ("3 unverified · 1 disputed"), zero-state silent.
+     * psa-7ph7: variables for the _page_nav partial (siblings, index link, search).
+     * Shared by renderShow() and the cascade fallback paths in clientShow().
+     *
+     * @return array{siblings: array<int, array{title:string,url:string,active:bool}>, indexUrl: string, searchAction: string, searchClientId: int|null}
+     */
+    private function pageNavVars(WikiPage $page, ?Client $client): array
+    {
+        return [
+            'siblings' => $this->pageSiblings($page, $client),
+            'indexUrl' => $client ? route('clients.wiki.index', $client) : route('wiki.index'),
+            'searchAction' => route('wiki.search'),
+            'searchClientId' => $client?->id,
+        ];
+    }
+
+    /**
+     * psa-7ph7: sibling pages in the same scope, ordered by kind/title, current page flagged active.
+     *
+     * @return array<int, array{title: string, url: string, active: bool}>
+     */
+    private function pageSiblings(WikiPage $page, ?Client $client): array
+    {
+        $query = $client
+            ? WikiPage::active()->forClient($client->id)
+            : WikiPage::active()->globalScope();
+
+        return $query
+            ->orderBy('kind')
+            ->orderBy('title')
+            ->get()
+            ->map(fn ($p) => [
+                'title' => $p->title,
+                'url' => $client
+                    ? route('clients.wiki.show', [$client, $p->slug])
+                    : route('wiki.show', $p->slug),
+                'active' => $p->id === $page->id,
+            ])
+            ->values()
+            ->all();
+    }
+
+    /**
+     * §8.1.1: ambient per-section counts ("3 unverified · 1 disputed · 2 stale"), zero-state silent.
+     *
+     * Staleness is a computed predicate (not a status), so stale facts are fetched via
+     * WikiFact::stale() per page and merged into the per-anchor parts separately.
      *
      * @return array<string, string>
      */
@@ -124,35 +169,52 @@ class WikiController extends Controller implements HasMiddleware
             ->get()
             ->groupBy('section_anchor');
 
+        // Staleness is computed — cannot be folded into the whereIn above.
+        $staleByAnchor = WikiFact::stale()
+            ->where('page_id', $page->id)
+            ->get()
+            ->groupBy('section_anchor');
+
+        // Union of all anchors that have any counts worth showing.
+        $allAnchors = $rows->keys()->merge($staleByAnchor->keys())->unique();
+
         $summaries = [];
-        foreach ($rows as $anchor => $facts) {
+        foreach ($allAnchors as $anchor) {
             $parts = [];
+            $facts = $rows->get($anchor, collect());
             $unverified = $facts->where('status', WikiFactStatus::Unverified)->count();
             $disputed = $facts->where('status', WikiFactStatus::Disputed)->count();
+            $stale = $staleByAnchor->get($anchor, collect())->count();
+
             if ($unverified) {
                 $parts[] = "{$unverified} unverified";
             }
             if ($disputed) {
                 $parts[] = "{$disputed} disputed";
             }
-            $summaries[$anchor] = implode(' · ', $parts);
+            if ($stale) {
+                $parts[] = "{$stale} stale";
+            }
+
+            if ($parts) {
+                $summaries[$anchor] = implode(' · ', $parts);
+            }
         }
 
         return $summaries;
     }
 
-    /** @return array{unverified: int, disputed: int} */
+    /** @return array{unverified: int, disputed: int, stale: int} */
     private function healthCounts(?int $clientId): array
     {
-        $query = WikiFact::query()->when(
-            $clientId,
-            fn ($q) => $q->where('client_id', $clientId),
-            fn ($q) => $q->whereNull('client_id'),
-        );
+        $scope = fn ($q) => $clientId
+            ? $q->where('client_id', $clientId)
+            : $q->whereNull('client_id');
 
         return [
-            'unverified' => (clone $query)->where('status', WikiFactStatus::Unverified->value)->count(),
-            'disputed' => (clone $query)->where('status', WikiFactStatus::Disputed->value)->count(),
+            'unverified' => WikiFact::where('status', WikiFactStatus::Unverified->value)->tap($scope)->count(),
+            'disputed' => WikiFact::where('status', WikiFactStatus::Disputed->value)->tap($scope)->count(),
+            'stale' => WikiFact::stale()->tap($scope)->count(),
         ];
     }
 

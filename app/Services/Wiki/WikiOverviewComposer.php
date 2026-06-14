@@ -3,6 +3,7 @@
 namespace App\Services\Wiki;
 
 use App\Enums\WikiAuthorType;
+use App\Enums\WikiComposeOutcome;
 use App\Enums\WikiFactSource;
 use App\Enums\WikiFactStatus;
 use App\Enums\WikiPageKind;
@@ -47,30 +48,37 @@ PROMPT;
         private readonly WikiRedactor $redactor,
     ) {}
 
-    public function compose(Client $client): void
+    /**
+     * Compose (or skip) the client's overview page.
+     *
+     * Returns a WikiComposeOutcome signal so callers can distinguish why the run
+     * stopped without probing the DB. Existing callers that already discard the
+     * void return are unaffected — PHP allows ignoring a return value.
+     */
+    public function compose(Client $client): WikiComposeOutcome
     {
         if (! WikiConfig::isEnabled()) {
-            return;
+            return WikiComposeOutcome::SkippedNoOverview;
         }
         $overview = WikiPage::forClient($client->id)->where('kind', WikiPageKind::Overview->value)->first();
         if (! $overview) {
-            return;
+            return WikiComposeOutcome::SkippedNoOverview;
         }
         if (WikiBudget::dailyLimitReached()) {
             Log::info('wiki overview skipped: daily token budget reached', ['client' => $client->id]);
 
-            return;
+            return WikiComposeOutcome::SkippedBudget;
         }
 
         $facts = $this->factsFor($client);
         if ($facts->isEmpty()) {
-            return;
+            return WikiComposeOutcome::SkippedNoOverview;
         }
 
         $digest = $this->factDigest($facts);
         $hash = hash('sha256', $digest);
         if (($overview->meta['composed_hash'] ?? null) === $hash) {
-            return; // fact set unchanged since last compose — nothing to do
+            return WikiComposeOutcome::SkippedUnchanged; // fact set unchanged since last compose — nothing to do
         }
 
         $run = WikiRun::create([
@@ -87,7 +95,7 @@ PROMPT;
         if ($body === '' || $this->redactor->scan($body) !== []) {
             $run->update(['status' => WikiRunStatus::Quarantined->value, 'ai_tokens_used' => $tokens]);
 
-            return;
+            return WikiComposeOutcome::Quarantined;
         }
 
         // updateBody writes body_md only; meta is a separate write on the same model.
@@ -99,6 +107,8 @@ PROMPT;
             'composed_hash' => $hash, 'composed_at' => now()->toIso8601String(),
         ])]);
         $run->update(['status' => WikiRunStatus::Completed->value, 'ai_tokens_used' => $tokens, 'stages_completed' => ['compose']]);
+
+        return WikiComposeOutcome::Composed;
     }
 
     /**

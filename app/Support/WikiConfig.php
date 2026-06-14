@@ -35,4 +35,26 @@ class WikiConfig
     {
         return (int) (Setting::getValue('wiki_daily_token_limit') ?: 500_000);
     }
+
+    public static function stalenessDaysVolatile(): int
+    {
+        return (int) (Setting::getValue('wiki_staleness_days_volatile') ?: 90);
+    }
+
+    /** Nightly maintenance defaults ON once the wiki is enabled (spec §9). */
+    public static function maintenanceEnabled(): bool
+    {
+        return self::isEnabled() && (bool) (Setting::getValue('wiki_maintenance_enabled') ?? true);
+    }
+
+    public static function backfillBatchSize(): int
+    {
+        return (int) (Setting::getValue('wiki_backfill_batch_size') ?: 25);
+    }
+
+    /** Open tickets idle longer than this are candidates for the stale-open-ticket sweep. */
+    public static function staleOpenTicketDays(): int
+    {
+        return (int) (Setting::getValue('wiki_stale_open_ticket_days') ?: 30);
+    }
 }

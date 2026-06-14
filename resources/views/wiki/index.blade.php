@@ -36,7 +36,7 @@
     @endif
 
     {{-- §8.1.4: health counters BELOW the content index, muted, zero-state silent --}}
-    @if (($health['unverified'] ?? 0) > 0 || ($health['disputed'] ?? 0) > 0)
+    @if (($health['unverified'] ?? 0) > 0 || ($health['disputed'] ?? 0) > 0 || ($health['stale'] ?? 0) > 0)
         <div class="mt-4 small text-muted">
             Needs review:
             @if ($health['unverified'] > 0)
@@ -44,6 +44,9 @@
             @endif
             @if ($health['disputed'] > 0)
                 <span class="badge bg-secondary">{{ $health['disputed'] }} disputed</span>
+            @endif
+            @if (($health['stale'] ?? 0) > 0)
+                <span class="badge bg-secondary">{{ $health['stale'] }} stale</span>
             @endif
         </div>
     @endif

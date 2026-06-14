@@ -164,13 +164,9 @@ class WikiFactService
                 'source_refs' => $sourceRefs,
                 'confidence' => $confidence,
                 'last_affirmed_at' => now(),
-                'disputed_with_fact_id' => $existing->id,
             ]);
 
-            $existing->update([
-                'status' => WikiFactStatus::Disputed,
-                'disputed_with_fact_id' => $challenger->id,
-            ]);
+            $this->pairAsDisputed($challenger, $existing);
 
             return $challenger;
         });
@@ -190,10 +186,15 @@ class WikiFactService
     /**
      * Retire a fact (human explicit removal). Does not use superseded_by_fact_id —
      * that is reserved for machine supersession; human retirement is a deliberate act.
+     * Records the retiring user when provided (HTTP path). Non-HTTP callers (supersession,
+     * correct()) set Retired inline via update() and are unaffected by the default null.
      */
-    public function retire(WikiFact $fact): void
+    public function retire(WikiFact $fact, ?User $user = null): void
     {
-        $fact->update(['status' => WikiFactStatus::Retired]);
+        $fact->update([
+            'status' => WikiFactStatus::Retired,
+            'retired_by' => $user?->id,
+        ]);
     }
 
     /**
@@ -315,6 +316,35 @@ class WikiFactService
         }
 
         return true;
+    }
+
+    /**
+     * Thin public wrapper — pairs the challenger and incumbent as Disputed via pairAsDisputed().
+     * Used by WikiMaintainService::contradictionSweep() to raise cross-run disputes without
+     * duplicating the merge-stage pairing logic. Both facts must already be persisted.
+     */
+    public function markDisputed(WikiFact $challenger, WikiFact $incumbent): void
+    {
+        DB::transaction(function () use ($challenger, $incumbent) {
+            $this->pairAsDisputed($challenger, $incumbent);
+        });
+    }
+
+    /**
+     * Set BOTH facts to Disputed and wire the symmetric disputed_with_fact_id link in one transaction.
+     * Extracted from upsertMinedFact so the same pairing logic is reused by markDisputed().
+     * Both rows must already be persisted. Idempotent on the status/link columns.
+     */
+    private function pairAsDisputed(WikiFact $a, WikiFact $b): void
+    {
+        $a->update([
+            'status' => WikiFactStatus::Disputed,
+            'disputed_with_fact_id' => $b->id,
+        ]);
+        $b->update([
+            'status' => WikiFactStatus::Disputed,
+            'disputed_with_fact_id' => $a->id,
+        ]);
     }
 
     /** Spec §5.2: deterministic normalization so wording drift can't defeat dedup. */

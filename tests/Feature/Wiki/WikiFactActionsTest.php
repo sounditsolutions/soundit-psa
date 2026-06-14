@@ -53,6 +53,16 @@ class WikiFactActionsTest extends TestCase
         $this->assertSame(WikiFactStatus::Retired, $this->fact->fresh()->status);
     }
 
+    public function test_retire_records_actor(): void
+    {
+        $this->actingAs($this->user)
+            ->post("/wiki-facts/{$this->fact->id}/retire")
+            ->assertRedirect();
+
+        $this->assertSame(WikiFactStatus::Retired, $this->fact->fresh()->status);
+        $this->assertSame($this->user->id, $this->fact->fresh()->retired_by);
+    }
+
     public function test_correct_creates_pinned_human_fact(): void
     {
         $this->actingAs($this->user)

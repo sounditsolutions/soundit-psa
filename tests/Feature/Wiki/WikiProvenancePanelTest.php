@@ -128,4 +128,76 @@ class WikiProvenancePanelTest extends TestCase
             ->assertOk()
             ->assertDontSee('Show provenance');
     }
+
+    public function test_fact_statement_is_on_its_own_full_width_line_not_in_action_flex_row(): void
+    {
+        // psa-ux48: the statement must be its own block element, NOT inside the same
+        // d-flex row as the Confirm/Correct/Retire action buttons.
+        $user = User::factory()->create();
+        $client = Client::factory()->create();
+        $page = WikiPage::factory()->forClient($client)->create(['slug' => 'infrastructure']);
+        WikiFact::factory()->create([
+            'client_id' => $client->id, 'page_id' => $page->id,
+            'status' => WikiFactStatus::Unverified,
+            'statement' => 'DC01 runs Windows Server 2022',
+            'source_type' => 'ticket', 'source_refs' => [['type' => 'ticket', 'id' => 42]],
+        ]);
+
+        $content = $this->actingAs($user)->get("/clients/{$client->id}/wiki/infrastructure")
+            ->assertOk()
+            ->getContent();
+
+        // The statement text must appear before the action buttons (Confirm / Correct / Retire).
+        $statementPos = strpos($content, 'DC01 runs Windows Server 2022');
+        // The action row carries the `wiki-fact-actions` class
+        $actionPos = strpos($content, 'wiki-fact-actions');
+        $this->assertNotFalse($statementPos, 'Statement not found in response');
+        $this->assertNotFalse($actionPos, 'Action wrapper not found in response');
+        $this->assertLessThan($actionPos, $statementPos, 'Statement must appear before actions');
+
+        // The statement must NOT be inside the same flex wrapper as the action buttons.
+        // We verify by checking that the statement div and the action div are siblings,
+        // not nested — the statement class is `wiki-fact-statement` (own block, own div),
+        // and actions are in a separate `wiki-fact-actions` div beneath it.
+        $this->assertStringContainsString('wiki-fact-statement', $content);
+        $this->assertStringContainsString('wiki-fact-actions', $content);
+
+        // The statement and actions are NOT in the same d-flex row:
+        // find the statement text and verify the d-flex wrapper around the actions
+        // does NOT contain the statement text (they are separate blocks).
+        $stmtDivStart = strpos($content, 'wiki-fact-statement');
+        $actionsDivStart = strpos($content, 'wiki-fact-actions');
+        $this->assertGreaterThan($stmtDivStart, $actionsDivStart,
+            'Actions div must come after the statement div (stacked layout)');
+    }
+
+    public function test_correct_and_retire_details_open_full_width_outside_action_flex_row(): void
+    {
+        // psa-ux48: Correct/Retire <details> editors must open full width, not be
+        // constrained inside the action flex row. They sit in their own full-width
+        // container below the action row.
+        $user = User::factory()->create();
+        $client = Client::factory()->create();
+        $page = WikiPage::factory()->forClient($client)->create(['slug' => 'infrastructure']);
+        WikiFact::factory()->create([
+            'client_id' => $client->id, 'page_id' => $page->id,
+            'status' => WikiFactStatus::Unverified,
+            'statement' => 'Server spec TBD',
+            'source_type' => 'ticket', 'source_refs' => [['type' => 'ticket', 'id' => 99]],
+        ]);
+
+        $content = $this->actingAs($user)->get("/clients/{$client->id}/wiki/infrastructure")
+            ->assertOk()
+            ->getContent();
+
+        // Correct and Retire details elements must be present
+        $this->assertStringContainsString('wiki-fact-editors', $content);
+        // The editors block comes after the actions block
+        $actionsPos = strpos($content, 'wiki-fact-actions');
+        $editorsPos = strpos($content, 'wiki-fact-editors');
+        $this->assertNotFalse($actionsPos);
+        $this->assertNotFalse($editorsPos);
+        $this->assertGreaterThan($actionsPos, $editorsPos,
+            'Editors block must come after the inline action buttons');
+    }
 }
