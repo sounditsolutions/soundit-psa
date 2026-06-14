@@ -18,6 +18,7 @@ use App\Models\TriageRun;
 use App\Models\User;
 use App\Services\RateLimitException;
 use App\Services\ReplyDraftService;
+use App\Services\TicketResolutionDrafter;
 use App\Services\TicketService;
 use App\Support\AiConfig;
 use App\Support\TriageConfig;
@@ -469,6 +470,42 @@ class TicketController extends Controller
             return response()->json(['error' => $e->getMessage()], 429);
         } catch (\Throwable $e) {
             Log::warning('[ReplyDraft] Draft generation failed', [
+                'ticket_id' => $ticket->id,
+                'error' => $e->getMessage(),
+            ]);
+
+            $message = match (true) {
+                str_contains($e->getMessage(), '529') => 'AI provider is temporarily overloaded. Try again in a minute or two.',
+                str_contains($e->getMessage(), '500 Internal Server Error') => 'AI provider returned a server error. This is usually temporary — try again shortly.',
+                str_contains($e->getMessage(), '401') || str_contains($e->getMessage(), '403') => 'AI API key is invalid or expired. Check Settings > Integrations.',
+                str_contains($e->getMessage(), '408') || str_contains($e->getMessage(), 'timed out') || str_contains($e->getMessage(), 'cURL error 28') => 'AI request timed out. The ticket may be too large, or the provider is slow. Try again.',
+                default => 'Failed to generate draft. Please try again or type manually.',
+            };
+
+            return response()->json(['error' => $message], 422);
+        }
+    }
+
+    public function draftResolution(Ticket $ticket)
+    {
+        if (! AiConfig::isConfigured()) {
+            return response()->json(['error' => 'AI is not configured. Set it up in Settings > Integrations.'], 422);
+        }
+
+        try {
+            $result = app(TicketResolutionDrafter::class)->draft($ticket, 'manual');
+
+            if ($result === null) {
+                return response()->json([
+                    'error' => "Couldn't draft a resolution from this ticket's notes — write one manually.",
+                ], 422);
+            }
+
+            return response()->json(['resolution' => $result]);
+        } catch (RateLimitException $e) {
+            return response()->json(['error' => $e->getMessage()], 429);
+        } catch (\Throwable $e) {
+            Log::warning('[ResolutionDraft] Draft generation failed', [
                 'ticket_id' => $ticket->id,
                 'error' => $e->getMessage(),
             ]);

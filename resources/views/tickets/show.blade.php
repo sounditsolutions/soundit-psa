@@ -1075,10 +1075,20 @@
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
-                    <label for="resolveResolution" class="form-label">Resolution summary <span class="text-muted">(recommended)</span></label>
+                    <div class="d-flex align-items-center justify-content-between mb-1">
+                        <label for="resolveResolution" class="form-label mb-0">Resolution summary <span class="text-muted">(recommended)</span></label>
+                        @if(\App\Support\AiConfig::isConfigured())
+                        <button type="button" class="btn btn-outline-secondary btn-sm" id="draftResolutionBtn"
+                                data-url="{{ route('tickets.draft-resolution', $ticket) }}"
+                                title="Draft with AI">
+                            <i class="bi bi-robot me-1"></i>Draft with AI
+                        </button>
+                        @endif
+                    </div>
                     <textarea name="resolution" id="resolveResolution" class="form-control" rows="3"
                               placeholder="How was this resolved?"></textarea>
                     <div class="form-text">A short summary is recorded on the ticket and feeds the client wiki — it helps future tickets.</div>
+                    <div class="mt-1 small text-danger d-none" id="draftResolutionError"></div>
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
@@ -1185,6 +1195,57 @@ document.addEventListener('DOMContentLoaded', function() {
         if (dropdownMenu) {
             dropdownMenu.addEventListener('click', function(e) { e.stopPropagation(); });
         }
+    }
+
+    // AI Draft Resolution
+    const draftResolutionBtn = document.getElementById('draftResolutionBtn');
+    if (draftResolutionBtn) {
+        draftResolutionBtn.addEventListener('click', function() {
+            const textarea = document.getElementById('resolveResolution');
+            const errorEl = document.getElementById('draftResolutionError');
+
+            // Overwrite protection
+            if (textarea && textarea.value.trim() && !confirm('Replace current text with AI draft?')) {
+                return;
+            }
+
+            const originalHtml = draftResolutionBtn.innerHTML;
+            draftResolutionBtn.disabled = true;
+            draftResolutionBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Drafting...';
+            if (errorEl) errorEl.classList.add('d-none');
+
+            fetch(draftResolutionBtn.dataset.url, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content,
+                    'Accept': 'application/json',
+                },
+                body: JSON.stringify({}),
+            })
+            .then(function(r) {
+                if (!r.ok) return r.json().then(function(d) { throw new Error(d.error || 'Request failed'); });
+                return r.json();
+            })
+            .then(function(data) {
+                if (textarea) {
+                    textarea.value = data.resolution;
+                    textarea.focus();
+                }
+            })
+            .catch(function(err) {
+                if (errorEl) {
+                    errorEl.textContent = err.message;
+                    errorEl.classList.remove('d-none');
+                } else {
+                    alert('Draft failed: ' + err.message);
+                }
+            })
+            .finally(function() {
+                draftResolutionBtn.disabled = false;
+                draftResolutionBtn.innerHTML = originalHtml;
+            });
+        });
     }
 
     // Move ticket panel
