@@ -542,14 +542,9 @@
                 {{-- Quick actions --}}
                 <div class="d-flex gap-2">
                     @if($ticket->status->isOpen())
-                        <form method="POST" action="{{ route('tickets.update-status', $ticket) }}">
-                            @csrf
-                            @method('PATCH')
-                            <input type="hidden" name="status" value="resolved">
-                            <button type="submit" class="btn btn-success btn-sm">
-                                <i class="bi bi-check-lg me-1"></i>Resolve
-                            </button>
-                        </form>
+                        <button type="button" class="btn btn-success btn-sm" data-bs-toggle="modal" data-bs-target="#resolveModal">
+                            <i class="bi bi-check-lg me-1"></i>Resolve
+                        </button>
                     @endif
                     @if($ticket->status !== App\Enums\TicketStatus::Closed)
                         <form method="POST" action="{{ route('tickets.update-status', $ticket) }}">
@@ -1057,6 +1052,35 @@
                     <i class="bi bi-play-fill me-1"></i>Run
                 </button>
             </div>
+        </div>
+    </div>
+</div>
+@endif
+
+{{-- Resolve modal — captures a resolution so the wiki can mine it --}}
+@if($ticket->status->isOpen())
+<div class="modal fade" id="resolveModal" tabindex="-1" aria-labelledby="resolveModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <form method="POST" action="{{ route('tickets.update-status', $ticket) }}">
+                @csrf
+                @method('PATCH')
+                <input type="hidden" name="status" value="resolved">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="resolveModalLabel">Resolve ticket</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <label for="resolveResolution" class="form-label">Resolution summary <span class="text-muted">(recommended)</span></label>
+                    <textarea name="resolution" id="resolveResolution" class="form-control" rows="3"
+                              placeholder="How was this resolved?"></textarea>
+                    <div class="form-text">A short summary is recorded on the ticket and feeds the client wiki — it helps future tickets.</div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-success"><i class="bi bi-check-lg me-1"></i>Resolve</button>
+                </div>
+            </form>
         </div>
     </div>
 </div>
