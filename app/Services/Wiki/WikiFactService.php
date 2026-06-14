@@ -190,10 +190,15 @@ class WikiFactService
     /**
      * Retire a fact (human explicit removal). Does not use superseded_by_fact_id —
      * that is reserved for machine supersession; human retirement is a deliberate act.
+     * Records the retiring user when provided (HTTP path). Non-HTTP callers (supersession,
+     * correct()) set Retired inline via update() and are unaffected by the default null.
      */
-    public function retire(WikiFact $fact): void
+    public function retire(WikiFact $fact, ?User $user = null): void
     {
-        $fact->update(['status' => WikiFactStatus::Retired]);
+        $fact->update([
+            'status' => WikiFactStatus::Retired,
+            'retired_by' => $user?->id,
+        ]);
     }
 
     /**

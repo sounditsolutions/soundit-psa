@@ -32,8 +32,7 @@ class WikiFactController extends Controller implements HasMiddleware
 
     public function retire(WikiFact $fact, WikiFactService $facts, WikiComposerService $composer)
     {
-        // Merged Task 5 API: retire(WikiFact) — human retirement takes no user arg.
-        $facts->retire($fact);
+        $facts->retire($fact, auth()->user());
         $composer->composeSection($fact->page->fresh(), $fact->section_anchor);
 
         return $this->backToPage($fact, 'Fact retired.');
