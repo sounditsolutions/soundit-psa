@@ -45,7 +45,11 @@ Verdicts: Security **approve-with-changes**, Architecture **approve-with-changes
 
 ---
 
-## ⚠️ Open product decision (resolve before Task 4 ships — recommended default baked in)
+## ⚠️ Open product decision — RESOLVED
+
+**DECIDED 2026-06-14 (Charlie): Ship Option A.** Task 4 implements the incremental page-nav affordances. Option B (consolidated single-scroll client-environment view) remains a deferred fast-follow tracked under **psa-s5bf**. The original framing is kept below for context.
+
+### (original) Open product decision (recommended default baked in)
 
 QA filed two linked navigation findings against the wiki UI:
 
