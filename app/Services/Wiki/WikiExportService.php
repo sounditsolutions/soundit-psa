@@ -73,8 +73,11 @@ class WikiExportService
      *   2. Resolve the nearest existing ancestor via realpath() — the leaf directory doesn't exist yet,
      *      so a plain realpath($base) returns false. Walking up defeats symlink escapes too.
      *   3. Require the resolved anchor to sit inside realpath(storage_path('app')).
-     *   4. Require the resolved anchor to NOT sit inside realpath(public_path()), which is the web
-     *      docroot (public/storage symlinks back into storage/app/public/).
+     *   4. Require the resolved anchor to NOT sit inside the web docroot — both realpath(public_path())
+     *      AND realpath(storage_path('app/public')). The latter is the symlink TARGET of public/storage
+     *      in a standard deploy, so a path resolving literally under storage/app/public/ is web-reachable
+     *      even though it passes the storage fence. Guard against realpath() returning false (the dir may
+     *      not exist) — only compare when it resolves.
      */
     private function safeBase(?string $path): string
     {
@@ -87,11 +90,17 @@ class WikiExportService
         $real = $this->realAncestor($base);
         $storage = realpath(storage_path('app'));
         $public = realpath(public_path());
+        $storagePublic = realpath(storage_path('app/public'));
 
-        // Check docroot FIRST — public/ is not under storage/app, so without this ordering the
-        // storage check fires first and the caller gets a less informative message.
+        // Check web-reachable locations FIRST — public/ is not under storage/app, so without this
+        // ordering the storage check fires first and the caller gets a less informative message.
+        // storage/app/public is the symlink target of public/storage, so it IS under the storage
+        // fence but still web-reachable; reject it explicitly.
         if ($public !== false && str_starts_with($real, $public)) {
             throw new \RuntimeException('Refusing to export under the web docroot.');
+        }
+        if ($storagePublic !== false && str_starts_with($real, $storagePublic)) {
+            throw new \RuntimeException('Refusing to export under storage/app/public (web-reachable via the public/storage symlink).');
         }
 
         if ($storage === false || ! str_starts_with($real, $storage)) {

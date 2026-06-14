@@ -123,6 +123,19 @@ class WikiExportTest extends TestCase
         app(WikiExportService::class)->export(path: $publicSub);
     }
 
+    // ── F2 — path fence: storage/app/public rejected (symlink target of public/storage) ──
+
+    public function test_rejects_path_under_storage_public(): void
+    {
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessageMatches('/web-reachable/i');
+
+        // storage/app/public is the symlink TARGET of public/storage — web-reachable even though
+        // it sits under the storage fence. Must be rejected.
+        $storagePublicSub = storage_path('app/public/wiki-exports');
+        app(WikiExportService::class)->export(path: $storagePublicSub);
+    }
+
     // ── F2 — path fence: traversal rejected ──────────────────────────────────
 
     public function test_rejects_traversal_path(): void
