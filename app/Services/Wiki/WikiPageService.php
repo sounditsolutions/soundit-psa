@@ -50,7 +50,20 @@ class WikiPageService
     public function updateBody(WikiPage $page, string $bodyMd, WikiAuthorType $author, ?int $authorId, string $changeSummary, ?array $sourceRefs = null): WikiPage
     {
         return DB::transaction(function () use ($page, $bodyMd, $author, $authorId, $changeSummary, $sourceRefs) {
-            $page->update(['body_md' => $bodyMd]);
+            $updates = ['body_md' => $bodyMd];
+
+            // Phase-5 residual: a human edit of an Overview body diverges from the last AI-composed
+            // text, making the stored composed_hash stale. Clear it so the next WikiOverviewComposer::
+            // compose() sees a hash mismatch and re-runs, rather than skipping a now-divergent body.
+            // Keep composed_at: the overview injection still uses it to decide whether to keep injecting
+            // until the next recompose regenerates a fresh hash.
+            if ($page->kind === WikiPageKind::Overview) {
+                $meta = $page->meta ?? [];
+                unset($meta['composed_hash']);
+                $updates['meta'] = $meta;
+            }
+
+            $page->update($updates);
             $this->writeRevision($page, $author, $authorId, $changeSummary, $sourceRefs);
             $this->rebuildLinks($page); // spec §5.2: synchronous, same transaction
 

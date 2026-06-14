@@ -87,16 +87,22 @@ class GeneralSettingsController extends Controller
         $validated = $request->validate([
             'wiki_enabled' => ['nullable', 'boolean'],
             'wiki_auto_mine' => ['nullable', 'boolean'],
+            'wiki_maintenance_enabled' => ['nullable', 'boolean'],
             'wiki_model' => ['nullable', 'string', 'max:100'],
             'wiki_max_tokens_per_run' => ['nullable', 'integer', 'min:1000', 'max:200000'],
             'wiki_daily_token_limit' => ['nullable', 'integer', 'min:10000', 'max:5000000'],
+            'wiki_staleness_days_volatile' => ['nullable', 'integer', 'min:1'],
+            'wiki_backfill_batch_size' => ['nullable', 'integer', 'min:1', 'max:500'],
         ]);
 
         Setting::setValue('wiki_enabled', $request->boolean('wiki_enabled') ? '1' : '0');
         Setting::setValue('wiki_auto_mine', $request->boolean('wiki_auto_mine') ? '1' : '0');
+        Setting::setValue('wiki_maintenance_enabled', $request->boolean('wiki_maintenance_enabled') ? '1' : '0');
         Setting::setValue('wiki_model', $validated['wiki_model'] ?? '');
         Setting::setValue('wiki_max_tokens_per_run', (string) ($validated['wiki_max_tokens_per_run'] ?? 50000));
         Setting::setValue('wiki_daily_token_limit', (string) ($validated['wiki_daily_token_limit'] ?? 500000));
+        Setting::setValue('wiki_staleness_days_volatile', (string) ($validated['wiki_staleness_days_volatile'] ?? 90));
+        Setting::setValue('wiki_backfill_batch_size', (string) ($validated['wiki_backfill_batch_size'] ?? 25));
 
         return redirect()->route('settings.general')->with('success', 'Wiki settings updated.');
     }

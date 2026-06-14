@@ -244,7 +244,11 @@
                     Auto-maintained client environment documentation. The master switch controls the whole module.
                     Mining spends AI tokens on each closed ticket, and a short hot-summary is recomposed after
                     tickets that change facts — both draw from one shared daily token budget (set below). Expect
-                    roughly $2–8/day at the default budgets; the daily ceiling is a hard cap on total wiki AI spend.
+                    roughly $2–8/day at the default budgets. Nightly maintenance recomposes only clients whose
+                    facts changed since the last run (hash-skip), so steady-state nightly cost is near-zero.
+                    <code>wiki:backfill</code> is a separate, operator-initiated, dry-run-first spend that
+                    populates history from closed tickets and respects the same daily ceiling. The daily
+                    ceiling is a hard cap on total wiki AI spend — no single operation can exceed it.
                 </p>
                 <form method="POST" action="{{ route('settings.general.wiki') }}">
                     @csrf
@@ -253,11 +257,18 @@
                                @checked(\App\Support\WikiConfig::isEnabled())>
                         <label class="form-check-label" for="wiki_enabled">Enable the Client Wiki module</label>
                     </div>
-                    <div class="form-check form-switch mb-3">
+                    <div class="form-check form-switch mb-2">
                         <input class="form-check-input" type="checkbox" id="wiki_auto_mine" name="wiki_auto_mine" value="1"
                                @checked((bool) \App\Models\Setting::getValue('wiki_auto_mine'))>
                         <label class="form-check-label" for="wiki_auto_mine">
                             Mine closed tickets into wiki facts (spends AI tokens; requires the module enabled above)
+                        </label>
+                    </div>
+                    <div class="form-check form-switch mb-3">
+                        <input class="form-check-input" type="checkbox" id="wiki_maintenance_enabled" name="wiki_maintenance_enabled" value="1"
+                               @checked(\App\Support\WikiConfig::maintenanceEnabled())>
+                        <label class="form-check-label" for="wiki_maintenance_enabled">
+                            Run nightly maintenance (staleness sweep, contradiction detection, stale-overview regen)
                         </label>
                     </div>
                     <div class="row g-3">
@@ -275,6 +286,18 @@
                             <label class="form-label" for="wiki_daily_token_limit">Daily token ceiling</label>
                             <input type="number" class="form-control" id="wiki_daily_token_limit" name="wiki_daily_token_limit"
                                    value="{{ \App\Support\WikiConfig::dailyTokenLimit() }}">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label" for="wiki_staleness_days_volatile">Staleness window (days)</label>
+                            <input type="number" class="form-control" id="wiki_staleness_days_volatile" name="wiki_staleness_days_volatile"
+                                   value="{{ \App\Support\WikiConfig::stalenessDaysVolatile() }}" min="1">
+                            <div class="form-text">Volatile facts un-reaffirmed longer than this are flagged stale (default 90).</div>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label" for="wiki_backfill_batch_size">Backfill batch size</label>
+                            <input type="number" class="form-control" id="wiki_backfill_batch_size" name="wiki_backfill_batch_size"
+                                   value="{{ \App\Support\WikiConfig::backfillBatchSize() }}" min="1" max="500">
+                            <div class="form-text">Max tickets dispatched per <code>wiki:backfill --execute</code> run (default 25).</div>
                         </div>
                     </div>
                     <button type="submit" class="btn btn-primary mt-3">Save Wiki Settings</button>
