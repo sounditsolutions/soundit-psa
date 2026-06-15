@@ -1,0 +1,56 @@
+{
+    "_meta": {
+        "description": "Trimmed, PINNED snapshot of the fields SoundPSA relies on from Tactical RMM's read API (the agent list/detail endpoint and the alerts poll endpoint). This is NOT a live dump — it is a best-effort pinned contract assembled from the field usage in app/Services/Tactical/* and the amidaware/tacticalrmm source, because this deployment has no live Tactical instance yet. It MUST be refreshed from a real `/api/schema/` (enable SWAGGER_ENABLED in Tactical, then GET <tactical>/api/schema/) before relying on it as an upstream-drift detector. See docs/INSTALL.md §9.",
+        "pinned_tactical_version": "1.5.0",
+        "source": "amidaware/tacticalrmm api/tacticalrmm (v1.5.0) + SoundPSA field usage",
+        "refreshed_at": "2026-06-15 (best-effort, never validated against a live instance)",
+        "refresh_command": "Enable SWAGGER_ENABLED in Tactical, then: curl -s https://<tactical-host>/api/schema/ > tests/Fixtures/tactical/api_schema.json (then trim to the agent + alert schemas)"
+    },
+    "openapi": "3.0.3",
+    "info": {
+        "title": "Tactical RMM API (trimmed pinned snapshot)",
+        "version": "1.5.0"
+    },
+    "components": {
+        "schemas": {
+            "AgentTable": {
+                "type": "object",
+                "description": "Fields returned by GET /agents/ (the list endpoint the daily sync consumes).",
+                "properties": {
+                    "agent_id": { "type": "string" },
+                    "hostname": { "type": "string" },
+                    "client_name": { "type": "string" },
+                    "site_name": { "type": "string" },
+                    "logged_username": { "type": "string", "nullable": true },
+                    "operating_system": { "type": "string", "nullable": true },
+                    "public_ip": { "type": "string", "nullable": true },
+                    "local_ips": { "type": "string", "nullable": true },
+                    "cpu_model": { "type": "array", "items": { "type": "string" } },
+                    "physical_disks": { "type": "array", "items": { "type": "string" } },
+                    "graphics": { "type": "string", "nullable": true },
+                    "make_model": { "type": "string", "nullable": true },
+                    "serial_number": { "type": "string", "nullable": true },
+                    "status": { "type": "string" },
+                    "version": { "type": "string" },
+                    "last_seen": { "type": "string", "format": "date-time", "nullable": true },
+                    "needs_reboot": { "type": "boolean" },
+                    "has_patches_pending": { "type": "boolean" },
+                    "monitoring_type": { "type": "string" }
+                }
+            },
+            "Alert": {
+                "type": "object",
+                "description": "Fields returned by GET/PATCH /alerts/ (the hourly reconciliation poll).",
+                "properties": {
+                    "id": { "type": "integer" },
+                    "resolved": { "type": "boolean" },
+                    "agent_id": { "type": "string", "nullable": true },
+                    "alert_time": { "type": "string", "format": "date-time", "nullable": true },
+                    "severity": { "type": "string" },
+                    "alert_type": { "type": "string" },
+                    "message": { "type": "string", "nullable": true }
+                }
+            }
+        }
+    }
+}
