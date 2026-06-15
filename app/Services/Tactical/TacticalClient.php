@@ -54,7 +54,7 @@ class TacticalClient
         return json_decode((string) $response->getBody(), true) ?? [];
     }
 
-    public function post(string $endpoint, array $body = []): array
+    public function post(string $endpoint, array $body = []): mixed
     {
         try {
             $response = $this->http->request('POST', $endpoint, [
@@ -251,8 +251,10 @@ class TacticalClient
      * failure raises TacticalClientException, which the action bus catches and
      * classifies (transport => offline, HTTP error => error).
      */
-    public function reboot(string $agentId): array
+    public function reboot(string $agentId): mixed
     {
+        // The reboot endpoint returns the JSON scalar "ok" (not an object), so the
+        // response is intentionally typed mixed — any 2xx is success; non-2xx throws.
         return $this->post("agents/{$agentId}/reboot/", []);
     }
 

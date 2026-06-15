@@ -106,10 +106,10 @@ class TacticalActionService
         try {
             $result = $action->execute($this->client, $agentId, $params);
         } catch (TacticalClientException $e) {
-            if ($e->isTransportFailure()) {
+            if ($this->isAgentOffline($e)) {
                 $result = TacticalActionResult::offline('Tactical agent is unreachable (offline)');
             } else {
-                // M2: an HTTP error (auth/4xx/5xx) is NEVER collapsed to offline.
+                // M2: a genuine HTTP error (auth/4xx/5xx) is NEVER collapsed to offline.
                 Log::error('[TacticalActionService] action failed with an HTTP error', [
                     'action' => $action->key(),
                     'agent_id' => $agentId,
@@ -126,6 +126,36 @@ class TacticalActionService
         return $this->audit(
             $action, $target, $actor, $label, $agentId, $params, $ticketId, $correlationId, $result,
         );
+    }
+
+    /**
+     * Is this failure the agent being unreachable (offline) vs. a genuine error?
+     *
+     * Transport failures (no HTTP response) are always offline. Additionally,
+     * Tactical signals an unreachable agent with an HTTP 400 whose body is a
+     * known marker (e.g. "Unable to contact the agent" / "natsdown") — confirmed
+     * against a live agent. Those classify as offline; everything else
+     * (401/403/404/5xx, or any other 400) stays a real error to surface.
+     */
+    private function isAgentOffline(TacticalClientException $e): bool
+    {
+        if ($e->isTransportFailure()) {
+            return true;
+        }
+
+        $body = strtolower((string) $e->responseBody());
+
+        if ($body === '') {
+            return false;
+        }
+
+        foreach (['unable to contact the agent', 'natsdown', 'agent is offline', 'nats timeout'] as $marker) {
+            if (str_contains($body, $marker)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
