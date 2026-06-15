@@ -9,6 +9,7 @@
     $showFilters = $showFilters ?? true;
     $showBulkActions = $showBulkActions ?? true;
     $columns = $columns ?? null; // null = show all columns
+    $closedTicketCount = $closedTicketCount ?? 0;
 @endphp
 
 @if($showFilters)
@@ -185,11 +186,23 @@
 @endif
 
 @if($tickets->isEmpty())
-    <div class="text-center py-5 text-muted">
-        <i class="bi bi-ticket-perforated" style="font-size: 3rem;"></i>
-        <p class="mt-3">No tickets found.</p>
-        <a href="{{ route('tickets.create', isset($prefilter['client_id']) ? ['client_id' => $prefilter['client_id']] : []) }}" class="btn btn-primary btn-sm">Create a Ticket</a>
-    </div>
+    @if(!($filters['show_closed'] ?? false) && $closedTicketCount > 0)
+        {{-- Open-tickets list is empty but closed tickets exist — avoid hiding service history. --}}
+        <div class="text-center py-5 text-muted">
+            <i class="bi bi-ticket-perforated" style="font-size: 3rem;"></i>
+            <p class="mt-3">No open tickets.</p>
+            <a href="{{ route($listRoute, array_merge($prefilter, request()->except('show_closed', 'page'), ['show_closed' => '1'])) }}"
+               class="btn btn-outline-secondary btn-sm">
+                Show closed ({{ $closedTicketCount }})
+            </a>
+        </div>
+    @else
+        <div class="text-center py-5 text-muted">
+            <i class="bi bi-ticket-perforated" style="font-size: 3rem;"></i>
+            <p class="mt-3">No tickets found.</p>
+            <a href="{{ route('tickets.create', isset($prefilter['client_id']) ? ['client_id' => $prefilter['client_id']] : []) }}" class="btn btn-primary btn-sm">Create a Ticket</a>
+        </div>
+    @endif
 @else
     @php
         $currentSort = $filters['sort'] ?? 'priority';

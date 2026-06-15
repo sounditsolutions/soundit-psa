@@ -128,4 +128,11 @@ class Invoice extends Model
 
         return true;
     }
+
+    public function isOverdue(): bool
+    {
+        return $this->status === InvoiceStatus::Posted
+            && $this->due_date !== null
+            && $this->due_date->isPast();
+    }
 }

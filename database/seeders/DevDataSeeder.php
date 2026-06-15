@@ -557,7 +557,7 @@ class DevDataSeeder extends Seeder
                 'os' => 'Windows Server 2022',
                 'os_version' => '10.0.20348',
                 'public_ip' => '203.0.113.'.random_int(1, 254),
-                'local_ips' => json_encode(['10.0.0.10']),
+                'local_ips' => ['10.0.0.10'],
                 'cpu' => 'Intel Xeon E-2336',
                 'make_model' => 'Dell PowerEdge T350',
                 'disk_summary' => '2x 1TB NVMe RAID1',

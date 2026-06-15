@@ -118,7 +118,13 @@
                             <td class="small text-end">${{ number_format($invoice->subtotal, 2) }}</td>
                             <td class="small text-end">${{ number_format($invoice->tax, 2) }}</td>
                             <td class="text-end fw-semibold">${{ number_format($invoice->total, 2) }}</td>
-                            <td><span class="badge {{ $invoice->status->badgeClass() }}">{{ $invoice->status->label() }}</span></td>
+                            <td>
+                                @if($invoice->isOverdue())
+                                    <span class="badge bg-danger">Overdue</span>
+                                @else
+                                    <span class="badge {{ $invoice->status->badgeClass() }}">{{ $invoice->status->label() }}</span>
+                                @endif
+                            </td>
                             <td>
                                 @if($invoice->stripe_sync_error || $invoice->qbo_sync_error)
                                     <i class="bi bi-exclamation-triangle-fill text-danger" title="{{ $invoice->stripe_sync_error ?: $invoice->qbo_sync_error }}"></i>
