@@ -1403,12 +1403,15 @@ function confirmClientSeatChange(form, id, oldQty, product, scheduledQty) {
     var activityLoaded = false;
     var activityFilters = new Set(['all']);
 
-    // Load activity when tab is shown
-    document.getElementById('activity-tab').addEventListener('shown.bs.tab', function() {
-        if (!activityLoaded) {
-            loadClientActivity();
-        }
-    });
+    // Load activity when tab is shown (element absent on sub-tab pages where it renders as a link)
+    var activityTabEl = document.getElementById('activity-tab');
+    if (activityTabEl) {
+        activityTabEl.addEventListener('shown.bs.tab', function() {
+            if (!activityLoaded) {
+                loadClientActivity();
+            }
+        });
+    }
 
     // Also load if tab persistence restores the activity tab on page load
     setTimeout(function() {
