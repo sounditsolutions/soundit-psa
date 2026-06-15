@@ -9,4 +9,5 @@ enum WikiRunType: string
     case Maintain = 'maintain';
     case Backfill = 'backfill';
     case Compose = 'compose';
+    case DraftResolution = 'draft_resolution';
 }

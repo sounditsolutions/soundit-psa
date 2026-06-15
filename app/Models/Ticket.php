@@ -31,6 +31,7 @@ class Ticket extends Model
         'description',
         'description_html',
         'resolution',
+        'resolution_ai_drafted',
         'source',
         'source_ref',
         'type',
@@ -58,6 +59,7 @@ class Ticket extends Model
     protected function casts(): array
     {
         return [
+            'resolution_ai_drafted' => 'boolean',
             'status' => TicketStatus::class,
             'priority' => TicketPriority::class,
             'type' => TicketType::class,
