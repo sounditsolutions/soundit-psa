@@ -206,4 +206,60 @@ class TacticalWebhookTest extends TestCase
 
         $this->assertEquals(AlertStatus::Resolved, $alert->fresh()->status);
     }
+
+    public function test_terminal_failed_hook_marks_webhook_failed_not_pending(): void
+    {
+        // The job uses Laravel-native retry: handle() lets exceptions propagate and
+        // markFailed() runs ONLY from the terminal failed() hook (after $tries is
+        // exhausted), where attempts is still 1. The row must end 'failed' — not be
+        // reset to 'pending' — so it surfaces in the webhook-health failed badge.
+        $row = TacticalWebhook::factory()->create([
+            'event' => 'alert_failure',
+            'status' => 'pending',
+        ]);
+
+        (new ProcessTacticalWebhook($row->id))->failed(new \RuntimeException('boom'));
+
+        $fresh = $row->fresh();
+        $this->assertEquals('failed', $fresh->status);
+        $this->assertSame('boom', $fresh->error);
+        $this->assertEquals(1, $fresh->attempts);
+    }
+
+    public function test_mark_failed_sets_failed_status_unconditionally(): void
+    {
+        // Direct model contract: a single markFailed (attempts goes 0 -> 1) is terminal.
+        $row = TacticalWebhook::factory()->create([
+            'event' => 'alert_failure',
+            'status' => 'pending',
+            'attempts' => 0,
+        ]);
+
+        $row->markFailed('kaput');
+
+        $this->assertEquals('failed', $row->fresh()->status);
+        $this->assertEquals(1, $row->fresh()->attempts);
+    }
+
+    public function test_failure_and_resolve_are_distinct_rows_and_both_dispatch(): void
+    {
+        Queue::fake();
+        $h = ['X-Webhook-Key' => $this->validWebhookKey()];
+
+        $failure = $this->fixture('alert_failure.json');   // alert_id 84213
+        $resolved = $this->fixture('alert_resolved.json');  // same alert_id 84213
+        $this->assertSame($failure['alert_id'], $resolved['alert_id']); // guard the fixture invariant
+
+        // Distinct events for the same alert id must NOT collide (both must process)...
+        $this->withHeaders($h)->postJson('/api/webhooks/tactical', $failure)->assertNoContent();
+        $this->withHeaders($h)->postJson('/api/webhooks/tactical', $resolved)->assertNoContent();
+        // ...but a replay of either event DOES collide.
+        $this->withHeaders($h)->postJson('/api/webhooks/tactical', $failure)->assertNoContent();
+
+        $this->assertDatabaseCount('tactical_webhooks', 2);
+        $this->assertEquals(2, TacticalWebhook::distinct('dedup_key')->count('dedup_key'));
+        $this->assertDatabaseHas('tactical_webhooks', ['event' => 'alert_failure', 'dedup_key' => 'alert_failure:84213']);
+        $this->assertDatabaseHas('tactical_webhooks', ['event' => 'alert_resolved', 'dedup_key' => 'alert_resolved:84213']);
+        Queue::assertPushed(ProcessTacticalWebhook::class, 2);
+    }
 }

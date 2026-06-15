@@ -53,10 +53,18 @@ class TacticalWebhook extends Model
 
     public function markFailed(string $error): void
     {
+        // Unlike the Ninja analog, ProcessTacticalWebhook uses Laravel-native retry:
+        // handle() lets exceptions propagate, so markFailed() is invoked ONLY from the
+        // job's terminal failed() hook — which fires once, after the queue has already
+        // exhausted $tries. The queue's $tries (not this column) gates termination, so
+        // by the time we're here the webhook is definitively done: mark it failed
+        // unconditionally. (attempts is still incremented for the record.) Guarding on
+        // `attempts >= 3` here — as Ninja does — would wrongly leave it 'pending' forever,
+        // because attempts is only 1 at the terminal hook.
         $this->increment('attempts');
         $this->update([
             'error' => $error,
-            'status' => $this->attempts >= 3 ? 'failed' : 'pending',
+            'status' => 'failed',
         ]);
     }
 }

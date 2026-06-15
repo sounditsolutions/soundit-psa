@@ -95,8 +95,27 @@ class TacticalWebhookController extends Controller
             return "{$event}:{$alertId}";
         }
 
-        ksort($data);
+        // Recursively sort so a re-delivery with reordered keys — at any nesting depth —
+        // canonicalizes to the same hash and still collides on the unique dedup_key.
+        $canonical = $data;
+        $this->recursiveKsort($canonical);
 
-        return $event.':'.hash('sha256', json_encode($data));
+        return $event.':'.hash('sha256', json_encode($canonical));
+    }
+
+    /**
+     * Recursively sort an array by key in place, so structurally-identical payloads
+     * with differently-ordered keys serialize identically.
+     */
+    private function recursiveKsort(array &$data): void
+    {
+        foreach ($data as &$value) {
+            if (is_array($value)) {
+                $this->recursiveKsort($value);
+            }
+        }
+        unset($value);
+
+        ksort($data);
     }
 }

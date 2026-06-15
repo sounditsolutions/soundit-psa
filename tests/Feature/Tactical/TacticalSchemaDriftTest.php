@@ -34,6 +34,7 @@ class TacticalSchemaDriftTest extends TestCase
         'local_ips',
         'cpu_model',
         'physical_disks',
+        'graphics',
         'make_model',
         'serial_number',
         'status',
