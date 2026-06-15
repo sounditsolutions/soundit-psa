@@ -196,6 +196,7 @@ P1 is the "trust + document" phase; close the existing Tactical doc debt.
 - [ ] **Step 2: Add the three `tactical:*` rows to the INSTALL.md §6 cron table** — `tactical:reconcile-alerts` (hourly), `tactical:sync-devices` (daily 05:32), `tactical:sync-scripts` (daily 05:35), matching `routes/console.php`.
 - [ ] **Step 3: Add a queue-worker prerequisite line** — Tactical alert webhooks are processed by a queued job; a worker is required for alert→ticket; without one, alerts won't process.
 - [ ] **Step 4: Commit.** (Record in the plan that there is **no `.env.example` impact** and **no README route-table** to change — Tactical config is in `Setting`, not `.env`.)
+  - **Verified (2026-06-15):** `.env.example` contains **zero** `tactical` keys (all Tactical config lives in the `settings` table via `TacticalConfig`/`Setting`), so there is **no `.env.example` impact**. `README.md` has **no route table** — only a one-line feature mention ("RMM: NinjaRMM, Level RMM, Tactical RMM, ScreenConnect") which is already accurate, so there is **no README change** needed.
 
 ---
 
