@@ -35,7 +35,7 @@ class TacticalSyncDevices extends Command
             $this->info("Scoping to client: {$client->name}");
         }
 
-        $service = new TacticalDeviceSyncService(new TacticalClient);
+        $service = new TacticalDeviceSyncService(app(TacticalClient::class));
 
         $this->info('Syncing Tactical RMM devices...');
 

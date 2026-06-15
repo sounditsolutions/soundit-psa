@@ -21,7 +21,7 @@ class TacticalSyncScripts extends Command
             return self::FAILURE;
         }
 
-        $service = new TacticalScriptSyncService(new TacticalClient);
+        $service = new TacticalScriptSyncService(app(TacticalClient::class));
         $stats = $service->syncScripts();
 
         $this->info("Synced: {$stats['synced']}, Created: {$stats['created']}, Removed: {$stats['removed']}");

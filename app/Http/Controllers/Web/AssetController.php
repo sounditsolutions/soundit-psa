@@ -535,7 +535,7 @@ class AssetController extends Controller
         // If no Tactical link, try to find and link the agent by hostname
         if (! $tacticalAsset && \App\Support\TacticalConfig::isConfigured() && $asset->hostname) {
             try {
-                $tacticalClient = new \App\Services\Tactical\TacticalClient;
+                $tacticalClient = app(\App\Services\Tactical\TacticalClient::class);
                 $agents = $tacticalClient->getAgents();
                 foreach ($agents as $agent) {
                     if (strcasecmp($agent['hostname'] ?? '', $asset->hostname) === 0) {
@@ -560,7 +560,7 @@ class AssetController extends Controller
 
         if ($tacticalAsset && \App\Support\TacticalConfig::isConfigured()) {
             try {
-                $tacticalClient = new \App\Services\Tactical\TacticalClient;
+                $tacticalClient = app(\App\Services\Tactical\TacticalClient::class);
                 $tacticalClient->setAgentCustomField(
                     $tacticalAsset->agent_id,
                     \App\Support\CometConfig::TACTICAL_TOKEN_FIELD_ID,
@@ -602,7 +602,7 @@ class AssetController extends Controller
         $tacticalAsset = $asset->tacticalAsset;
         if (! $tacticalAsset && \App\Support\TacticalConfig::isConfigured() && $asset->hostname) {
             try {
-                $tacticalClient = new \App\Services\Tactical\TacticalClient;
+                $tacticalClient = app(\App\Services\Tactical\TacticalClient::class);
                 $agents = $tacticalClient->getAgents();
                 foreach ($agents as $agent) {
                     if (strcasecmp($agent['hostname'] ?? '', $asset->hostname) === 0) {
@@ -631,7 +631,7 @@ class AssetController extends Controller
 
             // Trigger Tactical deploy script immediately (fire-and-forget)
             try {
-                $tactical = new \App\Services\Tactical\TacticalClient;
+                $tactical = app(\App\Services\Tactical\TacticalClient::class);
                 $tactical->runScriptAsync(
                     $asset->tacticalAsset->agent_id,
                     218,  // Deploy: Servosity Backup
@@ -726,7 +726,7 @@ class AssetController extends Controller
         $timeout = (int) $request->input('timeout');
 
         try {
-            $client = new \App\Services\Tactical\TacticalClient;
+            $client = app(\App\Services\Tactical\TacticalClient::class);
             $result = $client->runScript(
                 $asset->tacticalAsset->agent_id,
                 $script->tactical_script_id,

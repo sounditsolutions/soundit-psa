@@ -336,7 +336,7 @@ class ServosityDeploymentService
             return;
         }
 
-        $tactical = new TacticalClient;
+        $tactical = app(TacticalClient::class);
         $agentId = $tacticalAsset->agent_id;
 
         $fields = [

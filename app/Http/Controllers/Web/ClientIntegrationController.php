@@ -197,7 +197,7 @@ class ClientIntegrationController extends Controller
         ]);
 
         try {
-            $tacticalClient = new \App\Services\Tactical\TacticalClient;
+            $tacticalClient = app(\App\Services\Tactical\TacticalClient::class);
 
             $existing = collect($tacticalClient->getClients())
                 ->firstWhere('name', $client->name);
@@ -234,7 +234,7 @@ class ClientIntegrationController extends Controller
         }
 
         try {
-            $tacticalClient = new \App\Services\Tactical\TacticalClient;
+            $tacticalClient = app(\App\Services\Tactical\TacticalClient::class);
             $tacticalClients = $tacticalClient->getClients();
             $parts = explode('|', $client->tactical_site_id);
             $tacticalClientName = $parts[0] ?? null;

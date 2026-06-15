@@ -329,6 +329,9 @@ These commands execute automatically based on their schedule:
 |---------|----------|---------|
 | `ninja:sync-devices` | Every 4 hours | Full device sync from NinjaRMM (inventory, hardware detail, status, creates, deletes) |
 | `level:sync-devices` | Every 4 hours | Sync devices from Level RMM (online status updated in real-time via webhooks) |
+| `tactical:reconcile-alerts` | Hourly | Resolve PSA alerts whose Tactical alerts have closed — the at-least-once backstop for the no-retry alert webhook (only if Tactical configured) |
+| `tactical:sync-devices` | Daily at 05:32 | Sync devices from Tactical RMM into `tactical_assets` and hostname-link to assets (only if configured + clients mapped to a Tactical site) |
+| `tactical:sync-scripts` | Daily at 05:35 | Sync the script library from Tactical RMM (only if configured) |
 | `mesh:sync-licenses` | Daily at 04:30 | Sync license counts from Mesh Email Security |
 | `cipp:sync-licenses` | Daily at 04:45 | Sync M365 license counts from CIPP |
 | `huntress:sync-licenses` | Daily at 05:00 | Sync EDR/ITDR license counts from Huntress (only if configured) |
@@ -460,7 +463,7 @@ Go to **Settings > Integrations** to configure your optional integrations (see S
 
 ### Queue worker (required for background features)
 
-Several features run as queued jobs: AI triage, call transcription, and T2T webhook callbacks. To process these jobs in the background:
+Several features run as queued jobs: AI triage, call transcription, T2T webhook callbacks, and **Tactical RMM alert webhooks** (inbound Tactical alerts are persisted and processed by a queued `ProcessTacticalWebhook` job — without a worker, alerts are received and stored but never turn into PSA alerts/tickets). To process these jobs in the background:
 
 1. Set `QUEUE_CONNECTION=database` in `.env`
 2. Run `php artisan queue:work --daemon` (or set up a systemd service / supervisor)
@@ -519,6 +522,24 @@ Syncs backup storage usage, device protection status, and license counts from Co
 2. Enter your Level **API key**
 3. After connecting, go to Settings > Level Group Mapping to map Level groups to PSA clients
 4. **Webhooks (optional):** Click "Generate" to create a webhook secret, save, then follow the Webhook Setup instructions in the card to configure Level to push real-time device updates
+
+### Tactical RMM
+
+Self-hosted RMM (amidaware/tacticalrmm). Syncs device inventory and a script library into PSA, and ingests alert webhooks into the unified alerts inbox (which can become tickets). One PSA deployment points at one self-hosted Tactical instance; PSA clients map to Tactical client/site pairs.
+
+1. Settings > Integrations > Tactical RMM (RMM & Monitoring tab)
+2. Enter your Tactical **API URL** (e.g. `https://api-rmm.yourmsp.com`) and **API key**, then click **Test Connection**. The API key comes from Tactical under **Settings > Global Settings > API Keys**.
+3. Map PSA clients to Tactical client/site pairs in **Site Mapping** (`settings.tactical-sites`). Devices only sync for clients that have a `tactical_site_id` set.
+4. Click **Sync Devices** / **Sync Scripts**, or wait for the daily crons (`tactical:sync-devices` at 05:32, `tactical:sync-scripts` at 05:35).
+5. **Webhooks (alert → ticket):**
+   - In the Tactical card, click **Generate Webhook Key** and copy the generated key (shown once).
+   - In Tactical, create an **Alert Template** and add a `URLAction` (REST). Point both the failure action and the resolved action at `https://psa.yourmsp.com/api/webhooks/tactical` with header `X-Webhook-Key: <key>` (a `Authorization: Bearer <key>` header also works). Tactical's webhook body templates **must be single-line JSON** and should include at least an `event` field (`alert_failure` / `alert_resolved`) plus `agent_id` and `alert_id`.
+   - Tactical's outbound action has an **8-second timeout and no retry** and can double-deliver, so PSA acks immediately and processes asynchronously, deduping replays by `alert_id`. **A queue worker is required** (see "Queue worker" above) — without one, alerts are stored but never become PSA alerts/tickets. The hourly `tactical:reconcile-alerts` poll is the at-least-once backstop for dropped resolve webhooks.
+   - Webhook health (last alert received, 24h processed count, failed count) is shown on the Tactical settings card.
+
+**Least-privilege service user:** the API key inherits the role of the Tactical user it belongs to and **bypasses 2FA**, so create a dedicated service user with only the permissions PSA needs (agent read + run-script/alerts; no user-management, no global-settings) and treat the key as a high-value secret. Optionally set a key expiry and rotate periodically.
+
+**API schema pinning / drift guard:** Tactical exposes no versioned API contract, so PSA pins the fields it reads and ships a contract test (`tests/Feature/Tactical/TacticalSchemaDriftTest.php`) against a trimmed snapshot at `tests/Fixtures/tactical/api_schema.json`. That snapshot is a periodic **manual** refresh, not a live check: enable `SWAGGER_ENABLED` in Tactical, then `curl -s https://<tactical-host>/api/schema/ > tests/Fixtures/tactical/api_schema.json` and re-trim to the agent + alert schemas, bumping the pinned version in its `_meta`. The pinned version is recorded in that file (currently Tactical 1.5.0).
 
 ### QuickBooks Online
 
