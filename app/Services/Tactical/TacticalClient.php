@@ -266,6 +266,75 @@ class TacticalClient
         return $this->post("agents/{$agentId}/reboot/", []);
     }
 
+    /**
+     * Run an ad-hoc command on an agent (sync over NATS). The most dangerous
+     * capability in the integration (arbitrary RCE) — the request body is PINNED
+     * here server-side (amendment C1): `custom_shell` is ALWAYS null (it would
+     * specify an arbitrary interpreter path and bypass the shell allowlist),
+     * `run_as_user` ALWAYS false, `env_vars` ALWAYS []. None of those is derived
+     * from any caller input; this method takes no parameter for them by design.
+     *
+     * Endpoint per spec §3: POST /agents/{id}/cmd/. The endpoint returns the
+     * command output as a bare JSON string (NOT an object), so the return is
+     * typed `mixed` — RunCommandAction::execute normalizes it. The exact body is
+     * merge-blocking-verified against the live box (a wrong body on an RCE
+     * endpoint silently sends a malformed command).
+     *
+     * @param  string  $shell  Pre-validated allowlist value (cmd|powershell|shell)
+     * @param  string  $cmd  The discrete command string — passed through verbatim,
+     *                       NEVER shell-concatenated PSA-side
+     */
+    public function cmd(string $agentId, string $cmd, string $shell, int $timeout): mixed
+    {
+        return $this->post("agents/{$agentId}/cmd/", [
+            'shell' => $shell,
+            'cmd' => $cmd,
+            'timeout' => $timeout,
+            'custom_shell' => null,
+            'run_as_user' => false,
+            'env_vars' => [],
+        ]);
+    }
+
+    /**
+     * Shut an agent down (sync over NATS). Unlike reboot, the box stays OFF —
+     * remote power-on is impossible (physical/IPMI only); the consequence copy
+     * lives in ShutdownAction::summary().
+     *
+     * Endpoint per spec §3: POST /agents/{id}/shutdown/. Expects a scalar "ok"-
+     * style body like reboot, so the return is typed `mixed`.
+     */
+    public function shutdown(string $agentId): mixed
+    {
+        return $this->post("agents/{$agentId}/shutdown/", []);
+    }
+
+    /**
+     * Recover an agent's services. Endpoint per spec §3: POST
+     * /agents/{id}/recover/ with body {mode}. `mode=mesh` is synchronous (P3 ships
+     * mesh only — see RecoverAction); `tacagent` is async and deferred. Typed
+     * `mixed` for shape-safety.
+     */
+    public function recover(string $agentId, string $mode): mixed
+    {
+        return $this->post("agents/{$agentId}/recover/", [
+            'mode' => $mode,
+        ]);
+    }
+
+    /**
+     * Toggle an agent's maintenance mode (alert suppression). Amendment D3: a
+     * PARTIAL PUT of {maintenance_mode: bool} to /agents/{id}/ — the same partial-
+     * PUT shape proven by setAgentCustomField, NOT a read-modify-write of the full
+     * agent object (which would risk clobbering concurrent field changes).
+     */
+    public function setMaintenance(string $agentId, bool $enabled): mixed
+    {
+        return $this->put("agents/{$agentId}/", [
+            'maintenance_mode' => $enabled,
+        ]);
+    }
+
     public function getSoftware(string $agentId): array
     {
         return $this->get("software/{$agentId}/");
