@@ -1614,7 +1614,9 @@ class IntegrationsController extends Controller
     public function updateTactical(Request $request)
     {
         $validated = $request->validate([
-            'api_url' => 'required|url|max:255',
+            // B2: SSRF guard — https-only, no private/reserved/link-local/metadata
+            // targets (literal or DNS-resolved); the API key bypasses 2FA.
+            'api_url' => ['required', 'string', 'max:255', new \App\Rules\SafeTacticalUrl],
             'api_key' => 'nullable|string|min:1|max:500',
             'alert_min_severity' => 'nullable|in:error,warning,info',
         ]);
