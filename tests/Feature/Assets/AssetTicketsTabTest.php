@@ -39,7 +39,7 @@ class AssetTicketsTabTest extends TestCase
         ]);
         $asset->tickets()->attach($ticket);
 
-        $resp = $this->actingAs($user)->get(route('assets.tickets', $asset) . '?show_closed=1');
+        $resp = $this->actingAs($user)->get(route('assets.tickets', $asset).'?show_closed=1');
 
         $resp->assertOk();
         $resp->assertSee('My resolved ticket');

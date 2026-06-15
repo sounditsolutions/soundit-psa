@@ -19,7 +19,7 @@ class InvoiceOverdueTest extends TestCase
 
         return Invoice::create(array_merge([
             'client_id' => $client->id,
-            'invoice_number' => 'INV-TEST-' . rand(1000, 9999),
+            'invoice_number' => 'INV-TEST-'.rand(1000, 9999),
             'invoice_date' => now()->subDays(30),
             'due_date' => now()->subDays(10),
             'subtotal' => '100.00',
