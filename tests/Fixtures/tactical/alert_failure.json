@@ -1,0 +1,19 @@
+{
+    "event": "alert_failure",
+    "alert_id": 84213,
+    "agent_id": "kJh3kd9sLqWmRtVxYz12AbCdEf34Gh56IjKlMnOp",
+    "hostname": "WS-FINANCE-04",
+    "client_name": "Acme Corp",
+    "site_name": "Head Office",
+    "alert_message": "Disk space on C: is below 10%",
+    "alert_type": "check",
+    "severity": "error",
+    "check_name": "Disk Space - C:",
+    "check_output": "Drive C: has 4.2 GB free of 256 GB (1.6% free)",
+    "monitoring_type": "workstation",
+    "alert_time": "2026-06-15T14:32:07Z",
+    "public_ip": "203.0.113.42",
+    "logged_in_user": "ACME\\jsmith",
+    "operating_system": "Windows 11 Pro 23H2",
+    "needs_reboot": "false"
+}
