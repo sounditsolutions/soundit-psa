@@ -2,7 +2,6 @@
 
 namespace Tests\Feature\Tactical;
 
-use App\Models\Setting;
 use App\Services\Tactical\TacticalClient;
 use App\Services\Tactical\TacticalClientException;
 use GuzzleHttp\Client as GuzzleClient;
@@ -10,9 +9,7 @@ use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\HandlerStack;
 use GuzzleHttp\Middleware;
 use GuzzleHttp\Psr7\Response;
-use Illuminate\Foundation\Testing\RefreshDatabase;
 use Psr\Http\Message\RequestInterface;
-use ReflectionClass;
 use Tests\TestCase;
 
 /**
@@ -20,37 +17,27 @@ use Tests\TestCase;
  * these lock in the CURRENT contract (X-API-KEY header, endpoint paths/verbs, and
  * non-2xx -> TacticalClientException mapping).
  *
- * TacticalClient builds its own Guzzle client in the constructor with no injection
- * seam, so we construct it normally (exercising the config->headers path) and then
- * reflect-swap its private $http for a MockHandler-backed client that preserves the
- * same default X-API-KEY header, capturing requests via history middleware.
+ * P2/m4: the reflection-based $http swap from P1 is RETIRED. TacticalClient now
+ * accepts an injected Guzzle client (Task 1 seam), so we build the mock transport
+ * and hand it to `new TacticalClient($mockHttp)` directly. The injected client
+ * carries the X-API-KEY default header itself (the constructor does not re-inject
+ * config headers onto a provided client).
  */
 class TacticalClientHttpTest extends TestCase
 {
-    use RefreshDatabase;
-
     private string $apiKey = 'svc-user-api-key-abc123';
 
     /** @var array<int, array{request: RequestInterface}> */
     private array $history = [];
 
-    protected function setUp(): void
-    {
-        parent::setUp();
-        Setting::setValue('tactical_api_url', 'https://tactical.example.com');
-        Setting::setEncrypted('tactical_api_key', $this->apiKey);
-    }
-
     /**
-     * Build a TacticalClient whose transport is mocked to return $queue in order,
-     * while still applying the real X-API-KEY default header from config.
+     * Build a TacticalClient over an injected mock transport that returns $queue
+     * in order, while applying the same default X-API-KEY header production uses.
      *
      * @param  Response[]  $queue
      */
     private function clientReturning(array $queue): TacticalClient
     {
-        $client = new TacticalClient; // exercises config -> default headers
-
         $this->history = [];
         $stack = HandlerStack::create(new MockHandler($queue));
         $stack->push(Middleware::history($this->history));
@@ -58,6 +45,7 @@ class TacticalClientHttpTest extends TestCase
         $mockHttp = new GuzzleClient([
             'base_uri' => 'https://tactical.example.com/',
             'handler' => $stack,
+            'allow_redirects' => false,
             'headers' => [
                 'X-API-KEY' => $this->apiKey,
                 'Content-Type' => 'application/json',
@@ -65,12 +53,7 @@ class TacticalClientHttpTest extends TestCase
             ],
         ]);
 
-        $ref = new ReflectionClass($client);
-        $prop = $ref->getProperty('http');
-        $prop->setAccessible(true);
-        $prop->setValue($client, $mockHttp);
-
-        return $client;
+        return new TacticalClient($mockHttp);
     }
 
     private function lastRequest(): RequestInterface

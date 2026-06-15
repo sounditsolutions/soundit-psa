@@ -1497,33 +1497,57 @@ class TriageToolExecutor
             return ['error' => "Invalid diagnostic '{$diagnostic}'. Available: ".implode(', ', array_keys($diagnosticScripts))];
         }
 
+        // Client-scoping is enforced here: resolveTacticalAgent() rejects a
+        // hostname whose linked asset belongs to a different client.
         $resolved = $this->resolveTacticalAgent($hostname);
         if (! $resolved) {
             return ['error' => "Device '{$hostname}' not found or belongs to a different client"];
         }
 
-        try {
-            $result = app(TacticalClient::class)->runScript(
-                $resolved['agent_id'],
-                $diagnosticScripts[$diagnostic],
-                [],
-                30
-            );
-        } catch (\Throwable $e) {
-            Log::warning('[Triage] Tactical diagnostic failed', [
+        /** @var \App\Models\TacticalAsset $tacticalAsset */
+        $tacticalAsset = $resolved['tactical_asset'];
+        $asset = $tacticalAsset->asset;
+
+        // The bus resolves the agent FROM a PSA Asset. A Tactical agent with no
+        // linked PSA asset can't be dispatched through the bus; surface a clear
+        // error rather than silently bypassing the audited pipeline.
+        if (! $asset) {
+            return ['error' => "Device '{$hostname}' is not linked to a PSA asset"];
+        }
+
+        // Dispatch through the audited bus as the AI actor (M1: no User; attribute
+        // via actor_label='ai-triage', actor_id null). The bus catches/classifies
+        // transport vs HTTP errors and audits the run.
+        $result = app(\App\Services\Tactical\TacticalActionService::class)->dispatch(
+            new \App\Services\Tactical\Actions\RunScriptAction,
+            $asset,
+            null,
+            [
+                'tactical_script_id' => $diagnosticScripts[$diagnostic],
+                'args' => '',
+                'timeout' => 30,
+            ],
+            actorLabel: 'ai-triage',
+            ticketId: $this->ticket->id,
+        );
+
+        if (! $result->isOk()) {
+            Log::warning('[Triage] Tactical diagnostic did not succeed', [
                 'hostname' => $hostname,
                 'diagnostic' => $diagnostic,
-                'error' => $e->getMessage(),
+                'status' => $result->status,
             ]);
 
-            return ['error' => 'Tactical diagnostic failed: '.mb_substr($e->getMessage(), 0, 200)];
+            return ['error' => 'Tactical diagnostic failed: '.mb_substr($result->message ?? $result->status, 0, 200)];
         }
 
         return [
             'diagnostic' => $diagnostic,
-            'retcode' => $result['retcode'] ?? null,
-            'stdout' => mb_substr($result['stdout'] ?? '', 0, 3000),
-            'stderr' => mb_substr($result['stderr'] ?? '', 0, 1000),
+            'retcode' => $result->retcode,
+            'stdout' => mb_substr($result->stdout ?? '', 0, 3000),
+            // Carry stderr through (the bus result captures it): diagnostics like
+            // disk_health/network_test write signal to stderr the AI reasons over.
+            'stderr' => mb_substr($result->stderr ?? '', 0, 1000),
         ];
     }
 }

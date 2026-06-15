@@ -629,7 +629,16 @@ class AssetController extends Controller
             $service = new ServosityDeploymentService;
             $service->enableBackup($asset);
 
-            // Trigger Tactical deploy script immediately (fire-and-forget)
+            // Trigger Tactical deploy script immediately (fire-and-forget).
+            //
+            // P2 SCOPE-OUT (amendment M7): this async runScriptAsync deploy
+            // deliberately does NOT route through the synchronous action bus.
+            // The bus's execute() is synchronous (single-target sync NATS call);
+            // the queued/async action path is P3's RunTacticalActionJob. Folding
+            // this onto the bus is tracked as a P3 follow-up (the Servosity creds
+            // here are Tactical-side {{agent.*}} template placeholders, so the
+            // literal secret is not in THIS request body — but setAgentCustomField
+            // pushes the real cred via a separate path; both migrate in P3).
             try {
                 $tactical = app(\App\Services\Tactical\TacticalClient::class);
                 $tactical->runScriptAsync(
@@ -717,42 +726,121 @@ class AssetController extends Controller
 
         $asset->load('tacticalAsset');
 
-        if (! $asset->tacticalAsset || $asset->tacticalAsset->status !== 'online') {
-            return response()->json(['error' => 'Device is not online or has no Tactical agent.'], 422);
+        // Only the not-linked case is a hard pre-check. M4: do NOT gate on the
+        // daily-stale snapshot status — let the bus attempt and report `offline`
+        // as the source of truth (a device the snapshot calls offline may have
+        // come back online, and vice versa).
+        if (! $asset->tacticalAsset || empty($asset->tacticalAsset->agent_id)) {
+            return response()->json(['error' => 'Device has no Tactical agent.'], 422);
         }
 
         $script = \App\Models\TacticalScript::findOrFail($request->input('script_id'));
-        $args = $request->input('args') ? array_map('trim', explode(' ', $request->input('args'))) : null;
-        $timeout = (int) $request->input('timeout');
 
-        try {
-            $client = app(\App\Services\Tactical\TacticalClient::class);
-            $result = $client->runScript(
-                $asset->tacticalAsset->agent_id,
-                $script->tactical_script_id,
-                $args,
-                $timeout,
-            );
+        // Route execution through the audited action bus. Args are tokenized
+        // argv-safely inside RunScriptAction (no more explode(' ')).
+        $result = app(\App\Services\Tactical\TacticalActionService::class)->dispatch(
+            new \App\Services\Tactical\Actions\RunScriptAction,
+            $asset,
+            $request->user(),
+            [
+                'tactical_script_id' => $script->tactical_script_id,
+                'args' => (string) $request->input('args', ''),
+                'timeout' => (int) $request->input('timeout'),
+            ],
+        );
 
-            Log::info('[Tactical] Script executed', [
-                'asset_id' => $asset->id,
-                'script' => $script->name,
-                'agent_id' => $asset->tacticalAsset->agent_id,
-            ]);
+        return $this->tacticalScriptResponse($result, $script->name);
+    }
 
+    /**
+     * Map the bus's normalized result back to the JSON contract the Script
+     * Runner JS parses (M3): ok -> 200 {success,...}; anything else ->
+     * {error} with a status the front-end renders as the red error box.
+     */
+    private function tacticalScriptResponse(
+        \App\Services\Tactical\Actions\TacticalActionResult $result,
+        string $scriptName,
+    ): \Illuminate\Http\JsonResponse {
+        if ($result->isOk()) {
             return response()->json([
                 'success' => true,
-                'script_name' => $script->name,
-                'stdout' => $result['stdout'] ?? $result['output'] ?? '',
-                'stderr' => $result['stderr'] ?? '',
-                'retcode' => $result['retcode'] ?? $result['return_code'] ?? null,
-                'execution_time' => $result['execution_time'] ?? null,
+                'script_name' => $scriptName,
+                'stdout' => $result->stdout ?? '',
+                'stderr' => $result->stderr ?? '',
+                'retcode' => $result->retcode,
+                'execution_time' => null,
             ]);
-        } catch (\Throwable $e) {
-            return response()->json([
-                'error' => 'Script execution failed: '.$e->getMessage(),
-            ], 500);
         }
+
+        $status = $result->isOffline() ? 422 : 500;
+
+        return response()->json([
+            'error' => $result->message ?? 'Script execution failed.',
+        ], $status);
+    }
+
+    /**
+     * Reboot a Tactical-linked agent (destructive). CSRF-protected (web group).
+     * The human confirmation gate is a typed-hostname match (case-insensitive,
+     * trimmed — m3); on match we mint a confirm token bound to
+     * {reboot, agent, actor} and dispatch through the bus, which enforces the
+     * destructive-confirm stage and audits the outcome. Offline is a surfaced
+     * 422 {error}, never a 500.
+     */
+    public function rebootTacticalAgent(Request $request, Asset $asset)
+    {
+        $request->validate([
+            'hostname' => ['required', 'string', 'max:255'],
+        ]);
+
+        $asset->load('tacticalAsset');
+
+        if (! $asset->tacticalAsset || empty($asset->tacticalAsset->agent_id)) {
+            return response()->json(['error' => 'This device is not linked to a Tactical agent.'], 422);
+        }
+
+        // m3: the typed hostname must match the device's Tactical hostname,
+        // case-insensitively and trimmed.
+        $expected = trim((string) ($asset->tacticalAsset->hostname ?? $asset->hostname ?? ''));
+        $typed = trim((string) $request->input('hostname'));
+        if ($expected === '' || strcasecmp($expected, $typed) !== 0) {
+            return response()->json([
+                'error' => 'The typed hostname does not match this device. Reboot cancelled.',
+            ], 422);
+        }
+
+        $action = new \App\Services\Tactical\Actions\RebootAction;
+        $actor = $request->user();
+
+        // Mint a short-TTL token bound to {action, agent, actor}; the bus
+        // verifies it at the destructive-confirm stage (payloadHash null for
+        // reboot — it has no free-text payload).
+        $token = \App\Services\Tactical\TacticalActionConfirmToken::issue(
+            $action->key(),
+            $asset->tacticalAsset->agent_id,
+            $actor?->id,
+        );
+
+        $result = app(\App\Services\Tactical\TacticalActionService::class)->dispatch(
+            $action,
+            $asset,
+            $actor,
+            [],
+            $token,
+        );
+
+        if ($result->isOk()) {
+            return response()->json([
+                'success' => true,
+                'message' => $result->stdout ?? 'Reboot command sent.',
+            ]);
+        }
+
+        $status = $result->isOffline() ? 422 : 500;
+
+        return response()->json([
+            'error' => $result->message ?? 'Reboot failed.',
+        ], $status);
     }
 
     public function quickLook(Asset $asset)

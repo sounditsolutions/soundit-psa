@@ -11,13 +11,29 @@ class TacticalClient
 {
     private Client $http;
 
-    public function __construct()
+    /**
+     * @param  \GuzzleHttp\Client|null  $http  When null (the zero-arg
+     *                                         AppServiceProvider singleton path), a config-driven client is built
+     *                                         from the encrypted Settings (X-API-KEY, base_uri, 30s timeout) with
+     *                                         redirect-following disabled (P2 §11/B2 outbound hardening: a followed
+     *                                         redirect could exfiltrate the 2FA-bypassing key to a metadata host).
+     *                                         When provided (the test/bus seam), it is used AS-IS — the injected
+     *                                         client owns its own headers; config is NOT consulted.
+     */
+    public function __construct(?Client $http = null)
     {
+        if ($http !== null) {
+            $this->http = $http;
+
+            return;
+        }
+
         $baseUrl = rtrim(TacticalConfig::apiUrl(), '/').'/';
 
         $this->http = new Client([
             'base_uri' => $baseUrl,
             'timeout' => 30,
+            'allow_redirects' => false,
             'headers' => [
                 'X-API-KEY' => TacticalConfig::get('api_key'),
                 'Content-Type' => 'application/json',
@@ -32,13 +48,13 @@ class TacticalClient
             $response = $this->http->request('GET', $endpoint);
         } catch (GuzzleException $e) {
             Log::error("[TacticalClient] GET {$endpoint} failed: {$e->getMessage()}");
-            throw new TacticalClientException("Tactical API error: {$e->getMessage()}", $e->getCode(), $e);
+            throw TacticalClientException::fromGuzzle("Tactical API error: {$e->getMessage()}", $e);
         }
 
         return json_decode((string) $response->getBody(), true) ?? [];
     }
 
-    public function post(string $endpoint, array $body = []): array
+    public function post(string $endpoint, array $body = []): mixed
     {
         try {
             $response = $this->http->request('POST', $endpoint, [
@@ -46,7 +62,7 @@ class TacticalClient
             ]);
         } catch (GuzzleException $e) {
             Log::error("[TacticalClient] POST {$endpoint} failed: {$e->getMessage()}");
-            throw new TacticalClientException("Tactical API error: {$e->getMessage()}", $e->getCode(), $e);
+            throw TacticalClientException::fromGuzzle("Tactical API error: {$e->getMessage()}", $e);
         }
 
         return json_decode((string) $response->getBody(), true) ?? [];
@@ -60,7 +76,7 @@ class TacticalClient
             ]);
         } catch (GuzzleException $e) {
             Log::error("[TacticalClient] PUT {$endpoint} failed: {$e->getMessage()}");
-            throw new TacticalClientException("Tactical API error: {$e->getMessage()}", $e->getCode(), $e);
+            throw TacticalClientException::fromGuzzle("Tactical API error: {$e->getMessage()}", $e);
         }
 
         return json_decode((string) $response->getBody(), true);
@@ -74,7 +90,7 @@ class TacticalClient
             ]);
         } catch (GuzzleException $e) {
             Log::error("[TacticalClient] PATCH {$endpoint} failed: {$e->getMessage()}");
-            throw new TacticalClientException("Tactical API error: {$e->getMessage()}", $e->getCode(), $e);
+            throw TacticalClientException::fromGuzzle("Tactical API error: {$e->getMessage()}", $e);
         }
 
         return json_decode((string) $response->getBody(), true) ?? [];
@@ -179,7 +195,7 @@ class TacticalClient
             ]);
         } catch (GuzzleException $e) {
             Log::error("[TacticalClient] POST clients/ failed: {$e->getMessage()}");
-            throw new TacticalClientException("Tactical API error: {$e->getMessage()}", $e->getCode(), $e);
+            throw TacticalClientException::fromGuzzle("Tactical API error: {$e->getMessage()}", $e);
         }
 
         return [
@@ -193,7 +209,15 @@ class TacticalClient
         return $this->get('scripts/');
     }
 
-    public function runScript(string $agentId, int $scriptId, ?array $args = null, int $timeout = 120): array
+    /**
+     * Run a curated script on an agent (sync `wait`). Typed `mixed`, not `array`:
+     * post() returns whatever the endpoint's JSON decodes to. The runscript
+     * endpoint normally returns an object, but — like reboot, which returns the
+     * scalar "ok" (live-verified) — a non-object reply must not raise an
+     * uncaught TypeError that bypasses the bus's TacticalClientException catch.
+     * RunScriptAction::execute normalizes a non-array result defensively.
+     */
+    public function runScript(string $agentId, int $scriptId, ?array $args = null, int $timeout = 120): mixed
     {
         $body = [
             'output' => 'wait',
@@ -224,6 +248,22 @@ class TacticalClient
             'env_vars' => [],
             'run_as_user' => false,
         ]);
+    }
+
+    /**
+     * Reboot an agent now (sync `rebootnow` over NATS).
+     *
+     * Endpoint per spec §3: POST /agents/{id}/reboot/. The exact response shape
+     * and the offline/natsdown body MUST be confirmed against the live Vultr/
+     * Tactical box (P2 gated note) — mocked until then. A non-2xx / connect
+     * failure raises TacticalClientException, which the action bus catches and
+     * classifies (transport => offline, HTTP error => error).
+     */
+    public function reboot(string $agentId): mixed
+    {
+        // The reboot endpoint returns the JSON scalar "ok" (not an object), so the
+        // response is intentionally typed mixed — any 2xx is success; non-2xx throws.
+        return $this->post("agents/{$agentId}/reboot/", []);
     }
 
     public function getSoftware(string $agentId): array
