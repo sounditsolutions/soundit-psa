@@ -143,6 +143,21 @@ class RunScriptActionTest extends TestCase
         $this->assertSame(3, $result->retcode);
     }
 
+    public function test_execute_carries_stderr_from_the_response(): void
+    {
+        $stack = HandlerStack::create(new MockHandler([
+            new Response(200, [], json_encode(['stdout' => 'out', 'stderr' => 'a warning occurred', 'retcode' => 1])),
+        ]));
+        $client = new TacticalClient(new GuzzleClient(['base_uri' => 'https://t.example.com/', 'handler' => $stack]));
+
+        $params = $this->action->validateParams(['tactical_script_id' => 201, 'timeout' => 60]);
+        $result = $this->action->execute($client, 'AGENT-1', $params);
+
+        $this->assertSame('out', $result->stdout);
+        $this->assertSame('a warning occurred', $result->stderr);
+        $this->assertSame(1, $result->retcode);
+    }
+
     public function test_summary_is_redacted(): void
     {
         $params = $this->action->validateParams([

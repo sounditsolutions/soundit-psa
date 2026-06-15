@@ -27,11 +27,12 @@ final class TacticalActionResult
         public readonly ?string $stdout = null,
         public readonly ?int $retcode = null,
         public readonly ?string $message = null,
+        public readonly ?string $stderr = null,
     ) {}
 
-    public static function ok(?string $stdout = null, int $retcode = 0): self
+    public static function ok(?string $stdout = null, int $retcode = 0, ?string $stderr = null): self
     {
-        return new self('ok', $stdout, $retcode);
+        return new self('ok', $stdout, $retcode, null, $stderr);
     }
 
     public static function offline(string $message): self
@@ -76,13 +77,21 @@ final class TacticalActionResult
      * keyed to match the table. The bus is responsible for redacting/truncating
      * `output` before persistence; the keys here are the canonical shape.
      *
+     * The audit table has no stderr column, so stderr is folded into `output`
+     * under a clear marker — it is still redacted + persisted as one blob.
+     *
      * @return array{result_status: string, output: ?string, retcode: ?int, message: ?string}
      */
     public function audit(): array
     {
+        $output = $this->stdout;
+        if ($this->stderr !== null && $this->stderr !== '') {
+            $output = ($output ?? '')."\n[stderr]\n".$this->stderr;
+        }
+
         return [
             'result_status' => $this->status,
-            'output' => $this->stdout,
+            'output' => $output,
             'retcode' => $this->retcode,
             'message' => $this->message,
         ];

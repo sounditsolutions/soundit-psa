@@ -91,8 +91,9 @@ class RunScriptAction implements TacticalAction
 
         $stdout = $result['stdout'] ?? $result['output'] ?? '';
         $retcode = $result['retcode'] ?? $result['return_code'] ?? null;
+        $stderr = $result['stderr'] ?? null;
 
-        return TacticalActionResult::ok($stdout, $retcode ?? 0);
+        return TacticalActionResult::ok($stdout, $retcode ?? 0, $stderr ?: null);
     }
 
     /**

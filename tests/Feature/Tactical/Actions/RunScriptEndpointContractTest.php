@@ -71,7 +71,7 @@ class RunScriptEndpointContractTest extends TestCase
         $user = User::factory()->create();
         $asset = $this->onlineAsset();
         $script = $this->script();
-        $this->bindClient([new Response(200, [], json_encode(['stdout' => 'hello out', 'retcode' => 0]))]);
+        $this->bindClient([new Response(200, [], json_encode(['stdout' => 'hello out', 'stderr' => 'a warning', 'retcode' => 0]))]);
 
         $resp = $this->actingAs($user)->postJson(route('assets.run-tactical-script', $asset), [
             'script_id' => $script->id,
@@ -84,6 +84,7 @@ class RunScriptEndpointContractTest extends TestCase
                 'success' => true,
                 'script_name' => 'Get Event Log Errors',
                 'stdout' => 'hello out',
+                'stderr' => 'a warning',
                 'retcode' => 0,
             ])
             ->assertJsonStructure(['success', 'script_name', 'stdout', 'stderr', 'retcode']);

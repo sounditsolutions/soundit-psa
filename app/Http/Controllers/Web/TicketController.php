@@ -566,6 +566,7 @@ class TicketController extends Controller
         }
 
         $stdout = $result->stdout ?? '';
+        $stderr = $result->stderr ?? '';
         $retcode = $result->retcode;
 
         // m5: the ticket-note side effect STAYS here (post-dispatch, reading the
@@ -576,6 +577,9 @@ class TicketController extends Controller
 
         if ($stdout) {
             $noteBody .= "\n**Output:**\n```\n".substr($stdout, 0, 5000)."\n```";
+        }
+        if ($stderr) {
+            $noteBody .= "\n**Errors:**\n```\n".substr($stderr, 0, 2000)."\n```";
         }
 
         $this->ticketService->addNote(
@@ -590,7 +594,7 @@ class TicketController extends Controller
             'success' => true,
             'script_name' => $script->name,
             'stdout' => $stdout,
-            'stderr' => '',
+            'stderr' => $stderr,
             'retcode' => $retcode,
         ]);
     }

@@ -765,7 +765,7 @@ class AssetController extends Controller
                 'success' => true,
                 'script_name' => $scriptName,
                 'stdout' => $result->stdout ?? '',
-                'stderr' => '',
+                'stderr' => $result->stderr ?? '',
                 'retcode' => $result->retcode,
                 'execution_time' => null,
             ]);

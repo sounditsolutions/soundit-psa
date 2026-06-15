@@ -21,8 +21,18 @@ class TacticalActionResultTest extends TestCase
         $this->assertSame('ok', $r->status);
         $this->assertSame('hello world', $r->stdout);
         $this->assertSame(0, $r->retcode);
+        $this->assertNull($r->stderr);
         $this->assertTrue($r->isOk());
         $this->assertFalse($r->isOffline());
+    }
+
+    public function test_ok_factory_carries_stderr(): void
+    {
+        $r = TacticalActionResult::ok('out', 1, 'some stderr text');
+
+        $this->assertSame('out', $r->stdout);
+        $this->assertSame(1, $r->retcode);
+        $this->assertSame('some stderr text', $r->stderr);
     }
 
     public function test_ok_retcode_defaults_to_zero(): void
@@ -105,5 +115,19 @@ class TacticalActionResultTest extends TestCase
         $this->assertNull($audit['output']);
         $this->assertNull($audit['retcode']);
         $this->assertSame('agent offline', $audit['message']);
+    }
+
+    public function test_audit_folds_stderr_into_the_output_column(): void
+    {
+        // The audit table has no stderr column; stderr is folded into `output`
+        // (so it is still redacted + persisted) under a clear marker.
+        $r = TacticalActionResult::ok('the stdout', 2, 'the stderr');
+
+        $audit = $r->audit();
+
+        $this->assertStringContainsString('the stdout', $audit['output']);
+        $this->assertStringContainsString('the stderr', $audit['output']);
+        $this->assertStringContainsStringIgnoringCase('stderr', $audit['output']);
+        $this->assertSame(2, $audit['retcode']);
     }
 }
