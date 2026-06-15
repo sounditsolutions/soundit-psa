@@ -410,7 +410,7 @@
                             <td>{{ $ta->public_ip }}</td>
                         </tr>
                         @endif
-                        @if($ta->local_ips && count($ta->local_ips) > 0)
+                        @if(is_array($ta->local_ips) && count($ta->local_ips) > 0)
                         <tr>
                             <td class="text-muted">Local IPs</td>
                             <td>{{ implode(', ', $ta->local_ips) }}</td>
