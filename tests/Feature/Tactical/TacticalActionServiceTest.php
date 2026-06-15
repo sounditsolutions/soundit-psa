@@ -13,6 +13,7 @@ use App\Services\Tactical\Actions\TacticalActionResult;
 use App\Services\Tactical\TacticalActionConfirmToken;
 use App\Services\Tactical\TacticalActionService;
 use App\Services\Tactical\TacticalClient;
+use App\Services\Tactical\TacticalClientException;
 use GuzzleHttp\Client as GuzzleClient;
 use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Handler\MockHandler;
@@ -315,6 +316,96 @@ class TacticalActionServiceTest extends TestCase
         $this->assertSame('error', $result->status, 'a 403 must classify as error, never offline');
         $this->assertNotSame('offline', $result->status);
         $this->assertDatabaseHas('tactical_action_logs', ['result_status' => 'error']);
+    }
+
+    /** A fake action whose execute() throws the given client exception. */
+    private function throwingAction(TacticalClientException $e): TacticalAction
+    {
+        return new class($e) implements TacticalAction
+        {
+            public function __construct(private TacticalClientException $e) {}
+
+            public function key(): string
+            {
+                return 'tactical.fake';
+            }
+
+            public function isDestructive(): bool
+            {
+                return false;
+            }
+
+            public function validateParams(array $params): array
+            {
+                return $params;
+            }
+
+            public function summary(array $params): string
+            {
+                return 'fake';
+            }
+
+            public function execute(TacticalClient $client, string $agentId, array $params): TacticalActionResult
+            {
+                throw $this->e;
+            }
+        };
+    }
+
+    public function test_http_400_with_offline_marker_body_classifies_as_offline(): void
+    {
+        // Regression (live-verified, M2): an offline agent makes Tactical return
+        // HTTP 400 with body "Unable to contact the agent". The bus's
+        // isAgentOffline() recognises the marker and classifies offline — NOT error.
+        $asset = $this->asset();
+        $actor = User::factory()->create();
+
+        $e = new TacticalClientException(
+            'Tactical API error',
+            statusCode: 400,
+            responseBody: 'Unable to contact the agent',
+            transportFailure: false,
+        );
+
+        $result = $this->busReturning([])->dispatch($this->throwingAction($e), $asset, $actor, []);
+
+        $this->assertSame('offline', $result->status, 'a 400 with the offline marker must classify as offline');
+        $this->assertDatabaseHas('tactical_action_logs', ['result_status' => 'offline']);
+    }
+
+    public function test_http_403_with_non_marker_body_stays_error(): void
+    {
+        // The marker check must NOT swallow genuine errors: a 403 with an
+        // unrelated body is still `error`, never offline.
+        $asset = $this->asset();
+        $actor = User::factory()->create();
+
+        $e = new TacticalClientException(
+            'Tactical API error',
+            statusCode: 403,
+            responseBody: 'Authentication credentials were not provided.',
+            transportFailure: false,
+        );
+
+        $result = $this->busReturning([])->dispatch($this->throwingAction($e), $asset, $actor, []);
+
+        $this->assertSame('error', $result->status, 'a 403 with a non-marker body must stay error');
+        $this->assertDatabaseHas('tactical_action_logs', ['result_status' => 'error']);
+    }
+
+    public function test_transport_failure_exception_classifies_as_offline(): void
+    {
+        // The original signal still works: a transport failure (no HTTP response)
+        // is always offline, regardless of body.
+        $asset = $this->asset();
+        $actor = User::factory()->create();
+
+        $e = new TacticalClientException('Connection timed out', transportFailure: true);
+
+        $result = $this->busReturning([])->dispatch($this->throwingAction($e), $asset, $actor, []);
+
+        $this->assertSame('offline', $result->status);
+        $this->assertDatabaseHas('tactical_action_logs', ['result_status' => 'offline']);
     }
 
     // ── audit: ticket attribution (M1) ────────────────────────────────────

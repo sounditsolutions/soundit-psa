@@ -79,4 +79,36 @@ class RebootActionTest extends TestCase
             $this->assertTrue($e->isTransportFailure());
         }
     }
+
+    public function test_reboot_handles_a_scalar_string_response_without_throwing(): void
+    {
+        // Regression (live-verified): POST /agents/{id}/reboot/ returns the JSON
+        // scalar "ok", not an object. reboot()/post() are typed `: mixed`; a
+        // narrower `: array` return type would TypeError here.
+        $client = new TacticalClient(new GuzzleClient([
+            'base_uri' => 'https://t.example.com/',
+            'handler' => HandlerStack::create(new MockHandler([
+                new Response(200, [], json_encode('ok')), // body is the JSON string "ok"
+            ])),
+        ]));
+
+        $response = $client->reboot('AGENT-1');
+
+        $this->assertSame('ok', $response);
+    }
+
+    public function test_action_execute_succeeds_on_a_scalar_reboot_response(): void
+    {
+        // The same scalar response, through the action: must yield an ok result.
+        $client = new TacticalClient(new GuzzleClient([
+            'base_uri' => 'https://t.example.com/',
+            'handler' => HandlerStack::create(new MockHandler([
+                new Response(200, [], json_encode('ok')),
+            ])),
+        ]));
+
+        $result = $this->action->execute($client, 'AGENT-1', []);
+
+        $this->assertTrue($result->isOk());
+    }
 }
