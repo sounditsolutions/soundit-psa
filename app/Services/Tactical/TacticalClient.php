@@ -11,13 +11,29 @@ class TacticalClient
 {
     private Client $http;
 
-    public function __construct()
+    /**
+     * @param  \GuzzleHttp\Client|null  $http  When null (the zero-arg
+     *                                         AppServiceProvider singleton path), a config-driven client is built
+     *                                         from the encrypted Settings (X-API-KEY, base_uri, 30s timeout) with
+     *                                         redirect-following disabled (P2 §11/B2 outbound hardening: a followed
+     *                                         redirect could exfiltrate the 2FA-bypassing key to a metadata host).
+     *                                         When provided (the test/bus seam), it is used AS-IS — the injected
+     *                                         client owns its own headers; config is NOT consulted.
+     */
+    public function __construct(?Client $http = null)
     {
+        if ($http !== null) {
+            $this->http = $http;
+
+            return;
+        }
+
         $baseUrl = rtrim(TacticalConfig::apiUrl(), '/').'/';
 
         $this->http = new Client([
             'base_uri' => $baseUrl,
             'timeout' => 30,
+            'allow_redirects' => false,
             'headers' => [
                 'X-API-KEY' => TacticalConfig::get('api_key'),
                 'Content-Type' => 'application/json',
@@ -32,7 +48,7 @@ class TacticalClient
             $response = $this->http->request('GET', $endpoint);
         } catch (GuzzleException $e) {
             Log::error("[TacticalClient] GET {$endpoint} failed: {$e->getMessage()}");
-            throw new TacticalClientException("Tactical API error: {$e->getMessage()}", $e->getCode(), $e);
+            throw TacticalClientException::fromGuzzle("Tactical API error: {$e->getMessage()}", $e);
         }
 
         return json_decode((string) $response->getBody(), true) ?? [];
@@ -46,7 +62,7 @@ class TacticalClient
             ]);
         } catch (GuzzleException $e) {
             Log::error("[TacticalClient] POST {$endpoint} failed: {$e->getMessage()}");
-            throw new TacticalClientException("Tactical API error: {$e->getMessage()}", $e->getCode(), $e);
+            throw TacticalClientException::fromGuzzle("Tactical API error: {$e->getMessage()}", $e);
         }
 
         return json_decode((string) $response->getBody(), true) ?? [];
@@ -60,7 +76,7 @@ class TacticalClient
             ]);
         } catch (GuzzleException $e) {
             Log::error("[TacticalClient] PUT {$endpoint} failed: {$e->getMessage()}");
-            throw new TacticalClientException("Tactical API error: {$e->getMessage()}", $e->getCode(), $e);
+            throw TacticalClientException::fromGuzzle("Tactical API error: {$e->getMessage()}", $e);
         }
 
         return json_decode((string) $response->getBody(), true);
@@ -74,7 +90,7 @@ class TacticalClient
             ]);
         } catch (GuzzleException $e) {
             Log::error("[TacticalClient] PATCH {$endpoint} failed: {$e->getMessage()}");
-            throw new TacticalClientException("Tactical API error: {$e->getMessage()}", $e->getCode(), $e);
+            throw TacticalClientException::fromGuzzle("Tactical API error: {$e->getMessage()}", $e);
         }
 
         return json_decode((string) $response->getBody(), true) ?? [];
@@ -179,7 +195,7 @@ class TacticalClient
             ]);
         } catch (GuzzleException $e) {
             Log::error("[TacticalClient] POST clients/ failed: {$e->getMessage()}");
-            throw new TacticalClientException("Tactical API error: {$e->getMessage()}", $e->getCode(), $e);
+            throw TacticalClientException::fromGuzzle("Tactical API error: {$e->getMessage()}", $e);
         }
 
         return [
