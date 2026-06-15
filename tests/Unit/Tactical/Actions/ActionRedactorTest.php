@@ -118,4 +118,62 @@ class ActionRedactorTest extends TestCase
 
         $this->assertStringNotContainsString('supersecretvalue1234', $clean);
     }
+
+    public function test_redact_output_scrubs_a_bare_token_with_no_adjacent_keyword(): void
+    {
+        // Code-review (critic BLOCKER): the immutable audit output must scrub a
+        // bare credential a script prints on its own line — WikiRedactor only
+        // catches keyword-ADJACENT shapes, so the audit-path backstop must catch
+        // a long high-entropy token standing alone.
+        $token = 'a1b2c3d4e5f607182930a4b5c6d7e8f901234567'; // 40-char, no keyword
+
+        $clean = $this->redactor->redactOutput("recovered:\n{$token}\nok");
+
+        $this->assertStringNotContainsString($token, $clean);
+    }
+
+    public function test_redact_output_scrubs_an_aws_access_key_id(): void
+    {
+        $key = 'AKIAIOSFODNN7EXAMPLE';
+
+        $clean = $this->redactor->redactOutput("aws creds: {$key}");
+
+        $this->assertStringNotContainsString($key, $clean);
+    }
+
+    public function test_redact_output_scrubs_a_space_delimited_bearer_token(): void
+    {
+        // "Bearer <token>" / "Token <token>" use a space, not =, so WikiRedactor's
+        // keyword=value rule misses them.
+        $token = 'abcDEF123456ghiJKL789mnoPQR';
+
+        $clean = $this->redactor->redactOutput("Authorization: Bearer {$token}");
+
+        $this->assertStringNotContainsString($token, $clean);
+    }
+
+    public function test_redact_output_keeps_a_dashed_uuid_readable(): void
+    {
+        // The backstop must not nuke a normal UUID (dash-structured, segments < 32)
+        // — those are legitimate identifiers an operator reads in the audit trail.
+        $uuid = '550e8400-e29b-41d4-a716-446655440000';
+
+        $clean = $this->redactor->redactOutput("correlation: {$uuid}");
+
+        $this->assertStringContainsString($uuid, $clean);
+    }
+
+    public function test_redacts_value_in_an_equals_joined_secret_flag_token(): void
+    {
+        // The `-Flag=value` single-token form (vs `-Flag value` two tokens): the
+        // value after `=` on a sensitive flag must be scrubbed; the flag survives.
+        $argv = ['-ServosityCredPass=hunter2-SUPER-SECRET-xyz', '-Verbose'];
+
+        $clean = $this->redactor->redactArgv($argv);
+
+        $joined = implode(' ', $clean);
+        $this->assertStringNotContainsString('hunter2-SUPER-SECRET-xyz', $joined);
+        $this->assertStringContainsString('-ServosityCredPass', $joined);
+        $this->assertContains('-Verbose', $clean);
+    }
 }

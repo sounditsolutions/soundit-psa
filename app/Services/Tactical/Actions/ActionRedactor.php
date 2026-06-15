@@ -28,6 +28,30 @@ class ActionRedactor
     /** Cap stored output at a sane bound (the column is TEXT ~64KB). */
     public const OUTPUT_MAX = 8000;
 
+    /**
+     * Output-path backstop (code-review C1, immutable audit store).
+     *
+     * WikiRedactor only catches keyword-ADJACENT secrets (`password=…`, `token:
+     * …`) and DELIBERATELY preserves bare alphanumeric runs (serials/GUIDs/RMM
+     * ids are real wiki facts there — see WikiRedactor::SECRET_PATTERNS). But the
+     * audit `output` column is a different context: a curated/recovery script
+     * that prints a bare credential on its own line would otherwise land it
+     * VERBATIM in an append-only row. These stricter patterns apply ONLY to
+     * audit output (never to wiki mining), trading a redacted serial for never
+     * persisting a leaked credential:
+     *   A. auth-scheme + space (`Bearer <tok>` / `Token <tok>` — no `=`, so the
+     *      WikiRedactor keyword=value rule misses them); keep the scheme word.
+     *   B. AWS access-key ids (AKIA…/ASIA… + ≥12 chars).
+     *   C. a long (≥32) contiguous high-entropy alnum run — a hex/base64url API
+     *      token standing alone. Dash-structured UUIDs split into <32 segments,
+     *      so they survive; file paths split on `/`/`.`, so they survive too.
+     */
+    private const OUTPUT_SECRET_PATTERNS = [
+        '/\b(bearer|token|basic|negotiate)\s+[A-Za-z0-9+\/=_.\-]{12,}/i' => '$1 '.self::REDACTED,
+        '/\b(?:AKIA|ASIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASCA)[A-Z0-9]{12,}\b/' => self::REDACTED,
+        '/(?<![A-Za-z0-9])[A-Za-z0-9]{32,}(?![A-Za-z0-9])/' => self::REDACTED,
+    ];
+
     public function __construct(
         private readonly WikiRedactor $wiki = new WikiRedactor,
     ) {}
@@ -54,8 +78,21 @@ class ActionRedactor
             $redactNext = false;
 
             if (is_string($token)) {
-                // A flag like "-Password" / "--api-key" arms the next token.
-                if ($this->looksLikeFlag($token) && preg_match(self::SENSITIVE_FLAG, $token)) {
+                $isFlag = $this->looksLikeFlag($token);
+
+                // "-Flag=value" single-token form: scrub the value, keep the flag.
+                if ($isFlag && str_contains($token, '=')) {
+                    [$flag, $value] = explode('=', $token, 2);
+                    if ($value !== '' && preg_match(self::SENSITIVE_FLAG, $flag)) {
+                        $out[] = $flag.'='.self::REDACTED;
+
+                        continue;
+                    }
+                }
+
+                // "-Flag value" two-token form: a flag like "-Password" /
+                // "--api-key" arms the NEXT token.
+                if ($isFlag && preg_match(self::SENSITIVE_FLAG, $token)) {
                     $redactNext = true;
                     $out[] = $token; // keep the flag; only its value is secret
 
@@ -115,13 +152,32 @@ class ActionRedactor
             return null;
         }
 
-        $clean = $this->redactString($output);
+        // Truncate FIRST, then redact: bound the regex work, and keep the
+        // truncation marker visible even when redaction collapses a long run.
+        $truncated = mb_strlen($output) > self::OUTPUT_MAX;
+        if ($truncated) {
+            $output = mb_substr($output, 0, self::OUTPUT_MAX);
+        }
 
-        if (mb_strlen($clean) > self::OUTPUT_MAX) {
-            $clean = mb_substr($clean, 0, self::OUTPUT_MAX)."\n…[truncated]";
+        // WikiRedactor (keyword-adjacent shapes) + the stricter output-path
+        // backstop for bare credentials a script may print.
+        $clean = $this->redactOutputSecrets($this->redactString($output));
+
+        if ($truncated) {
+            $clean .= "\n…[truncated]";
         }
 
         return $clean;
+    }
+
+    /** Apply the audit-output-only secret backstop (see OUTPUT_SECRET_PATTERNS). */
+    private function redactOutputSecrets(string $output): string
+    {
+        foreach (self::OUTPUT_SECRET_PATTERNS as $pattern => $replacement) {
+            $output = preg_replace($pattern, $replacement, $output);
+        }
+
+        return $output;
     }
 
     /**
