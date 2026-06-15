@@ -209,7 +209,15 @@ class TacticalClient
         return $this->get('scripts/');
     }
 
-    public function runScript(string $agentId, int $scriptId, ?array $args = null, int $timeout = 120): array
+    /**
+     * Run a curated script on an agent (sync `wait`). Typed `mixed`, not `array`:
+     * post() returns whatever the endpoint's JSON decodes to. The runscript
+     * endpoint normally returns an object, but — like reboot, which returns the
+     * scalar "ok" (live-verified) — a non-object reply must not raise an
+     * uncaught TypeError that bypasses the bus's TacticalClientException catch.
+     * RunScriptAction::execute normalizes a non-array result defensively.
+     */
+    public function runScript(string $agentId, int $scriptId, ?array $args = null, int $timeout = 120): mixed
     {
         $body = [
             'output' => 'wait',

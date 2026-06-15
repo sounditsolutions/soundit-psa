@@ -82,12 +82,19 @@ class RunScriptAction implements TacticalAction
 
     public function execute(TacticalClient $client, string $agentId, array $params): TacticalActionResult
     {
-        $result = $client->runScript(
+        $raw = $client->runScript(
             $agentId,
             (int) $params['tactical_script_id'],
             $params['args'] ?? [],
             (int) ($params['timeout'] ?? self::TIMEOUT_DEFAULT),
         );
+
+        // Don't assume the Tactical response shape (the live reboot fix lesson):
+        // an object is the norm, but a scalar reply (e.g. "ok") must not blow up
+        // array access. Normalize a non-array result to a stdout-only payload.
+        $result = is_array($raw)
+            ? $raw
+            : ['stdout' => is_scalar($raw) ? (string) $raw : ''];
 
         $stdout = $result['stdout'] ?? $result['output'] ?? '';
         $retcode = $result['retcode'] ?? $result['return_code'] ?? null;

