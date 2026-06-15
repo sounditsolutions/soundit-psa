@@ -54,9 +54,9 @@
         @endif
 
         @if($ticket->resolution)
-            <div class="card card-static shadow-sm mb-3 border-start border-3 border-success">
+            <div class="card card-static shadow-sm mb-3 border-start border-3 {{ $ticket->status->isOpen() ? 'border-secondary' : 'border-success' }}">
                 <div class="card-body">
-                    <label class="form-label small text-muted mb-1">Resolution
+                    <label class="form-label small text-muted mb-1">{{ $ticket->status->isOpen() ? 'Prior resolution (ticket reopened)' : 'Resolution' }}
                         @if($ticket->resolution_ai_drafted)
                             <span class="badge bg-info ms-2">AI-drafted · review</span>
                         @endif
@@ -557,6 +557,16 @@
                             <input type="hidden" name="status" value="closed">
                             <button type="submit" class="btn btn-secondary btn-sm">
                                 <i class="bi bi-x-circle me-1"></i>Close
+                            </button>
+                        </form>
+                    @endif
+                    @if(! $ticket->status->isOpen())
+                        <form method="POST" action="{{ route('tickets.update-status', $ticket) }}">
+                            @csrf
+                            @method('PATCH')
+                            <input type="hidden" name="status" value="in_progress">
+                            <button type="submit" class="btn btn-outline-primary btn-sm">
+                                <i class="bi bi-arrow-counterclockwise me-1"></i>Reopen
                             </button>
                         </form>
                     @endif
