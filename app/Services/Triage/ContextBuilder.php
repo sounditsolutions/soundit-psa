@@ -690,7 +690,7 @@ class ContextBuilder
                     // Fetch live check summary if Tactical is configured
                     if (TacticalConfig::isConfigured()) {
                         try {
-                            $client = new \App\Services\Tactical\TacticalClient;
+                            $client = app(\App\Services\Tactical\TacticalClient::class);
                             $checks = $client->getAgentChecks($tacticalAsset->agent_id);
                             $failing = collect($checks)->filter(fn ($c) => ($c['check_result']['status'] ?? '') === 'failing');
                             if ($failing->isNotEmpty()) {

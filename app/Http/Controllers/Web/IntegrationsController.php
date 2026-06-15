@@ -1640,7 +1640,7 @@ class IntegrationsController extends Controller
         }
 
         try {
-            $client = new \App\Services\Tactical\TacticalClient;
+            $client = app(\App\Services\Tactical\TacticalClient::class);
 
             if ($client->isHealthy()) {
                 Setting::setValue('tactical_connected_at', now()->toDateTimeString());
@@ -1661,7 +1661,7 @@ class IntegrationsController extends Controller
         }
 
         try {
-            $client = new \App\Services\Tactical\TacticalClient;
+            $client = app(\App\Services\Tactical\TacticalClient::class);
             $service = new \App\Services\Tactical\TacticalDeviceSyncService($client);
             $result = $service->syncDevices();
 
@@ -1680,7 +1680,7 @@ class IntegrationsController extends Controller
         }
 
         try {
-            $client = new \App\Services\Tactical\TacticalClient;
+            $client = app(\App\Services\Tactical\TacticalClient::class);
             $service = new \App\Services\Tactical\TacticalScriptSyncService($client);
             $stats = $service->syncScripts();
 

@@ -18,6 +18,7 @@ use App\Services\Graph\GraphClient;
 use App\Services\Level\LevelClient;
 use App\Services\Mesh\MeshClient;
 use App\Services\Ninja\NinjaClient;
+use App\Services\Tactical\TacticalClient;
 use App\Support\AppTimezone;
 use App\Support\CippConfig;
 use App\Support\MeshConfig;
@@ -82,6 +83,10 @@ class AppServiceProvider extends ServiceProvider
                 'base_url' => MeshConfig::get('base_url'),
             ]);
         });
+
+        // TacticalClient reads its (encrypted) config from Settings in its own
+        // constructor, so a plain zero-arg singleton mirrors NinjaClient/MeshClient.
+        $this->app->singleton(TacticalClient::class);
 
         $this->app->singleton(CippClient::class, function ($app) {
             return new CippClient(

@@ -547,7 +547,7 @@ class TicketController extends Controller
         $timeout = (int) $request->input('timeout');
 
         try {
-            $client = new \App\Services\Tactical\TacticalClient;
+            $client = app(\App\Services\Tactical\TacticalClient::class);
             $result = $client->runScript(
                 $asset->tacticalAsset->agent_id,
                 $script->tactical_script_id,
