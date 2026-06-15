@@ -223,6 +223,10 @@ class AssetController extends Controller
         $tickets = $ticketService->getTicketList($filters);
         $unassignedCount = Ticket::open()->whereHas('assets', fn ($q) => $q->where('assets.id', $asset->id))->whereNull('assignee_id')->count();
 
+        // Count closed/resolved tickets even when not showing them so the view can
+        // surface a "Show closed (N)" affordance and avoid a misleading empty state.
+        $closedTicketCount = Ticket::closed()->whereHas('assets', fn ($q) => $q->where('assets.id', $asset->id))->count();
+
         // Load same data as show()
         $asset->load(['client', 'contracts', 'activeAlerts', 'users', 'tacticalAsset']);
 
@@ -253,6 +257,7 @@ class AssetController extends Controller
             'ticketTypes' => TicketType::cases(),
             'ticketSources' => TicketSource::cases(),
             'unassignedCount' => $unassignedCount,
+            'closedTicketCount' => $closedTicketCount,
         ]);
     }
 

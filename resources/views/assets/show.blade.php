@@ -1069,6 +1069,7 @@
                 'priorities' => $ticketPriorities,
                 'types' => $ticketTypes,
                 'sources' => $ticketSources,
+                'closedTicketCount' => $closedTicketCount ?? 0,
             ])
         @else
         {{-- Unified Alerts --}}
