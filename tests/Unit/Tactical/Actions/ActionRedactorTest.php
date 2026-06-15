@@ -166,6 +166,58 @@ class ActionRedactorTest extends TestCase
         $this->assertStringContainsString($uuid, $clean);
     }
 
+    // ---- redactCommandString (amendment B1/B2): free-text cmd path -----------
+
+    public function test_redact_command_string_redacts_an_inline_keyword_secret(): void
+    {
+        // The WikiRedactor layer catches the keyword=value form inside a command.
+        $clean = $this->redactor->redactCommandString('mysql --password=supersecretvalue1234 -e x');
+
+        $this->assertStringNotContainsString('supersecretvalue1234', $clean);
+    }
+
+    public function test_redact_command_string_redacts_a_mysql_glued_password(): void
+    {
+        // B2 (binding): `-p<secret>` has no separator — only the command-line layer catches it.
+        $clean = $this->redactor->redactCommandString('mysqldump -u root -pSuperSecret123 mydb');
+
+        $this->assertStringNotContainsString('SuperSecret123', $clean);
+    }
+
+    public function test_redact_command_string_redacts_a_net_user_positional_password(): void
+    {
+        // B2 (binding): the positional password in `net user <name> <pass> /add`.
+        $clean = $this->redactor->redactCommandString('net user deploy P@ssw0rdLong /add');
+
+        $this->assertStringNotContainsString('P@ssw0rdLong', $clean);
+    }
+
+    public function test_redact_command_string_redacts_a_bare_high_entropy_token(): void
+    {
+        // B2 (binding): a bare 40-char positional token via the OUTPUT backstop.
+        $token = 'a1b2c3d4e5f607182930a4b5c6d7e8f901234567';
+
+        $clean = $this->redactor->redactCommandString("curl https://api/i -H authtok:{$token}");
+
+        $this->assertStringNotContainsString($token, $clean);
+    }
+
+    public function test_redact_command_string_does_not_mangle_powershell_dash_p_flags(): void
+    {
+        // False-positive guard: the mysql `-p` rule must NOT eat PowerShell's
+        // -Path / Get-Process etc. (a letter precedes their `-P`; the rule
+        // requires `-p` lowercase at a token boundary).
+        foreach ([
+            'Get-Process | Sort-Object CPU -Descending',
+            'Stop-Process -Name notepad',
+            'Get-ChildItem -Path C:\\temp -Recurse',
+            'net use Z: \\\\srv\\share /persistent:yes',
+            'ipconfig /all',
+        ] as $cmd) {
+            $this->assertSame($cmd, $this->redactor->redactCommandString($cmd), "mangled: {$cmd}");
+        }
+    }
+
     public function test_redacts_value_in_an_equals_joined_secret_flag_token(): void
     {
         // The `-Flag=value` single-token form (vs `-Flag value` two tokens): the
