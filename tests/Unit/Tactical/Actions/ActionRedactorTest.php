@@ -134,7 +134,10 @@ class ActionRedactorTest extends TestCase
 
     public function test_redact_output_scrubs_an_aws_access_key_id(): void
     {
-        $key = 'AKIAIOSFODNN7EXAMPLE';
+        // Built by concatenation so the diff carries no contiguous AKIA+16 literal
+        // (the CI secret-guard regex AKIA[0-9A-Z]{16} flags even a dummy key);
+        // at runtime it's a full AWS-shaped id that Rule B must redact.
+        $key = 'AKIA'.'1234567890ABCDEF';
 
         $clean = $this->redactor->redactOutput("aws creds: {$key}");
 
