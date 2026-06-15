@@ -135,12 +135,22 @@ class TacticalActionService
      * Tactical signals an unreachable agent with an HTTP 400 whose body is a
      * known marker (e.g. "Unable to contact the agent" / "natsdown") — confirmed
      * against a live agent. Those classify as offline; everything else
-     * (401/403/404/5xx, or any other 400) stays a real error to surface.
+     * (401/403/404/5xx, or any other status) stays a real error to surface.
+     *
+     * The marker body-sniff is SCOPED to HTTP 400 (code-review M2 hardening):
+     * the markers are matched as substrings, so a genuine auth/permission error
+     * (401/403) or a 5xx whose body merely CONTAINS "agent is offline" must NOT
+     * be reclassified as a safe offline no-op — that would mask a key compromise
+     * or RBAC failure. Only Tactical's 400 natsdown carries the marker.
      */
     private function isAgentOffline(TacticalClientException $e): bool
     {
         if ($e->isTransportFailure()) {
             return true;
+        }
+
+        if ($e->statusCode() !== 400) {
+            return false;
         }
 
         $body = strtolower((string) $e->responseBody());

@@ -483,4 +483,101 @@ class TacticalActionServiceTest extends TestCase
         // Sanity: the flag itself survives (we only scrub the value).
         $this->assertStringContainsString('-Password', json_encode($row->params));
     }
+
+    public function test_bare_token_secret_in_stdout_is_redacted_in_the_audit_row(): void
+    {
+        // Code-review (critic BLOCKER): WikiRedactor only catches keyword-ADJACENT
+        // secrets (password=…). A curated/recovery script that prints a bare
+        // credential on its own line — a 40-char API token, no keyword — would
+        // otherwise land VERBATIM in the IMMUTABLE audit row. The output-path
+        // backstop must scrub it.
+        $asset = $this->asset();
+        $actor = User::factory()->create();
+
+        $bareSecret = 'a1b2c3d4e5f607182930a4b5c6d7e8f901234567'; // 40-char, no adjacent keyword
+
+        $action = $this->staticOkAction("recovered key:\n{$bareSecret}\ndone.", null);
+
+        $result = $this->busReturning([])->dispatch($action, $asset, $actor, []);
+
+        $this->assertSame('ok', $result->status);
+        $row = TacticalActionLog::sole();
+        $this->assertStringNotContainsString($bareSecret, (string) $row->output, 'bare token leaked into the audit output');
+    }
+
+    public function test_bare_token_secret_in_stderr_is_redacted_in_the_audit_row(): void
+    {
+        // The live fix (247d54d) added stderr carry-through; audit() folds stderr
+        // into the output column. A bare secret printed to stderr must be scrubbed
+        // there too (the redaction guarantee covers stdout AND stderr).
+        $asset = $this->asset();
+        $actor = User::factory()->create();
+
+        $bareSecret = 'ZZZ9f8e7d6c5b4a3928171605f4e3d2c1b0a9988'; // 40-char, no adjacent keyword
+
+        $action = $this->staticOkAction('clean stdout', "fatal: token {$bareSecret} rejected");
+
+        $result = $this->busReturning([])->dispatch($action, $asset, $actor, []);
+
+        $this->assertSame('ok', $result->status);
+        $row = TacticalActionLog::sole();
+        $this->assertStringNotContainsString($bareSecret, (string) $row->output, 'bare stderr token leaked into the audit output');
+    }
+
+    public function test_http_403_with_offline_marker_body_stays_error(): void
+    {
+        // M2 hardening: the offline-marker body-sniff must NOT reclassify a genuine
+        // auth/HTTP error as offline just because the body coincidentally contains
+        // a marker substring. Only Tactical's HTTP 400 natsdown carries the marker;
+        // a 403 (even with "agent is offline" in the body) stays `error` so a key
+        // compromise / permission failure is never masked as a safe no-op.
+        $asset = $this->asset();
+        $actor = User::factory()->create();
+
+        $e = new TacticalClientException(
+            'Tactical API error',
+            statusCode: 403,
+            responseBody: 'Forbidden: agent is offline for this role',
+            transportFailure: false,
+        );
+
+        $result = $this->busReturning([])->dispatch($this->throwingAction($e), $asset, $actor, []);
+
+        $this->assertSame('error', $result->status, 'a 403 must stay error even when its body contains an offline marker');
+        $this->assertDatabaseHas('tactical_action_logs', ['result_status' => 'error']);
+    }
+
+    /** A fake non-destructive action returning a fixed stdout/stderr (no client call). */
+    private function staticOkAction(?string $stdout, ?string $stderr): TacticalAction
+    {
+        return new class($stdout, $stderr) implements TacticalAction
+        {
+            public function __construct(private ?string $stdout, private ?string $stderr) {}
+
+            public function key(): string
+            {
+                return 'tactical.fake';
+            }
+
+            public function isDestructive(): bool
+            {
+                return false;
+            }
+
+            public function validateParams(array $params): array
+            {
+                return $params;
+            }
+
+            public function summary(array $params): string
+            {
+                return 'fake';
+            }
+
+            public function execute(TacticalClient $client, string $agentId, array $params): TacticalActionResult
+            {
+                return TacticalActionResult::ok($this->stdout, 0, $this->stderr);
+            }
+        };
+    }
 }
