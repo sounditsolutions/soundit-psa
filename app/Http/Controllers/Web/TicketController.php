@@ -538,64 +538,60 @@ class TicketController extends Controller
             return response()->json(['error' => 'Asset is not linked to this ticket.'], 422);
         }
 
+        // Pre-check preserves today's UI contract (M3); snapshot-gating is M4 (Reboot/UI task).
         if (! $asset->tacticalAsset || $asset->tacticalAsset->status !== 'online') {
             return response()->json(['error' => 'Device is not online or has no Tactical agent.'], 422);
         }
 
         $script = \App\Models\TacticalScript::findOrFail($request->input('script_id'));
-        $args = $request->input('args') ? array_map('trim', explode(' ', $request->input('args'))) : null;
-        $timeout = (int) $request->input('timeout');
 
-        try {
-            $client = app(\App\Services\Tactical\TacticalClient::class);
-            $result = $client->runScript(
-                $asset->tacticalAsset->agent_id,
-                $script->tactical_script_id,
-                $args,
-                $timeout,
-            );
+        // Route execution through the audited action bus, attributing the ticket
+        // (m1) so the audit row carries per-incident ITIL history.
+        $result = app(\App\Services\Tactical\TacticalActionService::class)->dispatch(
+            new \App\Services\Tactical\Actions\RunScriptAction,
+            $asset,
+            $request->user(),
+            [
+                'tactical_script_id' => $script->tactical_script_id,
+                'args' => (string) $request->input('args', ''),
+                'timeout' => (int) $request->input('timeout'),
+            ],
+            ticketId: $ticket->id,
+        );
 
-            $stdout = $result['stdout'] ?? $result['output'] ?? '';
-            $stderr = $result['stderr'] ?? '';
-            $retcode = $result['retcode'] ?? $result['return_code'] ?? null;
+        if (! $result->isOk()) {
+            $status = $result->isOffline() ? 422 : 500;
 
-            // Post output as a private ticket note
-            $noteBody = "**Script Executed:** {$script->name}\n"
-                .'**Device:** '.($asset->hostname ?? $asset->name)."\n"
-                .'**Return Code:** '.($retcode ?? 'unknown')."\n";
-
-            if ($stdout) {
-                $noteBody .= "\n**Output:**\n```\n".substr($stdout, 0, 5000)."\n```";
-            }
-            if ($stderr) {
-                $noteBody .= "\n**Errors:**\n```\n".substr($stderr, 0, 2000)."\n```";
-            }
-
-            $this->ticketService->addNote(
-                $ticket,
-                $noteBody,
-                \App\Enums\NoteType::System,
-                true,
-                auth()->id(),
-            );
-
-            Log::info('[Tactical] Script executed from ticket', [
-                'ticket_id' => $ticket->id,
-                'asset_id' => $asset->id,
-                'script' => $script->name,
-            ]);
-
-            return response()->json([
-                'success' => true,
-                'script_name' => $script->name,
-                'stdout' => $stdout,
-                'stderr' => $stderr,
-                'retcode' => $retcode,
-            ]);
-        } catch (\Throwable $e) {
-            return response()->json([
-                'error' => 'Script execution failed: '.$e->getMessage(),
-            ], 500);
+            return response()->json(['error' => $result->message ?? 'Script execution failed.'], $status);
         }
+
+        $stdout = $result->stdout ?? '';
+        $retcode = $result->retcode;
+
+        // m5: the ticket-note side effect STAYS here (post-dispatch, reading the
+        // normalized result) — RunScriptAction is side-effect-free w.r.t. PSA models.
+        $noteBody = "**Script Executed:** {$script->name}\n"
+            .'**Device:** '.($asset->hostname ?? $asset->name)."\n"
+            .'**Return Code:** '.($retcode ?? 'unknown')."\n";
+
+        if ($stdout) {
+            $noteBody .= "\n**Output:**\n```\n".substr($stdout, 0, 5000)."\n```";
+        }
+
+        $this->ticketService->addNote(
+            $ticket,
+            $noteBody,
+            \App\Enums\NoteType::System,
+            true,
+            auth()->id(),
+        );
+
+        return response()->json([
+            'success' => true,
+            'script_name' => $script->name,
+            'stdout' => $stdout,
+            'stderr' => '',
+            'retcode' => $retcode,
+        ]);
     }
 }

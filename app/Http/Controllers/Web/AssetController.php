@@ -629,7 +629,16 @@ class AssetController extends Controller
             $service = new ServosityDeploymentService;
             $service->enableBackup($asset);
 
-            // Trigger Tactical deploy script immediately (fire-and-forget)
+            // Trigger Tactical deploy script immediately (fire-and-forget).
+            //
+            // P2 SCOPE-OUT (amendment M7): this async runScriptAsync deploy
+            // deliberately does NOT route through the synchronous action bus.
+            // The bus's execute() is synchronous (single-target sync NATS call);
+            // the queued/async action path is P3's RunTacticalActionJob. Folding
+            // this onto the bus is tracked as a P3 follow-up (the Servosity creds
+            // here are Tactical-side {{agent.*}} template placeholders, so the
+            // literal secret is not in THIS request body — but setAgentCustomField
+            // pushes the real cred via a separate path; both migrate in P3).
             try {
                 $tactical = app(\App\Services\Tactical\TacticalClient::class);
                 $tactical->runScriptAsync(
@@ -717,42 +726,56 @@ class AssetController extends Controller
 
         $asset->load('tacticalAsset');
 
+        // Pre-check preserves today's UI contract (M3): an unlinked / snapshot-
+        // offline device 422s before dispatch. (Gating on the daily-stale
+        // snapshot is M4's concern, owned by the Reboot/UI task — not changed here.)
         if (! $asset->tacticalAsset || $asset->tacticalAsset->status !== 'online') {
             return response()->json(['error' => 'Device is not online or has no Tactical agent.'], 422);
         }
 
         $script = \App\Models\TacticalScript::findOrFail($request->input('script_id'));
-        $args = $request->input('args') ? array_map('trim', explode(' ', $request->input('args'))) : null;
-        $timeout = (int) $request->input('timeout');
 
-        try {
-            $client = app(\App\Services\Tactical\TacticalClient::class);
-            $result = $client->runScript(
-                $asset->tacticalAsset->agent_id,
-                $script->tactical_script_id,
-                $args,
-                $timeout,
-            );
+        // Route execution through the audited action bus. Args are tokenized
+        // argv-safely inside RunScriptAction (no more explode(' ')).
+        $result = app(\App\Services\Tactical\TacticalActionService::class)->dispatch(
+            new \App\Services\Tactical\Actions\RunScriptAction,
+            $asset,
+            $request->user(),
+            [
+                'tactical_script_id' => $script->tactical_script_id,
+                'args' => (string) $request->input('args', ''),
+                'timeout' => (int) $request->input('timeout'),
+            ],
+        );
 
-            Log::info('[Tactical] Script executed', [
-                'asset_id' => $asset->id,
-                'script' => $script->name,
-                'agent_id' => $asset->tacticalAsset->agent_id,
-            ]);
+        return $this->tacticalScriptResponse($result, $script->name);
+    }
 
+    /**
+     * Map the bus's normalized result back to the JSON contract the Script
+     * Runner JS parses (M3): ok -> 200 {success,...}; anything else ->
+     * {error} with a status the front-end renders as the red error box.
+     */
+    private function tacticalScriptResponse(
+        \App\Services\Tactical\Actions\TacticalActionResult $result,
+        string $scriptName,
+    ): \Illuminate\Http\JsonResponse {
+        if ($result->isOk()) {
             return response()->json([
                 'success' => true,
-                'script_name' => $script->name,
-                'stdout' => $result['stdout'] ?? $result['output'] ?? '',
-                'stderr' => $result['stderr'] ?? '',
-                'retcode' => $result['retcode'] ?? $result['return_code'] ?? null,
-                'execution_time' => $result['execution_time'] ?? null,
+                'script_name' => $scriptName,
+                'stdout' => $result->stdout ?? '',
+                'stderr' => '',
+                'retcode' => $result->retcode,
+                'execution_time' => null,
             ]);
-        } catch (\Throwable $e) {
-            return response()->json([
-                'error' => 'Script execution failed: '.$e->getMessage(),
-            ], 500);
         }
+
+        $status = $result->isOffline() ? 422 : 500;
+
+        return response()->json([
+            'error' => $result->message ?? 'Script execution failed.',
+        ], $status);
     }
 
     public function quickLook(Asset $asset)
