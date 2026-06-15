@@ -357,13 +357,52 @@
         </div>
         {{-- Tactical RMM --}}
         @if($asset->tacticalAsset)
-        @php $ta = $asset->tacticalAsset; @endphp
+        @php
+            $ta = $asset->tacticalAsset;
+            // E3: surface the maintenance state best-effort. `maintenance_mode` is
+            // NOT currently synced onto tactical_assets (no column — P3 is schema-
+            // free), so this attribute is null/absent and the badge stays hidden
+            // until the toggle is used. Tracked gap: see the report / INSTALL.md.
+            $maintenanceOn = (bool) ($ta->maintenance_mode ?? false);
+        @endphp
         <div class="card shadow-sm card-static mb-3 mt-4">
             <div class="card-header d-flex justify-content-between align-items-center">
                 <span><i class="bi bi-pc-display me-2"></i>Tactical RMM</span>
-                <span class="badge {{ $ta->statusBadgeClass() }}">{{ ucfirst($ta->status) }}</span>
+                <span class="d-flex align-items-center gap-2">
+                    {{-- E3: prominent "alerts muted" warning when maintenance is ON,
+                         placed right next to the device status. --}}
+                    <span class="badge bg-warning text-dark" id="tacticalMaintenanceBadge"
+                          style="{{ $maintenanceOn ? '' : 'display:none;' }}">
+                        <i class="bi bi-bell-slash me-1"></i>Maintenance — alerts muted
+                    </span>
+                    <span class="badge {{ $ta->statusBadgeClass() }}">{{ ucfirst($ta->status) }}</span>
+                </span>
             </div>
             <div class="card-body">
+                {{-- E3: maintenance is an ALWAYS-VISIBLE control near the device
+                     status (never buried in the script/power card). It drives the
+                     non-destructive set_maintenance action (single click, no
+                     confirm token). --}}
+                <div class="d-flex justify-content-between align-items-center mb-3 pb-3 border-bottom">
+                    <div>
+                        <div class="fw-semibold small"><i class="bi bi-bell-slash me-1"></i>Maintenance mode</div>
+                        <div class="text-muted" style="font-size:0.8rem;" id="tacticalMaintenanceHint">
+                            @if($maintenanceOn)
+                                Alerts are <strong>muted</strong> for this device.
+                            @else
+                                Mute monitoring alerts (e.g. while working on this device).
+                            @endif
+                        </div>
+                    </div>
+                    <div class="form-check form-switch m-0">
+                        <input class="form-check-input" type="checkbox" role="switch"
+                               id="tacticalMaintenanceToggle"
+                               data-asset-maintenance-url="{{ route('assets.maintenance-tactical', $asset) }}"
+                               {{ $maintenanceOn ? 'checked' : '' }}>
+                        <label class="form-check-label visually-hidden" for="tacticalMaintenanceToggle">Maintenance mode</label>
+                    </div>
+                </div>
+                <div id="tacticalMaintenanceResult" class="small mb-2" style="display:none;"></div>
                 <table class="table table-borderless table-sm mb-0">
                     <tbody>
                         @if($ta->agent_version)
@@ -542,6 +581,20 @@
                     <div class="border rounded p-2 bg-dark text-light small font-monospace" style="max-height: 300px; overflow-y: auto; white-space: pre-wrap;" id="tacticalScriptOutput"></div>
                     <div class="mt-1 small text-muted" id="tacticalScriptMeta"></div>
                 </div>
+
+                {{-- Recover agent services (non-destructive → single click, mode=mesh) --}}
+                <hr class="my-3">
+                <div class="d-flex justify-content-between align-items-center">
+                    <span class="small text-muted">
+                        <i class="bi bi-arrow-repeat me-1"></i>Recover agent
+                        <span class="text-muted d-block" style="font-size:0.75rem;">Restart the monitoring agent's services if it's misbehaving.</span>
+                    </span>
+                    <button type="button" class="btn btn-outline-secondary btn-sm" id="tacticalRecoverBtn"
+                            data-asset-recover-url="{{ route('assets.recover-tactical', $asset) }}">
+                        <i class="bi bi-arrow-repeat me-1"></i>Recover agent
+                    </button>
+                </div>
+                <div id="tacticalRecoverResult" class="mt-2 small" style="display:none;"></div>
 
                 {{-- Destructive actions --}}
                 <hr class="my-3">
@@ -2287,6 +2340,116 @@ function renderPatches(data) {
         .finally(function() {
             confirmBtn.disabled = !matches();
             confirmBtn.innerHTML = '<i class="bi bi-arrow-clockwise me-1"></i>Reboot now';
+        });
+    });
+})();
+
+// Recover agent services (non-destructive, single click — no confirm token).
+(function() {
+    var btn = document.getElementById('tacticalRecoverBtn');
+    var resultEl = document.getElementById('tacticalRecoverResult');
+    if (!btn) return;
+
+    btn.addEventListener('click', function() {
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Recovering...';
+        if (resultEl) resultEl.style.display = 'none';
+
+        fetch(btn.dataset.assetRecoverUrl, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content,
+                'Accept': 'application/json',
+            },
+            body: JSON.stringify({ mode: 'mesh' }),
+        })
+        .then(function(r) { return r.json().then(function(d) { d._status = r.status; return d; }); })
+        .then(function(data) {
+            if (resultEl) {
+                resultEl.style.display = '';
+                if (data.error) {
+                    resultEl.className = 'mt-2 small text-danger';
+                    resultEl.textContent = data.error;
+                } else {
+                    resultEl.className = 'mt-2 small text-success';
+                    resultEl.textContent = data.message || 'Recovery initiated.';
+                }
+            }
+        })
+        .catch(function(err) {
+            if (resultEl) {
+                resultEl.style.display = '';
+                resultEl.className = 'mt-2 small text-danger';
+                resultEl.textContent = 'Request failed: ' + err.message;
+            }
+        })
+        .finally(function() {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-arrow-repeat me-1"></i>Recover agent';
+        });
+    });
+})();
+
+// Maintenance-mode toggle (non-destructive, single click — no confirm token).
+// On a server error the switch reverts to its prior position so it never lies
+// about the device's actual alerting state.
+(function() {
+    var toggle = document.getElementById('tacticalMaintenanceToggle');
+    var badge = document.getElementById('tacticalMaintenanceBadge');
+    var hint = document.getElementById('tacticalMaintenanceHint');
+    var resultEl = document.getElementById('tacticalMaintenanceResult');
+    if (!toggle) return;
+
+    toggle.addEventListener('change', function() {
+        var enabled = toggle.checked;
+        toggle.disabled = true;
+        if (resultEl) resultEl.style.display = 'none';
+
+        fetch(toggle.dataset.assetMaintenanceUrl, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content,
+                'Accept': 'application/json',
+            },
+            body: JSON.stringify({ enabled: enabled }),
+        })
+        .then(function(r) { return r.json().then(function(d) { d._status = r.status; return d; }); })
+        .then(function(data) {
+            if (data.error) {
+                // Revert the switch — the change did NOT take effect.
+                toggle.checked = !enabled;
+                if (resultEl) {
+                    resultEl.style.display = '';
+                    resultEl.className = 'small mb-2 text-danger';
+                    resultEl.textContent = data.error;
+                }
+                return;
+            }
+            // Reflect the new, confirmed state.
+            if (badge) badge.style.display = enabled ? '' : 'none';
+            if (hint) {
+                hint.innerHTML = enabled
+                    ? 'Alerts are <strong>muted</strong> for this device.'
+                    : 'Mute monitoring alerts (e.g. while working on this device).';
+            }
+            if (resultEl) {
+                resultEl.style.display = '';
+                resultEl.className = 'small mb-2 text-success';
+                resultEl.textContent = data.message || (enabled ? 'Maintenance mode enabled.' : 'Maintenance mode disabled.');
+            }
+        })
+        .catch(function(err) {
+            toggle.checked = !enabled;
+            if (resultEl) {
+                resultEl.style.display = '';
+                resultEl.className = 'small mb-2 text-danger';
+                resultEl.textContent = 'Request failed: ' + err.message;
+            }
+        })
+        .finally(function() {
+            toggle.disabled = false;
         });
     });
 })();

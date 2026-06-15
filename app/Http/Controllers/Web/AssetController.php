@@ -843,6 +843,80 @@ class AssetController extends Controller
         ], $status);
     }
 
+    /**
+     * Recover a Tactical agent's services (non-destructive → single-click, no
+     * confirm token). P3 ships mode=mesh only (sync; reports the real outcome —
+     * amendment D4); RecoverAction rejects tacagent. CSRF-protected (web group).
+     * Returns the P2 JSON contract: ok→200 {success}, not-linked/offline→422
+     * {error}, error→500 {error}.
+     */
+    public function recoverTacticalAgent(Request $request, Asset $asset)
+    {
+        $asset->load('tacticalAsset');
+
+        if (! $asset->tacticalAsset || empty($asset->tacticalAsset->agent_id)) {
+            return response()->json(['error' => 'This device is not linked to a Tactical agent.'], 422);
+        }
+
+        $result = app(\App\Services\Tactical\TacticalActionService::class)->dispatch(
+            new \App\Services\Tactical\Actions\RecoverAction,
+            $asset,
+            $request->user(),
+            ['mode' => 'mesh'],
+        );
+
+        if ($result->isOk()) {
+            return response()->json([
+                'success' => true,
+                'message' => $result->stdout ?: 'Recovery initiated.',
+            ]);
+        }
+
+        return response()->json([
+            'error' => $result->message ?? 'Recover failed.',
+        ], $result->isOffline() ? 422 : 500);
+    }
+
+    /**
+     * Toggle a Tactical agent's maintenance mode / alert suppression (non-
+     * destructive → single-click, no confirm token). CSRF-protected (web group).
+     * Drives the D3 partial-PUT via the bus. Returns the P2 JSON contract plus
+     * the resolved `enabled` flag so the UI can reflect the new state.
+     */
+    public function setTacticalMaintenance(Request $request, Asset $asset)
+    {
+        $request->validate([
+            'enabled' => ['required', 'boolean'],
+        ]);
+
+        $asset->load('tacticalAsset');
+
+        if (! $asset->tacticalAsset || empty($asset->tacticalAsset->agent_id)) {
+            return response()->json(['error' => 'This device is not linked to a Tactical agent.'], 422);
+        }
+
+        $enabled = $request->boolean('enabled');
+
+        $result = app(\App\Services\Tactical\TacticalActionService::class)->dispatch(
+            new \App\Services\Tactical\Actions\SetMaintenanceAction,
+            $asset,
+            $request->user(),
+            ['enabled' => $enabled],
+        );
+
+        if ($result->isOk()) {
+            return response()->json([
+                'success' => true,
+                'enabled' => $enabled,
+                'message' => $result->stdout ?: ($enabled ? 'Maintenance mode enabled.' : 'Maintenance mode disabled.'),
+            ]);
+        }
+
+        return response()->json([
+            'error' => $result->message ?? 'Could not change maintenance mode.',
+        ], $result->isOffline() ? 422 : 500);
+    }
+
     public function quickLook(Asset $asset)
     {
         $cacheKey = "asset_quick_look:{$asset->id}";
