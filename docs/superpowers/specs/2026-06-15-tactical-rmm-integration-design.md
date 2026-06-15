@@ -426,3 +426,14 @@ later phase.
 alerts surface and the resolve webhook auto-closes them (zero-config). P4 ships snapshot + manual
 "refresh now" first; opportunistic auto-refresh only if the manual button proves insufficient (defer
 the speculative freshness).
+
+**MSP-agnostic configuration (multi-tenant readiness — binding):** every self-hosted Tactical names
+its `api`/`rmm`/`mesh` subdomains freely (Sound IT alone: prod `api-rmm.soundit.co`, dev
+`rmm-api.dev.soundpsa.com`). The integration MUST assume **no subdomain convention** and never
+*derive* one subdomain from another. Required per-MSP config = **API URL + API key + webhook key**
+(all free-form) **+ an optional, separately-configured `tactical_web_url`** (the dashboard base) for
+convenience links. Cross-domain URLs PSA can't know (the MeshCentral remote-control deep-links from
+`GET /agents/<id>/meshcentral/`, the agent installer download URL) come back FROM Tactical's API and
+must be used **verbatim** — never reconstructed PSA-side. Current bug to fix (bead psa-6h5r, lands
+with P4): the asset-page "Open in Tactical RMM" link points at `apiUrl()` (the API root), not a web
+URL. Enforce the "use API-returned URLs verbatim" rule in P6 (remote control).
