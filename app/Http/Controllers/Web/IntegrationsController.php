@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Web;
 
 use App\Http\Controllers\Controller;
 use App\Models\Setting;
+use App\Models\TacticalWebhook;
 use App\Services\Graph\GraphClient;
 use App\Services\Graph\GraphWebhookManager;
 use App\Services\Level\LevelClient;
@@ -236,6 +237,13 @@ class IntegrationsController extends Controller
         $tacticalConnected = (bool) Setting::getValue('tactical_connected_at');
         $tacticalEnabled = Setting::getValue('tactical_enabled', '1') === '1';
 
+        // Webhook-health signal (P1 visible trust signal) — sourced from tactical_webhooks.
+        $tacticalWebhookLastAt = $fmtTs(TacticalWebhook::max('created_at'));
+        $tacticalWebhookProcessed24h = TacticalWebhook::where('status', 'processed')
+            ->where('processed_at', '>=', now()->subDay())
+            ->count();
+        $tacticalWebhookFailed = TacticalWebhook::where('status', 'failed')->count();
+
         // AI Assistant settings
         $assistantEnabled = \App\Support\AssistantConfig::isEnabled();
         $assistantMaxMessages = Setting::getValue('assistant_max_messages') ?? 50;
@@ -276,6 +284,7 @@ class IntegrationsController extends Controller
             'assistantEnabled', 'assistantMaxMessages', 'assistantDailyTokens',
             'screenconnectBaseUrl', 'screenconnectWebhookSecret', 'screenconnectEnabled', 'screenconnectConfigured',
             'tacticalConfigured', 'tacticalApiUrl', 'tacticalConnected', 'tacticalEnabled',
+            'tacticalWebhookLastAt', 'tacticalWebhookProcessed24h', 'tacticalWebhookFailed',
             'users',
         ));
     }

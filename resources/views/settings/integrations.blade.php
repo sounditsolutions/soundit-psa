@@ -805,6 +805,27 @@
 
                 <div id="test-result-tactical" class="mt-3" style="display: none;"></div>
 
+                {{-- Webhook health (P1 trust signal) — sourced from tactical_webhooks --}}
+                <div class="mt-3 pt-3 border-top">
+                    <div class="d-flex align-items-center flex-wrap gap-3 small">
+                        <span class="text-muted">
+                            <i class="bi bi-activity me-1"></i>Webhook health
+                        </span>
+                        <span title="Most recent alert webhook received from Tactical">
+                            Last alert received:
+                            <strong>{{ $tacticalWebhookLastAt ?? 'never' }}</strong>
+                        </span>
+                        <span title="Alert webhooks successfully processed in the last 24 hours">
+                            <i class="bi bi-check-circle text-success me-1"></i>{{ $tacticalWebhookProcessed24h }} processed (24h)
+                        </span>
+                        @if($tacticalWebhookFailed > 0)
+                            <span class="badge bg-danger" title="Webhooks that exhausted retries — investigate the queue worker / logs">
+                                <i class="bi bi-exclamation-triangle me-1"></i>{{ $tacticalWebhookFailed }} failed
+                            </span>
+                        @endif
+                    </div>
+                </div>
+
                 @if($tacticalConnected)
                 <div class="mt-3 pt-3 border-top d-flex gap-2 flex-wrap">
                     <a href="{{ route('settings.tactical-sites.index') }}" class="btn btn-outline-primary btn-sm">
