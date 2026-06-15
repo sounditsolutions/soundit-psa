@@ -465,13 +465,33 @@
         </div>
         @endif
 
-        {{-- Tactical Script Runner --}}
-        @if($asset->tacticalAsset && $asset->tacticalAsset->status === 'online')
+        {{-- Tactical Script Runner + Actions --}}
+        {{-- M4: render WHENEVER Tactical-linked. The daily snapshot status is
+             advisory only; the bus's offline result is the source of truth, so
+             we show the controls with a clear offline affordance rather than
+             letting the card vanish. --}}
+        @if($asset->tacticalAsset)
+        @php
+            $tacticalOnline = $asset->tacticalAsset->status === 'online';
+            $tacticalHostname = $asset->tacticalAsset->hostname ?? $asset->hostname ?? '';
+            $tacticalSyncedAt = $asset->tacticalAsset->synced_at;
+            $tacticalIsServer = ($asset->tacticalAsset->monitoring_type ?? null) === 'server';
+        @endphp
         <div class="card shadow-sm card-static mb-3">
-            <div class="card-header">
-                <i class="bi bi-terminal me-2"></i>Run Script
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-terminal me-2"></i>Run Script</span>
+                @unless($tacticalOnline)
+                    <span class="badge bg-secondary" title="Per the last sync. The action will still be attempted and will report if the agent is offline.">
+                        <i class="bi bi-cloud-slash me-1"></i>offline (as of {{ $tacticalSyncedAt?->toAppTz()->format('M j, g:i A') ?? 'last sync' }})
+                    </span>
+                @endunless
             </div>
             <div class="card-body">
+                @unless($tacticalOnline)
+                    <div class="alert alert-secondary py-2 small mb-2">
+                        <i class="bi bi-info-circle me-1"></i>This device was <strong>offline</strong> at the last sync. You can still attempt an action — it will run if the agent has since come online, or report back that it is offline.
+                    </div>
+                @endunless
                 <div class="mb-2">
                     <select class="form-select form-select-sm" id="tacticalScriptSelect">
                         <option value="">Select a script...</option>
@@ -521,6 +541,53 @@
                 <div id="tacticalScriptResult" style="display:none;">
                     <div class="border rounded p-2 bg-dark text-light small font-monospace" style="max-height: 300px; overflow-y: auto; white-space: pre-wrap;" id="tacticalScriptOutput"></div>
                     <div class="mt-1 small text-muted" id="tacticalScriptMeta"></div>
+                </div>
+
+                {{-- Destructive actions --}}
+                <hr class="my-3">
+                <div class="d-flex justify-content-between align-items-center">
+                    <span class="small text-muted"><i class="bi bi-exclamation-octagon me-1"></i>Power</span>
+                    <button type="button" class="btn btn-outline-danger btn-sm" id="tacticalRebootBtn"
+                            data-bs-toggle="modal" data-bs-target="#tacticalRebootModal">
+                        <i class="bi bi-arrow-clockwise me-1"></i>Reboot
+                    </button>
+                </div>
+                <div id="tacticalRebootResult" class="mt-2 small" style="display:none;"></div>
+            </div>
+        </div>
+
+        {{-- Reboot confirm modal: typed-hostname gate (m3) + server caution (M5) --}}
+        <div class="modal fade" id="tacticalRebootModal" tabindex="-1" aria-hidden="true">
+            <div class="modal-dialog">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title"><i class="bi bi-arrow-clockwise me-2"></i>Reboot device</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+                    <div class="modal-body">
+                        @if($tacticalIsServer)
+                            <div class="alert alert-danger py-2">
+                                <i class="bi bi-hdd-rack me-1"></i><strong>This is a SERVER.</strong>
+                                Rebooting will disconnect users and stop services running on it. Proceed only if you are certain.
+                            </div>
+                        @else
+                            <div class="alert alert-warning py-2">
+                                <i class="bi bi-exclamation-triangle me-1"></i>This will reboot the device now. Any unsaved work on it will be lost.
+                            </div>
+                        @endif
+                        <p class="mb-2 small">To confirm, type the device hostname exactly:</p>
+                        <p class="mb-2"><code class="user-select-all">{{ $tacticalHostname }}</code></p>
+                        <input type="text" class="form-control form-control-sm" id="tacticalRebootHostname"
+                               autocomplete="off" placeholder="Type the hostname to confirm">
+                        <div class="text-danger small mt-1" id="tacticalRebootError" style="display:none;"></div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+                        <button type="button" class="btn btn-danger btn-sm" id="tacticalRebootConfirm" disabled
+                                data-expected-hostname="{{ $tacticalHostname }}">
+                            <i class="bi bi-arrow-clockwise me-1"></i>Reboot now
+                        </button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -2065,7 +2132,9 @@ function renderPatches(data) {
 </script>
 
 {{-- Tactical Script Runner JS --}}
-@if($asset->tacticalAsset && $asset->tacticalAsset->status === 'online')
+{{-- M4: load WHENEVER Tactical-linked (not gated on the stale snapshot). The IIFE
+     early-returns if the elements aren't present, so this is safe either way. --}}
+@if($asset->tacticalAsset)
 <script>
 (function() {
     var select = document.getElementById('tacticalScriptSelect');
@@ -2153,6 +2222,73 @@ function renderPatches(data) {
             runBtn.innerHTML = '<i class="bi bi-play-fill me-1"></i>Run';
         });
     };
+})();
+
+// Reboot confirm modal (destructive): typed-hostname gate + token round-trip.
+(function() {
+    var confirmBtn = document.getElementById('tacticalRebootConfirm');
+    var input = document.getElementById('tacticalRebootHostname');
+    var errEl = document.getElementById('tacticalRebootError');
+    var resultEl = document.getElementById('tacticalRebootResult');
+    if (!confirmBtn || !input) return;
+
+    var expected = (confirmBtn.dataset.expectedHostname || '').trim().toLowerCase();
+
+    function matches() {
+        return input.value.trim().toLowerCase() === expected && expected !== '';
+    }
+    input.addEventListener('input', function() {
+        confirmBtn.disabled = !matches();
+        errEl.style.display = 'none';
+    });
+
+    confirmBtn.addEventListener('click', function() {
+        if (!matches()) return;
+        confirmBtn.disabled = true;
+        confirmBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Rebooting...';
+
+        fetch('{{ route("assets.reboot-tactical", $asset) }}', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content,
+                'Accept': 'application/json',
+            },
+            body: JSON.stringify({ hostname: input.value }),
+        })
+        .then(function(r) { return r.json().then(function(d) { d._status = r.status; return d; }); })
+        .then(function(data) {
+            if (data.error) {
+                // A bound confirmation can expire (~10 min TTL, m3) — surface a
+                // clear re-confirm hint rather than a generic failure.
+                var msg = data.error;
+                if (/confirm|expired/i.test(msg)) {
+                    msg = 'Confirmation expired — please re-confirm.';
+                }
+                errEl.textContent = msg;
+                errEl.style.display = '';
+                return;
+            }
+            // Success: close the modal and show the result on the card.
+            var modalEl = document.getElementById('tacticalRebootModal');
+            var modal = bootstrap.Modal.getInstance(modalEl);
+            if (modal) modal.hide();
+            if (resultEl) {
+                resultEl.className = 'mt-2 small text-success';
+                resultEl.textContent = data.message || 'Reboot command sent.';
+                resultEl.style.display = '';
+            }
+            input.value = '';
+        })
+        .catch(function(err) {
+            errEl.textContent = 'Request failed: ' + err.message;
+            errEl.style.display = '';
+        })
+        .finally(function() {
+            confirmBtn.disabled = !matches();
+            confirmBtn.innerHTML = '<i class="bi bi-arrow-clockwise me-1"></i>Reboot now';
+        });
+    });
 })();
 </script>
 @endif

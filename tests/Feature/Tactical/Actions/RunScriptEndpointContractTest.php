@@ -113,8 +113,10 @@ class RunScriptEndpointContractTest extends TestCase
         $this->assertArrayNotHasKey('success', $resp->json());
     }
 
-    public function test_asset_offline_returns_422_error(): void
+    public function test_snapshot_offline_device_still_attempts_via_bus_and_reports_offline(): void
     {
+        // M4: a snapshot-offline device is NOT pre-rejected — it attempts via the
+        // bus, which reports `offline` (transport failure) -> 422 {error} + audit.
         $user = User::factory()->create();
         $asset = Asset::factory()->create();
         TacticalAsset::create([
@@ -124,14 +126,38 @@ class RunScriptEndpointContractTest extends TestCase
             'status' => 'offline',
         ]);
         $script = $this->script();
-        $this->bindClient([]);
+        $this->bindClient([new ConnectException('agent offline', new Request('POST', 'x'))]);
 
-        $resp = $this->actingAs($user->refresh())->postJson(route('assets.run-tactical-script', $asset->refresh()), [
+        $resp = $this->actingAs($user)->postJson(route('assets.run-tactical-script', $asset->refresh()), [
             'script_id' => $script->id,
             'timeout' => 60,
         ]);
 
         $resp->assertStatus(422)->assertJsonStructure(['error']);
+        $this->assertDatabaseHas('tactical_action_logs', ['result_status' => 'offline']);
+    }
+
+    public function test_snapshot_offline_device_succeeds_if_agent_is_back_online(): void
+    {
+        // M4 corollary: the snapshot is advisory — if the agent actually responds,
+        // the run succeeds even though the snapshot said offline.
+        $user = User::factory()->create();
+        $asset = Asset::factory()->create();
+        TacticalAsset::create([
+            'asset_id' => $asset->id,
+            'agent_id' => 'AGENT-1',
+            'hostname' => $asset->hostname,
+            'status' => 'offline',
+        ]);
+        $script = $this->script();
+        $this->bindClient([new Response(200, [], json_encode(['stdout' => 'back online', 'retcode' => 0]))]);
+
+        $resp = $this->actingAs($user)->postJson(route('assets.run-tactical-script', $asset->refresh()), [
+            'script_id' => $script->id,
+            'timeout' => 60,
+        ]);
+
+        $resp->assertOk()->assertJson(['success' => true, 'stdout' => 'back online']);
     }
 
     public function test_asset_client_failure_returns_500_error(): void

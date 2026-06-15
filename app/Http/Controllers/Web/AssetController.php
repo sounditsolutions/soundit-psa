@@ -726,11 +726,12 @@ class AssetController extends Controller
 
         $asset->load('tacticalAsset');
 
-        // Pre-check preserves today's UI contract (M3): an unlinked / snapshot-
-        // offline device 422s before dispatch. (Gating on the daily-stale
-        // snapshot is M4's concern, owned by the Reboot/UI task — not changed here.)
-        if (! $asset->tacticalAsset || $asset->tacticalAsset->status !== 'online') {
-            return response()->json(['error' => 'Device is not online or has no Tactical agent.'], 422);
+        // Only the not-linked case is a hard pre-check. M4: do NOT gate on the
+        // daily-stale snapshot status — let the bus attempt and report `offline`
+        // as the source of truth (a device the snapshot calls offline may have
+        // come back online, and vice versa).
+        if (! $asset->tacticalAsset || empty($asset->tacticalAsset->agent_id)) {
+            return response()->json(['error' => 'Device has no Tactical agent.'], 422);
         }
 
         $script = \App\Models\TacticalScript::findOrFail($request->input('script_id'));
@@ -775,6 +776,70 @@ class AssetController extends Controller
 
         return response()->json([
             'error' => $result->message ?? 'Script execution failed.',
+        ], $status);
+    }
+
+    /**
+     * Reboot a Tactical-linked agent (destructive). CSRF-protected (web group).
+     * The human confirmation gate is a typed-hostname match (case-insensitive,
+     * trimmed — m3); on match we mint a confirm token bound to
+     * {reboot, agent, actor} and dispatch through the bus, which enforces the
+     * destructive-confirm stage and audits the outcome. Offline is a surfaced
+     * 422 {error}, never a 500.
+     */
+    public function rebootTacticalAgent(Request $request, Asset $asset)
+    {
+        $request->validate([
+            'hostname' => ['required', 'string', 'max:255'],
+        ]);
+
+        $asset->load('tacticalAsset');
+
+        if (! $asset->tacticalAsset || empty($asset->tacticalAsset->agent_id)) {
+            return response()->json(['error' => 'This device is not linked to a Tactical agent.'], 422);
+        }
+
+        // m3: the typed hostname must match the device's Tactical hostname,
+        // case-insensitively and trimmed.
+        $expected = trim((string) ($asset->tacticalAsset->hostname ?? $asset->hostname ?? ''));
+        $typed = trim((string) $request->input('hostname'));
+        if ($expected === '' || strcasecmp($expected, $typed) !== 0) {
+            return response()->json([
+                'error' => 'The typed hostname does not match this device. Reboot cancelled.',
+            ], 422);
+        }
+
+        $action = new \App\Services\Tactical\Actions\RebootAction;
+        $actor = $request->user();
+
+        // Mint a short-TTL token bound to {action, agent, actor}; the bus
+        // verifies it at the destructive-confirm stage (payloadHash null for
+        // reboot — it has no free-text payload).
+        $token = \App\Services\Tactical\TacticalActionConfirmToken::issue(
+            $action->key(),
+            $asset->tacticalAsset->agent_id,
+            $actor?->id,
+        );
+
+        $result = app(\App\Services\Tactical\TacticalActionService::class)->dispatch(
+            $action,
+            $asset,
+            $actor,
+            [],
+            $token,
+        );
+
+        if ($result->isOk()) {
+            return response()->json([
+                'success' => true,
+                'message' => $result->stdout ?? 'Reboot command sent.',
+            ]);
+        }
+
+        $status = $result->isOffline() ? 422 : 500;
+
+        return response()->json([
+            'error' => $result->message ?? 'Reboot failed.',
         ], $status);
     }
 

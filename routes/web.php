@@ -449,6 +449,7 @@ Route::middleware('auth')->group(function () {
     Route::post('/assets/{asset}/comet/toggle-backup', [AssetController::class, 'toggleCometBackup'])->name('assets.comet.toggle-backup');
     Route::post('/assets/{asset}/servosity/toggle-backup', [AssetController::class, 'toggleServosityBackup'])->name('assets.servosity.toggle-backup');
     Route::post('/assets/{asset}/tactical/run-script', [AssetController::class, 'runTacticalScript'])->name('assets.run-tactical-script');
+    Route::post('/assets/{asset}/tactical/reboot', [AssetController::class, 'rebootTacticalAgent'])->name('assets.reboot-tactical');
     Route::post('/assets/{asset}/users', [AssetController::class, 'addUser'])->name('assets.add-user');
     Route::delete('/assets/{asset}/users/{person}', [AssetController::class, 'removeUser'])->name('assets.remove-user');
     Route::post('/assets/{asset}/users/{person}/primary', [AssetController::class, 'setPrimaryUser'])->name('assets.set-primary-user');

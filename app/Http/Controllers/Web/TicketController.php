@@ -538,9 +538,10 @@ class TicketController extends Controller
             return response()->json(['error' => 'Asset is not linked to this ticket.'], 422);
         }
 
-        // Pre-check preserves today's UI contract (M3); snapshot-gating is M4 (Reboot/UI task).
-        if (! $asset->tacticalAsset || $asset->tacticalAsset->status !== 'online') {
-            return response()->json(['error' => 'Device is not online or has no Tactical agent.'], 422);
+        // Only the not-linked case is a hard pre-check (M4: don't gate on the
+        // daily-stale snapshot; the bus reports `offline` as the source of truth).
+        if (! $asset->tacticalAsset || empty($asset->tacticalAsset->agent_id)) {
+            return response()->json(['error' => 'Device has no Tactical agent.'], 422);
         }
 
         $script = \App\Models\TacticalScript::findOrFail($request->input('script_id'));

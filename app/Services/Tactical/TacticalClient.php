@@ -242,6 +242,20 @@ class TacticalClient
         ]);
     }
 
+    /**
+     * Reboot an agent now (sync `rebootnow` over NATS).
+     *
+     * Endpoint per spec §3: POST /agents/{id}/reboot/. The exact response shape
+     * and the offline/natsdown body MUST be confirmed against the live Vultr/
+     * Tactical box (P2 gated note) — mocked until then. A non-2xx / connect
+     * failure raises TacticalClientException, which the action bus catches and
+     * classifies (transport => offline, HTTP error => error).
+     */
+    public function reboot(string $agentId): array
+    {
+        return $this->post("agents/{$agentId}/reboot/", []);
+    }
+
     public function getSoftware(string $agentId): array
     {
         return $this->get("software/{$agentId}/");
