@@ -55,6 +55,13 @@ class SafeUrlInspectorTest extends TestCase
         $this->assertNotNull(SafeUrlInspector::reject('https://[::ffff:169.254.169.254]/', $this->resolver([])));
     }
 
+    public function test_rejects_ipv6_link_local_literal(): void
+    {
+        // fe80::/10 link-local is a real SSRF vector and PHP's FILTER_FLAG_NO_RES_RANGE
+        // does not reliably flag all of it — the explicit guard branch must catch it.
+        $this->assertNotNull(SafeUrlInspector::reject('https://[fe80::1]/', $this->resolver([])));
+    }
+
     public function test_rejects_decimal_encoded_loopback_literal(): void
     {
         // 2130706433 == 127.0.0.1

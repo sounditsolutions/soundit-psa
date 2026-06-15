@@ -180,6 +180,27 @@ class RunScriptEndpointContractTest extends TestCase
         $this->assertDatabaseHas('tactical_action_logs', ['result_status' => 'offline']);
     }
 
+    public function test_asset_genuine_http_error_returns_500(): void
+    {
+        // The contract's `failure -> 500` branch (distinct from offline -> 422):
+        // a genuine Tactical HTTP error (e.g. 403) classifies as `error`, and the
+        // endpoint maps a non-offline failure to 500 {error}. Previously untested
+        // (the "500" test above actually exercised the offline/422 path).
+        $user = User::factory()->create();
+        $asset = $this->onlineAsset();
+        $script = $this->script();
+        $this->bindClient([new Response(403, [], 'forbidden by role')]);
+
+        $resp = $this->actingAs($user)->postJson(route('assets.run-tactical-script', $asset), [
+            'script_id' => $script->id,
+            'timeout' => 60,
+        ]);
+
+        $resp->assertStatus(500)->assertJsonStructure(['error']);
+        $this->assertArrayNotHasKey('success', $resp->json());
+        $this->assertDatabaseHas('tactical_action_logs', ['result_status' => 'error']);
+    }
+
     // ── ticket endpoint ──────────────────────────────────────────────────────
 
     public function test_ticket_success_posts_note_and_audits_with_ticket_id(): void

@@ -1545,7 +1545,9 @@ class TriageToolExecutor
             'diagnostic' => $diagnostic,
             'retcode' => $result->retcode,
             'stdout' => mb_substr($result->stdout ?? '', 0, 3000),
-            'stderr' => '',
+            // Carry stderr through (the bus result captures it): diagnostics like
+            // disk_health/network_test write signal to stderr the AI reasons over.
+            'stderr' => mb_substr($result->stderr ?? '', 0, 1000),
         ];
     }
 }
