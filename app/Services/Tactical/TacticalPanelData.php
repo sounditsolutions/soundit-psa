@@ -49,11 +49,84 @@ class TacticalPanelData
     public function section(TacticalAsset $ta, string $section): array
     {
         return match ($section) {
+            'network' => $this->network($ta),
+            'storage' => $this->storage($ta),
             'software' => $this->software($ta),
             'patches' => $this->patches($ta),
             'checks' => $this->checks($ta),
             default => ['error' => 'Unknown Tactical section.'],
         };
+    }
+
+    /**
+     * Network: the agent's public/local IPs + IP-enabled adapters, off the same
+     * getAgent detail TacticalInsightService reads for the snapshot. Reuses the
+     * shared TacticalFieldMap::mapNetwork mapper (the AI triage tool maps the same
+     * shape). Genuinely-empty (a reachable agent with no IP-enabled adapters)
+     * renders distinct from {error} (couldn't reach); a failed read degrades.
+     *
+     * @return array<string, mixed>
+     */
+    private function network(TacticalAsset $ta): array
+    {
+        $read = $this->insight->read(
+            fn () => $this->client->getAgent($ta->agent_id, timeout: TacticalInsightService::LIVE_TIMEOUT_SECONDS),
+            signal: 'network',
+            agentId: $ta->agent_id,
+        );
+
+        if ($read->state === SignalState::Unavailable || ! is_array($read->value)) {
+            return $this->degrade();
+        }
+
+        return array_merge(['tactical' => true], TacticalFieldMap::mapNetwork($read->value));
+    }
+
+    /**
+     * Storage: the agent's disk volumes, off the same getAgent detail. Reuses the
+     * shared TacticalFieldMap::mapDiskVolumes shape (the snapshot's lowDisk flag
+     * maps the same disks) and adds the per-volume low_disk flag using the same
+     * LOW_DISK_* thresholds (>=90% used OR <10 GB free). Genuinely-empty (a
+     * reachable agent reporting no disks) renders distinct from {error}.
+     *
+     * @return array<string, mixed>
+     */
+    private function storage(TacticalAsset $ta): array
+    {
+        $read = $this->insight->read(
+            fn () => $this->client->getAgent($ta->agent_id, timeout: TacticalInsightService::LIVE_TIMEOUT_SECONDS),
+            signal: 'storage',
+            agentId: $ta->agent_id,
+        );
+
+        if ($read->state === SignalState::Unavailable || ! is_array($read->value)) {
+            return $this->degrade();
+        }
+
+        $volumes = collect(TacticalFieldMap::mapDiskVolumes($read->value['disks'] ?? []))
+            ->map(fn (array $v) => $v + ['low_disk' => $this->isLowDisk($v)])
+            ->all();
+
+        return [
+            'tactical' => true,
+            'volumes' => $volumes,
+        ];
+    }
+
+    /**
+     * Per-volume low-disk verdict — the same deterministic rule the insight layer
+     * uses for the snapshot lowDisk flag: at/above LOW_DISK_PERCENT_USED OR below
+     * LOW_DISK_FREE_GB free. An unknown percent AND unknown free is not "low".
+     *
+     * @param  array{drive: ?string, total_gb: ?float, free_gb: ?float, percent_used: int|float|null}  $v
+     */
+    private function isLowDisk(array $v): bool
+    {
+        if ($v['percent_used'] !== null && $v['percent_used'] >= EndpointInsight::LOW_DISK_PERCENT_USED) {
+            return true;
+        }
+
+        return $v['free_gb'] !== null && $v['free_gb'] < EndpointInsight::LOW_DISK_FREE_GB;
     }
 
     /**

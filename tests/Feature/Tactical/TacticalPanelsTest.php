@@ -332,6 +332,156 @@ class TacticalPanelsTest extends TestCase
         $this->assertArrayNotHasKey('pending_count', $resp->json());
     }
 
+    // ── network (getAgent wmi_detail.network_config — amendment I) ──────────────
+
+    public function test_network_section_maps_ip_enabled_adapters(): void
+    {
+        $asset = $this->linkedAsset();
+        // getAgent shape (source v1.5.0 + live read): local_ips/public_ip strings +
+        // wmi_detail.network_config = a list of Windows adapter dicts. Only the
+        // IP-ENABLED ones (non-empty IPAddress) are mapped; a virtual/loopback
+        // adapter with no IPAddress is dropped.
+        $this->bindClient([
+            new Response(200, [], json_encode([
+                'status' => 'online',
+                'local_ips' => '192.168.1.245',
+                'public_ip' => '203.0.113.7',
+                'wmi_detail' => [
+                    'network_config' => [
+                        [
+                            'Caption' => '[00000001] Intel(R) Ethernet',
+                            'Description' => 'Intel(R) Ethernet Connection',
+                            'IPAddress' => ['192.168.1.245', 'fe80::1'],
+                            'IPSubnet' => ['255.255.255.0', '64'],
+                            'DefaultIPGateway' => ['192.168.1.1'],
+                            'DNSServerSearchOrder' => ['192.168.1.1', '8.8.8.8'],
+                            'DHCPEnabled' => true,
+                            'MACAddress' => 'AA:BB:CC:DD:EE:FF',
+                        ],
+                        // No IPAddress -> dropped (a disabled/virtual adapter).
+                        ['Caption' => 'Loopback', 'Description' => 'Software Loopback', 'IPAddress' => null],
+                    ],
+                ],
+            ])),
+        ]);
+
+        $resp = $this->fetchSection($asset, 'network');
+
+        $resp->assertOk();
+        $resp->assertJsonPath('tactical', true);
+        $resp->assertJsonPath('public_ip', '203.0.113.7');
+        $resp->assertJsonPath('local_ips', '192.168.1.245');
+        // Only the IP-enabled adapter survives the filter.
+        $this->assertCount(1, $resp->json('adapters'));
+        $resp->assertJsonPath('adapters.0.caption', '[00000001] Intel(R) Ethernet');
+        $resp->assertJsonPath('adapters.0.ip_addresses.0', '192.168.1.245');
+        $resp->assertJsonPath('adapters.0.gateway.0', '192.168.1.1');
+        $resp->assertJsonPath('adapters.0.dns_servers.1', '8.8.8.8');
+        $resp->assertJsonPath('adapters.0.dhcp_enabled', true);
+        $resp->assertJsonPath('adapters.0.mac_address', 'AA:BB:CC:DD:EE:FF');
+    }
+
+    public function test_network_empty_adapters_is_distinct_from_could_not_load(): void
+    {
+        $asset = $this->linkedAsset();
+        // Reachable agent, but no IP-enabled adapters (e.g. wmi not yet collected).
+        // (b) genuinely-empty: adapters present (empty), no error. The public/local
+        // IP strings can still be present from the agent base.
+        $this->bindClient([
+            new Response(200, [], json_encode([
+                'status' => 'online',
+                'local_ips' => '10.0.0.5',
+                'public_ip' => null,
+                'wmi_detail' => ['network_config' => []],
+            ])),
+        ]);
+
+        $resp = $this->fetchSection($asset, 'network');
+
+        $resp->assertOk();
+        $resp->assertJsonPath('tactical', true);
+        $this->assertSame([], $resp->json('adapters'));
+        $resp->assertJsonPath('local_ips', '10.0.0.5');
+        $this->assertArrayNotHasKey('error', $resp->json());
+    }
+
+    public function test_network_offline_degrades_to_error_not_500(): void
+    {
+        $asset = $this->linkedAsset();
+        $this->bindClient([new ConnectException('offline', new Request('GET', 'agents/AGENT-1/'))]);
+
+        $resp = $this->fetchSection($asset, 'network');
+
+        // (c) could-not-load: degrade payload, 200, no adapters key.
+        $resp->assertOk();
+        $this->assertArrayHasKey('error', $resp->json());
+        $this->assertArrayNotHasKey('adapters', $resp->json());
+    }
+
+    // ── storage (getAgent disks — reuses the mapDiskVolumes shape) ──────────────
+
+    public function test_storage_section_maps_volumes_with_low_disk_flag(): void
+    {
+        $asset = $this->linkedAsset();
+        // getAgent `disks`: total/used/free are FORMATTED STRINGS, percent an int.
+        // C: is healthy; D: is low-disk by percent (>=90); E: is low-disk by free
+        // (<10 GB) even though its percent is moderate.
+        $this->bindClient([
+            new Response(200, [], json_encode([
+                'status' => 'online',
+                'disks' => [
+                    ['device' => 'C:', 'fstype' => 'NTFS', 'total' => '256.5 GB', 'used' => '100.0 GB', 'free' => '156.3 GB', 'percent' => 39],
+                    ['device' => 'D:', 'fstype' => 'NTFS', 'total' => '500.0 GB', 'used' => '480.0 GB', 'free' => '20.0 GB', 'percent' => 96],
+                    ['device' => 'E:', 'fstype' => 'NTFS', 'total' => '64.0 GB', 'used' => '58.0 GB', 'free' => '6.0 GB', 'percent' => 55],
+                ],
+            ])),
+        ]);
+
+        $resp = $this->fetchSection($asset, 'storage');
+
+        $resp->assertOk();
+        $resp->assertJsonPath('tactical', true);
+        $this->assertCount(3, $resp->json('volumes'));
+        // Reuses mapDiskVolumes -> {drive,total_gb,free_gb,percent_used}; panel adds low_disk.
+        $resp->assertJsonPath('volumes.0.drive', 'C:');
+        $resp->assertJsonPath('volumes.0.total_gb', 256.5);
+        $resp->assertJsonPath('volumes.0.free_gb', 156.3);
+        $resp->assertJsonPath('volumes.0.percent_used', 39);
+        $resp->assertJsonPath('volumes.0.low_disk', false);
+        // D: low by percent (>=90).
+        $resp->assertJsonPath('volumes.1.low_disk', true);
+        // E: low by free_gb (<10) despite a moderate percent.
+        $resp->assertJsonPath('volumes.2.low_disk', true);
+    }
+
+    public function test_storage_empty_volumes_is_distinct_from_could_not_load(): void
+    {
+        $asset = $this->linkedAsset();
+        // Reachable agent reporting no disks. (b) genuinely-empty, not an error.
+        $this->bindClient([
+            new Response(200, [], json_encode(['status' => 'online', 'disks' => []])),
+        ]);
+
+        $resp = $this->fetchSection($asset, 'storage');
+
+        $resp->assertOk();
+        $resp->assertJsonPath('tactical', true);
+        $this->assertSame([], $resp->json('volumes'));
+        $this->assertArrayNotHasKey('error', $resp->json());
+    }
+
+    public function test_storage_offline_degrades_to_error_not_500(): void
+    {
+        $asset = $this->linkedAsset();
+        $this->bindClient([new ConnectException('offline', new Request('GET', 'agents/AGENT-1/'))]);
+
+        $resp = $this->fetchSection($asset, 'storage');
+
+        $resp->assertOk();
+        $this->assertArrayHasKey('error', $resp->json());
+        $this->assertArrayNotHasKey('volumes', $resp->json());
+    }
+
     // ── routing / gating ────────────────────────────────────────────────────────
 
     public function test_checks_is_an_allowed_section(): void
