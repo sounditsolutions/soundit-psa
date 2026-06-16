@@ -364,6 +364,10 @@
             // free), so this attribute is null/absent and the badge stays hidden
             // until the toggle is used. Tracked gap: see the report / INSTALL.md.
             $maintenanceOn = (bool) ($ta->maintenance_mode ?? false);
+            // P4 amendment H: freshness sits next to the status badge (one unit),
+            // amber when an "online" claim is stale (the dangerous misread).
+            $insight = $tacticalInsight ?? null;
+            $freshStale = $insight?->stale ?? false;
         @endphp
         <div class="card shadow-sm card-static mb-3 mt-4">
             <div class="card-header d-flex justify-content-between align-items-center">
@@ -375,10 +379,64 @@
                           style="{{ $maintenanceOn ? '' : 'display:none;' }}">
                         <i class="bi bi-bell-slash me-1"></i>Maintenance — alerts muted
                     </span>
-                    <span class="badge {{ $ta->statusBadgeClass() }}">{{ ucfirst($ta->status) }}</span>
+                    {{-- amendment H: status + freshness read as one unit. --}}
+                    <span class="badge {{ $ta->statusBadgeClass() }}" id="tacticalStatusBadge">{{ ucfirst($ta->status) }}</span>
+                    @if($ta->synced_at)
+                    <span class="small tactical-freshness {{ $freshStale ? 'tactical-freshness-stale text-warning-emphasis fw-semibold' : 'text-muted' }}"
+                          id="tacticalFreshness"
+                          title="{{ $ta->synced_at->toAppTz()->format('Y-m-d H:i T') }}">
+                        @if($freshStale)<i class="bi bi-clock-history me-1"></i>@endif synced {{ $ta->synced_at->diffForHumans() }}
+                    </span>
+                    @endif
+                    {{-- amendment J: in-place AJAX refresh-now (no page reload). --}}
+                    <button type="button" class="btn btn-outline-secondary btn-sm py-0 px-1" id="tacticalRefreshBtn"
+                            data-asset-refresh-url="{{ route('assets.tactical-refresh', $asset) }}"
+                            title="Refresh status from the agent now">
+                        <i class="bi bi-arrow-clockwise"></i>
+                    </button>
                 </span>
             </div>
             <div class="card-body">
+                {{-- Eager at-a-glance health line (amendment B): snapshot / local-DB
+                     derived — ZERO live calls on render. Failing-checks count ("—"
+                     when unknown, never "0"), open-alerts, pending-patches, last-seen. --}}
+                @if($insight)
+                <div class="d-flex flex-wrap gap-3 mb-3 pb-3 border-bottom small tactical-health-line" id="tacticalHealthLine">
+                    <span title="Failing monitoring checks">
+                        <i class="bi bi-clipboard2-check me-1 {{ ($insight->checksFailing ?? 0) > 0 ? 'text-danger' : 'text-muted' }}"></i>
+                        @if($insight->checksFailing === null)
+                            checks: <span class="text-muted">—</span>
+                        @elseif($insight->checksFailing > 0)
+                            <span class="text-danger fw-semibold">{{ $insight->checksFailing }} checks failing</span>
+                        @else
+                            <span class="text-success">checks: all passing</span>
+                        @endif
+                    </span>
+                    <span title="Open alerts">
+                        <i class="bi bi-bell me-1 {{ $insight->openAlerts > 0 ? 'text-warning' : 'text-muted' }}"></i>
+                        {{ $insight->openAlerts }} {{ \Illuminate\Support\Str::plural('alert', $insight->openAlerts) }}
+                    </span>
+                    <span title="Pending updates">
+                        <i class="bi bi-shield-check me-1 {{ $ta->has_patches_pending ? 'text-warning' : 'text-muted' }}"></i>
+                        @if($ta->has_patches_pending)
+                            <span class="text-warning-emphasis">updates pending</span>
+                        @else
+                            <span class="text-success">up to date</span>
+                        @endif
+                    </span>
+                    @if($insight->needsReboot)
+                    <span title="A reboot is required" class="text-warning-emphasis">
+                        <i class="bi bi-arrow-repeat me-1"></i>reboot needed
+                    </span>
+                    @endif
+                    @if($ta->last_seen_at)
+                    <span class="text-muted ms-auto" title="{{ $ta->last_seen_at->toAppTz()->format('Y-m-d H:i T') }}">
+                        <i class="bi bi-eye me-1"></i>seen {{ $ta->last_seen_at->diffForHumans() }}
+                    </span>
+                    @endif
+                </div>
+                @endif
+                <div id="tacticalRefreshResult" class="small mb-2" style="display:none;"></div>
                 {{-- E3: maintenance is an ALWAYS-VISIBLE control near the device
                      status (never buried in the script/power card). It drives the
                      non-destructive set_maintenance action (single click, no
@@ -2865,6 +2923,93 @@ function renderPatches(data) {
         })
         .finally(function() {
             toggle.disabled = false;
+        });
+    });
+})();
+
+// In-place refresh-now (P4 amendment J). A READ — POST to a non-bus, non-audited
+// endpoint that re-syncs the local snapshot; updates the status badge + freshness
+// in place (no full-page reload, no quickLook cache). An in-button spinner
+// re-enables on completion/failure (the ~3s bound guarantees no infinite spin).
+// A degraded result is a 200 with degraded:true — copy sits adjacent to status.
+(function() {
+    var btn = document.getElementById('tacticalRefreshBtn');
+    if (!btn) return;
+    var statusBadge = document.getElementById('tacticalStatusBadge');
+    var freshness = document.getElementById('tacticalFreshness');
+    var resultEl = document.getElementById('tacticalRefreshResult');
+    var original = btn.innerHTML;
+    var STATUS_CLASSES = ['bg-success', 'bg-danger', 'bg-warning', 'text-dark', 'bg-secondary'];
+
+    function statusClass(status) {
+        switch ((status || '').toLowerCase()) {
+            case 'online': return ['bg-success'];
+            case 'offline': return ['bg-danger'];
+            case 'overdue': return ['bg-warning', 'text-dark'];
+            default: return ['bg-secondary'];
+        }
+    }
+
+    btn.addEventListener('click', function() {
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+        if (resultEl) resultEl.style.display = 'none';
+
+        fetch(btn.dataset.assetRefreshUrl, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content,
+                'Accept': 'application/json',
+            },
+        })
+        .then(function(r) { return r.json().then(function(d) { d._status = r.status; return d; }); })
+        .then(function(data) {
+            if (data.error) {
+                if (resultEl) {
+                    resultEl.style.display = '';
+                    resultEl.className = 'small mb-2 text-danger';
+                    resultEl.textContent = data.error;
+                }
+                return;
+            }
+            // Update the status badge in place (only on a non-degraded read — a
+            // degraded read leaves the last-known status untouched).
+            if (!data.degraded && data.status_label && statusBadge) {
+                STATUS_CLASSES.forEach(function(c) { statusBadge.classList.remove(c); });
+                statusClass(data.status).forEach(function(c) { statusBadge.classList.add(c); });
+                statusBadge.textContent = data.status_label;
+            }
+            // Freshness flips to "Refreshed just now" (clears the stale-amber).
+            if (freshness) {
+                if (data.degraded) {
+                    freshness.classList.remove('tactical-freshness-stale', 'text-warning-emphasis', 'fw-semibold');
+                    freshness.classList.add('text-muted');
+                    freshness.textContent = ' synced ' + (data.freshAsOf || 'a while ago');
+                } else {
+                    freshness.classList.remove('tactical-freshness-stale', 'text-warning-emphasis', 'fw-semibold');
+                    freshness.classList.add('text-muted');
+                    freshness.textContent = ' Refreshed just now';
+                }
+            }
+            if (resultEl) {
+                resultEl.style.display = '';
+                resultEl.className = data.degraded ? 'small mb-2 text-warning-emphasis' : 'small mb-2 text-success';
+                resultEl.textContent = data.degraded
+                    ? (data.message || 'Couldn’t reach the agent — showing last sync.')
+                    : (data.message || 'Refreshed just now.');
+            }
+        })
+        .catch(function(err) {
+            if (resultEl) {
+                resultEl.style.display = '';
+                resultEl.className = 'small mb-2 text-danger';
+                resultEl.textContent = 'Request failed: ' + err.message;
+            }
+        })
+        .finally(function() {
+            btn.disabled = false;
+            btn.innerHTML = original;
         });
     });
 })();

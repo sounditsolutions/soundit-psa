@@ -200,7 +200,23 @@ class AssetController extends Controller
             'zorusEndpoints' => $zorusEndpoints,
             'lastUserPerson' => $lastUserPerson,
             'clientPeople' => $clientPeople,
+            'tacticalInsight' => $this->tacticalInsight($asset),
         ]);
+    }
+
+    /**
+     * The snapshot-only EndpointInsight for the eager card health line + freshness
+     * (P4 amendments B/H). forAsset() (no $live) makes ZERO outbound Tactical
+     * calls — the page renders instantly from the snapshot + local DB. Null when
+     * not Tactical-linked so the view skips the block.
+     */
+    private function tacticalInsight(Asset $asset): ?\App\Services\Tactical\EndpointInsight
+    {
+        if (! $asset->tacticalAsset) {
+            return null;
+        }
+
+        return app(\App\Services\Tactical\TacticalInsightService::class)->forAsset($asset);
     }
 
     public function tickets(Request $request, Asset $asset)
@@ -247,6 +263,7 @@ class AssetController extends Controller
             'zorusEndpoints' => collect(),
             'lastUserPerson' => $lastUserPerson,
             'clientPeople' => $clientPeople,
+            'tacticalInsight' => $this->tacticalInsight($asset),
             'activeTab' => 'tickets',
             'tickets' => $tickets,
             'ticketFilters' => $filters,
@@ -915,6 +932,40 @@ class AssetController extends Controller
         return response()->json([
             'error' => $result->message ?? 'Could not change maintenance mode.',
         ], $result->isOffline() ? 422 : 500);
+    }
+
+    /**
+     * Refresh-now: an in-place AJAX refresh of the Tactical device status +
+     * freshness (P4 amendment J). It calls TacticalDeviceSyncService::syncDeviceDetail
+     * (getAgent → status/last_seen/ram_gb/os_version + checks summary), NOT the
+     * action bus — it is a READ that mutates only the local snapshot, so it is
+     * NOT audited and NOT confirm-gated. It does NOT reuse refresh()'s redirect
+     * path or quickLook()'s 60s cache (a cached refresh-now would serve stale data).
+     *
+     * Returns {status, freshAsOf, degraded, message} for the in-place JS update.
+     * A live failure (offline agent / Tactical unreachable) is a NORMAL outcome:
+     * 200 with degraded:true and the prior snapshot left intact — never a 500.
+     * POST + CSRF + the same auth as the page (the web group).
+     */
+    public function refreshTactical(Asset $asset, \App\Services\Tactical\TacticalDeviceSyncService $sync)
+    {
+        $asset->load('tacticalAsset');
+
+        if (! $asset->tacticalAsset || empty($asset->tacticalAsset->agent_id)) {
+            return response()->json(['error' => 'This device is not linked to a Tactical agent.'], 422);
+        }
+
+        $result = $sync->syncDeviceDetail($asset);
+
+        return response()->json([
+            'status' => $result->status,
+            'status_label' => $result->status ? ucfirst($result->status) : null,
+            'freshAsOf' => $result->freshAsOf?->diffForHumans(),
+            'degraded' => ! $result->ok,
+            'message' => $result->ok
+                ? 'Refreshed just now.'
+                : ($result->message ?? 'Could not reach the agent — showing last sync.'),
+        ]);
     }
 
     /**
