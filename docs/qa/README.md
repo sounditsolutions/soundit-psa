@@ -16,13 +16,13 @@ An autonomous QA agent (`soundit-psa/gastown.qa`) drives the dev server in a rea
     {"type":"screenshot","name":"infra"}]}' \
     | QA_ALLOWED_HOSTS=soundit-dev node scripts/qa/playwright-runner.mjs
   ```
-- Actions: `goto {path}`, `click {selector}`, `fill {selector,value}`, `expectText {text}`, `expectMissing {text}`, `snapshot` (accessibility tree), `screenshot {name}`.
+- Actions: `goto {path}`, `click {selector}`, `fill {selector,value}`, `expectText {text}`, `expectMissing {text}`, `snapshot` (accessibility tree), `screenshot {name}`, `axe {name}` (axe-core a11y scan → `result.axe[]`), and multi-viewport screenshots via a top-level `viewports:[{name,width,height},…]` job field.
 - Output: JSON with per-step ok/detail, `finalUrl`, the accessibility `snapshot`, `screenshots[]`, `pageErrors[]`, and a `harnessError` flag distinguishing harness failures from product failures. Exit 0 = all steps ok, 1 = a step failed, 2 = harness/guard error.
 
 ## Safety
 - The runner refuses any `baseUrl` whose host is not in `QA_ALLOWED_HOSTS`, contains a backslash, or has a non-http(s) scheme — mirroring `App\Services\Qa\QaTargetGuard`. QA never drives a non-dev host. The dev-login bypass only exists when `APP_ENV=local`, so the same config cannot reach production.
 
 ## The agent loop
-The `gastown.qa` agent: reads a scenario from `docs/qa/scenarios/*.md` (parsed by `App\Services\Qa\QaScenarioLoader`), authors a runner job, runs it, reasons over the result + snapshot + screenshot (deviating to investigate anything off), and files findings via `App\Services\Qa\QaFindingFiler` (→ `psa-` beads labeled `qa` + `bug`/`ux`/`docs`, deduped). A per-run report (`App\Services\Qa\QaRunReport` / `php artisan qa:report`) lands under `storage/qa-reports/`.
+The `gastown.qa` agent: reads a scenario from `docs/qa/scenarios/*.md` (parsed by `App\Services\Qa\QaScenarioLoader`), authors a runner job, runs it, reasons over the result + snapshot + screenshot (deviating to investigate anything off), and files findings via `App\Services\Qa\QaFindingFiler` (→ `psa-` beads labeled `qa` + `bug`/`ux`/`docs`, deduped). A per-run report (`App\Services\Qa\QaRunReport` / `php artisan qa:report`) lands under `storage/qa-reports/`. On design-audit runs the agent also invokes the impeccable skill on the captured multi-viewport screenshots + axe results, filing design findings (label qa+design).
 
 See `dev-environment.md` for the dev-server contract (queue worker is required for async flows).
