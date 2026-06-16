@@ -717,6 +717,12 @@ class ContextBuilder
                                     // Redact on the FULL text first, then clip — so a
                                     // secret straddling the 150-char boundary is still
                                     // caught.
+                                    //
+                                    // KNOWN RESIDUAL (accepted, same as TacticalPanelData::safeStdout
+                                    // and the P3 audit-output residual): redact() is keyword-shape
+                                    // best-effort — a curated check echoing a BARE/JSON-embedded
+                                    // secret (no keyword) can pass; the 150-char clip BOUNDS the
+                                    // exposure, it does not guarantee redaction.
                                     $stdout = substr($redactor->redact($fc['check_result']['stdout'] ?? ''), 0, 150);
                                     $info .= "\n  - [FAILING] {$fc['name']}: {$stdout}";
                                 }

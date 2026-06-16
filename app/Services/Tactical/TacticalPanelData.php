@@ -208,7 +208,19 @@ class TacticalPanelData
         ];
     }
 
-    /** Redact (WikiRedactor) THEN length-clip raw check stdout for display. */
+    /**
+     * Redact (WikiRedactor) THEN length-clip raw check stdout for display.
+     *
+     * KNOWN RESIDUAL (accepted, documented like the P3 audit-output residual):
+     * WikiRedactor::redact() is keyword-shape BEST-EFFORT. It catches keyword=value
+     * forms, connection strings, PEM blocks, JWTs, and base64-distinctive runs — but
+     * a curated check that echoes a BARE secret with no keyword (e.g. a short hex/
+     * alphanumeric token, a raw key value, or a secret buried inside a JSON blob
+     * whose escaping breaks the contiguous-shape match) can pass through. The
+     * STDOUT_CLIP (~200 chars) BOUNDS the blast radius (a dumped key is truncated),
+     * it does not guarantee redaction. The check library is operator-curated, so
+     * this is a bounded, accepted exposure — not a claim of total stdout safety.
+     */
     private function safeStdout(string $stdout): string
     {
         $redacted = $this->redactor->redact($stdout);

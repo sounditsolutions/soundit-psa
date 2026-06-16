@@ -173,8 +173,12 @@ class TacticalPanelsTest extends TestCase
         $this->assertArrayNotHasKey('failing_checks', $resp->json());
     }
 
-    public function test_planted_secret_in_check_stdout_is_redacted_and_clipped_in_the_panel(): void
+    public function test_keyword_shaped_secret_in_check_stdout_is_redacted_and_clipped(): void
     {
+        // This pins what the control DOES catch — a KEYWORD-SHAPED secret
+        // ("password = …") — plus the length clip. It does NOT claim total stdout
+        // safety: see test_bare_non_keyword_secret_is_a_known_redaction_gap below
+        // for the documented residual.
         $asset = $this->linkedAsset();
 
         // Build the secret by concatenation so no contiguous credential literal
@@ -196,6 +200,33 @@ class TacticalPanelsTest extends TestCase
         $this->assertStringNotContainsString('S3cr3tP'.'@ssw0rd!', $stdout);
         // Length-clipped (~200 chars) — the 500-char tail must not render whole.
         $this->assertLessThanOrEqual(220, strlen($stdout));
+    }
+
+    public function test_bare_non_keyword_secret_is_a_known_redaction_gap_bounded_only_by_the_clip(): void
+    {
+        // DOCUMENTING THE RESIDUAL (not a silent surprise): redact() is keyword-shape
+        // best-effort. A curated check that echoes a BARE token with no keyword and no
+        // base64-distinctive shape (here a short hex run) passes through. The control
+        // we actually rely on for this class is the length CLIP, which bounds the
+        // blast radius. This test pins the gap so a future "we fully scrub stdout"
+        // claim trips here first. (Build the value by concatenation — secret-guard.)
+        $asset = $this->linkedAsset();
+        $bareToken = 'a1b2c3d4'.'e5f60718'; // 16 hex chars, no keyword, no +//=
+
+        $this->bindClient([
+            new Response(200, [], json_encode([
+                ['name' => 'Echo Check', 'check_result' => ['status' => 'failing', 'stdout' => 'value '.$bareToken]],
+            ])),
+        ]);
+
+        $resp = $this->fetchSection($asset, 'checks');
+
+        $resp->assertOk();
+        $stdout = $resp->json('failing_checks.0.stdout');
+        // Honest: the bare token is NOT redacted (keyword-shape redaction can't see
+        // it). The length clip is what bounds exposure here, not redaction.
+        $this->assertStringContainsString($bareToken, $stdout);
+        $this->assertStringNotContainsString('[REDACTED:credential]', $stdout);
     }
 
     // ── patches (count-first, shape UNVERIFIED — amendment F) ───────────────────
