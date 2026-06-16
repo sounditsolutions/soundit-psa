@@ -1235,29 +1235,9 @@ class TriageToolExecutor
             return ['error' => 'Tactical query failed: '.mb_substr($e->getMessage(), 0, 200)];
         }
 
-        $networkConfigs = $agent['wmi_detail']['network_config'] ?? [];
-
-        // Filter to IP-enabled adapters
-        $adapters = collect($networkConfigs)
-            ->filter(fn ($n) => ! empty($n['IPAddress']))
-            ->take(20)
-            ->map(fn ($n) => [
-                'caption' => $n['Caption'] ?? $n['Description'] ?? 'Unknown',
-                'ip_addresses' => $n['IPAddress'] ?? [],
-                'subnets' => $n['IPSubnet'] ?? [],
-                'gateway' => $n['DefaultIPGateway'] ?? [],
-                'dns_servers' => $n['DNSServerSearchOrder'] ?? [],
-                'dhcp_enabled' => $n['DHCPEnabled'] ?? false,
-                'mac_address' => $n['MACAddress'] ?? null,
-            ])
-            ->values()
-            ->toArray();
-
-        return [
-            'public_ip' => $agent['public_ip'] ?? null,
-            'local_ips' => $agent['local_ips'] ?? null,
-            'adapters' => $adapters,
-        ];
+        // Shared IP-enabled-adapter mapping (the storage/network asset panels reuse
+        // the same TacticalFieldMap mapper — one shape, two consumers).
+        return TacticalFieldMap::mapNetwork($agent);
     }
 
     private function tacticalGetDeviceSoftware(array $input): array

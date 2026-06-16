@@ -242,20 +242,16 @@ class TacticalInsightService
 
     /**
      * Map Tactical's disk volumes (getAgent `disks`) to a structured shape for
-     * the lowDisk flag + the UI. total/used/free arrive as FORMATTED STRINGS
-     * ("X.Y GB"/TB/MB) and percent as an INT (source v1.5.0 + live VM 105).
+     * the lowDisk flag + the UI. Delegates to the shared TacticalFieldMap mapper
+     * (the single source of truth, also used by the storage panel) so the
+     * snapshot's lowDisk flag and the panel's volume list can never diverge.
      *
      * @param  array<int, array<string, mixed>>  $disks
      * @return array<int, array{drive: ?string, total_gb: ?float, free_gb: ?float, percent_used: int|float|null}>
      */
     private function mapDiskVolumes(array $disks): array
     {
-        return collect($disks)->take(10)->map(fn ($d) => [
-            'drive' => $d['device'] ?? null,
-            'total_gb' => TacticalFieldMap::diskSizeToGb($d['total'] ?? null),
-            'free_gb' => TacticalFieldMap::diskSizeToGb($d['free'] ?? null),
-            'percent_used' => $d['percent'] ?? null,
-        ])->values()->all();
+        return TacticalFieldMap::mapDiskVolumes($disks);
     }
 
     /**

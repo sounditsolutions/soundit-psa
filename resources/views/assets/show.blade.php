@@ -79,6 +79,12 @@
             <a class="nav-link active" data-bs-toggle="tab" href="#tab-overview">Overview</a>
         @endif
     </li>
+    {{-- The page-top Network/Storage/Software/Patches tabs are Ninja/Level-only
+         (they hit the Ninja/Level RMM device-data endpoints). On a Tactical-only or
+         no-RMM asset they only ever rendered "not linked to an RMM", so hide them —
+         a Tactical asset gets the same data from its own card panels below. A
+         Ninja/Level (or dual-linked) asset is unchanged. --}}
+    @if($asset->ninja_id || $asset->level_id)
     <li class="nav-item">
         @if(($activeTab ?? '') === 'tickets')
             <a class="nav-link" href="{{ route('assets.show', $asset) }}#tab-network">Network</a>
@@ -107,6 +113,7 @@
             <a class="nav-link" data-bs-toggle="tab" href="#tab-patches" data-ajax-section="patches">Patches</a>
         @endif
     </li>
+    @endif
     <li class="nav-item">
         @if(($activeTab ?? '') === 'tickets')
             <a class="nav-link" href="{{ route('assets.show', $asset) }}#tab-security">Security</a>
@@ -618,6 +625,36 @@
                             </div>
                         </div>
                     </div>
+                    {{-- Network (public/local IPs + IP-enabled adapters) --}}
+                    <div class="accordion-item">
+                        <h2 class="accordion-header">
+                            <button class="accordion-button collapsed py-2 small" type="button"
+                                    data-bs-toggle="collapse" data-bs-target="#tacticalPanelNetwork"
+                                    data-tactical-panel="network" aria-expanded="false">
+                                <i class="bi bi-hdd-network me-2"></i>Network
+                            </button>
+                        </h2>
+                        <div id="tacticalPanelNetwork" class="accordion-collapse collapse" data-bs-parent="#tacticalPanels">
+                            <div class="accordion-body small" data-tactical-panel-body="network">
+                                <div class="text-muted py-2"><span class="spinner-border spinner-border-sm me-1"></span>Loading…</div>
+                            </div>
+                        </div>
+                    </div>
+                    {{-- Storage (disk volumes + low-disk flag) --}}
+                    <div class="accordion-item">
+                        <h2 class="accordion-header">
+                            <button class="accordion-button collapsed py-2 small" type="button"
+                                    data-bs-toggle="collapse" data-bs-target="#tacticalPanelStorage"
+                                    data-tactical-panel="storage" aria-expanded="false">
+                                <i class="bi bi-device-hdd me-2"></i>Storage
+                            </button>
+                        </h2>
+                        <div id="tacticalPanelStorage" class="accordion-collapse collapse" data-bs-parent="#tacticalPanels">
+                            <div class="accordion-body small" data-tactical-panel-body="storage">
+                                <div class="text-muted py-2"><span class="spinner-border spinner-border-sm me-1"></span>Loading…</div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
             {{-- psa-6h5r: the Open-in-Tactical link targets the configured WEB
@@ -1089,6 +1126,9 @@
 
     </div>
 
+    {{-- TABS 2-5 (Network/Storage/Software/Patches) are Ninja/Level-only; their
+         panes render only when the page-top tabs above do (same gate). --}}
+    @if($asset->ninja_id || $asset->level_id)
     {{-- ==================== TAB 2: NETWORK (AJAX) ==================== --}}
     <div class="tab-pane fade" id="tab-network">
         <div class="d-flex justify-content-center py-5"><div class="spinner-border text-primary" role="status"></div></div>
@@ -1108,6 +1148,7 @@
     <div class="tab-pane fade" id="tab-patches">
         <div class="d-flex justify-content-center py-5"><div class="spinner-border text-primary" role="status"></div></div>
     </div>
+    @endif
 
     {{-- ==================== TAB 6: SECURITY ==================== --}}
     <div class="tab-pane fade p-3" id="tab-security">
@@ -3185,7 +3226,69 @@ function renderPatches(data) {
         return html;
     }
 
-    var renderers = { checks: renderChecks, patches: renderPatches, software: renderSoftware };
+    function renderNetwork(d) {
+        var html = '';
+        // Public/local IP summary chips (present even when no adapters parsed).
+        var chips = [];
+        if (d.public_ip) chips.push('<span class="text-muted me-3"><i class="bi bi-globe2 me-1"></i>Public ' + esc(d.public_ip) + '</span>');
+        if (d.local_ips) chips.push('<span class="text-muted"><i class="bi bi-house me-1"></i>Local ' + esc(d.local_ips) + '</span>');
+        if (chips.length) html += '<div class="mb-2">' + chips.join('') + '</div>';
+
+        var adapters = d.adapters || [];
+        if (!adapters.length) {
+            // (b) genuinely-empty — a reachable agent with no IP-enabled adapters.
+            html += '<div class="text-muted"><i class="bi bi-info-circle me-1"></i>No active network adapters reported.</div>';
+            return html;
+        }
+        adapters.forEach(function(a) {
+            html += '<div class="border rounded p-2 mb-2">';
+            html += '<div class="fw-semibold mb-1">' + esc(a.caption || 'Adapter') +
+                    (a.dhcp_enabled ? ' <span class="badge bg-light text-dark">DHCP</span>' : ' <span class="badge bg-light text-dark">Static</span>') + '</div>';
+            html += '<table class="table table-sm table-borderless mb-0"><tbody>';
+            html += netRow('IP', (a.ip_addresses || []).join(', '));
+            html += netRow('Subnet', (a.subnets || []).join(', '));
+            html += netRow('Gateway', (a.gateway || []).join(', '));
+            html += netRow('DNS', (a.dns_servers || []).join(', '));
+            html += netRow('MAC', a.mac_address || '');
+            html += '</tbody></table></div>';
+        });
+        return html;
+    }
+
+    function netRow(label, value) {
+        if (!value) return '';
+        return '<tr><th class="text-muted fw-normal" style="width:90px;">' + esc(label) +
+               '</th><td style="word-break:break-word;">' + esc(value) + '</td></tr>';
+    }
+
+    function renderStorage(d) {
+        var vols = d.volumes || [];
+        if (!vols.length) {
+            // (b) genuinely-empty — a reachable agent reporting no disks.
+            return '<div class="text-muted"><i class="bi bi-info-circle me-1"></i>No disk volumes reported.</div>';
+        }
+        var html = '';
+        vols.forEach(function(v) {
+            var pct = (typeof v.percent_used === 'number') ? v.percent_used : null;
+            var barClass = v.low_disk ? 'bg-danger' : (pct !== null && pct >= 75 ? 'bg-warning' : 'bg-success');
+            var free = (typeof v.free_gb === 'number') ? v.free_gb + ' GB free' : '';
+            var total = (typeof v.total_gb === 'number') ? ' of ' + v.total_gb + ' GB' : '';
+            html += '<div class="mb-3">';
+            html += '<div class="d-flex justify-content-between align-items-center mb-1">' +
+                    '<span class="fw-semibold">' + esc(v.drive || 'Volume') +
+                    (v.low_disk ? ' <span class="badge bg-danger ms-1"><i class="bi bi-exclamation-triangle me-1"></i>Low disk</span>' : '') + '</span>' +
+                    '<span class="text-muted small">' + esc(free + total) + '</span></div>';
+            if (pct !== null) {
+                html += '<div class="progress" role="progressbar" aria-valuenow="' + pct + '" aria-valuemin="0" aria-valuemax="100" style="height:8px;">' +
+                        '<div class="progress-bar ' + barClass + '" style="width:' + pct + '%;"></div></div>' +
+                        '<div class="small text-muted mt-1">' + pct + '% used</div>';
+            }
+            html += '</div>';
+        });
+        return html;
+    }
+
+    var renderers = { checks: renderChecks, patches: renderPatches, software: renderSoftware, network: renderNetwork, storage: renderStorage };
 
     root.querySelectorAll('[data-tactical-panel]').forEach(function(btn) {
         var section = btn.dataset.tacticalPanel;
