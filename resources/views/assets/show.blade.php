@@ -404,12 +404,20 @@
                 <div class="d-flex flex-wrap gap-3 mb-3 pb-3 border-bottom small tactical-health-line" id="tacticalHealthLine">
                     <span title="Failing monitoring checks">
                         <i class="bi bi-clipboard2-check me-1 {{ ($insight->checksFailing ?? 0) > 0 ? 'text-danger' : 'text-muted' }}"></i>
+                        {{-- fix #2: a degraded/STALE clean signal must never read as a
+                             confident green "all passing" (the amendment-H misread the
+                             status badge guards but the chips didn't). Positive copy
+                             only when checks were actually read clean AND are fresh;
+                             otherwise a muted "as of last sync" qualifier. The negative
+                             "N failing" count still shows regardless of staleness. --}}
                         @if($insight->checksFailing === null)
                             checks: <span class="text-muted">—</span>
                         @elseif($insight->checksFailing > 0)
                             <span class="text-danger fw-semibold">{{ $insight->checksFailing }} checks failing</span>
-                        @else
+                        @elseif($insight->checksKnownClean() && !$insight->stale)
                             <span class="text-success">checks: all passing</span>
+                        @else
+                            checks: <span class="text-muted">clean as of last sync</span>
                         @endif
                     </span>
                     <span title="Open alerts">
@@ -418,10 +426,15 @@
                     </span>
                     <span title="Pending updates">
                         <i class="bi bi-shield-check me-1 {{ $ta->has_patches_pending ? 'text-warning' : 'text-muted' }}"></i>
+                        {{-- fix #2: same staleness guard as the checks chip. A stale
+                             "no patches pending" snapshot must not claim a confident
+                             green "up to date"; the pending WARNING always shows. --}}
                         @if($ta->has_patches_pending)
                             <span class="text-warning-emphasis">updates pending</span>
-                        @else
+                        @elseif(!$insight->stale)
                             <span class="text-success">up to date</span>
+                        @else
+                            <span class="text-muted">patched as of last sync</span>
                         @endif
                     </span>
                     @if($insight->needsReboot)
