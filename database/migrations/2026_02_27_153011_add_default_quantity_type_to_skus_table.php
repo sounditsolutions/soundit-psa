@@ -12,7 +12,7 @@ return new class extends Migration
     public function up(): void
     {
         Schema::table('skus', function (Blueprint $table) {
-            $table->string('default_quantity_type', 30)->nullable()->after('included_per_unit');
+            $table->string('default_quantity_type', 30)->nullable()->after('unit_cost');
         });
     }
 
