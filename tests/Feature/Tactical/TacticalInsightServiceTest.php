@@ -281,6 +281,26 @@ class TacticalInsightServiceTest extends TestCase
         $this->assertTrue($insight->freshAsOf->diffInMinutes(now()) < 1);
     }
 
+    public function test_live_refresh_treats_none_sentinel_as_not_logged_in(): void
+    {
+        // getAgent `logged_in_username` uses the literal string "None" as the
+        // no-user sentinel (source v1.5.0 + live VM 105). It must read as NOT
+        // logged in, not as a user literally named "None".
+        $asset = $this->linkedAsset(['agent_id' => 'AGENT-NOUSER', 'last_user' => '-']);
+
+        $service = $this->service([
+            new Response(200, [], json_encode([
+                'status' => 'online',
+                'logged_in_username' => 'None',
+            ])),
+            new Response(200, [], json_encode([])),
+        ]);
+
+        $insight = $service->forAsset($asset, live: true);
+
+        $this->assertFalse($insight->userLoggedIn, '"None" is the no-user sentinel');
+    }
+
     public function test_live_refresh_degrades_to_snapshot_on_failure_never_throws(): void
     {
         $asset = $this->linkedAsset(['status' => 'online', 'checks_failing' => 1, 'checks_total' => 4]);
@@ -358,18 +378,17 @@ class TacticalInsightServiceTest extends TestCase
 
     public function test_low_disk_flag_from_getagent_disks_shape_live(): void
     {
-        // fix #6: pin the getAgent `disks` -> lowDisk live path (CURRENT assumed
-        // shape: device/total/free/percent; total/free in bytes). A volume at/above
-        // 90% used trips lowDisk. (Shape is live-verified later in task 17 — this
-        // pins the current assumption so a regression is caught.)
-        $gib = 1073741824; // bytes per GiB
+        // getAgent `disks` REAL shape (source v1.5.0 + live VM 105):
+        // {device, fstype, total, used, free, percent} where total/used/free are
+        // FORMATTED STRINGS ("X.Y GB"/TB/MB) and percent is an INT. A volume
+        // at/above 90% used trips lowDisk.
         $asset = $this->linkedAsset(['agent_id' => 'AGENT-LOWDISK']);
 
         $service = $this->service([
             new Response(200, [], json_encode([
                 'status' => 'online',
                 'disks' => [
-                    ['device' => 'C:', 'total' => 256 * $gib, 'free' => 4 * $gib, 'percent' => 95],
+                    ['device' => 'C:', 'fstype' => 'NTFS', 'total' => '256.0 GB', 'used' => '243.2 GB', 'free' => '12.8 GB', 'percent' => 95],
                 ],
             ])),
             new Response(200, [], json_encode([])), // checks: empty, all-passing
@@ -380,20 +399,43 @@ class TacticalInsightServiceTest extends TestCase
         $this->assertTrue($insight->lowDisk, 'a 95%-used volume must trip lowDisk');
         $this->assertNotEmpty($insight->diskVolumes);
         $this->assertSame('C:', $insight->diskVolumes[0]['drive']);
+        // The formatted strings are parsed to GB floats for the UI.
+        $this->assertSame(256.0, $insight->diskVolumes[0]['total_gb']);
+        $this->assertSame(12.8, $insight->diskVolumes[0]['free_gb']);
+    }
+
+    public function test_low_disk_flag_trips_on_low_free_gb_even_when_percent_is_moderate(): void
+    {
+        // A small volume can be under 90% used yet have < 10 GB free — the free-GB
+        // floor (parsed from the "X.Y GB" string) must still trip lowDisk.
+        $asset = $this->linkedAsset(['agent_id' => 'AGENT-SMALLFREE']);
+
+        $service = $this->service([
+            new Response(200, [], json_encode([
+                'status' => 'online',
+                'disks' => [
+                    ['device' => 'C:', 'fstype' => 'NTFS', 'total' => '32.0 GB', 'used' => '24.0 GB', 'free' => '8.0 GB', 'percent' => 75],
+                ],
+            ])),
+            new Response(200, [], json_encode([])),
+        ]);
+
+        $insight = $service->forAsset($asset, live: true);
+
+        $this->assertTrue($insight->lowDisk, '8 GB free (< 10) trips lowDisk even at 75%');
     }
 
     public function test_low_disk_flag_is_false_for_a_healthy_volume_live(): void
     {
-        $gib = 1073741824;
         $asset = $this->linkedAsset(['agent_id' => 'AGENT-OKDISK']);
 
         $service = $this->service([
             new Response(200, [], json_encode([
                 'status' => 'online',
-                // 40% used, 100 GiB free — clears BOTH the percent ceiling (<90)
+                // 40% used, 100.0 GB free — clears BOTH the percent ceiling (<90)
                 // and the GB floor (>=10).
                 'disks' => [
-                    ['device' => 'C:', 'total' => 256 * $gib, 'free' => 100 * $gib, 'percent' => 40],
+                    ['device' => 'C:', 'fstype' => 'NTFS', 'total' => '256.0 GB', 'used' => '156.0 GB', 'free' => '100.0 GB', 'percent' => 40],
                 ],
             ])),
             new Response(200, [], json_encode([])),

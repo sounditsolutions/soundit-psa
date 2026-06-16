@@ -39,6 +39,38 @@ class TacticalFieldMap
     }
 
     /**
+     * Parse a Tactical disk size STRING ("19.3 GB" / "2.0 TB" / "512.0 MB") to a
+     * GB float, rounded to one decimal. The agent `disks` total/used/free fields
+     * are pre-formatted strings (source v1.5.0 + live VM 105), NOT byte counts. A
+     * bare unitless number is read as GB. null/empty/unparseable => null.
+     */
+    public static function diskSizeToGb(?string $size): ?float
+    {
+        if ($size === null) {
+            return null;
+        }
+
+        if (! preg_match('/(-?\d+(?:\.\d+)?)\s*([KMGTP]?B)?/i', trim($size), $m)) {
+            return null;
+        }
+
+        $value = (float) $m[1];
+        $unit = strtoupper($m[2] ?? 'GB');
+
+        $gb = match ($unit) {
+            'PB' => $value * 1024 * 1024,
+            'TB' => $value * 1024,
+            'GB', '' => $value,
+            'MB' => $value / 1024,
+            'KB' => $value / (1024 * 1024),
+            'B' => $value / (1024 * 1024 * 1024),
+            default => $value,
+        };
+
+        return round($gb, 1);
+    }
+
+    /**
      * Format a human uptime string ("3d 5h", "42m") from a boot time.
      *
      * Accepts a unix timestamp (the agent detail's `boot_time` is epoch seconds)

@@ -53,7 +53,9 @@ class TacticalInsightService
         $status = $ta->status;
         $statusState = SignalState::Snapshot;
         $maintenance = false; // not persisted on the snapshot; only known live
-        $userLoggedIn = ! empty($ta->last_user);
+        // last_user is the list-sync `logged_username` (already "-" normalized for
+        // no-user); treat that sentinel as NOT logged in.
+        $userLoggedIn = $this->userLoggedIn($ta->last_user);
         $needsReboot = (bool) $ta->needs_reboot;
 
         $checksFailing = $ta->checks_failing;
@@ -82,7 +84,7 @@ class TacticalInsightService
                 $status = $agent['status'] ?? $status;
                 $statusState = SignalState::Live;
                 $maintenance = (bool) ($agent['maintenance_mode'] ?? false);
-                $userLoggedIn = ! empty($agent['logged_in_username']);
+                $userLoggedIn = $this->userLoggedIn($agent['logged_in_username'] ?? null);
                 $needsReboot = (bool) ($agent['needs_reboot'] ?? $needsReboot);
                 $freshAsOf = now();
 
@@ -223,8 +225,25 @@ class TacticalInsightService
     }
 
     /**
+     * Is a user logged in, given a Tactical username field? Tactical uses the
+     * literal "None" (getAgent `logged_in_username`) and "-" (list-sync
+     * `logged_username`) as no-user sentinels; empty/null is also no-user.
+     */
+    private function userLoggedIn(mixed $username): bool
+    {
+        if ($username === null) {
+            return false;
+        }
+
+        $u = trim((string) $username);
+
+        return $u !== '' && $u !== 'None' && $u !== '-';
+    }
+
+    /**
      * Map Tactical's disk volumes (getAgent `disks`) to a structured shape for
-     * the lowDisk flag + the UI.
+     * the lowDisk flag + the UI. total/used/free arrive as FORMATTED STRINGS
+     * ("X.Y GB"/TB/MB) and percent as an INT (source v1.5.0 + live VM 105).
      *
      * @param  array<int, array<string, mixed>>  $disks
      * @return array<int, array{drive: ?string, total_gb: ?float, free_gb: ?float, percent_used: int|float|null}>
@@ -233,8 +252,8 @@ class TacticalInsightService
     {
         return collect($disks)->take(10)->map(fn ($d) => [
             'drive' => $d['device'] ?? null,
-            'total_gb' => TacticalFieldMap::ramGbFromBytes($d['total'] ?? null),
-            'free_gb' => TacticalFieldMap::ramGbFromBytes($d['free'] ?? null),
+            'total_gb' => TacticalFieldMap::diskSizeToGb($d['total'] ?? null),
+            'free_gb' => TacticalFieldMap::diskSizeToGb($d['free'] ?? null),
             'percent_used' => $d['percent'] ?? null,
         ])->values()->all();
     }

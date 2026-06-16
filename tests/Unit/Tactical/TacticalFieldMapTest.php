@@ -30,6 +30,26 @@ class TacticalFieldMapTest extends TestCase
         $this->assertNull(TacticalFieldMap::ramGb(0));
     }
 
+    public function test_disk_size_to_gb_parses_formatted_strings(): void
+    {
+        // Tactical disk total/used/free are FORMATTED STRINGS ("X.Y GB"/TB/MB),
+        // not byte counts (source v1.5.0 + live VM 105). Parse leading number+unit.
+        $this->assertSame(19.3, TacticalFieldMap::diskSizeToGb('19.3 GB'));
+        $this->assertSame(32.0, TacticalFieldMap::diskSizeToGb('32.0 GB'));
+        // TB -> *1024, MB -> /1024, rounded to 1 decimal.
+        $this->assertSame(2048.0, TacticalFieldMap::diskSizeToGb('2.0 TB'));
+        $this->assertSame(0.5, TacticalFieldMap::diskSizeToGb('512.0 MB'));
+        // A bare/unitless number is read as GB.
+        $this->assertSame(100.0, TacticalFieldMap::diskSizeToGb('100'));
+    }
+
+    public function test_disk_size_to_gb_handles_null_and_garbage(): void
+    {
+        $this->assertNull(TacticalFieldMap::diskSizeToGb(null));
+        $this->assertNull(TacticalFieldMap::diskSizeToGb(''));
+        $this->assertNull(TacticalFieldMap::diskSizeToGb('n/a'));
+    }
+
     public function test_uptime_from_boot_time_formats_days_hours(): void
     {
         $boot = Carbon::now()->subDays(3)->subHours(5)->subMinutes(12);
