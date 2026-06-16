@@ -245,12 +245,13 @@ class AssetTacticalCardRenderTest extends TestCase
         $resp->assertOk()->assertSee('updates pending');
     }
 
-    // ── Legacy page-top device-data tabs are Ninja/Level-only (gating) ──────────
-    //    Those Network/Storage/Software/Patches tabs hit the Ninja/Level RMM; on a
-    //    Tactical-only (or no-RMM) asset they only ever rendered "not linked to an
-    //    RMM". Hide them there; the Tactical card's own panels carry that data.
+    // ── Page-top device-data tabs serve every RMM-linked asset (psa-ymw8) ───────
+    //    The prominent Network/Storage/Software/Patches tabs render for Ninja/Level
+    //    AND Tactical assets. A Tactical-only asset routes them to its Tactical data
+    //    (source=tactical) and gets an extra Checks tab. A no-RMM asset still hides
+    //    them. (Reverses #36, which buried Tactical data in a collapsed accordion.)
 
-    public function test_tactical_only_asset_hides_the_legacy_device_data_tabs(): void
+    public function test_tactical_only_asset_shows_the_device_data_tabs_routed_to_tactical(): void
     {
         $user = User::factory()->create();
         $asset = $this->linkedAsset('online'); // Tactical-linked, no ninja_id/level_id
@@ -258,11 +259,14 @@ class AssetTacticalCardRenderTest extends TestCase
         $resp = $this->actingAs($user)->get(route('assets.show', $asset));
 
         $resp->assertOk()
-            // None of the four legacy AJAX tabs render for a Tactical-only asset.
-            ->assertDontSee('data-ajax-section="network"', false)
-            ->assertDontSee('data-ajax-section="storage"', false)
-            ->assertDontSee('data-ajax-section="software"', false)
-            ->assertDontSee('data-ajax-section="patches"', false);
+            // The same prominent page-top tabs render, plus a Tactical-only Checks tab.
+            ->assertSee('data-ajax-section="network"', false)
+            ->assertSee('data-ajax-section="storage"', false)
+            ->assertSee('data-ajax-section="software"', false)
+            ->assertSee('data-ajax-section="patches"', false)
+            ->assertSee('data-ajax-section="checks"', false)
+            // The renderer that backs those tabs for a Tactical-only asset is defined.
+            ->assertSee('window.renderTacticalSection', false);
     }
 
     public function test_no_rmm_asset_hides_the_legacy_device_data_tabs(): void
@@ -286,20 +290,22 @@ class AssetTacticalCardRenderTest extends TestCase
         $resp->assertOk()->assertSee('data-ajax-section="network"', false);
     }
 
-    public function test_tactical_card_renders_the_network_and_storage_panels(): void
+    public function test_tactical_only_asset_drops_the_under_card_accordion_panels(): void
     {
-        // The new lazy panels live under the Tactical card (co-located with the P4
-        // software/patches/checks panels), NOT the hidden page-top tabs.
+        // psa-ymw8: the collapsed under-card accordion (data-tactical-panel) buried
+        // the data after dev-test, so it was removed. Network/Storage/Software/
+        // Patches/Checks now live in the prominent page-top tabs (asserted above);
+        // the accordion DOM is gone.
         $user = User::factory()->create();
         $asset = $this->linkedAsset('online');
 
         $resp = $this->actingAs($user)->get(route('assets.show', $asset));
 
         $resp->assertOk()
-            ->assertSee('data-tactical-panel="network"', false)
-            ->assertSee('data-tactical-panel-body="network"', false)
-            ->assertSee('data-tactical-panel="storage"', false)
-            ->assertSee('data-tactical-panel-body="storage"', false);
+            ->assertDontSee('id="tacticalPanels"', false)
+            ->assertDontSee('data-tactical-panel="network"', false)
+            ->assertDontSee('data-tactical-panel-body="network"', false)
+            ->assertDontSee('data-tactical-panel="storage"', false);
     }
 
     public function test_dual_linked_ninja_tactical_asset_keeps_the_legacy_tabs(): void

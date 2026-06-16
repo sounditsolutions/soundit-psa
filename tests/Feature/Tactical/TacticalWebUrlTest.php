@@ -180,16 +180,18 @@ class TacticalWebUrlTest extends TestCase
         $resp->assertDontSee('href="'.self::API_URL.'"', false);
     }
 
-    public function test_panels_root_carries_the_web_url_for_the_view_in_tactical_affordance(): void
+    public function test_tactical_renderers_carry_the_web_url_for_the_view_in_tactical_affordance(): void
     {
-        // Chunk 2's panel "View in Tactical" reads root.dataset.webUrl — it must
-        // be populated from the web URL (not the API URL).
+        // psa-ymw8: the page-top Tactical tabs' renderers build the "View in Tactical"
+        // link from the `tacticalWebUrl` JS var (previously the accordion root's
+        // data-web-url). It must be the configured WEB url, not the API url (psa-6h5r).
         Setting::setValue('tactical_web_url', 'https://rmm.example.com');
         $asset = $this->linkedAsset();
 
         $resp = $this->actingAs(User::factory()->create())->get(route('assets.show', $asset));
 
         $resp->assertOk();
-        $resp->assertSee('data-web-url="https://rmm.example.com"', false);
+        // @json() escapes the forward slashes in the rendered JS string literal.
+        $resp->assertSee('tacticalWebUrl = "https:\/\/rmm.example.com"', false);
     }
 }
