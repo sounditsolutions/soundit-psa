@@ -234,13 +234,15 @@ class TacticalPanelsTest extends TestCase
     public function test_patches_section_leads_with_a_compliance_count(): void
     {
         $asset = $this->linkedAsset();
-        // winupdate serializer shape (guess): a list of update rows. `installed`
-        // false => pending. severity rolls up when present.
+        // getPatches (GET /winupdate/<id>/) REAL row shape (source v1.5.0 + live
+        // VM 105): {id, kb, guid, title, installed, downloaded, action, severity,
+        // date_installed, …}. A patch is PENDING iff installed === false (action is
+        // the APPROVAL policy, not install status). severity is a free string.
         $this->bindClient([
             new Response(200, [], json_encode([
-                ['id' => 1, 'kb' => 'KB5001', 'title' => 'Cumulative Update', 'severity' => 'Critical', 'installed' => false],
-                ['id' => 2, 'kb' => 'KB5002', 'title' => 'Defender Update', 'severity' => 'Important', 'installed' => false],
-                ['id' => 3, 'kb' => 'KB4999', 'title' => 'Old Update', 'severity' => 'Critical', 'installed' => true],
+                ['id' => 1, 'kb' => 'KB5001', 'guid' => 'g1', 'title' => 'Cumulative Update', 'severity' => 'Critical', 'action' => 'approve', 'installed' => false, 'downloaded' => true],
+                ['id' => 2, 'kb' => 'KB5002', 'guid' => 'g2', 'title' => 'Defender Update', 'severity' => 'Important', 'action' => 'inherit', 'installed' => false, 'downloaded' => false],
+                ['id' => 3, 'kb' => 'KB4999', 'guid' => 'g3', 'title' => 'Old Update', 'severity' => 'Critical', 'action' => 'nothing', 'installed' => true, 'downloaded' => true],
             ])),
         ]);
 
@@ -248,7 +250,7 @@ class TacticalPanelsTest extends TestCase
 
         $resp->assertOk();
         $resp->assertJsonPath('tactical', true);
-        // Count-first: 2 pending (the installed one excluded).
+        // Count-first: 2 pending (installed:true excluded — regardless of action).
         $resp->assertJsonPath('pending_count', 2);
         // Severity rollup present.
         $this->assertSame(1, $resp->json('severity.critical'));
@@ -257,27 +259,30 @@ class TacticalPanelsTest extends TestCase
         $this->assertCount(2, $resp->json('patches'));
     }
 
-    public function test_patches_pending_classification_for_action_rows_and_the_default_fallback(): void
+    public function test_patches_pending_is_install_status_not_approval_action(): void
     {
-        // fix #6: pin isPendingPatch across the UNVERIFIED winupdate shape:
-        //   - action "approve" (no installed flag)         => pending
-        //   - action "nothing"                              => NOT pending
-        //   - neither installed nor action (but a kb field) => default-to-pending
-        // The default-to-pending fallback was previously untested.
+        // installed is the ONLY pending signal. `action` is the approval POLICY
+        // ("nothing"/"approve"/"ignore"/"inherit") and must NOT drive pending:
+        //   - installed:false + action:"nothing"  => STILL pending (not yet installed)
+        //   - installed:true  + action:"approve"  => NOT pending (already installed)
         $asset = $this->linkedAsset();
         $this->bindClient([
             new Response(200, [], json_encode([
-                ['kb' => 'KB5001', 'title' => 'Cumulative Update', 'action' => 'approve'],
-                ['kb' => 'KB4900', 'title' => 'Already Applied', 'action' => 'nothing'],
-                ['kb' => 'KB5050', 'title' => 'No Status Field'], // neither installed nor action
+                ['id' => 1, 'kb' => 'KB5001', 'title' => 'Pending w/ nothing action', 'action' => 'nothing', 'installed' => false, 'severity' => ''],
+                ['id' => 2, 'kb' => 'KB4900', 'title' => 'Installed w/ approve action', 'action' => 'approve', 'installed' => true, 'severity' => 'Critical'],
             ])),
         ]);
 
         $resp = $this->fetchSection($asset, 'patches');
 
         $resp->assertOk();
-        // approve + the no-status default => 2 pending; "nothing" excluded.
-        $resp->assertJsonPath('pending_count', 2);
+        // Only the installed:false row is pending — action is ignored for pending.
+        $resp->assertJsonPath('pending_count', 1);
+        $resp->assertJsonPath('patches.0.kb', 'KB5001');
+        // An empty severity string buckets to "other", not critical/important.
+        $this->assertSame(0, $resp->json('severity.critical'));
+        $this->assertSame(0, $resp->json('severity.important'));
+        $this->assertSame(1, $resp->json('severity.other'));
     }
 
     public function test_patches_empty_is_no_pending_updates_not_an_error(): void

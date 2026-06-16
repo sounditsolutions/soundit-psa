@@ -95,10 +95,12 @@ class TacticalPanelData
     }
 
     /**
-     * Patches — count-first compliance summary (amendment F). The winupdate shape
-     * is UNVERIFIED, so: lead with the pending count + a severity rollup (when the
-     * shape exposes it); carry the full list as opt-in "show all"; and on a shape
-     * we don't recognise, return shape_error ("couldn't read patch detail") rather
+     * Patches — count-first compliance summary (amendment F). winupdate
+     * (GET /winupdate/<id>/) returns a LIST of {id, kb, guid, title, installed,
+     * downloaded, action, severity, …}; a patch is pending iff installed===false
+     * (confirmed source v1.5.0 + live VM 105). Lead with the pending count + a
+     * severity rollup; carry the full list as opt-in "show all"; and on a shape we
+     * don't recognise, return shape_error ("couldn't read patch detail") rather
      * than presenting an empty list as "fully patched".
      *
      * @return array<string, mixed>
@@ -151,8 +153,8 @@ class TacticalPanelData
         }
 
         $list = $pending->take(self::PATCH_LIST_LIMIT)->map(fn ($p) => [
-            'kb' => $p['kb'] ?? $p['kb_article'] ?? null,
-            'title' => $p['title'] ?? $p['description'] ?? '—',
+            'kb' => $p['kb'] ?? null,
+            'title' => $p['title'] ?? '—',
             'severity' => $p['severity'] ?? null,
         ])->values()->all();
 
@@ -257,13 +259,14 @@ class TacticalPanelData
     /**
      * Does the payload look like winupdate rows? At least one row must carry a
      * recognisable patch field. Guards against rendering an unknown shape as
-     * "0 pending" (amendment F).
+     * "0 pending" (amendment F). Fields are the real getPatches shape (source
+     * v1.5.0 + live VM 105).
      *
      * @param  array<int, mixed>  $rows
      */
     private function looksLikePatchRows(array $rows): bool
     {
-        $known = ['kb', 'kb_article', 'title', 'installed', 'action', 'severity', 'guid', 'downloaded'];
+        $known = ['kb', 'title', 'installed', 'action', 'severity', 'guid', 'downloaded'];
 
         foreach ($rows as $row) {
             if (! is_array($row)) {
@@ -280,27 +283,17 @@ class TacticalPanelData
     }
 
     /**
-     * Is a winupdate row pending (not yet installed)? Defensive across the
-     * unverified shape: prefer an explicit installed/action signal, default to
-     * pending when neither says "installed".
+     * Is a winupdate row pending? A patch is PENDING iff installed === false
+     * (source v1.5.0 + live VM 105). `action` is the APPROVAL policy
+     * ("nothing"/"approve"/"ignore"/"inherit"), NOT install status — it does not
+     * decide pending. A row missing the installed flag is not counted pending
+     * (looksLikePatchRows already gated the payload as recognisable).
      *
      * @param  array<string, mixed>  $patch
      */
     private function isPendingPatch(array $patch): bool
     {
-        if (array_key_exists('installed', $patch)) {
-            return ! (bool) $patch['installed'];
-        }
-
-        if (isset($patch['action'])) {
-            // Tactical winupdate `action`: "approve"/"nothing"/"ignore" etc. An
-            // installed update typically reports action "nothing" with installed
-            // true; without an installed flag, treat a non-"nothing" action as
-            // pending.
-            return ! in_array(strtolower((string) $patch['action']), ['nothing', 'ignore'], true);
-        }
-
-        return true;
+        return ($patch['installed'] ?? null) === false;
     }
 
     private function severityBucket(?string $severity): string
