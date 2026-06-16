@@ -79,6 +79,12 @@
             <a class="nav-link active" data-bs-toggle="tab" href="#tab-overview">Overview</a>
         @endif
     </li>
+    {{-- The page-top Network/Storage/Software/Patches tabs are Ninja/Level-only
+         (they hit the Ninja/Level RMM device-data endpoints). On a Tactical-only or
+         no-RMM asset they only ever rendered "not linked to an RMM", so hide them —
+         a Tactical asset gets the same data from its own card panels below. A
+         Ninja/Level (or dual-linked) asset is unchanged. --}}
+    @if($asset->ninja_id || $asset->level_id)
     <li class="nav-item">
         @if(($activeTab ?? '') === 'tickets')
             <a class="nav-link" href="{{ route('assets.show', $asset) }}#tab-network">Network</a>
@@ -107,6 +113,7 @@
             <a class="nav-link" data-bs-toggle="tab" href="#tab-patches" data-ajax-section="patches">Patches</a>
         @endif
     </li>
+    @endif
     <li class="nav-item">
         @if(($activeTab ?? '') === 'tickets')
             <a class="nav-link" href="{{ route('assets.show', $asset) }}#tab-security">Security</a>
@@ -1089,6 +1096,9 @@
 
     </div>
 
+    {{-- TABS 2-5 (Network/Storage/Software/Patches) are Ninja/Level-only; their
+         panes render only when the page-top tabs above do (same gate). --}}
+    @if($asset->ninja_id || $asset->level_id)
     {{-- ==================== TAB 2: NETWORK (AJAX) ==================== --}}
     <div class="tab-pane fade" id="tab-network">
         <div class="d-flex justify-content-center py-5"><div class="spinner-border text-primary" role="status"></div></div>
@@ -1108,6 +1118,7 @@
     <div class="tab-pane fade" id="tab-patches">
         <div class="d-flex justify-content-center py-5"><div class="spinner-border text-primary" role="status"></div></div>
     </div>
+    @endif
 
     {{-- ==================== TAB 6: SECURITY ==================== --}}
     <div class="tab-pane fade p-3" id="tab-security">
