@@ -180,6 +180,7 @@ Route::middleware('auth')->group(function () {
     Route::post('/tickets/{ticket}/draft-reply', [TicketController::class, 'draftReply'])->name('tickets.draft-reply');
     Route::post('/tickets/{ticket}/draft-resolution', [TicketController::class, 'draftResolution'])->name('tickets.draft-resolution');
     Route::post('/tickets/{ticket}/tactical/run-script', [TicketController::class, 'runTacticalScript'])->name('tickets.run-tactical-script');
+    Route::post('/tickets/{ticket}/tactical/command', [TicketController::class, 'runTacticalCommand'])->name('tickets.run-tactical-command');
     Route::post('/triage-runs/{triageRun}/feedback', [TicketController::class, 'storeFeedback'])->name('triage-runs.feedback');
     Route::delete('/triage-runs/{triageRun}/feedback', [TicketController::class, 'clearFeedback'])->name('triage-runs.feedback.clear');
     Route::post('/tickets/{ticket}/notes', [TicketNoteController::class, 'store'])->name('tickets.notes.store');

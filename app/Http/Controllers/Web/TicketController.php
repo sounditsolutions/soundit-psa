@@ -599,4 +599,155 @@ class TicketController extends Controller
             'retcode' => $retcode,
         ]);
     }
+
+    /**
+     * Run an ad-hoc command on a ticket's asset while working the incident — the
+     * ITIL "diagnostic during an incident" flow (amendment G1: ticket surface is
+     * cmd ONLY; shutdown/recover/maintenance stay asset-page). The most dangerous
+     * capability in the integration (arbitrary RCE), so it carries the SAME A1
+     * security spine as AssetController::runTacticalCommand PLUS the run-script
+     * membership gate.
+     *
+     * Spine, in order:
+     *   1. membership — the posted asset MUST be attached to this ticket (else 422,
+     *      no dispatch — mirror runTacticalScript);
+     *   2. resolve the asset's tacticalAsset->agent_id (else 422, not-linked);
+     *   3. ONE canonical $params = RunCommandAction::validateParams($request->only
+     *      (shell,cmd,timeout)) — invalid input is dispatched RAW (no token) so the
+     *      bus audits a `rejected` row (with the ticket id);
+     *   4. server-side typed-hostname match (strcasecmp, like reboot);
+     *   5. mint a token bound to payloadHash($params) and dispatch THAT SAME array,
+     *      passing $ticket->id NON-OPTIONALLY so the audit row carries it.
+     * The controller NEVER re-reads cmd/shell/timeout for execution.
+     *
+     * B3 + DC1 — the ticket-note side effect (written OUTSIDE the bus, so the
+     * controller must redact it itself): AFTER the bus returns, and ONLY if the
+     * result isOk(), write a note from REDACTED values — `$action->summary($params)`
+     * for the command (already secret-redacted), the retcode, and
+     * `ActionRedactor::redactOutput()` for stdout/stderr. NEVER raw request input.
+     * A blocked/rejected/offline/error cmd writes NO note (the bus audit row covers
+     * those).
+     */
+    public function runTacticalCommand(Request $request, Ticket $ticket)
+    {
+        $request->validate([
+            'asset_id' => ['required', 'exists:assets,id'],
+            'hostname' => ['required', 'string', 'max:255'],
+        ]);
+
+        $asset = Asset::with('tacticalAsset')->findOrFail($request->input('asset_id'));
+
+        // 1. Membership gate (mirror runTacticalScript): the posted asset must be
+        //    attached to THIS ticket — never an arbitrary asset id.
+        if (! $ticket->assets()->where('assets.id', $asset->id)->exists()) {
+            return response()->json(['error' => 'Asset is not linked to this ticket.'], 422);
+        }
+
+        // 2. resolve the agent (not-linked is a hard pre-check; the bus reports
+        //    `offline` as the live source of truth for a linked-but-unreachable box).
+        if (! $asset->tacticalAsset || empty($asset->tacticalAsset->agent_id)) {
+            return response()->json(['error' => 'Device has no Tactical agent.'], 422);
+        }
+
+        $agentId = $asset->tacticalAsset->agent_id;
+        $actor = $request->user();
+        $action = new \App\Services\Tactical\Actions\RunCommandAction;
+        $bus = app(\App\Services\Tactical\TacticalActionService::class);
+
+        // 3. A1 step 1: ONE canonical params source. Invalid input is dispatched
+        //    RAW (no token) so the bus audits a `rejected` row carrying the ticket.
+        try {
+            $params = $action->validateParams($request->only('shell', 'cmd', 'timeout'));
+        } catch (\App\Services\Tactical\Actions\InvalidActionParams $e) {
+            $result = $bus->dispatch($action, $asset, $actor, $request->only('shell', 'cmd', 'timeout'), null, null, $ticket->id);
+
+            return $this->tacticalCommandResponse($result);
+        }
+
+        // 4. Typed-hostname gate (server-side, case-insensitive + trimmed — reboot).
+        $expected = trim((string) ($asset->tacticalAsset->hostname ?? $asset->hostname ?? ''));
+        $typed = trim((string) $request->input('hostname'));
+        if ($expected === '' || strcasecmp($expected, $typed) !== 0) {
+            return response()->json([
+                'error' => 'The typed hostname does not match this device. Command cancelled.',
+            ], 422);
+        }
+
+        // 5. A1 steps 2 + 4: hash the canonical array, mint a token bound to it,
+        //    dispatch THAT SAME array WITH the ticket id (never re-reading input).
+        $token = \App\Services\Tactical\TacticalActionConfirmToken::issue(
+            $action->key(),
+            $agentId,
+            $actor?->id,
+            $action->payloadHash($params),
+        );
+
+        $result = $bus->dispatch($action, $asset, $actor, $params, $token, null, $ticket->id);
+
+        // B3 + DC1: success-gated, redacted ticket note (written outside the bus).
+        if ($result->isOk()) {
+            $this->writeCommandNote($ticket, $asset, $action, $params, $result);
+        }
+
+        return $this->tacticalCommandResponse($result);
+    }
+
+    /**
+     * B3 — compose the ticket note from REDACTED values only: the command via
+     * RunCommandAction::summary() (already routed through
+     * ActionRedactor::redactCommandString) and the output via redactOutput().
+     * NEVER the raw request input. Mirrors runTacticalScript's note shape.
+     */
+    private function writeCommandNote(
+        Ticket $ticket,
+        Asset $asset,
+        \App\Services\Tactical\Actions\RunCommandAction $action,
+        array $params,
+        \App\Services\Tactical\Actions\TacticalActionResult $result,
+    ): void {
+        $redactor = app(\App\Services\Tactical\Actions\ActionRedactor::class);
+
+        $noteBody = "**Command Executed:** `{$action->summary($params)}`\n"
+            .'**Device:** '.($asset->hostname ?? $asset->name)."\n"
+            .'**Return Code:** '.($result->retcode ?? 'unknown')."\n";
+
+        $stdout = $redactor->redactOutput($result->stdout);
+        $stderr = $redactor->redactOutput($result->stderr);
+
+        if ($stdout !== null && $stdout !== '') {
+            $noteBody .= "\n**Output:**\n```\n".$stdout."\n```";
+        }
+        if ($stderr !== null && $stderr !== '') {
+            $noteBody .= "\n**Errors:**\n```\n".$stderr."\n```";
+        }
+
+        $this->ticketService->addNote(
+            $ticket,
+            $noteBody,
+            \App\Enums\NoteType::System,
+            true,
+            auth()->id(),
+        );
+    }
+
+    /**
+     * Map the bus's normalized cmd result to the JSON contract the ticket cmd JS
+     * parses: ok -> 200 {success, message}; offline -> 422 {error}; any other
+     * non-ok (rejected/blocked/error) -> 500 {error}. No `success` key on failure.
+     * (Mirrors AssetController::tacticalActionResponse.)
+     */
+    private function tacticalCommandResponse(
+        \App\Services\Tactical\Actions\TacticalActionResult $result,
+    ): \Illuminate\Http\JsonResponse {
+        if ($result->isOk()) {
+            return response()->json([
+                'success' => true,
+                'message' => $result->stdout ?: 'Command sent.',
+            ]);
+        }
+
+        return response()->json([
+            'error' => $result->message ?? 'Command failed.',
+        ], $result->isOffline() ? 422 : 500);
+    }
 }
