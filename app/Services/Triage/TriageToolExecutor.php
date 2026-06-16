@@ -17,6 +17,7 @@ use App\Services\Level\LevelClient;
 use App\Services\Mesh\MeshClient;
 use App\Services\Ninja\NinjaClient;
 use App\Services\Tactical\TacticalClient;
+use App\Services\Tactical\TacticalFieldMap;
 use App\Services\Wiki\HandlesWikiTools;
 use App\Support\ControlDConfig;
 use Carbon\Carbon;
@@ -1153,34 +1154,16 @@ class TriageToolExecutor
             return ['error' => 'Tactical query failed: '.mb_substr($e->getMessage(), 0, 200)];
         }
 
-        // Format uptime from boot_time
-        $uptime = null;
-        if (! empty($agent['boot_time'])) {
-            try {
-                $bootTime = Carbon::parse($agent['boot_time']);
-                $diff = $bootTime->diff(now());
-                $parts = [];
-                if ($diff->days > 0) {
-                    $parts[] = $diff->days.'d';
-                }
-                if ($diff->h > 0) {
-                    $parts[] = $diff->h.'h';
-                }
-                if (empty($parts)) {
-                    $parts[] = $diff->i.'m';
-                }
-                $uptime = implode(' ', $parts);
-            } catch (\Throwable) {
-                // Ignore parse errors
-            }
-        }
+        // Format uptime from boot_time (shared mapper — amendment E)
+        $uptime = TacticalFieldMap::uptimeFromBootTime($agent['boot_time'] ?? null);
 
-        // Summarize checks
+        // getAgent `checks` is a SUMMARY DICT ({total, passing, failing, …}) —
+        // read failing/total off it directly (NOT the getAgentChecks list helper).
         $checksSummary = null;
-        $checks = $agent['checks'] ?? [];
-        if (is_array($checks)) {
-            $total = count($checks);
-            $failing = collect($checks)->filter(fn ($c) => ($c['status'] ?? '') === 'failing')->count();
+        $checks = $agent['checks'] ?? null;
+        if (is_array($checks) && isset($checks['total'])) {
+            $failing = (int) ($checks['failing'] ?? 0);
+            $total = (int) $checks['total'];
             $checksSummary = "{$failing} failing / {$total} total";
         }
 
@@ -1189,11 +1172,15 @@ class TriageToolExecutor
             'status' => $agent['status'] ?? null,
             'os' => $agent['operating_system'] ?? null,
             'cpu' => $agent['cpu_model'] ?? null,
-            'ram_gb' => isset($agent['total_ram']) ? round($agent['total_ram'] / 1073741824, 1) : null,
+            'ram_gb' => TacticalFieldMap::ramGb($agent['total_ram'] ?? null),
             'make_model' => $agent['make_model'] ?? null,
             'public_ip' => $agent['public_ip'] ?? null,
             'local_ips' => $agent['local_ips'] ?? null,
-            'logged_in_user' => $agent['logged_in_username'] ?? null,
+            // Tactical's "None" (and empty) means no user is logged in — surface
+            // null to the AI, not the literal sentinel string.
+            'logged_in_user' => in_array($agent['logged_in_username'] ?? null, [null, '', 'None'], true)
+                ? null
+                : $agent['logged_in_username'],
             'needs_reboot' => $agent['needs_reboot'] ?? false,
             'uptime' => $uptime,
             'checks_summary' => $checksSummary,
@@ -1370,11 +1357,13 @@ class TriageToolExecutor
             return ['error' => 'Tactical query failed: '.mb_substr($e->getMessage(), 0, 200)];
         }
 
-        // Logical volumes
+        // Logical volumes — getAgent `disks` total/used/free are FORMATTED STRINGS
+        // ("X.Y GB"/TB/MB) and percent is an INT (source v1.5.0 + live VM 105), so
+        // parse the strings to GB; do NOT byte-divide.
         $volumes = collect($agent['disks'] ?? [])->take(10)->map(fn ($d) => [
             'drive' => $d['device'] ?? null,
-            'total_gb' => isset($d['total']) ? round($d['total'] / 1073741824, 1) : null,
-            'free_gb' => isset($d['free']) ? round($d['free'] / 1073741824, 1) : null,
+            'total_gb' => TacticalFieldMap::diskSizeToGb($d['total'] ?? null),
+            'free_gb' => TacticalFieldMap::diskSizeToGb($d['free'] ?? null),
             'percent_used' => $d['percent'] ?? null,
             'fstype' => $d['fstype'] ?? null,
         ])->toArray();

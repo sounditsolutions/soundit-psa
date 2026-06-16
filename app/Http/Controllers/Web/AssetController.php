@@ -200,7 +200,39 @@ class AssetController extends Controller
             'zorusEndpoints' => $zorusEndpoints,
             'lastUserPerson' => $lastUserPerson,
             'clientPeople' => $clientPeople,
+            'tacticalInsight' => $this->tacticalInsight($asset),
+            'tacticalActionTotal' => $this->tacticalActionTotal($asset),
         ]);
+    }
+
+    /**
+     * The snapshot-only EndpointInsight for the eager card health line + freshness
+     * (P4 amendments B/H). forAsset() (no $live) makes ZERO outbound Tactical
+     * calls — the page renders instantly from the snapshot + local DB. Null when
+     * not Tactical-linked so the view skips the block.
+     */
+    private function tacticalInsight(Asset $asset): ?\App\Services\Tactical\EndpointInsight
+    {
+        if (! $asset->tacticalAsset) {
+            return null;
+        }
+
+        return app(\App\Services\Tactical\TacticalInsightService::class)->forAsset($asset);
+    }
+
+    /**
+     * Total Tactical action-log rows for the asset (the insight caps its list at
+     * 10 newest-first; this total drives the "showing the N most recent of M"
+     * overflow affordance on the change-history panel — amendment K). Zero when
+     * not linked / no actions.
+     */
+    private function tacticalActionTotal(Asset $asset): int
+    {
+        if (! $asset->tacticalAsset) {
+            return 0;
+        }
+
+        return \App\Models\TacticalActionLog::where('asset_id', $asset->id)->count();
     }
 
     public function tickets(Request $request, Asset $asset)
@@ -247,6 +279,8 @@ class AssetController extends Controller
             'zorusEndpoints' => collect(),
             'lastUserPerson' => $lastUserPerson,
             'clientPeople' => $clientPeople,
+            'tacticalInsight' => $this->tacticalInsight($asset),
+            'tacticalActionTotal' => $this->tacticalActionTotal($asset),
             'activeTab' => 'tickets',
             'tickets' => $tickets,
             'ticketFilters' => $filters,
@@ -918,6 +952,40 @@ class AssetController extends Controller
     }
 
     /**
+     * Refresh-now: an in-place AJAX refresh of the Tactical device status +
+     * freshness (P4 amendment J). It calls TacticalDeviceSyncService::syncDeviceDetail
+     * (getAgent → status/last_seen/ram_gb/os_version + checks summary), NOT the
+     * action bus — it is a READ that mutates only the local snapshot, so it is
+     * NOT audited and NOT confirm-gated. It does NOT reuse refresh()'s redirect
+     * path or quickLook()'s 60s cache (a cached refresh-now would serve stale data).
+     *
+     * Returns {status, freshAsOf, degraded, message} for the in-place JS update.
+     * A live failure (offline agent / Tactical unreachable) is a NORMAL outcome:
+     * 200 with degraded:true and the prior snapshot left intact — never a 500.
+     * POST + CSRF + the same auth as the page (the web group).
+     */
+    public function refreshTactical(Asset $asset, \App\Services\Tactical\TacticalDeviceSyncService $sync)
+    {
+        $asset->load('tacticalAsset');
+
+        if (! $asset->tacticalAsset || empty($asset->tacticalAsset->agent_id)) {
+            return response()->json(['error' => 'This device is not linked to a Tactical agent.'], 422);
+        }
+
+        $result = $sync->syncDeviceDetail($asset);
+
+        return response()->json([
+            'status' => $result->status,
+            'status_label' => $result->status ? ucfirst($result->status) : null,
+            'freshAsOf' => $result->freshAsOf?->diffForHumans(),
+            'degraded' => ! $result->ok,
+            'message' => $result->ok
+                ? 'Refreshed just now.'
+                : ($result->message ?? 'Could not reach the agent — showing last sync.'),
+        ]);
+    }
+
+    /**
      * Run an ad-hoc command on a Tactical agent — the most dangerous capability
      * in the integration (arbitrary RCE). DESTRUCTIVE: confirm-gated by a
      * typed-hostname match (the human gate) PLUS a payloadHash-bound confirm
@@ -1179,11 +1247,27 @@ class AssetController extends Controller
     /**
      * AJAX endpoint: fetch live device sub-resource data from RMM.
      */
-    public function deviceData(Asset $asset, string $section)
+    public function deviceData(Asset $asset, string $section, Request $request)
     {
-        $allowedSections = ['network', 'storage', 'software', 'patches'];
+        // 'checks' is Tactical-only (no Ninja/Level analog); the others are shared.
+        $allowedSections = ['network', 'storage', 'software', 'patches', 'checks'];
         if (! in_array($section, $allowedSections)) {
             return response()->json(['error' => 'Invalid section'], 422);
+        }
+
+        // fix #4 (dual-link): the Tactical card's panel JS requests ?source=tactical
+        // so its software/patches/checks panels resolve to the TACTICAL branch even
+        // when the asset is ALSO Ninja-linked. Without this, a dual-linked asset fell
+        // through the Ninja-first branch and `checks` hit fetchNinjaDeviceData's
+        // match() (no `checks` arm) -> UnhandledMatchError -> {error}. The page-top
+        // Ninja/Level tabs send no source param and keep their existing behavior.
+        $asset->loadMissing('tacticalAsset');
+        if ($request->query('source') === 'tactical'
+            && $asset->tacticalAsset
+            && \App\Support\TacticalConfig::isConfigured()) {
+            $panel = app(\App\Services\Tactical\TacticalPanelData::class);
+
+            return response()->json($panel->section($asset->tacticalAsset, $section));
         }
 
         if ($asset->ninja_id) {
@@ -1192,6 +1276,17 @@ class AssetController extends Controller
 
         if ($asset->level_id) {
             return response()->json($this->getLevelFallbackData($asset, $section));
+        }
+
+        // Tactical branch (amendment I): the same deviceData endpoint serves the
+        // Tactical software/patches/checks panels, but they render in the Tactical
+        // card region, not the page-top Ninja/Level tabs. Each section is a bounded
+        // live read that degrades to the {error:…} payload the JS already renders.
+        // (Tactical-only assets reach here without needing the source param.)
+        if ($asset->tacticalAsset && \App\Support\TacticalConfig::isConfigured()) {
+            $panel = app(\App\Services\Tactical\TacticalPanelData::class);
+
+            return response()->json($panel->section($asset->tacticalAsset, $section));
         }
 
         return response()->json(['error' => 'Asset not linked to any RMM'], 422);

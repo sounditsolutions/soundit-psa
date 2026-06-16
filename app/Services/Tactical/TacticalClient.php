@@ -42,10 +42,25 @@ class TacticalClient
         ]);
     }
 
-    public function get(string $endpoint): array
+    /**
+     * GET a Tactical endpoint.
+     *
+     * `$timeout` (amendment C) is an optional per-request override in seconds,
+     * merged into the Guzzle call — mirroring NinjaClient::getDevice(timeout:).
+     * It exists for the cheap LIVE reads (status/checks/software/patches), which
+     * want a short ~2-3s bound rather than the 30s client default the action
+     * bus's NATS-blocking writes need. When null, no per-request option is set
+     * and the client default governs (unchanged behaviour). NOTE: this method
+     * still throws on any non-2xx / transport failure — the bound-and-degrade
+     * classification lives in TacticalInsightService (the action bus depends on
+     * get()/post() throwing), NOT here.
+     */
+    public function get(string $endpoint, ?int $timeout = null): array
     {
+        $options = $timeout !== null ? ['timeout' => $timeout] : [];
+
         try {
-            $response = $this->http->request('GET', $endpoint);
+            $response = $this->http->request('GET', $endpoint, $options);
         } catch (GuzzleException $e) {
             Log::error("[TacticalClient] GET {$endpoint} failed: {$e->getMessage()}");
             throw TacticalClientException::fromGuzzle("Tactical API error: {$e->getMessage()}", $e);
@@ -113,9 +128,9 @@ class TacticalClient
         return $this->get('agents/');
     }
 
-    public function getAgent(string $agentId): array
+    public function getAgent(string $agentId, ?int $timeout = null): array
     {
-        return $this->get("agents/{$agentId}/");
+        return $this->get("agents/{$agentId}/", $timeout);
     }
 
     public function getClients(): array
@@ -335,19 +350,19 @@ class TacticalClient
         ]);
     }
 
-    public function getSoftware(string $agentId): array
+    public function getSoftware(string $agentId, ?int $timeout = null): array
     {
-        return $this->get("software/{$agentId}/");
+        return $this->get("software/{$agentId}/", $timeout);
     }
 
-    public function getPatches(string $agentId): array
+    public function getPatches(string $agentId, ?int $timeout = null): array
     {
-        return $this->get("winupdate/{$agentId}/");
+        return $this->get("winupdate/{$agentId}/", $timeout);
     }
 
-    public function getAgentChecks(string $agentId): array
+    public function getAgentChecks(string $agentId, ?int $timeout = null): array
     {
-        return $this->get("agents/{$agentId}/checks/");
+        return $this->get("agents/{$agentId}/checks/", $timeout);
     }
 
     public function getAgentTasks(string $agentId): array

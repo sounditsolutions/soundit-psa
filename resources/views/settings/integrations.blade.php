@@ -781,6 +781,26 @@
                         @enderror
                     </div>
 
+                    {{-- psa-6h5r: the web dashboard base, distinct from the API
+                         URL above. Optional; when blank, the asset-page
+                         "Open in Tactical" link stays hidden. --}}
+                    <div class="mb-3">
+                        <label for="tactical_web_url" class="form-label">Tactical web dashboard URL <span class="text-muted">(optional)</span></label>
+                        <input type="text"
+                               class="form-control @error('web_url') is-invalid @enderror"
+                               id="tactical_web_url"
+                               name="web_url"
+                               value="{{ old('web_url', $tacticalWebUrl) }}"
+                               placeholder="https://rmm.example.com">
+                        @error('web_url')
+                            <div class="invalid-feedback">{{ $message }}</div>
+                        @enderror
+                        <div class="form-text">
+                            The Tactical RMM <strong>dashboard</strong> base (where you log in) — distinct from the API URL above.
+                            Used only for the asset-page <em>Open in Tactical</em> link, which is hidden until this is set.
+                        </div>
+                    </div>
+
                     <div class="mb-3">
                         <label for="tactical_api_key" class="form-label">API Key</label>
                         <input type="password"

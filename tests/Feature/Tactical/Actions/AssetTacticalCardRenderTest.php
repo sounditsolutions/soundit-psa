@@ -5,6 +5,7 @@ namespace Tests\Feature\Tactical\Actions;
 use App\Models\Asset;
 use App\Models\TacticalAsset;
 use App\Models\User;
+use App\Services\Tactical\EndpointInsight;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -129,5 +130,118 @@ class AssetTacticalCardRenderTest extends TestCase
         $resp = $this->actingAs($user)->get(route('assets.show', $asset->refresh()));
 
         $resp->assertOk()->assertSee('This is a SERVER', false);
+    }
+
+    // ── Eager health-line chips: stale/unavailable must never read as a confident
+    //    green "all passing" / "up to date" (amendment H misread, fix #2). ──
+
+    private function healthLineAsset(array $taOverrides): Asset
+    {
+        $asset = Asset::factory()->create(['hostname' => 'BOX-CHIP']);
+        TacticalAsset::create(array_merge([
+            'asset_id' => $asset->id,
+            'agent_id' => 'AGENT-CHIP',
+            'hostname' => 'BOX-CHIP',
+            'status' => 'online',
+        ], $taOverrides));
+
+        return $asset->refresh();
+    }
+
+    public function test_fresh_snapshot_with_zero_failing_shows_a_clean_checks_chip(): void
+    {
+        // A FRESH (non-stale) snapshot that actually read 0 failing checks may show
+        // the positive "all passing" chip.
+        $user = User::factory()->create();
+        $asset = $this->healthLineAsset([
+            'checks_failing' => 0,
+            'checks_total' => 5,
+            'synced_at' => now()->subMinutes(2), // fresh
+        ]);
+
+        $resp = $this->actingAs($user)->get(route('assets.show', $asset));
+
+        $resp->assertOk()->assertSee('all passing');
+    }
+
+    public function test_stale_snapshot_does_not_render_checks_as_all_passing(): void
+    {
+        // A STALE clean snapshot must NOT render a confident green "all passing"
+        // (the amendment-H misread). It degrades to an "as of last sync" qualifier.
+        $user = User::factory()->create();
+        $asset = $this->healthLineAsset([
+            'checks_failing' => 0,
+            'checks_total' => 5,
+            'synced_at' => now()->subMinutes(EndpointInsight::STALE_AFTER_MINUTES + 5), // stale
+        ]);
+
+        $resp = $this->actingAs($user)->get(route('assets.show', $asset));
+
+        $resp->assertOk()
+            ->assertDontSee('all passing')
+            ->assertSee('as of last sync');
+    }
+
+    public function test_unavailable_checks_does_not_render_as_all_passing(): void
+    {
+        // No snapshot checks count at all (Unavailable) — never "all passing".
+        $user = User::factory()->create();
+        $asset = $this->healthLineAsset([
+            'checks_failing' => null,
+            'checks_total' => null,
+            'synced_at' => now()->subMinutes(2),
+        ]);
+
+        $resp = $this->actingAs($user)->get(route('assets.show', $asset));
+
+        $resp->assertOk()->assertDontSee('all passing');
+    }
+
+    public function test_failing_checks_chip_still_shows_the_count_when_stale(): void
+    {
+        // Staleness gates only the POSITIVE claim; a known-failing count is still a
+        // real, useful signal and must keep showing.
+        $user = User::factory()->create();
+        $asset = $this->healthLineAsset([
+            'checks_failing' => 3,
+            'checks_total' => 5,
+            'synced_at' => now()->subMinutes(EndpointInsight::STALE_AFTER_MINUTES + 5),
+        ]);
+
+        $resp = $this->actingAs($user)->get(route('assets.show', $asset));
+
+        $resp->assertOk()->assertSee('3 checks failing');
+    }
+
+    public function test_stale_snapshot_does_not_render_patches_as_up_to_date(): void
+    {
+        // A stale "no patches pending" snapshot must NOT render a confident green
+        // "up to date"; it degrades to an "as of last sync" qualifier.
+        $user = User::factory()->create();
+        $asset = $this->healthLineAsset([
+            'has_patches_pending' => false,
+            'checks_failing' => 0,
+            'checks_total' => 5,
+            'synced_at' => now()->subMinutes(EndpointInsight::STALE_AFTER_MINUTES + 5),
+        ]);
+
+        $resp = $this->actingAs($user)->get(route('assets.show', $asset));
+
+        $resp->assertOk()->assertDontSee('up to date');
+    }
+
+    public function test_pending_patches_chip_still_warns_when_stale(): void
+    {
+        // The negative "updates pending" signal still shows when stale (a pending
+        // update doesn't un-pend itself).
+        $user = User::factory()->create();
+        $asset = $this->healthLineAsset([
+            'has_patches_pending' => true,
+            'synced_at' => now()->subMinutes(EndpointInsight::STALE_AFTER_MINUTES + 5),
+        ]);
+
+        $resp = $this->actingAs($user)->get(route('assets.show', $asset));
+
+        $resp->assertOk()->assertSee('updates pending');
     }
 }

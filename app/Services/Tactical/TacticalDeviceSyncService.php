@@ -11,9 +11,82 @@ use Illuminate\Support\Facades\Log;
 
 class TacticalDeviceSyncService
 {
+    /** Per-request timeout for the on-demand detail read (~3s, §11.5). */
+    public const DETAIL_TIMEOUT_SECONDS = 3;
+
     public function __construct(
         private readonly TacticalClient $client,
     ) {}
+
+    /**
+     * On-demand DETAIL read for one linked asset (amendment B). Reads getAgent
+     * and writes the columns the daily list-sync leaves unfilled — ram_gb (from
+     * total_ram, a GB count) and os_version — plus refreshes status/last_seen_at and
+     * the checks_failing/checks_total summary, stamping synced_at.
+     *
+     * This is the trigger behind "refresh now". It is a READ: a fetch failure
+     * (offline agent / Tactical unreachable) is a NORMAL outcome — it leaves the
+     * prior snapshot intact and returns a degraded DetailSyncResult, never
+     * throwing. ram_gb/os_version populate here (and via the daily sync only if
+     * the list payload grows a checks dict — see mapAgentToTacticalAsset).
+     */
+    public function syncDeviceDetail(Asset $asset): DetailSyncResult
+    {
+        $ta = $asset->tacticalAsset;
+
+        if (! $ta) {
+            return DetailSyncResult::degraded('Asset is not linked to a Tactical agent.');
+        }
+
+        try {
+            $agent = $this->client->getAgent($ta->agent_id, timeout: self::DETAIL_TIMEOUT_SECONDS);
+        } catch (TacticalClientException $e) {
+            // Offline vs HTTP error — both leave the snapshot intact. Debug, not
+            // error: an unreachable agent is an expected read outcome.
+            Log::debug('[TacticalDetailSync] detail read degraded', [
+                'agent_id' => $ta->agent_id,
+                'transport_failure' => $e->isTransportFailure(),
+                'status_code' => $e->statusCode(),
+            ]);
+
+            return DetailSyncResult::degraded(
+                'Could not reach the agent — showing the last sync.',
+                status: $ta->status,
+                freshAsOf: $ta->synced_at,
+            );
+        }
+
+        $update = [
+            'status' => $agent['status'] ?? $ta->status,
+            'synced_at' => now(),
+        ];
+
+        if (($ramGb = TacticalFieldMap::ramGb($agent['total_ram'] ?? null)) !== null) {
+            $update['ram_gb'] = $ramGb;
+        }
+        if (! empty($agent['operating_system'])) {
+            $update['os_version'] = $agent['operating_system'];
+        }
+        if (isset($agent['last_seen'])) {
+            $update['last_seen_at'] = Carbon::parse($agent['last_seen']);
+        }
+        if (isset($agent['needs_reboot'])) {
+            $update['needs_reboot'] = (bool) $agent['needs_reboot'];
+        }
+
+        // getAgent `checks` is a SUMMARY DICT
+        // ({total, passing, failing, warning, info, has_failing_checks}), NOT a
+        // list of checks — read failing/total off it directly. (The DETAILED
+        // failing-check list is a separate getAgentChecks read.)
+        if (isset($agent['checks']) && is_array($agent['checks']) && isset($agent['checks']['total'])) {
+            $update['checks_failing'] = (int) ($agent['checks']['failing'] ?? 0);
+            $update['checks_total'] = (int) $agent['checks']['total'];
+        }
+
+        $ta->update($update);
+
+        return DetailSyncResult::success($ta->status, $ta->synced_at);
+    }
 
     public function syncDevices(?int $clientId = null): SyncResult
     {
@@ -134,7 +207,7 @@ class TacticalDeviceSyncService
             $localIps = array_map('trim', explode(',', $localIps));
         }
 
-        return [
+        $mapped = [
             'hostname' => $agent['hostname'] ?? null,
             'os' => $agent['operating_system'] ?? null,
             'public_ip' => $agent['public_ip'] ?? null,
@@ -155,6 +228,21 @@ class TacticalDeviceSyncService
             'monitoring_type' => $agent['monitoring_type'] ?? null,
             'synced_at' => now(),
         ];
+
+        // Eager checks-summary (amendment B): the Tactical AgentTable serializer
+        // embeds a `checks` SUMMARY DICT
+        // ({total, passing, failing, warning, info, has_failing_checks}) per agent
+        // in the LIST payload too (confirmed against source v1.5.0 + live VM 105).
+        // Persist failing/total so the card health line is snapshot-fresh from the
+        // DAILY sync (zero per-agent fan-out) — not detail-only. Read defensively:
+        // leave the columns untouched if a payload ever omits the dict.
+        $checks = $agent['checks'] ?? null;
+        if (is_array($checks) && isset($checks['total'])) {
+            $mapped['checks_total'] = (int) $checks['total'];
+            $mapped['checks_failing'] = (int) ($checks['failing'] ?? 0);
+        }
+
+        return $mapped;
     }
 
     /**

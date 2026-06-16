@@ -364,6 +364,10 @@
             // free), so this attribute is null/absent and the badge stays hidden
             // until the toggle is used. Tracked gap: see the report / INSTALL.md.
             $maintenanceOn = (bool) ($ta->maintenance_mode ?? false);
+            // P4 amendment H: freshness sits next to the status badge (one unit),
+            // amber when an "online" claim is stale (the dangerous misread).
+            $insight = $tacticalInsight ?? null;
+            $freshStale = $insight?->stale ?? false;
         @endphp
         <div class="card shadow-sm card-static mb-3 mt-4">
             <div class="card-header d-flex justify-content-between align-items-center">
@@ -375,10 +379,77 @@
                           style="{{ $maintenanceOn ? '' : 'display:none;' }}">
                         <i class="bi bi-bell-slash me-1"></i>Maintenance — alerts muted
                     </span>
-                    <span class="badge {{ $ta->statusBadgeClass() }}">{{ ucfirst($ta->status) }}</span>
+                    {{-- amendment H: status + freshness read as one unit. --}}
+                    <span class="badge {{ $ta->statusBadgeClass() }}" id="tacticalStatusBadge">{{ ucfirst($ta->status) }}</span>
+                    @if($ta->synced_at)
+                    <span class="small tactical-freshness {{ $freshStale ? 'tactical-freshness-stale text-warning-emphasis fw-semibold' : 'text-muted' }}"
+                          id="tacticalFreshness"
+                          title="{{ $ta->synced_at->toAppTz()->format('Y-m-d H:i T') }}">
+                        @if($freshStale)<i class="bi bi-clock-history me-1"></i>@endif synced {{ $ta->synced_at->diffForHumans() }}
+                    </span>
+                    @endif
+                    {{-- amendment J: in-place AJAX refresh-now (no page reload). --}}
+                    <button type="button" class="btn btn-outline-secondary btn-sm py-0 px-1" id="tacticalRefreshBtn"
+                            data-asset-refresh-url="{{ route('assets.tactical-refresh', $asset) }}"
+                            title="Refresh status from the agent now">
+                        <i class="bi bi-arrow-clockwise"></i>
+                    </button>
                 </span>
             </div>
             <div class="card-body">
+                {{-- Eager at-a-glance health line (amendment B): snapshot / local-DB
+                     derived — ZERO live calls on render. Failing-checks count ("—"
+                     when unknown, never "0"), open-alerts, pending-patches, last-seen. --}}
+                @if($insight)
+                <div class="d-flex flex-wrap gap-3 mb-3 pb-3 border-bottom small tactical-health-line" id="tacticalHealthLine">
+                    <span title="Failing monitoring checks">
+                        <i class="bi bi-clipboard2-check me-1 {{ ($insight->checksFailing ?? 0) > 0 ? 'text-danger' : 'text-muted' }}"></i>
+                        {{-- fix #2: a degraded/STALE clean signal must never read as a
+                             confident green "all passing" (the amendment-H misread the
+                             status badge guards but the chips didn't). Positive copy
+                             only when checks were actually read clean AND are fresh;
+                             otherwise a muted "as of last sync" qualifier. The negative
+                             "N failing" count still shows regardless of staleness. --}}
+                        @if($insight->checksFailing === null)
+                            checks: <span class="text-muted">—</span>
+                        @elseif($insight->checksFailing > 0)
+                            <span class="text-danger fw-semibold">{{ $insight->checksFailing }} checks failing</span>
+                        @elseif($insight->checksKnownClean() && !$insight->stale)
+                            <span class="text-success">checks: all passing</span>
+                        @else
+                            checks: <span class="text-muted">clean as of last sync</span>
+                        @endif
+                    </span>
+                    <span title="Open alerts">
+                        <i class="bi bi-bell me-1 {{ $insight->openAlerts > 0 ? 'text-warning' : 'text-muted' }}"></i>
+                        {{ $insight->openAlerts }} {{ \Illuminate\Support\Str::plural('alert', $insight->openAlerts) }}
+                    </span>
+                    <span title="Pending updates">
+                        <i class="bi bi-shield-check me-1 {{ $ta->has_patches_pending ? 'text-warning' : 'text-muted' }}"></i>
+                        {{-- fix #2: same staleness guard as the checks chip. A stale
+                             "no patches pending" snapshot must not claim a confident
+                             green "up to date"; the pending WARNING always shows. --}}
+                        @if($ta->has_patches_pending)
+                            <span class="text-warning-emphasis">updates pending</span>
+                        @elseif(!$insight->stale)
+                            <span class="text-success">up to date</span>
+                        @else
+                            <span class="text-muted">patched as of last sync</span>
+                        @endif
+                    </span>
+                    @if($insight->needsReboot)
+                    <span title="A reboot is required" class="text-warning-emphasis">
+                        <i class="bi bi-arrow-repeat me-1"></i>reboot needed
+                    </span>
+                    @endif
+                    @if($ta->last_seen_at)
+                    <span class="text-muted ms-auto" title="{{ $ta->last_seen_at->toAppTz()->format('Y-m-d H:i T') }}">
+                        <i class="bi bi-eye me-1"></i>seen {{ $ta->last_seen_at->diffForHumans() }}
+                    </span>
+                    @endif
+                </div>
+                @endif
+                <div id="tacticalRefreshResult" class="small mb-2" style="display:none;"></div>
                 {{-- E3: maintenance is an ALWAYS-VISIBLE control near the device
                      status (never buried in the script/power card). It drives the
                      non-destructive set_maintenance action (single click, no
@@ -493,14 +564,143 @@
                         @endif
                     </tbody>
                 </table>
+
+                {{-- Lazy Tactical telemetry panels (P4 amendment I): co-located
+                     under the Tactical card, fetched on first expand via the shared
+                     deviceData AJAX branch — never on initial page render. Each
+                     panel renders three distinct states (data / genuinely-empty /
+                     could-not-load) from the JSON the controller returns. --}}
+                <div class="accordion accordion-flush mt-2" id="tacticalPanels"
+                     data-asset-id="{{ $asset->id }}"
+                     data-web-url="{{ \App\Support\TacticalConfig::webUrl() }}">
+                    {{-- Checks-health --}}
+                    <div class="accordion-item">
+                        <h2 class="accordion-header">
+                            <button class="accordion-button collapsed py-2 small" type="button"
+                                    data-bs-toggle="collapse" data-bs-target="#tacticalPanelChecks"
+                                    data-tactical-panel="checks" aria-expanded="false">
+                                <i class="bi bi-clipboard2-check me-2"></i>Checks health
+                            </button>
+                        </h2>
+                        <div id="tacticalPanelChecks" class="accordion-collapse collapse" data-bs-parent="#tacticalPanels">
+                            <div class="accordion-body small" data-tactical-panel-body="checks">
+                                <div class="text-muted py-2"><span class="spinner-border spinner-border-sm me-1"></span>Loading…</div>
+                            </div>
+                        </div>
+                    </div>
+                    {{-- Patches (compliance, count-first) --}}
+                    <div class="accordion-item">
+                        <h2 class="accordion-header">
+                            <button class="accordion-button collapsed py-2 small" type="button"
+                                    data-bs-toggle="collapse" data-bs-target="#tacticalPanelPatches"
+                                    data-tactical-panel="patches" aria-expanded="false">
+                                <i class="bi bi-shield-check me-2"></i>Patch compliance
+                            </button>
+                        </h2>
+                        <div id="tacticalPanelPatches" class="accordion-collapse collapse" data-bs-parent="#tacticalPanels">
+                            <div class="accordion-body small" data-tactical-panel-body="patches">
+                                <div class="text-muted py-2"><span class="spinner-border spinner-border-sm me-1"></span>Loading…</div>
+                            </div>
+                        </div>
+                    </div>
+                    {{-- Software inventory --}}
+                    <div class="accordion-item">
+                        <h2 class="accordion-header">
+                            <button class="accordion-button collapsed py-2 small" type="button"
+                                    data-bs-toggle="collapse" data-bs-target="#tacticalPanelSoftware"
+                                    data-tactical-panel="software" aria-expanded="false">
+                                <i class="bi bi-box-seam me-2"></i>Installed software
+                            </button>
+                        </h2>
+                        <div id="tacticalPanelSoftware" class="accordion-collapse collapse" data-bs-parent="#tacticalPanels">
+                            <div class="accordion-body small" data-tactical-panel-body="software">
+                                <div class="text-muted py-2"><span class="spinner-border spinner-border-sm me-1"></span>Loading…</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
-            @if(\App\Support\TacticalConfig::apiUrl())
+            {{-- psa-6h5r: the Open-in-Tactical link targets the configured WEB
+                 dashboard base (TacticalConfig::webUrl()), NOT the API root.
+                 Hidden when unset — no fallback to the API URL (the old bug). --}}
+            @if($tacticalWebUrl = \App\Support\TacticalConfig::webUrl())
             <div class="card-footer text-end">
-                <a href="{{ rtrim(\App\Support\TacticalConfig::apiUrl(), '/') }}" target="_blank" class="btn btn-outline-primary btn-sm">
+                <a href="{{ rtrim($tacticalWebUrl, '/') }}" target="_blank" rel="noopener noreferrer" class="btn btn-outline-primary btn-sm">
                     <i class="bi bi-box-arrow-up-right me-1"></i>Open in Tactical RMM
                 </a>
             </div>
             @endif
+        </div>
+        @endif
+
+        {{-- Recent Tactical actions — ITIL change history (P4 amendment K). NOT a
+             flat activity log: each row ties an endpoint change to the incident it
+             was performed under (ticket link), distinguishes outcomes (succeeded /
+             no-op / error / blocked), caps at 10 newest-first, and renders from the
+             already-redacted action-log rows (no re-leak). Co-located under the
+             Tactical region. --}}
+        @if($asset->tacticalAsset && $tacticalInsight)
+        @php
+            $recentActions = $tacticalInsight->recentActions;
+            $actionTotal = $tacticalActionTotal ?? count($recentActions);
+            // ok→success, offline→warning (no-op), error→danger, rejected/denied/
+            // blocked→secondary. Reuses the statusBadgeClass colour vocabulary.
+            $outcomeBadge = function (string $status): array {
+                return match ($status) {
+                    'ok' => ['bg-success', 'succeeded'],
+                    'offline' => ['bg-warning text-dark', 'no-op (agent unreachable)'],
+                    'error' => ['bg-danger', 'error'],
+                    'rejected', 'denied', 'blocked' => ['bg-secondary', $status],
+                    default => ['bg-secondary', $status],
+                };
+            };
+            $actionLabel = function (string $key): string {
+                return \Illuminate\Support\Str::of($key)
+                    ->after('tactical.')
+                    ->replace('_', ' ')
+                    ->title()
+                    ->toString();
+            };
+        @endphp
+        <div class="card shadow-sm card-static mb-3" id="tactical-recent-actions">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-clock-history me-2"></i>Recent Tactical actions</span>
+                @if($actionTotal > count($recentActions))
+                    <span class="badge bg-light text-dark" title="There are more actions than shown">
+                        {{ count($recentActions) }} most recent of {{ $actionTotal }}
+                    </span>
+                @endif
+            </div>
+            <div class="card-body p-0">
+                @if(empty($recentActions))
+                    <div class="text-muted small p-3"><i class="bi bi-info-circle me-1"></i>No recent Tactical actions for this device.</div>
+                @else
+                <ul class="list-group list-group-flush">
+                    @foreach($recentActions as $row)
+                    @php
+                        [$badgeClass, $outcomeText] = $outcomeBadge($row['result_status']);
+                        $when = $row['when'] ? \Illuminate\Support\Carbon::parse($row['when']) : null;
+                    @endphp
+                    <li class="list-group-item py-2 small">
+                        <div class="d-flex justify-content-between align-items-start gap-2">
+                            <div>
+                                <span class="fw-semibold">{{ $actionLabel($row['action']) }}</span>
+                                <span class="text-muted">· {{ $row['actor'] }}</span>
+                                @if(! empty($row['ticket_id']))
+                                    · under
+                                    <a href="{{ route('tickets.show', $row['ticket_id']) }}" class="text-decoration-none">#{{ $row['ticket_id'] }}</a>
+                                @endif
+                                @if($when)
+                                    <span class="text-muted">· <span title="{{ $when->toAppTz()->format('Y-m-d H:i T') }}">{{ $when->diffForHumans() }}</span></span>
+                                @endif
+                            </div>
+                            <span class="badge {{ $badgeClass }} flex-shrink-0">{{ $outcomeText }}</span>
+                        </div>
+                    </li>
+                    @endforeach
+                </ul>
+                @endif
+            </div>
         </div>
         @endif
 
@@ -2811,6 +3011,210 @@ function renderPatches(data) {
         })
         .finally(function() {
             toggle.disabled = false;
+        });
+    });
+})();
+
+// In-place refresh-now (P4 amendment J). A READ — POST to a non-bus, non-audited
+// endpoint that re-syncs the local snapshot; updates the status badge + freshness
+// in place (no full-page reload, no quickLook cache). An in-button spinner
+// re-enables on completion/failure (the ~3s bound guarantees no infinite spin).
+// A degraded result is a 200 with degraded:true — copy sits adjacent to status.
+(function() {
+    var btn = document.getElementById('tacticalRefreshBtn');
+    if (!btn) return;
+    var statusBadge = document.getElementById('tacticalStatusBadge');
+    var freshness = document.getElementById('tacticalFreshness');
+    var resultEl = document.getElementById('tacticalRefreshResult');
+    var original = btn.innerHTML;
+    var STATUS_CLASSES = ['bg-success', 'bg-danger', 'bg-warning', 'text-dark', 'bg-secondary'];
+
+    function statusClass(status) {
+        switch ((status || '').toLowerCase()) {
+            case 'online': return ['bg-success'];
+            case 'offline': return ['bg-danger'];
+            case 'overdue': return ['bg-warning', 'text-dark'];
+            default: return ['bg-secondary'];
+        }
+    }
+
+    btn.addEventListener('click', function() {
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+        if (resultEl) resultEl.style.display = 'none';
+
+        fetch(btn.dataset.assetRefreshUrl, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content,
+                'Accept': 'application/json',
+            },
+        })
+        .then(function(r) { return r.json().then(function(d) { d._status = r.status; return d; }); })
+        .then(function(data) {
+            if (data.error) {
+                if (resultEl) {
+                    resultEl.style.display = '';
+                    resultEl.className = 'small mb-2 text-danger';
+                    resultEl.textContent = data.error;
+                }
+                return;
+            }
+            // Update the status badge in place (only on a non-degraded read — a
+            // degraded read leaves the last-known status untouched).
+            if (!data.degraded && data.status_label && statusBadge) {
+                STATUS_CLASSES.forEach(function(c) { statusBadge.classList.remove(c); });
+                statusClass(data.status).forEach(function(c) { statusBadge.classList.add(c); });
+                statusBadge.textContent = data.status_label;
+            }
+            // Freshness flips to "Refreshed just now" (clears the stale-amber).
+            if (freshness) {
+                if (data.degraded) {
+                    freshness.classList.remove('tactical-freshness-stale', 'text-warning-emphasis', 'fw-semibold');
+                    freshness.classList.add('text-muted');
+                    freshness.textContent = ' synced ' + (data.freshAsOf || 'a while ago');
+                } else {
+                    freshness.classList.remove('tactical-freshness-stale', 'text-warning-emphasis', 'fw-semibold');
+                    freshness.classList.add('text-muted');
+                    freshness.textContent = ' Refreshed just now';
+                }
+            }
+            if (resultEl) {
+                resultEl.style.display = '';
+                resultEl.className = data.degraded ? 'small mb-2 text-warning-emphasis' : 'small mb-2 text-success';
+                resultEl.textContent = data.degraded
+                    ? (data.message || 'Couldn’t reach the agent — showing last sync.')
+                    : (data.message || 'Refreshed just now.');
+            }
+        })
+        .catch(function(err) {
+            if (resultEl) {
+                resultEl.style.display = '';
+                resultEl.className = 'small mb-2 text-danger';
+                resultEl.textContent = 'Request failed: ' + err.message;
+            }
+        })
+        .finally(function() {
+            btn.disabled = false;
+            btn.innerHTML = original;
+        });
+    });
+})();
+
+// Lazy Tactical telemetry panels (P4 amendment I + G). Each accordion fetches its
+// section on first expand via the shared deviceData branch and renders one of
+// three states: data, genuinely-empty (positive copy), or could-not-load (an
+// {error} from a degraded bounded read). A could-not-load is NOT cached, so a
+// re-expand retries.
+(function() {
+    var root = document.getElementById('tacticalPanels');
+    if (!root) return;
+    var assetId = root.dataset.assetId;
+    var tacticalWebUrl = root.dataset.webUrl || '';
+    var loaded = {};
+
+    function viewInTacticalLink() {
+        if (!tacticalWebUrl) return '';
+        return '<a href="' + esc(tacticalWebUrl) + '" target="_blank" rel="noopener noreferrer" ' +
+               'class="btn btn-outline-secondary btn-sm mt-2"><i class="bi bi-box-arrow-up-right me-1"></i>View in Tactical</a>';
+    }
+
+    function renderChecks(d) {
+        if (typeof d.checks_failing !== 'number' || d.checks_failing === 0) {
+            return '<div class="text-success"><i class="bi bi-check-circle me-1"></i>All checks passing' +
+                   (typeof d.checks_total === 'number' ? ' (' + d.checks_total + ')' : '') + '.</div>';
+        }
+        var html = '<div class="fw-semibold text-danger mb-2"><i class="bi bi-exclamation-triangle me-1"></i>' +
+                   d.checks_failing + ' of ' + d.checks_total + ' check' + (d.checks_failing === 1 ? '' : 's') + ' failing</div>';
+        (d.failing_checks || []).forEach(function(c) {
+            html += '<div class="border-start border-danger border-2 ps-2 mb-2">' +
+                    '<div class="fw-semibold">' + esc(c.name) +
+                    (c.retcode !== null && c.retcode !== undefined ? ' <span class="text-muted">(rc=' + esc(String(c.retcode)) + ')</span>' : '') +
+                    '</div>';
+            if (c.stdout) {
+                html += '<pre class="mb-0 mt-1 small text-muted" style="white-space:pre-wrap;word-break:break-word;">' + esc(c.stdout) + '</pre>';
+            }
+            html += '</div>';
+        });
+        return html;
+    }
+
+    function renderPatches(d) {
+        // Shape we couldn't parse (amendment F) — explicit, never "fully patched".
+        if (d.shape_error) {
+            return '<div class="text-warning-emphasis"><i class="bi bi-question-circle me-1"></i>' + esc(d.shape_error) + '</div>' + viewInTacticalLink();
+        }
+        if (d.pending_count === 0) {
+            return '<div class="text-success"><i class="bi bi-check-circle me-1"></i>No pending updates.</div>';
+        }
+        var sev = d.severity || {};
+        var html = '<div class="fw-semibold mb-1"><i class="bi bi-shield-exclamation me-1 text-warning"></i>' +
+                   d.pending_count + ' pending update' + (d.pending_count === 1 ? '' : 's') + '</div>';
+        var chips = [];
+        if (sev.critical) chips.push('<span class="badge bg-danger me-1">' + sev.critical + ' critical</span>');
+        if (sev.important) chips.push('<span class="badge bg-warning text-dark me-1">' + sev.important + ' important</span>');
+        if (sev.other) chips.push('<span class="badge bg-secondary me-1">' + sev.other + ' other</span>');
+        if (chips.length) html += '<div class="mb-1">' + chips.join('') + '</div>';
+        if (d.needs_reboot) html += '<div class="small text-warning-emphasis mb-1"><i class="bi bi-arrow-repeat me-1"></i>A reboot is needed to finish applying updates.</div>';
+        // Full list is opt-in.
+        if ((d.patches || []).length) {
+            html += '<button class="btn btn-link btn-sm p-0 mt-1" type="button" data-bs-toggle="collapse" data-bs-target="#tacticalPatchList">Show all</button>';
+            html += '<div class="collapse mt-1" id="tacticalPatchList"><ul class="list-unstyled mb-0">';
+            d.patches.forEach(function(p) {
+                html += '<li class="border-bottom py-1">' + (p.kb ? '<span class="badge bg-light text-dark me-1">' + esc(p.kb) + '</span>' : '') +
+                        esc(p.title) + (p.severity ? ' <span class="text-muted">— ' + esc(p.severity) + '</span>' : '') + '</li>';
+            });
+            html += '</ul></div>';
+        }
+        html += viewInTacticalLink();
+        return html;
+    }
+
+    function renderSoftware(d) {
+        var list = d.software || [];
+        if (!list.length) {
+            return '<div class="text-muted"><i class="bi bi-info-circle me-1"></i>No software inventory reported.</div>';
+        }
+        var html = '<div class="table-responsive"><table class="table table-sm table-borderless mb-0"><tbody>';
+        list.forEach(function(s) {
+            html += '<tr><td>' + esc(s.name) + '</td><td class="text-muted text-end">' + esc(s.version || '') + '</td></tr>';
+        });
+        html += '</tbody></table></div>';
+        if (list.length >= 500) html += '<div class="small text-muted">Showing the first 500 entries.</div>';
+        return html;
+    }
+
+    var renderers = { checks: renderChecks, patches: renderPatches, software: renderSoftware };
+
+    root.querySelectorAll('[data-tactical-panel]').forEach(function(btn) {
+        var section = btn.dataset.tacticalPanel;
+        var target = document.querySelector(btn.dataset.bsTarget);
+        if (!target) return;
+        target.addEventListener('shown.bs.collapse', function() {
+            if (loaded[section]) return;
+            var body = target.querySelector('[data-tactical-panel-body="' + section + '"]');
+            if (!body) return;
+
+            // fix #4: scope to the Tactical source so a Ninja+Tactical dual-linked
+            // asset's panels resolve to the Tactical branch, not Ninja-first (which
+            // has no `checks` arm -> UnhandledMatchError).
+            fetch('/assets/' + assetId + '/device-data/' + section + '?source=tactical', {
+                headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+            })
+            .then(function(r) { return r.ok ? r.json() : Promise.reject(r); })
+            .then(function(data) {
+                if (data.error) {
+                    // (c) could-not-load — distinct from genuinely-empty; allow retry.
+                    body.innerHTML = '<div class="text-danger"><i class="bi bi-x-circle me-1"></i>' + esc(data.error) + '</div>';
+                    return;
+                }
+                body.innerHTML = renderers[section](data);
+                loaded[section] = true;
+            })
+            .catch(function() {
+                body.innerHTML = '<div class="text-danger"><i class="bi bi-x-circle me-1"></i>Could not load. Try again in a moment.</div>';
+            });
         });
     });
 })();

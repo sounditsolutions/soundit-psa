@@ -28,6 +28,8 @@ class TacticalAsset extends Model
         'site_name',
         'needs_reboot',
         'has_patches_pending',
+        'checks_failing',
+        'checks_total',
         'graphics',
         'monitoring_type',
         'synced_at',
@@ -40,6 +42,8 @@ class TacticalAsset extends Model
             'ram_gb' => 'decimal:1',
             'needs_reboot' => 'boolean',
             'has_patches_pending' => 'boolean',
+            'checks_failing' => 'integer',
+            'checks_total' => 'integer',
             'last_seen_at' => 'datetime',
             'synced_at' => 'datetime',
         ];
