@@ -356,6 +356,54 @@ class TacticalInsightServiceTest extends TestCase
         }
     }
 
+    public function test_low_disk_flag_from_getagent_disks_shape_live(): void
+    {
+        // fix #6: pin the getAgent `disks` -> lowDisk live path (CURRENT assumed
+        // shape: device/total/free/percent; total/free in bytes). A volume at/above
+        // 90% used trips lowDisk. (Shape is live-verified later in task 17 — this
+        // pins the current assumption so a regression is caught.)
+        $gib = 1073741824; // bytes per GiB
+        $asset = $this->linkedAsset(['agent_id' => 'AGENT-LOWDISK']);
+
+        $service = $this->service([
+            new Response(200, [], json_encode([
+                'status' => 'online',
+                'disks' => [
+                    ['device' => 'C:', 'total' => 256 * $gib, 'free' => 4 * $gib, 'percent' => 95],
+                ],
+            ])),
+            new Response(200, [], json_encode([])), // checks: empty, all-passing
+        ]);
+
+        $insight = $service->forAsset($asset, live: true);
+
+        $this->assertTrue($insight->lowDisk, 'a 95%-used volume must trip lowDisk');
+        $this->assertNotEmpty($insight->diskVolumes);
+        $this->assertSame('C:', $insight->diskVolumes[0]['drive']);
+    }
+
+    public function test_low_disk_flag_is_false_for_a_healthy_volume_live(): void
+    {
+        $gib = 1073741824;
+        $asset = $this->linkedAsset(['agent_id' => 'AGENT-OKDISK']);
+
+        $service = $this->service([
+            new Response(200, [], json_encode([
+                'status' => 'online',
+                // 40% used, 100 GiB free — clears BOTH the percent ceiling (<90)
+                // and the GB floor (>=10).
+                'disks' => [
+                    ['device' => 'C:', 'total' => 256 * $gib, 'free' => 100 * $gib, 'percent' => 40],
+                ],
+            ])),
+            new Response(200, [], json_encode([])),
+        ]);
+
+        $insight = $service->forAsset($asset, live: true);
+
+        $this->assertFalse($insight->lowDisk, 'a 40%-used volume with 100GB free is not low');
+    }
+
     public function test_checks_unavailable_when_live_fails_and_no_snapshot_count(): void
     {
         // No snapshot checks count + a failed live fetch => Unavailable, NOT "0 clean".

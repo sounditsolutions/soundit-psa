@@ -257,6 +257,29 @@ class TacticalPanelsTest extends TestCase
         $this->assertCount(2, $resp->json('patches'));
     }
 
+    public function test_patches_pending_classification_for_action_rows_and_the_default_fallback(): void
+    {
+        // fix #6: pin isPendingPatch across the UNVERIFIED winupdate shape:
+        //   - action "approve" (no installed flag)         => pending
+        //   - action "nothing"                              => NOT pending
+        //   - neither installed nor action (but a kb field) => default-to-pending
+        // The default-to-pending fallback was previously untested.
+        $asset = $this->linkedAsset();
+        $this->bindClient([
+            new Response(200, [], json_encode([
+                ['kb' => 'KB5001', 'title' => 'Cumulative Update', 'action' => 'approve'],
+                ['kb' => 'KB4900', 'title' => 'Already Applied', 'action' => 'nothing'],
+                ['kb' => 'KB5050', 'title' => 'No Status Field'], // neither installed nor action
+            ])),
+        ]);
+
+        $resp = $this->fetchSection($asset, 'patches');
+
+        $resp->assertOk();
+        // approve + the no-status default => 2 pending; "nothing" excluded.
+        $resp->assertJsonPath('pending_count', 2);
+    }
+
     public function test_patches_empty_is_no_pending_updates_not_an_error(): void
     {
         $asset = $this->linkedAsset();
