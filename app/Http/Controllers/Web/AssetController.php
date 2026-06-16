@@ -1181,7 +1181,8 @@ class AssetController extends Controller
      */
     public function deviceData(Asset $asset, string $section)
     {
-        $allowedSections = ['network', 'storage', 'software', 'patches'];
+        // 'checks' is Tactical-only (no Ninja/Level analog); the others are shared.
+        $allowedSections = ['network', 'storage', 'software', 'patches', 'checks'];
         if (! in_array($section, $allowedSections)) {
             return response()->json(['error' => 'Invalid section'], 422);
         }
@@ -1192,6 +1193,17 @@ class AssetController extends Controller
 
         if ($asset->level_id) {
             return response()->json($this->getLevelFallbackData($asset, $section));
+        }
+
+        // Tactical branch (amendment I): the same deviceData endpoint serves the
+        // Tactical software/patches/checks panels, but they render in the Tactical
+        // card region, not the page-top Ninja/Level tabs. Each section is a bounded
+        // live read that degrades to the {error:…} payload the JS already renders.
+        $asset->loadMissing('tacticalAsset');
+        if ($asset->tacticalAsset && \App\Support\TacticalConfig::isConfigured()) {
+            $panel = app(\App\Services\Tactical\TacticalPanelData::class);
+
+            return response()->json($panel->section($asset->tacticalAsset, $section));
         }
 
         return response()->json(['error' => 'Asset not linked to any RMM'], 422);

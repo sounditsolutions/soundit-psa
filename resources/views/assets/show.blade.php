@@ -493,6 +493,60 @@
                         @endif
                     </tbody>
                 </table>
+
+                {{-- Lazy Tactical telemetry panels (P4 amendment I): co-located
+                     under the Tactical card, fetched on first expand via the shared
+                     deviceData AJAX branch — never on initial page render. Each
+                     panel renders three distinct states (data / genuinely-empty /
+                     could-not-load) from the JSON the controller returns. --}}
+                <div class="accordion accordion-flush mt-2" id="tacticalPanels"
+                     data-asset-id="{{ $asset->id }}">
+                    {{-- Checks-health --}}
+                    <div class="accordion-item">
+                        <h2 class="accordion-header">
+                            <button class="accordion-button collapsed py-2 small" type="button"
+                                    data-bs-toggle="collapse" data-bs-target="#tacticalPanelChecks"
+                                    data-tactical-panel="checks" aria-expanded="false">
+                                <i class="bi bi-clipboard2-check me-2"></i>Checks health
+                            </button>
+                        </h2>
+                        <div id="tacticalPanelChecks" class="accordion-collapse collapse" data-bs-parent="#tacticalPanels">
+                            <div class="accordion-body small" data-tactical-panel-body="checks">
+                                <div class="text-muted py-2"><span class="spinner-border spinner-border-sm me-1"></span>Loading…</div>
+                            </div>
+                        </div>
+                    </div>
+                    {{-- Patches (compliance, count-first) --}}
+                    <div class="accordion-item">
+                        <h2 class="accordion-header">
+                            <button class="accordion-button collapsed py-2 small" type="button"
+                                    data-bs-toggle="collapse" data-bs-target="#tacticalPanelPatches"
+                                    data-tactical-panel="patches" aria-expanded="false">
+                                <i class="bi bi-shield-check me-2"></i>Patch compliance
+                            </button>
+                        </h2>
+                        <div id="tacticalPanelPatches" class="accordion-collapse collapse" data-bs-parent="#tacticalPanels">
+                            <div class="accordion-body small" data-tactical-panel-body="patches">
+                                <div class="text-muted py-2"><span class="spinner-border spinner-border-sm me-1"></span>Loading…</div>
+                            </div>
+                        </div>
+                    </div>
+                    {{-- Software inventory --}}
+                    <div class="accordion-item">
+                        <h2 class="accordion-header">
+                            <button class="accordion-button collapsed py-2 small" type="button"
+                                    data-bs-toggle="collapse" data-bs-target="#tacticalPanelSoftware"
+                                    data-tactical-panel="software" aria-expanded="false">
+                                <i class="bi bi-box-seam me-2"></i>Installed software
+                            </button>
+                        </h2>
+                        <div id="tacticalPanelSoftware" class="accordion-collapse collapse" data-bs-parent="#tacticalPanels">
+                            <div class="accordion-body small" data-tactical-panel-body="software">
+                                <div class="text-muted py-2"><span class="spinner-border spinner-border-sm me-1"></span>Loading…</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
             @if(\App\Support\TacticalConfig::apiUrl())
             <div class="card-footer text-end">
@@ -2811,6 +2865,120 @@ function renderPatches(data) {
         })
         .finally(function() {
             toggle.disabled = false;
+        });
+    });
+})();
+
+// Lazy Tactical telemetry panels (P4 amendment I + G). Each accordion fetches its
+// section on first expand via the shared deviceData branch and renders one of
+// three states: data, genuinely-empty (positive copy), or could-not-load (an
+// {error} from a degraded bounded read). A could-not-load is NOT cached, so a
+// re-expand retries.
+(function() {
+    var root = document.getElementById('tacticalPanels');
+    if (!root) return;
+    var assetId = root.dataset.assetId;
+    var tacticalWebUrl = root.dataset.webUrl || '';
+    var loaded = {};
+
+    function viewInTacticalLink() {
+        if (!tacticalWebUrl) return '';
+        return '<a href="' + esc(tacticalWebUrl) + '" target="_blank" rel="noopener noreferrer" ' +
+               'class="btn btn-outline-secondary btn-sm mt-2"><i class="bi bi-box-arrow-up-right me-1"></i>View in Tactical</a>';
+    }
+
+    function renderChecks(d) {
+        if (typeof d.checks_failing !== 'number' || d.checks_failing === 0) {
+            return '<div class="text-success"><i class="bi bi-check-circle me-1"></i>All checks passing' +
+                   (typeof d.checks_total === 'number' ? ' (' + d.checks_total + ')' : '') + '.</div>';
+        }
+        var html = '<div class="fw-semibold text-danger mb-2"><i class="bi bi-exclamation-triangle me-1"></i>' +
+                   d.checks_failing + ' of ' + d.checks_total + ' check' + (d.checks_failing === 1 ? '' : 's') + ' failing</div>';
+        (d.failing_checks || []).forEach(function(c) {
+            html += '<div class="border-start border-danger border-2 ps-2 mb-2">' +
+                    '<div class="fw-semibold">' + esc(c.name) +
+                    (c.retcode !== null && c.retcode !== undefined ? ' <span class="text-muted">(rc=' + esc(String(c.retcode)) + ')</span>' : '') +
+                    '</div>';
+            if (c.stdout) {
+                html += '<pre class="mb-0 mt-1 small text-muted" style="white-space:pre-wrap;word-break:break-word;">' + esc(c.stdout) + '</pre>';
+            }
+            html += '</div>';
+        });
+        return html;
+    }
+
+    function renderPatches(d) {
+        // Shape we couldn't parse (amendment F) — explicit, never "fully patched".
+        if (d.shape_error) {
+            return '<div class="text-warning-emphasis"><i class="bi bi-question-circle me-1"></i>' + esc(d.shape_error) + '</div>' + viewInTacticalLink();
+        }
+        if (d.pending_count === 0) {
+            return '<div class="text-success"><i class="bi bi-check-circle me-1"></i>No pending updates.</div>';
+        }
+        var sev = d.severity || {};
+        var html = '<div class="fw-semibold mb-1"><i class="bi bi-shield-exclamation me-1 text-warning"></i>' +
+                   d.pending_count + ' pending update' + (d.pending_count === 1 ? '' : 's') + '</div>';
+        var chips = [];
+        if (sev.critical) chips.push('<span class="badge bg-danger me-1">' + sev.critical + ' critical</span>');
+        if (sev.important) chips.push('<span class="badge bg-warning text-dark me-1">' + sev.important + ' important</span>');
+        if (sev.other) chips.push('<span class="badge bg-secondary me-1">' + sev.other + ' other</span>');
+        if (chips.length) html += '<div class="mb-1">' + chips.join('') + '</div>';
+        if (d.needs_reboot) html += '<div class="small text-warning-emphasis mb-1"><i class="bi bi-arrow-repeat me-1"></i>A reboot is needed to finish applying updates.</div>';
+        // Full list is opt-in.
+        if ((d.patches || []).length) {
+            html += '<button class="btn btn-link btn-sm p-0 mt-1" type="button" data-bs-toggle="collapse" data-bs-target="#tacticalPatchList">Show all</button>';
+            html += '<div class="collapse mt-1" id="tacticalPatchList"><ul class="list-unstyled mb-0">';
+            d.patches.forEach(function(p) {
+                html += '<li class="border-bottom py-1">' + (p.kb ? '<span class="badge bg-light text-dark me-1">' + esc(p.kb) + '</span>' : '') +
+                        esc(p.title) + (p.severity ? ' <span class="text-muted">— ' + esc(p.severity) + '</span>' : '') + '</li>';
+            });
+            html += '</ul></div>';
+        }
+        html += viewInTacticalLink();
+        return html;
+    }
+
+    function renderSoftware(d) {
+        var list = d.software || [];
+        if (!list.length) {
+            return '<div class="text-muted"><i class="bi bi-info-circle me-1"></i>No software inventory reported.</div>';
+        }
+        var html = '<div class="table-responsive"><table class="table table-sm table-borderless mb-0"><tbody>';
+        list.forEach(function(s) {
+            html += '<tr><td>' + esc(s.name) + '</td><td class="text-muted text-end">' + esc(s.version || '') + '</td></tr>';
+        });
+        html += '</tbody></table></div>';
+        if (list.length >= 500) html += '<div class="small text-muted">Showing the first 500 entries.</div>';
+        return html;
+    }
+
+    var renderers = { checks: renderChecks, patches: renderPatches, software: renderSoftware };
+
+    root.querySelectorAll('[data-tactical-panel]').forEach(function(btn) {
+        var section = btn.dataset.tacticalPanel;
+        var target = document.querySelector(btn.dataset.bsTarget);
+        if (!target) return;
+        target.addEventListener('shown.bs.collapse', function() {
+            if (loaded[section]) return;
+            var body = target.querySelector('[data-tactical-panel-body="' + section + '"]');
+            if (!body) return;
+
+            fetch('/assets/' + assetId + '/device-data/' + section, {
+                headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+            })
+            .then(function(r) { return r.ok ? r.json() : Promise.reject(r); })
+            .then(function(data) {
+                if (data.error) {
+                    // (c) could-not-load — distinct from genuinely-empty; allow retry.
+                    body.innerHTML = '<div class="text-danger"><i class="bi bi-x-circle me-1"></i>' + esc(data.error) + '</div>';
+                    return;
+                }
+                body.innerHTML = renderers[section](data);
+                loaded[section] = true;
+            })
+            .catch(function() {
+                body.innerHTML = '<div class="text-danger"><i class="bi bi-x-circle me-1"></i>Could not load. Try again in a moment.</div>';
+            });
         });
     });
 })();
