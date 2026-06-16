@@ -68,7 +68,7 @@ function assertAllowedHost(baseUrl) {
 }
 
 async function run(job) {
-  const { baseUrl, loginUserId = 1, scenario = 'unnamed', actions = [] } = job;
+  const { baseUrl, loginUserId = 1, scenario = 'unnamed', actions = [], viewports = null } = job;
   assertAllowedHost(baseUrl);
 
   const screenDir = process.env.QA_SCREENSHOT_DIR || '/tmp/qa-screens';
@@ -157,10 +157,18 @@ async function run(job) {
             break;
           }
           case 'screenshot': {
-            const path = `${screenDir}/${scenario}-${action.name || i}.png`;
-            mkdirSync(dirname(path), { recursive: true });
-            await page.screenshot({ path, fullPage: true });
-            result.screenshots.push(path);
+            // With a `viewports` job field, capture the same screen at each breakpoint
+            // (named suffix) so responsive regressions are observable. Without it,
+            // capture once at the default viewport (unchanged behavior).
+            const vps = viewports && viewports.length ? viewports : [null];
+            for (const vp of vps) {
+              if (vp) await page.setViewportSize({ width: vp.width, height: vp.height });
+              const suffix = vp ? `@${vp.name}` : '';
+              const path = `${screenDir}/${scenario}-${action.name || i}${suffix}.png`;
+              mkdirSync(dirname(path), { recursive: true });
+              await page.screenshot({ path, fullPage: true });
+              result.screenshots.push(path);
+            }
             break;
           }
           default:
