@@ -17,6 +17,7 @@ use App\Services\Level\LevelClient;
 use App\Services\Mesh\MeshClient;
 use App\Services\Ninja\NinjaClient;
 use App\Services\Tactical\TacticalClient;
+use App\Services\Tactical\TacticalFieldMap;
 use App\Services\Wiki\HandlesWikiTools;
 use App\Support\ControlDConfig;
 use Carbon\Carbon;
@@ -1153,35 +1154,15 @@ class TriageToolExecutor
             return ['error' => 'Tactical query failed: '.mb_substr($e->getMessage(), 0, 200)];
         }
 
-        // Format uptime from boot_time
-        $uptime = null;
-        if (! empty($agent['boot_time'])) {
-            try {
-                $bootTime = Carbon::parse($agent['boot_time']);
-                $diff = $bootTime->diff(now());
-                $parts = [];
-                if ($diff->days > 0) {
-                    $parts[] = $diff->days.'d';
-                }
-                if ($diff->h > 0) {
-                    $parts[] = $diff->h.'h';
-                }
-                if (empty($parts)) {
-                    $parts[] = $diff->i.'m';
-                }
-                $uptime = implode(' ', $parts);
-            } catch (\Throwable) {
-                // Ignore parse errors
-            }
-        }
+        // Format uptime from boot_time (shared mapper — amendment E)
+        $uptime = TacticalFieldMap::uptimeFromBootTime($agent['boot_time'] ?? null);
 
-        // Summarize checks
+        // Summarize checks (shared mapper — amendment E)
         $checksSummary = null;
         $checks = $agent['checks'] ?? [];
         if (is_array($checks)) {
-            $total = count($checks);
-            $failing = collect($checks)->filter(fn ($c) => ($c['status'] ?? '') === 'failing')->count();
-            $checksSummary = "{$failing} failing / {$total} total";
+            $counts = TacticalFieldMap::checksSummary($checks);
+            $checksSummary = "{$counts['failing']} failing / {$counts['total']} total";
         }
 
         return [
@@ -1189,7 +1170,7 @@ class TriageToolExecutor
             'status' => $agent['status'] ?? null,
             'os' => $agent['operating_system'] ?? null,
             'cpu' => $agent['cpu_model'] ?? null,
-            'ram_gb' => isset($agent['total_ram']) ? round($agent['total_ram'] / 1073741824, 1) : null,
+            'ram_gb' => TacticalFieldMap::ramGbFromBytes($agent['total_ram'] ?? null),
             'make_model' => $agent['make_model'] ?? null,
             'public_ip' => $agent['public_ip'] ?? null,
             'local_ips' => $agent['local_ips'] ?? null,
