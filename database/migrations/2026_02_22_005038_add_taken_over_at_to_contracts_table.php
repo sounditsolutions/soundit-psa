@@ -12,7 +12,7 @@ return new class extends Migration
     public function up(): void
     {
         Schema::table('contracts', function (Blueprint $table) {
-            $table->timestamp('taken_over_at')->nullable()->after('halo_synced_at');
+            $table->timestamp('taken_over_at')->nullable()->after('notes');
             $table->foreignId('taken_over_by')->nullable()->after('taken_over_at')
                 ->constrained('users')->nullOnDelete();
         });

@@ -9,7 +9,7 @@ return new class extends Migration
     public function up(): void
     {
         Schema::table('users', function (Blueprint $table) {
-            $table->boolean('is_active')->default(true)->after('notification_preferences');
+            $table->boolean('is_active')->default(true)->after('halo_agent_id');
         });
     }
 
