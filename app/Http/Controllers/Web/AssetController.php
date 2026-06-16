@@ -1247,12 +1247,27 @@ class AssetController extends Controller
     /**
      * AJAX endpoint: fetch live device sub-resource data from RMM.
      */
-    public function deviceData(Asset $asset, string $section)
+    public function deviceData(Asset $asset, string $section, Request $request)
     {
         // 'checks' is Tactical-only (no Ninja/Level analog); the others are shared.
         $allowedSections = ['network', 'storage', 'software', 'patches', 'checks'];
         if (! in_array($section, $allowedSections)) {
             return response()->json(['error' => 'Invalid section'], 422);
+        }
+
+        // fix #4 (dual-link): the Tactical card's panel JS requests ?source=tactical
+        // so its software/patches/checks panels resolve to the TACTICAL branch even
+        // when the asset is ALSO Ninja-linked. Without this, a dual-linked asset fell
+        // through the Ninja-first branch and `checks` hit fetchNinjaDeviceData's
+        // match() (no `checks` arm) -> UnhandledMatchError -> {error}. The page-top
+        // Ninja/Level tabs send no source param and keep their existing behavior.
+        $asset->loadMissing('tacticalAsset');
+        if ($request->query('source') === 'tactical'
+            && $asset->tacticalAsset
+            && \App\Support\TacticalConfig::isConfigured()) {
+            $panel = app(\App\Services\Tactical\TacticalPanelData::class);
+
+            return response()->json($panel->section($asset->tacticalAsset, $section));
         }
 
         if ($asset->ninja_id) {
@@ -1267,7 +1282,7 @@ class AssetController extends Controller
         // Tactical software/patches/checks panels, but they render in the Tactical
         // card region, not the page-top Ninja/Level tabs. Each section is a bounded
         // live read that degrades to the {error:…} payload the JS already renders.
-        $asset->loadMissing('tacticalAsset');
+        // (Tactical-only assets reach here without needing the source param.)
         if ($asset->tacticalAsset && \App\Support\TacticalConfig::isConfigured()) {
             $panel = app(\App\Services\Tactical\TacticalPanelData::class);
 

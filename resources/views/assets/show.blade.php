@@ -3196,7 +3196,10 @@ function renderPatches(data) {
             var body = target.querySelector('[data-tactical-panel-body="' + section + '"]');
             if (!body) return;
 
-            fetch('/assets/' + assetId + '/device-data/' + section, {
+            // fix #4: scope to the Tactical source so a Ninja+Tactical dual-linked
+            // asset's panels resolve to the Tactical branch, not Ninja-first (which
+            // has no `checks` arm -> UnhandledMatchError).
+            fetch('/assets/' + assetId + '/device-data/' + section + '?source=tactical', {
                 headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
             })
             .then(function(r) { return r.ok ? r.json() : Promise.reject(r); })

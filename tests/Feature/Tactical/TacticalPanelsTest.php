@@ -63,10 +63,10 @@ class TacticalPanelsTest extends TestCase
         return $asset->refresh();
     }
 
-    private function fetchSection(Asset $asset, string $section)
+    private function fetchSection(Asset $asset, string $section, array $query = [])
     {
         return $this->actingAs(User::factory()->create())
-            ->getJson(route('assets.deviceData', ['asset' => $asset, 'section' => $section]));
+            ->getJson(route('assets.deviceData', array_merge(['asset' => $asset, 'section' => $section], $query)));
     }
 
     // ── software ──────────────────────────────────────────────────────────────
@@ -290,5 +290,71 @@ class TacticalPanelsTest extends TestCase
         $asset = Asset::factory()->create(['hostname' => 'NOLINK']);
 
         $this->fetchSection($asset, 'software')->assertStatus(422);
+    }
+
+    // ── dual-link routing (amendment I / fix #4) ────────────────────────────────
+
+    public function test_dual_linked_asset_source_tactical_gets_tactical_checks_not_ninja(): void
+    {
+        // A Ninja+Tactical dual-linked asset: deviceData branches Ninja-first, so
+        // the Tactical card's `checks` panel would hit fetchNinjaDeviceData's
+        // match() (no `checks` arm) -> UnhandledMatchError -> {error}. The Tactical
+        // panel JS requests ?source=tactical, which MUST resolve to the Tactical
+        // branch regardless of ninja_id.
+        $asset = $this->linkedAsset();
+        $asset->update(['ninja_id' => 'NINJA-999']);
+
+        $this->bindClient([
+            new Response(200, [], json_encode([
+                ['name' => 'Disk C', 'check_result' => ['status' => 'failing', 'retcode' => 1, 'stdout' => 'low space on C:']],
+                ['name' => 'Ping GW', 'check_result' => ['status' => 'passing']],
+            ])),
+        ]);
+
+        $resp = $this->fetchSection($asset->refresh(), 'checks', ['source' => 'tactical']);
+
+        $resp->assertOk();
+        // Tactical payload shape — NOT Ninja, NOT an UnhandledMatchError {error}.
+        $resp->assertJsonPath('tactical', true);
+        $resp->assertJsonPath('checks_failing', 1);
+        $resp->assertJsonPath('failing_checks.0.name', 'Disk C');
+        $this->assertArrayNotHasKey('error', $resp->json());
+    }
+
+    public function test_dual_linked_asset_source_tactical_gets_tactical_software(): void
+    {
+        $asset = $this->linkedAsset();
+        $asset->update(['ninja_id' => 'NINJA-999']);
+
+        $this->bindClient([
+            new Response(200, [], json_encode([
+                ['name' => 'Google Chrome', 'version' => '120.0.1', 'publisher' => 'Google LLC'],
+            ])),
+        ]);
+
+        $resp = $this->fetchSection($asset->refresh(), 'software', ['source' => 'tactical']);
+
+        $resp->assertOk();
+        $resp->assertJsonPath('tactical', true);
+        $resp->assertJsonPath('software.0.name', 'Google Chrome');
+    }
+
+    public function test_dual_linked_asset_without_source_keeps_ninja_branch_for_page_top_tabs(): void
+    {
+        // Without ?source=tactical the page-top Ninja tabs are unchanged: a Ninja
+        // section (network) still routes to the Ninja branch. (Ninja client isn't
+        // bound here, so a Ninja read degrades to its own {error} — the point is it
+        // does NOT hit the Tactical branch.)
+        $asset = $this->linkedAsset();
+        $asset->update(['ninja_id' => 'NINJA-999']);
+
+        // 'network' is a Ninja/Level section with no Tactical analog; reaching the
+        // Tactical branch for it would be the bug. The Ninja branch handles it
+        // (and degrades gracefully since no Ninja client is mocked).
+        $resp = $this->fetchSection($asset->refresh(), 'network');
+
+        $resp->assertOk();
+        // Not a Tactical payload.
+        $this->assertArrayNotHasKey('tactical', $resp->json());
     }
 }
