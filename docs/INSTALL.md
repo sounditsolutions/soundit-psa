@@ -537,6 +537,14 @@ Self-hosted RMM (amidaware/tacticalrmm). Syncs device inventory and a script lib
    - Tactical's outbound action has an **8-second timeout and no retry** and can double-deliver, so PSA acks immediately and processes asynchronously, deduping replays by `alert_id`. **A queue worker is required** (see "Queue worker" above) — without one, alerts are stored but never become PSA alerts/tickets. The hourly `tactical:reconcile-alerts` poll is the at-least-once backstop for dropped resolve webhooks.
    - Webhook health (last alert received, 24h processed count, failed count) is shown on the Tactical settings card.
 
+**Asset visibility — telemetry panels, freshness, and change history (P4):** a linked device's asset page surfaces live telemetry beyond the daily snapshot. The **software inventory**, **patch compliance**, and **checks-health** panels are **lazy-loaded**: nothing fetches on initial page render (which stays snapshot-fast); each panel calls the agent **on demand** only when you expand it. Every panel is **snapshot-first + live-on-demand** and bounded — a live read uses a short (~2–3 s) timeout and degrades to the snapshot rather than hanging, and each panel renders three distinct states (data / genuinely-empty / could-not-load), so a "couldn't reach the agent" never reads as "all checks passing" or "fully patched". The patch panel **leads with the pending count + a severity rollup** and keeps the full per-patch list opt-in.
+
+- **Freshness honesty (`freshAsOf`):** the Tactical card shows the device status **adjacent to its freshness** as one unit — "Online · synced 18h ago" — never a confident status badge with the age buried elsewhere. When an "online" claim is **stale** (the snapshot is older than ~60 min), the age renders in an **amber warning** treatment, not muted grey, because a green "Online" that is really hours stale is the dangerous misread. The distinction between **"synced X ago"** (snapshot) and **"refreshed just now"** (a fresh live read) is always visible.
+- **Refresh-now (manual, non-audited read):** a refresh button on the card does an **in-place AJAX refresh** (no page reload) — it re-reads the agent and updates the status + freshness on the spot. It is a **READ**: it does **not** flow through the action bus and writes **no `tactical_action_logs` audit row** (it mutates only the local snapshot, not the device). It is POST + CSRF + the same auth as the page. A live failure is a graceful "couldn't reach the agent — showing last sync" (a 200 with a degraded flag, never a 500), leaving the prior snapshot intact. **State auto-refresh (refresh-on-load / background polling) is deferred** — ship manual refresh first; revisit only if it proves insufficient.
+- **`ram_gb` / `os_version` populate on detail-read / refresh-now**, **not** the daily list sync — the daily `tactical:sync-devices` writes most snapshot fields but leaves these two unfilled; they fill when you open the device detail or click refresh-now (a `getAgent` detail read). Expect them blank on a freshly-synced device until its first detail read.
+- **Recent Tactical actions (ITIL change history):** a panel surfaces the last ~10 endpoint actions for the device, **newest-first, ticket-linked** ("Reboot · J.Smith · under #1423 · 2h ago") so each change ties to the incident it was performed under, with **outcome badges** (succeeded / no-op-agent-unreachable / error / blocked — different facts) and a "view all" affordance. Rows are rendered from the already-redacted `tactical_action_logs` (no re-leak).
+- **`tactical_web_url` (optional):** the Tactical **web dashboard** base (e.g. `https://rmm.yourmsp.com`) — **distinct from the API URL** and a separate field on the Tactical settings card. It is the target of the asset-page **"Open in Tactical RMM"** link, which is **hidden until this is set** (no fallback to the API root). PSA **never derives it from the API URL** (spec §11) — set it explicitly. It is a plain (non-secret) DB-backed setting; the only validation is `https://` + a parseable host (it is a browser link target, not a server-side fetch).
+
 **Least-privilege service user (required):** the API key inherits the role of the Tactical user it belongs to and **bypasses 2FA**, so create a dedicated service user with the narrowest role PSA needs and treat the key as a high-value secret. Concrete ALLOW/DENY for the service role:
 
 - **ALLOW** — List/Read Agents; Run Scripts + **Send Command** + **Reboot/Shutdown** + **Recover agent services** + **Edit Agent** (the remote actions PSA ships: `POST /agents/<id>/cmd/`, `/reboot/`, `/shutdown/`, `/recover/`, and `PUT /agents/<id>/` for the maintenance-mode toggle); Manage Checks (read); List/Manage Alerts (read + the resolve poll); List Clients/Sites + Create Client/Site (provisioning); Run installer/deployment lookups. These map exactly to the endpoints PSA calls.
@@ -562,27 +570,33 @@ Optionally set a key expiry and rotate periodically (no rotation runbook is auto
 - Bulk / multi-agent actions + a queued `RunTacticalActionJob` with count-confirmation and the async result path (`recover mode=tacagent` surfacing); business-hours / maintenance-window awareness → bead **psa-d76b**. (The single-agent remote actions — reboot, shutdown, cmd, recover `mode=mesh`, maintenance toggle — shipped here; the bus's `execute()` is synchronous, so anything needing the queued/async path is tracked there.)
 - Request-time peer-IP re-validation against the deny-list (DNS-rebinding TOCTOU hardening) → bead **psa-rkf6**.
 - Migrating the Servosity async deploy (`enableServosityBackup`, fire-and-forget `runScriptAsync`) onto the bus → bead **psa-nfqd** (needs the async bus path, which is deferred to **psa-d76b**).
-- A configurable Tactical **web** URL + fixing the asset-page "Open in Tactical RMM" link (currently points at the API root) → bead **psa-6h5r** (P4).
+- A configurable Tactical **web** URL + fixing the asset-page "Open in Tactical RMM" link → **shipped (psa-6h5r, P4):** the `tactical_web_url` setting now targets the web dashboard (hidden when unset), see *Asset visibility* above.
+- A **scheduled detail-sync cron** for `ram_gb`/`os_version` + the checks-failing count across all linked agents (so the eager fleet-compliance signals stay fresh without a manual refresh) → bead **psa-0npd**. P4 is **on-demand only** (detail-read / refresh-now); no per-agent daily fan-out is added here.
 - Installer-download host check + encrypting `tactical_api_url` at rest → deferred (the save-time SSRF guard + no-redirects are the current controls).
 - Optional destructive-action **reason** capture on the audit row (the "why", beyond the optional ticket link) → bead **psa-jke6**. P3 stays schema-free (no migration); for now the optional ticket link on a cmd/shutdown confirm is the per-incident traceability.
 - A scheduled maintenance auto-expiry ("maintenance for 2h", then PSA un-toggles) → follow-up, not in this release.
 
-**API schema pinning / drift guard:** Tactical exposes no versioned API contract, so PSA pins the fields it reads and ships a contract test (`tests/Feature/Tactical/TacticalSchemaDriftTest.php`) against a trimmed snapshot at `tests/Fixtures/tactical/api_schema.json`. That snapshot is a periodic **manual** refresh, not a live check: enable `SWAGGER_ENABLED` in Tactical, then `curl -s https://<tactical-host>/api/schema/ > tests/Fixtures/tactical/api_schema.json` and re-trim to the agent + alert schemas, bumping the pinned version in its `_meta`. The pinned version is recorded in that file (currently Tactical 1.5.0).
+**API schema pinning / drift guard:** Tactical exposes no versioned API contract, so PSA pins the fields it reads and ships a contract test (`tests/Feature/Tactical/TacticalSchemaDriftTest.php`) against a trimmed snapshot at `tests/Fixtures/tactical/api_schema.json`. That snapshot is a periodic **manual** refresh, not a live check: enable `SWAGGER_ENABLED` in Tactical, then `curl -s https://<tactical-host>/api/schema/ > tests/Fixtures/tactical/api_schema.json` and re-trim to the agent + alert schemas, bumping the pinned version in its `_meta`. The pinned version is recorded in that file (currently Tactical 1.5.0). (NIT: the P4 read shapes — `software`, `winupdate`/patches, and agent `checks` — are **not yet** pinned in that fixture; the panels read them defensively and degrade on a shape mismatch, but adding them to the drift snapshot is a follow-up.)
 
 <!--
-  P3 (remote actions: reboot/shutdown/cmd/recover/maintenance) — explicit setup
-  NEGATIVES, so a future editor doesn't add config that isn't needed:
-  - NO .env.example change: all Tactical config (API URL/key, site mapping,
-    webhook key) is DB-backed via Setting / TacticalConfig, not env.
+  P3/P4 (remote actions + visibility) — explicit setup NEGATIVES, so a future
+  editor doesn't add config that isn't needed:
+  - NO .env.example change: ALL Tactical config (API URL/key, web URL, site
+    mapping, webhook key) is DB-backed via Setting / TacticalConfig, not env.
+    P4's tactical_web_url is a plain (non-secret) Setting — same posture.
   - NO cron-table change: every P3 action is SYNCHRONOUS (the bus execute() is a
     single-target sync NATS round-trip). The bulk/async path that WOULD need a
     queued job is deferred to psa-d76b; the existing queue worker requirement is
-    for webhooks/triage, unchanged here.
+    for webhooks/triage, unchanged here. P4 adds NO new cron either: the detail
+    read (ram_gb/os_version/checks-failing) is on-demand only (refresh-now /
+    detail-read); the scheduled fleet detail-sync is deferred to psa-0npd.
   - NO new PHP extensions.
   - NO README route-table change: README lists routes at the resource level and
     (by house style) omits every POST sub-action — including the already-shipped
     reboot/run-script — so the new cmd/shutdown/recover/maintenance action routes
-    are intentionally NOT added there; doing so would break that consistency.
+    are intentionally NOT added there; doing so would break that consistency. P4
+    adds no new ROUTES (it branches the existing asset deviceData GET + the
+    refresh POST, both already controller-level), so likewise no README change.
 -->
 
 ### QuickBooks Online
