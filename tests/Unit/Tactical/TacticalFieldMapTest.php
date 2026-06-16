@@ -13,21 +13,21 @@ use PHPUnit\Framework\TestCase;
  */
 class TacticalFieldMapTest extends TestCase
 {
-    public function test_ram_gb_from_bytes_rounds_to_one_decimal(): void
+    public function test_ram_gb_reads_total_ram_as_gb_integer_not_bytes(): void
     {
-        // 17179869184 bytes = 16 GiB exactly.
-        $this->assertSame(16.0, TacticalFieldMap::ramGbFromBytes(17179869184));
-        // 8.0 GiB
-        $this->assertSame(8.0, TacticalFieldMap::ramGbFromBytes(8589934592));
-        // 16310104064 = 15.19... -> 15.2
-        $this->assertSame(15.2, TacticalFieldMap::ramGbFromBytes(16310104064));
+        // Tactical's agent `total_ram` is an INTEGER COUNT OF GIGABYTES (source
+        // v1.5.0 + live VM 105), NOT a byte count. 4 => 4.0 GB, 16 => 16.0 GB.
+        $this->assertSame(4.0, TacticalFieldMap::ramGb(4));
+        $this->assertSame(16.0, TacticalFieldMap::ramGb(16));
+        // A string GB value (some serializers stringify it) still maps directly.
+        $this->assertSame(8.0, TacticalFieldMap::ramGb('8'));
     }
 
-    public function test_ram_gb_from_bytes_handles_null_and_zero(): void
+    public function test_ram_gb_handles_null_and_zero(): void
     {
-        $this->assertNull(TacticalFieldMap::ramGbFromBytes(null));
-        // 0 bytes is a present-but-empty reading; treat as null (no RAM known).
-        $this->assertNull(TacticalFieldMap::ramGbFromBytes(0));
+        $this->assertNull(TacticalFieldMap::ramGb(null));
+        // 0 GB is a present-but-empty reading; treat as null (no RAM known).
+        $this->assertNull(TacticalFieldMap::ramGb(0));
     }
 
     public function test_uptime_from_boot_time_formats_days_hours(): void
@@ -52,7 +52,9 @@ class TacticalFieldMapTest extends TestCase
 
     public function test_checks_summary_counts_failing_and_total(): void
     {
-        // getAgentChecks() shape: rich check_result.status
+        // getAgentChecks() shape: a LIST of checks, each with check_result.status.
+        // (This summary helper is for that LIST only — the getAgent DETAIL `checks`
+        // is a pre-computed summary dict read directly, not through here.)
         $checks = [
             ['name' => 'Disk C', 'check_result' => ['status' => 'failing']],
             ['name' => 'Ping', 'check_result' => ['status' => 'passing']],
@@ -63,20 +65,6 @@ class TacticalFieldMapTest extends TestCase
 
         $this->assertSame(2, $summary['failing']);
         $this->assertSame(3, $summary['total']);
-    }
-
-    public function test_checks_summary_reads_flat_status_from_agent_detail(): void
-    {
-        // getAgent() embeds checks with a flat `status` (no check_result wrapper).
-        $checks = [
-            ['name' => 'Disk C', 'status' => 'failing'],
-            ['name' => 'Ping', 'status' => 'passing'],
-        ];
-
-        $summary = TacticalFieldMap::checksSummary($checks);
-
-        $this->assertSame(1, $summary['failing']);
-        $this->assertSame(2, $summary['total']);
     }
 
     public function test_checks_summary_empty_is_zero_zero(): void

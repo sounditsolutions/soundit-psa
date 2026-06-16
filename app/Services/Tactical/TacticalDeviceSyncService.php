@@ -21,7 +21,7 @@ class TacticalDeviceSyncService
     /**
      * On-demand DETAIL read for one linked asset (amendment B). Reads getAgent
      * and writes the columns the daily list-sync leaves unfilled — ram_gb (from
-     * total_ram bytes) and os_version — plus refreshes status/last_seen_at and
+     * total_ram, a GB count) and os_version — plus refreshes status/last_seen_at and
      * the checks_failing/checks_total summary, stamping synced_at.
      *
      * This is the trigger behind "refresh now". It is a READ: a fetch failure
@@ -61,7 +61,7 @@ class TacticalDeviceSyncService
             'synced_at' => now(),
         ];
 
-        if (($ramGb = TacticalFieldMap::ramGbFromBytes($agent['total_ram'] ?? null)) !== null) {
+        if (($ramGb = TacticalFieldMap::ramGb($agent['total_ram'] ?? null)) !== null) {
             $update['ram_gb'] = $ramGb;
         }
         if (! empty($agent['operating_system'])) {
@@ -74,11 +74,13 @@ class TacticalDeviceSyncService
             $update['needs_reboot'] = (bool) $agent['needs_reboot'];
         }
 
-        // Checks summary from the detail object's embedded checks (flat status).
-        if (isset($agent['checks']) && is_array($agent['checks'])) {
-            $counts = TacticalFieldMap::checksSummary($agent['checks']);
-            $update['checks_failing'] = $counts['failing'];
-            $update['checks_total'] = $counts['total'];
+        // getAgent `checks` is a SUMMARY DICT
+        // ({total, passing, failing, warning, info, has_failing_checks}), NOT a
+        // list of checks — read failing/total off it directly. (The DETAILED
+        // failing-check list is a separate getAgentChecks read.)
+        if (isset($agent['checks']) && is_array($agent['checks']) && isset($agent['checks']['total'])) {
+            $update['checks_failing'] = (int) ($agent['checks']['failing'] ?? 0);
+            $update['checks_total'] = (int) $agent['checks']['total'];
         }
 
         $ta->update($update);
@@ -227,14 +229,13 @@ class TacticalDeviceSyncService
             'synced_at' => now(),
         ];
 
-        // Eager checks-summary (amendment B): the real Tactical AgentTable
-        // serializer typically embeds a `checks` count dict
-        // ({total, passing, failing, warning, info}). When present, persist the
-        // failing/total so the card health line populates from the daily sync
-        // (zero per-agent fan-out). Our pinned api_schema.json snapshot does NOT
-        // include it, so in practice these populate on detail-read/refresh-now
-        // until a live-verified payload confirms the dict — read defensively and
-        // leave the columns untouched when absent.
+        // Eager checks-summary (amendment B): the Tactical AgentTable serializer
+        // embeds a `checks` SUMMARY DICT
+        // ({total, passing, failing, warning, info, has_failing_checks}) per agent
+        // in the LIST payload too (confirmed against source v1.5.0 + live VM 105).
+        // Persist failing/total so the card health line is snapshot-fresh from the
+        // DAILY sync (zero per-agent fan-out) — not detail-only. Read defensively:
+        // leave the columns untouched if a payload ever omits the dict.
         $checks = $agent['checks'] ?? null;
         if (is_array($checks) && isset($checks['total'])) {
             $mapped['checks_total'] = (int) $checks['total'];

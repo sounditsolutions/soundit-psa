@@ -14,25 +14,28 @@ use Illuminate\Support\Carbon;
  * consumed by TriageToolExecutor + TacticalInsightService +
  * TacticalDeviceSyncService.
  *
- * GiB convention: 1 GiB = 1073741824 bytes (binary), rounded to 1 decimal —
- * matching the pre-extraction behaviour the triage tests pin.
+ * RAM convention: Tactical's agent `total_ram` is an INTEGER COUNT OF GIGABYTES
+ * (source v1.5.0 + live VM 105), NOT a byte count — so it maps DIRECTLY to a GB
+ * float, no 1073741824 division. (Disk total/used/free are a SEPARATE, string
+ * shape — "19.3 GB" — parsed by TacticalInsightService, not here.)
  */
 class TacticalFieldMap
 {
-    private const BYTES_PER_GIB = 1073741824;
-
     /**
-     * Convert a byte count (e.g. agent `total_ram`, disk `total`/`free`) to GiB,
-     * rounded to one decimal. A null or zero reading => null (not "0 GB" — we
-     * don't know the value, we shouldn't assert the box has no RAM).
+     * Map an agent `total_ram` reading to a GB float. `total_ram` is already a
+     * gigabyte COUNT (e.g. 4 => 4.0 GB), so this is a direct cast, not a bytes->GB
+     * conversion. A null or zero reading => null (not "0 GB" — we don't know the
+     * value, we shouldn't assert the box has no RAM).
      */
-    public static function ramGbFromBytes(?int $bytes): ?float
+    public static function ramGb(int|float|string|null $totalRam): ?float
     {
-        if ($bytes === null || $bytes <= 0) {
+        if ($totalRam === null || $totalRam === '' || ! is_numeric($totalRam)) {
             return null;
         }
 
-        return round($bytes / self::BYTES_PER_GIB, 1);
+        $gb = (float) $totalRam;
+
+        return $gb > 0 ? $gb : null;
     }
 
     /**
@@ -72,12 +75,12 @@ class TacticalFieldMap
     }
 
     /**
-     * Summarize a checks array to {failing, total} counts.
+     * Summarize a getAgentChecks LIST to {failing, total} counts.
      *
-     * Handles both Tactical shapes: the rich `getAgentChecks` row
-     * (`check_result.status`) and the flat checks embedded in a `getAgent`
-     * detail object (`status`). A check counts as failing when either reads
-     * "failing".
+     * This is for the getAgentChecks endpoint, which returns a LIST of checks each
+     * carrying a rich `check_result.status` (with a flat `status` fallback). It is
+     * NOT for the getAgent DETAIL `checks` field — that is already a pre-computed
+     * summary dict ({total, passing, failing, …}) read off directly by the caller.
      *
      * @param  array<int, array<string, mixed>>  $checks
      * @return array{failing: int, total: int}

@@ -83,7 +83,7 @@ class TacticalRefreshNowTest extends TestCase
         $this->bindClient([
             new Response(200, [], json_encode([
                 'status' => 'online',
-                'total_ram' => 17179869184, // 16 GiB
+                'total_ram' => 16, // GB integer (Tactical reports total_ram in GB)
                 'operating_system' => 'Windows 11 Pro',
                 'last_seen' => '2026-06-16 12:00:00',
             ])),

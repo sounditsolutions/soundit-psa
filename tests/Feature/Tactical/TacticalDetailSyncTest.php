@@ -60,15 +60,12 @@ class TacticalDetailSyncTest extends TestCase
 
         $service = $this->syncService([
             new Response(200, [], json_encode([
-                'total_ram' => 17179869184, // 16 GiB
+                'total_ram' => 16, // GB integer (Tactical reports total_ram in GB)
                 'operating_system' => 'Windows 11 Pro, 23H2 (build 22631)',
                 'status' => 'online',
                 'last_seen' => '2026-06-16 01:00:00',
-                'checks' => [
-                    ['name' => 'Disk C', 'status' => 'failing'],
-                    ['name' => 'Ping', 'status' => 'passing'],
-                    ['name' => 'CPU', 'status' => 'passing'],
-                ],
+                // getAgent `checks` is the SUMMARY DICT, not a list of checks.
+                'checks' => ['total' => 3, 'passing' => 2, 'failing' => 1, 'warning' => 0, 'info' => 0, 'has_failing_checks' => true],
             ])),
         ]);
 
@@ -137,7 +134,7 @@ class TacticalDetailSyncTest extends TestCase
             $captured[] = $options['timeout'] ?? null;
 
             return \GuzzleHttp\Promise\Create::promiseFor(new Response(200, [], json_encode([
-                'total_ram' => 8589934592,
+                'total_ram' => 8, // GB integer
                 'operating_system' => 'Windows 11',
                 'status' => 'online',
             ])));
@@ -161,10 +158,10 @@ class TacticalDetailSyncTest extends TestCase
 
     public function test_list_sync_persists_checks_summary_when_payload_carries_it(): void
     {
-        // Per amendment B: IF the agent-list payload carries a checks dict, the
-        // daily sync persists it. Our pinned api_schema.json fixture does NOT
-        // include it (so in practice it populates on detail-read), but the mapper
-        // is defensive: a real payload with a `checks` dict self-populates.
+        // Per amendment B: the agent-list payload carries a per-agent checks
+        // SUMMARY DICT (source v1.5.0 + live VM 105), so the daily sync persists
+        // failing/total straight off it — the card health line is snapshot-fresh
+        // from the daily run, no per-agent detail fan-out.
         $client = \App\Models\Client::factory()->create([
             'tactical_site_id' => 'Acme|Main',
             'is_active' => true,
@@ -191,7 +188,8 @@ class TacticalDetailSyncTest extends TestCase
 
     public function test_list_sync_leaves_checks_null_when_payload_lacks_it(): void
     {
-        // The pinned-contract reality: no checks dict in the list payload.
+        // Defensive guard: if a payload ever omits the checks dict, the columns
+        // stay null (Unavailable) rather than being written as "0 clean".
         $client = \App\Models\Client::factory()->create([
             'tactical_site_id' => 'Acme|Main',
             'is_active' => true,

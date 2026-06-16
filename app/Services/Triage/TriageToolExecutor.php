@@ -1157,12 +1157,14 @@ class TriageToolExecutor
         // Format uptime from boot_time (shared mapper — amendment E)
         $uptime = TacticalFieldMap::uptimeFromBootTime($agent['boot_time'] ?? null);
 
-        // Summarize checks (shared mapper — amendment E)
+        // getAgent `checks` is a SUMMARY DICT ({total, passing, failing, …}) —
+        // read failing/total off it directly (NOT the getAgentChecks list helper).
         $checksSummary = null;
-        $checks = $agent['checks'] ?? [];
-        if (is_array($checks)) {
-            $counts = TacticalFieldMap::checksSummary($checks);
-            $checksSummary = "{$counts['failing']} failing / {$counts['total']} total";
+        $checks = $agent['checks'] ?? null;
+        if (is_array($checks) && isset($checks['total'])) {
+            $failing = (int) ($checks['failing'] ?? 0);
+            $total = (int) $checks['total'];
+            $checksSummary = "{$failing} failing / {$total} total";
         }
 
         return [
@@ -1170,7 +1172,7 @@ class TriageToolExecutor
             'status' => $agent['status'] ?? null,
             'os' => $agent['operating_system'] ?? null,
             'cpu' => $agent['cpu_model'] ?? null,
-            'ram_gb' => TacticalFieldMap::ramGbFromBytes($agent['total_ram'] ?? null),
+            'ram_gb' => TacticalFieldMap::ramGb($agent['total_ram'] ?? null),
             'make_model' => $agent['make_model'] ?? null,
             'public_ip' => $agent['public_ip'] ?? null,
             'local_ips' => $agent['local_ips'] ?? null,
