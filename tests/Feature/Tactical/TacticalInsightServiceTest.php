@@ -101,8 +101,32 @@ class TacticalInsightServiceTest extends TestCase
         $this->assertSame(1, $insight->checksFailing);
         $this->assertSame(4, $insight->checksTotal);
         $this->assertSame(SignalState::Snapshot, $insight->checksState);
-        $this->assertTrue($insight->pendingPatchCount >= 0);
         $this->assertEmpty($this->history); // NO live calls on the snapshot path
+    }
+
+    public function test_pending_patch_count_is_null_on_snapshot_but_boolean_is_honest(): void
+    {
+        // The snapshot only carries a has_patches_pending BOOLEAN — the precise
+        // count is a live/panel read. Surfacing "1 pending" here would lie to the
+        // P5 snapshot (a box 47 behind would read as "1"). So the count is null
+        // (unknown) while the boolean honestly says "updates pending".
+        $asset = $this->linkedAsset(['has_patches_pending' => true]);
+
+        $insight = $this->service()->forAsset($asset);
+
+        $this->assertNull($insight->pendingPatchCount, 'count is unknown on the snapshot path');
+        $this->assertTrue($insight->hasPendingPatches, 'the boolean is the honest snapshot signal');
+        $this->assertEmpty($this->history);
+    }
+
+    public function test_no_pending_patches_boolean_is_false_when_snapshot_clean(): void
+    {
+        $asset = $this->linkedAsset(['has_patches_pending' => false]);
+
+        $insight = $this->service()->forAsset($asset);
+
+        $this->assertNull($insight->pendingPatchCount);
+        $this->assertFalse($insight->hasPendingPatches);
     }
 
     public function test_fresh_as_of_is_the_snapshot_synced_at(): void
@@ -276,6 +300,31 @@ class TacticalInsightServiceTest extends TestCase
         // Checks: the live fetch failed and we have a snapshot count, so Snapshot.
         $this->assertSame(SignalState::Snapshot, $insight->checksState);
         $this->assertSame(1, $insight->checksFailing);
+    }
+
+    public function test_mixed_read_keeps_per_signal_state_honest_status_live_checks_snapshot(): void
+    {
+        // freshAsOf is a single freshest-signal scalar; on a MIXED read (status
+        // refreshes Live, checks degrade to Snapshot) it is stamped now() while
+        // checks are stale. The honesty lives in the per-signal SignalState, NOT
+        // in freshAsOf — assert each signal carries its own truthful state.
+        $asset = $this->linkedAsset(['status' => 'offline', 'checks_failing' => 2, 'checks_total' => 5]);
+
+        $service = $this->service([
+            new Response(200, [], json_encode(['status' => 'online'])), // status: Live
+            new Response(500, [], 'boom'),                              // checks: degrade
+        ]);
+
+        $insight = $service->forAsset($asset, live: true);
+
+        // status refreshed Live...
+        $this->assertSame('online', $insight->status);
+        $this->assertSame(SignalState::Live, $insight->statusState);
+        // ...but checks fell back to the snapshot count — Snapshot, NOT Live.
+        $this->assertSame(SignalState::Snapshot, $insight->checksState);
+        $this->assertSame(2, $insight->checksFailing);
+        // freshAsOf alone (the freshest-signal stamp) would mislead a consumer that
+        // ignored checksState — the per-signal enum is the source of truth.
     }
 
     public function test_live_refresh_uses_a_short_timeout_not_the_30s_default(): void

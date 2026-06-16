@@ -139,6 +139,7 @@ class TacticalInsightService
             openAlerts: $this->openAlertCount($asset),
             openAlertList: $this->openAlertList($asset),
             pendingPatchCount: $this->pendingPatchCount($ta),
+            hasPendingPatches: (bool) $ta->has_patches_pending,
             recentActions: $this->recentActions($asset),
             freshAsOf: $freshAsOf,
         );
@@ -286,12 +287,15 @@ class TacticalInsightService
         return null;
     }
 
-    private function pendingPatchCount(TacticalAsset $ta): int
+    private function pendingPatchCount(TacticalAsset $ta): ?int
     {
-        // The AI-facing member is a COUNT, not a list (§11.3). The snapshot only
-        // carries a has_patches_pending boolean; the precise count is a live/panel
-        // read (chunk 2). Surface 0/at-least-derived from the boolean here.
-        return $ta->has_patches_pending ? 1 : 0;
+        // The AI-facing member is a COUNT, not a list (§11.3). The snapshot carries
+        // only a has_patches_pending BOOLEAN (surfaced separately as
+        // hasPendingPatches); the PRECISE count is a live/panel read (chunk 2).
+        // Return null (unknown) here rather than fabricating "1" from the boolean —
+        // a box 47 behind must not serialize to the P5 snapshot as "1 pending".
+        // Mirrors the checksFailing-null precedent (Unavailable ≠ "0 clean").
+        return null;
     }
 
     private function openAlertCount(Asset $asset): int

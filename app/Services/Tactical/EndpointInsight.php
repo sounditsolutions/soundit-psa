@@ -27,8 +27,10 @@ use Illuminate\Support\Carbon;
  *     budget).
  *   - Per-section SignalState (Live|Snapshot|Unavailable) so "couldn't fetch"
  *     never reads as "clean/empty" (§11.7).
- *   - freshAsOf never lies: it is the snapshot's synced_at for snapshot signals,
- *     now() for live-refreshed ones.
+ *   - freshAsOf is the FRESHEST-SIGNAL stamp (synced_at when all-snapshot, now()
+ *     once any signal refreshes live). On a mixed read it can read now() while a
+ *     degraded signal is stale — so per-signal freshness is the SignalState, not
+ *     freshAsOf. Gate each signal on its own statusState/checksState (§11.7).
  *
  * THRESHOLD CONSTANTS (documented — the deterministic-flag definitions):
  *   - STALE_AFTER_MINUTES (60): a snapshot whose freshAsOf is older than this is
@@ -57,7 +59,10 @@ final readonly class EndpointInsight
      * @param  FailingCheck[]  $failingChecks  RAW un-clipped stdout per check
      * @param  array<int, array{drive: ?string, total_gb: ?float, free_gb: ?float, percent_used: int|float|null}>  $diskVolumes  Structured volumes (live only)
      * @param  array<int, array{title: string, severity: ?string, source: ?string}>  $openAlertList  Small list (local DB)
+     * @param  ?int  $pendingPatchCount  PRECISE pending-update count, or null when unknown. The snapshot path knows only the boolean (see $hasPendingPatches); the exact count is a live/panel read. NEVER fabricate a count from the boolean (§11.3): "1 pending" for a box 47 behind would lie to the P5 snapshot. Mirrors the $checksFailing-null precedent (Unavailable ≠ "0 clean").
+     * @param  bool  $hasPendingPatches  The honest snapshot boolean ("updates pending" vs "up to date") the eager card chip uses — true even when the exact $pendingPatchCount is null/unknown.
      * @param  array<int, array{action: string, actor: string, result_status: string, ticket_id: ?int, when: ?string}>  $recentActions  Newest-first, capped
+     * @param  ?Carbon  $freshAsOf  The FRESHEST-SIGNAL stamp only (synced_at for an all-snapshot read; now() once ANY signal refreshes live). On a MIXED read (status Live, checks Snapshot) it reads now() while checks are stale — so it is NOT a per-signal freshness oracle. Consumers MUST gate a given signal's freshness on its own SignalState ($statusState / $checksState), never on freshAsOf alone (§11.7).
      */
     public function __construct(
         public bool $linked,
@@ -83,7 +88,8 @@ final readonly class EndpointInsight
         public ?int $checksTotal,
         public int $openAlerts,
         public array $openAlertList,
-        public int $pendingPatchCount,
+        public ?int $pendingPatchCount,
+        public bool $hasPendingPatches,
         public array $recentActions,
         public ?Carbon $freshAsOf,
     ) {}
@@ -118,7 +124,8 @@ final readonly class EndpointInsight
             checksTotal: null,
             openAlerts: 0,
             openAlertList: [],
-            pendingPatchCount: 0,
+            pendingPatchCount: null,
+            hasPendingPatches: false,
             recentActions: [],
             freshAsOf: null,
         );

@@ -43,7 +43,8 @@ class EndpointInsightTest extends TestCase
             'checksTotal' => 3,
             'openAlerts' => 0,
             'openAlertList' => [],
-            'pendingPatchCount' => 0,
+            'pendingPatchCount' => null,
+            'hasPendingPatches' => false,
             'recentActions' => [],
             'freshAsOf' => Carbon::now()->subMinutes(5),
         ], $overrides));
@@ -76,6 +77,20 @@ class EndpointInsightTest extends TestCase
         $this->assertSame('3d 5h', $insight->uptime);
         $this->assertSame(4, $insight->pendingPatchCount);
         $this->assertTrue($insight->userLoggedIn);
+    }
+
+    public function test_pending_patch_count_is_nullable_with_a_separate_honest_boolean(): void
+    {
+        // §11.3 honesty: the COUNT is precise-or-null (a live/panel read); the
+        // snapshot path knows only the BOOLEAN. A null count + true boolean means
+        // "updates pending, exact number unknown" — never a fabricated "1".
+        $unknown = $this->insight(['pendingPatchCount' => null, 'hasPendingPatches' => true]);
+        $this->assertNull($unknown->pendingPatchCount);
+        $this->assertTrue($unknown->hasPendingPatches);
+
+        $counted = $this->insight(['pendingPatchCount' => 7, 'hasPendingPatches' => true]);
+        $this->assertSame(7, $counted->pendingPatchCount);
+        $this->assertTrue($counted->hasPendingPatches);
     }
 
     public function test_failing_check_carries_raw_unclipped_stdout(): void
