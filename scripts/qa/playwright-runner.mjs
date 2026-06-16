@@ -27,7 +27,7 @@
 import { chromium } from 'playwright';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { createRequire } from 'module';
+import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 
@@ -161,6 +161,10 @@ async function run(job) {
             // (named suffix) so responsive regressions are observable. Without it,
             // capture once at the default viewport (unchanged behavior).
             const vps = viewports && viewports.length ? viewports : [null];
+            // Restore the viewport afterward so a multi-viewport capture doesn't
+            // leave later actions running at the last breakpoint. Only when we
+            // actually change it (the no-viewports path stays untouched).
+            const prevVp = vps.some(Boolean) ? page.viewportSize() : null;
             for (const vp of vps) {
               if (vp) await page.setViewportSize({ width: vp.width, height: vp.height });
               const suffix = vp ? `@${vp.name}` : '';
@@ -169,6 +173,7 @@ async function run(job) {
               await page.screenshot({ path, fullPage: true });
               result.screenshots.push(path);
             }
+            if (prevVp) await page.setViewportSize(prevVp);
             break;
           }
           default:
