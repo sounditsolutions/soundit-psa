@@ -18,15 +18,17 @@ services:
       MAIL_MAILER: ${MAIL_MAILER:-log}
     volumes: !override
       - .env.production:/var/www/html/.env
+      - app_public:/shared-public
 
   nginx:
     restart: unless-stopped
     ports:
       - "${APP_PORT:-80}:80"
-    volumes: !reset []
     configs:
       - source: nginx_default_conf
         target: /etc/nginx/conf.d/default.conf
+    volumes: !override
+      - app_public:/var/www/html/public:ro
 
   db:
     restart: unless-stopped
@@ -81,3 +83,6 @@ services:
 configs:
   nginx_default_conf:
     file: ./docker/nginx/default.conf
+
+volumes:
+  app_public:

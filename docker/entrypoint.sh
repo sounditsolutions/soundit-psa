@@ -12,4 +12,8 @@ if [ "$(id -u)" = "0" ]; then
     chown -R www-data:www-data storage bootstrap/cache
 fi
 
+if [ -d /shared-public ]; then
+    cp -a public/. /shared-public/
+fi
+
 exec docker-php-entrypoint "$@"

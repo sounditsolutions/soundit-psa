@@ -1,15 +1,138 @@
 # Docker Compose
 
-Docker Compose is an optional path for local development, self-hosted evaluation, and production-style examples for Sound PSA. It does not replace the manual Composer/VPS install flow documented in [INSTALL.md](INSTALL.md).
+Docker Compose is the containerized deployment path for Sound PSA. The production-style setup is the primary container workflow for MSPs and other operators. A smaller local development setup is also available for maintainers.
+
+This guide does not replace the manual Composer/VPS install flow in [INSTALL.md](INSTALL.md). It also is not a full hardening guide: operators are responsible for HTTPS, backups, monitoring, secret management, updates, firewalling, and database recovery.
 
 ## Prerequisites
 
 - Docker
 - Docker Compose plugin (`docker compose`, not the legacy `docker-compose` binary)
+- A server or VM with enough disk for the MariaDB volume and backups
+- A DNS name and HTTPS/TLS termination at a reverse proxy or load balancer
 
-## Local Development / Evaluation
+## Production-Style Deployment
 
-From the repository root:
+Use `compose.yml` plus `compose.prod.yml` together. The base file defines the services; the production override removes local source bind mounts, runs the application from the built image contents, sets production-oriented defaults, starts queue and scheduler services, uses `restart: unless-stopped`, and exposes only the web service.
+
+Create the production environment file:
+
+```bash
+cp .env.production.example .env.production
+```
+
+Edit `.env.production` before starting containers:
+
+- Set `APP_URL` to the public HTTPS URL.
+- Generate and set a real `APP_KEY`.
+- Set `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD`, `MYSQL_DATABASE`, `MYSQL_USER`, `MYSQL_PASSWORD`, and `MYSQL_ROOT_PASSWORD`.
+- Fill in mail, Microsoft, Plivo, AI, and other integration credentials only when you are ready to use those integrations.
+- Keep `.env.production` private. Never commit real `.env` files.
+
+Generate an app key without printing or committing secrets elsewhere:
+
+```bash
+docker compose --env-file .env.production -f compose.yml -f compose.prod.yml build
+docker compose --env-file .env.production -f compose.yml -f compose.prod.yml run --rm app php artisan key:generate --show
+```
+
+Copy the generated `base64:...` value into `APP_KEY` in `.env.production`.
+
+Validate the merged production configuration:
+
+```bash
+docker compose --env-file .env.production -f compose.yml -f compose.prod.yml config
+```
+
+Start the production-style stack:
+
+```bash
+docker compose --env-file .env.production -f compose.yml -f compose.prod.yml up -d
+```
+
+Run migrations:
+
+```bash
+docker compose --env-file .env.production -f compose.yml -f compose.prod.yml exec app php artisan migrate --force
+```
+
+Open the URL from `APP_URL` through your HTTPS reverse proxy or load balancer.
+
+## Production Operations
+
+View service status:
+
+```bash
+docker compose --env-file .env.production -f compose.yml -f compose.prod.yml ps
+```
+
+View logs:
+
+```bash
+docker compose --env-file .env.production -f compose.yml -f compose.prod.yml logs -f
+docker compose --env-file .env.production -f compose.yml -f compose.prod.yml logs -f app nginx db queue scheduler
+```
+
+Run Artisan commands:
+
+```bash
+docker compose --env-file .env.production -f compose.yml -f compose.prod.yml exec app php artisan about
+docker compose --env-file .env.production -f compose.yml -f compose.prod.yml exec app php artisan migrate --force
+docker compose --env-file .env.production -f compose.yml -f compose.prod.yml exec app php artisan config:clear
+```
+
+Open a shell in the app container:
+
+```bash
+docker compose --env-file .env.production -f compose.yml -f compose.prod.yml exec app bash
+```
+
+Rebuild and restart after pulling new code:
+
+```bash
+docker compose --env-file .env.production -f compose.yml -f compose.prod.yml build
+docker compose --env-file .env.production -f compose.yml -f compose.prod.yml up -d
+docker compose --env-file .env.production -f compose.yml -f compose.prod.yml exec app php artisan migrate --force
+```
+
+Stop containers without deleting the database volume:
+
+```bash
+docker compose --env-file .env.production -f compose.yml -f compose.prod.yml down
+```
+
+Do not use `down -v` in production unless you intentionally want to delete the MariaDB volume.
+
+## Backups and Security
+
+Configure backups for the `db_data` MariaDB volume before using the system with real customer data. Test restores regularly.
+
+At minimum, production operators should provide:
+
+- HTTPS/TLS at a reverse proxy or load balancer.
+- Firewall rules that expose only required public ports.
+- Secure storage for `.env.production` and all integration secrets.
+- Database backups and documented recovery steps.
+- Monitoring for app, queue, scheduler, web, and database containers.
+- A process for applying application, Docker image, OS, and database updates.
+
+The database service is not published to the host by the Compose files. It is reachable only by services on the Compose network unless you add your own port mapping.
+
+## Queue and Scheduler
+
+The production-style override enables `queue` and `scheduler` by default because background jobs and scheduled tasks are part of normal app operation.
+
+The queue service runs:
+
+```bash
+php artisan queue:work database --sleep=3 --tries=3 --timeout=90
+```
+
+The scheduler service runs `php artisan schedule:run` every 60 seconds.
+
+## Maintainer Local Development
+
+Maintainers can use the base `compose.yml` by itself for local development and evaluation. It uses `.env.docker.example`, exposes `${APP_PORT:-8080}:80`, and bind-mounts the repository so local file edits are visible in the containers.
 
 ```bash
 cp .env.docker.example .env
@@ -27,93 +150,31 @@ docker compose exec app php artisan db:seed --class=DevDataSeeder --force
 
 Open http://localhost:8080.
 
-The local Compose file is `compose.yml`. It uses Docker-friendly local defaults from `.env.docker.example`, exposes `${APP_PORT:-8080}:80`, and bind-mounts the repository so local file edits are visible in the containers.
-
-## Common Commands
-
-View logs:
+Common maintainer commands:
 
 ```bash
 docker compose logs -f
-docker compose logs -f app nginx db
-```
-
-Open a shell in the Laravel container:
-
-```bash
 docker compose exec app bash
-```
-
-Run Artisan commands:
-
-```bash
-docker compose exec app php artisan migrate
-docker compose exec app php artisan route:list
-```
-
-Run tests:
-
-```bash
 docker compose exec app php artisan test
-```
-
-Stop containers:
-
-```bash
 docker compose down
 ```
 
-Reset the database volume. This deletes the local MariaDB data for this Compose project:
-
-```bash
-docker compose down -v
-```
-
-## Queue and Scheduler
-
-The Compose file includes optional `queue` and `scheduler` services behind the `workers` profile. Start them with the app stack when you want background jobs and scheduled tasks running locally:
+For local background worker testing only:
 
 ```bash
 docker compose --profile workers up -d
 ```
 
-The queue service runs:
+Resetting the local development database volume deletes all local MariaDB data:
 
 ```bash
-php artisan queue:work database --sleep=3 --tries=3 --timeout=90
+docker compose down -v
 ```
 
-The scheduler service runs `php artisan schedule:run` every 60 seconds.
+## Environment Files
 
-## Production-Style Example
+`.env.production.example` contains placeholders only. Copy it to `.env.production`, fill in real values, generate a real `APP_KEY`, and set strong database passwords before starting production-style containers.
 
-The repository also includes `docker-compose.prod.yml` and `.env.production.example` for a production-style Compose example:
+`.env.docker.example` contains local development defaults and should not be used as a production environment file.
 
-```bash
-cp .env.production.example .env.production
-# edit .env.production with real values before running
-docker compose --env-file .env.production -f compose.yml -f docker-compose.prod.yml config
-docker compose --env-file .env.production -f compose.yml -f docker-compose.prod.yml up -d
-docker compose --env-file .env.production -f compose.yml -f docker-compose.prod.yml exec app php artisan key:generate
-docker compose --env-file .env.production -f compose.yml -f docker-compose.prod.yml exec app php artisan migrate --force
-```
-
-This is a production-style example, not a full hardening guide. Operators are responsible for HTTPS, backups, monitoring, secret management, updates, firewalling, and database recovery.
-
-The production override removes the local source bind mounts, runs from the built image contents, sets production-oriented defaults such as `APP_ENV=production` and `APP_DEBUG=false`, uses `restart: unless-stopped`, and keeps only the web service exposed. The MariaDB service is only available on the Compose network.
-
-## Environment and Secrets
-
-`.env.docker.example` is safe to commit and contains Docker-friendly local defaults for MariaDB, file cache, file sessions, database queues, and log mail. Copy it to `.env` before starting Compose.
-
-`.env.production.example` is also safe to commit because it contains placeholders only. Copy it to `.env.production`, fill in real values, generate a real `APP_KEY`, and set strong database passwords before using the production-style override.
-
-Real Microsoft, Plivo, AI, mail, billing, and other integration credentials still need to be configured manually for your own environment. Do not commit real secrets in `.env`, `.env.production`, or any other file.
-
-## Notes
-
-- MariaDB 10.11 is the default database in Compose to match the documented deployment database.
-- The app image does not bake in `.env` and does not run migrations during build.
-- Nginx serves the Laravel `public` directory and forwards PHP requests to the `app` PHP-FPM service.
-- The host port defaults to `8080`. Set `APP_PORT` in `.env` to use another port.
-- For production-style runs, configure HTTPS/TLS at a reverse proxy or load balancer and configure backups for the `db_data` volume.
+The app image does not bake in `.env` or `.env.production`, and migrations are not run during image build.
