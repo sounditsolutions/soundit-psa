@@ -286,6 +286,22 @@ class AssetTacticalCardRenderTest extends TestCase
         $resp->assertOk()->assertSee('data-ajax-section="network"', false);
     }
 
+    public function test_tactical_card_renders_the_network_and_storage_panels(): void
+    {
+        // The new lazy panels live under the Tactical card (co-located with the P4
+        // software/patches/checks panels), NOT the hidden page-top tabs.
+        $user = User::factory()->create();
+        $asset = $this->linkedAsset('online');
+
+        $resp = $this->actingAs($user)->get(route('assets.show', $asset));
+
+        $resp->assertOk()
+            ->assertSee('data-tactical-panel="network"', false)
+            ->assertSee('data-tactical-panel-body="network"', false)
+            ->assertSee('data-tactical-panel="storage"', false)
+            ->assertSee('data-tactical-panel-body="storage"', false);
+    }
+
     public function test_dual_linked_ninja_tactical_asset_keeps_the_legacy_tabs(): void
     {
         // A Ninja+Tactical dual-linked asset keeps the page-top Ninja tabs (they
