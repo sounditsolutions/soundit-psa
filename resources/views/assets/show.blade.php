@@ -582,6 +582,56 @@
                     <div class="mt-1 small text-muted" id="tacticalScriptMeta"></div>
                 </div>
 
+                {{-- Run command (DESTRUCTIVE — arbitrary RCE → confirm-gated).
+                     E5: shell pre-selected by device OS, still changeable; the
+                     command field has a <datalist> of common diagnostics. --}}
+                @php
+                    // E5 smart default: Windows -> cmd, otherwise shell. Parity
+                    // allowlist still lets the tech switch.
+                    $tacticalIsWindows = stripos((string) ($asset->tacticalAsset->os ?? $asset->os ?? ''), 'win') !== false;
+                    $tacticalDefaultShell = $tacticalIsWindows ? 'cmd' : 'shell';
+                @endphp
+                <hr class="my-3">
+                <div class="mb-2">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <span class="small text-muted"><i class="bi bi-terminal-fill me-1"></i>Run command</span>
+                    </div>
+                    <div class="row g-2">
+                        <div class="col-auto">
+                            <select class="form-select form-select-sm" id="tacticalCmdShell" style="width: 130px;" aria-label="Shell">
+                                <option value="cmd" @selected($tacticalDefaultShell === 'cmd')>cmd</option>
+                                <option value="powershell" @selected($tacticalDefaultShell === 'powershell')>powershell</option>
+                                <option value="shell" @selected($tacticalDefaultShell === 'shell')>shell</option>
+                            </select>
+                        </div>
+                        <div class="col">
+                            <input type="text" class="form-control form-control-sm" id="tacticalCmdInput"
+                                   list="tacticalCmdSuggestions" autocomplete="off"
+                                   placeholder="Command to run (e.g. whoami)">
+                            <datalist id="tacticalCmdSuggestions">
+                                <option value="whoami"></option>
+                                <option value="hostname"></option>
+                                <option value="ipconfig /all"></option>
+                                <option value="ip addr"></option>
+                                <option value="systeminfo"></option>
+                                <option value="uname -a"></option>
+                                <option value="Get-ComputerInfo"></option>
+                                <option value="gpupdate /force"></option>
+                                <option value="nltest /dsgetdc:"></option>
+                            </datalist>
+                        </div>
+                        <div class="col-auto">
+                            <button type="button" class="btn btn-outline-danger btn-sm" id="tacticalCmdBtn"
+                                    data-bs-toggle="modal" data-bs-target="#tacticalCmdModal" disabled>
+                                <i class="bi bi-play-fill me-1"></i>Run…
+                            </button>
+                        </div>
+                    </div>
+                    <div id="tacticalCmdResult" class="mt-2" style="display:none;">
+                        <div class="border rounded p-2 bg-dark text-light small font-monospace" style="max-height: 300px; overflow-y: auto; white-space: pre-wrap;" id="tacticalCmdOutput"></div>
+                    </div>
+                </div>
+
                 {{-- Recover agent services (non-destructive → single click, mode=mesh) --}}
                 <hr class="my-3">
                 <div class="d-flex justify-content-between align-items-center">
@@ -600,12 +650,19 @@
                 <hr class="my-3">
                 <div class="d-flex justify-content-between align-items-center">
                     <span class="small text-muted"><i class="bi bi-exclamation-octagon me-1"></i>Power</span>
-                    <button type="button" class="btn btn-outline-danger btn-sm" id="tacticalRebootBtn"
-                            data-bs-toggle="modal" data-bs-target="#tacticalRebootModal">
-                        <i class="bi bi-arrow-clockwise me-1"></i>Reboot
-                    </button>
+                    <div class="d-flex gap-2">
+                        <button type="button" class="btn btn-outline-danger btn-sm" id="tacticalShutdownBtn"
+                                data-bs-toggle="modal" data-bs-target="#tacticalShutdownModal">
+                            <i class="bi bi-power me-1"></i>Shut down
+                        </button>
+                        <button type="button" class="btn btn-outline-danger btn-sm" id="tacticalRebootBtn"
+                                data-bs-toggle="modal" data-bs-target="#tacticalRebootModal">
+                            <i class="bi bi-arrow-clockwise me-1"></i>Reboot
+                        </button>
+                    </div>
                 </div>
                 <div id="tacticalRebootResult" class="mt-2 small" style="display:none;"></div>
+                <div id="tacticalShutdownResult" class="mt-2 small" style="display:none;"></div>
             </div>
         </div>
 
@@ -639,6 +696,119 @@
                         <button type="button" class="btn btn-danger btn-sm" id="tacticalRebootConfirm" disabled
                                 data-expected-hostname="{{ $tacticalHostname }}">
                             <i class="bi bi-arrow-clockwise me-1"></i>Reboot now
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        {{-- E2: open tickets on this asset for the OPTIONAL destructive ticket-link. --}}
+        @php
+            $tacticalOpenTickets = $asset->tickets()->open()
+                ->orderByDesc('tickets.updated_at')
+                ->limit(50)
+                ->get(['tickets.id', 'tickets.subject']);
+        @endphp
+
+        {{-- Run-command confirm modal (DESTRUCTIVE — arbitrary RCE).
+             A3: the FULL resolved command shows in a multi-line <pre> (nothing
+             scrolls out of view). The displayed command is intentionally NOT
+             secret-redacted — the tech sees their own input on their own screen;
+             the AUDIT row + any ticket note ARE redacted server-side (amendment
+             A3/B1). E5: editing the command after it is shown forces a re-confirm.
+             E4: usable at ~375px (the <pre>, hostname input, and confirm button
+             are all reachable without the button scrolling off). --}}
+        <div class="modal fade" id="tacticalCmdModal" tabindex="-1" aria-hidden="true">
+            <div class="modal-dialog modal-dialog-scrollable">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title"><i class="bi bi-terminal-fill me-2"></i>Run command</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="alert alert-danger py-2">
+                            <i class="bi bi-exclamation-octagon me-1"></i><strong>This runs a command directly on the device</strong>
+                            with full agent privileges. Review it carefully — there is no undo.
+                        </div>
+                        <p class="mb-1 small text-muted">This exact command will run:</p>
+                        <pre class="border rounded bg-body-tertiary p-2 mb-3" style="white-space: pre-wrap; word-break: break-word; max-height: 40vh; overflow-y: auto;" id="tacticalCmdPreview"></pre>
+
+                        @if($tacticalOpenTickets->isNotEmpty())
+                        <div class="mb-3">
+                            <label class="form-label small mb-1" for="tacticalCmdTicket">Link to a ticket (optional)</label>
+                            <select class="form-select form-select-sm" id="tacticalCmdTicket">
+                                <option value="">— none —</option>
+                                @foreach($tacticalOpenTickets as $t)
+                                    <option value="{{ $t->id }}">#{{ $t->id }} — {{ \Illuminate\Support\Str::limit($t->subject, 60) }}</option>
+                                @endforeach
+                            </select>
+                        </div>
+                        @endif
+
+                        <p class="mb-2 small">To confirm, type the device hostname exactly:</p>
+                        <p class="mb-2"><code class="user-select-all">{{ $tacticalHostname }}</code></p>
+                        <input type="text" class="form-control form-control-sm" id="tacticalCmdHostname"
+                               autocomplete="off" placeholder="Type the hostname to confirm">
+                        <div class="text-danger small mt-1" id="tacticalCmdError" style="display:none;"></div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+                        <button type="button" class="btn btn-danger btn-sm" id="tacticalCmdConfirm" disabled
+                                data-expected-hostname="{{ $tacticalHostname }}"
+                                data-cmd-url="{{ route('assets.run-tactical-command', $asset) }}">
+                            <i class="bi bi-play-fill me-1"></i>Run command
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        {{-- Shutdown confirm modal (DESTRUCTIVE — extra-loud).
+             D2 (verbatim): the device cannot be powered back on remotely. E5:
+             uniform typed-FULL-hostname (same as reboot). E4: mobile-usable. --}}
+        <div class="modal fade" id="tacticalShutdownModal" tabindex="-1" aria-hidden="true">
+            <div class="modal-dialog modal-dialog-scrollable">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title"><i class="bi bi-power me-2"></i>Shut down device</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="alert alert-danger py-2">
+                            <i class="bi bi-power me-1"></i><strong>This device powers off and cannot be powered back on remotely.</strong>
+                            Recovery requires physical or IPMI/out-of-band access. Only shut down if someone can power it back on.
+                        </div>
+                        @if($tacticalIsServer)
+                            <div class="alert alert-warning py-2 small">
+                                <i class="bi bi-hdd-rack me-1"></i><strong>This is a SERVER.</strong>
+                                Shutting it down disconnects users and stops every service running on it.
+                            </div>
+                        @endif
+
+                        @if($tacticalOpenTickets->isNotEmpty())
+                        <div class="mb-3">
+                            <label class="form-label small mb-1" for="tacticalShutdownTicket">Link to a ticket (optional)</label>
+                            <select class="form-select form-select-sm" id="tacticalShutdownTicket">
+                                <option value="">— none —</option>
+                                @foreach($tacticalOpenTickets as $t)
+                                    <option value="{{ $t->id }}">#{{ $t->id }} — {{ \Illuminate\Support\Str::limit($t->subject, 60) }}</option>
+                                @endforeach
+                            </select>
+                        </div>
+                        @endif
+
+                        <p class="mb-2 small">To confirm, type the device hostname exactly:</p>
+                        <p class="mb-2"><code class="user-select-all">{{ $tacticalHostname }}</code></p>
+                        <input type="text" class="form-control form-control-sm" id="tacticalShutdownHostname"
+                               autocomplete="off" placeholder="Type the hostname to confirm">
+                        <div class="text-danger small mt-1" id="tacticalShutdownError" style="display:none;"></div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+                        <button type="button" class="btn btn-danger btn-sm" id="tacticalShutdownConfirm" disabled
+                                data-expected-hostname="{{ $tacticalHostname }}"
+                                data-shutdown-url="{{ route('assets.shutdown-tactical', $asset) }}">
+                            <i class="bi bi-power me-1"></i>Shut down now
                         </button>
                     </div>
                 </div>
@@ -2340,6 +2510,197 @@ function renderPatches(data) {
         .finally(function() {
             confirmBtn.disabled = !matches();
             confirmBtn.innerHTML = '<i class="bi bi-arrow-clockwise me-1"></i>Reboot now';
+        });
+    });
+})();
+
+// Run-command confirm modal (DESTRUCTIVE — arbitrary RCE). The command shown
+// in the <pre> is the EXACT string sent; editing the shell/command after the
+// modal opens re-renders the preview AND resets the confirm with a clear
+// "command changed — re-confirm" message (amendment E5). The hostname gate +
+// payloadHash-bound token are enforced server-side (A1).
+(function() {
+    var shellSel = document.getElementById('tacticalCmdShell');
+    var cmdInput = document.getElementById('tacticalCmdInput');
+    var openBtn = document.getElementById('tacticalCmdBtn');
+    var modalEl = document.getElementById('tacticalCmdModal');
+    var preview = document.getElementById('tacticalCmdPreview');
+    var hostInput = document.getElementById('tacticalCmdHostname');
+    var confirmBtn = document.getElementById('tacticalCmdConfirm');
+    var errEl = document.getElementById('tacticalCmdError');
+    var ticketSel = document.getElementById('tacticalCmdTicket');
+    var resultDiv = document.getElementById('tacticalCmdResult');
+    var outputDiv = document.getElementById('tacticalCmdOutput');
+    if (!cmdInput || !openBtn || !modalEl) return;
+
+    var expected = (confirmBtn.dataset.expectedHostname || '').trim().toLowerCase();
+    // The command snapshot the preview/confirm is bound to (set on modal open).
+    var confirmed = { shell: null, cmd: null };
+
+    function enableOpen() {
+        openBtn.disabled = cmdInput.value.trim() === '';
+    }
+    cmdInput.addEventListener('input', enableOpen);
+    enableOpen();
+
+    function resolvedText() {
+        return '[' + shellSel.value + '] ' + cmdInput.value;
+    }
+
+    function hostMatches() {
+        return hostInput.value.trim().toLowerCase() === expected && expected !== '';
+    }
+
+    function refreshConfirmState() {
+        confirmBtn.disabled = !hostMatches();
+    }
+
+    // Snapshot the command when the modal opens and render the exact preview.
+    modalEl.addEventListener('show.bs.modal', function() {
+        confirmed.shell = shellSel.value;
+        confirmed.cmd = cmdInput.value;
+        preview.textContent = resolvedText();
+        errEl.style.display = 'none';
+        hostInput.value = '';
+        confirmBtn.disabled = true;
+    });
+
+    // E5: if the underlying shell/command changes while the modal is open, the
+    // displayed command no longer matches what was confirmed — re-render and
+    // force a re-confirm.
+    function onCommandEdited() {
+        if (!modalEl.classList.contains('show')) return;
+        if (shellSel.value === confirmed.shell && cmdInput.value === confirmed.cmd) return;
+        confirmed.shell = shellSel.value;
+        confirmed.cmd = cmdInput.value;
+        preview.textContent = resolvedText();
+        hostInput.value = '';
+        confirmBtn.disabled = true;
+        errEl.textContent = 'Command changed — re-confirm by typing the hostname again.';
+        errEl.style.display = '';
+    }
+    shellSel.addEventListener('change', onCommandEdited);
+    cmdInput.addEventListener('input', onCommandEdited);
+
+    hostInput.addEventListener('input', function() {
+        refreshConfirmState();
+        if (hostMatches()) errEl.style.display = 'none';
+    });
+
+    confirmBtn.addEventListener('click', function() {
+        if (!hostMatches()) return;
+        confirmBtn.disabled = true;
+        confirmBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Running...';
+
+        var body = {
+            hostname: hostInput.value,
+            shell: confirmed.shell,
+            cmd: confirmed.cmd,
+            timeout: 60,
+        };
+        if (ticketSel && ticketSel.value) body.ticket_id = ticketSel.value;
+
+        fetch(confirmBtn.dataset.cmdUrl, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content,
+                'Accept': 'application/json',
+            },
+            body: JSON.stringify(body),
+        })
+        .then(function(r) { return r.json().then(function(d) { d._status = r.status; return d; }); })
+        .then(function(data) {
+            if (data.error) {
+                var msg = data.error;
+                if (/confirm|expired/i.test(msg)) msg = 'Confirmation expired — please re-confirm.';
+                errEl.textContent = msg;
+                errEl.style.display = '';
+                return;
+            }
+            var modal = bootstrap.Modal.getInstance(modalEl);
+            if (modal) modal.hide();
+            if (resultDiv && outputDiv) {
+                outputDiv.textContent = data.message || '(command sent)';
+                resultDiv.style.display = '';
+            }
+            hostInput.value = '';
+        })
+        .catch(function(err) {
+            errEl.textContent = 'Request failed: ' + err.message;
+            errEl.style.display = '';
+        })
+        .finally(function() {
+            confirmBtn.disabled = !hostMatches();
+            confirmBtn.innerHTML = '<i class="bi bi-play-fill me-1"></i>Run command';
+        });
+    });
+})();
+
+// Shutdown confirm modal (DESTRUCTIVE — the box stays OFF). Mirrors reboot:
+// typed-full-hostname gate + a confirm token minted server-side. Optional
+// ticket link (E2).
+(function() {
+    var confirmBtn = document.getElementById('tacticalShutdownConfirm');
+    var input = document.getElementById('tacticalShutdownHostname');
+    var errEl = document.getElementById('tacticalShutdownError');
+    var resultEl = document.getElementById('tacticalShutdownResult');
+    var ticketSel = document.getElementById('tacticalShutdownTicket');
+    if (!confirmBtn || !input) return;
+
+    var expected = (confirmBtn.dataset.expectedHostname || '').trim().toLowerCase();
+
+    function matches() {
+        return input.value.trim().toLowerCase() === expected && expected !== '';
+    }
+    input.addEventListener('input', function() {
+        confirmBtn.disabled = !matches();
+        errEl.style.display = 'none';
+    });
+
+    confirmBtn.addEventListener('click', function() {
+        if (!matches()) return;
+        confirmBtn.disabled = true;
+        confirmBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Shutting down...';
+
+        var body = { hostname: input.value };
+        if (ticketSel && ticketSel.value) body.ticket_id = ticketSel.value;
+
+        fetch(confirmBtn.dataset.shutdownUrl, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content,
+                'Accept': 'application/json',
+            },
+            body: JSON.stringify(body),
+        })
+        .then(function(r) { return r.json().then(function(d) { d._status = r.status; return d; }); })
+        .then(function(data) {
+            if (data.error) {
+                var msg = data.error;
+                if (/confirm|expired/i.test(msg)) msg = 'Confirmation expired — please re-confirm.';
+                errEl.textContent = msg;
+                errEl.style.display = '';
+                return;
+            }
+            var modalEl = document.getElementById('tacticalShutdownModal');
+            var modal = bootstrap.Modal.getInstance(modalEl);
+            if (modal) modal.hide();
+            if (resultEl) {
+                resultEl.className = 'mt-2 small text-success';
+                resultEl.textContent = data.message || 'Shutdown command sent.';
+                resultEl.style.display = '';
+            }
+            input.value = '';
+        })
+        .catch(function(err) {
+            errEl.textContent = 'Request failed: ' + err.message;
+            errEl.style.display = '';
+        })
+        .finally(function() {
+            confirmBtn.disabled = !matches();
+            confirmBtn.innerHTML = '<i class="bi bi-power me-1"></i>Shut down now';
         });
     });
 })();

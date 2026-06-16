@@ -917,6 +917,154 @@ class AssetController extends Controller
         ], $result->isOffline() ? 422 : 500);
     }
 
+    /**
+     * Run an ad-hoc command on a Tactical agent — the most dangerous capability
+     * in the integration (arbitrary RCE). DESTRUCTIVE: confirm-gated by a
+     * typed-hostname match (the human gate) PLUS a payloadHash-bound confirm
+     * token verified at the bus's destructive-confirm stage. CSRF-protected
+     * (web group). Returns the P2 JSON contract.
+     *
+     * Amendment A1 — the cmd security spine (the single most security-critical
+     * wiring in the phase):
+     *   1. validateParams($request->only(shell,cmd,timeout)) -> ONE canonical
+     *      {shell,cmd,timeout} array;
+     *   2. payloadHash() over THAT canonical array;
+     *   3. server-side typed-hostname match (strcasecmp, like reboot);
+     *   4. mint a token bound to {action, agent, actor, payloadHash} and
+     *      immediately dispatch THAT SAME canonical array.
+     * The controller MUST NEVER re-read cmd/shell/timeout from the request for
+     * execution — issue-side and verify-side hashes match identical bytes only
+     * because the dispatched params ARE the hashed params.
+     *
+     * Invalid params (bad shell/timeout/empty cmd) are dispatched raw with NO
+     * token so the bus validates + audits a `rejected` row (the bus rejects at
+     * the validate stage, before the confirm stage, so no token is needed) —
+     * preserving audit-all without minting a token over invalid input.
+     */
+    public function runTacticalCommand(Request $request, Asset $asset)
+    {
+        $request->validate([
+            'hostname' => ['required', 'string', 'max:255'],
+            'ticket_id' => ['nullable', 'integer', 'exists:tickets,id'],
+        ]);
+
+        $asset->load('tacticalAsset');
+
+        if (! $asset->tacticalAsset || empty($asset->tacticalAsset->agent_id)) {
+            return response()->json(['error' => 'This device is not linked to a Tactical agent.'], 422);
+        }
+
+        $agentId = $asset->tacticalAsset->agent_id;
+        $actor = $request->user();
+        $ticketId = $request->filled('ticket_id') ? (int) $request->input('ticket_id') : null;
+        $action = new \App\Services\Tactical\Actions\RunCommandAction;
+        $bus = app(\App\Services\Tactical\TacticalActionService::class);
+
+        // A1 step 1: ONE canonical params source. On invalid input, route the RAW
+        // params through the bus (no token) so it audits a `rejected` row.
+        try {
+            $params = $action->validateParams($request->only('shell', 'cmd', 'timeout'));
+        } catch (\App\Services\Tactical\Actions\InvalidActionParams $e) {
+            $result = $bus->dispatch($action, $asset, $actor, $request->only('shell', 'cmd', 'timeout'), null, null, $ticketId);
+
+            return $this->tacticalActionResponse($result, 'Command rejected.');
+        }
+
+        // Typed-hostname gate (server-side, case-insensitive + trimmed — like reboot).
+        $expected = trim((string) ($asset->tacticalAsset->hostname ?? $asset->hostname ?? ''));
+        $typed = trim((string) $request->input('hostname'));
+        if ($expected === '' || strcasecmp($expected, $typed) !== 0) {
+            return response()->json([
+                'error' => 'The typed hostname does not match this device. Command cancelled.',
+            ], 422);
+        }
+
+        // A1 steps 2 + 4: hash the canonical array, mint a token bound to it, and
+        // dispatch THAT SAME array (never re-reading cmd/shell/timeout).
+        $token = \App\Services\Tactical\TacticalActionConfirmToken::issue(
+            $action->key(),
+            $agentId,
+            $actor?->id,
+            $action->payloadHash($params),
+        );
+
+        $result = $bus->dispatch($action, $asset, $actor, $params, $token, null, $ticketId);
+
+        return $this->tacticalActionResponse($result, 'Command sent.');
+    }
+
+    /**
+     * Shut down a Tactical agent (DESTRUCTIVE — the box stays OFF, no remote
+     * power-on; ShutdownAction::summary carries the D2 consequence copy). Mirrors
+     * reboot: typed-hostname match + a confirm token bound to {action, agent,
+     * actor} (no payload — payloadHash null). CSRF-protected (web group).
+     */
+    public function shutdownTacticalAgent(Request $request, Asset $asset)
+    {
+        $request->validate([
+            'hostname' => ['required', 'string', 'max:255'],
+            'ticket_id' => ['nullable', 'integer', 'exists:tickets,id'],
+        ]);
+
+        $asset->load('tacticalAsset');
+
+        if (! $asset->tacticalAsset || empty($asset->tacticalAsset->agent_id)) {
+            return response()->json(['error' => 'This device is not linked to a Tactical agent.'], 422);
+        }
+
+        $expected = trim((string) ($asset->tacticalAsset->hostname ?? $asset->hostname ?? ''));
+        $typed = trim((string) $request->input('hostname'));
+        if ($expected === '' || strcasecmp($expected, $typed) !== 0) {
+            return response()->json([
+                'error' => 'The typed hostname does not match this device. Shutdown cancelled.',
+            ], 422);
+        }
+
+        $action = new \App\Services\Tactical\Actions\ShutdownAction;
+        $actor = $request->user();
+        $ticketId = $request->filled('ticket_id') ? (int) $request->input('ticket_id') : null;
+
+        $token = \App\Services\Tactical\TacticalActionConfirmToken::issue(
+            $action->key(),
+            $asset->tacticalAsset->agent_id,
+            $actor?->id,
+        );
+
+        $result = app(\App\Services\Tactical\TacticalActionService::class)->dispatch(
+            $action,
+            $asset,
+            $actor,
+            [],
+            $token,
+            null,
+            $ticketId,
+        );
+
+        return $this->tacticalActionResponse($result, 'Shutdown command sent.');
+    }
+
+    /**
+     * Map a bus result to the destructive-action JSON contract (mirrors
+     * rebootTacticalAgent): ok -> 200 {success, message}; offline -> 422
+     * {error}; any other non-ok (rejected/blocked/error/denied) -> 500 {error}.
+     * No `success` key on failure.
+     */
+    private function tacticalActionResponse(
+        \App\Services\Tactical\Actions\TacticalActionResult $result,
+        string $okMessage,
+    ): \Illuminate\Http\JsonResponse {
+        if ($result->isOk()) {
+            return response()->json([
+                'success' => true,
+                'message' => $result->stdout ?: $okMessage,
+            ]);
+        }
+
+        return response()->json([
+            'error' => $result->message ?? 'Action failed.',
+        ], $result->isOffline() ? 422 : 500);
+    }
+
     public function quickLook(Asset $asset)
     {
         $cacheKey = "asset_quick_look:{$asset->id}";

@@ -44,7 +44,33 @@ class AssetTacticalCardRenderTest extends TestCase
             ->assertSee('tacticalRunBtn', false)
             ->assertSee('tacticalRebootBtn', false)
             ->assertSee('tacticalRecoverBtn', false)
-            ->assertSee('Recover agent');
+            ->assertSee('Recover agent')
+            // Commit 2: cmd + shutdown controls + their confirm modals.
+            ->assertSee('tacticalCmdBtn', false)
+            ->assertSee('tacticalCmdModal', false)
+            ->assertSee('tacticalShutdownBtn', false)
+            ->assertSee('tacticalShutdownModal', false)
+            // D2 (verbatim): the shutdown irreversibility consequence is shown.
+            ->assertSee('cannot be powered back on remotely', false);
+    }
+
+    public function test_cmd_shell_defaults_to_powershell_or_cmd_for_windows(): void
+    {
+        // E5: a Windows device pre-selects a Windows shell (cmd) by default.
+        $user = User::factory()->create();
+        $asset = Asset::factory()->create(['hostname' => 'WINBOX']);
+        TacticalAsset::create([
+            'asset_id' => $asset->id,
+            'agent_id' => 'AGENT-WIN',
+            'hostname' => 'WINBOX',
+            'status' => 'online',
+            'os' => 'Windows 11 Pro',
+        ]);
+
+        $resp = $this->actingAs($user)->get(route('assets.show', $asset->refresh()));
+
+        // The cmd <option value="cmd"> carries the `selected` attribute.
+        $resp->assertOk()->assertSee('value="cmd" selected', false);
     }
 
     public function test_maintenance_toggle_is_always_visible_on_the_tactical_card(): void

@@ -3,6 +3,7 @@
 namespace Tests\Feature\Tactical\Actions;
 
 use App\Models\Asset;
+use App\Models\TacticalActionLog;
 use App\Models\TacticalAsset;
 use App\Models\User;
 use App\Services\Tactical\TacticalClient;
@@ -187,6 +188,274 @@ class RemoteActionEndpointsTest extends TestCase
     public function test_maintenance_is_in_the_csrf_protected_web_group(): void
     {
         $this->assertRouteIsCsrfProtected('assets.maintenance-tactical');
+    }
+
+    // ── cmd (DESTRUCTIVE, confirm-gated, payload-bound) ─────────────────────
+
+    public function test_cmd_happy_path_dispatches_and_audits_ok(): void
+    {
+        $user = User::factory()->create();
+        $asset = $this->onlineAsset();
+        // D1: the cmd endpoint returns a bare STRING as the primary shape.
+        $this->bindClient([new Response(200, [], json_encode('nt authority\\system'))]);
+
+        $resp = $this->actingAs($user)->postJson(route('assets.run-tactical-command', $asset), [
+            'hostname' => 'WORKSTATION-01',
+            'shell' => 'cmd',
+            'cmd' => 'whoami',
+            'timeout' => 30,
+        ]);
+
+        $resp->assertOk()->assertJson(['success' => true]);
+
+        $this->assertDatabaseHas('tactical_action_logs', [
+            'action_key' => 'tactical.run_command',
+            'asset_id' => $asset->id,
+            'actor_id' => $user->id,
+            'result_status' => 'ok',
+        ]);
+    }
+
+    public function test_cmd_wrong_hostname_is_422_and_not_dispatched(): void
+    {
+        $user = User::factory()->create();
+        $asset = $this->onlineAsset('WORKSTATION-01');
+        $this->bindClient([]); // must never be called
+
+        $resp = $this->actingAs($user)->postJson(route('assets.run-tactical-command', $asset), [
+            'hostname' => 'WRONG-HOST',
+            'shell' => 'cmd',
+            'cmd' => 'whoami',
+            'timeout' => 30,
+        ]);
+
+        $resp->assertStatus(422)->assertJsonStructure(['error']);
+        $this->assertSame(0, TacticalActionLog::count(), 'a hostname mismatch must not reach the bus');
+    }
+
+    public function test_cmd_not_linked_is_422(): void
+    {
+        $user = User::factory()->create();
+        $asset = Asset::factory()->create(['hostname' => 'NO-AGENT']);
+        $this->bindClient([]);
+
+        $resp = $this->actingAs($user)->postJson(route('assets.run-tactical-command', $asset), [
+            'hostname' => 'NO-AGENT',
+            'shell' => 'cmd',
+            'cmd' => 'whoami',
+            'timeout' => 30,
+        ]);
+
+        $resp->assertStatus(422)->assertJsonStructure(['error']);
+        $this->assertSame(0, TacticalActionLog::count());
+    }
+
+    public function test_cmd_invalid_shell_is_rejected_and_audited(): void
+    {
+        // C2 fail-closed: a shell outside the allowlist is rejected by
+        // validateParams -> the bus audits `rejected`; no client call.
+        $user = User::factory()->create();
+        $asset = $this->onlineAsset();
+        $this->bindClient([]); // must never be called
+
+        $resp = $this->actingAs($user)->postJson(route('assets.run-tactical-command', $asset), [
+            'hostname' => 'WORKSTATION-01',
+            'shell' => 'bash-as-root',
+            'cmd' => 'whoami',
+            'timeout' => 30,
+        ]);
+
+        // A rejected validation maps to the failure branch (non-offline -> 500).
+        $resp->assertStatus(500)->assertJsonStructure(['error']);
+        $this->assertArrayNotHasKey('success', $resp->json());
+        $this->assertDatabaseHas('tactical_action_logs', [
+            'action_key' => 'tactical.run_command',
+            'result_status' => 'rejected',
+        ]);
+    }
+
+    public function test_cmd_offline_is_422_with_audit(): void
+    {
+        $user = User::factory()->create();
+        $asset = $this->onlineAsset();
+        $this->bindClient([new ConnectException('agent offline', new Request('POST', 'agents/AGENT-1/cmd/'))]);
+
+        $resp = $this->actingAs($user)->postJson(route('assets.run-tactical-command', $asset), [
+            'hostname' => 'WORKSTATION-01',
+            'shell' => 'cmd',
+            'cmd' => 'whoami',
+            'timeout' => 30,
+        ]);
+
+        $resp->assertStatus(422)->assertJsonStructure(['error']);
+        $this->assertDatabaseHas('tactical_action_logs', [
+            'action_key' => 'tactical.run_command',
+            'result_status' => 'offline',
+        ]);
+    }
+
+    public function test_cmd_is_in_the_csrf_protected_web_group(): void
+    {
+        $this->assertRouteIsCsrfProtected('assets.run-tactical-command');
+    }
+
+    /**
+     * Amendment A1 (the cmd security spine), exercised through the SAME bus call
+     * the controller makes: the controller mints a confirm token bound to the
+     * canonical params' payloadHash and dispatches THAT canonical array. So a
+     * token minted for command A must NOT authorize a dispatch of command B
+     * (the bus re-derives the verify-side hash from the dispatched params), while
+     * the exact command the token was minted for proceeds. (The endpoint never
+     * accepts a client-supplied token, so the binding is asserted at the bus —
+     * the boundary A1 actually protects.)
+     */
+    public function test_cmd_token_is_payload_bound_command_a_token_rejects_command_b(): void
+    {
+        $user = User::factory()->create();
+        $asset = $this->onlineAsset();
+
+        $action = new \App\Services\Tactical\Actions\RunCommandAction;
+        $paramsA = $action->validateParams(['shell' => 'cmd', 'cmd' => 'whoami', 'timeout' => 30]);
+        $paramsB = $action->validateParams(['shell' => 'cmd', 'cmd' => 'shutdown /s /t 0', 'timeout' => 30]);
+
+        // A token minted for command A.
+        $tokenA = \App\Services\Tactical\TacticalActionConfirmToken::issue(
+            $action->key(),
+            'AGENT-1',
+            $user->id,
+            $action->payloadHash($paramsA),
+        );
+
+        // Dispatch command B with command A's token -> blocked, no client call.
+        // (Re-resolve the bus after each bind so it uses the freshly-bound client.)
+        $this->bindClient([]);
+        $blocked = app(\App\Services\Tactical\TacticalActionService::class)
+            ->dispatch($action, $asset, $user, $paramsB, $tokenA);
+        $this->assertSame('blocked', $blocked->status, 'a token for command A must not run command B');
+        $this->assertDatabaseHas('tactical_action_logs', [
+            'action_key' => 'tactical.run_command',
+            'result_status' => 'blocked',
+        ]);
+
+        // The exact command the token was minted for proceeds.
+        $this->bindClient([new Response(200, [], json_encode('ok'))]);
+        $ok = app(\App\Services\Tactical\TacticalActionService::class)
+            ->dispatch($action, $asset, $user, $paramsA, $tokenA);
+        $this->assertSame('ok', $ok->status, 'the matching command must proceed');
+    }
+
+    public function test_cmd_without_a_valid_token_is_blocked_and_audited_no_client_call(): void
+    {
+        // The bus-level guarantee the endpoint relies on: a destructive dispatch
+        // with no token is blocked and audited, and the client is never called.
+        $user = User::factory()->create();
+        $asset = $this->onlineAsset();
+        $bus = app(\App\Services\Tactical\TacticalActionService::class);
+        $this->bindClient([]); // must never be called
+
+        $action = new \App\Services\Tactical\Actions\RunCommandAction;
+        $params = $action->validateParams(['shell' => 'cmd', 'cmd' => 'whoami', 'timeout' => 30]);
+
+        $result = $bus->dispatch($action, $asset, $user, $params, null);
+
+        $this->assertSame('blocked', $result->status);
+        $this->assertDatabaseHas('tactical_action_logs', [
+            'action_key' => 'tactical.run_command',
+            'result_status' => 'blocked',
+        ]);
+    }
+
+    // ── shutdown (DESTRUCTIVE, confirm-gated, typed-hostname) ────────────────
+
+    public function test_shutdown_happy_path_dispatches_and_audits_ok(): void
+    {
+        $user = User::factory()->create();
+        $asset = $this->onlineAsset();
+        $this->bindClient([new Response(200, [], json_encode('ok'))]);
+
+        $resp = $this->actingAs($user)->postJson(route('assets.shutdown-tactical', $asset), [
+            'hostname' => 'WORKSTATION-01',
+        ]);
+
+        $resp->assertOk()->assertJson(['success' => true]);
+
+        $this->assertDatabaseHas('tactical_action_logs', [
+            'action_key' => 'tactical.shutdown',
+            'asset_id' => $asset->id,
+            'actor_id' => $user->id,
+            'result_status' => 'ok',
+        ]);
+    }
+
+    public function test_shutdown_wrong_hostname_is_422_and_not_dispatched(): void
+    {
+        $user = User::factory()->create();
+        $asset = $this->onlineAsset('WORKSTATION-01');
+        $this->bindClient([]);
+
+        $resp = $this->actingAs($user)->postJson(route('assets.shutdown-tactical', $asset), [
+            'hostname' => 'WRONG-HOST',
+        ]);
+
+        $resp->assertStatus(422)->assertJsonStructure(['error']);
+        $this->assertSame(0, TacticalActionLog::count(), 'a hostname mismatch must not reach the bus');
+    }
+
+    public function test_shutdown_not_linked_is_422(): void
+    {
+        $user = User::factory()->create();
+        $asset = Asset::factory()->create(['hostname' => 'NO-AGENT']);
+        $this->bindClient([]);
+
+        $resp = $this->actingAs($user)->postJson(route('assets.shutdown-tactical', $asset), [
+            'hostname' => 'NO-AGENT',
+        ]);
+
+        $resp->assertStatus(422)->assertJsonStructure(['error']);
+    }
+
+    public function test_shutdown_offline_is_422_with_audit(): void
+    {
+        $user = User::factory()->create();
+        $asset = $this->onlineAsset();
+        $this->bindClient([new ConnectException('agent offline', new Request('POST', 'agents/AGENT-1/shutdown/'))]);
+
+        $resp = $this->actingAs($user)->postJson(route('assets.shutdown-tactical', $asset), [
+            'hostname' => 'WORKSTATION-01',
+        ]);
+
+        $resp->assertStatus(422)->assertJsonStructure(['error']);
+        $this->assertDatabaseHas('tactical_action_logs', [
+            'action_key' => 'tactical.shutdown',
+            'result_status' => 'offline',
+        ]);
+    }
+
+    public function test_shutdown_optional_ticket_link_is_recorded_on_the_audit_row(): void
+    {
+        // E2: the destructive confirm may OPTIONALLY link an open ticket; the
+        // ticket id lands on the audit row for incident traceability.
+        $user = User::factory()->create();
+        $asset = $this->onlineAsset();
+        $ticket = \App\Models\Ticket::factory()->create();
+        $this->bindClient([new Response(200, [], json_encode('ok'))]);
+
+        $resp = $this->actingAs($user)->postJson(route('assets.shutdown-tactical', $asset), [
+            'hostname' => 'WORKSTATION-01',
+            'ticket_id' => $ticket->id,
+        ]);
+
+        $resp->assertOk()->assertJson(['success' => true]);
+        $this->assertDatabaseHas('tactical_action_logs', [
+            'action_key' => 'tactical.shutdown',
+            'ticket_id' => $ticket->id,
+            'result_status' => 'ok',
+        ]);
+    }
+
+    public function test_shutdown_is_in_the_csrf_protected_web_group(): void
+    {
+        $this->assertRouteIsCsrfProtected('assets.shutdown-tactical');
     }
 
     /**
