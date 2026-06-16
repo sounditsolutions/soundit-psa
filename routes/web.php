@@ -180,6 +180,7 @@ Route::middleware('auth')->group(function () {
     Route::post('/tickets/{ticket}/draft-reply', [TicketController::class, 'draftReply'])->name('tickets.draft-reply');
     Route::post('/tickets/{ticket}/draft-resolution', [TicketController::class, 'draftResolution'])->name('tickets.draft-resolution');
     Route::post('/tickets/{ticket}/tactical/run-script', [TicketController::class, 'runTacticalScript'])->name('tickets.run-tactical-script');
+    Route::post('/tickets/{ticket}/tactical/command', [TicketController::class, 'runTacticalCommand'])->name('tickets.run-tactical-command');
     Route::post('/triage-runs/{triageRun}/feedback', [TicketController::class, 'storeFeedback'])->name('triage-runs.feedback');
     Route::delete('/triage-runs/{triageRun}/feedback', [TicketController::class, 'clearFeedback'])->name('triage-runs.feedback.clear');
     Route::post('/tickets/{ticket}/notes', [TicketNoteController::class, 'store'])->name('tickets.notes.store');
@@ -450,6 +451,10 @@ Route::middleware('auth')->group(function () {
     Route::post('/assets/{asset}/servosity/toggle-backup', [AssetController::class, 'toggleServosityBackup'])->name('assets.servosity.toggle-backup');
     Route::post('/assets/{asset}/tactical/run-script', [AssetController::class, 'runTacticalScript'])->name('assets.run-tactical-script');
     Route::post('/assets/{asset}/tactical/reboot', [AssetController::class, 'rebootTacticalAgent'])->name('assets.reboot-tactical');
+    Route::post('/assets/{asset}/tactical/recover', [AssetController::class, 'recoverTacticalAgent'])->name('assets.recover-tactical');
+    Route::post('/assets/{asset}/tactical/maintenance', [AssetController::class, 'setTacticalMaintenance'])->name('assets.maintenance-tactical');
+    Route::post('/assets/{asset}/tactical/command', [AssetController::class, 'runTacticalCommand'])->name('assets.run-tactical-command');
+    Route::post('/assets/{asset}/tactical/shutdown', [AssetController::class, 'shutdownTacticalAgent'])->name('assets.shutdown-tactical');
     Route::post('/assets/{asset}/users', [AssetController::class, 'addUser'])->name('assets.add-user');
     Route::delete('/assets/{asset}/users/{person}', [AssetController::class, 'removeUser'])->name('assets.remove-user');
     Route::post('/assets/{asset}/users/{person}/primary', [AssetController::class, 'setPrimaryUser'])->name('assets.set-primary-user');

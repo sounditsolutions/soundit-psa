@@ -18,12 +18,12 @@ class AssetTacticalCardRenderTest extends TestCase
 {
     use RefreshDatabase;
 
-    private function linkedAsset(string $status): Asset
+    private function linkedAsset(string $status, string $agentId = 'AGENT-1'): Asset
     {
         $asset = Asset::factory()->create(['hostname' => 'BOX-1']);
         TacticalAsset::create([
             'asset_id' => $asset->id,
-            'agent_id' => 'AGENT-1',
+            'agent_id' => $agentId,
             'hostname' => 'BOX-1',
             'status' => $status,
             'synced_at' => now()->subHours(6),
@@ -42,7 +42,52 @@ class AssetTacticalCardRenderTest extends TestCase
         $resp->assertOk()
             ->assertSee('Run Script')
             ->assertSee('tacticalRunBtn', false)
-            ->assertSee('tacticalRebootBtn', false);
+            ->assertSee('tacticalRebootBtn', false)
+            ->assertSee('tacticalRecoverBtn', false)
+            ->assertSee('Recover agent')
+            // Commit 2: cmd + shutdown controls + their confirm modals.
+            ->assertSee('tacticalCmdBtn', false)
+            ->assertSee('tacticalCmdModal', false)
+            ->assertSee('tacticalShutdownBtn', false)
+            ->assertSee('tacticalShutdownModal', false)
+            // D2 (verbatim): the shutdown irreversibility consequence is shown.
+            ->assertSee('cannot be powered back on remotely', false);
+    }
+
+    public function test_cmd_shell_defaults_to_powershell_or_cmd_for_windows(): void
+    {
+        // E5: a Windows device pre-selects a Windows shell (cmd) by default.
+        $user = User::factory()->create();
+        $asset = Asset::factory()->create(['hostname' => 'WINBOX']);
+        TacticalAsset::create([
+            'asset_id' => $asset->id,
+            'agent_id' => 'AGENT-WIN',
+            'hostname' => 'WINBOX',
+            'status' => 'online',
+            'os' => 'Windows 11 Pro',
+        ]);
+
+        $resp = $this->actingAs($user)->get(route('assets.show', $asset->refresh()));
+
+        // The cmd <option value="cmd"> carries the `selected` attribute.
+        $resp->assertOk()->assertSee('value="cmd" selected', false);
+    }
+
+    public function test_maintenance_toggle_is_always_visible_on_the_tactical_card(): void
+    {
+        // E3: the maintenance control is an always-visible switch near the device
+        // status (not buried). It renders for a linked device regardless of the
+        // snapshot status.
+        $user = User::factory()->create();
+
+        foreach (['online', 'offline'] as $i => $status) {
+            $asset = $this->linkedAsset($status, "AGENT-MAINT-{$i}");
+            $resp = $this->actingAs($user)->get(route('assets.show', $asset));
+
+            $resp->assertOk()
+                ->assertSee('tacticalMaintenanceToggle', false)
+                ->assertSee('Maintenance mode');
+        }
     }
 
     public function test_card_still_renders_an_offline_state_when_snapshot_offline(): void

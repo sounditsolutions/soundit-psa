@@ -577,6 +577,9 @@
                         <button type="button" class="btn btn-outline-info btn-sm" data-bs-toggle="modal" data-bs-target="#tacticalScriptModal">
                             <i class="bi bi-terminal me-1"></i>Run Script
                         </button>
+                        <button type="button" class="btn btn-outline-danger btn-sm" data-bs-toggle="modal" data-bs-target="#tacticalCmdModal">
+                            <i class="bi bi-terminal-fill me-1"></i>Run Command
+                        </button>
                     @endif
                 </div>
             </div>
@@ -1064,6 +1067,87 @@
                 <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Close</button>
                 <button type="button" class="btn btn-primary btn-sm" id="ticketTacticalRunBtn" onclick="runTicketScript()">
                     <i class="bi bi-play-fill me-1"></i>Run
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+{{-- Run-command modal (DESTRUCTIVE — arbitrary RCE → confirm-gated; cmd ONLY per
+     amendment G1). Mirrors the asset-page cmd modal: shell select + command field
+     (+ a <datalist> of common diagnostics) + the FULL resolved command in a
+     multi-line <pre> (A3, nothing scrolled out of view) + a typed-hostname confirm.
+     The device is picked from the ticket's online tactical assets; the typed
+     hostname must match the SELECTED device. The shown command is intentionally
+     NOT secret-redacted (the tech sees their own input on their own screen); the
+     AUDIT row + the ticket note ARE redacted server-side (A3/B3). Usable at ~375px
+     (E4). --}}
+<div class="modal fade" id="tacticalCmdModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-terminal-fill me-2"></i>Run command</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="alert alert-danger py-2">
+                    <i class="bi bi-exclamation-octagon me-1"></i><strong>This runs a command directly on the device</strong>
+                    with full agent privileges. Review it carefully — there is no undo. The command and its output are saved (redacted) as a ticket note.
+                </div>
+                <div class="mb-3">
+                    <label class="form-label small fw-bold">Device</label>
+                    <select class="form-select form-select-sm" id="ticketCmdAsset">
+                        @foreach($tacticalAssets as $ta)
+                            @php $taHost = $ta->tacticalAsset->hostname ?? $ta->hostname ?? $ta->name; @endphp
+                            <option value="{{ $ta->id }}"
+                                    data-hostname="{{ $taHost }}"
+                                    data-shell="{{ stripos((string) ($ta->tacticalAsset->os ?? $ta->os ?? ''), 'win') !== false ? 'cmd' : 'shell' }}">
+                                {{ $taHost }} ({{ $ta->tacticalAsset->status }})
+                            </option>
+                        @endforeach
+                    </select>
+                </div>
+                <div class="row g-2 mb-3">
+                    <div class="col-auto">
+                        <select class="form-select form-select-sm" id="ticketCmdShell" style="width: 130px;" aria-label="Shell">
+                            <option value="cmd">cmd</option>
+                            <option value="powershell">powershell</option>
+                            <option value="shell">shell</option>
+                        </select>
+                    </div>
+                    <div class="col">
+                        <input type="text" class="form-control form-control-sm" id="ticketCmdInput"
+                               list="ticketCmdSuggestions" autocomplete="off"
+                               placeholder="Command to run (e.g. whoami)">
+                        <datalist id="ticketCmdSuggestions">
+                            <option value="whoami"></option>
+                            <option value="hostname"></option>
+                            <option value="ipconfig /all"></option>
+                            <option value="ip addr"></option>
+                            <option value="systeminfo"></option>
+                            <option value="uname -a"></option>
+                            <option value="Get-ComputerInfo"></option>
+                            <option value="gpupdate /force"></option>
+                            <option value="nltest /dsgetdc:"></option>
+                        </datalist>
+                    </div>
+                </div>
+                <p class="mb-1 small text-muted">This exact command will run:</p>
+                <pre class="border rounded bg-body-tertiary p-2 mb-3" style="white-space: pre-wrap; word-break: break-word; max-height: 30vh; overflow-y: auto;" id="ticketCmdPreview"></pre>
+                <p class="mb-2 small">To confirm, type the device hostname exactly:</p>
+                <p class="mb-2"><code class="user-select-all" id="ticketCmdExpectedHost"></code></p>
+                <input type="text" class="form-control form-control-sm" id="ticketCmdHostname"
+                       autocomplete="off" placeholder="Type the hostname to confirm">
+                <div class="text-danger small mt-1" id="ticketCmdError" style="display:none;"></div>
+                <div id="ticketCmdResult" class="mt-2" style="display:none;">
+                    <div class="border rounded p-2 bg-dark text-light small font-monospace" style="max-height: 200px; overflow-y: auto; white-space: pre-wrap;" id="ticketCmdOutput"></div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-danger btn-sm" id="ticketCmdConfirm" disabled
+                        data-cmd-url="{{ route('tickets.run-tactical-command', $ticket) }}">
+                    <i class="bi bi-play-fill me-1"></i>Run command
                 </button>
             </div>
         </div>
@@ -1563,6 +1647,144 @@ window.runTicketScript = function() {
         btn.innerHTML = '<i class="bi bi-play-fill me-1"></i>Run';
     });
 };
+
+// Run-command modal (DESTRUCTIVE — arbitrary RCE; cmd ONLY per amendment G1).
+// Mirrors the asset-page cmd modal but the device is chosen from the ticket's
+// online tactical assets, so the expected hostname (and the smart shell default)
+// follow the selected device. The command shown in the <pre> is the EXACT string
+// sent; editing the shell/command/device after the modal opens re-renders the
+// preview and resets the confirm with a clear "command changed — re-confirm"
+// message (E5). The hostname gate + payloadHash-bound token are enforced
+// server-side (A1); the audit row + ticket note are redacted server-side (B3).
+(function() {
+    var assetSel = document.getElementById('ticketCmdAsset');
+    var shellSel = document.getElementById('ticketCmdShell');
+    var cmdInput = document.getElementById('ticketCmdInput');
+    var modalEl = document.getElementById('tacticalCmdModal');
+    var preview = document.getElementById('ticketCmdPreview');
+    var hostInput = document.getElementById('ticketCmdHostname');
+    var expectedEl = document.getElementById('ticketCmdExpectedHost');
+    var confirmBtn = document.getElementById('ticketCmdConfirm');
+    var errEl = document.getElementById('ticketCmdError');
+    var resultDiv = document.getElementById('ticketCmdResult');
+    var outputDiv = document.getElementById('ticketCmdOutput');
+    if (!assetSel || !cmdInput || !modalEl) return;
+
+    // The command snapshot the preview/confirm is bound to (set on modal open).
+    var confirmed = { assetId: null, shell: null, cmd: null };
+
+    function selectedOption() {
+        return assetSel.options[assetSel.selectedIndex];
+    }
+    function expectedHost() {
+        var opt = selectedOption();
+        return ((opt && opt.dataset.hostname) || '').trim().toLowerCase();
+    }
+    function resolvedText() {
+        return '[' + shellSel.value + '] ' + cmdInput.value;
+    }
+    function hostMatches() {
+        var exp = expectedHost();
+        return exp !== '' && hostInput.value.trim().toLowerCase() === exp;
+    }
+
+    // Smart shell default by the selected device's OS (E5), still changeable.
+    function applyDeviceDefault() {
+        var opt = selectedOption();
+        if (opt && opt.dataset.shell) shellSel.value = opt.dataset.shell;
+        if (expectedEl) expectedEl.textContent = (opt && opt.dataset.hostname) || '';
+    }
+    assetSel.addEventListener('change', function() {
+        applyDeviceDefault();
+        onCommandEdited();
+    });
+
+    function snapshot() {
+        confirmed.assetId = assetSel.value;
+        confirmed.shell = shellSel.value;
+        confirmed.cmd = cmdInput.value;
+        preview.textContent = resolvedText();
+    }
+
+    // Snapshot the command + device when the modal opens and render the preview.
+    modalEl.addEventListener('show.bs.modal', function() {
+        applyDeviceDefault();
+        snapshot();
+        errEl.style.display = 'none';
+        if (resultDiv) resultDiv.style.display = 'none';
+        hostInput.value = '';
+        confirmBtn.disabled = true;
+    });
+
+    // E5: if the device/shell/command changes while the modal is open, the shown
+    // command no longer matches what was confirmed — re-render + force re-confirm.
+    function onCommandEdited() {
+        if (!modalEl.classList.contains('show')) return;
+        if (assetSel.value === confirmed.assetId && shellSel.value === confirmed.shell && cmdInput.value === confirmed.cmd) return;
+        snapshot();
+        hostInput.value = '';
+        confirmBtn.disabled = true;
+        errEl.textContent = 'Command changed — re-confirm by typing the hostname again.';
+        errEl.style.display = '';
+    }
+    shellSel.addEventListener('change', onCommandEdited);
+    cmdInput.addEventListener('input', onCommandEdited);
+
+    hostInput.addEventListener('input', function() {
+        confirmBtn.disabled = !hostMatches();
+        if (hostMatches()) errEl.style.display = 'none';
+    });
+
+    confirmBtn.addEventListener('click', function() {
+        if (!hostMatches()) return;
+        if (!confirmed.cmd || confirmed.cmd.trim() === '') {
+            errEl.textContent = 'Enter a command to run.';
+            errEl.style.display = '';
+            return;
+        }
+        confirmBtn.disabled = true;
+        confirmBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Running...';
+
+        fetch(confirmBtn.dataset.cmdUrl, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content,
+                'Accept': 'application/json',
+            },
+            body: JSON.stringify({
+                asset_id: confirmed.assetId,
+                hostname: hostInput.value,
+                shell: confirmed.shell,
+                cmd: confirmed.cmd,
+                timeout: 60,
+            }),
+        })
+        .then(function(r) { return r.json().then(function(d) { d._status = r.status; return d; }); })
+        .then(function(data) {
+            if (data.error) {
+                var msg = data.error;
+                if (/confirm|expired/i.test(msg)) msg = 'Confirmation expired — please re-confirm.';
+                errEl.textContent = msg;
+                errEl.style.display = '';
+                return;
+            }
+            if (resultDiv && outputDiv) {
+                outputDiv.textContent = data.message || '(command sent)';
+                resultDiv.style.display = '';
+            }
+            hostInput.value = '';
+            confirmBtn.disabled = true;
+        })
+        .catch(function(err) {
+            errEl.textContent = 'Request failed: ' + err.message;
+            errEl.style.display = '';
+        })
+        .finally(function() {
+            confirmBtn.innerHTML = '<i class="bi bi-play-fill me-1"></i>Run command';
+        });
+    });
+})();
 </script>
 @endpush
 

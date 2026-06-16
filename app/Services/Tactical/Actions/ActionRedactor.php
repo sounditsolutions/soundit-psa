@@ -118,8 +118,13 @@ class ActionRedactor
 
     /**
      * Recursively redact a params array: argv arrays via redactArgv(), nested
-     * arrays recursively, scalar strings via WikiRedactor. Structure (and
-     * non-string scalars) are preserved.
+     * arrays recursively, scalar strings via WikiRedactor. A `cmd` value is an
+     * opaque ad-hoc command line (RunCommandAction) — it goes through the stronger
+     * command-shape layer (glued `-p`, `net user`, bare tokens) that WikiRedactor
+     * alone misses (amendment B1/B2). Structure (and non-string scalars) preserved.
+     *
+     * Audit-boundary only: the bus calls this in audit() AFTER execute(), so the
+     * executed command is never altered — only the persisted params row is scrubbed.
      *
      * @param  array<string, mixed>  $params
      * @return array<string, mixed>
@@ -139,7 +144,11 @@ class ActionRedactor
                 continue;
             }
 
-            $out[$key] = is_string($value) ? $this->redactString($value) : $value;
+            $out[$key] = match (true) {
+                ! is_string($value) => $value,
+                $key === 'cmd' => $this->redactCommandString($value),
+                default => $this->redactString($value),
+            };
         }
 
         return $out;
@@ -168,6 +177,55 @@ class ActionRedactor
         }
 
         return $clean;
+    }
+
+    /**
+     * Command-line credential shapes that the keyword=value (WikiRedactor) and
+     * bare-token (OUTPUT_SECRET_PATTERNS) layers BOTH miss, because an ad-hoc
+     * `cmd` is one opaque free-text string with no argv-token structure to walk.
+     * These target the well-known glued/positional credential forms a tech might
+     * type inline (amendment B2 names the first two as binding):
+     *   D. mysql/mariadb glued password: `-p<secret>` / `--password=<secret>`
+     *      (the `-p` short form has NO separator, so the keyword rule can't see it).
+     *   E. Windows `net user <name> <password>` — the password is the 4th
+     *      positional token, recognizable only by the `net user` command shape.
+     * Applied ONLY to the command-string redaction path (never wiki/output).
+     */
+    private const COMMAND_SECRET_PATTERNS = [
+        // `--password=<secret>` long form (any case): keep the flag, scrub the value.
+        '/(--password=)(["\']?)[^\s"\']+\2/i' => '$1'.self::REDACTED,
+        // mysql-family glued short password `-p<secret>`: case-SENSITIVE lowercase
+        // `-p` (MySQL's password flag; `-P` is the PORT) and the `-p` must START a
+        // token (preceded by whitespace/start) so it never matches mid-word — e.g.
+        // PowerShell `Get-Process`/`-Path` (a letter precedes their `-P`) survive.
+        // The optional-quoted value runs to the next whitespace.
+        '/(?<=\s|^)(-p)(["\']?)[^\s"\']+\2/' => '$1'.self::REDACTED,
+        // `net user <name> <password> [/add|/flags]`: scrub the 3rd token (password).
+        // Anchored on `net user` (NOT `net use <drive>`, a different command).
+        '/(\bnet\s+user\s+\S+\s+)\S+/i' => '$1'.self::REDACTED,
+    ];
+
+    /**
+     * Redact a free-text COMMAND string for the confirm summary / audit / ticket
+     * note (amendment B1). An ad-hoc cmd is one opaque string with no argv
+     * structure, so the argv-flag layer (redactArgv) cannot help — instead run:
+     *   1. the command-line credential shapes (glued -p / net user — B2),
+     *   2. WikiRedactor (inline keyword=value / connection-string / PEM / JWT),
+     *   3. the bare-credential backstop (OUTPUT_SECRET_PATTERNS: auth-scheme,
+     *      AWS key ids, a lone 32+ high-entropy run).
+     *
+     * Residual (documented, accepted per B2): short/low-entropy POSITIONAL
+     * secrets outside the recognized command shapes (e.g. a bare `Hunter2`) may
+     * still pass — args are best-effort redacted; techs must avoid inline secrets.
+     */
+    public function redactCommandString(string $command): string
+    {
+        foreach (self::COMMAND_SECRET_PATTERNS as $pattern => $replacement) {
+            $command = preg_replace($pattern, $replacement, $command);
+        }
+
+        // WikiRedactor (keyword-adjacent) + the bare-credential output backstop.
+        return $this->redactOutputSecrets($this->redactString($command));
     }
 
     /** Apply the audit-output-only secret backstop (see OUTPUT_SECRET_PATTERNS). */

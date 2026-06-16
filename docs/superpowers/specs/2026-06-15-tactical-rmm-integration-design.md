@@ -315,7 +315,7 @@ failures.
 | NATS round-trips block web requests | Bounded timeouts; bulk actions queued |
 | Secrets leaking into AI context or audit logs | Redaction/scrub on both paths; reuse existing output-scan gating |
 | MeshCentral token expiry | Mint at click-time, never cache |
-| Single-tier lets any staff reboot prod | Accepted per direction; confirm + audit; capability hook ready for `psa-hbh` tiering |
+| Single-tier + ad-hoc cmd = any authenticated staff can run **arbitrary code as SYSTEM/root on every linked endpoint** via the 2FA-bypassing key (RCE blast radius, not just reboot) | **Accepted** per direction (single-tier acceptance **re-recorded as informed of the arbitrary-RCE scope, 2026-06-15**); mitigated by the payloadHash-bound confirm token + typed-hostname gate + immutable redacted audit trail + least-privilege Tactical service role; capability hook stays the one-line seam ready for `psa-hbh` tiering |
 | Stale snapshot misleads AI/tech | `freshAsOf` stamp surfaced to both UI and model |
 
 ---
