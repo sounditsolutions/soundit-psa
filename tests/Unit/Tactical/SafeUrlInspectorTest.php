@@ -109,4 +109,87 @@ class SafeUrlInspectorTest extends TestCase
 
         $this->assertNotNull($err, 'NXDOMAIN must fail closed (reject)');
     }
+
+    // --- psa-rkf6: ipIsSafe() is the shared range-check (save-time AND the
+    //     request-time pin use it, so there is one source of truth). ---
+
+    public function test_ip_is_safe_accepts_public_addresses(): void
+    {
+        $this->assertTrue(SafeUrlInspector::ipIsSafe('93.184.216.34'));
+        $this->assertTrue(SafeUrlInspector::ipIsSafe('1.1.1.1'));
+        $this->assertTrue(SafeUrlInspector::ipIsSafe('2606:4700:4700::1111')); // public IPv6
+    }
+
+    public function test_ip_is_safe_rejects_private_reserved_and_link_local(): void
+    {
+        foreach ([
+            '10.0.0.5', '172.16.0.9', '192.168.1.1', '127.0.0.1', '0.0.0.0',
+            '169.254.169.254',   // IPv4 metadata / link-local
+            '::1',               // IPv6 loopback
+            'fe80::1',           // IPv6 link-local
+        ] as $ip) {
+            $this->assertFalse(SafeUrlInspector::ipIsSafe($ip), "should reject {$ip}");
+        }
+    }
+
+    // --- psa-rkf6: inet_aton-style encodings (hex / octal / short form) must be
+    //     recognized as IP LITERALS and range-checked directly, never routed
+    //     through DNS. Each stub maps the encoded host to a PUBLIC A-record to
+    //     prove a malicious DNS answer cannot launder a private literal. ---
+
+    public function test_rejects_hex_encoded_loopback_literal(): void
+    {
+        // 0x7f000001 == 127.0.0.1
+        $this->assertNotNull(SafeUrlInspector::reject(
+            'https://0x7f000001/',
+            $this->resolver(['0x7f000001' => ['93.184.216.34']]),
+        ));
+    }
+
+    public function test_rejects_octal_encoded_loopback_literal(): void
+    {
+        // 0177.0.0.1 == 127.0.0.1 (octal first octet)
+        $this->assertNotNull(SafeUrlInspector::reject(
+            'https://0177.0.0.1/',
+            $this->resolver(['0177.0.0.1' => ['93.184.216.34']]),
+        ));
+    }
+
+    public function test_rejects_short_form_loopback_literal(): void
+    {
+        // 127.1 == 127.0.0.1 (inet_aton short form: last part fills 24 bits)
+        $this->assertNotNull(SafeUrlInspector::reject(
+            'https://127.1/',
+            $this->resolver(['127.1' => ['93.184.216.34']]),
+        ));
+    }
+
+    public function test_rejects_hex_encoded_metadata_literal(): void
+    {
+        // 0xa9fea9fe == 169.254.169.254 (cloud metadata)
+        $this->assertNotNull(SafeUrlInspector::reject(
+            'https://0xa9fea9fe/',
+            $this->resolver(['0xa9fea9fe' => ['93.184.216.34']]),
+        ));
+    }
+
+    public function test_accepts_hex_encoded_public_literal_without_dns(): void
+    {
+        // 0x5db8d822 == 93.184.216.34 (public). Recognized as a public literal
+        // and accepted WITHOUT DNS — the resolver returns NXDOMAIN to prove a
+        // lookup is never performed for a literal.
+        $this->assertNull(SafeUrlInspector::reject(
+            'https://0x5db8d822/',
+            $this->resolver([]),
+        ));
+    }
+
+    public function test_a_real_hostname_is_not_misparsed_as_an_inet_aton_literal(): void
+    {
+        // Dotted names with non-numeric labels must still go through DNS.
+        $this->assertNull(SafeUrlInspector::reject(
+            'https://rmm-api.dev.soundpsa.com',
+            $this->resolver(['rmm-api.dev.soundpsa.com' => ['93.184.216.34']]),
+        ));
+    }
 }

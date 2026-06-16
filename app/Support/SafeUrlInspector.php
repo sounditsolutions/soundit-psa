@@ -76,15 +76,90 @@ class SafeUrlInspector
             return self::extractMappedV4($host);
         }
 
-        // Decimal-encoded IPv4, e.g. 2130706433 == 127.0.0.1.
-        if (ctype_digit($host)) {
-            $n = (int) $host;
-            if ($n >= 0 && $n <= 4294967295) {
-                return long2ip($n);
+        // inet_aton-style IPv4 encodings: decimal (2130706433), hex
+        // (0x7f000001), octal (0177.0.0.1) and short forms (127.1). Recognized
+        // as literals so they are range-checked directly rather than routed
+        // through DNS, where a malicious answer could launder a private address.
+        return self::normalizeInetAton($host);
+    }
+
+    /**
+     * Parse an inet_aton-style IPv4 encoding to a canonical dotted-quad, or null
+     * when $host is not such an encoding (then it is treated as a hostname).
+     *
+     * inet_aton accepts 1–4 dot-separated parts; each part may be decimal,
+     * octal (leading 0) or hex (0x…), and the final part absorbs the remaining
+     * low-order bytes (so "127.1" == 127.0.0.1, "0x7f000001" == 127.0.0.1).
+     * We return a value ONLY for an unambiguous, in-range parse — anything
+     * malformed returns null and falls through to the DNS branch (which fails
+     * closed), so a half-parse never invents a public-looking address.
+     */
+    private static function normalizeInetAton(string $host): ?string
+    {
+        $parts = explode('.', $host);
+        $count = count($parts);
+        if ($count < 1 || $count > 4) {
+            return null;
+        }
+
+        $values = [];
+        foreach ($parts as $part) {
+            $value = self::parseInetAtonPart($part);
+            if ($value === null) {
+                return null;
+            }
+            $values[] = $value;
+        }
+
+        // The last part holds the low (4 − (count−1)) bytes; each leading part
+        // must be a single byte.
+        $last = array_pop($values);
+        $maxLast = match ($count) {
+            1 => 0xFFFFFFFF,
+            2 => 0xFFFFFF,
+            3 => 0xFFFF,
+            default => 0xFF,
+        };
+        if ($last > $maxLast) {
+            return null;
+        }
+        foreach ($values as $leading) {
+            if ($leading > 0xFF) {
+                return null;
             }
         }
 
-        return null;
+        $addr = $last;
+        foreach ($values as $i => $leading) {
+            $addr |= $leading << (8 * (3 - $i));
+        }
+
+        return long2ip($addr);
+    }
+
+    /**
+     * Parse one inet_aton part (decimal / 0-octal / 0x-hex) to its integer
+     * value, or null when it is not a clean numeric part or overflows 32 bits.
+     */
+    private static function parseInetAtonPart(string $part): ?int
+    {
+        if (preg_match('/^0[xX][0-9a-fA-F]+$/', $part)) {
+            $value = hexdec(substr($part, 2));
+        } elseif (preg_match('/^0[0-7]+$/', $part)) {
+            $value = octdec(substr($part, 1));
+        } elseif (preg_match('/^(?:0|[1-9][0-9]*)$/', $part)) {
+            $value = (float) $part;
+        } else {
+            return null;
+        }
+
+        // hexdec/octdec/(float) yield a float for very large inputs; bound
+        // before the int cast so an oversized part never wraps to a valid byte.
+        if ($value < 0 || $value > 0xFFFFFFFF) {
+            return null;
+        }
+
+        return (int) $value;
     }
 
     /**
@@ -101,7 +176,13 @@ class SafeUrlInspector
         return $ip;
     }
 
-    private static function ipIsSafe(string $ip): bool
+    /**
+     * True only for a public, routable address. The single source of truth for
+     * "is this IP safe to connect to" — shared by the save-time check above and
+     * the request-time connection pin in TacticalClient (psa-rkf6), so the two
+     * can never diverge on what counts as private/reserved.
+     */
+    public static function ipIsSafe(string $ip): bool
     {
         // Reject anything that isn't a public, routable IP.
         $public = filter_var(
