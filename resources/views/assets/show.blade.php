@@ -616,6 +616,77 @@
         </div>
         @endif
 
+        {{-- Recent Tactical actions — ITIL change history (P4 amendment K). NOT a
+             flat activity log: each row ties an endpoint change to the incident it
+             was performed under (ticket link), distinguishes outcomes (succeeded /
+             no-op / error / blocked), caps at 10 newest-first, and renders from the
+             already-redacted action-log rows (no re-leak). Co-located under the
+             Tactical region. --}}
+        @if($asset->tacticalAsset && $tacticalInsight)
+        @php
+            $recentActions = $tacticalInsight->recentActions;
+            $actionTotal = $tacticalActionTotal ?? count($recentActions);
+            // ok→success, offline→warning (no-op), error→danger, rejected/denied/
+            // blocked→secondary. Reuses the statusBadgeClass colour vocabulary.
+            $outcomeBadge = function (string $status): array {
+                return match ($status) {
+                    'ok' => ['bg-success', 'succeeded'],
+                    'offline' => ['bg-warning text-dark', 'no-op (agent unreachable)'],
+                    'error' => ['bg-danger', 'error'],
+                    'rejected', 'denied', 'blocked' => ['bg-secondary', $status],
+                    default => ['bg-secondary', $status],
+                };
+            };
+            $actionLabel = function (string $key): string {
+                return \Illuminate\Support\Str::of($key)
+                    ->after('tactical.')
+                    ->replace('_', ' ')
+                    ->title()
+                    ->toString();
+            };
+        @endphp
+        <div class="card shadow-sm card-static mb-3" id="tactical-recent-actions">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-clock-history me-2"></i>Recent Tactical actions</span>
+                @if($actionTotal > count($recentActions))
+                    <span class="badge bg-light text-dark" title="There are more actions than shown">
+                        {{ count($recentActions) }} most recent of {{ $actionTotal }}
+                    </span>
+                @endif
+            </div>
+            <div class="card-body p-0">
+                @if(empty($recentActions))
+                    <div class="text-muted small p-3"><i class="bi bi-info-circle me-1"></i>No recent Tactical actions for this device.</div>
+                @else
+                <ul class="list-group list-group-flush">
+                    @foreach($recentActions as $row)
+                    @php
+                        [$badgeClass, $outcomeText] = $outcomeBadge($row['result_status']);
+                        $when = $row['when'] ? \Illuminate\Support\Carbon::parse($row['when']) : null;
+                    @endphp
+                    <li class="list-group-item py-2 small">
+                        <div class="d-flex justify-content-between align-items-start gap-2">
+                            <div>
+                                <span class="fw-semibold">{{ $actionLabel($row['action']) }}</span>
+                                <span class="text-muted">· {{ $row['actor'] }}</span>
+                                @if(! empty($row['ticket_id']))
+                                    · under
+                                    <a href="{{ route('tickets.show', $row['ticket_id']) }}" class="text-decoration-none">#{{ $row['ticket_id'] }}</a>
+                                @endif
+                                @if($when)
+                                    <span class="text-muted">· <span title="{{ $when->toAppTz()->format('Y-m-d H:i T') }}">{{ $when->diffForHumans() }}</span></span>
+                                @endif
+                            </div>
+                            <span class="badge {{ $badgeClass }} flex-shrink-0">{{ $outcomeText }}</span>
+                        </div>
+                    </li>
+                    @endforeach
+                </ul>
+                @endif
+            </div>
+        </div>
+        @endif
+
         {{-- Tactical Script Runner + Actions --}}
         {{-- M4: render WHENEVER Tactical-linked. The daily snapshot status is
              advisory only; the bus's offline result is the source of truth, so

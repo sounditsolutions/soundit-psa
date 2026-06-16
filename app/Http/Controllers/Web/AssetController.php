@@ -201,6 +201,7 @@ class AssetController extends Controller
             'lastUserPerson' => $lastUserPerson,
             'clientPeople' => $clientPeople,
             'tacticalInsight' => $this->tacticalInsight($asset),
+            'tacticalActionTotal' => $this->tacticalActionTotal($asset),
         ]);
     }
 
@@ -217,6 +218,21 @@ class AssetController extends Controller
         }
 
         return app(\App\Services\Tactical\TacticalInsightService::class)->forAsset($asset);
+    }
+
+    /**
+     * Total Tactical action-log rows for the asset (the insight caps its list at
+     * 10 newest-first; this total drives the "showing the N most recent of M"
+     * overflow affordance on the change-history panel — amendment K). Zero when
+     * not linked / no actions.
+     */
+    private function tacticalActionTotal(Asset $asset): int
+    {
+        if (! $asset->tacticalAsset) {
+            return 0;
+        }
+
+        return \App\Models\TacticalActionLog::where('asset_id', $asset->id)->count();
     }
 
     public function tickets(Request $request, Asset $asset)
@@ -264,6 +280,7 @@ class AssetController extends Controller
             'lastUserPerson' => $lastUserPerson,
             'clientPeople' => $clientPeople,
             'tacticalInsight' => $this->tacticalInsight($asset),
+            'tacticalActionTotal' => $this->tacticalActionTotal($asset),
             'activeTab' => 'tickets',
             'tickets' => $tickets,
             'ticketFilters' => $filters,
