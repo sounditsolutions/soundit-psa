@@ -118,8 +118,13 @@ class ActionRedactor
 
     /**
      * Recursively redact a params array: argv arrays via redactArgv(), nested
-     * arrays recursively, scalar strings via WikiRedactor. Structure (and
-     * non-string scalars) are preserved.
+     * arrays recursively, scalar strings via WikiRedactor. A `cmd` value is an
+     * opaque ad-hoc command line (RunCommandAction) — it goes through the stronger
+     * command-shape layer (glued `-p`, `net user`, bare tokens) that WikiRedactor
+     * alone misses (amendment B1/B2). Structure (and non-string scalars) preserved.
+     *
+     * Audit-boundary only: the bus calls this in audit() AFTER execute(), so the
+     * executed command is never altered — only the persisted params row is scrubbed.
      *
      * @param  array<string, mixed>  $params
      * @return array<string, mixed>
@@ -139,7 +144,11 @@ class ActionRedactor
                 continue;
             }
 
-            $out[$key] = is_string($value) ? $this->redactString($value) : $value;
+            $out[$key] = match (true) {
+                ! is_string($value) => $value,
+                $key === 'cmd' => $this->redactCommandString($value),
+                default => $this->redactString($value),
+            };
         }
 
         return $out;

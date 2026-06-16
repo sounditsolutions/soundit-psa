@@ -216,6 +216,56 @@ class RemoteActionEndpointsTest extends TestCase
         ]);
     }
 
+    public function test_cmd_redacts_command_secrets_in_the_immutable_audit_params(): void
+    {
+        // Code-review BLOCKER (all 3 reviewers): the typed command must be redacted in
+        // the append-only tactical_action_logs.params['cmd'] — not only in summary()/
+        // the ticket note. The generic params path (WikiRedactor) misses the glued
+        // `-p<secret>` and bare-token shapes; only redactCommandString catches them.
+        $user = User::factory()->create();
+        $asset = $this->onlineAsset();
+        $this->bindClient([new Response(200, [], json_encode('done'))]);
+
+        $secret = 'SuperSecret123';
+        $bareToken = 'a1b2c3d4e5f607182930a4b5c6d7e8f901234567'; // 40-char, no keyword
+
+        $resp = $this->actingAs($user)->postJson(route('assets.run-tactical-command', $asset), [
+            'hostname' => 'WORKSTATION-01',
+            'shell' => 'cmd',
+            'cmd' => "mysqldump -u root -p{$secret} db && echo {$bareToken}",
+            'timeout' => 30,
+        ]);
+
+        $resp->assertOk();
+
+        $rawParams = json_encode(\App\Models\TacticalActionLog::sole()->params);
+        $this->assertStringNotContainsString($secret, $rawParams, 'glued -p secret leaked into immutable audit params');
+        $this->assertStringNotContainsString($bareToken, $rawParams, 'bare token leaked into immutable audit params');
+    }
+
+    public function test_cmd_with_surrounding_whitespace_succeeds_proving_issue_equals_verify(): void
+    {
+        // A1 endpoint-level regression guard (critic MAJOR): the controller must hash
+        // AND dispatch the SAME canonical params. If it minted the token over one form
+        // and dispatched another (e.g. raw vs outer-trimmed), the bus's verify-side
+        // payloadHash would mismatch -> `blocked`. A command with surrounding whitespace
+        // (canonicalized by the outer trim) exercises the issue==verify round-trip.
+        $user = User::factory()->create();
+        $asset = $this->onlineAsset();
+        $this->bindClient([new Response(200, [], json_encode('ok'))]);
+
+        $resp = $this->actingAs($user)->postJson(route('assets.run-tactical-command', $asset), [
+            'hostname' => 'WORKSTATION-01',
+            'shell' => 'cmd',
+            'cmd' => '   whoami   ',
+            'timeout' => 30,
+        ]);
+
+        $resp->assertOk()->assertJson(['success' => true]);
+        $this->assertDatabaseHas('tactical_action_logs', ['result_status' => 'ok']);
+        $this->assertDatabaseMissing('tactical_action_logs', ['result_status' => 'blocked']);
+    }
+
     public function test_cmd_wrong_hostname_is_422_and_not_dispatched(): void
     {
         $user = User::factory()->create();
