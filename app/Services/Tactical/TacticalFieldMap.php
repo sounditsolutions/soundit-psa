@@ -16,8 +16,9 @@ use Illuminate\Support\Carbon;
  *
  * RAM convention: Tactical's agent `total_ram` is an INTEGER COUNT OF GIGABYTES
  * (source v1.5.0 + live VM 105), NOT a byte count — so it maps DIRECTLY to a GB
- * float, no 1073741824 division. (Disk total/used/free are a SEPARATE, string
- * shape — "19.3 GB" — parsed by TacticalInsightService, not here.)
+ * float, no 1073741824 division. Disk total/used/free are a SEPARATE shape —
+ * formatted strings ("19.3 GB"/TB/MB) — handled by diskSizeToGb() below, also a
+ * direct parse with no byte division.
  */
 class TacticalFieldMap
 {
