@@ -558,7 +558,8 @@
                      panel renders three distinct states (data / genuinely-empty /
                      could-not-load) from the JSON the controller returns. --}}
                 <div class="accordion accordion-flush mt-2" id="tacticalPanels"
-                     data-asset-id="{{ $asset->id }}">
+                     data-asset-id="{{ $asset->id }}"
+                     data-web-url="{{ \App\Support\TacticalConfig::webUrl() }}">
                     {{-- Checks-health --}}
                     <div class="accordion-item">
                         <h2 class="accordion-header">
@@ -606,9 +607,12 @@
                     </div>
                 </div>
             </div>
-            @if(\App\Support\TacticalConfig::apiUrl())
+            {{-- psa-6h5r: the Open-in-Tactical link targets the configured WEB
+                 dashboard base (TacticalConfig::webUrl()), NOT the API root.
+                 Hidden when unset — no fallback to the API URL (the old bug). --}}
+            @if($tacticalWebUrl = \App\Support\TacticalConfig::webUrl())
             <div class="card-footer text-end">
-                <a href="{{ rtrim(\App\Support\TacticalConfig::apiUrl(), '/') }}" target="_blank" class="btn btn-outline-primary btn-sm">
+                <a href="{{ rtrim($tacticalWebUrl, '/') }}" target="_blank" rel="noopener noreferrer" class="btn btn-outline-primary btn-sm">
                     <i class="bi bi-box-arrow-up-right me-1"></i>Open in Tactical RMM
                 </a>
             </div>

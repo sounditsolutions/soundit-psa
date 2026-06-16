@@ -234,6 +234,7 @@ class IntegrationsController extends Controller
         // Tactical RMM
         $tacticalConfigured = TacticalConfig::isConfigured();
         $tacticalApiUrl = TacticalConfig::get('api_url');
+        $tacticalWebUrl = TacticalConfig::webUrl(); // psa-6h5r: web dashboard base
         $tacticalConnected = (bool) Setting::getValue('tactical_connected_at');
         $tacticalEnabled = Setting::getValue('tactical_enabled', '1') === '1';
 
@@ -283,7 +284,7 @@ class IntegrationsController extends Controller
             'triageDefaultAssignee', 'triageSystemUser', 'triageModel', 'triageMaxTokens', 'triageDailyTokens', 'triageBatchSize', 'triageStages',
             'assistantEnabled', 'assistantMaxMessages', 'assistantDailyTokens',
             'screenconnectBaseUrl', 'screenconnectWebhookSecret', 'screenconnectEnabled', 'screenconnectConfigured',
-            'tacticalConfigured', 'tacticalApiUrl', 'tacticalConnected', 'tacticalEnabled',
+            'tacticalConfigured', 'tacticalApiUrl', 'tacticalWebUrl', 'tacticalConnected', 'tacticalEnabled',
             'tacticalWebhookLastAt', 'tacticalWebhookProcessed24h', 'tacticalWebhookFailed',
             'users',
         ));
@@ -1619,9 +1620,17 @@ class IntegrationsController extends Controller
             'api_url' => ['required', 'string', 'max:255', new \App\Rules\SafeTacticalUrl],
             'api_key' => 'nullable|string|min:1|max:500',
             'alert_min_severity' => 'nullable|in:error,warning,info',
+            // psa-6h5r / amendment L: the web dashboard URL — a SEPARATE, plain
+            // (non-secret) setting, https://+host validated, NEVER derived from
+            // api_url (spec §11). Optional; blank leaves the link hidden.
+            'web_url' => ['nullable', 'string', 'max:255', new \App\Rules\SafeTacticalWebUrl],
         ]);
 
         Setting::setValue('tactical_api_url', $validated['api_url']);
+
+        if ($request->has('web_url')) {
+            Setting::setValue('tactical_web_url', $validated['web_url'] ?? '');
+        }
 
         if (! empty($validated['alert_min_severity'])) {
             Setting::setValue('tactical_alert_min_severity', $validated['alert_min_severity']);
