@@ -27,6 +27,9 @@
 import { chromium } from 'playwright';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { createRequire } from 'module';
+
+const require = createRequire(import.meta.url);
 
 function readStdin() {
   return new Promise((resolve, reject) => {
@@ -69,7 +72,7 @@ async function run(job) {
   assertAllowedHost(baseUrl);
 
   const screenDir = process.env.QA_SCREENSHOT_DIR || '/tmp/qa-screens';
-  const result = { scenario, ok: true, steps: [], screenshots: [], finalUrl: null, snapshot: null, error: null };
+  const result = { scenario, ok: true, steps: [], screenshots: [], finalUrl: null, snapshot: null, axe: [], error: null };
 
   const browser = await chromium.launch();
   const context = await browser.newContext({ ignoreHTTPSErrors: true }); // dev uses a self-signed cert
@@ -138,6 +141,21 @@ async function run(job) {
             // ariaSnapshot (YAML role tree) is the supported page-reading primitive.
             result.snapshot = await page.locator('body').ariaSnapshot();
             break;
+          case 'axe': {
+            // Inject the axe-core bundle into the page and run it; record only the
+            // violations (the actionable half). Read-only: axe never mutates the DOM.
+            await page.addScriptTag({ path: require.resolve('axe-core/axe.min.js') });
+            const axeRun = await page.evaluate(async () => await window.axe.run());
+            const violations = (axeRun.violations || []).map((v) => ({
+              id: v.id,
+              impact: v.impact,
+              help: v.help,
+              nodes: v.nodes.flatMap((n) => n.target),
+            }));
+            result.axe.push({ url: page.url(), label: action.name || `axe-${i}`, violations });
+            step.detail = `axe @ ${page.url()}: ${violations.length} violation(s)`;
+            break;
+          }
           case 'screenshot': {
             const path = `${screenDir}/${scenario}-${action.name || i}.png`;
             mkdirSync(dirname(path), { recursive: true });
