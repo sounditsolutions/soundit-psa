@@ -456,6 +456,8 @@ Route::middleware('auth')->group(function () {
     Route::post('/assets/{asset}/tactical/refresh', [AssetController::class, 'refreshTactical'])->name('assets.tactical-refresh');
     Route::post('/assets/{asset}/tactical/command', [AssetController::class, 'runTacticalCommand'])->name('assets.run-tactical-command');
     Route::post('/assets/{asset}/tactical/shutdown', [AssetController::class, 'shutdownTacticalAgent'])->name('assets.shutdown-tactical');
+    Route::post('/assets/{asset}/tactical/meshcentral', [AssetController::class, 'openTacticalMeshCentral'])
+        ->middleware('throttle:30,1')->name('assets.tactical-meshcentral');
     Route::post('/assets/{asset}/users', [AssetController::class, 'addUser'])->name('assets.add-user');
     Route::delete('/assets/{asset}/users/{person}', [AssetController::class, 'removeUser'])->name('assets.remove-user');
     Route::post('/assets/{asset}/users/{person}/primary', [AssetController::class, 'setPrimaryUser'])->name('assets.set-primary-user');
