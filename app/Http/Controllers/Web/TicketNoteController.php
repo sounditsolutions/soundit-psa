@@ -164,7 +164,12 @@ class TicketNoteController extends Controller
         ]);
 
         // Re-link any attachments referenced in the body to this note
-        app(\App\Services\AttachmentService::class)->linkAttachmentsFromBody($note, $request->input('body'));
+        app(\App\Services\AttachmentService::class)->linkAttachmentsFromBody(
+            $request->input('body'),
+            'App\\Models\\TicketNote',
+            $note->id,
+            $ticket->id,
+        );
 
         return redirect()->route('tickets.show', $ticket)
             ->with('success', 'Note updated.');
