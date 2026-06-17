@@ -817,6 +817,38 @@
                 </div>
                 <div id="tacticalRecoverResult" class="mt-2 small" style="display:none;"></div>
 
+                {{-- Remote access via MeshCentral --}}
+                <hr class="my-3">
+                <div class="mt-3">
+                    <label class="form-label small text-muted d-block">Remote access (MeshCentral)</label>
+                    <div class="btn-group btn-group-sm" role="group">
+                        <button type="button" class="btn btn-outline-secondary" data-mesh-type="control"><i class="bi bi-display me-1"></i>Control</button>
+                        <button type="button" class="btn btn-outline-secondary" data-mesh-type="terminal"><i class="bi bi-terminal me-1"></i>Terminal</button>
+                        <button type="button" class="btn btn-outline-secondary" data-mesh-type="file"><i class="bi bi-folder me-1"></i>Files</button>
+                    </div>
+                    <div class="text-danger small mt-1 d-none" data-mesh-error></div>
+                </div>
+                <script>
+                document.querySelectorAll('[data-mesh-type]').forEach(btn => btn.addEventListener('click', async () => {
+                    const err = document.querySelector('[data-mesh-error]'); err.classList.add('d-none');
+                    const tab = window.open('', '_blank');                          // open SYNCHRONOUSLY in the gesture (popup-safe)
+                    const label = btn.innerHTML; btn.disabled = true; btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+                    try {
+                        const r = await fetch(@json(route('assets.tactical-meshcentral', $asset)), {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content },
+                            body: JSON.stringify({ type: btn.dataset.meshType }),
+                        });
+                        const j = await r.json();
+                        if (!r.ok) throw new Error(j.error || 'Could not open remote session.');
+                        if (tab) tab.location = j.url; else window.location = j.url;   // open verbatim (G1)
+                    } catch (e) {
+                        if (tab) tab.close();
+                        err.textContent = e.message; err.classList.remove('d-none');
+                    } finally { btn.disabled = false; btn.innerHTML = label; }
+                }));
+                </script>
+
                 {{-- Destructive actions --}}
                 <hr class="my-3">
                 <div class="d-flex justify-content-between align-items-center">

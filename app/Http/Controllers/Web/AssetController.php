@@ -986,6 +986,82 @@ class AssetController extends Controller
     }
 
     /**
+     * Open a MeshCentral remote-control session for a Tactical-linked device (P6).
+     *
+     * Mints a fresh deep-link URL at click-time (tokens are short-lived; NEVER
+     * cached or logged). Returns {url} with Cache-Control: no-store so the browser
+     * discards it immediately and never serves it from cache.
+     *
+     * Security gates:
+     *   G1/G2  — audit every outcome (ok AND every failure) via TacticalActionLog;
+     *            params stores only {link_type} — NEVER the URL or token.
+     *   G4     — TacticalClientException → generic 502; no report()/rethrow
+     *            (responseBody may carry a token).
+     *   G5     — auth (web middleware) + linked tacticalAsset.agent_id (422);
+     *            throttle:30,1 on the route; ticket_id nullable|exists.
+     *   G6     — returned URL validated via SafeTacticalWebUrl (https + host);
+     *            no-usable-link → 422 (not 502 — a transport failure it is not).
+     *   G7     — Cache-Control: no-store on the success JSON response.
+     *   G8     — action_key is a fixed enum; free-text would need ActionRedactor.
+     */
+    public function openTacticalMeshCentral(Request $request, Asset $asset)
+    {
+        $data = $request->validate([
+            'type' => 'required|in:control,terminal,file',
+            'ticket_id' => 'nullable|integer|exists:tickets,id',
+        ]);
+
+        $asset->load('tacticalAsset');
+        $agentId = $asset->tacticalAsset->agent_id ?? null;
+
+        if (! $agentId) {
+            return response()->json(['error' => 'This device is not linked to a Tactical agent.'], 422);
+        }
+
+        // G2 helper: one URL-free audit row for any outcome.
+        $audit = function (string $status) use ($request, $asset, $agentId, $data) {
+            \App\Models\TacticalActionLog::create([
+                'actor_id' => $request->user()?->id,
+                'actor_label' => $request->user()?->email ?? 'unknown',
+                'action_key' => 'tactical.remote_control',          // G8: fixed enum — if you add free-text, route via ActionRedactor
+                'agent_id' => $agentId,
+                'asset_id' => $asset->id,
+                'ticket_id' => $data['ticket_id'] ?? null,
+                'target_label' => $asset->tacticalAsset->hostname ?? $asset->hostname ?? 'unknown',
+                'params' => ['link_type' => $data['type']],     // G1/G2: never the URL
+                'result_status' => $status,
+                'message' => $status === 'ok' ? 'Remote session opened.' : 'Remote session open failed.',
+                'correlation_id' => (string) \Illuminate\Support\Str::uuid(),
+            ]);
+        };
+
+        try {
+            $links = app(\App\Services\Tactical\TacticalClient::class)->getMeshCentralLinks($agentId);
+        } catch (\App\Services\Tactical\TacticalClientException $e) {
+            $audit('error');   // G4: do NOT report()/rethrow — $e->responseBody may carry a token
+
+            return response()->json(['error' => 'Could not reach Tactical to open a remote session. Check that Tactical RMM is reachable and try again.'], 502);
+        }
+
+        $url = $links[$data['type']] ?? null;
+        $valid = $url !== null && \Illuminate\Support\Facades\Validator::make(
+            ['u' => $url],
+            ['u' => [new \App\Rules\SafeTacticalWebUrl]]
+        )->passes();
+
+        if (! $valid) {
+            $audit('error');
+
+            // The realistic cause is MeshCentral not configured for this device, not a transport failure.
+            return response()->json(['error' => "MeshCentral isn't available for this device. Confirm the RMM server's MeshCentral integration is configured and this agent has a mesh connection."], 422);
+        }
+
+        $audit('ok');
+
+        return response()->json(['url' => $url])->header('Cache-Control', 'no-store');   // G1 verbatim, G7 no-store
+    }
+
+    /**
      * Run an ad-hoc command on a Tactical agent — the most dangerous capability
      * in the integration (arbitrary RCE). DESTRUCTIVE: confirm-gated by a
      * typed-hostname match (the human gate) PLUS a payloadHash-bound confirm

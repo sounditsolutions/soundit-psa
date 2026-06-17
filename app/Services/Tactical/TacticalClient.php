@@ -447,6 +447,20 @@ class TacticalClient
         return $this->get("agents/{$agentId}/checks/", $timeout);
     }
 
+    /**
+     * Mint MeshCentral remote-control deep-links for an agent.
+     * Tokens are short-lived — callers MUST fetch at click-time and NEVER cache or log the URLs.
+     *
+     * Returns Tactical's decoded JSON: {hostname, control, terminal, file, status, client, site}
+     * where control/terminal/file are absolute https:// URLs containing session tokens.
+     *
+     * @throws TacticalClientException
+     */
+    public function getMeshCentralLinks(string $agentId, ?int $timeout = null): array
+    {
+        return $this->get("agents/{$agentId}/meshcentral/", $timeout);
+    }
+
     public function getAgentTasks(string $agentId): array
     {
         return $this->get("agents/{$agentId}/tasks/");
