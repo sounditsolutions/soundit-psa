@@ -17,6 +17,9 @@ class TicketResolutionDrafter
 {
     private const MAX_OUTPUT_TOKENS = 400;
 
+    /** Resolution surface ceiling for the appended Tactical telemetry block. */
+    private const TACTICAL_CONTEXT_MAX_TOKENS = 1500;
+
     private const SYSTEM_PROMPT = <<<'PROMPT'
 You summarize how an IT support ticket was resolved.
 
@@ -75,8 +78,9 @@ PROMPT;
         $tacticalBlock = $this->resolveTacticalBlock($ticket);
         if ($tacticalBlock !== null) {
             Log::info('[TicketResolutionDrafter] Appending Tactical telemetry block', [
-                'ticket_id'       => $ticket->id,
+                'ticket_id'        => $ticket->id,
                 'estimated_tokens' => $tacticalBlock->estimatedTokens,
+                'max_tokens'       => self::TACTICAL_CONTEXT_MAX_TOKENS,
             ]);
             $context .= "\n\n".$tacticalBlock->text;
         }
@@ -120,7 +124,7 @@ PROMPT;
                 continue;
             }
 
-            return app(TacticalContextProvider::class)->forAsset($asset);
+            return app(TacticalContextProvider::class)->forAsset($asset, maxTokens: self::TACTICAL_CONTEXT_MAX_TOKENS);
         }
 
         return null;
