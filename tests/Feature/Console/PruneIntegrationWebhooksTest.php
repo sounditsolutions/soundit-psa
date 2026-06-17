@@ -21,10 +21,10 @@ class PruneIntegrationWebhooksTest extends TestCase
         // created_at/updated_at are not in $fillable, so use DB::table to seed
         // a controlled timestamp and then retrieve the hydrated model.
         $id = DB::table('tactical_webhooks')->insertGetId([
-            'event'      => 'alert_failure',
-            'agent_id'   => 'agent-1',
-            'payload'    => json_encode(['test' => true]),
-            'status'     => $status,
+            'event' => 'alert_failure',
+            'agent_id' => 'agent-1',
+            'payload' => json_encode(['test' => true]),
+            'status' => $status,
             'created_at' => $createdAt,
             'updated_at' => $createdAt,
         ]);
@@ -35,12 +35,12 @@ class PruneIntegrationWebhooksTest extends TestCase
     private function ninjaWebhook(string $status, string $createdAt): NinjaWebhook
     {
         $id = DB::table('ninja_webhooks')->insertGetId([
-            'activity_type'   => 'DEVICE_STATUS_CHANGE',
+            'activity_type' => 'DEVICE_STATUS_CHANGE',
             'ninja_device_id' => 1,
-            'payload'         => json_encode(['test' => true]),
-            'status'          => $status,
-            'created_at'      => $createdAt,
-            'updated_at'      => $createdAt,
+            'payload' => json_encode(['test' => true]),
+            'status' => $status,
+            'created_at' => $createdAt,
+            'updated_at' => $createdAt,
         ]);
 
         return NinjaWebhook::findOrFail($id);
@@ -56,20 +56,20 @@ class PruneIntegrationWebhooksTest extends TestCase
         $old = now()->subDays(31)->toDateTimeString();
 
         $tacticalOldProcessed = $this->tacticalWebhook('processed', $old);
-        $tacticalOldSkipped   = $this->tacticalWebhook('skipped',   $old);
-        $tacticalOldFailed    = $this->tacticalWebhook('failed',     $old);
-        $ninjaOldProcessed    = $this->ninjaWebhook('processed', $old);
-        $ninjaOldSkipped      = $this->ninjaWebhook('skipped',   $old);
-        $ninjaOldFailed       = $this->ninjaWebhook('failed',    $old);
+        $tacticalOldSkipped = $this->tacticalWebhook('skipped', $old);
+        $tacticalOldFailed = $this->tacticalWebhook('failed', $old);
+        $ninjaOldProcessed = $this->ninjaWebhook('processed', $old);
+        $ninjaOldSkipped = $this->ninjaWebhook('skipped', $old);
+        $ninjaOldFailed = $this->ninjaWebhook('failed', $old);
 
         $this->artisan('integrations:prune-webhooks')->assertSuccessful();
 
         $this->assertDatabaseMissing('tactical_webhooks', ['id' => $tacticalOldProcessed->id]);
         $this->assertDatabaseMissing('tactical_webhooks', ['id' => $tacticalOldSkipped->id]);
         $this->assertDatabaseMissing('tactical_webhooks', ['id' => $tacticalOldFailed->id]);
-        $this->assertDatabaseMissing('ninja_webhooks',    ['id' => $ninjaOldProcessed->id]);
-        $this->assertDatabaseMissing('ninja_webhooks',    ['id' => $ninjaOldSkipped->id]);
-        $this->assertDatabaseMissing('ninja_webhooks',    ['id' => $ninjaOldFailed->id]);
+        $this->assertDatabaseMissing('ninja_webhooks', ['id' => $ninjaOldProcessed->id]);
+        $this->assertDatabaseMissing('ninja_webhooks', ['id' => $ninjaOldSkipped->id]);
+        $this->assertDatabaseMissing('ninja_webhooks', ['id' => $ninjaOldFailed->id]);
     }
 
     /** Recent processed rows (within the 30-day window) are kept. */
@@ -78,12 +78,12 @@ class PruneIntegrationWebhooksTest extends TestCase
         $recent = now()->subDays(5)->toDateTimeString();
 
         $tacticalRecent = $this->tacticalWebhook('processed', $recent);
-        $ninjaRecent    = $this->ninjaWebhook('processed',    $recent);
+        $ninjaRecent = $this->ninjaWebhook('processed', $recent);
 
         $this->artisan('integrations:prune-webhooks')->assertSuccessful();
 
         $this->assertDatabaseHas('tactical_webhooks', ['id' => $tacticalRecent->id]);
-        $this->assertDatabaseHas('ninja_webhooks',    ['id' => $ninjaRecent->id]);
+        $this->assertDatabaseHas('ninja_webhooks', ['id' => $ninjaRecent->id]);
     }
 
     /** Old pending rows are never deleted regardless of age. */
@@ -92,12 +92,12 @@ class PruneIntegrationWebhooksTest extends TestCase
         $old = now()->subDays(60)->toDateTimeString();
 
         $tacticalOldPending = $this->tacticalWebhook('pending', $old);
-        $ninjaOldPending    = $this->ninjaWebhook('pending',    $old);
+        $ninjaOldPending = $this->ninjaWebhook('pending', $old);
 
         $this->artisan('integrations:prune-webhooks')->assertSuccessful();
 
         $this->assertDatabaseHas('tactical_webhooks', ['id' => $tacticalOldPending->id]);
-        $this->assertDatabaseHas('ninja_webhooks',    ['id' => $ninjaOldPending->id]);
+        $this->assertDatabaseHas('ninja_webhooks', ['id' => $ninjaOldPending->id]);
     }
 
     /** --dry-run reports the count but deletes nothing. */
@@ -106,7 +106,7 @@ class PruneIntegrationWebhooksTest extends TestCase
         $old = now()->subDays(31)->toDateTimeString();
 
         $tw = $this->tacticalWebhook('processed', $old);
-        $nw = $this->ninjaWebhook('processed',    $old);
+        $nw = $this->ninjaWebhook('processed', $old);
 
         $this->artisan('integrations:prune-webhooks --dry-run')
             ->expectsOutputToContain('Dry run')
@@ -114,7 +114,7 @@ class PruneIntegrationWebhooksTest extends TestCase
 
         // Nothing deleted
         $this->assertDatabaseHas('tactical_webhooks', ['id' => $tw->id]);
-        $this->assertDatabaseHas('ninja_webhooks',    ['id' => $nw->id]);
+        $this->assertDatabaseHas('ninja_webhooks', ['id' => $nw->id]);
     }
 
     /** Output mentions both table names when rows are actually deleted. */
@@ -123,7 +123,7 @@ class PruneIntegrationWebhooksTest extends TestCase
         $old = now()->subDays(31)->toDateTimeString();
 
         $this->tacticalWebhook('processed', $old);
-        $this->ninjaWebhook('processed',    $old);
+        $this->ninjaWebhook('processed', $old);
 
         // Use expectsOutputToContain for a combined token present in both table names.
         // The info line is: "Pruned N row(s) from tactical_webhooks and N row(s) from ninja_webhooks ..."

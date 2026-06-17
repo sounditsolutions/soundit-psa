@@ -25,7 +25,7 @@ class PruneIntegrationWebhooks extends Command
     public function handle(): int
     {
         $dryRun = (bool) $this->option('dry-run');
-        $days   = (int) $this->option('days');
+        $days = (int) $this->option('days');
         $cutoff = now()->subDays($days);
 
         $tacticalQuery = TacticalWebhook::whereIn('status', self::TERMINAL_STATUSES)
@@ -35,8 +35,8 @@ class PruneIntegrationWebhooks extends Command
             ->where('created_at', '<', $cutoff);
 
         $tacticalCount = $tacticalQuery->count();
-        $ninjaCount    = $ninjaQuery->count();
-        $total         = $tacticalCount + $ninjaCount;
+        $ninjaCount = $ninjaQuery->count();
+        $total = $tacticalCount + $ninjaCount;
 
         if ($dryRun) {
             $this->warn("Dry run — would prune {$tacticalCount} row(s) from tactical_webhooks and {$ninjaCount} row(s) from ninja_webhooks (total: {$total}).");
@@ -52,8 +52,8 @@ class PruneIntegrationWebhooks extends Command
         if ($total > 0) {
             Log::info('[Integrations] Pruned old terminal webhook rows', [
                 'tactical_webhooks' => $tacticalCount,
-                'ninja_webhooks'    => $ninjaCount,
-                'retention_days'    => $days,
+                'ninja_webhooks' => $ninjaCount,
+                'retention_days' => $days,
             ]);
         }
 

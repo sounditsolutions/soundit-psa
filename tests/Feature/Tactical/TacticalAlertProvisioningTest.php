@@ -81,12 +81,12 @@ class TacticalAlertProvisioningTest extends TestCase
 
         $mockHttp = new GuzzleClient([
             'base_uri' => 'https://tactical.example.com/',
-            'handler'  => $stack,
+            'handler' => $stack,
             'allow_redirects' => false,
             'headers' => [
-                'X-API-KEY'    => 'test-api-key',
+                'X-API-KEY' => 'test-api-key',
                 'Content-Type' => 'application/json',
-                'Accept'       => 'application/json',
+                'Accept' => 'application/json',
             ],
         ]);
 
@@ -97,8 +97,8 @@ class TacticalAlertProvisioningTest extends TestCase
     private function make403Exception(): TacticalClientException
     {
         $guzzleResp = new Response(403, [], '{"detail":"Permission denied"}');
-        $guzzleReq  = new GuzzleRequest('POST', 'https://tactical.example.com/core/urlaction/');
-        $guzzleEx   = RequestException::create($guzzleReq, $guzzleResp);
+        $guzzleReq = new GuzzleRequest('POST', 'https://tactical.example.com/core/urlaction/');
+        $guzzleEx = RequestException::create($guzzleReq, $guzzleResp);
 
         return TacticalClientException::fromGuzzle('Tactical API error: 403 Forbidden', $guzzleEx);
     }
@@ -107,8 +107,8 @@ class TacticalAlertProvisioningTest extends TestCase
     private function make404Exception(): TacticalClientException
     {
         $guzzleResp = new Response(404, [], '{"detail":"Not found"}');
-        $guzzleReq  = new GuzzleRequest('PUT', 'https://tactical.example.com/core/urlaction/7/');
-        $guzzleEx   = RequestException::create($guzzleReq, $guzzleResp);
+        $guzzleReq = new GuzzleRequest('PUT', 'https://tactical.example.com/core/urlaction/7/');
+        $guzzleEx = RequestException::create($guzzleReq, $guzzleResp);
 
         return TacticalClientException::fromGuzzle('Tactical API error: 404 Not Found', $guzzleEx);
     }
@@ -176,7 +176,7 @@ class TacticalAlertProvisioningTest extends TestCase
 
         $this->app->instance(TacticalClient::class, $client);
         $service = $this->app->make(TacticalProvisioningService::class);
-        $result  = $service->provision($this->actor->id);
+        $result = $service->provision($this->actor->id);
 
         $this->assertTrue($result['success']);
 
@@ -225,7 +225,7 @@ class TacticalAlertProvisioningTest extends TestCase
 
         $this->app->instance(TacticalClient::class, $client);
         $service = $this->app->make(TacticalProvisioningService::class);
-        $result  = $service->provision($this->actor->id);
+        $result = $service->provision($this->actor->id);
 
         $this->assertTrue($result['success']);
 
@@ -240,7 +240,7 @@ class TacticalAlertProvisioningTest extends TestCase
         $this->assertSame('PSA Auto-Ticket', $body['name']);
         $this->assertTrue($body['is_active']);
         $this->assertSame('rest', $body['action_type']);
-        $this->assertSame(7, $body['action_rest'],          'action_rest must be the urlaction id');
+        $this->assertSame(7, $body['action_rest'], 'action_rest must be the urlaction id');
         $this->assertSame('rest', $body['resolved_action_type']);
         $this->assertSame(7, $body['resolved_action_rest'], 'resolved_action_rest must be the urlaction id');
         $this->assertTrue($body['agent_script_actions']);
@@ -265,7 +265,7 @@ class TacticalAlertProvisioningTest extends TestCase
 
         $this->app->instance(TacticalClient::class, $client);
         $service = $this->app->make(TacticalProvisioningService::class);
-        $result  = $service->provision($this->actor->id);
+        $result = $service->provision($this->actor->id);
 
         $this->assertTrue($result['success']);
 
@@ -294,7 +294,7 @@ class TacticalAlertProvisioningTest extends TestCase
 
         $this->app->instance(TacticalClient::class, $client);
         $service = $this->app->make(TacticalProvisioningService::class);
-        $result  = $service->provision($this->actor->id);
+        $result = $service->provision($this->actor->id);
 
         $this->assertTrue($result['success']);
 
@@ -328,7 +328,7 @@ class TacticalAlertProvisioningTest extends TestCase
 
         $this->app->instance(TacticalClient::class, $client);
         $service = $this->app->make(TacticalProvisioningService::class);
-        $result  = $service->provision($this->actor->id);
+        $result = $service->provision($this->actor->id);
 
         $this->assertTrue($result['success']);
 
@@ -381,7 +381,7 @@ class TacticalAlertProvisioningTest extends TestCase
 
         $this->app->instance(TacticalClient::class, $client);
         $service = $this->app->make(TacticalProvisioningService::class);
-        $result  = $service->provision($this->actor->id);
+        $result = $service->provision($this->actor->id);
 
         $this->assertTrue($result['success']);
 
@@ -500,7 +500,7 @@ class TacticalAlertProvisioningTest extends TestCase
         Setting::setValue('tactical_url_action_id', null);
         $this->app->instance(TacticalClient::class, $mockClient);
         $service = $this->app->make(TacticalProvisioningService::class);
-        $result  = $service->provision($this->actor->id);
+        $result = $service->provision($this->actor->id);
 
         $this->assertTrue($result['success']);
         $this->assertSame('88', Setting::getValue('tactical_alert_template_id'),
@@ -525,7 +525,7 @@ class TacticalAlertProvisioningTest extends TestCase
 
         $this->app->instance(TacticalClient::class, $mockClient);
         $service = $this->app->make(TacticalProvisioningService::class);
-        $result  = $service->provision($this->actor->id);
+        $result = $service->provision($this->actor->id);
 
         $this->assertFalse($result['success']);
         $this->assertStringContainsString('403', $result['message']);
@@ -642,7 +642,7 @@ class TacticalAlertProvisioningTest extends TestCase
         $audit = json_decode($auditJson, true);
         $this->assertSame($this->actor->id, $audit['actor_id']);
         $this->assertTrue($audit['success']);
-        $this->assertSame(7,  $audit['url_action_id']);
+        $this->assertSame(7, $audit['url_action_id']);
         $this->assertSame(42, $audit['alert_template_id']);
 
         // Secret must NOT appear in the audit row
@@ -760,11 +760,11 @@ class TacticalAlertProvisioningTest extends TestCase
         // as Tactical's URLAction endpoint does on validation errors.
         $echoedBody = json_encode([
             'rest_headers' => json_encode(['X-Webhook-Key' => $webhookKey, 'Content-Type' => 'application/json']),
-            'pattern'      => ['This field is required.'],
+            'pattern' => ['This field is required.'],
         ]);
         $guzzleResp = new Response(400, [], $echoedBody);
-        $guzzleReq  = new GuzzleRequest('POST', 'https://tactical.example.com/core/urlaction/');
-        $guzzleEx   = RequestException::create($guzzleReq, $guzzleResp);
+        $guzzleReq = new GuzzleRequest('POST', 'https://tactical.example.com/core/urlaction/');
+        $guzzleEx = RequestException::create($guzzleReq, $guzzleResp);
         // After the sink-4 fix, fromGuzzle() produces a body-free message; the key
         // is stored only in responseBody() — which is what we test does NOT leak.
         $keyLeakException = TacticalClientException::fromGuzzle(
@@ -794,7 +794,7 @@ class TacticalAlertProvisioningTest extends TestCase
 
         $this->app->instance(TacticalClient::class, $mockClient);
         $service = $this->app->make(TacticalProvisioningService::class);
-        $result  = $service->provision($this->actor->id);
+        $result = $service->provision($this->actor->id);
 
         $this->assertFalse($result['success']);
 
@@ -836,7 +836,7 @@ class TacticalAlertProvisioningTest extends TestCase
 
         $this->app->instance(TacticalClient::class, $client);
         $service = $this->app->make(TacticalProvisioningService::class);
-        $result  = $service->provision($this->actor->id);
+        $result = $service->provision($this->actor->id);
 
         $this->assertTrue($result['success']);
         $warning = $result['warning'] ?? '';
@@ -876,7 +876,7 @@ class TacticalAlertProvisioningTest extends TestCase
 
         $this->app->instance(TacticalClient::class, $mockClient);
         $service = $this->app->make(TacticalProvisioningService::class);
-        $result  = $service->provision($this->actor->id);
+        $result = $service->provision($this->actor->id);
 
         // Must fail loudly — not succeed with a missing id
         $this->assertFalse($result['success'],
@@ -903,7 +903,7 @@ class TacticalAlertProvisioningTest extends TestCase
 
         $this->app->instance(TacticalClient::class, $mockClient);
         $service = $this->app->make(TacticalProvisioningService::class);
-        $result  = $service->provision($this->actor->id);
+        $result = $service->provision($this->actor->id);
 
         $this->assertFalse($result['success'],
             'Provision must fail when getAlertTemplates() does not contain the created name');

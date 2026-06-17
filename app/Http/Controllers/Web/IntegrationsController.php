@@ -1726,7 +1726,7 @@ class IntegrationsController extends Controller
 
         try {
             $service = app(\App\Services\Tactical\TacticalProvisioningService::class);
-            $result  = $service->provision(auth()->id());
+            $result = $service->provision(auth()->id());
 
             return response()->json($result);
         } catch (\Throwable $e) {
