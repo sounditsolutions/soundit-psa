@@ -83,6 +83,12 @@ Sound PSA is a **standalone MSP PSA** — not a wrapper or companion app. Each m
 
 See **[docs/INSTALL.md](docs/INSTALL.md)** for the full installation guide.
 
+### Docker Compose
+
+Docker Compose is available for maintainer convenience. See **[docs/DOCKER.md](docs/DOCKER.md)** for the local setup.
+
+### Manual Composer Setup
+
 ```bash
 cd ~/repos/soundit-psa
 composer install
@@ -99,6 +105,10 @@ php -S 127.0.0.1:8080 -t public
 ```
 
 ## Deployment
+
+### Docker Compose
+
+Production-style Docker Compose deployment is documented in **[docs/DOCKER.md](docs/DOCKER.md)** using `compose.yml` plus `compose.prod.yml`. This is the primary container workflow for MSPs and other operators using Sound PSA with Docker.
 
 ```bash
 ssh your-vps "cd /var/www/psa && git pull && composer install --no-dev --optimize-autoloader && php artisan migrate --force && php artisan config:cache && php artisan route:cache && php artisan view:cache"
