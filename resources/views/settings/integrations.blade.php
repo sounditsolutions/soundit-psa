@@ -866,7 +866,11 @@
                     <button type="button" class="btn btn-outline-info btn-sm" data-bs-toggle="collapse" data-bs-target="#tactical-webhook-setup">
                         <i class="bi bi-broadcast me-1"></i>Webhook Setup
                     </button>
+                    <button type="button" class="btn btn-outline-success btn-sm" onclick="tacticalProvisionAlerts(this)">
+                        <i class="bi bi-lightning-charge me-1"></i>Provision alert&rarr;ticket
+                    </button>
                 </div>
+                <div id="tactical-provision-result" class="mt-2" style="display: none;"></div>
 
                 <div class="mt-3">
                     <form method="POST" action="{{ route('settings.integrations.tactical.update') }}" class="d-flex align-items-center gap-2">
@@ -3413,6 +3417,43 @@ function testConnection(service) {
     .finally(() => {
         btn.disabled = false;
         btn.innerHTML = '<i class="bi bi-plug me-1"></i>Test Connection';
+    });
+}
+
+function tacticalProvisionAlerts(btn) {
+    const resultDiv = document.getElementById('tactical-provision-result');
+    const originalHtml = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>Provisioning…';
+    resultDiv.style.display = 'block';
+    resultDiv.innerHTML = '<span class="text-muted"><i class="bi bi-hourglass-split me-1"></i>Provisioning Tactical alert&rarr;ticket pipeline…</span>';
+
+    fetch('{{ route("settings.integrations.tactical.provision-alerts") }}', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content,
+            'Accept': 'application/json',
+        },
+    })
+    .then(r => r.json())
+    .then(data => {
+        btn.disabled = false;
+        btn.innerHTML = originalHtml;
+        if (data.success) {
+            let html = '<span class="text-success"><i class="bi bi-check-circle me-1"></i>' + data.message + '</span>';
+            if (data.warning) {
+                html += '<br><span class="text-warning"><i class="bi bi-exclamation-triangle me-1"></i>' + data.warning + '</span>';
+            }
+            resultDiv.innerHTML = html;
+        } else {
+            resultDiv.innerHTML = '<span class="text-danger"><i class="bi bi-x-circle me-1"></i>' + data.message + '</span>';
+        }
+    })
+    .catch(err => {
+        btn.disabled = false;
+        btn.innerHTML = originalHtml;
+        resultDiv.innerHTML = '<span class="text-danger"><i class="bi bi-x-circle me-1"></i>Request failed: ' + err + '</span>';
     });
 }
 

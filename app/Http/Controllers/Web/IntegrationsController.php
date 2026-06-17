@@ -1710,6 +1710,32 @@ class IntegrationsController extends Controller
         }
     }
 
+    /**
+     * Auto-provision Tactical's URLAction + AlertTemplate for the alert→ticket
+     * pipeline (P7 / G2–G5). Mirrors autoConfigureComet — returns JSON
+     * {success, message, warning?}.
+     *
+     * The actor id is captured here (auth()->id()) so the service can audit it
+     * without depending on the request context itself.
+     */
+    public function provisionTacticalAlerts(Request $request)
+    {
+        if (! TacticalConfig::isConfigured()) {
+            return response()->json(['success' => false, 'message' => 'Tactical RMM API credentials are not configured.']);
+        }
+
+        try {
+            $service = app(\App\Services\Tactical\TacticalProvisioningService::class);
+            $result  = $service->provision(auth()->id());
+
+            return response()->json($result);
+        } catch (\Throwable $e) {
+            Log::error('[TacticalProvisioning] Unexpected error', ['error' => $e->getMessage()]);
+
+            return response()->json(['success' => false, 'message' => 'An unexpected error occurred: '.$e->getMessage()]);
+        }
+    }
+
     public function syncNinjaBackup(NinjaBackupSyncService $service)
     {
         try {

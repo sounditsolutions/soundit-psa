@@ -61,4 +61,45 @@ class TacticalConfig
     {
         return self::get('alert_min_severity') ?: 'warning';
     }
+
+    // ── P7 provisioning keys ─────────────────────────────────────────────────
+
+    /**
+     * The Tactical URLAction id stored after provisioning, or null if not yet provisioned.
+     */
+    public static function urlActionId(): ?int
+    {
+        $v = Setting::getValue('tactical_url_action_id');
+
+        return $v !== null ? (int) $v : null;
+    }
+
+    /**
+     * The Tactical AlertTemplate id stored after provisioning, or null if not yet provisioned.
+     */
+    public static function alertTemplateId(): ?int
+    {
+        $v = Setting::getValue('tactical_alert_template_id');
+
+        return $v !== null ? (int) $v : null;
+    }
+
+    /**
+     * The prior default alert template id (recorded when provisioning detects a
+     * different existing default and refuses to clobber it). Null when absent.
+     */
+    public static function priorDefaultAlertTemplateId(): ?int
+    {
+        $v = Setting::getValue('tactical_prior_default_alert_template_id');
+
+        return $v !== null ? (int) $v : null;
+    }
+
+    /**
+     * Whether the alert→ticket auto-provisioning webhook has been set up.
+     */
+    public static function isAlertProvisioned(): bool
+    {
+        return self::urlActionId() !== null && self::alertTemplateId() !== null;
+    }
 }
