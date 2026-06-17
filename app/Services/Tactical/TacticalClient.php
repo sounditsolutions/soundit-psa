@@ -165,7 +165,7 @@ class TacticalClient
         return json_decode((string) $response->getBody(), true) ?? [];
     }
 
-    public function put(string $endpoint, array $body = []): mixed
+    public function put(string $endpoint, array $body = []): array
     {
         try {
             $response = $this->http->request('PUT', $endpoint, [
@@ -176,7 +176,7 @@ class TacticalClient
             throw TacticalClientException::fromGuzzle("Tactical API error: {$e->getMessage()}", $e);
         }
 
-        return json_decode((string) $response->getBody(), true);
+        return json_decode((string) $response->getBody(), true) ?? [];
     }
 
     public function patch(string $endpoint, array $body = []): array
@@ -464,6 +464,72 @@ class TacticalClient
     public function getAgentTasks(string $agentId): array
     {
         return $this->get("agents/{$agentId}/tasks/");
+    }
+
+    // ── Provisioning helpers (P7) ────────────────────────────────────────────
+
+    /**
+     * Create a URL action (webhook). POST core/urlaction/
+     * Body is built by the provisioning service (Task 2).
+     *
+     * @return array{id: int, ...} Decoded response including the new id.
+     */
+    public function createUrlAction(array $body): array
+    {
+        return $this->post('core/urlaction/', $body);
+    }
+
+    /**
+     * Update an existing URL action. PUT core/urlaction/{id}/
+     *
+     * @return array Decoded response.
+     */
+    public function updateUrlAction(int $id, array $body): array
+    {
+        return $this->put("core/urlaction/{$id}/", $body);
+    }
+
+    /**
+     * Create an alert template. POST alerts/templates/
+     *
+     * @return array{id: int, ...} Decoded response including the new id.
+     */
+    public function createAlertTemplate(array $body): array
+    {
+        return $this->post('alerts/templates/', $body);
+    }
+
+    /**
+     * Update an existing alert template. PUT alerts/templates/{id}/
+     *
+     * @return array Decoded response.
+     */
+    public function updateAlertTemplate(int $id, array $body): array
+    {
+        return $this->put("alerts/templates/{$id}/", $body);
+    }
+
+    /**
+     * Set the global default alert template. PUT core/settings/ {alert_template: id}
+     * Only sends the alert_template field — not a read-modify-write of the full settings object.
+     *
+     * @return array Decoded response (Tactical echoes back the full settings object).
+     */
+    public function setDefaultAlertTemplate(int $templateId): array
+    {
+        return $this->put('core/settings/', ['alert_template' => $templateId]);
+    }
+
+    /**
+     * Read the global core settings. GET core/settings/
+     * Used by the provisioning service to check whether a default template is already set
+     * before clobbering it.
+     *
+     * @return array Decoded settings object.
+     */
+    public function getCoreSettings(): array
+    {
+        return $this->get('core/settings/');
     }
 
     public function isHealthy(): bool
