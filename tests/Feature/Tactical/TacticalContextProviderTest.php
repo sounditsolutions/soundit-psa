@@ -175,6 +175,83 @@ class TacticalContextProviderTest extends TestCase
         return $payload;
     }
 
+    public function test_clips_failing_check_stdout_to_200_chars(): void
+    {
+        $longStdout = str_repeat('x', 1000);
+        [$asset] = $this->seedTacticalAssetWithFailingCheck(stdout: $longStdout);
+        $block = $this->provider([
+            new Response(200, [], json_encode($this->agentStatusPayload())),
+            new Response(200, [], json_encode($this->failingChecksPayload($longStdout))),
+        ])->forAsset($asset)->text;
+        $this->assertStringContainsString(str_repeat('x', 200), $block);
+        $this->assertStringNotContainsString(str_repeat('x', 201), $block);
+    }
+
+    public function test_truncates_to_budget_at_a_line_boundary_keeping_freshness_and_failing_summary(): void
+    {
+        [$asset] = $this->seedTacticalAssetWithManyFailingChecks(count: 60); // huge raw section
+        $block = $this->provider($this->liveReadsWithManyFailingChecks(count: 60))->forAsset($asset, maxTokens: 300);
+        $this->assertLessThanOrEqual(300, $block->estimatedTokens);
+        $this->assertStringContainsString('freshAsOf:', $block->text);   // never dropped
+        $this->assertStringContainsString('failing of', $block->text);   // failing-signal summary never dropped
+        $this->assertStringNotContainsString("\nFailing check:...PARTIAL", $block->text); // no mid-line cut
+    }
+
+    /**
+     * Seed a TacticalAsset with N failing checks, each with a distinct name and
+     * short stdout. Used to produce a large raw section that exceeds the token budget.
+     *
+     * @return array{0: Asset}
+     */
+    private function seedTacticalAssetWithManyFailingChecks(int $count = 60): array
+    {
+        $asset = Asset::factory()->create(['hostname' => 'BOX-MANY']);
+        TacticalAsset::create([
+            'asset_id'            => $asset->id,
+            'agent_id'            => 'AGENT-MANY',
+            'hostname'            => 'BOX-MANY',
+            'os'                  => 'Windows 11 Pro',
+            'cpu'                 => 'Intel i7',
+            'ram_gb'              => 16.0,
+            'disk_summary'        => 'C: 256GB',
+            'status'              => 'online',
+            'needs_reboot'        => false,
+            'has_patches_pending' => false,
+            'checks_failing'      => $count,
+            'checks_total'        => $count,
+            'last_seen_at'        => now()->subMinutes(5),
+            'synced_at'           => now()->subMinutes(10),
+        ]);
+
+        return [$asset->refresh()];
+    }
+
+    /**
+     * Live read sequence for an asset with N failing checks.
+     * Returns two responses: agent-status + N checks (all failing).
+     *
+     * @return array<int, Response>
+     */
+    private function liveReadsWithManyFailingChecks(int $count = 60): array
+    {
+        $checks = [];
+        for ($i = 1; $i <= $count; $i++) {
+            $checks[] = [
+                'name'         => "Check {$i}",
+                'check_result' => [
+                    'status'  => 'failing',
+                    'retcode' => 1,
+                    'stdout'  => "output for check {$i}",
+                ],
+            ];
+        }
+
+        return [
+            new Response(200, [], json_encode($this->agentStatusPayload())),
+            new Response(200, [], json_encode($checks)),
+        ];
+    }
+
     /**
      * Checks response body with a single failing check whose stdout contains the
      * given string. Matches the getAgentChecks shape used throughout

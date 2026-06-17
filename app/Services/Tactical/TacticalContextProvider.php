@@ -22,10 +22,12 @@ final class TacticalContextProvider
             return null;
         }
 
-        // G1: compose deterministic flag/summary lines around raw free-text, then neutralize + redact + fence.
+        // G1: compose deterministic flag/summary lines around raw free-text (stdout clipped to 200),
+        // then neutralize + redact + apply token budget at line boundaries + fence.
         $plain = $this->neutralizeInjection($this->compose($insight));
         $redacted = $this->redactor->redact($plain);
-        $fenced = $this->fence($redacted, $insight->freshAsOf);
+        $budgeted = $this->budget($redacted, $maxTokens);
+        $fenced = $this->fence($budgeted, $insight->freshAsOf);
 
         return new PromptBlock($fenced, (int) ceil(mb_strlen($fenced) / 4), $insight->freshAsOf);
     }
@@ -64,10 +66,60 @@ final class TacticalContextProvider
             ? "{$i->pendingPatchCount} pending"
             : ($i->hasPendingPatches ? 'updates pending (count unknown)' : 'up to date'));
         $lines[] = "Open alerts: {$i->openAlerts}";
-        // Raw free-text (failing-check stdout) — the part the model synthesizes over (G4).
-        $raw = $i->toPlainText();
+        // Raw free-text (failing-check stdout, clipped to 200 chars per check) — G4.
+        // Built here (not via toPlainText()) so the per-check clip applies before fencing.
+        // toPlainText() is the redaction-input contract and remains untouched.
+        $rawLines = [];
+        if ($i->hostname !== null) {
+            $rawLines[] = "Host: {$i->hostname}";
+        }
+        if ($i->status !== null) {
+            $rawLines[] = "Status: {$i->status}";
+        }
+        if ($i->uptime !== null) {
+            $rawLines[] = "Uptime: {$i->uptime}";
+        }
+        if ($i->cpu !== null) {
+            $rawLines[] = "CPU: {$i->cpu}";
+        }
+        if ($i->ramGb !== null) {
+            $rawLines[] = "RAM: {$i->ramGb} GB";
+        }
+        foreach ($i->failingChecks as $check) {
+            $retcode = $check->retcode !== null ? " (rc={$check->retcode})" : '';
+            $clippedStdout = mb_substr($check->stdout, 0, 200);
+            $rawLines[] = "Failing check: {$check->name}{$retcode}: {$clippedStdout}";
+        }
+        $raw = implode("\n", $rawLines);
 
         return implode("\n", $lines).($raw !== '' ? "\n".$raw : '');
+    }
+
+    /**
+     * Truncate a body string at line boundaries so that fenced output fits within
+     * $maxTokens. Reserves $fenceOverhead tokens for the fence header/footer + stamp.
+     * Appends a truncation marker when the body is clipped.
+     *
+     * The summary lines (flags/checks/patches) are emitted FIRST in compose(), so
+     * line-boundary truncation always keeps them; the large raw failing-check section
+     * is what gets dropped. The freshness stamp lives in the fence and is never touched.
+     */
+    private function budget(string $body, int $maxTokens): string
+    {
+        $fenceOverhead = 55; // tokens reserved for fence header/footer (~43) + truncation marker (~7) + margin
+        $maxChars = max(0, ($maxTokens - $fenceOverhead)) * 4;
+        if (mb_strlen($body) <= $maxChars) {
+            return $body;
+        }
+        $kept = '';
+        foreach (explode("\n", $body) as $line) {
+            if (mb_strlen($kept) + mb_strlen($line) + 1 > $maxChars) {
+                break; // line boundary
+            }
+            $kept .= ($kept === '' ? '' : "\n").$line;
+        }
+
+        return $kept."\n… (truncated to budget)";
     }
 
     /** Render a boolean flag as explicit "yes" or "no" text. */
