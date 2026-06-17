@@ -2,10 +2,8 @@
 
 namespace Tests\Feature\Tactical;
 
-use App\Enums\AlertSeverity;
 use App\Enums\AlertStatus;
 use App\Enums\TicketSource;
-use App\Enums\TicketStatus;
 use App\Models\Alert;
 use App\Models\Client;
 use App\Models\Setting;
@@ -158,13 +156,6 @@ class TacticalAutoTicketTest extends TestCase
             $p['check_name'] = "Check-{$i}";
             $this->service()->handleAlertFailure($p);
         }
-
-        $normalTicketCount = Ticket::where('source', TicketSource::Alert->value)
-            ->whereNull('source_ref') // storm ticket would not have source_ref matching an alert id pattern, OR check subject
-            ->orWhere(function ($q) {
-                $q->where('source', TicketSource::Alert->value)
-                    ->whereNotNull('source_ref');
-            });
 
         // All $cap alerts should have tickets (we haven't exceeded yet)
         $this->assertSame($cap, Ticket::where('source', TicketSource::Alert->value)->count(),

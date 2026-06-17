@@ -315,8 +315,10 @@ class Ticket extends Model
             return false;
         }
 
-        // Gate 1 & 2: query notes, excluding soft-deleted ones (withTrashed in the relation).
-        // We want active notes only — trashed notes don't count.
+        // Gate 1 & 2: query via a fresh hasMany(TicketNote::class) which applies the
+        // default global scope and therefore EXCLUDES soft-deleted notes by default.
+        // (The notes() relation uses withTrashed() so that already-loaded relation is
+        // bypassed here — we want active notes only; trashed notes don't count.)
         $systemTypes = array_map(
             fn (NoteType $t) => $t->value,
             NoteType::systemGenerated(),

@@ -49,7 +49,7 @@ class TacticalProvisioningService
             // exception message. Log only the status code, not the raw body summary.
             Log::warning('[TacticalProvisioning] Provision failed', [
                 'actor_id' => $actorId,
-                'status'   => $e->statusCode(),
+                'status' => $e->statusCode(),
             ]);
 
             return ['success' => false, 'message' => $message];
@@ -138,9 +138,9 @@ class TacticalProvisioningService
             // was false (we skipped setDefaultAlertTemplate) and would mislead an
             // operator into believing auto-ticketing is already live.
             $warning = "A different alert template (id {$currentDefault}) is already your Tactical global default; "
-                . "it was left unchanged to avoid clobbering it. "
-                . "To activate PSA auto-ticketing, set the default to template id {$newAlertTemplateId} "
-                . "in Tactical → Settings → Alert Templates.";
+                .'it was left unchanged to avoid clobbering it. '
+                ."To activate PSA auto-ticketing, set the default to template id {$newAlertTemplateId} "
+                .'in Tactical → Settings → Alert Templates.';
             // We intentionally do NOT call setDefaultAlertTemplate here.
         } else {
             // Empty or already ours — safe to set.
@@ -170,23 +170,23 @@ class TacticalProvisioningService
     private function buildUrlActionBody(string $webhookKey): array
     {
         return [
-            'name'         => 'PSA Ticket Webhook',
-            'desc'         => 'PSA integration: creates and resolves tickets from Tactical alerts.',
-            'pattern'      => url('/api/webhooks/tactical'),
-            'action_type'  => 'rest',
-            'rest_method'  => 'post',
+            'name' => 'PSA Ticket Webhook',
+            'desc' => 'PSA integration: creates and resolves tickets from Tactical alerts.',
+            'pattern' => url('/api/webhooks/tactical'),
+            'action_type' => 'rest',
+            'rest_method' => 'post',
             'rest_headers' => json_encode([
-                'Content-Type'  => 'application/json',
+                'Content-Type' => 'application/json',
                 'X-Webhook-Key' => $webhookKey,
             ]),
-            'rest_body'    => json_encode([
-                'alert_id'   => '{{alert.id}}',
+            'rest_body' => json_encode([
+                'alert_id' => '{{alert.id}}',
                 'alert_type' => '{{alert.alert_type}}',
-                'severity'   => '{{alert.severity}}',
-                'agent'      => '{{agent.hostname}}',
-                'client'     => '{{client.name}}',
-                'site'       => '{{site.name}}',
-                'message'    => '{{alert.message}}',
+                'severity' => '{{alert.severity}}',
+                'agent' => '{{agent.hostname}}',
+                'client' => '{{client.name}}',
+                'site' => '{{site.name}}',
+                'message' => '{{alert.message}}',
             ]),
         ];
     }
@@ -194,15 +194,15 @@ class TacticalProvisioningService
     private function buildAlertTemplateBody(int $urlActionId): array
     {
         return [
-            'name'                   => 'PSA Auto-Ticket',
-            'is_active'              => true,
-            'action_type'            => 'rest',
-            'action_rest'            => $urlActionId,
-            'resolved_action_type'   => 'rest',
-            'resolved_action_rest'   => $urlActionId,
-            'agent_script_actions'   => true,
-            'check_script_actions'   => true,
-            'task_script_actions'    => true,
+            'name' => 'PSA Auto-Ticket',
+            'is_active' => true,
+            'action_type' => 'rest',
+            'action_rest' => $urlActionId,
+            'resolved_action_type' => 'rest',
+            'resolved_action_rest' => $urlActionId,
+            'agent_script_actions' => true,
+            'check_script_actions' => true,
+            'task_script_actions' => true,
         ];
     }
 
@@ -214,9 +214,9 @@ class TacticalProvisioningService
     {
         if ($e->statusCode() === 403) {
             return "403 Forbidden: Your Tactical API key's role lacks permission to provision alert→ticket. "
-                . "Grant 'Run URL Actions', 'Manage Alert Templates', and Core Settings write access "
-                . "to the API key's role in Tactical, then try again. "
-                . "Or configure URL Actions and Alert Templates manually in Tactical Settings.";
+                ."Grant 'Run URL Actions', 'Manage Alert Templates', and Core Settings write access "
+                ."to the API key's role in Tactical, then try again. "
+                .'Or configure URL Actions and Alert Templates manually in Tactical Settings.';
         }
 
         // FIX 1 (security): do NOT use $e->getMessage() here — the Guzzle
@@ -238,6 +238,10 @@ class TacticalProvisioningService
      */
     private function findUrlActionIdByName(string $name): int
     {
+        // Highest-id-wins: Tactical allows duplicate names; the newest create wins.
+        // The provision route is not overlap-locked — a concurrent admin run could
+        // create two entries; the highest id is ours and self-corrects for the normal
+        // single-admin flow.
         $actions = $this->client->getUrlActions();
         $bestId = null;
 
@@ -270,6 +274,10 @@ class TacticalProvisioningService
      */
     private function findAlertTemplateIdByName(string $name): int
     {
+        // Highest-id-wins: Tactical allows duplicate names; the newest create wins.
+        // The provision route is not overlap-locked — a concurrent admin run could
+        // create two entries; the highest id is ours and self-corrects for the normal
+        // single-admin flow.
         $templates = $this->client->getAlertTemplates();
         $bestId = null;
 
@@ -303,10 +311,10 @@ class TacticalProvisioningService
         ?string $errorMessage,
     ): void {
         $audit = [
-            'actor_id'          => $actorId,
-            'provisioned_at'    => now()->toIso8601String(),
-            'success'           => $success,
-            'url_action_id'     => $urlActionId,
+            'actor_id' => $actorId,
+            'provisioned_at' => now()->toIso8601String(),
+            'success' => $success,
+            'url_action_id' => $urlActionId,
             'alert_template_id' => $alertTemplateId,
         ];
 

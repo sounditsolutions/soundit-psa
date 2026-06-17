@@ -67,23 +67,23 @@ class TacticalAutoResolveTest extends TestCase
         $systemUserId = TriageConfig::systemUserId();
 
         $ticket = Ticket::factory()->create([
-            'source'       => TicketSource::Alert,
-            'status'       => TicketStatus::New,
+            'source' => TicketSource::Alert,
+            'status' => TicketStatus::New,
             'responded_at' => null,
-            'created_by'   => $systemUserId,
-            'client_id'    => null,
-            'resolution'   => null,
+            'created_by' => $systemUserId,
+            'client_id' => null,
+            'resolution' => null,
         ]);
 
         $alert = Alert::create([
-            'source'          => AlertSource::Tactical,
+            'source' => AlertSource::Tactical,
             'source_alert_id' => '84213',  // matches alert_resolved.json alert_id
-            'severity'        => AlertSeverity::Error,
-            'status'          => AlertStatus::Ticketed,
-            'title'           => 'Disk Space - C:',
-            'hostname'        => 'WS-FINANCE-04',
-            'fired_at'        => now(),
-            'ticket_id'       => $ticket->id,
+            'severity' => AlertSeverity::Error,
+            'status' => AlertStatus::Ticketed,
+            'title' => 'Disk Space - C:',
+            'hostname' => 'WS-FINANCE-04',
+            'fired_at' => now(),
+            'ticket_id' => $ticket->id,
         ]);
 
         return $alert->fresh();
@@ -97,23 +97,23 @@ class TacticalAutoResolveTest extends TestCase
         $systemUserId = TriageConfig::systemUserId();
 
         $ticket = Ticket::factory()->create([
-            'source'       => TicketSource::Manual,
-            'status'       => TicketStatus::New,
+            'source' => TicketSource::Manual,
+            'status' => TicketStatus::New,
             'responded_at' => null,
-            'created_by'   => $systemUserId,
-            'client_id'    => null,
-            'resolution'   => null,
+            'created_by' => $systemUserId,
+            'client_id' => null,
+            'resolution' => null,
         ]);
 
         $alert = Alert::create([
-            'source'          => AlertSource::Tactical,
+            'source' => AlertSource::Tactical,
             'source_alert_id' => '84213',
-            'severity'        => AlertSeverity::Error,
-            'status'          => AlertStatus::Ticketed,
-            'title'           => 'Disk Space - C:',
-            'hostname'        => 'WS-FINANCE-04',
-            'fired_at'        => now(),
-            'ticket_id'       => $ticket->id,
+            'severity' => AlertSeverity::Error,
+            'status' => AlertStatus::Ticketed,
+            'title' => 'Disk Space - C:',
+            'hostname' => 'WS-FINANCE-04',
+            'fired_at' => now(),
+            'ticket_id' => $ticket->id,
         ]);
 
         return $alert->fresh();
@@ -126,7 +126,7 @@ class TacticalAutoResolveTest extends TestCase
         $systemUserId = TriageConfig::systemUserId();
 
         $ticket = Ticket::factory()->create([
-            'status'       => TicketStatus::New,
+            'status' => TicketStatus::New,
             'responded_at' => null,
         ]);
 
@@ -135,10 +135,10 @@ class TacticalAutoResolveTest extends TestCase
             'ticket_id' => $ticket->id,
             'note_type' => NoteType::System,
             'author_id' => $systemUserId,
-            'who_type'  => WhoType::System,
-            'body'      => 'Alert fired.',
+            'who_type' => WhoType::System,
+            'body' => 'Alert fired.',
             'is_private' => true,
-            'noted_at'  => now(),
+            'noted_at' => now(),
         ]);
 
         // AiTriage note — NOT human
@@ -146,10 +146,10 @@ class TacticalAutoResolveTest extends TestCase
             'ticket_id' => $ticket->id,
             'note_type' => NoteType::AiTriage,
             'author_id' => $systemUserId,
-            'who_type'  => WhoType::System,
-            'body'      => 'AI triage output.',
+            'who_type' => WhoType::System,
+            'body' => 'AI triage output.',
             'is_private' => true,
-            'noted_at'  => now(),
+            'noted_at' => now(),
         ]);
 
         // StatusChange note — NOT human
@@ -157,10 +157,10 @@ class TacticalAutoResolveTest extends TestCase
             'ticket_id' => $ticket->id,
             'note_type' => NoteType::StatusChange,
             'author_id' => $systemUserId,
-            'who_type'  => WhoType::System,
-            'body'      => 'Status changed.',
+            'who_type' => WhoType::System,
+            'body' => 'Status changed.',
             'is_private' => true,
-            'noted_at'  => now(),
+            'noted_at' => now(),
         ]);
 
         $this->assertTrue($ticket->isUntouchedByHuman(),
@@ -172,7 +172,7 @@ class TacticalAutoResolveTest extends TestCase
         $user = User::factory()->create();
 
         $ticket = Ticket::factory()->create([
-            'status'       => TicketStatus::New,
+            'status' => TicketStatus::New,
             'responded_at' => null,
         ]);
 
@@ -180,10 +180,10 @@ class TacticalAutoResolveTest extends TestCase
             'ticket_id' => $ticket->id,
             'note_type' => NoteType::Note,
             'author_id' => $user->id,
-            'who_type'  => WhoType::Agent,
-            'body'      => 'Agent added a note.',
+            'who_type' => WhoType::Agent,
+            'body' => 'Agent added a note.',
             'is_private' => false,
-            'noted_at'  => now(),
+            'noted_at' => now(),
         ]);
 
         $this->assertFalse($ticket->isUntouchedByHuman(),
@@ -195,7 +195,7 @@ class TacticalAutoResolveTest extends TestCase
         $user = User::factory()->create();
 
         $ticket = Ticket::factory()->create([
-            'status'       => TicketStatus::New,
+            'status' => TicketStatus::New,
             'responded_at' => null,
         ]);
 
@@ -203,10 +203,10 @@ class TacticalAutoResolveTest extends TestCase
             'ticket_id' => $ticket->id,
             'note_type' => NoteType::Reply,
             'author_id' => $user->id,
-            'who_type'  => WhoType::Agent,
-            'body'      => 'Agent replied to the client.',
+            'who_type' => WhoType::Agent,
+            'body' => 'Agent replied to the client.',
             'is_private' => false,
-            'noted_at'  => now(),
+            'noted_at' => now(),
         ]);
 
         $this->assertFalse($ticket->isUntouchedByHuman(),
@@ -216,20 +216,20 @@ class TacticalAutoResolveTest extends TestCase
     public function test_is_untouched_false_when_ticket_has_portal_reply(): void
     {
         $ticket = Ticket::factory()->create([
-            'status'       => TicketStatus::New,
+            'status' => TicketStatus::New,
             'responded_at' => null,
         ]);
 
         // Portal reply: who_type = EndUser, author_id null (end-user with no PSA account)
         TicketNote::create([
-            'ticket_id'   => $ticket->id,
-            'note_type'   => NoteType::Reply,
-            'author_id'   => null,
-            'who_type'    => WhoType::EndUser,
+            'ticket_id' => $ticket->id,
+            'note_type' => NoteType::Reply,
+            'author_id' => null,
+            'who_type' => WhoType::EndUser,
             'author_name' => 'John Client',
-            'body'        => 'Client replied via portal.',
-            'is_private'  => false,
-            'noted_at'    => now(),
+            'body' => 'Client replied via portal.',
+            'is_private' => false,
+            'noted_at' => now(),
         ]);
 
         $this->assertFalse($ticket->isUntouchedByHuman(),
@@ -239,7 +239,7 @@ class TacticalAutoResolveTest extends TestCase
     public function test_is_untouched_false_when_status_is_not_new(): void
     {
         $ticket = Ticket::factory()->create([
-            'status'       => TicketStatus::InProgress,
+            'status' => TicketStatus::InProgress,
             'responded_at' => null,
         ]);
 
@@ -250,7 +250,7 @@ class TacticalAutoResolveTest extends TestCase
     public function test_is_untouched_false_when_responded_at_is_set(): void
     {
         $ticket = Ticket::factory()->create([
-            'status'       => TicketStatus::New,
+            'status' => TicketStatus::New,
             'responded_at' => now(),
         ]);
 
@@ -304,10 +304,10 @@ class TacticalAutoResolveTest extends TestCase
             'ticket_id' => $ticket->id,
             'note_type' => NoteType::Note,
             'author_id' => $user->id,
-            'who_type'  => WhoType::Agent,
-            'body'      => 'Agent investigated.',
+            'who_type' => WhoType::Agent,
+            'body' => 'Agent investigated.',
             'is_private' => false,
-            'noted_at'  => now(),
+            'noted_at' => now(),
         ]);
 
         $this->assertFalse($ticket->isUntouchedByHuman(),
@@ -350,14 +350,14 @@ class TacticalAutoResolveTest extends TestCase
 
         // Portal reply makes it human-touched
         TicketNote::create([
-            'ticket_id'   => $ticket->id,
-            'note_type'   => NoteType::Reply,
-            'author_id'   => null,
-            'who_type'    => WhoType::EndUser,
+            'ticket_id' => $ticket->id,
+            'note_type' => NoteType::Reply,
+            'author_id' => null,
+            'who_type' => WhoType::EndUser,
             'author_name' => 'Portal User',
-            'body'        => 'Client replied via portal.',
-            'is_private'  => false,
-            'noted_at'    => now(),
+            'body' => 'Client replied via portal.',
+            'is_private' => false,
+            'noted_at' => now(),
         ]);
 
         $this->assertFalse($ticket->isUntouchedByHuman(),
@@ -386,10 +386,10 @@ class TacticalAutoResolveTest extends TestCase
             'ticket_id' => $ticket->id,
             'note_type' => NoteType::Note,
             'author_id' => $user->id,
-            'who_type'  => WhoType::Agent,
-            'body'      => 'Agent note.',
+            'who_type' => WhoType::Agent,
+            'body' => 'Agent note.',
             'is_private' => false,
-            'noted_at'  => now(),
+            'noted_at' => now(),
         ]);
 
         $noteCountBefore = $ticket->notes()->count();
@@ -404,6 +404,39 @@ class TacticalAutoResolveTest extends TestCase
             'AlertService::resolve() must add a system note to the ticket regardless of auto-resolve');
     }
 
+    // ── Empty-resolution guard: resolution is never empty on auto-resolve ───────
+
+    /**
+     * Guards the fix in maybeAutoResolveTicket(): mb_substr('', 0, 1000) === '',
+     * which would un-suppress GenerateTicketResolution. The fallback default must
+     * be used so the resolution is always non-empty.
+     */
+    public function test_auto_resolve_resolution_is_never_empty_even_when_reason_is_empty(): void
+    {
+        $alert = $this->makeAlertWithAutoTicket();
+        $ticket = $alert->ticket;
+
+        $this->assertSame(TicketStatus::New, $ticket->status, 'Pre-condition: ticket is New');
+        $this->assertTrue($ticket->isUntouchedByHuman(), 'Pre-condition: ticket is untouched');
+
+        // Use the fixture but strip any action results so the resolved reason starts as
+        // the bare string; we directly call handleAlertResolved() and trust the guard runs.
+        $payload = $this->resolvedFixture();
+        unset($payload['action_stdout'], $payload['action_stderr'], $payload['action_retcode']);
+
+        $this->service()->handleAlertResolved($payload);
+
+        $ticket->refresh();
+
+        $this->assertSame(TicketStatus::Resolved, $ticket->status,
+            'Ticket should be auto-resolved');
+
+        // The core assertion: resolution is never empty (empty → LLM job fires)
+        $this->assertNotEmpty($ticket->resolution,
+            'Resolution must never be empty on auto-resolve (empty would un-suppress GenerateTicketResolution)');
+        $this->assertIsString($ticket->resolution);
+    }
+
     // ── Shared AlertService::resolve() is untouched: Ninja path does NOT auto-resolve ─
 
     public function test_shared_alert_service_resolve_does_not_auto_resolve_ticket(): void
@@ -412,23 +445,23 @@ class TacticalAutoResolveTest extends TestCase
 
         // Create an alert from Ninja (not Tactical) with a linked auto-ticket
         $ticket = Ticket::factory()->create([
-            'source'       => TicketSource::Alert,
-            'status'       => TicketStatus::New,
+            'source' => TicketSource::Alert,
+            'status' => TicketStatus::New,
             'responded_at' => null,
-            'created_by'   => $systemUserId,
-            'client_id'    => null,
-            'resolution'   => null,
+            'created_by' => $systemUserId,
+            'client_id' => null,
+            'resolution' => null,
         ]);
 
         $alert = Alert::create([
-            'source'          => AlertSource::Ninja,  // ← Ninja, NOT Tactical
+            'source' => AlertSource::Ninja,  // ← Ninja, NOT Tactical
             'source_alert_id' => 'ninja-99',
-            'severity'        => AlertSeverity::Error,
-            'status'          => AlertStatus::Ticketed,
-            'title'           => 'Ninja alert',
-            'hostname'        => 'WS-TEST-01',
-            'fired_at'        => now(),
-            'ticket_id'       => $ticket->id,
+            'severity' => AlertSeverity::Error,
+            'status' => AlertStatus::Ticketed,
+            'title' => 'Ninja alert',
+            'hostname' => 'WS-TEST-01',
+            'fired_at' => now(),
+            'ticket_id' => $ticket->id,
         ]);
 
         // Invoke shared AlertService::resolve() directly (not via TacticalAlertService)

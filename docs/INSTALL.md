@@ -329,7 +329,7 @@ These commands execute automatically based on their schedule:
 |---------|----------|---------|
 | `ninja:sync-devices` | Every 4 hours | Full device sync from NinjaRMM (inventory, hardware detail, status, creates, deletes) |
 | `level:sync-devices` | Every 4 hours | Sync devices from Level RMM (online status updated in real-time via webhooks) |
-| `tactical:reconcile-alerts` | Hourly | Resolve PSA alerts whose Tactical alerts have closed — the at-least-once backstop for the no-retry alert webhook (only if Tactical configured) |
+| `tactical:reconcile-alerts` | Hourly | Resolve PSA alerts whose Tactical alerts have closed — the at-least-once backstop for dropped resolve webhooks (resolves the alert only; does not auto-resolve a linked auto-ticket — only if Tactical configured) |
 | `tactical:sync-devices` | Daily at 05:32 | Sync devices from Tactical RMM into `tactical_assets` and hostname-link to assets (only if configured + clients mapped to a Tactical site) |
 | `tactical:sync-scripts` | Daily at 05:35 | Sync the script library from Tactical RMM (only if configured) |
 | `mesh:sync-licenses` | Daily at 04:30 | Sync license counts from Mesh Email Security |
@@ -562,7 +562,7 @@ Self-hosted RMM (amidaware/tacticalrmm). Syncs device inventory and a script lib
    - Create an **Alert Template** in Tactical that triggers the URLAction on both failure and resolve events.
    - Set the AlertTemplate as the global default (or assign it to the relevant policies/agents).
 
-   Tactical's outbound action has an **8-second timeout and no retry** and can double-deliver, so PSA acks immediately and processes asynchronously, deduping replays by `alert_id`. **A queue worker is required** (see "Queue worker" above) — without one, alerts are stored but never become PSA alerts/tickets. The hourly `tactical:reconcile-alerts` poll is the at-least-once backstop for dropped resolve webhooks.
+   Tactical's outbound action has an **8-second timeout and no retry** and can double-deliver, so PSA acks immediately and processes asynchronously, deduping replays by `alert_id`. **A queue worker is required** (see "Queue worker" above) — without one, alerts are stored but never become PSA alerts/tickets. The hourly `tactical:reconcile-alerts` poll is the at-least-once backstop for dropped resolve webhooks; note that reconcile resolves the *alert* but does **not** currently auto-resolve a linked auto-created *ticket* — auto-ticket resolution happens only on the live resolve-webhook path, so if the resolve webhook is dropped, an auto-ticket may remain open until a human closes it.
 
    Webhook health (last alert received, 24h processed count, failed count) is shown on the Tactical settings card.
 

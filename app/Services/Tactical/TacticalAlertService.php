@@ -9,8 +9,8 @@ use App\Enums\TicketSource;
 use App\Enums\TicketStatus;
 use App\Enums\TicketType;
 use App\Models\Alert;
-use App\Models\Ticket;
 use App\Models\TacticalAsset;
+use App\Models\Ticket;
 use App\Services\AlertService;
 use App\Services\TicketService;
 use App\Support\TacticalConfig;
@@ -238,7 +238,9 @@ class TacticalAlertService
             return;
         }
 
-        // Burst guard: count recent auto-created alert-tickets for this client
+        // Burst guard: count recent auto-created alert-tickets for this client.
+        // A null client_id collapses all unmapped-agent alerts into a single global
+        // burst bucket/storm ticket — documented v1 behaviour.
         $recentCount = Ticket::where('source', TicketSource::Alert->value)
             ->where('client_id', $clientId)
             ->where('created_at', '>=', now()->subMinutes(self::BURST_WINDOW_MINUTES))
@@ -295,7 +297,7 @@ class TacticalAlertService
         $systemUserId = TriageConfig::systemUserId();
         $this->ticketService->createTicket([
             'subject' => 'Alert Storm — Multiple Tactical RMM alerts fired',
-            'description' => "More than ".self::BURST_CAP." Tactical RMM alerts fired within ".self::BURST_WINDOW_MINUTES." minutes for this client.\n\nPlease investigate the root cause.",
+            'description' => 'More than '.self::BURST_CAP.' Tactical RMM alerts fired within '.self::BURST_WINDOW_MINUTES." minutes for this client.\n\nPlease investigate the root cause.",
             'client_id' => $clientId,
             'contact_id' => null,
             'priority' => TicketPriority::P2->value,
@@ -443,8 +445,8 @@ class TacticalAlertService
             return;
         }
 
-        // Truncate the resolution string to a reasonable length
-        $resolution = mb_substr($reason, 0, 1000);
+        // Truncate and ensure non-empty — empty resolution un-suppresses GenerateTicketResolution.
+        $resolution = mb_substr($reason, 0, 1000) ?: 'Tactical RMM alert cleared.';
 
         $this->ticketService->changeStatus(
             $ticket,
