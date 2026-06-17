@@ -372,6 +372,14 @@ class TacticalAlertService
 
         $this->alertService->resolve($alert, $reason);
 
+        // G7 — Tactical-scoped auto-resolve (NOT in shared AlertService::resolve()).
+        // After AlertService::resolve() has added its NoteType::System note, check whether
+        // the linked ticket is an auto-created (TicketSource::Alert), still-open, untouched
+        // ticket. If so, resolve it (not close) with a resolution string so the
+        // GenerateTicketResolution LLM draft job does not fire. CloseResolvedTickets later
+        // closes it after the confirmation window.
+        $this->maybeAutoResolveTicket($alert, $reason);
+
         Log::info('[Tactical Alert] Alert resolved', [
             'alert_id' => $alert->id,
             'source_alert_id' => $alertId,
@@ -379,5 +387,76 @@ class TacticalAlertService
         ]);
 
         return $alert;
+    }
+
+    /**
+     * G7 — auto-RESOLVE (not close) the linked ticket on Tactical alert resolve,
+     * but ONLY when ALL hold:
+     *   1. Alert has a linked ticket
+     *   2. Ticket source is TicketSource::Alert (auto-created from an alert)
+     *   3. Ticket is still open
+     *   4. Ticket::isUntouchedByHuman() — no human notes/replies/portal-replies,
+     *      responded_at null, status still New
+     *
+     * Passes a resolution string to TicketService::changeStatus() so the
+     * TicketObserver does NOT dispatch GenerateTicketResolution (empty resolution = LLM draft).
+     *
+     * The resolve note added by AlertService::resolve() is NoteType::System, which is
+     * excluded from the isUntouchedByHuman() check — ordering is safe.
+     */
+    private function maybeAutoResolveTicket(Alert $alert, string $reason): void
+    {
+        // Gate 1: must have a linked ticket
+        if (! $alert->ticket_id) {
+            return;
+        }
+
+        $ticket = $alert->ticket;
+        if (! $ticket) {
+            return;
+        }
+
+        // Gate 2: must be auto-created from an alert (not manually-created or other source)
+        if ($ticket->source !== TicketSource::Alert) {
+            return;
+        }
+
+        // Gate 3: must still be open
+        if (! $ticket->isOpen()) {
+            return;
+        }
+
+        // Gate 4: must be untouched by a human (freshly re-query to pick up the resolve note
+        // that AlertService::resolve() just added — that note is NoteType::System, which
+        // isUntouchedByHuman() correctly ignores)
+        $ticket->refresh();
+        if (! $ticket->isUntouchedByHuman()) {
+            return;
+        }
+
+        $systemUserId = TriageConfig::systemUserId();
+        if (! $systemUserId) {
+            Log::warning('[Tactical Alert] Cannot auto-resolve ticket — no system user', [
+                'ticket_id' => $ticket->id,
+            ]);
+
+            return;
+        }
+
+        // Truncate the resolution string to a reasonable length
+        $resolution = mb_substr($reason, 0, 1000);
+
+        $this->ticketService->changeStatus(
+            $ticket,
+            TicketStatus::Resolved,
+            $systemUserId,
+            'Ticket auto-resolved: Tactical RMM alert cleared.',
+            $resolution,
+        );
+
+        Log::info('[Tactical Alert] Auto-resolved untouched auto-ticket', [
+            'alert_id' => $alert->id,
+            'ticket_id' => $ticket->id,
+        ]);
     }
 }

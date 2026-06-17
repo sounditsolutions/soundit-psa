@@ -2,10 +2,12 @@
 
 namespace App\Models;
 
+use App\Enums\NoteType;
 use App\Enums\TicketPriority;
 use App\Enums\TicketSource;
 use App\Enums\TicketStatus;
 use App\Enums\TicketType;
+use App\Enums\WhoType;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -292,6 +294,42 @@ class Ticket extends Model
     public function isOpen(): bool
     {
         return $this->status->isOpen();
+    }
+
+    /**
+     * True iff this ticket has had zero human interaction since creation.
+     *
+     * All of the following must hold:
+     *   1. No TicketNote with a non-system note_type (excludes System/StatusChange/AiTriage/Escalation).
+     *   2. No portal reply — a note with who_type == EndUser (null author_id, but IS human).
+     *   3. responded_at is null.
+     *   4. status is still New.
+     *
+     * Designed to be called AFTER AlertService::resolve() has added its resolve note;
+     * that note is NoteType::System (system-generated) and is therefore excluded by gate 1.
+     */
+    public function isUntouchedByHuman(): bool
+    {
+        // Gate 3 & 4: quick scalar checks first (no DB query)
+        if ($this->responded_at !== null || $this->status !== TicketStatus::New) {
+            return false;
+        }
+
+        // Gate 1 & 2: query notes, excluding soft-deleted ones (withTrashed in the relation).
+        // We want active notes only — trashed notes don't count.
+        $systemTypes = array_map(
+            fn (NoteType $t) => $t->value,
+            NoteType::systemGenerated(),
+        );
+
+        return ! $this->hasMany(TicketNote::class)
+            ->where(function ($q) use ($systemTypes) {
+                // Gate 1: human note_type
+                $q->whereNotIn('note_type', $systemTypes)
+                    // Gate 2: portal reply (EndUser who_type)
+                    ->orWhere('who_type', WhoType::EndUser->value);
+            })
+            ->exists();
     }
 
     public function isOverdue(): bool
