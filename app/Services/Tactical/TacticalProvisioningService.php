@@ -43,9 +43,12 @@ class TacticalProvisioningService
         } catch (TacticalClientException $e) {
             $message = $this->mapException($e);
             $this->writeAudit($actorId, false, null, null, $message);
+            // FIX 1 (security): NEVER pass $e->getMessage() to any sink on the
+            // failure path — Guzzle's BodySummarizer bakes the response body (which
+            // can include rest_headers containing the X-Webhook-Key) into the
+            // exception message. Log only the status code, not the raw body summary.
             Log::warning('[TacticalProvisioning] Provision failed', [
                 'actor_id' => $actorId,
-                'error'    => $e->getMessage(),
                 'status'   => $e->statusCode(),
             ]);
 
@@ -89,7 +92,16 @@ class TacticalProvisioningService
         // any log, audit row, or caller return value.
         unset($resp['rest_headers'], $resp['rest_body']);
 
-        $newUrlActionId = (int) ($resp['id'] ?? $urlActionId);
+        // FIX 3 (id-0 guard): on the POST-fallback path $urlActionId is null, so
+        // ($resp['id'] ?? null) would coalesce to null → (int)null = 0. A malformed
+        // 2xx without `id` must fail loudly rather than silently wire id 0.
+        $rawUrlActionId = $resp['id'] ?? null;
+        if (! is_int($rawUrlActionId) || $rawUrlActionId <= 0) {
+            throw new TacticalClientException(
+                'Tactical URLAction create/update returned a 2xx response with no valid `id` field.'
+            );
+        }
+        $newUrlActionId = $rawUrlActionId;
         Setting::setValue('tactical_url_action_id', (string) $newUrlActionId);
 
         // 3. Upsert AlertTemplate
@@ -111,7 +123,15 @@ class TacticalProvisioningService
             $tResp = $this->client->createAlertTemplate($templateBody);
         }
 
-        $newAlertTemplateId = (int) ($tResp['id'] ?? $alertTemplateId);
+        // FIX 3 (id-0 guard): same logic for AlertTemplate — fail loudly on a
+        // malformed 2xx rather than silently storing id 0.
+        $rawAlertTemplateId = $tResp['id'] ?? null;
+        if (! is_int($rawAlertTemplateId) || $rawAlertTemplateId <= 0) {
+            throw new TacticalClientException(
+                'Tactical AlertTemplate create/update returned a 2xx response with no valid `id` field.'
+            );
+        }
+        $newAlertTemplateId = $rawAlertTemplateId;
         Setting::setValue('tactical_alert_template_id', (string) $newAlertTemplateId);
 
         // 4. GET core/settings; no-clobber check
@@ -122,7 +142,14 @@ class TacticalProvisioningService
         if ($currentDefault !== null && (int) $currentDefault !== $newAlertTemplateId) {
             // A different template is already the default — do NOT silently clobber.
             Setting::setValue('tactical_prior_default_alert_template_id', (string) $currentDefault);
-            $warning = "Changed your Tactical global default alert template from id {$currentDefault} to ours (id {$newAlertTemplateId}); revert in Tactical Settings › Alert Templates if unintended.";
+            // FIX 2: Operator-facing copy must accurately reflect that the existing
+            // default was NOT changed — the old "Changed your … default … to ours"
+            // was false (we skipped setDefaultAlertTemplate) and would mislead an
+            // operator into believing auto-ticketing is already live.
+            $warning = "A different alert template (id {$currentDefault}) is already your Tactical global default; "
+                . "it was left unchanged to avoid clobbering it. "
+                . "To activate PSA auto-ticketing, set the default to template id {$newAlertTemplateId} "
+                . "in Tactical → Settings → Alert Templates.";
             // We intentionally do NOT call setDefaultAlertTemplate here.
         } else {
             // Empty or already ours — safe to set.
@@ -201,7 +228,12 @@ class TacticalProvisioningService
                 . "Or configure URL Actions and Alert Templates manually in Tactical Settings.";
         }
 
-        return "Tactical provisioning failed: {$e->getMessage()}";
+        // FIX 1 (security): do NOT use $e->getMessage() here — the Guzzle
+        // BodySummarizer can embed the response body in it, which may contain
+        // rest_headers with the X-Webhook-Key. Use the HTTP status code only.
+        $status = $e->statusCode() ?? 'unknown';
+
+        return "Tactical provisioning failed (HTTP {$status}).";
     }
 
     /**

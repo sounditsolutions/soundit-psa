@@ -614,6 +614,164 @@ class TacticalAlertProvisioningTest extends TestCase
         $this->assertStringNotContainsString('audit-fail-key', $auditJson);
     }
 
+    // ── G3 PROOF: webhook key absent from ALL sinks on the FAILURE path ──────
+    //
+    // This is the gate test that proves the fix. The existing failure tests used
+    // a key-free body ("{"detail":"Permission denied"}") so the leak passed green.
+    // This test plants the real webhook key inside the exception message (simulating
+    // Tactical echoing rest_headers in a 400 validation-error body) and asserts
+    // the key is absent from (a) logs, (b) the audit row, and (c) return message.
+
+    public function test_webhook_key_absent_from_all_sinks_when_urlaction_fails_with_key_in_body(): void
+    {
+        $webhookKey = 'wh-secret-12345-must-not-leak';
+        Setting::setEncrypted('tactical_webhook_key', $webhookKey);
+
+        // Simulate Tactical echoing rest_headers (containing X-Webhook-Key) in a
+        // 400 validation-error body. Guzzle's BodySummarizer bakes this into the
+        // exception message, so the TacticalClientException message will contain
+        // the key verbatim.
+        $echoedBody = json_encode([
+            'rest_headers' => json_encode(['X-Webhook-Key' => $webhookKey, 'Content-Type' => 'application/json']),
+            'pattern'      => ['This field is required.'],
+        ]);
+        $guzzleResp = new Response(400, [], $echoedBody);
+        $guzzleReq  = new GuzzleRequest('POST', 'https://tactical.example.com/core/urlaction/');
+        $guzzleEx   = RequestException::create($guzzleReq, $guzzleResp);
+        // The exception message that fromGuzzle bakes in will reference the response body summary
+        $keyLeakException = TacticalClientException::fromGuzzle(
+            "Tactical API error: 400 Bad Request\n{$echoedBody}",
+            $guzzleEx
+        );
+
+        // Verify our test setup: the exception message actually contains the key
+        $this->assertStringContainsString($webhookKey, $keyLeakException->getMessage(),
+            'Test setup error: exception message must contain the key to be a valid leak test');
+
+        // Tap logs
+        /** @var list<string> $loggedMessages */
+        $loggedMessages = [];
+        Log::listen(function ($message) use (&$loggedMessages) {
+            $loggedMessages[] = (string) $message->message;
+            $loggedMessages[] = json_encode($message->context ?? []);
+        });
+
+        $mockClient = \Mockery::mock(TacticalClient::class);
+        $mockClient->shouldReceive('createUrlAction')
+            ->once()
+            ->andThrow($keyLeakException);
+
+        $this->app->instance(TacticalClient::class, $mockClient);
+        $service = $this->app->make(TacticalProvisioningService::class);
+        $result  = $service->provision($this->actor->id);
+
+        $this->assertFalse($result['success']);
+
+        // (a) Key must be absent from ALL log output
+        $allLogs = implode("\n", $loggedMessages);
+        $this->assertStringNotContainsString(
+            $webhookKey, $allLogs,
+            'Webhook key must not appear in any log output on the failure path'
+        );
+
+        // (b) Key must be absent from the audit row stored in settings
+        $auditJson = Setting::getValue('tactical_provision_audit') ?? '';
+        $this->assertStringNotContainsString(
+            $webhookKey, $auditJson,
+            'Webhook key must not appear in the stored audit row'
+        );
+
+        // (c) Key must be absent from the returned message
+        $this->assertStringNotContainsString(
+            $webhookKey, $result['message'],
+            'Webhook key must not appear in the returned message'
+        );
+    }
+
+    // ── FIX 2 PROOF: no-clobber warning says "left unchanged", not "changed" ─
+
+    public function test_no_clobber_warning_says_left_unchanged_not_changed(): void
+    {
+        Setting::setEncrypted('tactical_webhook_key', 'wk-key');
+
+        $client = $this->clientReturning([
+            new Response(201, [], json_encode(['id' => 7])),
+            new Response(201, [], json_encode(['id' => 42])),
+            new Response(200, [], json_encode(['alert_template' => 99])), // different existing default
+            // No fourth response — setDefault must NOT be called
+        ]);
+
+        $this->app->instance(TacticalClient::class, $client);
+        $service = $this->app->make(TacticalProvisioningService::class);
+        $result  = $service->provision($this->actor->id);
+
+        $this->assertTrue($result['success']);
+        $warning = $result['warning'] ?? '';
+
+        // Must mention both the existing id and our id
+        $this->assertStringContainsString('99', $warning);
+        $this->assertStringContainsString('42', $warning);
+
+        // Must clearly communicate that the default was LEFT UNCHANGED
+        $this->assertTrue(
+            str_contains(strtolower($warning), 'left unchanged') || str_contains(strtolower($warning), 'not changed'),
+            "Warning must say 'left unchanged' or 'not changed'; got: {$warning}"
+        );
+
+        // Must NOT say "changed … to ours" (the old misleading copy)
+        $this->assertStringNotContainsString('Changed your', $warning);
+    }
+
+    // ── FIX 3: id-0 guard — malformed 2xx on create must not store id 0 ──────
+
+    public function test_create_urlaction_without_id_in_response_throws_not_stores_zero(): void
+    {
+        Setting::setEncrypted('tactical_webhook_key', 'wk-key');
+
+        // createUrlAction returns a 201 but without an `id` field
+        $mockClient = \Mockery::mock(TacticalClient::class);
+        $mockClient->shouldReceive('createUrlAction')
+            ->once()
+            ->andReturn(['name' => 'PSA Ticket Webhook']); // no `id`
+
+        $this->app->instance(TacticalClient::class, $mockClient);
+        $service = $this->app->make(TacticalProvisioningService::class);
+        $result  = $service->provision($this->actor->id);
+
+        // Must fail loudly — not succeed with id 0
+        $this->assertFalse($result['success'],
+            'Provision must fail when createUrlAction returns no id');
+
+        // Must not have stored 0
+        $storedId = Setting::getValue('tactical_url_action_id');
+        $this->assertNotSame('0', $storedId,
+            'Must not store id=0 when response is missing the id field');
+    }
+
+    public function test_create_alert_template_without_id_in_response_throws_not_stores_zero(): void
+    {
+        Setting::setEncrypted('tactical_webhook_key', 'wk-key');
+
+        $mockClient = \Mockery::mock(TacticalClient::class);
+        $mockClient->shouldReceive('createUrlAction')
+            ->once()
+            ->andReturn(['id' => 7]);
+        $mockClient->shouldReceive('createAlertTemplate')
+            ->once()
+            ->andReturn(['name' => 'PSA Auto-Ticket']); // no `id`
+
+        $this->app->instance(TacticalClient::class, $mockClient);
+        $service = $this->app->make(TacticalProvisioningService::class);
+        $result  = $service->provision($this->actor->id);
+
+        $this->assertFalse($result['success'],
+            'Provision must fail when createAlertTemplate returns no id');
+
+        $storedId = Setting::getValue('tactical_alert_template_id');
+        $this->assertNotSame('0', $storedId,
+            'Must not store id=0 when template response is missing the id field');
+    }
+
     // ── Controller action + route ─────────────────────────────────────────────
 
     public function test_controller_provision_alerts_returns_json_success(): void
