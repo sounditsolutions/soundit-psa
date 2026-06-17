@@ -687,47 +687,11 @@ class ContextBuilder
                         $info .= ' | PATCHES PENDING';
                     }
 
-                    // Fetch live check summary if Tactical is configured. P4
-                    // amendment D — foot-gun removal: the read is now TIME-BOUNDED
-                    // (the insight service's bounded primitive: ~3s timeout +
-                    // classify-degrade, no silent 30s hang on the triage hot path)
-                    // and the injected stdout is REDACTED before it reaches the
-                    // prompt (WikiRedactor::redact() — a check echoing a credential
-                    // would otherwise leak verbatim). Output shape is byte-identical
-                    // (the full token-budgeted/fenced provider remains P5).
-                    if (TacticalConfig::isConfigured()) {
-                        $insight = app(\App\Services\Tactical\TacticalInsightService::class);
-                        $read = $insight->read(
-                            fn () => app(\App\Services\Tactical\TacticalClient::class)->getAgentChecks(
-                                $tacticalAsset->agent_id,
-                                timeout: \App\Services\Tactical\TacticalInsightService::LIVE_TIMEOUT_SECONDS,
-                            ),
-                            fallback: null,
-                            signal: 'checks',
-                            agentId: $tacticalAsset->agent_id,
-                        );
-
-                        if ($read->isLive() && is_array($read->value)) {
-                            $redactor = app(WikiRedactor::class);
-                            $failing = collect($read->value)
-                                ->filter(fn ($c) => ($c['check_result']['status'] ?? '') === 'failing');
-                            if ($failing->isNotEmpty()) {
-                                $info .= ' | Failing checks: '.$failing->count();
-                                foreach ($failing->take(3) as $fc) {
-                                    // Redact on the FULL text first, then clip — so a
-                                    // secret straddling the 150-char boundary is still
-                                    // caught.
-                                    //
-                                    // KNOWN RESIDUAL (accepted, same as TacticalPanelData::safeStdout
-                                    // and the P3 audit-output residual): redact() is keyword-shape
-                                    // best-effort — a curated check echoing a BARE/JSON-embedded
-                                    // secret (no keyword) can pass; the 150-char clip BOUNDS the
-                                    // exposure, it does not guarantee redaction.
-                                    $stdout = substr($redactor->redact($fc['check_result']['stdout'] ?? ''), 0, 150);
-                                    $info .= "\n  - [FAILING] {$fc['name']}: {$stdout}";
-                                }
-                            }
-                        }
+                    // P5: token-budgeted, redacted, injection-fenced Tactical telemetry (replaces the
+                    // un-timed inline live-check). Provider owns the bounded read + freshness contract.
+                    $block = app(\App\Services\Tactical\TacticalContextProvider::class)->forAsset($asset);
+                    if ($block !== null) {
+                        $info .= "\n".$block->text;
                     }
                 }
             }
