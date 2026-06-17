@@ -7,13 +7,18 @@ use App\Enums\WikiRunType;
 use App\Models\Ticket;
 use App\Models\WikiRun;
 use App\Services\Ai\AiClient;
+use App\Services\Tactical\TacticalContextProvider;
 use App\Services\Wiki\Mining\WikiRedactor;
 use App\Services\Wiki\Mining\WikiTicketContext;
 use App\Support\WikiBudget;
+use Illuminate\Support\Facades\Log;
 
 class TicketResolutionDrafter
 {
     private const MAX_OUTPUT_TOKENS = 400;
+
+    /** Resolution surface ceiling for the appended Tactical telemetry block. */
+    private const TACTICAL_CONTEXT_MAX_TOKENS = 1500;
 
     private const SYSTEM_PROMPT = <<<'PROMPT'
 You summarize how an IT support ticket was resolved.
@@ -60,7 +65,27 @@ PROMPT;
             'triggered_by' => $triggeredBy,
         ]);
 
-        $raw = $this->ai->completeJson(self::SYSTEM_PROMPT, $this->context->build($ticket), self::MAX_OUTPUT_TOKENS);
+        $context = $this->context->build($ticket);
+
+        // G3: token-budgeted, redacted, injection-fenced Tactical telemetry for the
+        // resolution surface. Mirrors the triage/chat wiring (§5.4). The block is
+        // appended after WikiTicketContext::build() because WikiTicketContext does not
+        // call ContextBuilder::buildAssetSection(). Provider owns freshness + budget.
+        // G3 non-silent accounting: estimatedTokens is logged so over-budget conditions
+        // are visible in application logs. Actual token spend (including the block) is
+        // captured faithfully by cumulativeInputTokens() below, since the block text is
+        // part of the context string sent to the API — it appears in WikiRun.ai_tokens_used.
+        $tacticalBlock = $this->resolveTacticalBlock($ticket);
+        if ($tacticalBlock !== null) {
+            Log::info('[TicketResolutionDrafter] Appending Tactical telemetry block', [
+                'ticket_id' => $ticket->id,
+                'estimated_tokens' => $tacticalBlock->estimatedTokens,
+                'max_tokens' => self::TACTICAL_CONTEXT_MAX_TOKENS,
+            ]);
+            $context .= "\n\n".$tacticalBlock->text;
+        }
+
+        $raw = $this->ai->completeJson(self::SYSTEM_PROMPT, $context, self::MAX_OUTPUT_TOKENS);
         $tokens = ['input' => $this->ai->cumulativeInputTokens(), 'output' => $this->ai->cumulativeOutputTokens()];
         $resolution = trim((string) ($raw['resolution'] ?? ''));
 
@@ -79,6 +104,30 @@ PROMPT;
         $run->update(['status' => WikiRunStatus::Completed->value, 'ai_tokens_used' => $tokens]);
 
         return $resolution;
+    }
+
+    /**
+     * Return the TacticalContextProvider block for the ticket's first
+     * Tactical-linked asset, or null if none. Mirrors buildAssetSection()'s
+     * resolution logic: iterate ticket assets, pick the first whose
+     * tactical_asset_id is set AND whose tacticalAsset relation is populated.
+     */
+    private function resolveTacticalBlock(Ticket $ticket): ?\App\Services\Tactical\PromptBlock
+    {
+        $ticket->loadMissing('assets');
+
+        foreach ($ticket->assets as $asset) {
+            if (! $asset->tactical_asset_id) {
+                continue;
+            }
+            if (! $asset->tacticalAsset) {
+                continue;
+            }
+
+            return app(TacticalContextProvider::class)->forAsset($asset, maxTokens: self::TACTICAL_CONTEXT_MAX_TOKENS);
+        }
+
+        return null;
     }
 
     /**
