@@ -329,7 +329,7 @@ These commands execute automatically based on their schedule:
 |---------|----------|---------|
 | `ninja:sync-devices` | Every 4 hours | Full device sync from NinjaRMM (inventory, hardware detail, status, creates, deletes) |
 | `level:sync-devices` | Every 4 hours | Sync devices from Level RMM (online status updated in real-time via webhooks) |
-| `tactical:reconcile-alerts` | Hourly | Resolve PSA alerts whose Tactical alerts have closed — the at-least-once backstop for the no-retry alert webhook (only if Tactical configured) |
+| `tactical:reconcile-alerts` | Hourly | Resolve PSA alerts whose Tactical alerts have closed — the at-least-once backstop for dropped resolve webhooks (resolves the alert only; does not auto-resolve a linked auto-ticket — only if Tactical configured) |
 | `tactical:sync-devices` | Daily at 05:32 | Sync devices from Tactical RMM into `tactical_assets` and hostname-link to assets (only if configured + clients mapped to a Tactical site) |
 | `tactical:sync-scripts` | Daily at 05:35 | Sync the script library from Tactical RMM (only if configured) |
 | `mesh:sync-licenses` | Daily at 04:30 | Sync license counts from Mesh Email Security |
@@ -357,6 +357,7 @@ These commands execute automatically based on their schedule:
 | `attachments:clean-orphans` | Daily at 04:00 | Deletes unlinked attachment files older than 24h (orphans from abandoned editor sessions) |
 | `prepay:expire` | Daily at 04:10 | Forfeit the unconsumed remainder of expired prepaid-time credits (no-op until a contract sets an expiration policy). Use `--dry-run` to preview, `--contract=ID` to scope. |
 | `prepay:check-balances` | Hourly | Check prepay contracts for low balances; trigger alerts / auto-top-ups |
+| `integrations:prune-webhooks` | Daily at 04:05 | Delete processed/terminal webhook rows older than 30 days from `tactical_webhooks` and `ninja_webhooks`. Pending rows are never pruned regardless of age. Use `--dry-run` to preview counts without deleting; `--days=N` to override the retention window. |
 
 **Ad-hoc maintenance commands** (not scheduled — run manually when needed):
 
@@ -531,11 +532,39 @@ Self-hosted RMM (amidaware/tacticalrmm). Syncs device inventory and a script lib
 2. Enter your Tactical **API URL** (e.g. `https://api-rmm.yourmsp.com`) and **API key**, then click **Test Connection**. The API key comes from Tactical under **Settings > Global Settings > API Keys**.
 3. Map PSA clients to Tactical client/site pairs in **Site Mapping** (`settings.tactical-sites`). Devices only sync for clients that have a `tactical_site_id` set.
 4. Click **Sync Devices** / **Sync Scripts**, or wait for the daily crons (`tactical:sync-devices` at 05:32, `tactical:sync-scripts` at 05:35).
-5. **Webhooks (alert → ticket):**
-   - In the Tactical card, click **Generate Webhook Key** and copy the generated key (shown once).
-   - In Tactical, create an **Alert Template** and add a `URLAction` (REST). Point both the failure action and the resolved action at `https://psa.yourmsp.com/api/webhooks/tactical` with header `X-Webhook-Key: <key>` (a `Authorization: Bearer <key>` header also works). Tactical's webhook body templates **must be single-line JSON** and should include at least an `event` field (`alert_failure` / `alert_resolved`) plus `agent_id` and `alert_id`.
-   - Tactical's outbound action has an **8-second timeout and no retry** and can double-deliver, so PSA acks immediately and processes asynchronously, deduping replays by `alert_id`. **A queue worker is required** (see "Queue worker" above) — without one, alerts are stored but never become PSA alerts/tickets. The hourly `tactical:reconcile-alerts` poll is the at-least-once backstop for dropped resolve webhooks.
-   - Webhook health (last alert received, 24h processed count, failed count) is shown on the Tactical settings card.
+5. **Alert → ticket pipeline (one-click provisioning):**
+
+   PSA can create the URLAction and AlertTemplate in Tactical for you. In the Tactical settings card, click **Provision alert→ticket**. PSA will:
+   - Generate a secure webhook key (stored encrypted in the PSA database, never shown in plaintext after generation).
+   - Create a **URLAction** ("PSA Ticket Webhook") in Tactical pointing at `https://psa.yourmsp.com/api/webhooks/tactical`, with `X-Webhook-Key` in the request headers and the standard alert payload template in the body — wired for both failure and resolve events.
+   - Create an **Alert Template** ("PSA Auto-Ticket") in Tactical that triggers the URLAction on failure and resolve for agent, check, and task alerts.
+   - Set the AlertTemplate as the global default in Tactical **only if** no default is currently set (or if the current default is already PSA's template). If a different default exists it is left unchanged and you receive a warning with instructions to set it manually.
+
+   The operation is **idempotent**: clicking Provision again updates the existing URLAction and AlertTemplate in-place rather than creating duplicates.
+
+   **API key role permissions required for provisioning:**
+   The Tactical API key used by PSA must have the following permissions to run one-click provisioning:
+   - **Run URL Actions** — to create/update the URLAction
+   - **Manage Alert Templates** — to create/update the AlertTemplate
+   - **Core Settings** (write) — to set the global default AlertTemplate
+
+   These permissions are only needed during provisioning (which is rare and idempotent). After a successful provision you can remove these three permissions from the service role if you want to follow a **grant-then-revoke** posture: narrow the role back to the standard least-privilege set (see below) and re-grant only when re-provisioning.
+
+   **Opt-in auto-ticket (default OFF):** provisioning wires the alert webhook, but auto-ticket creation is opt-in. By default PSA stores the incoming alert but does **not** auto-create a ticket — you review alerts in the alerts inbox and create tickets manually. To enable auto-ticketing, turn on **Auto-create ticket** in Settings > Integrations > Tactical RMM after provisioning and after you have tuned the severity threshold. The minimum severity for auto-ticketing defaults to `error` (only error-level alerts auto-create tickets); warning/info alerts are still ingested but require manual action. Enable only after confirming your alert volume is manageable — disabling auto-ticket does not affect already-created tickets.
+
+   **Auto-resolve (not auto-close):** when Tactical fires the resolve event for an alert, PSA sets the corresponding ticket to **Resolved** status — it does **not** close the ticket immediately. The daily `tickets:close-resolved` sweep closes resolved tickets after the configured auto-close window (so a tech still has a chance to review before closure). The no-clobber rule applies: the auto-resolve only updates the ticket if it has not been modified by a human since the alert fired.
+
+   **Deprovision / manual cleanup:** if you disable the Tactical integration, the URLAction and AlertTemplate created by provisioning remain in Tactical. They will continue firing webhook POST requests to PSA (which PSA will reject as unconfigured). To fully clean up, go to Tactical → Settings → URL Actions and delete "PSA Ticket Webhook", and Tactical → Settings → Alert Templates and delete "PSA Auto-Ticket". If PSA's template was your global default, set a new default (or clear it) in Tactical → Settings → Core Settings.
+
+   **Manual setup (fallback):** if one-click provisioning fails (e.g. your key lacks the provisioning permissions and you prefer not to grant them), you can configure the webhook manually:
+   - In the Tactical card, click **Generate Webhook Key** and copy the generated key.
+   - In Tactical, create a **URLAction** (REST) pointing at `https://psa.yourmsp.com/api/webhooks/tactical` with `Content-Type: application/json` and `X-Webhook-Key: <key>` headers and the standard payload body (see below for the required fields).
+   - Create an **Alert Template** in Tactical that triggers the URLAction on both failure and resolve events.
+   - Set the AlertTemplate as the global default (or assign it to the relevant policies/agents).
+
+   Tactical's outbound action has an **8-second timeout and no retry** and can double-deliver, so PSA acks immediately and processes asynchronously, deduping replays by `alert_id`. **A queue worker is required** (see "Queue worker" above) — without one, alerts are stored but never become PSA alerts/tickets. The hourly `tactical:reconcile-alerts` poll is the at-least-once backstop for dropped resolve webhooks; note that reconcile resolves the *alert* but does **not** currently auto-resolve a linked auto-created *ticket* — auto-ticket resolution happens only on the live resolve-webhook path, so if the resolve webhook is dropped, an auto-ticket may remain open until a human closes it.
+
+   Webhook health (last alert received, 24h processed count, failed count) is shown on the Tactical settings card.
 
 **Asset visibility — telemetry panels, freshness, and change history (P4):** a linked device's asset page surfaces live telemetry beyond the daily snapshot. The **software inventory**, **patch compliance**, and **checks-health** panels are **lazy-loaded**: nothing fetches on initial page render (which stays snapshot-fast); each panel calls the agent **on demand** only when you expand it. Every panel is **snapshot-first + live-on-demand** and bounded — a live read uses a short (~2–3 s) timeout and degrades to the snapshot rather than hanging, and each panel renders three distinct states (data / genuinely-empty / could-not-load), so a "couldn't reach the agent" never reads as "all checks passing" or "fully patched". The patch panel **leads with the pending count + a severity rollup** and keeps the full per-patch list opt-in.
 

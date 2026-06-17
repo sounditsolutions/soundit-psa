@@ -278,6 +278,12 @@ Schedule::command('attachments:clean-orphans')
     ->withoutOverlapping()
     ->runInBackground();
 
+// Integrations — prune processed/terminal webhook rows older than 30 days
+Schedule::command('integrations:prune-webhooks')
+    ->dailyAt('04:05')
+    ->withoutOverlapping()
+    ->runInBackground();
+
 // Wiki — nightly maintenance sweeps (staleness/contradiction/link-lint/open-ticket/stale-only regen)
 // withoutOverlapping(60): 60-minute overlap-lock guard for a scheduled command.
 // NOT ->expireAfter() — that is queue-middleware-only and throws BadMethodCallException on Schedule events.

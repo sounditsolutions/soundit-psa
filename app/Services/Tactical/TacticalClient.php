@@ -144,8 +144,12 @@ class TacticalClient
         try {
             $response = $this->http->request('GET', $endpoint, $options);
         } catch (GuzzleException $e) {
-            Log::error("[TacticalClient] GET {$endpoint} failed: {$e->getMessage()}");
-            throw TacticalClientException::fromGuzzle("Tactical API error: {$e->getMessage()}", $e);
+            Log::error("[TacticalClient] GET {$endpoint} failed", [
+                'status' => ($e instanceof \GuzzleHttp\Exception\RequestException && $e->hasResponse())
+                    ? $e->getResponse()->getStatusCode()
+                    : null,
+            ]);
+            throw TacticalClientException::fromGuzzle("Tactical API error (HTTP GET {$endpoint})", $e);
         }
 
         return json_decode((string) $response->getBody(), true) ?? [];
@@ -158,13 +162,26 @@ class TacticalClient
                 'json' => $body,
             ]);
         } catch (GuzzleException $e) {
-            Log::error("[TacticalClient] POST {$endpoint} failed: {$e->getMessage()}");
-            throw TacticalClientException::fromGuzzle("Tactical API error: {$e->getMessage()}", $e);
+            Log::error("[TacticalClient] POST {$endpoint} failed", [
+                'status' => ($e instanceof \GuzzleHttp\Exception\RequestException && $e->hasResponse())
+                    ? $e->getResponse()->getStatusCode()
+                    : null,
+            ]);
+            throw TacticalClientException::fromGuzzle("Tactical API error (HTTP POST {$endpoint})", $e);
         }
 
         return json_decode((string) $response->getBody(), true) ?? [];
     }
 
+    /**
+     * PUT a Tactical endpoint. Returns the decoded response as-is (mixed).
+     *
+     * Several Tactical PUT endpoints (core/urlaction/{id}/, alerts/templates/{id}/,
+     * and agent maintenance/custom-field endpoints) return the scalar "ok" rather
+     * than an object — live-verified 2026-06-17. Return type is `mixed` to handle
+     * both scalar and object responses; callers that need an array must guard
+     * against a non-array return value themselves.
+     */
     public function put(string $endpoint, array $body = []): mixed
     {
         try {
@@ -172,11 +189,15 @@ class TacticalClient
                 'json' => $body,
             ]);
         } catch (GuzzleException $e) {
-            Log::error("[TacticalClient] PUT {$endpoint} failed: {$e->getMessage()}");
-            throw TacticalClientException::fromGuzzle("Tactical API error: {$e->getMessage()}", $e);
+            Log::error("[TacticalClient] PUT {$endpoint} failed", [
+                'status' => ($e instanceof \GuzzleHttp\Exception\RequestException && $e->hasResponse())
+                    ? $e->getResponse()->getStatusCode()
+                    : null,
+            ]);
+            throw TacticalClientException::fromGuzzle("Tactical API error (HTTP PUT {$endpoint})", $e);
         }
 
-        return json_decode((string) $response->getBody(), true);
+        return json_decode((string) $response->getBody(), true) ?? [];
     }
 
     public function patch(string $endpoint, array $body = []): array
@@ -186,8 +207,12 @@ class TacticalClient
                 'json' => $body,
             ]);
         } catch (GuzzleException $e) {
-            Log::error("[TacticalClient] PATCH {$endpoint} failed: {$e->getMessage()}");
-            throw TacticalClientException::fromGuzzle("Tactical API error: {$e->getMessage()}", $e);
+            Log::error("[TacticalClient] PATCH {$endpoint} failed", [
+                'status' => ($e instanceof \GuzzleHttp\Exception\RequestException && $e->hasResponse())
+                    ? $e->getResponse()->getStatusCode()
+                    : null,
+            ]);
+            throw TacticalClientException::fromGuzzle("Tactical API error (HTTP PATCH {$endpoint})", $e);
         }
 
         return json_decode((string) $response->getBody(), true) ?? [];
@@ -291,8 +316,12 @@ class TacticalClient
                 ],
             ]);
         } catch (GuzzleException $e) {
-            Log::error("[TacticalClient] POST clients/ failed: {$e->getMessage()}");
-            throw TacticalClientException::fromGuzzle("Tactical API error: {$e->getMessage()}", $e);
+            Log::error('[TacticalClient] POST clients/ failed', [
+                'status' => ($e instanceof \GuzzleHttp\Exception\RequestException && $e->hasResponse())
+                    ? $e->getResponse()->getStatusCode()
+                    : null,
+            ]);
+            throw TacticalClientException::fromGuzzle('Tactical API error (HTTP POST clients/)', $e);
         }
 
         return [
@@ -464,6 +493,108 @@ class TacticalClient
     public function getAgentTasks(string $agentId): array
     {
         return $this->get("agents/{$agentId}/tasks/");
+    }
+
+    // ── Provisioning helpers (P7) ────────────────────────────────────────────
+
+    /**
+     * List all URL actions. GET core/urlaction/
+     * Used after create to resolve the newly-created action's id (the POST
+     * endpoint returns the scalar "ok", not an object with an id field —
+     * live-verified 2026-06-17 against dev Tactical).
+     *
+     * @return list<array{id: int, name: string, ...}>
+     */
+    public function getUrlActions(): array
+    {
+        return $this->get('core/urlaction/');
+    }
+
+    /**
+     * Create a URL action (webhook). POST core/urlaction/
+     * Body is built by the provisioning service.
+     *
+     * NOTE: Tactical returns the scalar "ok" on success, not an object. The
+     * provisioning service calls getUrlActions() immediately after to resolve
+     * the new id by name.
+     *
+     * @return mixed Scalar "ok" on success.
+     */
+    public function createUrlAction(array $body): mixed
+    {
+        return $this->post('core/urlaction/', $body);
+    }
+
+    /**
+     * Update an existing URL action. PUT core/urlaction/{id}/
+     * Returns scalar "ok" on success (live-verified 2026-06-17).
+     *
+     * @return mixed Scalar "ok" on success.
+     */
+    public function updateUrlAction(int $id, array $body): mixed
+    {
+        return $this->put("core/urlaction/{$id}/", $body);
+    }
+
+    /**
+     * List all alert templates. GET alerts/templates/
+     * Used after create to resolve the newly-created template's id (the POST
+     * endpoint returns the scalar "ok", not an object with an id field —
+     * live-verified 2026-06-17 against dev Tactical).
+     *
+     * @return list<array{id: int, name: string, ...}>
+     */
+    public function getAlertTemplates(): array
+    {
+        return $this->get('alerts/templates/');
+    }
+
+    /**
+     * Create an alert template. POST alerts/templates/
+     *
+     * NOTE: Tactical returns the scalar "ok" on success, not an object. The
+     * provisioning service calls getAlertTemplates() immediately after to
+     * resolve the new id by name.
+     *
+     * @return mixed Scalar "ok" on success.
+     */
+    public function createAlertTemplate(array $body): mixed
+    {
+        return $this->post('alerts/templates/', $body);
+    }
+
+    /**
+     * Update an existing alert template. PUT alerts/templates/{id}/
+     * Returns scalar "ok" on success (live-verified 2026-06-17).
+     *
+     * @return mixed Scalar "ok" on success.
+     */
+    public function updateAlertTemplate(int $id, array $body): mixed
+    {
+        return $this->put("alerts/templates/{$id}/", $body);
+    }
+
+    /**
+     * Set the global default alert template. PUT core/settings/ {alert_template: id}
+     * Only sends the alert_template field — not a read-modify-write of the full settings object.
+     *
+     * @return mixed Decoded response from Tactical (shape depends on Tactical version).
+     */
+    public function setDefaultAlertTemplate(int $templateId): mixed
+    {
+        return $this->put('core/settings/', ['alert_template' => $templateId]);
+    }
+
+    /**
+     * Read the global core settings. GET core/settings/
+     * Used by the provisioning service to check whether a default template is already set
+     * before clobbering it.
+     *
+     * @return array Decoded settings object.
+     */
+    public function getCoreSettings(): array
+    {
+        return $this->get('core/settings/');
     }
 
     public function isHealthy(): bool

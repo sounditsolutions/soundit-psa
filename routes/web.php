@@ -287,6 +287,7 @@ Route::middleware('auth')->group(function () {
     Route::post('/settings/integrations/tactical/test', [IntegrationsController::class, 'testTactical'])->name('settings.integrations.tactical.test');
     Route::post('/settings/integrations/tactical/sync-devices', [IntegrationsController::class, 'syncTacticalDevices'])->name('settings.integrations.tactical.sync-devices');
     Route::post('/settings/integrations/tactical/sync-scripts', [IntegrationsController::class, 'syncTacticalScripts'])->name('settings.integrations.tactical.sync-scripts');
+    Route::post('/settings/integrations/tactical/provision-alerts', [IntegrationsController::class, 'provisionTacticalAlerts'])->name('settings.integrations.tactical.provision-alerts');
     Route::post('/settings/integrations/comet', [IntegrationsController::class, 'updateComet'])->name('settings.integrations.comet.update');
     Route::post('/settings/integrations/comet/auto-configure', [IntegrationsController::class, 'autoConfigureComet'])->name('settings.integrations.comet.auto-configure');
     Route::post('/settings/integrations/comet/test', [IntegrationsController::class, 'testComet'])->name('settings.integrations.comet.test');
