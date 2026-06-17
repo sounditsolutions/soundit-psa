@@ -194,7 +194,33 @@ class TacticalContextProviderTest extends TestCase
         $this->assertLessThanOrEqual(300, $block->estimatedTokens);
         $this->assertStringContainsString('freshAsOf:', $block->text);   // never dropped
         $this->assertStringContainsString('failing of', $block->text);   // failing-signal summary never dropped
-        $this->assertStringNotContainsString("\nFailing check:...PARTIAL", $block->text); // no mid-line cut
+
+        // G3: budget() must truncate at a line boundary — no mid-line cut.
+        //
+        // (a) The truncation marker must be present: with 60 checks at ~300-token budget the
+        //     raw section is always over-budget, so if the marker is absent the test is not
+        //     exercising the truncation path at all.
+        $this->assertStringContainsString('… (truncated to budget)', $block->text);
+
+        // (b) Every "Failing check:" line that appears in the output must be a COMPLETE line.
+        //     liveReadsWithManyFailingChecks() gives check N the stdout "output for check N",
+        //     so compose() renders each as:
+        //       Failing check: Check N (rc=1): output for check N
+        //     A mid-line cut (e.g. mb_substr) would leave the last check line severed — it
+        //     would NOT end with "output for check N". We verify every included check line
+        //     is intact by checking that the numeric suffix in the name matches the suffix at
+        //     the end of the stdout on the same line.
+        preg_match_all('/^Failing check: Check (\d+) \(rc=\d+\): (.+)$/m', $block->text, $matches, PREG_SET_ORDER);
+        $this->assertNotEmpty($matches, 'Expected at least one Failing check: line in the (truncated) output');
+        foreach ($matches as $m) {
+            $index   = $m[1];               // the N from "Check N"
+            $stdoutLine = $m[2];            // everything after the colon+space
+            $this->assertStringEndsWith(
+                "output for check {$index}",
+                $stdoutLine,
+                "Failing check line for Check {$index} is severed mid-line (got: {$stdoutLine})"
+            );
+        }
     }
 
     /**
