@@ -397,6 +397,13 @@
                                             </select>
                                         </div>
                                         <div class="col-auto">
+                                            <label class="form-label small">Date/time</label>
+                                            <input type="datetime-local" name="noted_at" class="form-control form-control-sm"
+                                                   value="{{ $item->noted_at?->toAppTz()->format('Y-m-d\TH:i') }}"
+                                                   max="{{ now()->toAppTz()->format('Y-m-d\TH:i') }}" style="width: 200px;"
+                                                   title="Adjust when this note is dated — controls its position in the timeline">
+                                        </div>
+                                        <div class="col-auto">
                                             <label class="form-label small">Time</label>
                                             <input type="text" name="time" class="form-control form-control-sm"
                                                    value="{{ $item->formatted_time }}" placeholder="0h 15m" style="width: 100px;">
