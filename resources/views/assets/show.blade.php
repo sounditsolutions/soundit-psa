@@ -79,12 +79,13 @@
             <a class="nav-link active" data-bs-toggle="tab" href="#tab-overview">Overview</a>
         @endif
     </li>
-    {{-- The page-top Network/Storage/Software/Patches tabs are Ninja/Level-only
-         (they hit the Ninja/Level RMM device-data endpoints). On a Tactical-only or
-         no-RMM asset they only ever rendered "not linked to an RMM", so hide them —
-         a Tactical asset gets the same data from its own card panels below. A
-         Ninja/Level (or dual-linked) asset is unchanged. --}}
-    @if($asset->ninja_id || $asset->level_id)
+    {{-- Page-top Network/Storage/Software/Patches tabs. Shown for any RMM-linked
+         asset: Ninja/Level hit the Ninja/Level device-data endpoints; a Tactical-only
+         asset routes the SAME tabs to its Tactical data (source=tactical) — see the
+         AJAX handler's hasTactical branch. Dual-linked (ninja/level + tactical) keeps
+         the Ninja/Level tabs (the Tactical card carries the at-a-glance summary). A
+         no-RMM asset still shows "not linked to an RMM". psa-ymw8. --}}
+    @if($asset->ninja_id || $asset->level_id || $asset->tacticalAsset)
     <li class="nav-item">
         @if(($activeTab ?? '') === 'tickets')
             <a class="nav-link" href="{{ route('assets.show', $asset) }}#tab-network">Network</a>
@@ -113,6 +114,16 @@
             <a class="nav-link" data-bs-toggle="tab" href="#tab-patches" data-ajax-section="patches">Patches</a>
         @endif
     </li>
+    {{-- Checks: Tactical-only (Ninja/Level have no "checks" concept). psa-ymw8. --}}
+    @if($asset->tacticalAsset && !$asset->ninja_id && !$asset->level_id)
+    <li class="nav-item">
+        @if(($activeTab ?? '') === 'tickets')
+            <a class="nav-link" href="{{ route('assets.show', $asset) }}#tab-checks">Checks</a>
+        @else
+            <a class="nav-link" data-bs-toggle="tab" href="#tab-checks" data-ajax-section="checks">Checks</a>
+        @endif
+    </li>
+    @endif
     @endif
     <li class="nav-item">
         @if(($activeTab ?? '') === 'tickets')
@@ -572,90 +583,13 @@
                     </tbody>
                 </table>
 
-                {{-- Lazy Tactical telemetry panels (P4 amendment I): co-located
-                     under the Tactical card, fetched on first expand via the shared
-                     deviceData AJAX branch — never on initial page render. Each
-                     panel renders three distinct states (data / genuinely-empty /
-                     could-not-load) from the JSON the controller returns. --}}
-                <div class="accordion accordion-flush mt-2" id="tacticalPanels"
-                     data-asset-id="{{ $asset->id }}"
-                     data-web-url="{{ \App\Support\TacticalConfig::webUrl() }}">
-                    {{-- Checks-health --}}
-                    <div class="accordion-item">
-                        <h2 class="accordion-header">
-                            <button class="accordion-button collapsed py-2 small" type="button"
-                                    data-bs-toggle="collapse" data-bs-target="#tacticalPanelChecks"
-                                    data-tactical-panel="checks" aria-expanded="false">
-                                <i class="bi bi-clipboard2-check me-2"></i>Checks health
-                            </button>
-                        </h2>
-                        <div id="tacticalPanelChecks" class="accordion-collapse collapse" data-bs-parent="#tacticalPanels">
-                            <div class="accordion-body small" data-tactical-panel-body="checks">
-                                <div class="text-muted py-2"><span class="spinner-border spinner-border-sm me-1"></span>Loading…</div>
-                            </div>
-                        </div>
-                    </div>
-                    {{-- Patches (compliance, count-first) --}}
-                    <div class="accordion-item">
-                        <h2 class="accordion-header">
-                            <button class="accordion-button collapsed py-2 small" type="button"
-                                    data-bs-toggle="collapse" data-bs-target="#tacticalPanelPatches"
-                                    data-tactical-panel="patches" aria-expanded="false">
-                                <i class="bi bi-shield-check me-2"></i>Patch compliance
-                            </button>
-                        </h2>
-                        <div id="tacticalPanelPatches" class="accordion-collapse collapse" data-bs-parent="#tacticalPanels">
-                            <div class="accordion-body small" data-tactical-panel-body="patches">
-                                <div class="text-muted py-2"><span class="spinner-border spinner-border-sm me-1"></span>Loading…</div>
-                            </div>
-                        </div>
-                    </div>
-                    {{-- Software inventory --}}
-                    <div class="accordion-item">
-                        <h2 class="accordion-header">
-                            <button class="accordion-button collapsed py-2 small" type="button"
-                                    data-bs-toggle="collapse" data-bs-target="#tacticalPanelSoftware"
-                                    data-tactical-panel="software" aria-expanded="false">
-                                <i class="bi bi-box-seam me-2"></i>Installed software
-                            </button>
-                        </h2>
-                        <div id="tacticalPanelSoftware" class="accordion-collapse collapse" data-bs-parent="#tacticalPanels">
-                            <div class="accordion-body small" data-tactical-panel-body="software">
-                                <div class="text-muted py-2"><span class="spinner-border spinner-border-sm me-1"></span>Loading…</div>
-                            </div>
-                        </div>
-                    </div>
-                    {{-- Network (public/local IPs + IP-enabled adapters) --}}
-                    <div class="accordion-item">
-                        <h2 class="accordion-header">
-                            <button class="accordion-button collapsed py-2 small" type="button"
-                                    data-bs-toggle="collapse" data-bs-target="#tacticalPanelNetwork"
-                                    data-tactical-panel="network" aria-expanded="false">
-                                <i class="bi bi-hdd-network me-2"></i>Network
-                            </button>
-                        </h2>
-                        <div id="tacticalPanelNetwork" class="accordion-collapse collapse" data-bs-parent="#tacticalPanels">
-                            <div class="accordion-body small" data-tactical-panel-body="network">
-                                <div class="text-muted py-2"><span class="spinner-border spinner-border-sm me-1"></span>Loading…</div>
-                            </div>
-                        </div>
-                    </div>
-                    {{-- Storage (disk volumes + low-disk flag) --}}
-                    <div class="accordion-item">
-                        <h2 class="accordion-header">
-                            <button class="accordion-button collapsed py-2 small" type="button"
-                                    data-bs-toggle="collapse" data-bs-target="#tacticalPanelStorage"
-                                    data-tactical-panel="storage" aria-expanded="false">
-                                <i class="bi bi-device-hdd me-2"></i>Storage
-                            </button>
-                        </h2>
-                        <div id="tacticalPanelStorage" class="accordion-collapse collapse" data-bs-parent="#tacticalPanels">
-                            <div class="accordion-body small" data-tactical-panel-body="storage">
-                                <div class="text-muted py-2"><span class="spinner-border spinner-border-sm me-1"></span>Loading…</div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
+                {{-- psa-ymw8: the under-card Tactical telemetry accordion
+                     (Checks/Patches/Software/Network/Storage) was removed — the
+                     owner found the collapsed panels buried the data after dev-test.
+                     That data now lives in the prominent page-top tabs, which route
+                     to Tactical data for a Tactical-only asset (see the AJAX handler's
+                     hasTactical branch + window.renderTacticalSection). The Tactical
+                     card keeps the at-a-glance summary, refresh-now + recent actions. --}}
             </div>
             {{-- psa-6h5r: the Open-in-Tactical link targets the configured WEB
                  dashboard base (TacticalConfig::webUrl()), NOT the API root.
@@ -1126,9 +1060,10 @@
 
     </div>
 
-    {{-- TABS 2-5 (Network/Storage/Software/Patches) are Ninja/Level-only; their
-         panes render only when the page-top tabs above do (same gate). --}}
-    @if($asset->ninja_id || $asset->level_id)
+    {{-- TABS 2-6 (Network/Storage/Software/Patches/Checks). Panes render for any
+         RMM-linked asset; the AJAX handler routes a Tactical-only asset to its
+         Tactical data (source=tactical). Same gate as the nav tabs above. psa-ymw8. --}}
+    @if($asset->ninja_id || $asset->level_id || $asset->tacticalAsset)
     {{-- ==================== TAB 2: NETWORK (AJAX) ==================== --}}
     <div class="tab-pane fade" id="tab-network">
         <div class="d-flex justify-content-center py-5"><div class="spinner-border text-primary" role="status"></div></div>
@@ -1148,6 +1083,13 @@
     <div class="tab-pane fade" id="tab-patches">
         <div class="d-flex justify-content-center py-5"><div class="spinner-border text-primary" role="status"></div></div>
     </div>
+
+    {{-- ============= TAB 6: CHECKS (AJAX, Tactical-only) ============= --}}
+    @if($asset->tacticalAsset && !$asset->ninja_id && !$asset->level_id)
+    <div class="tab-pane fade" id="tab-checks">
+        <div class="d-flex justify-content-center py-5"><div class="spinner-border text-primary" role="status"></div></div>
+    </div>
+    @endif
     @endif
 
     {{-- ==================== TAB 6: SECURITY ==================== --}}
@@ -2560,6 +2502,11 @@ function renderPatches(data) {
     var assetId = {{ $asset->id }};
     var hasNinja = {{ $asset->ninja_id ? 'true' : 'false' }};
     var hasLevel = {{ $asset->level_id ? 'true' : 'false' }};
+    var hasTactical = {{ $asset->tacticalAsset ? 'true' : 'false' }};
+    // psa-ymw8: a Tactical-only asset routes the SAME page-top tabs to its Tactical
+    // data (source=tactical) + the Tactical renderers. A Ninja/Level asset (incl.
+    // dual-linked) is unchanged — it keeps the Ninja/Level endpoint + renderers.
+    var useTactical = !hasNinja && !hasLevel && hasTactical;
 
     document.querySelectorAll('[data-ajax-section]').forEach(function(tab) {
         tab.addEventListener('shown.bs.tab', function() {
@@ -2567,14 +2514,14 @@ function renderPatches(data) {
             var pane = document.querySelector(this.getAttribute('href'));
             if (!pane || cache[section]) return;
 
-            if (!hasNinja && !hasLevel) {
+            if (!hasNinja && !hasLevel && !hasTactical) {
                 pane.innerHTML = '<p class="text-muted p-4">Asset not linked to an RMM — no live data available.</p>';
                 cache[section] = true;
                 return;
             }
 
             // Show spinner (already in the pane from server render)
-            fetch('/assets/' + assetId + '/device-data/' + section, {
+            fetch('/assets/' + assetId + '/device-data/' + section + (useTactical ? '?source=tactical' : ''), {
                 headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
             })
             .then(function(r) { return r.ok ? r.json() : Promise.reject(r); })
@@ -2582,7 +2529,9 @@ function renderPatches(data) {
                 if (data.error) {
                     pane.innerHTML = '<div class="alert alert-warning m-3"><i class="bi bi-exclamation-triangle me-2"></i>' + esc(data.error) + '</div>';
                 } else {
-                    pane.innerHTML = window['render' + section.charAt(0).toUpperCase() + section.slice(1)](data);
+                    pane.innerHTML = useTactical
+                        ? window.renderTacticalSection(section, data)
+                        : window['render' + section.charAt(0).toUpperCase() + section.slice(1)](data);
                 }
                 cache[section] = true;
             })
@@ -3143,17 +3092,15 @@ function renderPatches(data) {
     });
 })();
 
-// Lazy Tactical telemetry panels (P4 amendment I + G). Each accordion fetches its
-// section on first expand via the shared deviceData branch and renders one of
-// three states: data, genuinely-empty (positive copy), or could-not-load (an
-// {error} from a degraded bounded read). A could-not-load is NOT cached, so a
-// re-expand retries.
+// Tactical telemetry renderers (P4 amendment I + G), used by the page-top
+// Network/Storage/Software/Patches/Checks tabs for Tactical-only assets. Each
+// renders one of three states: data, genuinely-empty (positive copy), or — via
+// the caller — could-not-load. stdout stays escaped (amendment-G). psa-ymw8.
 (function() {
-    var root = document.getElementById('tacticalPanels');
-    if (!root) return;
-    var assetId = root.dataset.assetId;
-    var tacticalWebUrl = root.dataset.webUrl || '';
-    var loaded = {};
+    // psa-ymw8: these Tactical telemetry renderers used to back the under-card
+    // accordion; that accordion was removed and they now serve the page-top tabs
+    // for Tactical-only assets (exposed below as window.renderTacticalSection).
+    var tacticalWebUrl = @json(\App\Support\TacticalConfig::webUrl() ?: '');
 
     function viewInTacticalLink() {
         if (!tacticalWebUrl) return '';
@@ -3290,36 +3237,15 @@ function renderPatches(data) {
 
     var renderers = { checks: renderChecks, patches: renderPatches, software: renderSoftware, network: renderNetwork, storage: renderStorage };
 
-    root.querySelectorAll('[data-tactical-panel]').forEach(function(btn) {
-        var section = btn.dataset.tacticalPanel;
-        var target = document.querySelector(btn.dataset.bsTarget);
-        if (!target) return;
-        target.addEventListener('shown.bs.collapse', function() {
-            if (loaded[section]) return;
-            var body = target.querySelector('[data-tactical-panel-body="' + section + '"]');
-            if (!body) return;
-
-            // fix #4: scope to the Tactical source so a Ninja+Tactical dual-linked
-            // asset's panels resolve to the Tactical branch, not Ninja-first (which
-            // has no `checks` arm -> UnhandledMatchError).
-            fetch('/assets/' + assetId + '/device-data/' + section + '?source=tactical', {
-                headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
-            })
-            .then(function(r) { return r.ok ? r.json() : Promise.reject(r); })
-            .then(function(data) {
-                if (data.error) {
-                    // (c) could-not-load — distinct from genuinely-empty; allow retry.
-                    body.innerHTML = '<div class="text-danger"><i class="bi bi-x-circle me-1"></i>' + esc(data.error) + '</div>';
-                    return;
-                }
-                body.innerHTML = renderers[section](data);
-                loaded[section] = true;
-            })
-            .catch(function() {
-                body.innerHTML = '<div class="text-danger"><i class="bi bi-x-circle me-1"></i>Could not load. Try again in a moment.</div>';
-            });
-        });
-    });
+    // psa-ymw8: expose the Tactical renderers so the page-top Network/Storage/
+    // Software/Patches/Checks tabs (the hasTactical branch in the AJAX handler)
+    // render Tactical-shaped data with amendment-G stdout redaction preserved.
+    // The could-not-load (error) and genuinely-empty states are handled by the
+    // caller and the individual renderers respectively. The under-card accordion
+    // that previously consumed these was removed.
+    window.renderTacticalSection = function(section, data) {
+        return renderers[section] ? renderers[section](data) : '';
+    };
 })();
 </script>
 @endif
