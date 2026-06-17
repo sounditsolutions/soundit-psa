@@ -1007,7 +1007,7 @@ class AssetController extends Controller
     public function openTacticalMeshCentral(Request $request, Asset $asset)
     {
         $data = $request->validate([
-            'type'      => 'required|in:control,terminal,file',
+            'type' => 'required|in:control,terminal,file',
             'ticket_id' => 'nullable|integer|exists:tickets,id',
         ]);
 
@@ -1021,16 +1021,16 @@ class AssetController extends Controller
         // G2 helper: one URL-free audit row for any outcome.
         $audit = function (string $status) use ($request, $asset, $agentId, $data) {
             \App\Models\TacticalActionLog::create([
-                'actor_id'     => $request->user()?->id,
-                'actor_label'  => $request->user()?->email ?? 'unknown',
-                'action_key'   => 'tactical.remote_control',          // G8: fixed enum — if you add free-text, route via ActionRedactor
-                'agent_id'     => $agentId,
-                'asset_id'     => $asset->id,
-                'ticket_id'    => $data['ticket_id'] ?? null,
+                'actor_id' => $request->user()?->id,
+                'actor_label' => $request->user()?->email ?? 'unknown',
+                'action_key' => 'tactical.remote_control',          // G8: fixed enum — if you add free-text, route via ActionRedactor
+                'agent_id' => $agentId,
+                'asset_id' => $asset->id,
+                'ticket_id' => $data['ticket_id'] ?? null,
                 'target_label' => $asset->tacticalAsset->hostname ?? $asset->hostname ?? 'unknown',
-                'params'       => ['link_type' => $data['type']],     // G1/G2: never the URL
+                'params' => ['link_type' => $data['type']],     // G1/G2: never the URL
                 'result_status' => $status,
-                'message'      => $status === 'ok' ? 'Remote session opened.' : 'Remote session open failed.',
+                'message' => $status === 'ok' ? 'Remote session opened.' : 'Remote session open failed.',
                 'correlation_id' => (string) \Illuminate\Support\Str::uuid(),
             ]);
         };
@@ -1039,10 +1039,11 @@ class AssetController extends Controller
             $links = app(\App\Services\Tactical\TacticalClient::class)->getMeshCentralLinks($agentId);
         } catch (\App\Services\Tactical\TacticalClientException $e) {
             $audit('error');   // G4: do NOT report()/rethrow — $e->responseBody may carry a token
+
             return response()->json(['error' => 'Could not reach Tactical to open a remote session. Check that Tactical RMM is reachable and try again.'], 502);
         }
 
-        $url   = $links[$data['type']] ?? null;
+        $url = $links[$data['type']] ?? null;
         $valid = $url !== null && \Illuminate\Support\Facades\Validator::make(
             ['u' => $url],
             ['u' => [new \App\Rules\SafeTacticalWebUrl]]
@@ -1050,11 +1051,13 @@ class AssetController extends Controller
 
         if (! $valid) {
             $audit('error');
+
             // The realistic cause is MeshCentral not configured for this device, not a transport failure.
             return response()->json(['error' => "MeshCentral isn't available for this device. Confirm the RMM server's MeshCentral integration is configured and this agent has a mesh connection."], 422);
         }
 
         $audit('ok');
+
         return response()->json(['url' => $url])->header('Cache-Control', 'no-store');   // G1 verbatim, G7 no-store
     }
 

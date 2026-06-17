@@ -82,13 +82,13 @@ class TacticalMeshCentralTest extends TestCase
      */
     private function authedUserWithTacticalAsset(string $agentId = 'AGENT-1'): array
     {
-        $user  = User::factory()->create();
+        $user = User::factory()->create();
         $asset = Asset::factory()->create(['hostname' => 'BOX-1']);
         TacticalAsset::create([
             'asset_id' => $asset->id,
             'agent_id' => $agentId,
-            'hostname'  => 'BOX-1',
-            'status'    => 'online',
+            'hostname' => 'BOX-1',
+            'status' => 'online',
             'synced_at' => now(),
         ]);
 
@@ -127,14 +127,14 @@ class TacticalMeshCentralTest extends TestCase
 
     // ── unit tests: TacticalClient::getMeshCentralLinks ─────────────────────
 
-    public function test_getMeshCentralLinks_hits_the_agent_meshcentral_endpoint(): void
+    public function test_get_mesh_central_links_hits_the_agent_meshcentral_endpoint(): void
     {
         $client = $this->clientReturning([
             new Response(200, [], json_encode([
                 'hostname' => 'BOX',
-                'control'  => 'https://mesh.example.com/?login=ctrl',
+                'control' => 'https://mesh.example.com/?login=ctrl',
                 'terminal' => 'https://mesh.example.com/?login=term',
-                'file'     => 'https://mesh.example.com/?login=file',
+                'file' => 'https://mesh.example.com/?login=file',
             ])),
         ]);
 
@@ -147,16 +147,16 @@ class TacticalMeshCentralTest extends TestCase
         );
     }
 
-    public function test_getMeshCentralLinks_returns_all_fields(): void
+    public function test_get_mesh_central_links_returns_all_fields(): void
     {
         $payload = [
             'hostname' => 'WORKSTATION-42',
-            'control'  => 'https://mesh.example.com/?login=ctrl',
+            'control' => 'https://mesh.example.com/?login=ctrl',
             'terminal' => 'https://mesh.example.com/?login=term',
-            'file'     => 'https://mesh.example.com/?login=file',
-            'status'   => 'online',
-            'client'   => 'Acme Corp',
-            'site'     => 'Main',
+            'file' => 'https://mesh.example.com/?login=file',
+            'status' => 'online',
+            'client' => 'Acme Corp',
+            'site' => 'Main',
         ];
 
         $client = $this->clientReturning([
@@ -168,7 +168,7 @@ class TacticalMeshCentralTest extends TestCase
         $this->assertSame($payload, $links);
     }
 
-    public function test_getMeshCentralLinks_uses_get_verb(): void
+    public function test_get_mesh_central_links_uses_get_verb(): void
     {
         $client = $this->clientReturning([
             new Response(200, [], json_encode(['hostname' => 'BOX'])),
@@ -233,7 +233,7 @@ class TacticalMeshCentralTest extends TestCase
 
     public function test_open_meshcentral_422_when_asset_has_no_tactical_link(): void
     {
-        $user  = User::factory()->create();
+        $user = User::factory()->create();
         $asset = Asset::factory()->create(['hostname' => 'NOLINK']);
 
         $res = $this->actingAs($user)
@@ -262,7 +262,7 @@ class TacticalMeshCentralTest extends TestCase
 
         $res = $this->actingAs($user)
             ->postJson("/assets/{$asset->id}/tactical/meshcentral", [
-                'type'      => 'control',
+                'type' => 'control',
                 'ticket_id' => $ticket->id,
             ]);
 
