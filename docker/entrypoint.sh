@@ -13,7 +13,9 @@ if [ "$(id -u)" = "0" ]; then
 fi
 
 if [ -d /shared-public ]; then
-    cp -a public/. /shared-public/
+    rm -f /shared-public/.soundit-public-ready
+    cp -af public/. /shared-public/
+    touch /shared-public/.soundit-public-ready
 fi
 
 exec docker-php-entrypoint "$@"

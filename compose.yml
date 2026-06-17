@@ -14,7 +14,7 @@ services:
       - composer_cache:/tmp/composer-cache
 
   nginx:
-    image: nginx:stable-alpine
+    image: nginx:1.30.2-alpine
     depends_on:
       - app
     ports:
@@ -25,7 +25,7 @@ services:
       - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
 
   db:
-    image: mariadb:10.11
+    image: mariadb:10.11.18
     environment:
       MYSQL_DATABASE: ${DB_DATABASE:-soundit_psa}
       MYSQL_USER: ${DB_USERNAME:-soundit_psa}
