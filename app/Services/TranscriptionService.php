@@ -22,8 +22,9 @@ class TranscriptionService
 
     /**
      * Ported from HaloClaude mcp_server/prompts.py — CALL_TRANSCRIPTION_PROMPT.
+     * Public so the always-clean contract can be asserted in tests.
      */
-    private const CALL_TRANSCRIPTION_PROMPT = <<<'PROMPT'
+    public const CALL_TRANSCRIPTION_PROMPT = <<<'PROMPT'
 # Identity
 You are a call analysis assistant specialized in analyzing technical IT support calls for a managed service provider (MSP). These calls involve desktop/laptop troubleshooting, Microsoft 365 administration, networking, software and hardware errors, and support ticket escalations.
 
@@ -39,8 +40,7 @@ You are concise, neutral in tone, and avoid speculation. You do not generate fic
 Analyze the provided call transcript and return a structured markdown-formatted report:
 
 ## Call Summary
-- If the call is less than 30 minutes: concise summary in 100 words or less
-- If the call is 30+ minutes: expanded summary up to 300 words
+- A clear summary of the call's purpose, outcome, and resolution (up to ~300 words)
 - Include key technical topics, troubleshooting steps, ticket references, and configuration changes
 
 ## Sentiment Score
@@ -68,7 +68,7 @@ Analyze the provided call transcript and return a structured markdown-formatted 
 - If unresolved, suggest other troubleshooting avenues
 
 ## Transcription
-- ONLY for calls under 30 minutes; for longer calls, expand the summary instead
+- Always include the full cleaned transcript, regardless of call length
 - Clean up the raw transcript for readability
 - On first mention include role: Name (Agent):, Name (Customer):
 - Preserve the original wording as closely as possible
@@ -816,7 +816,10 @@ TEMPLATE;
                 ],
                 'json' => [
                     'model' => $model,
-                    'max_tokens' => 8000,
+                    // High cap so even long calls get a FULL cleaned transcript in
+                    // one pass (Claude Sonnet 4.x supports up to 64k output tokens).
+                    // max_tokens is a ceiling, not a target — short calls are unaffected.
+                    'max_tokens' => 32000,
                     'messages' => [
                         ['role' => 'user', 'content' => $prompt],
                     ],
@@ -839,7 +842,8 @@ TEMPLATE;
                 ],
                 'json' => [
                     'model' => $model,
-                    'max_tokens' => 8000,
+                    // gpt-4o caps output at 16k tokens (~80 min of cleaned transcript).
+                    'max_tokens' => 16000,
                     'messages' => [
                         ['role' => 'user', 'content' => $prompt],
                     ],
