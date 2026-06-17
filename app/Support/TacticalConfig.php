@@ -62,6 +62,30 @@ class TacticalConfig
         return self::get('alert_min_severity') ?: 'warning';
     }
 
+    // ── P7 auto-ticket (G6) ──────────────────────────────────────────────────
+
+    /**
+     * Whether auto-ticketing is enabled for Tactical alerts.
+     * Default OFF (opt-in) to prevent first-run flooding.
+     */
+    public static function autoTicket(): bool
+    {
+        return (bool) Setting::getValue('tactical_auto_ticket');
+    }
+
+    /**
+     * Minimum severity to auto-create a ticket.
+     * Validated against the known severity keys; falls back to 'error' if
+     * the stored value is invalid/empty (never falls through to 0 / "everything").
+     */
+    public static function autoTicketMinSeverity(): string
+    {
+        $validKeys = ['error', 'warning', 'info', 'informational'];
+        $stored = strtolower(trim((string) Setting::getValue('tactical_auto_ticket_min_severity')));
+
+        return in_array($stored, $validKeys, true) ? $stored : 'error';
+    }
+
     // ── P7 provisioning keys ─────────────────────────────────────────────────
 
     /**
