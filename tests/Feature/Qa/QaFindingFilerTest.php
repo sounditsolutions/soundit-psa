@@ -71,4 +71,34 @@ class QaFindingFilerTest extends TestCase
         $this->expectException(\InvalidArgumentException::class);
         $filer->file($this->finding('typo'));
     }
+
+    public function test_files_a_design_finding_as_a_labeled_bead(): void
+    {
+        $calls = [];
+        $runner = function (array $cmd) use (&$calls) {
+            $calls[] = $cmd;
+
+            return 'psa-DSGN1';
+        };
+
+        $filer = new QaFindingFiler($runner, fn () => []);
+        $finding = new QaFinding(
+            scenarioId: 'asset-show',
+            title: '[spacing] Action buttons are cramped in the asset-detail header',
+            kind: 'design',
+            severity: 'minor',
+            steps: ['Open /assets/23', 'Observe the header action row at desktop width'],
+            expected: 'Comfortable, consistent spacing between action buttons',
+            actual: 'Buttons abut with <4px gap; visually crowded',
+            screenshotPath: '/tmp/qa/asset-show@desktop.png',
+        );
+
+        $id = $filer->file($finding);
+
+        $this->assertSame('psa-DSGN1', $id);
+        $create = collect($calls)->first(fn ($c) => in_array('create', $c, true));
+        $this->assertNotNull($create, 'expected a bd create call');
+        $this->assertContains('qa', $create);
+        $this->assertContains('design', $create);
+    }
 }

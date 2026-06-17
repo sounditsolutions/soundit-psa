@@ -4,7 +4,7 @@ namespace App\Services\Qa;
 
 class QaFinding
 {
-    public const KINDS = ['bug', 'ux', 'docs'];
+    public const KINDS = ['bug', 'ux', 'docs', 'design'];
 
     /** @param array<int,string> $steps */
     public function __construct(

@@ -27,6 +27,9 @@
 import { chromium } from 'playwright';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
 
 function readStdin() {
   return new Promise((resolve, reject) => {
@@ -65,11 +68,11 @@ function assertAllowedHost(baseUrl) {
 }
 
 async function run(job) {
-  const { baseUrl, loginUserId = 1, scenario = 'unnamed', actions = [] } = job;
+  const { baseUrl, loginUserId = 1, scenario = 'unnamed', actions = [], viewports = null } = job;
   assertAllowedHost(baseUrl);
 
   const screenDir = process.env.QA_SCREENSHOT_DIR || '/tmp/qa-screens';
-  const result = { scenario, ok: true, steps: [], screenshots: [], finalUrl: null, snapshot: null, error: null };
+  const result = { scenario, ok: true, steps: [], screenshots: [], finalUrl: null, snapshot: null, axe: [], error: null };
 
   const browser = await chromium.launch();
   const context = await browser.newContext({ ignoreHTTPSErrors: true }); // dev uses a self-signed cert
@@ -138,11 +141,39 @@ async function run(job) {
             // ariaSnapshot (YAML role tree) is the supported page-reading primitive.
             result.snapshot = await page.locator('body').ariaSnapshot();
             break;
+          case 'axe': {
+            // Inject the axe-core bundle into the page and run it; record only the
+            // violations (the actionable half). Read-only: axe never mutates the DOM.
+            await page.addScriptTag({ path: require.resolve('axe-core/axe.min.js') });
+            const axeRun = await page.evaluate(async () => await window.axe.run());
+            const violations = (axeRun.violations || []).map((v) => ({
+              id: v.id,
+              impact: v.impact,
+              help: v.help,
+              nodes: v.nodes.flatMap((n) => n.target),
+            }));
+            result.axe.push({ url: page.url(), label: action.name || `axe-${i}`, violations });
+            step.detail = `axe @ ${page.url()}: ${violations.length} violation(s)`;
+            break;
+          }
           case 'screenshot': {
-            const path = `${screenDir}/${scenario}-${action.name || i}.png`;
-            mkdirSync(dirname(path), { recursive: true });
-            await page.screenshot({ path, fullPage: true });
-            result.screenshots.push(path);
+            // With a `viewports` job field, capture the same screen at each breakpoint
+            // (named suffix) so responsive regressions are observable. Without it,
+            // capture once at the default viewport (unchanged behavior).
+            const vps = viewports && viewports.length ? viewports : [null];
+            // Restore the viewport afterward so a multi-viewport capture doesn't
+            // leave later actions running at the last breakpoint. Only when we
+            // actually change it (the no-viewports path stays untouched).
+            const prevVp = vps.some(Boolean) ? page.viewportSize() : null;
+            for (const vp of vps) {
+              if (vp) await page.setViewportSize({ width: vp.width, height: vp.height });
+              const suffix = vp ? `@${vp.name}` : '';
+              const path = `${screenDir}/${scenario}-${action.name || i}${suffix}.png`;
+              mkdirSync(dirname(path), { recursive: true });
+              await page.screenshot({ path, fullPage: true });
+              result.screenshots.push(path);
+            }
+            if (prevVp) await page.setViewportSize(prevVp);
             break;
           }
           default:

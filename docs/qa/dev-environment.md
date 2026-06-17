@@ -15,3 +15,5 @@ Async jobs (triage, wiki mining) run on the **database** queue. A worker MUST be
 
 ## Reset
 Dev data is staged/disposable. Clearing the queue or mutating tickets/wiki during QA runs is expected and acceptable.
+
+The design-audit + verify-a-change modes use the same dev contract — no new env beyond QA_ALLOWED_HOSTS, /dev/login, and the queue worker. axe-core installs with the harness (npm install in scripts/qa).
