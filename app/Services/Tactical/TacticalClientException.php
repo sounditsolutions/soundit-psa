@@ -37,6 +37,15 @@ class TacticalClientException extends RuntimeException
      * not a transport failure). Anything else (ConnectException, timeouts,
      * TooManyRedirectsException — none carry a usable response) => transport
      * failure.
+     *
+     * SECURITY: the $message parameter is intentionally IGNORED — it may carry
+     * the Guzzle exception message, which Guzzle's BodySummarizer embeds a
+     * ~120-byte summary of the HTTP response body into. A Tactical URLAction
+     * endpoint serializes fields="__all__" and echoes rest_headers (containing
+     * X-Webhook-Key) in validation-error bodies, so the Guzzle message leaks
+     * the key verbatim. The exception MESSAGE is always built from the HTTP
+     * status only (body-free). Callers that explicitly need the raw body must
+     * use responseBody() — that accessor is preserved for behavior, not logging.
      */
     public static function fromGuzzle(string $message, Throwable $e): self
     {
@@ -51,7 +60,13 @@ class TacticalClientException extends RuntimeException
             $transport = false;
         }
 
-        return new self($message, $e->getCode(), $e, $status, $body, $transport);
+        // Build a body-free message from the HTTP status only — never from
+        // $message or $e->getMessage(), which may embed the response body.
+        $safeMessage = $status !== null
+            ? "Tactical API error (HTTP {$status})"
+            : 'Tactical API error (transport failure)';
+
+        return new self($safeMessage, $e->getCode(), $e, $status, $body, $transport);
     }
 
     /**

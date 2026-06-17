@@ -614,23 +614,93 @@ class TacticalAlertProvisioningTest extends TestCase
         $this->assertStringNotContainsString('audit-fail-key', $auditJson);
     }
 
-    // ── G3 PROOF: webhook key absent from ALL sinks on the FAILURE path ──────
+    // ── G3 PROOF (sink 4): webhook key absent from TacticalClient's OWN catch logs ─
     //
-    // This is the gate test that proves the fix. The existing failure tests used
-    // a key-free body ("{"detail":"Permission denied"}") so the leak passed green.
-    // This test plants the real webhook key inside the exception message (simulating
-    // Tactical echoing rest_headers in a 400 validation-error body) and asserts
-    // the key is absent from (a) logs, (b) the audit row, and (c) return message.
+    // The prior fix cleaned the provisioning *service* sinks. This test drives the
+    // REAL TacticalClient::post() path (mock transport, not a Mockery mock of the
+    // client) so the client's own Log::error catch block executes. If the client
+    // still logs $e->getMessage() the key escapes here — this must be RED before
+    // the client fix and GREEN after.
+    //
+    // The body that the mock transport returns echoes X-Webhook-Key in rest_headers,
+    // exactly as Tactical's URLAction 400 validation-error does in production.
+    // Guzzle's BodySummarizer bakes the first ~120 bytes of the response body into
+    // RequestException::getMessage() — so when the client catch block logs that
+    // message, the key is written to the Laravel error log.
+
+    public function test_webhook_key_absent_from_client_catch_log_on_real_client_post_400(): void
+    {
+        $webhookKey = 'real-client-sink4-leak-key-xyz';
+        Setting::setEncrypted('tactical_webhook_key', $webhookKey);
+
+        // Build a response body that echoes back the webhook key in rest_headers,
+        // simulating what Tactical's URLAction endpoint returns on a 400 error.
+        $echoedBody = json_encode([
+            'rest_headers' => json_encode(['X-Webhook-Key' => $webhookKey, 'Content-Type' => 'application/json']),
+            'pattern' => ['This field is required.'],
+        ]);
+
+        // Use a REAL TacticalClient backed by a mock transport (not a Mockery mock
+        // of the client itself) — this forces the real post() catch block to run.
+        $client = $this->clientReturning([
+            new Response(400, [], $echoedBody),
+        ]);
+
+        // Tap logs BEFORE calling the client
+        /** @var list<string> $loggedMessages */
+        $loggedMessages = [];
+        Log::listen(function ($message) use (&$loggedMessages) {
+            $loggedMessages[] = (string) $message->message;
+            $loggedMessages[] = json_encode($message->context ?? []);
+        });
+
+        // Exercise the real client's post() catch block
+        $caughtException = null;
+        try {
+            $client->post('core/urlaction/', [
+                'rest_headers' => json_encode(['X-Webhook-Key' => $webhookKey]),
+            ]);
+        } catch (TacticalClientException $e) {
+            $caughtException = $e;
+        }
+
+        $this->assertNotNull($caughtException, 'post() must throw TacticalClientException on 400');
+        $this->assertSame(400, $caughtException->statusCode(), 'statusCode() must be 400');
+
+        // (a) Key must be absent from ALL log output (including the client's catch log)
+        $allLogs = implode("\n", $loggedMessages);
+        $this->assertStringNotContainsString(
+            $webhookKey, $allLogs,
+            'Webhook key must not appear in TacticalClient catch block log output'
+        );
+
+        // (b) The exception MESSAGE itself must not carry the key
+        $this->assertStringNotContainsString(
+            $webhookKey, $caughtException->getMessage(),
+            'TacticalClientException::getMessage() must not contain the webhook key'
+        );
+
+        // (c) responseBody() MAY contain the key (it is the raw body for callers
+        // that explicitly need it) — but the MESSAGE and logs must be key-free.
+        $this->assertNotNull($caughtException->responseBody(),
+            'responseBody() must still return the raw body for callers that need it');
+    }
+
+    // ── G3 PROOF: webhook key absent from ALL service sinks on the FAILURE path ─
+    //
+    // This tests the provisioning SERVICE sinks (log, audit, return message) when
+    // a TacticalClientException carries the webhook key in responseBody(). Since
+    // fromGuzzle() now builds a body-free message (the sink-4 fix), the exception
+    // message itself is clean — the service test verifies the service catch block
+    // doesn't leak the key via responseBody() into its own log/audit/return sinks.
 
     public function test_webhook_key_absent_from_all_sinks_when_urlaction_fails_with_key_in_body(): void
     {
         $webhookKey = 'wh-secret-12345-must-not-leak';
         Setting::setEncrypted('tactical_webhook_key', $webhookKey);
 
-        // Simulate Tactical echoing rest_headers (containing X-Webhook-Key) in a
-        // 400 validation-error body. Guzzle's BodySummarizer bakes this into the
-        // exception message, so the TacticalClientException message will contain
-        // the key verbatim.
+        // Build a 400 response that echoes back rest_headers with the webhook key,
+        // as Tactical's URLAction endpoint does on validation errors.
         $echoedBody = json_encode([
             'rest_headers' => json_encode(['X-Webhook-Key' => $webhookKey, 'Content-Type' => 'application/json']),
             'pattern'      => ['This field is required.'],
@@ -638,15 +708,19 @@ class TacticalAlertProvisioningTest extends TestCase
         $guzzleResp = new Response(400, [], $echoedBody);
         $guzzleReq  = new GuzzleRequest('POST', 'https://tactical.example.com/core/urlaction/');
         $guzzleEx   = RequestException::create($guzzleReq, $guzzleResp);
-        // The exception message that fromGuzzle bakes in will reference the response body summary
+        // After the sink-4 fix, fromGuzzle() produces a body-free message; the key
+        // is stored only in responseBody() — which is what we test does NOT leak.
         $keyLeakException = TacticalClientException::fromGuzzle(
-            "Tactical API error: 400 Bad Request\n{$echoedBody}",
+            'Tactical API error (HTTP 400)',
             $guzzleEx
         );
 
-        // Verify our test setup: the exception message actually contains the key
-        $this->assertStringContainsString($webhookKey, $keyLeakException->getMessage(),
-            'Test setup error: exception message must contain the key to be a valid leak test');
+        // Verify responseBody() carries the key (for callers that explicitly need it),
+        // but the message itself is body-free.
+        $this->assertStringContainsString($webhookKey, $keyLeakException->responseBody() ?? '',
+            'Test setup: responseBody() must contain the key to be a valid leak test');
+        $this->assertStringNotContainsString($webhookKey, $keyLeakException->getMessage(),
+            'Test setup: fromGuzzle() must produce a body-free message after the sink-4 fix');
 
         // Tap logs
         /** @var list<string> $loggedMessages */

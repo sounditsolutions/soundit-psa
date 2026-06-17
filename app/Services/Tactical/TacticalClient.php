@@ -144,8 +144,12 @@ class TacticalClient
         try {
             $response = $this->http->request('GET', $endpoint, $options);
         } catch (GuzzleException $e) {
-            Log::error("[TacticalClient] GET {$endpoint} failed: {$e->getMessage()}");
-            throw TacticalClientException::fromGuzzle("Tactical API error: {$e->getMessage()}", $e);
+            Log::error("[TacticalClient] GET {$endpoint} failed", [
+                'status' => ($e instanceof \GuzzleHttp\Exception\RequestException && $e->hasResponse())
+                    ? $e->getResponse()->getStatusCode()
+                    : null,
+            ]);
+            throw TacticalClientException::fromGuzzle("Tactical API error (HTTP GET {$endpoint})", $e);
         }
 
         return json_decode((string) $response->getBody(), true) ?? [];
@@ -158,8 +162,12 @@ class TacticalClient
                 'json' => $body,
             ]);
         } catch (GuzzleException $e) {
-            Log::error("[TacticalClient] POST {$endpoint} failed: {$e->getMessage()}");
-            throw TacticalClientException::fromGuzzle("Tactical API error: {$e->getMessage()}", $e);
+            Log::error("[TacticalClient] POST {$endpoint} failed", [
+                'status' => ($e instanceof \GuzzleHttp\Exception\RequestException && $e->hasResponse())
+                    ? $e->getResponse()->getStatusCode()
+                    : null,
+            ]);
+            throw TacticalClientException::fromGuzzle("Tactical API error (HTTP POST {$endpoint})", $e);
         }
 
         return json_decode((string) $response->getBody(), true) ?? [];
@@ -172,8 +180,12 @@ class TacticalClient
                 'json' => $body,
             ]);
         } catch (GuzzleException $e) {
-            Log::error("[TacticalClient] PUT {$endpoint} failed: {$e->getMessage()}");
-            throw TacticalClientException::fromGuzzle("Tactical API error: {$e->getMessage()}", $e);
+            Log::error("[TacticalClient] PUT {$endpoint} failed", [
+                'status' => ($e instanceof \GuzzleHttp\Exception\RequestException && $e->hasResponse())
+                    ? $e->getResponse()->getStatusCode()
+                    : null,
+            ]);
+            throw TacticalClientException::fromGuzzle("Tactical API error (HTTP PUT {$endpoint})", $e);
         }
 
         return json_decode((string) $response->getBody(), true) ?? [];
@@ -186,8 +198,12 @@ class TacticalClient
                 'json' => $body,
             ]);
         } catch (GuzzleException $e) {
-            Log::error("[TacticalClient] PATCH {$endpoint} failed: {$e->getMessage()}");
-            throw TacticalClientException::fromGuzzle("Tactical API error: {$e->getMessage()}", $e);
+            Log::error("[TacticalClient] PATCH {$endpoint} failed", [
+                'status' => ($e instanceof \GuzzleHttp\Exception\RequestException && $e->hasResponse())
+                    ? $e->getResponse()->getStatusCode()
+                    : null,
+            ]);
+            throw TacticalClientException::fromGuzzle("Tactical API error (HTTP PATCH {$endpoint})", $e);
         }
 
         return json_decode((string) $response->getBody(), true) ?? [];
@@ -291,8 +307,12 @@ class TacticalClient
                 ],
             ]);
         } catch (GuzzleException $e) {
-            Log::error("[TacticalClient] POST clients/ failed: {$e->getMessage()}");
-            throw TacticalClientException::fromGuzzle("Tactical API error: {$e->getMessage()}", $e);
+            Log::error('[TacticalClient] POST clients/ failed', [
+                'status' => ($e instanceof \GuzzleHttp\Exception\RequestException && $e->hasResponse())
+                    ? $e->getResponse()->getStatusCode()
+                    : null,
+            ]);
+            throw TacticalClientException::fromGuzzle('Tactical API error (HTTP POST clients/)', $e);
         }
 
         return [
