@@ -2,10 +2,13 @@
 
 namespace App\Services\Tactical;
 
+use App\Support\SafeUrlInspector;
 use App\Support\TacticalConfig;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\GuzzleException;
+use GuzzleHttp\HandlerStack;
 use Illuminate\Support\Facades\Log;
+use Psr\Http\Message\RequestInterface;
 
 class TacticalClient
 {
@@ -19,8 +22,13 @@ class TacticalClient
      *                                         redirect could exfiltrate the 2FA-bypassing key to a metadata host).
      *                                         When provided (the test/bus seam), it is used AS-IS — the injected
      *                                         client owns its own headers; config is NOT consulted.
+     * @param  callable|null  $resolver  Host-resolution seam for the request-time
+     *                                   SSRF pin (psa-rkf6): host => string[]|false.
+     *                                   Defaults to gethostbynamel in production;
+     *                                   injected by tests for determinism. Only
+     *                                   consulted on the config-driven path.
      */
-    public function __construct(?Client $http = null)
+    public function __construct(?Client $http = null, ?callable $resolver = null)
     {
         if ($http !== null) {
             $this->http = $http;
@@ -30,8 +38,15 @@ class TacticalClient
 
         $baseUrl = rtrim(TacticalConfig::apiUrl(), '/').'/';
 
+        // Request-time peer-IP pin (psa-rkf6): validate + pin the target IP on
+        // every request, closing the DNS-rebinding TOCTOU the save-time
+        // SafeUrlInspector check leaves open.
+        $stack = HandlerStack::create();
+        $stack->push(self::ssrfPinMiddleware($resolver ?? 'gethostbynamel'), 'tactical_ssrf_pin');
+
         $this->http = new Client([
             'base_uri' => $baseUrl,
+            'handler' => $stack,
             'timeout' => 30,
             'allow_redirects' => false,
             'headers' => [
@@ -40,6 +55,73 @@ class TacticalClient
                 'Accept' => 'application/json',
             ],
         ]);
+    }
+
+    /**
+     * Guzzle middleware factory for the request-time SSRF pin (psa-rkf6).
+     *
+     * Before every outbound request it resolves the target host through
+     * $resolver (host => string[] addresses, or false for NXDOMAIN), validates
+     * that EVERY resolved address is public/routable via the shared
+     * SafeUrlInspector::ipIsSafe() checker, and pins the connection to the
+     * validated address(es) with CURLOPT_RESOLVE so curl performs no second DNS
+     * lookup. Validate-and-pin are atomic, closing the DNS-rebinding TOCTOU the
+     * save-time check cannot: a host that passed save-time validation can never
+     * rebind to a private/metadata address at connect time. Fails CLOSED — an
+     * unsafe or unresolvable host throws TacticalClientException before connect.
+     *
+     * Exposed (not private) so it is unit-testable against a mock transport with
+     * an injected resolver; production wires it via the constructor above.
+     */
+    public static function ssrfPinMiddleware(callable $resolver): callable
+    {
+        return static function (callable $handler) use ($resolver): callable {
+            return static function (RequestInterface $request, array $options) use ($handler, $resolver) {
+                $uri = $request->getUri();
+                $host = $uri->getHost();
+                $port = $uri->getPort() ?? ($uri->getScheme() === 'https' ? 443 : 80);
+
+                // Throws (fail closed) before connect if any resolved IP is unsafe.
+                $resolveLine = self::resolveAndPin($host, $port, $resolver);
+
+                // Force CURLOPT_RESOLVE: a security control must not be
+                // overridable by caller-supplied curl options.
+                $curl = $options['curl'] ?? [];
+                $curl[CURLOPT_RESOLVE] = $resolveLine;
+                $options['curl'] = $curl;
+
+                return $handler($request, $options);
+            };
+        };
+    }
+
+    /**
+     * Resolve $host and return a single CURLOPT_RESOLVE entry
+     * ("host:port:ip[,ip...]") pinning it to its validated address(es); throw
+     * TacticalClientException when the host does not resolve or ANY resolved
+     * address is private/reserved. Pre-connect — the request never leaves the
+     * box when this throws.
+     *
+     * @return list<string>
+     */
+    private static function resolveAndPin(string $host, int $port, callable $resolver): array
+    {
+        $ips = $resolver($host);
+        if ($ips === false || ! is_array($ips) || $ips === []) {
+            Log::warning("[TacticalClient] SSRF pin: host '{$host}' did not resolve — refusing.");
+            throw new TacticalClientException("Tactical API host '{$host}' did not resolve (refused for safety).");
+        }
+
+        foreach ($ips as $ip) {
+            if (! SafeUrlInspector::ipIsSafe($ip)) {
+                Log::warning("[TacticalClient] SSRF pin: host '{$host}' resolved to non-public {$ip} — refusing.");
+                throw new TacticalClientException(
+                    "Tactical API host '{$host}' resolved to a private or reserved address ({$ip}); refused."
+                );
+            }
+        }
+
+        return [$host.':'.$port.':'.implode(',', $ips)];
     }
 
     /**
