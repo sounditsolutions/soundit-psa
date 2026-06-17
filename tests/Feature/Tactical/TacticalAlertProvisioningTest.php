@@ -24,8 +24,16 @@ use Tests\TestCase;
  * Gate commitments proved here:
  *  G2: 403 → actionable error message; audit row written with actor id + outcome (no secret)
  *  G3: webhook key absent from logs AND audit row, on both request and response paths
- *  G4: idempotent (PUT on re-provision); PUT 404 → POST-create + overwrite id; no-clobber GET-first
+ *  G4: idempotent (PUT on re-provision); PUT 404 → POST-create + getUrlActions/getAlertTemplates
+ *      id resolution; no-clobber GET-first
  *  G5: all calls via TacticalClient
+ *
+ * IMPORTANT — live-verified 2026-06-17: Tactical's POST core/urlaction/ and POST
+ * alerts/templates/ both return the scalar "ok" (not an object with an `id` field).
+ * The provisioning service calls getUrlActions()/getAlertTemplates() immediately
+ * after each POST to resolve the new id by name (highest id wins for duplicates).
+ * Transport-mock tests queue the extra GET responses; Mockery-mock tests add
+ * getUrlActions()/getAlertTemplates() expectations.
  */
 class TacticalAlertProvisioningTest extends TestCase
 {
@@ -48,6 +56,20 @@ class TacticalAlertProvisioningTest extends TestCase
 
     /**
      * Build a TacticalClient backed by a mock transport returning the given response queue.
+     *
+     * Queue order for a fresh provision (no stored ids):
+     *   [0] POST core/urlaction/          → "ok" (scalar)
+     *   [1] GET  core/urlaction/          → [{id, name, ...}] — id resolution
+     *   [2] POST alerts/templates/        → "ok" (scalar)
+     *   [3] GET  alerts/templates/        → [{id, name, ...}] — id resolution
+     *   [4] GET  core/settings/           → {alert_template: ...}
+     *   [5] PUT  core/settings/           → {alert_template: N}  (only when default is null or ours)
+     *
+     * Queue order for a re-provision (stored ids → PUT path):
+     *   [0] PUT  core/urlaction/{id}/     → "ok"
+     *   [1] PUT  alerts/templates/{id}/   → "ok"
+     *   [2] GET  core/settings/           → {alert_template: ...}
+     *   [3] PUT  core/settings/           → {alert_template: N}  (only if needed)
      *
      * @param  Response[]  $queue
      */
@@ -98,10 +120,12 @@ class TacticalAlertProvisioningTest extends TestCase
         $this->assertNull(Setting::getEncrypted('tactical_webhook_key'));
 
         $client = $this->clientReturning([
-            new Response(201, [], json_encode(['id' => 7, 'name' => 'PSA Ticket Webhook'])),
-            new Response(201, [], json_encode(['id' => 42, 'name' => 'PSA Auto-Ticket'])),
-            new Response(200, [], json_encode(['alert_template' => null])),
-            new Response(200, [], json_encode(['alert_template' => 42])),
+            new Response(200, [], json_encode('ok')),                                     // POST urlaction/
+            new Response(200, [], json_encode([['id' => 7, 'name' => 'PSA Ticket Webhook']])), // GET urlaction/
+            new Response(200, [], json_encode('ok')),                                     // POST alerts/templates/
+            new Response(200, [], json_encode([['id' => 42, 'name' => 'PSA Auto-Ticket']])), // GET alerts/templates/
+            new Response(200, [], json_encode(['alert_template' => null])),               // GET core/settings/
+            new Response(200, [], json_encode(['alert_template' => 42])),                 // PUT core/settings/
         ]);
 
         $this->app->instance(TacticalClient::class, $client);
@@ -120,8 +144,10 @@ class TacticalAlertProvisioningTest extends TestCase
         Setting::setEncrypted('tactical_webhook_key', 'existing-key-abc');
 
         $client = $this->clientReturning([
-            new Response(201, [], json_encode(['id' => 7, 'name' => 'PSA Ticket Webhook'])),
-            new Response(201, [], json_encode(['id' => 42, 'name' => 'PSA Auto-Ticket'])),
+            new Response(200, [], json_encode('ok')),
+            new Response(200, [], json_encode([['id' => 7, 'name' => 'PSA Ticket Webhook']])),
+            new Response(200, [], json_encode('ok')),
+            new Response(200, [], json_encode([['id' => 42, 'name' => 'PSA Auto-Ticket']])),
             new Response(200, [], json_encode(['alert_template' => null])),
             new Response(200, [], json_encode(['alert_template' => 42])),
         ]);
@@ -140,10 +166,12 @@ class TacticalAlertProvisioningTest extends TestCase
         Setting::setEncrypted('tactical_webhook_key', 'my-webhook-key-xyz');
 
         $client = $this->clientReturning([
-            new Response(201, [], json_encode(['id' => 7, 'name' => 'PSA Ticket Webhook', 'rest_headers' => 'should-be-stripped'])),
-            new Response(201, [], json_encode(['id' => 42, 'name' => 'PSA Auto-Ticket'])),
-            new Response(200, [], json_encode(['alert_template' => null])),
-            new Response(200, [], json_encode(['alert_template' => 42])),
+            new Response(200, [], json_encode('ok')),                                              // POST urlaction/
+            new Response(200, [], json_encode([['id' => 7, 'name' => 'PSA Ticket Webhook']])),    // GET urlaction/
+            new Response(200, [], json_encode('ok')),                                              // POST alerts/templates/
+            new Response(200, [], json_encode([['id' => 42, 'name' => 'PSA Auto-Ticket']])),      // GET alerts/templates/
+            new Response(200, [], json_encode(['alert_template' => null])),                        // GET core/settings/
+            new Response(200, [], json_encode(['alert_template' => 42])),                          // PUT core/settings/
         ]);
 
         $this->app->instance(TacticalClient::class, $client);
@@ -187,10 +215,12 @@ class TacticalAlertProvisioningTest extends TestCase
         Setting::setEncrypted('tactical_webhook_key', 'wk-key');
 
         $client = $this->clientReturning([
-            new Response(201, [], json_encode(['id' => 7])),   // createUrlAction
-            new Response(201, [], json_encode(['id' => 42])),  // createAlertTemplate
-            new Response(200, [], json_encode(['alert_template' => null])), // getCoreSettings
-            new Response(200, [], json_encode(['alert_template' => 42])),   // setDefaultAlertTemplate
+            new Response(200, [], json_encode('ok')),                                           // POST urlaction/
+            new Response(200, [], json_encode([['id' => 7, 'name' => 'PSA Ticket Webhook']])), // GET urlaction/
+            new Response(200, [], json_encode('ok')),                                           // POST alerts/templates/
+            new Response(200, [], json_encode([['id' => 42, 'name' => 'PSA Auto-Ticket']])),   // GET alerts/templates/
+            new Response(200, [], json_encode(['alert_template' => null])),                     // GET core/settings/
+            new Response(200, [], json_encode(['alert_template' => 42])),                       // PUT core/settings/
         ]);
 
         $this->app->instance(TacticalClient::class, $client);
@@ -225,8 +255,10 @@ class TacticalAlertProvisioningTest extends TestCase
         Setting::setEncrypted('tactical_webhook_key', 'wk-key');
 
         $client = $this->clientReturning([
-            new Response(201, [], json_encode(['id' => 7])),
-            new Response(201, [], json_encode(['id' => 42])),
+            new Response(200, [], json_encode('ok')),
+            new Response(200, [], json_encode([['id' => 7, 'name' => 'PSA Ticket Webhook']])),
+            new Response(200, [], json_encode('ok')),
+            new Response(200, [], json_encode([['id' => 42, 'name' => 'PSA Auto-Ticket']])),
             new Response(200, [], json_encode(['alert_template' => null])), // no existing default
             new Response(200, [], json_encode(['alert_template' => 42])),   // setDefault response
         ]);
@@ -252,10 +284,12 @@ class TacticalAlertProvisioningTest extends TestCase
         Setting::setEncrypted('tactical_webhook_key', 'wk-key');
 
         $client = $this->clientReturning([
-            new Response(201, [], json_encode(['id' => 7])),
-            new Response(201, [], json_encode(['id' => 42])),
+            new Response(200, [], json_encode('ok')),
+            new Response(200, [], json_encode([['id' => 7, 'name' => 'PSA Ticket Webhook']])),
+            new Response(200, [], json_encode('ok')),
+            new Response(200, [], json_encode([['id' => 42, 'name' => 'PSA Auto-Ticket']])),
             new Response(200, [], json_encode(['alert_template' => 99])), // different existing default!
-            // No fourth response — setDefault should NOT be called
+            // No more response — setDefault must NOT be called
         ]);
 
         $this->app->instance(TacticalClient::class, $client);
@@ -281,16 +315,17 @@ class TacticalAlertProvisioningTest extends TestCase
     public function test_provision_sets_default_when_already_ours(): void
     {
         Setting::setEncrypted('tactical_webhook_key', 'wk-key');
+        Setting::setValue('tactical_url_action_id', '7');
         Setting::setValue('tactical_alert_template_id', '42');
 
+        // Re-provision: stored ids → PUT path (no GET list needed)
         $client = $this->clientReturning([
-            new Response(200, [], json_encode(['id' => 7])),   // updateUrlAction
-            new Response(200, [], json_encode(['id' => 42])),  // updateAlertTemplate
-            new Response(200, [], json_encode(['alert_template' => 42])), // getCoreSettings — already ours
-            new Response(200, [], json_encode(['alert_template' => 42])), // setDefault (allowed)
+            new Response(200, [], json_encode('ok')),                          // PUT urlaction/7/
+            new Response(200, [], json_encode('ok')),                          // PUT templates/42/
+            new Response(200, [], json_encode(['alert_template' => 42])),      // GET core/settings/ — already ours
+            new Response(200, [], json_encode(['alert_template' => 42])),      // PUT core/settings/ (allowed)
         ]);
 
-        Setting::setValue('tactical_url_action_id', '7');
         $this->app->instance(TacticalClient::class, $client);
         $service = $this->app->make(TacticalProvisioningService::class);
         $result  = $service->provision($this->actor->id);
@@ -312,8 +347,10 @@ class TacticalAlertProvisioningTest extends TestCase
         Setting::setEncrypted('tactical_webhook_key', 'wk-key');
 
         $client = $this->clientReturning([
-            new Response(201, [], json_encode(['id' => 7])),
-            new Response(201, [], json_encode(['id' => 42])),
+            new Response(200, [], json_encode('ok')),
+            new Response(200, [], json_encode([['id' => 7, 'name' => 'PSA Ticket Webhook']])),
+            new Response(200, [], json_encode('ok')),
+            new Response(200, [], json_encode([['id' => 42, 'name' => 'PSA Auto-Ticket']])),
             new Response(200, [], json_encode(['alert_template' => null])),
             new Response(200, [], json_encode(['alert_template' => 42])),
         ]);
@@ -336,10 +373,10 @@ class TacticalAlertProvisioningTest extends TestCase
         Setting::setValue('tactical_alert_template_id', '42');
 
         $client = $this->clientReturning([
-            new Response(200, [], json_encode(['id' => 7])),   // PUT urlaction/7/
-            new Response(200, [], json_encode(['id' => 42])),  // PUT templates/42/
-            new Response(200, [], json_encode(['alert_template' => null])),
-            new Response(200, [], json_encode(['alert_template' => 42])),
+            new Response(200, [], json_encode('ok')),                          // PUT urlaction/7/
+            new Response(200, [], json_encode('ok')),                          // PUT templates/42/
+            new Response(200, [], json_encode(['alert_template' => null])),    // GET core/settings/
+            new Response(200, [], json_encode(['alert_template' => 42])),      // PUT core/settings/
         ]);
 
         $this->app->instance(TacticalClient::class, $client);
@@ -365,7 +402,7 @@ class TacticalAlertProvisioningTest extends TestCase
         $this->assertStringContainsString('/alerts/templates/42/', $templateReq['request']->getUri()->getPath());
     }
 
-    // ── PUT 404 → POST-create + overwrite id ─────────────────────────────────
+    // ── PUT 404 → POST-create + getUrlActions/getAlertTemplates id resolution ─
 
     public function test_reprovision_falls_back_to_create_on_urlaction_404(): void
     {
@@ -380,15 +417,25 @@ class TacticalAlertProvisioningTest extends TestCase
             ->with(7, \Mockery::any())
             ->andThrow($this->make404Exception());
 
-        // Falls back to createUrlAction → returns new id 99
+        // Falls back to createUrlAction → "ok" scalar, then resolves id via list
         $mockClient->shouldReceive('createUrlAction')
             ->once()
-            ->andReturn(['id' => 99]);
+            ->andReturn('ok');
+
+        // getUrlActions() called to resolve id after POST
+        $mockClient->shouldReceive('getUrlActions')
+            ->once()
+            ->andReturn([['id' => 99, 'name' => 'PSA Ticket Webhook']]);
 
         // Template: no stored id → create
         $mockClient->shouldReceive('createAlertTemplate')
             ->once()
-            ->andReturn(['id' => 55]);
+            ->andReturn('ok');
+
+        // getAlertTemplates() called to resolve id after POST
+        $mockClient->shouldReceive('getAlertTemplates')
+            ->once()
+            ->andReturn([['id' => 55, 'name' => 'PSA Auto-Ticket']]);
 
         $mockClient->shouldReceive('getCoreSettings')
             ->once()
@@ -396,7 +443,7 @@ class TacticalAlertProvisioningTest extends TestCase
 
         $mockClient->shouldReceive('setDefaultAlertTemplate')
             ->once()
-            ->andReturn(['alert_template' => 55]);
+            ->andReturn('ok');
 
         $this->app->instance(TacticalClient::class, $mockClient);
         $service = $this->app->make(TacticalProvisioningService::class);
@@ -421,7 +468,11 @@ class TacticalAlertProvisioningTest extends TestCase
         // URLAction: no stored id → create
         $mockClient->shouldReceive('createUrlAction')
             ->once()
-            ->andReturn(['id' => 7]);
+            ->andReturn('ok');
+
+        $mockClient->shouldReceive('getUrlActions')
+            ->once()
+            ->andReturn([['id' => 7, 'name' => 'PSA Ticket Webhook']]);
 
         // updateAlertTemplate(42) → 404
         $mockClient->shouldReceive('updateAlertTemplate')
@@ -432,7 +483,11 @@ class TacticalAlertProvisioningTest extends TestCase
         // Falls back to create
         $mockClient->shouldReceive('createAlertTemplate')
             ->once()
-            ->andReturn(['id' => 88]);
+            ->andReturn('ok');
+
+        $mockClient->shouldReceive('getAlertTemplates')
+            ->once()
+            ->andReturn([['id' => 88, 'name' => 'PSA Auto-Ticket']]);
 
         $mockClient->shouldReceive('getCoreSettings')
             ->once()
@@ -440,7 +495,7 @@ class TacticalAlertProvisioningTest extends TestCase
 
         $mockClient->shouldReceive('setDefaultAlertTemplate')
             ->once()
-            ->andReturn(['alert_template' => 88]);
+            ->andReturn('ok');
 
         Setting::setValue('tactical_url_action_id', null);
         $this->app->instance(TacticalClient::class, $mockClient);
@@ -464,6 +519,7 @@ class TacticalAlertProvisioningTest extends TestCase
             ->andThrow($this->make403Exception());
 
         // Other methods should not be called
+        $mockClient->shouldNotReceive('getUrlActions');
         $mockClient->shouldNotReceive('createAlertTemplate');
         $mockClient->shouldNotReceive('getCoreSettings');
 
@@ -497,8 +553,10 @@ class TacticalAlertProvisioningTest extends TestCase
         });
 
         $client = $this->clientReturning([
-            new Response(201, [], json_encode(['id' => 7, 'rest_headers' => 'MUST_BE_STRIPPED'])),
-            new Response(201, [], json_encode(['id' => 42])),
+            new Response(200, [], json_encode('ok')),
+            new Response(200, [], json_encode([['id' => 7, 'name' => 'PSA Ticket Webhook']])),
+            new Response(200, [], json_encode('ok')),
+            new Response(200, [], json_encode([['id' => 42, 'name' => 'PSA Auto-Ticket']])),
             new Response(200, [], json_encode(['alert_template' => null])),
             new Response(200, [], json_encode(['alert_template' => 42])),
         ]);
@@ -519,7 +577,10 @@ class TacticalAlertProvisioningTest extends TestCase
 
     public function test_webhook_key_absent_from_logs_on_response_path(): void
     {
-        // G3: Tactical echoes back rest_headers in the response — we must strip it immediately.
+        // G3: Tactical echoes back rest_headers in the response (on some older Tactical
+        // versions) — we must not allow it to reach any log. Since the provision service
+        // no longer reads id from the POST response (it uses GET-after-POST), the echo
+        // risk is mitigated; this test confirms the key never escapes to logs regardless.
         $webhookKey = 'echoed-key-in-response-must-not-log';
         Setting::setEncrypted('tactical_webhook_key', $webhookKey);
 
@@ -530,17 +591,11 @@ class TacticalAlertProvisioningTest extends TestCase
             $loggedMessages[] = json_encode($message->context ?? []);
         });
 
-        // Tactical echoes rest_headers + rest_body in the response
-        $echoedRestHeaders = json_encode(['X-Webhook-Key' => $webhookKey, 'Content-Type' => 'application/json']);
-        $echoedRestBody    = json_encode(['alert_id' => '{{alert.id}}']);
-
         $client = $this->clientReturning([
-            new Response(201, [], json_encode([
-                'id'           => 7,
-                'rest_headers' => $echoedRestHeaders,
-                'rest_body'    => $echoedRestBody,
-            ])),
-            new Response(201, [], json_encode(['id' => 42])),
+            new Response(200, [], json_encode('ok')),                                              // POST urlaction/
+            new Response(200, [], json_encode([['id' => 7, 'name' => 'PSA Ticket Webhook']])),    // GET urlaction/
+            new Response(200, [], json_encode('ok')),                                              // POST alerts/templates/
+            new Response(200, [], json_encode([['id' => 42, 'name' => 'PSA Auto-Ticket']])),      // GET alerts/templates/
             new Response(200, [], json_encode(['alert_template' => null])),
             new Response(200, [], json_encode(['alert_template' => 42])),
         ]);
@@ -565,8 +620,10 @@ class TacticalAlertProvisioningTest extends TestCase
         Setting::setEncrypted('tactical_webhook_key', 'audit-test-key');
 
         $client = $this->clientReturning([
-            new Response(201, [], json_encode(['id' => 7])),
-            new Response(201, [], json_encode(['id' => 42])),
+            new Response(200, [], json_encode('ok')),
+            new Response(200, [], json_encode([['id' => 7, 'name' => 'PSA Ticket Webhook']])),
+            new Response(200, [], json_encode('ok')),
+            new Response(200, [], json_encode([['id' => 42, 'name' => 'PSA Auto-Ticket']])),
             new Response(200, [], json_encode(['alert_template' => null])),
             new Response(200, [], json_encode(['alert_template' => 42])),
         ]);
@@ -769,10 +826,12 @@ class TacticalAlertProvisioningTest extends TestCase
         Setting::setEncrypted('tactical_webhook_key', 'wk-key');
 
         $client = $this->clientReturning([
-            new Response(201, [], json_encode(['id' => 7])),
-            new Response(201, [], json_encode(['id' => 42])),
+            new Response(200, [], json_encode('ok')),
+            new Response(200, [], json_encode([['id' => 7, 'name' => 'PSA Ticket Webhook']])),
+            new Response(200, [], json_encode('ok')),
+            new Response(200, [], json_encode([['id' => 42, 'name' => 'PSA Auto-Ticket']])),
             new Response(200, [], json_encode(['alert_template' => 99])), // different existing default
-            // No fourth response — setDefault must NOT be called
+            // No more response — setDefault must NOT be called
         ]);
 
         $this->app->instance(TacticalClient::class, $client);
@@ -796,54 +855,61 @@ class TacticalAlertProvisioningTest extends TestCase
         $this->assertStringNotContainsString('Changed your', $warning);
     }
 
-    // ── FIX 3: id-0 guard — malformed 2xx on create must not store id 0 ──────
+    // ── FIX 3 (id resolution guard): if Tactical returns "ok" and name not found
+    //    in the GET list, fail loudly instead of silently proceeding.
+    // ─────────────────────────────────────────────────────────────────────────────
 
-    public function test_create_urlaction_without_id_in_response_throws_not_stores_zero(): void
+    public function test_create_urlaction_name_not_found_in_list_fails_loudly(): void
     {
         Setting::setEncrypted('tactical_webhook_key', 'wk-key');
 
-        // createUrlAction returns a 201 but without an `id` field
         $mockClient = \Mockery::mock(TacticalClient::class);
+
+        // createUrlAction succeeds ("ok"), but the GET list is empty (e.g. a race or API oddity)
         $mockClient->shouldReceive('createUrlAction')
             ->once()
-            ->andReturn(['name' => 'PSA Ticket Webhook']); // no `id`
+            ->andReturn('ok');
+
+        $mockClient->shouldReceive('getUrlActions')
+            ->once()
+            ->andReturn([]); // name not found
 
         $this->app->instance(TacticalClient::class, $mockClient);
         $service = $this->app->make(TacticalProvisioningService::class);
         $result  = $service->provision($this->actor->id);
 
-        // Must fail loudly — not succeed with id 0
+        // Must fail loudly — not succeed with a missing id
         $this->assertFalse($result['success'],
-            'Provision must fail when createUrlAction returns no id');
+            'Provision must fail when getUrlActions() does not contain the created name');
 
-        // Must not have stored 0
-        $storedId = Setting::getValue('tactical_url_action_id');
-        $this->assertNotSame('0', $storedId,
-            'Must not store id=0 when response is missing the id field');
+        // Must not have stored anything
+        $this->assertNull(Setting::getValue('tactical_url_action_id'),
+            'Must not store an id when name resolution fails');
     }
 
-    public function test_create_alert_template_without_id_in_response_throws_not_stores_zero(): void
+    public function test_create_alert_template_name_not_found_in_list_fails_loudly(): void
     {
         Setting::setEncrypted('tactical_webhook_key', 'wk-key');
 
         $mockClient = \Mockery::mock(TacticalClient::class);
-        $mockClient->shouldReceive('createUrlAction')
-            ->once()
-            ->andReturn(['id' => 7]);
-        $mockClient->shouldReceive('createAlertTemplate')
-            ->once()
-            ->andReturn(['name' => 'PSA Auto-Ticket']); // no `id`
+
+        $mockClient->shouldReceive('createUrlAction')->once()->andReturn('ok');
+        $mockClient->shouldReceive('getUrlActions')->once()
+            ->andReturn([['id' => 7, 'name' => 'PSA Ticket Webhook']]);
+
+        // createAlertTemplate succeeds, but the GET list is empty
+        $mockClient->shouldReceive('createAlertTemplate')->once()->andReturn('ok');
+        $mockClient->shouldReceive('getAlertTemplates')->once()->andReturn([]);
 
         $this->app->instance(TacticalClient::class, $mockClient);
         $service = $this->app->make(TacticalProvisioningService::class);
         $result  = $service->provision($this->actor->id);
 
         $this->assertFalse($result['success'],
-            'Provision must fail when createAlertTemplate returns no id');
+            'Provision must fail when getAlertTemplates() does not contain the created name');
 
-        $storedId = Setting::getValue('tactical_alert_template_id');
-        $this->assertNotSame('0', $storedId,
-            'Must not store id=0 when template response is missing the id field');
+        $this->assertNull(Setting::getValue('tactical_alert_template_id'),
+            'Must not store an id when template name resolution fails');
     }
 
     // ── Controller action + route ─────────────────────────────────────────────

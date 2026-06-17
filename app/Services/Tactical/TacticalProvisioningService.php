@@ -73,35 +73,30 @@ class TacticalProvisioningService
 
         if ($urlActionId !== null) {
             try {
-                $resp = $this->client->updateUrlAction($urlActionId, $urlActionBody);
+                // PUT returns "ok" scalar (live-verified) — no id to extract; we
+                // already have it and just need to confirm the update succeeded.
+                $this->client->updateUrlAction($urlActionId, $urlActionBody);
+                $newUrlActionId = $urlActionId;
             } catch (TacticalClientException $e) {
                 if ($e->statusCode() === 404) {
-                    // Human deleted it in Tactical — fall back to create
-                    $resp = $this->client->createUrlAction($urlActionBody);
-                    $urlActionId = null; // will be set from response below
+                    // Human deleted it in Tactical — fall back to create + find.
+                    $this->client->createUrlAction($urlActionBody);
+                    $newUrlActionId = $this->findUrlActionIdByName($urlActionBody['name']);
                 } else {
                     throw $e;
                 }
             }
         } else {
-            $resp = $this->client->createUrlAction($urlActionBody);
+            // POST returns "ok" scalar (live-verified 2026-06-17 — not an object
+            // with `id`). Resolve the id by GETting the list and matching by name.
+            $this->client->createUrlAction($urlActionBody);
+            $newUrlActionId = $this->findUrlActionIdByName($urlActionBody['name']);
         }
 
-        // G3: Strip rest_headers + rest_body IMMEDIATELY — Tactical echoes the
-        // webhook key back in the create/update response and it must never reach
-        // any log, audit row, or caller return value.
-        unset($resp['rest_headers'], $resp['rest_body']);
+        // G3: The webhook key is in rest_headers in the body we SENT, not in the
+        // response (Tactical returns "ok", not an echo of the body). Nothing to
+        // strip from the response; the urlActionBody local is discarded here.
 
-        // FIX 3 (id-0 guard): on the POST-fallback path $urlActionId is null, so
-        // ($resp['id'] ?? null) would coalesce to null → (int)null = 0. A malformed
-        // 2xx without `id` must fail loudly rather than silently wire id 0.
-        $rawUrlActionId = $resp['id'] ?? null;
-        if (! is_int($rawUrlActionId) || $rawUrlActionId <= 0) {
-            throw new TacticalClientException(
-                'Tactical URLAction create/update returned a 2xx response with no valid `id` field.'
-            );
-        }
-        $newUrlActionId = $rawUrlActionId;
         Setting::setValue('tactical_url_action_id', (string) $newUrlActionId);
 
         // 3. Upsert AlertTemplate
@@ -110,28 +105,24 @@ class TacticalProvisioningService
 
         if ($alertTemplateId !== null) {
             try {
-                $tResp = $this->client->updateAlertTemplate($alertTemplateId, $templateBody);
+                // PUT returns "ok" scalar (live-verified) — id already known.
+                $this->client->updateAlertTemplate($alertTemplateId, $templateBody);
+                $newAlertTemplateId = $alertTemplateId;
             } catch (TacticalClientException $e) {
                 if ($e->statusCode() === 404) {
-                    $tResp = $this->client->createAlertTemplate($templateBody);
-                    $alertTemplateId = null;
+                    $this->client->createAlertTemplate($templateBody);
+                    $newAlertTemplateId = $this->findAlertTemplateIdByName($templateBody['name']);
                 } else {
                     throw $e;
                 }
             }
         } else {
-            $tResp = $this->client->createAlertTemplate($templateBody);
+            // POST returns "ok" scalar (live-verified 2026-06-17 — not an object
+            // with `id`). Resolve the id by GETting the list and matching by name.
+            $this->client->createAlertTemplate($templateBody);
+            $newAlertTemplateId = $this->findAlertTemplateIdByName($templateBody['name']);
         }
 
-        // FIX 3 (id-0 guard): same logic for AlertTemplate — fail loudly on a
-        // malformed 2xx rather than silently storing id 0.
-        $rawAlertTemplateId = $tResp['id'] ?? null;
-        if (! is_int($rawAlertTemplateId) || $rawAlertTemplateId <= 0) {
-            throw new TacticalClientException(
-                'Tactical AlertTemplate create/update returned a 2xx response with no valid `id` field.'
-            );
-        }
-        $newAlertTemplateId = $rawAlertTemplateId;
         Setting::setValue('tactical_alert_template_id', (string) $newAlertTemplateId);
 
         // 4. GET core/settings; no-clobber check
@@ -234,6 +225,69 @@ class TacticalProvisioningService
         $status = $e->statusCode() ?? 'unknown';
 
         return "Tactical provisioning failed (HTTP {$status}).";
+    }
+
+    /**
+     * Resolve a URLAction id by name after a POST (Tactical's POST core/urlaction/
+     * returns the scalar "ok", not an object — live-verified 2026-06-17).
+     *
+     * Tactical allows duplicate names, so if multiple actions share the name,
+     * we take the one with the highest id — it is the one we just created.
+     *
+     * Throws TacticalClientException if no matching name is found in the list.
+     */
+    private function findUrlActionIdByName(string $name): int
+    {
+        $actions = $this->client->getUrlActions();
+        $bestId = null;
+
+        foreach ($actions as $a) {
+            if (($a['name'] ?? '') === $name && is_int($a['id'] ?? null) && $a['id'] > 0) {
+                if ($bestId === null || $a['id'] > $bestId) {
+                    $bestId = $a['id'];
+                }
+            }
+        }
+
+        if ($bestId === null) {
+            throw new TacticalClientException(
+                "Tactical URLAction '{$name}' was created (POST returned ok) but could not be found by name in GET core/urlaction/."
+            );
+        }
+
+        return $bestId;
+    }
+
+    /**
+     * Resolve an AlertTemplate id by name after a POST (Tactical's POST
+     * alerts/templates/ returns the scalar "ok", not an object — live-verified
+     * 2026-06-17).
+     *
+     * Tactical allows duplicate names, so if multiple templates share the name,
+     * we take the one with the highest id — it is the one we just created.
+     *
+     * Throws TacticalClientException if no matching name is found in the list.
+     */
+    private function findAlertTemplateIdByName(string $name): int
+    {
+        $templates = $this->client->getAlertTemplates();
+        $bestId = null;
+
+        foreach ($templates as $t) {
+            if (($t['name'] ?? '') === $name && is_int($t['id'] ?? null) && $t['id'] > 0) {
+                if ($bestId === null || $t['id'] > $bestId) {
+                    $bestId = $t['id'];
+                }
+            }
+        }
+
+        if ($bestId === null) {
+            throw new TacticalClientException(
+                "Tactical AlertTemplate '{$name}' was created (POST returned ok) but could not be found by name in GET alerts/templates/."
+            );
+        }
+
+        return $bestId;
     }
 
     /**

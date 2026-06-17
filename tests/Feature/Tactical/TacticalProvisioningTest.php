@@ -63,26 +63,71 @@ class TacticalProvisioningTest extends TestCase
         return $this->history[array_key_last($this->history)]['request'];
     }
 
+    // ── getUrlActions ────────────────────────────────────────────────────────
+
+    public function test_get_url_actions_gets_core_urlaction(): void
+    {
+        // Live-verified 2026-06-17: POST core/urlaction/ returns "ok" scalar, not
+        // an object with id. getUrlActions() GETs the list so the service can find
+        // the newly-created action by name.
+        $payload = [['id' => 7, 'name' => 'PSA Ticket Webhook', 'action_type' => 'rest']];
+        $client = $this->clientReturning([new Response(200, [], json_encode($payload))]);
+
+        $result = $client->getUrlActions();
+
+        $req = $this->lastRequest();
+        $this->assertSame('GET', $req->getMethod());
+        $this->assertSame('/core/urlaction/', $req->getUri()->getPath());
+        $this->assertIsArray($result);
+        $this->assertCount(1, $result);
+        $this->assertSame(7, $result[0]['id']);
+        $this->assertSame('PSA Ticket Webhook', $result[0]['name']);
+    }
+
+    // ── getAlertTemplates ────────────────────────────────────────────────────
+
+    public function test_get_alert_templates_gets_alerts_templates(): void
+    {
+        // Live-verified 2026-06-17: POST alerts/templates/ returns "ok" scalar.
+        // getAlertTemplates() GETs the list so the service can find the newly-created
+        // template by name.
+        $payload = [['id' => 42, 'name' => 'PSA Auto-Ticket', 'is_active' => true]];
+        $client = $this->clientReturning([new Response(200, [], json_encode($payload))]);
+
+        $result = $client->getAlertTemplates();
+
+        $req = $this->lastRequest();
+        $this->assertSame('GET', $req->getMethod());
+        $this->assertSame('/alerts/templates/', $req->getUri()->getPath());
+        $this->assertIsArray($result);
+        $this->assertCount(1, $result);
+        $this->assertSame(42, $result[0]['id']);
+        $this->assertSame('PSA Auto-Ticket', $result[0]['name']);
+    }
+
     // ── createUrlAction ──────────────────────────────────────────────────────
 
     public function test_create_url_action_posts_to_core_urlaction(): void
     {
-        $payload = ['id' => 7, 'name' => 'PSA Alert', 'url' => 'https://psa.example.com/webhook'];
-        $client = $this->clientReturning([new Response(201, [], json_encode($payload))]);
+        // NOTE: Tactical returns "ok" scalar on success (live-verified 2026-06-17),
+        // not an object with id. The provisioning service calls getUrlActions() after
+        // POST to resolve the id by name. This test confirms the correct HTTP call is
+        // made and the raw return value is the decoded response.
+        $payload = 'ok';
+        $client = $this->clientReturning([new Response(200, [], json_encode($payload))]);
 
         $result = $client->createUrlAction(['name' => 'PSA Alert', 'url' => 'https://psa.example.com/webhook']);
 
         $req = $this->lastRequest();
         $this->assertSame('POST', $req->getMethod());
         $this->assertSame('/core/urlaction/', $req->getUri()->getPath());
-        $this->assertSame(7, $result['id']);
-        $this->assertSame('PSA Alert', $result['name']);
+        $this->assertSame('ok', $result); // scalar "ok" as live-verified
     }
 
     public function test_create_url_action_sends_body(): void
     {
         $body = ['name' => 'PSA Alert', 'url' => 'https://psa.example.com/webhook', 'rest_method' => 'POST'];
-        $client = $this->clientReturning([new Response(201, [], json_encode(array_merge(['id' => 1], $body)))]);
+        $client = $this->clientReturning([new Response(200, [], json_encode('ok'))]);
 
         $client->createUrlAction($body);
 
@@ -95,21 +140,21 @@ class TacticalProvisioningTest extends TestCase
 
     public function test_update_url_action_puts_to_core_urlaction_id(): void
     {
-        $payload = ['id' => 7, 'name' => 'PSA Alert Updated'];
-        $client = $this->clientReturning([new Response(200, [], json_encode($payload))]);
+        // Live-verified 2026-06-17: PUT core/urlaction/{id}/ returns "ok" scalar.
+        $client = $this->clientReturning([new Response(200, [], json_encode('ok'))]);
 
         $result = $client->updateUrlAction(7, ['name' => 'PSA Alert Updated']);
 
         $req = $this->lastRequest();
         $this->assertSame('PUT', $req->getMethod());
         $this->assertSame('/core/urlaction/7/', $req->getUri()->getPath());
-        $this->assertSame(7, $result['id']);
+        $this->assertSame('ok', $result);
     }
 
     public function test_update_url_action_sends_body(): void
     {
         $body = ['name' => 'Renamed', 'url' => 'https://psa.example.com/v2/webhook'];
-        $client = $this->clientReturning([new Response(200, [], json_encode(array_merge(['id' => 3], $body)))]);
+        $client = $this->clientReturning([new Response(200, [], json_encode('ok'))]);
 
         $client->updateUrlAction(3, $body);
 
@@ -121,22 +166,21 @@ class TacticalProvisioningTest extends TestCase
 
     public function test_create_alert_template_posts_to_alerts_templates(): void
     {
-        $payload = ['id' => 42, 'name' => 'PSA Alert Template'];
-        $client = $this->clientReturning([new Response(201, [], json_encode($payload))]);
+        // Live-verified 2026-06-17: POST alerts/templates/ returns "ok" scalar.
+        $client = $this->clientReturning([new Response(200, [], json_encode('ok'))]);
 
         $result = $client->createAlertTemplate(['name' => 'PSA Alert Template']);
 
         $req = $this->lastRequest();
         $this->assertSame('POST', $req->getMethod());
         $this->assertSame('/alerts/templates/', $req->getUri()->getPath());
-        $this->assertSame(42, $result['id']);
-        $this->assertSame('PSA Alert Template', $result['name']);
+        $this->assertSame('ok', $result);
     }
 
     public function test_create_alert_template_sends_body(): void
     {
         $body = ['name' => 'PSA Template', 'action' => true];
-        $client = $this->clientReturning([new Response(201, [], json_encode(array_merge(['id' => 5], $body)))]);
+        $client = $this->clientReturning([new Response(200, [], json_encode('ok'))]);
 
         $client->createAlertTemplate($body);
 
@@ -149,7 +193,8 @@ class TacticalProvisioningTest extends TestCase
 
     public function test_update_alert_template_puts_to_alerts_templates_id(): void
     {
-        $payload = ['id' => 42, 'name' => 'Updated Template'];
+        // Live-verified 2026-06-17: PUT alerts/templates/{id}/ returns "ok" scalar.
+        $payload = 'ok';
         $client = $this->clientReturning([new Response(200, [], json_encode($payload))]);
 
         $result = $client->updateAlertTemplate(42, ['name' => 'Updated Template']);
@@ -157,13 +202,13 @@ class TacticalProvisioningTest extends TestCase
         $req = $this->lastRequest();
         $this->assertSame('PUT', $req->getMethod());
         $this->assertSame('/alerts/templates/42/', $req->getUri()->getPath());
-        $this->assertSame(42, $result['id']);
+        $this->assertSame('ok', $result);
     }
 
     public function test_update_alert_template_sends_body(): void
     {
         $body = ['name' => 'Changed', 'action_url' => 7];
-        $client = $this->clientReturning([new Response(200, [], json_encode(array_merge(['id' => 9], $body)))]);
+        $client = $this->clientReturning([new Response(200, [], json_encode('ok'))]);
 
         $client->updateAlertTemplate(9, $body);
 

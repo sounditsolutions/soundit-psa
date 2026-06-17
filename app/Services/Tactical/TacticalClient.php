@@ -173,7 +173,16 @@ class TacticalClient
         return json_decode((string) $response->getBody(), true) ?? [];
     }
 
-    public function put(string $endpoint, array $body = []): array
+    /**
+     * PUT a Tactical endpoint. Returns the decoded response as-is (mixed).
+     *
+     * Several Tactical PUT endpoints (core/urlaction/{id}/, alerts/templates/{id}/,
+     * and agent maintenance/custom-field endpoints) return the scalar "ok" rather
+     * than an object — live-verified 2026-06-17. Return type is `mixed` to handle
+     * both scalar and object responses; callers that need an array must guard
+     * against a non-array return value themselves.
+     */
+    public function put(string $endpoint, array $body = []): mixed
     {
         try {
             $response = $this->http->request('PUT', $endpoint, [
@@ -489,42 +498,78 @@ class TacticalClient
     // ── Provisioning helpers (P7) ────────────────────────────────────────────
 
     /**
-     * Create a URL action (webhook). POST core/urlaction/
-     * Body is built by the provisioning service (Task 2).
+     * List all URL actions. GET core/urlaction/
+     * Used after create to resolve the newly-created action's id (the POST
+     * endpoint returns the scalar "ok", not an object with an id field —
+     * live-verified 2026-06-17 against dev Tactical).
      *
-     * @return array{id: int, ...} Decoded response including the new id.
+     * @return list<array{id: int, name: string, ...}>
      */
-    public function createUrlAction(array $body): array
+    public function getUrlActions(): array
+    {
+        return $this->get('core/urlaction/');
+    }
+
+    /**
+     * Create a URL action (webhook). POST core/urlaction/
+     * Body is built by the provisioning service.
+     *
+     * NOTE: Tactical returns the scalar "ok" on success, not an object. The
+     * provisioning service calls getUrlActions() immediately after to resolve
+     * the new id by name.
+     *
+     * @return mixed Scalar "ok" on success.
+     */
+    public function createUrlAction(array $body): mixed
     {
         return $this->post('core/urlaction/', $body);
     }
 
     /**
      * Update an existing URL action. PUT core/urlaction/{id}/
+     * Returns scalar "ok" on success (live-verified 2026-06-17).
      *
-     * @return array Decoded response.
+     * @return mixed Scalar "ok" on success.
      */
-    public function updateUrlAction(int $id, array $body): array
+    public function updateUrlAction(int $id, array $body): mixed
     {
         return $this->put("core/urlaction/{$id}/", $body);
     }
 
     /**
+     * List all alert templates. GET alerts/templates/
+     * Used after create to resolve the newly-created template's id (the POST
+     * endpoint returns the scalar "ok", not an object with an id field —
+     * live-verified 2026-06-17 against dev Tactical).
+     *
+     * @return list<array{id: int, name: string, ...}>
+     */
+    public function getAlertTemplates(): array
+    {
+        return $this->get('alerts/templates/');
+    }
+
+    /**
      * Create an alert template. POST alerts/templates/
      *
-     * @return array{id: int, ...} Decoded response including the new id.
+     * NOTE: Tactical returns the scalar "ok" on success, not an object. The
+     * provisioning service calls getAlertTemplates() immediately after to
+     * resolve the new id by name.
+     *
+     * @return mixed Scalar "ok" on success.
      */
-    public function createAlertTemplate(array $body): array
+    public function createAlertTemplate(array $body): mixed
     {
         return $this->post('alerts/templates/', $body);
     }
 
     /**
      * Update an existing alert template. PUT alerts/templates/{id}/
+     * Returns scalar "ok" on success (live-verified 2026-06-17).
      *
-     * @return array Decoded response.
+     * @return mixed Scalar "ok" on success.
      */
-    public function updateAlertTemplate(int $id, array $body): array
+    public function updateAlertTemplate(int $id, array $body): mixed
     {
         return $this->put("alerts/templates/{$id}/", $body);
     }
@@ -533,9 +578,9 @@ class TacticalClient
      * Set the global default alert template. PUT core/settings/ {alert_template: id}
      * Only sends the alert_template field — not a read-modify-write of the full settings object.
      *
-     * @return array Decoded response (Tactical echoes back the full settings object).
+     * @return mixed Decoded response from Tactical (shape depends on Tactical version).
      */
-    public function setDefaultAlertTemplate(int $templateId): array
+    public function setDefaultAlertTemplate(int $templateId): mixed
     {
         return $this->put('core/settings/', ['alert_template' => $templateId]);
     }
