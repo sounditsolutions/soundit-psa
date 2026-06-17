@@ -78,9 +78,9 @@ PROMPT;
         $tacticalBlock = $this->resolveTacticalBlock($ticket);
         if ($tacticalBlock !== null) {
             Log::info('[TicketResolutionDrafter] Appending Tactical telemetry block', [
-                'ticket_id'        => $ticket->id,
+                'ticket_id' => $ticket->id,
                 'estimated_tokens' => $tacticalBlock->estimatedTokens,
-                'max_tokens'       => self::TACTICAL_CONTEXT_MAX_TOKENS,
+                'max_tokens' => self::TACTICAL_CONTEXT_MAX_TOKENS,
             ]);
             $context .= "\n\n".$tacticalBlock->text;
         }

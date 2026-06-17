@@ -108,16 +108,16 @@ class TacticalContextProviderTest extends TestCase
     /**
      * Seed a TacticalAsset with one failing check. Returns [$asset].
      *
-     * @param  string|null  $hostname     Asset hostname (defaults to 'BOX-CTX').
-     * @param  string       $stdout       Stdout text for the failing check.
-     * @param  bool         $needsReboot  Seed the snapshot needs_reboot flag.
-     * @param  bool         $lowDisk      Unused in the DB row (lowDisk is live-only);
-     *                                    passed here so callers can pair it with the
-     *                                    matching liveReads(lowDisk: true) payload.
-     * @param  bool         $checksKnown  When false, checks_failing/checks_total are
-     *                                    left null — simulating an asset that has never
-     *                                    had a checks sync, so a live-read failure yields
-     *                                    checksState Unavailable (not Snapshot).
+     * @param  string|null  $hostname  Asset hostname (defaults to 'BOX-CTX').
+     * @param  string  $stdout  Stdout text for the failing check.
+     * @param  bool  $needsReboot  Seed the snapshot needs_reboot flag.
+     * @param  bool  $lowDisk  Unused in the DB row (lowDisk is live-only);
+     *                         passed here so callers can pair it with the
+     *                         matching liveReads(lowDisk: true) payload.
+     * @param  bool  $checksKnown  When false, checks_failing/checks_total are
+     *                             left null — simulating an asset that has never
+     *                             had a checks sync, so a live-read failure yields
+     *                             checksState Unavailable (not Snapshot).
      * @return array{0: Asset}
      */
     private function seedTacticalAssetWithFailingCheck(
@@ -130,20 +130,20 @@ class TacticalContextProviderTest extends TestCase
         $hostname ??= 'BOX-CTX';
         $asset = Asset::factory()->create(['hostname' => $hostname]);
         TacticalAsset::create([
-            'asset_id'          => $asset->id,
-            'agent_id'          => 'AGENT-CTX',
-            'hostname'          => $hostname,
-            'os'                => 'Windows 11 Pro',
-            'cpu'               => 'Intel i7',
-            'ram_gb'            => 16.0,
-            'disk_summary'      => 'C: 256GB',
-            'status'            => 'online',
-            'needs_reboot'      => $needsReboot,
+            'asset_id' => $asset->id,
+            'agent_id' => 'AGENT-CTX',
+            'hostname' => $hostname,
+            'os' => 'Windows 11 Pro',
+            'cpu' => 'Intel i7',
+            'ram_gb' => 16.0,
+            'disk_summary' => 'C: 256GB',
+            'status' => 'online',
+            'needs_reboot' => $needsReboot,
             'has_patches_pending' => false,
-            'checks_failing'    => $checksKnown ? 1 : null,
-            'checks_total'      => $checksKnown ? 3 : null,
-            'last_seen_at'      => now()->subMinutes(5),
-            'synced_at'         => now()->subMinutes(10),
+            'checks_failing' => $checksKnown ? 1 : null,
+            'checks_total' => $checksKnown ? 3 : null,
+            'last_seen_at' => now()->subMinutes(5),
+            'synced_at' => now()->subMinutes(10),
         ]);
 
         return [$asset->refresh()];
@@ -153,16 +153,16 @@ class TacticalContextProviderTest extends TestCase
      * Minimal agent-status response body for the getAgent endpoint.
      *
      * @param  bool  $needsReboot  Include needs_reboot: true in the payload.
-     * @param  bool  $lowDisk      Include a disk volume at 92% used (triggers lowDisk).
+     * @param  bool  $lowDisk  Include a disk volume at 92% used (triggers lowDisk).
      * @return array<string, mixed>
      */
     private function agentStatusPayload(bool $needsReboot = false, bool $lowDisk = false): array
     {
         $payload = [
-            'status'              => 'online',
-            'maintenance_mode'    => false,
-            'logged_in_username'  => 'None',
-            'needs_reboot'        => $needsReboot,
+            'status' => 'online',
+            'maintenance_mode' => false,
+            'logged_in_username' => 'None',
+            'needs_reboot' => $needsReboot,
         ];
 
         if ($lowDisk) {
@@ -213,7 +213,7 @@ class TacticalContextProviderTest extends TestCase
         preg_match_all('/^Failing check: Check (\d+) \(rc=\d+\): (.+)$/m', $block->text, $matches, PREG_SET_ORDER);
         $this->assertNotEmpty($matches, 'Expected at least one Failing check: line in the (truncated) output');
         foreach ($matches as $m) {
-            $index   = $m[1];               // the N from "Check N"
+            $index = $m[1];               // the N from "Check N"
             $stdoutLine = $m[2];            // everything after the colon+space
             $this->assertStringEndsWith(
                 "output for check {$index}",
@@ -233,20 +233,20 @@ class TacticalContextProviderTest extends TestCase
     {
         $asset = Asset::factory()->create(['hostname' => 'BOX-MANY']);
         TacticalAsset::create([
-            'asset_id'            => $asset->id,
-            'agent_id'            => 'AGENT-MANY',
-            'hostname'            => 'BOX-MANY',
-            'os'                  => 'Windows 11 Pro',
-            'cpu'                 => 'Intel i7',
-            'ram_gb'              => 16.0,
-            'disk_summary'        => 'C: 256GB',
-            'status'              => 'online',
-            'needs_reboot'        => false,
+            'asset_id' => $asset->id,
+            'agent_id' => 'AGENT-MANY',
+            'hostname' => 'BOX-MANY',
+            'os' => 'Windows 11 Pro',
+            'cpu' => 'Intel i7',
+            'ram_gb' => 16.0,
+            'disk_summary' => 'C: 256GB',
+            'status' => 'online',
+            'needs_reboot' => false,
             'has_patches_pending' => false,
-            'checks_failing'      => $count,
-            'checks_total'        => $count,
-            'last_seen_at'        => now()->subMinutes(5),
-            'synced_at'           => now()->subMinutes(10),
+            'checks_failing' => $count,
+            'checks_total' => $count,
+            'last_seen_at' => now()->subMinutes(5),
+            'synced_at' => now()->subMinutes(10),
         ]);
 
         return [$asset->refresh()];
@@ -263,11 +263,11 @@ class TacticalContextProviderTest extends TestCase
         $checks = [];
         for ($i = 1; $i <= $count; $i++) {
             $checks[] = [
-                'name'         => "Check {$i}",
+                'name' => "Check {$i}",
                 'check_result' => [
-                    'status'  => 'failing',
+                    'status' => 'failing',
                     'retcode' => 1,
-                    'stdout'  => "output for check {$i}",
+                    'stdout' => "output for check {$i}",
                 ],
             ];
         }
@@ -289,11 +289,11 @@ class TacticalContextProviderTest extends TestCase
     {
         return [
             [
-                'name'         => 'DB Connection Check',
+                'name' => 'DB Connection Check',
                 'check_result' => [
-                    'status'  => 'failing',
+                    'status' => 'failing',
                     'retcode' => 1,
-                    'stdout'  => $stdout,
+                    'stdout' => $stdout,
                 ],
             ],
         ];

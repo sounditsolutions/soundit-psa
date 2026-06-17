@@ -61,12 +61,12 @@ class ContextBuilderTacticalChecksTest extends TestCase
     {
         $asset = Asset::factory()->create(['hostname' => 'BOX-1']);
         $ta = TacticalAsset::create(array_merge([
-            'asset_id'       => $asset->id,
-            'agent_id'       => 'AGENT-1',
-            'hostname'       => 'BOX-1',
-            'status'         => 'online',
+            'asset_id' => $asset->id,
+            'agent_id' => 'AGENT-1',
+            'hostname' => 'BOX-1',
+            'status' => 'online',
             'checks_failing' => 1,
-            'checks_total'   => 2,
+            'checks_total' => 2,
         ], $taAttributes));
         $asset->update(['tactical_asset_id' => $ta->id]);
 
@@ -84,10 +84,10 @@ class ContextBuilderTacticalChecksTest extends TestCase
     private function agentStatusPayload(): array
     {
         return [
-            'status'             => 'online',
-            'maintenance_mode'   => false,
+            'status' => 'online',
+            'maintenance_mode' => false,
             'logged_in_username' => 'None',
-            'needs_reboot'       => false,
+            'needs_reboot' => false,
         ];
     }
 

@@ -58,14 +58,14 @@ class AiTacticalContextIntegrationTest extends TestCase
     {
         $asset = Asset::factory()->create(['hostname' => 'T6-BOX']);
         $ta = TacticalAsset::create([
-            'asset_id'       => $asset->id,
-            'agent_id'       => 'AGENT-T6',
-            'hostname'       => 'T6-BOX',
-            'status'         => 'online',
+            'asset_id' => $asset->id,
+            'agent_id' => 'AGENT-T6',
+            'hostname' => 'T6-BOX',
+            'status' => 'online',
             'checks_failing' => 1,
-            'checks_total'   => 3,
-            'last_seen_at'   => now()->subMinutes(2),
-            'synced_at'      => now()->subMinutes(5),
+            'checks_total' => 3,
+            'last_seen_at' => now()->subMinutes(2),
+            'synced_at' => now()->subMinutes(5),
         ]);
         $asset->update(['tactical_asset_id' => $ta->id]);
 
@@ -93,11 +93,11 @@ class AiTacticalContextIntegrationTest extends TestCase
     private function withReplyNote(Ticket $ticket): void
     {
         TicketNote::create([
-            'ticket_id'   => $ticket->id,
+            'ticket_id' => $ticket->id,
             'author_name' => 'Tech',
-            'body'        => 'Rebooted the endpoint and confirmed the issue was resolved.',
-            'note_type'   => 'reply',
-            'noted_at'    => now(),
+            'body' => 'Rebooted the endpoint and confirmed the issue was resolved.',
+            'note_type' => 'reply',
+            'noted_at' => now(),
         ]);
     }
 
@@ -110,10 +110,10 @@ class AiTacticalContextIntegrationTest extends TestCase
     {
         $stack = HandlerStack::create(new MockHandler($responses));
         $http = new GuzzleClient([
-            'base_uri'         => 'https://tactical.example.com/',
-            'handler'          => $stack,
-            'timeout'          => 30,
-            'allow_redirects'  => false,
+            'base_uri' => 'https://tactical.example.com/',
+            'handler' => $stack,
+            'timeout' => 30,
+            'allow_redirects' => false,
         ]);
         $this->app->instance(TacticalClient::class, new TacticalClient($http));
     }
@@ -122,10 +122,10 @@ class AiTacticalContextIntegrationTest extends TestCase
     private function agentStatusPayload(): array
     {
         return [
-            'status'             => 'online',
-            'maintenance_mode'   => false,
+            'status' => 'online',
+            'maintenance_mode' => false,
             'logged_in_username' => 'None',
-            'needs_reboot'       => false,
+            'needs_reboot' => false,
         ];
     }
 
@@ -134,7 +134,7 @@ class AiTacticalContextIntegrationTest extends TestCase
     {
         return [
             [
-                'name'         => 'Disk Space C',
+                'name' => 'Disk Space C',
                 'check_result' => ['status' => 'failing', 'stdout' => 'C: at 92%', 'retcode' => 1],
             ],
         ];
@@ -178,9 +178,9 @@ class AiTacticalContextIntegrationTest extends TestCase
         $this->bindClient($this->liveResponses());
 
         $conversation = AssistantConversation::create([
-            'user_id'      => User::factory()->create()->id,
+            'user_id' => User::factory()->create()->id,
             'context_type' => 'ticket',
-            'context_id'   => $ticket->id,
+            'context_id' => $ticket->id,
         ]);
 
         $prompt = $this->buildSystemPrompt($conversation);
@@ -202,9 +202,9 @@ class AiTacticalContextIntegrationTest extends TestCase
         $this->bindClient([]);
 
         $conversation = AssistantConversation::create([
-            'user_id'      => User::factory()->create()->id,
+            'user_id' => User::factory()->create()->id,
             'context_type' => 'ticket',
-            'context_id'   => $ticket->id,
+            'context_id' => $ticket->id,
         ]);
 
         $prompt = $this->buildSystemPrompt($conversation);
