@@ -9,7 +9,9 @@ use App\Models\Ticket;
 use App\Models\TicketNote;
 use App\Services\EmailService;
 use App\Services\TicketService;
+use App\Support\AppTimezone;
 use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Log;
 
 class TicketNoteController extends Controller
@@ -139,6 +141,7 @@ class TicketNoteController extends Controller
             'time' => ['nullable', 'string'],
             'is_billable' => ['nullable'],
             'contract_id' => ['nullable', 'exists:contracts,id'],
+            'noted_at' => ['nullable', 'date'],
         ]);
 
         $timeMinutes = $this->ticketService->parseTimeInput($request->input('time'));
@@ -148,10 +151,23 @@ class TicketNoteController extends Controller
                 ->with('error', 'Time logged cannot exceed 24 hours per entry.');
         }
 
+        // Optional note date/time adjustment. The picker is wall-clock in the
+        // display timezone; DB stores UTC. Reject future dates (a note can't
+        // have happened later than now).
+        $notedAt = null;
+        if ($request->filled('noted_at')) {
+            $notedAt = Carbon::parse($request->input('noted_at'), AppTimezone::get())->setTimezone('UTC');
+
+            if ($notedAt->isFuture()) {
+                return redirect()->route('tickets.show', $ticket)
+                    ->with('error', 'Note date cannot be in the future.');
+            }
+        }
+
         $isBillable = $timeMinutes ? $request->boolean('is_billable') : null;
         $contractId = $timeMinutes ? ($request->input('contract_id') ?: null) : null;
 
-        $note->update([
+        $attributes = [
             'body' => $request->input('body'),
             'body_html' => \App\Helpers\MarkdownRenderer::render($request->input('body')),
             'note_type' => $request->input('note_type'),
@@ -161,7 +177,13 @@ class TicketNoteController extends Controller
             'contract_id' => $contractId,
             'edited_at' => now(),
             'edited_by' => auth()->id(),
-        ]);
+        ];
+
+        if ($notedAt !== null) {
+            $attributes['noted_at'] = $notedAt;
+        }
+
+        $note->update($attributes);
 
         // Re-link any attachments referenced in the body to this note
         app(\App\Services\AttachmentService::class)->linkAttachmentsFromBody(

@@ -5,6 +5,7 @@ namespace Tests\Feature\Tickets;
 use App\Enums\NoteType;
 use App\Enums\WhoType;
 use App\Models\Attachment;
+use App\Models\Setting;
 use App\Models\Ticket;
 use App\Models\TicketNote;
 use App\Models\User;
@@ -93,5 +94,82 @@ class TicketNoteEditTest extends TestCase
             'attachable_type' => 'App\\Models\\TicketNote',
             'attachable_id' => $note->id,
         ]);
+    }
+
+    public function test_editing_a_note_updates_its_noted_at(): void
+    {
+        $user = User::factory()->create();
+        $ticket = Ticket::factory()->create();
+        $note = $this->makeNote($ticket, $user);
+
+        // Backdate the note (the chronological-ordering use case).
+        $newDate = now()->subDays(10)->startOfMinute();
+
+        $this->actingAs($user)->put(route('tickets.notes.update', [$ticket, $note]), [
+            'body' => 'Backdated note',
+            'note_type' => 'note',
+            'is_private' => '1',
+            'noted_at' => $newDate->format('Y-m-d\TH:i'),
+        ])->assertRedirect(route('tickets.show', $ticket));
+
+        $note->refresh();
+        $this->assertSame($newDate->format('Y-m-d H:i'), $note->noted_at->format('Y-m-d H:i'));
+    }
+
+    public function test_a_future_noted_at_is_rejected_and_leaves_the_note_unchanged(): void
+    {
+        $user = User::factory()->create();
+        $ticket = Ticket::factory()->create();
+        $note = $this->makeNote($ticket, $user, 'Original body');
+        $original = $note->noted_at->format('Y-m-d H:i');
+
+        $resp = $this->actingAs($user)->put(route('tickets.notes.update', [$ticket, $note]), [
+            'body' => 'Edited body',
+            'note_type' => 'note',
+            'is_private' => '1',
+            'noted_at' => now()->addDays(2)->format('Y-m-d\TH:i'),
+        ]);
+
+        $resp->assertRedirect(route('tickets.show', $ticket));
+        $resp->assertSessionHas('error');
+
+        $note->refresh();
+        // Whole edit is rejected (mirrors the >24h time guard): date AND body unchanged.
+        $this->assertSame($original, $note->noted_at->format('Y-m-d H:i'));
+        $this->assertSame('Original body', $note->body);
+    }
+
+    public function test_noted_at_is_interpreted_in_the_app_timezone(): void
+    {
+        Setting::setValue('app_timezone', 'America/New_York');
+
+        $user = User::factory()->create();
+        $ticket = Ticket::factory()->create();
+        $note = $this->makeNote($ticket, $user);
+
+        // 09:00 on 2026-06-01 in America/New_York (EDT, UTC-4) == 13:00 UTC in storage.
+        $this->actingAs($user)->put(route('tickets.notes.update', [$ticket, $note]), [
+            'body' => 'tz note',
+            'note_type' => 'note',
+            'is_private' => '1',
+            'noted_at' => '2026-06-01T09:00',
+        ])->assertRedirect(route('tickets.show', $ticket));
+
+        $note->refresh();
+        $this->assertSame('2026-06-01 13:00', $note->noted_at->format('Y-m-d H:i'));
+    }
+
+    public function test_edit_modal_includes_a_prefilled_noted_at_input(): void
+    {
+        $user = User::factory()->create();
+        $ticket = Ticket::factory()->create();
+        $note = $this->makeNote($ticket, $user);
+
+        $resp = $this->actingAs($user)->get(route('tickets.show', $ticket));
+
+        $resp->assertOk();
+        $resp->assertSee('name="noted_at"', false);
+        // Pre-filled with the note's current date in the datetime-local format.
+        $resp->assertSee('value="'.$note->noted_at->toAppTz()->format('Y-m-d\TH:i').'"', false);
     }
 }
