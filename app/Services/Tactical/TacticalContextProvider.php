@@ -106,7 +106,7 @@ final class TacticalContextProvider
      */
     private function budget(string $body, int $maxTokens): string
     {
-        $fenceOverhead = 55; // tokens reserved for fence header/footer (~43) + truncation marker (~7) + margin
+        $fenceOverhead = 55; // ~43 tokens for the real fence header/footer+stamp + ~7 for the truncation marker + margin (measured)
         $maxChars = max(0, ($maxTokens - $fenceOverhead)) * 4;
         if (mb_strlen($body) <= $maxChars) {
             return $body;
@@ -140,8 +140,16 @@ final class TacticalContextProvider
     /** Neutralize role lines + classic injection phrases so telemetry can't pose as instructions. */
     private function neutralizeInjection(string $text): string
     {
-        // Defang role markers at line start (system:/assistant:/human:/user:).
-        $text = preg_replace('/^\s*(system|assistant|human|user)\s*:/im', '[$1]:', $text);
+        // FIX 1: Collapse any run of 3+ '=' so telemetry cannot reproduce the real fence
+        // delimiters ("=== ENDPOINT TELEMETRY ===" / "=== END ENDPOINT TELEMETRY ===").
+        // fence() appends the real delimiters AFTER neutralization, so they are unaffected.
+        $text = preg_replace('/={3,}/', '==', $text);
+
+        // FIX 2: Defang role markers anywhere in a line using a word-boundary pattern so
+        // mid-line "system: ..." in failing-check stdout is caught.  The \b prevents
+        // matching "system" inside compound words like "filesystem:", "subsystem:", etc.
+        $text = preg_replace('/\b(system|assistant|human|user)\s*:/i', '[$1]:', $text);
+
         // Defang the canonical override phrase.
         $text = preg_replace('/ignore (all |any )?previous instructions/i', '[neutralized-instruction]', $text);
 

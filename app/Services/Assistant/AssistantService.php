@@ -183,6 +183,11 @@ PROMPT;
         if ($conversation->context_type === 'ticket') {
             $ticket = $conversation->resolveTicket();
             if ($ticket) {
+                // Any Tactical telemetry block included via buildForTicket() is bounded
+                // (≤ TacticalContextProvider::DEFAULT_TOKEN_BUDGET = 1500 tokens) and
+                // accounted POST-HOC against the per-turn budget (TOKEN_BUDGET_PER_TURN)
+                // via the actual input-token count returned by $ai->cumulativeInputTokens()
+                // below — accounting is intentional and not silent.
                 $prompt .= "\n\n".ContextBuilder::buildForTicket($ticket);
 
                 // Include most recent AI triage note if available
