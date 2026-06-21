@@ -2,7 +2,7 @@
      Provides on-page search, sibling-page list, and back-to-index link.
      Variables: $siblings (array of {title,url,active}), $indexUrl, $searchAction. --}}
 <div class="card mb-3">
-    <div class="card-header small text-uppercase text-muted">Wiki</div>
+    <div class="card-header small text-uppercase">Wiki</div>
     <div class="card-body py-2">
         <form action="{{ $searchAction }}" method="get" class="mb-0">
             @if (isset($searchClientId))

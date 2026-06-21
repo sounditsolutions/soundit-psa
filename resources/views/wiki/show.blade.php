@@ -68,7 +68,7 @@
 
             @if ($backlinks->isNotEmpty())
                 <div class="card">
-                    <div class="card-header small text-uppercase text-muted">Linked from</div>
+                    <div class="card-header small text-uppercase">Linked from</div>
                     <ul class="list-group list-group-flush">
                         @foreach ($backlinks as $link)
                             <li class="list-group-item">

@@ -317,12 +317,12 @@
                                             <div class="btn-group btn-group-sm ms-2">
                                                 <button type="button" class="btn btn-link btn-sm text-muted p-0 px-1"
                                                         data-bs-toggle="modal" data-bs-target="#editNoteModal{{ $note->id }}"
-                                                        title="Edit note">
+                                                        title="Edit note" aria-label="Edit note">
                                                     <i class="bi bi-pencil"></i>
                                                 </button>
                                                 <button type="button" class="btn btn-link btn-sm text-muted p-0 px-1"
                                                         onclick="if(confirm('Delete this note? It will be hidden from clients and its time will stop counting.')) document.getElementById('deleteNote{{ $note->id }}').submit();"
-                                                        title="Delete note">
+                                                        title="Delete note" aria-label="Delete note">
                                                     <i class="bi bi-trash"></i>
                                                 </button>
                                                 <form id="deleteNote{{ $note->id }}" method="POST"
@@ -1188,7 +1188,7 @@
                     </div>
                     <textarea name="resolution" id="resolveResolution" class="form-control" rows="3"
                               placeholder="How was this resolved?"></textarea>
-                    <div class="form-text">A short summary is recorded on the ticket and feeds the client wiki — it helps future tickets.</div>
+                    <div class="form-text">A short summary is recorded on the ticket and feeds the client wiki — it helps future tickets.@if(\App\Support\AiConfig::isConfigured()) Leave it blank and we'll draft one from the ticket's notes.@endif</div>
                     <div class="mt-1 small text-danger d-none" id="draftResolutionError"></div>
                 </div>
                 <div class="modal-footer">
