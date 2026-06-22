@@ -80,6 +80,8 @@ These are first-class and must be **complete** — the v1 draft closed only a fr
 
 ## Convert to client (guided, history-preserving, carries the request)
 
+**Convert is triggered by AGREEMENT to engage — not by payment.** "Active" is the *agreement* threshold; a deposit/retainer is the **first obligation of being a client, not a prerequisite to becoming one**. Per the standard SoundPSA agreement, the client initials a commitment to purchase a ~2.5-hour prepaid time block to seed their account — so the **seed-block / deposit is the new client's FIRST invoice**, created in the post-convert onboarding flow below. Consequence: a prospect **never needs to touch QBO/Stripe**, so the billing lockout needs **no carve-out**, and the model is defensible for any MSP on this PSA (convert-on-agreement; invoice-as-onboarding). Do NOT build a payment-gated convert.
+
 A **new controller action** (the existing `ClientController::update`/`ClientUpdateRequest` have no `stage` field, and `stage` must not be mass-fillable). It:
 - Flips `stage` Prospect→Active (`client_id` never changes → all calls/tickets/notes stay attached; zero migration), and **re-enables** triage/notifications/mining for future tickets.
 - **Defines the originating ticket's fate (decide in v1):** the prospect's existing ticket(s) stay open and, on conversion, become normal Active-client tickets (triage may run on the next relevant event; the spec should state whether triage is back-filled or only applies going forward — recommend: going forward only, to avoid a burst of retroactive AI runs).

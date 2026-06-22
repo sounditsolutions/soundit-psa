@@ -543,7 +543,7 @@ public function test_creating_a_prospect_from_a_call_provisions_client_person_ti
 
 ### Task 9: Convert to client (guided, carries the request)
 
-**Files:** `ProspectController::convert` (new action — `stage` is NOT mass-fillable; set it explicitly) + a convert success view that echoes the prospect's open tickets/notes and links assign-tech / create-contract / provision. Test: `tests/Feature/Prospect/ConvertTest.php`.
+**Files:** `ProspectController::convert` (new action — `stage` is NOT mass-fillable; set it explicitly) + a convert success view that echoes the prospect's open tickets/notes and links assign-tech / create-contract / create the seed-block first invoice / provision (convert = agreement, NOT payment — the seed-block is the first invoice, never a pre-convert one). Test: `tests/Feature/Prospect/ConvertTest.php`.
 
 **Interfaces:** Consumes `ProspectIntakeService` (add `convert(Client $prospect): Client`).
 
