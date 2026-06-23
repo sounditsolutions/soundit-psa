@@ -90,6 +90,36 @@ class TechnicianConfig
         return is_string($value) && $value !== '' ? $value : 'within one business day';
     }
 
+    /** Category tokens whose inbound tickets must NOT be auto-acknowledged (spec §9). */
+    public static function ackSuppressedCategories(): array
+    {
+        $raw = Setting::getValue('technician_ack_suppressed_categories');
+        if (is_string($raw) && $raw !== '') {
+            $decoded = json_decode($raw, true);
+            if (is_array($decoded)) {
+                return array_map('strval', $decoded);
+            }
+        }
+
+        return ['billing', 'security', 'incident', 'outage'];
+    }
+
+    public static function ackSuppressedForCategory(?string $category): bool
+    {
+        if (! is_string($category) || $category === '') {
+            return false;
+        }
+
+        $haystack = mb_strtolower($category);
+        foreach (self::ackSuppressedCategories() as $needle) {
+            if ($needle !== '' && str_contains($haystack, mb_strtolower($needle))) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     /** @return array<string, string> */
     private static function decodeMap(string $key): array
     {
