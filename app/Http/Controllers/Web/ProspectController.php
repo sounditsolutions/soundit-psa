@@ -17,6 +17,22 @@ class ProspectController extends Controller
     ) {}
 
     /**
+     * Dismiss an unknown caller — stamps followed_up_at so it leaves the
+     * "Unknown caller" facet (client_id IS NULL AND followed_up_at IS NULL).
+     * Creates NO Client, Person, or Ticket. The call remains in the full
+     * Call Log.
+     */
+    public function dismiss(PhoneCall $call): RedirectResponse
+    {
+        $call->followed_up_at = now();
+        $call->save();
+
+        return redirect()
+            ->route('calls.show', $call)
+            ->with('success', 'Call dismissed — removed from Unknown callers.');
+    }
+
+    /**
      * JSON search over all active clients (including prospects) for the
      * search-first capture control on call pages.
      *

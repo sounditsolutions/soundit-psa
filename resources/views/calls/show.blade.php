@@ -311,6 +311,19 @@
                         </div>
                     </div>
 
+                    {{-- Not a lead / dismiss --}}
+                    @if(! $call->isFollowedUp())
+                    <div class="border-top pt-2 mb-2">
+                        <form method="POST" action="{{ route('prospects.dismiss', $call) }}"
+                              onsubmit="return confirm('Mark as not a lead? This removes the call from the Unknown callers list.')">
+                            @csrf
+                            <button type="submit" class="btn btn-sm btn-outline-secondary w-100">
+                                <i class="bi bi-x-circle me-1"></i>Not a lead / dismiss
+                            </button>
+                        </form>
+                    </div>
+                    @endif
+
                     <div class="border-top pt-2">
                     @if($callHistory->isNotEmpty())
                             <small class="text-muted d-block mb-2">
