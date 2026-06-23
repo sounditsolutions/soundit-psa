@@ -120,6 +120,22 @@ class TechnicianConfig
         return false;
     }
 
+    /** The Technician's own daily token ceiling (spec §11). */
+    public static function dailyTokenLimit(): int
+    {
+        $value = Setting::getValue('technician_daily_token_limit');
+
+        return is_numeric($value) ? (int) $value : 1_000_000;
+    }
+
+    /** Per-run token budget for a single Technician AI call. */
+    public static function maxTokensPerRun(): int
+    {
+        $value = Setting::getValue('technician_max_tokens_per_run');
+
+        return is_numeric($value) ? (int) $value : 100_000;
+    }
+
     /** @return array<string, string> */
     private static function decodeMap(string $key): array
     {
