@@ -6,6 +6,7 @@ use App\Enums\ClientStage;
 use App\Enums\TechnicianRunState;
 use App\Models\TechnicianRun;
 use App\Models\Ticket;
+use App\Services\Technician\AutoAcknowledge;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Support\Facades\Log;
@@ -59,6 +60,11 @@ class RunTechnicianLoop implements ShouldQueue
             ],
         );
 
-        // Phase 0: the AutoAcknowledge task appends its call here.
+        // Only run the ack while the run is still pre-send (idempotent re-runs
+        // that find a Done run do nothing — the gate's content_hash + the run
+        // state both guard against a duplicate send).
+        if ($run->state === TechnicianRunState::Gathering) {
+            app(AutoAcknowledge::class)->run($run, $ticket);
+        }
     }
 }
