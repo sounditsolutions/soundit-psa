@@ -39,6 +39,15 @@ class TechnicianConfig
         return User::orderBy('id')->value('id');
     }
 
+    /** The configured AI actor's display name (spec §3), for the disclosure persona. */
+    public static function aiActorName(): string
+    {
+        $id = self::aiActorUserId();
+        $name = $id ? User::find($id)?->name : null;
+
+        return is_string($name) && trim($name) !== '' ? $name : 'our virtual assistant';
+    }
+
     /**
      * action_type => tier-string map (data, not code). Invalid/missing → [],
      * which the classifier reads as "default-deny everything to Approve".
