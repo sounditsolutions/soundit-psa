@@ -3140,6 +3140,9 @@
                 <p class="text-muted small">
                     Supervised foundation (Phase 0). When enabled, the AI Technician acknowledges new tickets with a clearly-disclosed AI message, authored by your configured AI actor (set in AI Triage). All other actions require approval — coming in a later phase. Off by default.
                 </p>
+                <p class="text-muted small">
+                    <i class="bi bi-info-circle me-1"></i><strong>Requires a distinct AI System User</strong> (set in AI Triage). A ticket created by that same user is not auto-acknowledged — inbound tickets (email, the portal, another technician) are.
+                </p>
 
                 <form method="POST" action="{{ route('settings.integrations.technician.update') }}">
                     @csrf
