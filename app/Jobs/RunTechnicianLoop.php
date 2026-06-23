@@ -28,7 +28,7 @@ class RunTechnicianLoop implements ShouldQueue
 
     public function __construct(private readonly int $ticketId)
     {
-        // Phase 0 rides the 'default' queue (served by the existing worker). Spec §4.4's dedicated 'technician' queue + a supervised worker is a Phase-1-enablement prerequisite: provision that worker before flipping technician_enabled, then restore onQueue('technician').
+        $this->onQueue('technician');
     }
 
     public function handle(): void
