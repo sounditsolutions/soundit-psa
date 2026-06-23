@@ -15,6 +15,7 @@ class MissingDisclosureException extends RuntimeException {}
  */
 class TechnicianDisclosure
 {
+    // TODO Phase 1 (spec §2.1 config-not-hardcoded): derive the persona name from the configured AI-actor — User::find(TechnicianConfig::aiActorUserId())?->name — instead of the literal "Chet", and have assertPresent() check a structural sentinel ("an AI assistant") rather than the name.
     /** The load-bearing, model-independent disclosure sentinel. */
     public const MARKER = '— Sent by Chet, an AI assistant for our team.';
 

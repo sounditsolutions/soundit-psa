@@ -298,6 +298,7 @@ class TechnicianActionGateTest extends TestCase
 
         $this->assertFalse($ran);
         $this->assertSame('held', $second->status);
+        $this->assertDatabaseHas('technician_action_logs', ['result_status' => 'held', 'action_type' => 'send_reply']);
     }
 
     /**
