@@ -1,0 +1,109 @@
+<?php
+
+namespace App\Support;
+
+use App\Models\Setting;
+use App\Models\User;
+
+/**
+ * Setting-backed coverage-profile reader (spec §5). Everything is data — no
+ * hardcoded operator/trip. Fail-closed: unreadable JSON yields the safe empty
+ * default (an empty tier map default-denies every action in the classifier).
+ */
+class TechnicianConfig
+{
+    /** Master on/off for the whole Technician subsystem. */
+    public static function enabled(): bool
+    {
+        return (bool) Setting::getValue('technician_enabled');
+    }
+
+    /** Global pause — re-checked inside the gate immediately before execution. */
+    public static function killSwitchEngaged(): bool
+    {
+        return (bool) Setting::getValue('technician_kill_switch');
+    }
+
+    /**
+     * The reused "System User (AI Actor)" id (spec §3/§4.6). Same selection as
+     * TriageConfig::systemUserId(): the configured setting, else the first user.
+     */
+    public static function aiActorUserId(): ?int
+    {
+        $configured = Setting::getValue('triage_system_user_id');
+
+        if ($configured) {
+            return (int) $configured;
+        }
+
+        return User::orderBy('id')->value('id');
+    }
+
+    /**
+     * action_type => tier-string map (data, not code). Invalid/missing → [],
+     * which the classifier reads as "default-deny everything to Approve".
+     *
+     * @return array<string, string>
+     */
+    public static function tierMap(): array
+    {
+        return self::decodeMap('technician_action_tiers');
+    }
+
+    public static function clientExcluded(int $clientId): bool
+    {
+        return in_array($clientId, self::decodeList('technician_excluded_client_ids'), true);
+    }
+
+    public static function clientAlwaysHuman(int $clientId): bool
+    {
+        return in_array($clientId, self::decodeList('technician_always_human_client_ids'), true);
+    }
+
+    /** @return array<int, int> ordered user ids */
+    public static function escalationChain(): array
+    {
+        return array_values(array_map('intval', self::decodeList('technician_escalation_chain')));
+    }
+
+    /** Authoritative manual "covering / not covering" toggle (default: covering). */
+    public static function operatorCovering(): bool
+    {
+        $value = Setting::getValue('technician_operator_covering');
+
+        return $value === null || (bool) $value;
+    }
+
+    public static function ackEtaText(): string
+    {
+        $value = Setting::getValue('technician_ack_eta_text');
+
+        return is_string($value) && $value !== '' ? $value : 'within one business day';
+    }
+
+    /** @return array<string, string> */
+    private static function decodeMap(string $key): array
+    {
+        $raw = Setting::getValue($key);
+        if (! is_string($raw) || $raw === '') {
+            return [];
+        }
+
+        $decoded = json_decode($raw, true);
+
+        return is_array($decoded) ? array_map('strval', $decoded) : [];
+    }
+
+    /** @return array<int, mixed> */
+    private static function decodeList(string $key): array
+    {
+        $raw = Setting::getValue($key);
+        if (! is_string($raw) || $raw === '') {
+            return [];
+        }
+
+        $decoded = json_decode($raw, true);
+
+        return is_array($decoded) ? array_values($decoded) : [];
+    }
+}
