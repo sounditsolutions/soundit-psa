@@ -214,7 +214,7 @@
                             No people synced for this client.
                         </div>
                     @else
-                        <div class="table-responsive">
+                        <div class="table-responsive d-none d-md-block">
                             <table class="table table-hover mb-0">
                                 <thead>
                                     <tr>
@@ -268,6 +268,42 @@
                                 </tbody>
                             </table>
                         </div>
+                        {{-- Mobile: stacked rows below md so Email/Phone do not clip (psa-6zs7) --}}
+                        <div class="d-md-none">
+                            @foreach($client->people as $person)
+                                <div class="data-row">
+                                    <div class="fw-semibold mb-1">
+                                        <x-person-badge :person="$person" :size="24" />
+                                        @if($person->is_primary)
+                                            <span class="badge bg-warning text-dark ms-1">Primary</span>
+                                        @endif
+                                        @if($person->person_type !== \App\Enums\PersonType::User)
+                                            <span class="badge bg-secondary ms-1" title="{{ $person->person_type->label() }}">
+                                                <i class="{{ $person->person_type->icon() }}"></i>
+                                            </span>
+                                        @endif
+                                    </div>
+                                    @if($person->email)
+                                        <div class="d-flex justify-content-between gap-3 small py-1">
+                                            <span class="data-label">Email</span>
+                                            <a href="mailto:{{ $person->email }}" class="text-break text-end">{{ $person->email }}</a>
+                                        </div>
+                                    @endif
+                                    @if($person->phone_display)
+                                        <div class="d-flex justify-content-between gap-3 small py-1">
+                                            <span class="data-label">Phone</span>
+                                            <a href="#" data-phone="{{ $person->phone }}" class="text-decoration-none dial-link text-end">{{ $person->phone_display }}</a>
+                                        </div>
+                                    @endif
+                                    @if($person->mobile_display)
+                                        <div class="d-flex justify-content-between gap-3 small py-1">
+                                            <span class="data-label">Mobile</span>
+                                            <a href="#" data-phone="{{ $person->mobile }}" class="text-decoration-none dial-link text-end">{{ $person->mobile_display }}</a>
+                                        </div>
+                                    @endif
+                                </div>
+                            @endforeach
+                        </div>
                     @endif
                 </div>
 
@@ -295,7 +331,7 @@
                             No active contracts.
                         </div>
                     @else
-                        <div class="table-responsive">
+                        <div class="table-responsive d-none d-md-block">
                             <table class="table table-hover mb-0">
                                 <thead>
                                     <tr>
@@ -324,6 +360,29 @@
                                     @endforeach
                                 </tbody>
                             </table>
+                        </div>
+                        {{-- Mobile: stacked rows below md so Prepay/Profiles do not clip (psa-6zs7) --}}
+                        <div class="d-md-none">
+                            @foreach($activeContracts as $contract)
+                                <div class="data-row" style="cursor:pointer;" onclick="window.location='{{ route('contracts.show', $contract) }}'">
+                                    <div class="fw-semibold mb-1">
+                                        <a href="{{ route('contracts.show', $contract) }}" class="text-decoration-none" onclick="event.stopPropagation()">{{ $contract->name }}</a>
+                                    </div>
+                                    <div class="d-flex justify-content-between gap-3 small py-1">
+                                        <span class="data-label">Type</span><span>{{ $contract->type->label() }}</span>
+                                    </div>
+                                    <div class="d-flex justify-content-between gap-3 small py-1">
+                                        <span class="data-label">Billing</span><span>{{ $contract->billing_period->label() }}</span>
+                                    </div>
+                                    <div class="d-flex justify-content-between gap-3 small py-1">
+                                        <span class="data-label">Prepay</span>
+                                        <span class="{{ $contract->has_prepay && (float) $contract->prepay_balance <= 0 ? 'fw-semibold text-danger' : '' }}">{{ $contract->prepay_balance_formatted }}</span>
+                                    </div>
+                                    <div class="d-flex justify-content-between gap-3 small py-1">
+                                        <span class="data-label">Profiles</span><span>{{ $contract->profiles_count }}</span>
+                                    </div>
+                                </div>
+                            @endforeach
                         </div>
                     @endif
                 </div>

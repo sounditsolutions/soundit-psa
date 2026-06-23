@@ -147,6 +147,49 @@ h1, h2, h3, h4, h5, h6 {
     color: var(--accent-hover);
 }
 
+/* ── Responsive table cards (mobile) ──
+   Wide console tables (the tickets queue and the client People/Contracts lists)
+   keep the full table at md+ and fall back to a stacked layout below md, so the
+   triage signal (priority, status, assignee, due) stays visible without a
+   horizontal scroll. Flat by doctrine (DESIGN.md §4): depth is the hairline
+   border and the canvas/surface tonal step, never a shadow. Priority reads as a
+   badge here, not the color-only row stripe (DESIGN.md §5: state is never color
+   alone). */
+.ticket-card {
+    display: block;
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 12px;
+    padding: 0.75rem 0.875rem;
+    color: var(--text-body);
+    cursor: pointer;
+}
+.ticket-card + .ticket-card {
+    margin-top: 0.5rem;
+}
+.ticket-card-subject {
+    color: var(--primary);
+}
+.ticket-card-subject:hover {
+    color: var(--accent-hover);
+}
+
+/* In-card stacked rows for the secondary tables (client People / Contracts).
+   The parent .card keeps its navy header and actions; only the tabular body
+   swaps to label/value rows separated by the hairline, so there is no
+   card-in-card nesting. */
+.data-row {
+    padding: 0.625rem 1rem;
+}
+.data-row + .data-row {
+    border-top: 1px solid #e5e7eb;
+}
+.data-label {
+    color: var(--text-muted);
+    font-weight: 600;
+    font-size: 0.8rem;
+}
+
 /* ── Forms ── */
 .form-control,
 .form-select {
