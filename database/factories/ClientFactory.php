@@ -14,4 +14,9 @@ class ClientFactory extends Factory
             'name' => fake()->company(),
         ];
     }
+
+    public function prospect(): static
+    {
+        return $this->state(fn () => ['stage' => \App\Enums\ClientStage::Prospect, 'is_active' => true]);
+    }
 }
