@@ -43,7 +43,19 @@ class ClientController extends Controller
 
     public function index(Request $request)
     {
-        $clients = Client::active()
+        // Stage facet: all (default — is_active, both stages) / active (operational
+        // customers) / prospect (not-yet-customers). scopeActive() includes prospects.
+        $stage = in_array($request->query('stage'), ['active', 'prospect'], true)
+            ? $request->query('stage')
+            : 'all';
+
+        $query = match ($stage) {
+            'active' => Client::operational(),
+            'prospect' => Client::active()->where('stage', \App\Enums\ClientStage::Prospect),
+            default => Client::active(),
+        };
+
+        $clients = $query
             ->search($request->query('search'))
             ->with('reseller:id,name')
             ->withCount('people')
@@ -54,6 +66,7 @@ class ClientController extends Controller
         return view('clients.index', [
             'clients' => $clients,
             'search' => $request->query('search'),
+            'stage' => $stage,
         ]);
     }
 

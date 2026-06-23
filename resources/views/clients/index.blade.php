@@ -23,6 +23,13 @@
     </div>
 </form>
 
+<div class="btn-group btn-group-sm mb-3" role="group" aria-label="Filter clients by stage">
+    @foreach(['all' => 'All', 'active' => 'Active', 'prospect' => 'Prospects'] as $stageKey => $stageLabel)
+        <a href="{{ route('clients.index', array_filter(['stage' => $stageKey, 'search' => $search])) }}"
+           class="btn {{ $stage === $stageKey ? 'btn-primary' : 'btn-outline-secondary' }}">{{ $stageLabel }}</a>
+    @endforeach
+</div>
+
 @if($clients->isEmpty())
     <div class="alert alert-info">
         @if($search)
@@ -49,6 +56,9 @@
                         <tr>
                             <td>
                                 <x-client-badge :client="$client" :size="24" />
+                                @if($client->stage === \App\Enums\ClientStage::Prospect)
+                                    <span class="badge bg-warning text-dark badge-prospect ms-1">Prospect</span>
+                                @endif
                                 @if($client->reseller)
                                     <i class="bi bi-arrow-up-right-circle text-info ms-1" title="Reseller: {{ $client->reseller->name }}"></i>
                                 @endif
