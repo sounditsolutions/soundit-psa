@@ -10,6 +10,7 @@ use App\Models\User;
 use App\Services\Technician\TechnicianActionGate;
 use App\Services\Technician\TechnicianApprovalGrant;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
 
 class TechnicianActionGateTest extends TestCase
@@ -215,6 +216,143 @@ class TechnicianActionGateTest extends TestCase
         $this->assertFalse($ran);
         $this->assertSame('held', $result->status);
         $this->assertDatabaseHas('technician_action_logs', [
+            'result_status' => 'held',
+        ]);
+    }
+
+    // -------------------------------------------------------------------------
+    // Kill-switch tests (§7 / §13 fire-drill)
+    // -------------------------------------------------------------------------
+
+    public function test_kill_switch_holds_an_auto_action_before_execution(): void
+    {
+        $this->autoTier('send_ack');
+        Setting::setValue('technician_kill_switch', '1');
+        $ran = false;
+
+        $result = $this->gate()->dispatch(
+            actionType: 'send_ack',
+            ticketId: $this->ticketId,
+            clientId: $this->clientId,
+            contentHash: str_repeat('a', 64),
+            summary: 'ack',
+            runId: 1,
+            executor: function () use (&$ran) {
+                $ran = true;
+            },
+        );
+
+        $this->assertFalse($ran);
+        $this->assertSame('held', $result->status);
+        $this->assertDatabaseHas('technician_action_logs', [
+            'action_type' => 'send_ack',
+            'result_status' => 'held',
+        ]);
+    }
+
+    /**
+     * In-flight kill-switch test: an approved action executes once (switch off),
+     * then the operator pulls the cord, and the NEXT dispatch — even with a still-
+     * valid grant — is immediately held by the gate's kill-switch barrier.  This
+     * proves both the pre-classification check (catches it on entry) and the
+     * structural guarantee that a valid grant cannot bypass the kill-switch.
+     */
+    public function test_kill_switch_flipped_in_flight_halts_an_approved_action(): void
+    {
+        $approver = User::factory()->create();
+        $hash = str_repeat('c', 64);
+        $token = TechnicianApprovalGrant::issue('send_reply', $this->ticketId, $hash, $approver->id);
+
+        // First dispatch executes (switch off).
+        $first = $this->gate()->dispatch(
+            actionType: 'send_reply',
+            ticketId: $this->ticketId,
+            clientId: $this->clientId,
+            contentHash: $hash,
+            summary: 'reply',
+            runId: 1,
+            executor: function () { /* sent */
+            },
+            approvalToken: $token,
+            approverUserId: $approver->id,
+        );
+        $this->assertSame('executed', $first->status);
+
+        // Operator pulls the cord.
+        Setting::setValue('technician_kill_switch', '1');
+        $ran = false;
+
+        $second = $this->gate()->dispatch(
+            actionType: 'send_reply',
+            ticketId: $this->ticketId,
+            clientId: $this->clientId,
+            contentHash: $hash,
+            summary: 'reply',
+            runId: 1,
+            executor: function () use (&$ran) {
+                $ran = true;
+            },
+            approvalToken: $token,
+            approverUserId: $approver->id,
+        );
+
+        $this->assertFalse($ran);
+        $this->assertSame('held', $second->status);
+    }
+
+    /**
+     * True in-flight re-check: the kill-switch is OFF when the gate's
+     * pre-classification check (check #1) runs, then trips to ON between that
+     * check and the gate's second killSwitchEngaged() call immediately before
+     * the executor (check #2).  Proven against the REAL TechnicianActionGate
+     * without modification.
+     *
+     * Mechanism: DB::listen fires after each completed query.  When the gate
+     * executes check #1 (SELECT key='technician_kill_switch'), the listener
+     * fires after the query returns false — setting the DB value to '1' for the
+     * subsequent check #2 to observe.  The first check has already resolved to
+     * false; the second check reads the freshly-written '1' and halts.
+     */
+    public function test_in_flight_recheck_halts_approved_auto_action_when_switch_trips_between_checks(): void
+    {
+        $this->autoTier('send_ack');
+
+        // Kill-switch starts OFF.
+        Setting::setValue('technician_kill_switch', '0');
+
+        $flipped = false;
+        DB::listen(function ($query) use (&$flipped) {
+            // Fire exactly once: after check #1's query for the kill-switch
+            // setting returns.  The gate's check #1 has already seen 'false';
+            // we now write '1' so check #2 observes it as engaged.
+            if (! $flipped
+                && str_contains($query->sql, 'settings')
+                && in_array('technician_kill_switch', $query->bindings, true)
+            ) {
+                $flipped = true;
+                Setting::setValue('technician_kill_switch', '1');
+            }
+        });
+
+        $ran = false;
+
+        $result = $this->gate()->dispatch(
+            actionType: 'send_ack',
+            ticketId: $this->ticketId,
+            clientId: $this->clientId,
+            contentHash: str_repeat('e', 64),
+            summary: 'ack',
+            runId: 1,
+            executor: function () use (&$ran) {
+                $ran = true;
+            },
+        );
+
+        $this->assertTrue($flipped, 'DB listener should have fired (sanity check)');
+        $this->assertFalse($ran, 'Executor must not run when kill-switch trips between checks');
+        $this->assertSame('held', $result->status);
+        $this->assertDatabaseHas('technician_action_logs', [
+            'action_type' => 'send_ack',
             'result_status' => 'held',
         ]);
     }
