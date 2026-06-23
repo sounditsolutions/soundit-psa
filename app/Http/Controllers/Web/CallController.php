@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Web;
 
 use App\Enums\CallStatus;
+use App\Enums\ClientStage;
 use App\Enums\NoteType;
 use App\Enums\TicketPriority;
 use App\Enums\TicketSource;
@@ -486,6 +487,13 @@ class CallController extends Controller
             'category' => null,
             'subcategory' => null,
         ];
+
+        // Prospect gate: never send transcript/summary to the LLM for prospect-stage clients.
+        // Integration point for Task 6/7 (prospect provisioning): when prospect provisioning
+        // builds tickets via this code path, the legacySubject / defaults are used instead.
+        if ($call->client?->stage === ClientStage::Prospect) {
+            return $defaults;
+        }
 
         // Source material for the AI prompt
         $source = trim((string) ($call->call_summary ?? ''));

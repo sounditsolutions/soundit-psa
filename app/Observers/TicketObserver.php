@@ -2,6 +2,7 @@
 
 namespace App\Observers;
 
+use App\Enums\ClientStage;
 use App\Enums\TicketSource;
 use App\Enums\TicketStatus;
 use App\Jobs\GenerateTicketResolution;
@@ -21,6 +22,12 @@ class TicketObserver
      */
     public function created(Ticket $ticket): void
     {
+        // Prospect gate: never notify or triage for prospect-stage clients.
+        // Data must not reach the LLM or notification pipeline during the sales phase.
+        if ($ticket->client?->stage === ClientStage::Prospect) {
+            return;
+        }
+
         app(NotificationService::class)->notifyTicketCreated($ticket);
 
         if (! TriageConfig::autoTriageEnabled()) {
@@ -54,8 +61,12 @@ class TicketObserver
         $isTerminal = in_array($ticket->status, [TicketStatus::Resolved, TicketStatus::Closed], true);
         $becameTerminalOrResolutionChanged = $ticket->wasChanged('status') || $ticket->wasChanged('resolution');
 
+        // Prospect gate: don't mine or auto-draft resolutions for prospect-stage clients.
+        $isProspect = $ticket->client?->stage === ClientStage::Prospect;
+
         if (
-            $isTerminal
+            ! $isProspect
+            && $isTerminal
             && $becameTerminalOrResolutionChanged
             && filled($ticket->resolution)
             && WikiConfig::autoMineEnabled()
@@ -69,7 +80,8 @@ class TicketObserver
         // writes `resolution` (status unchanged), this branch does NOT re-fire → no loop.
         // The mining branch above uses wasChanged('resolution'), so it DOES fire on that save.
         if (
-            $isTerminal
+            ! $isProspect
+            && $isTerminal
             && $ticket->wasChanged('status')
             && empty($ticket->resolution)
             && WikiConfig::autoMineEnabled()
