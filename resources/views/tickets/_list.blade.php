@@ -215,7 +215,9 @@
         ];
     @endphp
 
-    <div class="card shadow-sm card-static">
+    {{-- Desktop: the full table (md+). Below md it is replaced by the stacked
+         cards beneath this block so triage signal stays visible (psa-6zs7). --}}
+    <div class="card shadow-sm card-static d-none d-md-block">
         @if($showBulkActions)
         <div class="text-center py-2 bg-light border-bottom small" id="selectAllBanner" style="display:none;">
             <span id="selectAllBannerText"></span>
@@ -407,6 +409,42 @@
                 </tbody>
             </table>
         </div>
+    </div>
+
+    {{-- Mobile: stacked cards (below md). Promotes the triage-critical signal —
+         priority, status, assignee, due — into a card so it is visible without a
+         horizontal scroll. Priority is a badge, not the color-only row stripe
+         (psa-6zs7). --}}
+    <div class="d-md-none ticket-cards">
+        @foreach($tickets as $ticket)
+            @php $cardOverdue = $ticket->isOverdue() || $ticket->isResponseOverdue(); @endphp
+            <div class="ticket-card" onclick="window.location='{{ route('tickets.show', $ticket) }}'">
+                <div class="d-flex justify-content-between align-items-center gap-2 mb-1">
+                    <span class="text-muted small">{{ $ticket->display_id }}</span>
+                    <span class="badge {{ $ticket->priority->badgeClass() }}">{{ $ticket->priority->label() }}</span>
+                </div>
+                <a href="{{ route('tickets.show', $ticket) }}" class="ticket-card-subject d-block fw-semibold text-decoration-none mb-1" onclick="event.stopPropagation()">
+                    {{ Str::limit($ticket->subject, 80) }}
+                </a>
+                @if((!$columns || in_array('client', $columns)) && !isset($prefilter['client_id']))
+                    <div class="small mb-2" onclick="event.stopPropagation()">
+                        <x-client-badge :client="$ticket->client" fallback="-" />
+                    </div>
+                @endif
+                <div class="d-flex flex-wrap align-items-center gap-2 small">
+                    <span class="badge {{ $ticket->status->badgeClass() }}">{{ $ticket->status->label() }}</span>
+                    <span class="text-muted d-inline-flex align-items-center gap-1" onclick="event.stopPropagation()">
+                        <i class="bi bi-person"></i><x-user-badge :user="$ticket->assignee" fallback="Unassigned" />
+                    </span>
+                    @if($ticket->due_at || ($ticket->response_due_at && !$ticket->responded_at))
+                        <span class="ms-auto {{ $cardOverdue ? 'text-danger fw-bold' : 'text-muted' }}">
+                            @if($cardOverdue)<i class="bi bi-exclamation-triangle-fill me-1" title="SLA breach"></i>@endif
+                            Due {{ ($ticket->due_at ?? $ticket->response_due_at)->diffForHumans() }}
+                        </span>
+                    @endif
+                </div>
+            </div>
+        @endforeach
     </div>
 
     <div class="mt-3 d-flex align-items-center justify-content-between">
