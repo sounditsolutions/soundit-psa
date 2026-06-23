@@ -40,6 +40,9 @@ class PortalManagementController extends Controller
             abort(403);
         }
 
+        // Prospects must never be granted portal access (no enable, no token).
+        abort_if($client->stage !== \App\Enums\ClientStage::Active, 403, 'Portal access is unavailable for prospects.');
+
         if (! $person->email) {
             return back()->with('error', 'This contact has no email address.');
         }
@@ -93,6 +96,9 @@ class PortalManagementController extends Controller
             abort(403);
         }
 
+        // Prospects must never have portal access enabled.
+        abort_if($client->stage !== \App\Enums\ClientStage::Active, 403, 'Portal access is unavailable for prospects.');
+
         $person->update(['portal_enabled' => ! $person->portal_enabled]);
 
         $status = $person->portal_enabled ? 'enabled' : 'disabled';
@@ -131,6 +137,9 @@ class PortalManagementController extends Controller
             abort(403);
         }
 
+        // Prospects must never receive a portal password-reset token.
+        abort_if($client->stage !== \App\Enums\ClientStage::Active, 403, 'Portal access is unavailable for prospects.');
+
         try {
             Password::broker('portal')->sendResetLink(['email' => $person->email]);
         } catch (\Throwable $e) {
@@ -151,6 +160,9 @@ class PortalManagementController extends Controller
         if ($person->client_id !== $client->id || ! $person->portal_enabled) {
             abort(403);
         }
+
+        // Prospects must never have a portal session granted on their behalf.
+        abort_if($client->stage !== \App\Enums\ClientStage::Active, 403, 'Portal access is unavailable for prospects.');
 
         // Store the staff user's ID so we can show the banner and return them
         $staffUser = $request->user();

@@ -2,6 +2,7 @@
 
 namespace App\Providers;
 
+use App\Auth\PortalUserProvider;
 use App\Models\Asset;
 use App\Models\Invoice;
 use App\Models\Person;
@@ -24,6 +25,7 @@ use App\Support\CippConfig;
 use App\Support\MeshConfig;
 use Illuminate\Pagination\Paginator;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\View;
@@ -110,6 +112,13 @@ class AppServiceProvider extends ServiceProvider
         Paginator::useBootstrapFive();
 
         Event::listen(SocialiteWasCalled::class, MicrosoftExtendSocialite::class);
+
+        // Portal guard + portal password broker resolve people through this
+        // provider, which only ever returns Active-stage clients' contacts.
+        // Keeps prospects structurally out of login and the reset broker.
+        Auth::provider('portal-eloquent', function ($app, array $config) {
+            return new PortalUserProvider($app['hash'], $config['model']);
+        });
 
         // Register model observers
         Asset::observe(AssetObserver::class);

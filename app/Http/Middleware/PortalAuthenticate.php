@@ -13,7 +13,9 @@ class PortalAuthenticate
     {
         $person = Auth::guard('portal')->user();
 
-        if (! $person || ! $person->is_active || ! $person->portal_enabled || ! $person->person_type->canHavePortal()) {
+        // canAccessPortal() enforces is_active + portal_enabled + client stage =
+        // Active (defense-in-depth: a prospect must never hold a live session).
+        if (! $person || ! $person->canAccessPortal() || ! $person->person_type->canHavePortal()) {
             Auth::guard('portal')->logout();
 
             if ($request->expectsJson()) {
