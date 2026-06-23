@@ -127,6 +127,11 @@ class PhoneCall extends Model
             ->whereNull('followed_up_at');
     }
 
+    public function scopeUnknownCaller(Builder $query): Builder
+    {
+        return $query->whereNull('client_id')->whereNull('followed_up_at');
+    }
+
     public function scopeForClient(Builder $query, int $clientId): Builder
     {
         return $query->where('client_id', $clientId);
