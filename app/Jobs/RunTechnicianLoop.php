@@ -7,6 +7,7 @@ use App\Enums\TechnicianRunState;
 use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Services\Technician\AutoAcknowledge;
+use App\Services\Technician\DraftPipeline;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Support\Facades\Log;
@@ -66,5 +67,10 @@ class RunTechnicianLoop implements ShouldQueue
         if ($run->state === TechnicianRunState::Gathering) {
             app(AutoAcknowledge::class)->run($run, $ticket);
         }
+
+        // Phase 1A: the autonomous draft pipeline — gathers, judges ownability,
+        // drafts a reply + proposes a resolution, and HOLDS them for approval.
+        // Idempotent + budget-guarded; nothing substantive is sent here.
+        app(DraftPipeline::class)->run($ticket);
     }
 }
