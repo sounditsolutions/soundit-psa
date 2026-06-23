@@ -251,6 +251,66 @@
                     <p class="text-muted mb-2">
                         <i class="bi bi-question-circle me-1"></i>Client not resolved
                     </p>
+
+                    {{-- Prospect capture: search-first control --}}
+                    <div class="mb-3">
+                        <label class="form-label small fw-semibold">Attach to existing client</label>
+                        <input type="text"
+                               name="client_search"
+                               id="prospect-client-search"
+                               class="form-control form-control-sm"
+                               placeholder="Search clients by name, phone, or email…"
+                               autocomplete="off">
+                        <div id="prospect-search-results" class="list-group mt-1" style="display:none;"></div>
+                    </div>
+
+                    {{-- Dedup warning --}}
+                    @if(session('error') && session('dedup_client_name'))
+                    <div class="alert alert-warning py-2 px-3 small mb-3">
+                        <i class="bi bi-exclamation-triangle me-1"></i>
+                        {{ session('error') }}
+                        <form method="POST" action="{{ route('calls.update-person') }}" class="d-inline ms-2">
+                        </form>
+                        {{-- Offer provision-anyway with confirm_new --}}
+                        <form method="POST" action="{{ route('prospects.store') }}" class="mt-2">
+                            @csrf
+                            <input type="hidden" name="phone_call_id" value="{{ $call->id }}">
+                            <input type="hidden" name="name" value="{{ old('name') }}">
+                            <input type="hidden" name="confirm_new" value="1">
+                            <button type="submit" class="btn btn-sm btn-outline-warning">
+                                Create new client anyway
+                            </button>
+                        </form>
+                    </div>
+                    @endif
+
+                    {{-- New client fallback — subordinate to search --}}
+                    <div class="border-top pt-2 mb-3">
+                        <a class="text-decoration-none small text-muted" data-bs-toggle="collapse" href="#new-prospect-form" role="button" aria-expanded="false">
+                            <i class="bi bi-person-plus me-1"></i>+ New client
+                            @if($call->from_number)
+                                "{{ \App\Support\PhoneNumber::format($call->from_number) }}"
+                            @endif
+                        </a>
+                        <div class="collapse mt-2" id="new-prospect-form">
+                            <form method="POST" action="{{ route('prospects.store') }}">
+                                @csrf
+                                <input type="hidden" name="phone_call_id" value="{{ $call->id }}">
+                                <input type="text" name="name"
+                                       class="form-control form-control-sm mb-2 @error('name') is-invalid @enderror"
+                                       placeholder="Client / company name"
+                                       value="{{ old('name') }}"
+                                       required>
+                                @error('name')
+                                    <div class="invalid-feedback">{{ $message }}</div>
+                                @enderror
+                                <button type="submit" class="btn btn-sm btn-accent w-100">
+                                    <i class="bi bi-person-plus me-1"></i>Create prospect &amp; open ticket
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+
                     <div class="border-top pt-2">
                     @if($callHistory->isNotEmpty())
                             <small class="text-muted d-block mb-2">
@@ -501,6 +561,53 @@
 
 @push('scripts')
 <script>
+// Prospect capture: client search control
+(function() {
+    const input = document.getElementById('prospect-client-search');
+    const results = document.getElementById('prospect-search-results');
+    if (!input) return;
+
+    let timer;
+
+    input.addEventListener('input', function() {
+        clearTimeout(timer);
+        const q = this.value.trim();
+        if (q.length < 2) {
+            results.style.display = 'none';
+            results.innerHTML = '';
+            return;
+        }
+        timer = setTimeout(function() {
+            fetch('/api/clients/search-all?q=' + encodeURIComponent(q), {
+                headers: { 'Accept': 'application/json' }
+            })
+            .then(r => r.json())
+            .then(function(clients) {
+                results.innerHTML = '';
+                if (clients.length === 0) {
+                    results.style.display = 'none';
+                    return;
+                }
+                clients.forEach(function(c) {
+                    const a = document.createElement('a');
+                    a.href = '/clients/' + c.id;
+                    a.className = 'list-group-item list-group-item-action py-1 px-2 small';
+                    a.textContent = c.name + (c.stage === 'prospect' ? ' (prospect)' : '');
+                    results.appendChild(a);
+                });
+                results.style.display = '';
+            })
+            .catch(function() { results.style.display = 'none'; });
+        }, 250);
+    });
+
+    document.addEventListener('click', function(e) {
+        if (!results.contains(e.target) && e.target !== input) {
+            results.style.display = 'none';
+        }
+    });
+})();
+
 (function() {
     const clientSelect = document.getElementById('override-client-select');
     const personSelect = document.getElementById('override-person-select');
