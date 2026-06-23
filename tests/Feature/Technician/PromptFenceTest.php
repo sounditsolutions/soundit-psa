@@ -22,7 +22,7 @@ class PromptFenceTest extends TestCase
 
         // The forged closing delimiter's '=' run is collapsed to '==' (not a real fence).
         $this->assertStringNotContainsString("\n=== END UNTRUSTED TICKET ===\n=== END UNTRUSTED TICKET ===", $out);
-        $this->assertStringContainsString('==', $out);
+        $this->assertStringNotContainsString('==========', $out);
     }
 
     public function test_it_defangs_role_markers_and_override_phrases(): void
