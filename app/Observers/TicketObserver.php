@@ -7,11 +7,13 @@ use App\Enums\TicketSource;
 use App\Enums\TicketStatus;
 use App\Jobs\GenerateTicketResolution;
 use App\Jobs\MineTicketKnowledge;
+use App\Jobs\RunTechnicianLoop;
 use App\Jobs\RunTriagePipeline;
 use App\Jobs\SendT2TCallback;
 use App\Models\Ticket;
 use App\Services\NotificationService;
 use App\Support\T2TConfig;
+use App\Support\TechnicianConfig;
 use App\Support\TriageConfig;
 use App\Support\WikiConfig;
 
@@ -30,16 +32,20 @@ class TicketObserver
 
         app(NotificationService::class)->notifyTicketCreated($ticket);
 
-        if (! TriageConfig::autoTriageEnabled()) {
-            return;
-        }
+        // Recursion guard: skip AI dispatches for tickets created by the system/AI-actor user.
+        $isSystemCreated = $ticket->created_by && $ticket->created_by === TriageConfig::systemUserId();
 
-        // Recursion guard: don't triage tickets created by the triage system itself
-        if ($ticket->created_by && $ticket->created_by === TriageConfig::systemUserId()) {
-            return;
-        }
+        if (! $isSystemCreated) {
+            if (TriageConfig::autoTriageEnabled()) {
+                RunTriagePipeline::dispatch($ticket->id, 'triage');
+            }
 
-        RunTriagePipeline::dispatch($ticket->id, 'triage');
+            // AI Technician Loop (spec §4.1) — same prospect gate (above) + the same
+            // system-user recursion guard as triage. Gated by TechnicianConfig::enabled().
+            if (TechnicianConfig::enabled()) {
+                RunTechnicianLoop::dispatch($ticket->id);
+            }
+        }
     }
 
     public function updated(Ticket $ticket): void
