@@ -13,6 +13,10 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * @property string $action_type
  * @property string $content_hash
  * @property TechnicianRunState $state
+ * @property string|null $proposed_content
+ * @property array|null $proposed_meta
+ * @property float|null $confidence
+ * @property int $tokens_used
  */
 class TechnicianRun extends Model
 {
@@ -22,12 +26,19 @@ class TechnicianRun extends Model
         'action_type',
         'content_hash',
         'state',
+        'proposed_content',
+        'proposed_meta',
+        'confidence',
+        'tokens_used',
     ];
 
     protected function casts(): array
     {
         return [
             'state' => TechnicianRunState::class,
+            'proposed_meta' => 'array',
+            'confidence' => 'float',
+            'tokens_used' => 'integer',
         ];
     }
 
