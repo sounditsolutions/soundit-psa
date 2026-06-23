@@ -54,7 +54,6 @@ class ProspectController extends Controller
     public function converted(Client $client)
     {
         $openTickets = $client->tickets()
-            ->whereIn('status', \App\Enums\TicketStatus::cases())
             ->with('notes')
             ->orderByDesc('opened_at')
             ->get()

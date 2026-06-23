@@ -269,8 +269,6 @@
                     <div class="alert alert-warning py-2 px-3 small mb-3">
                         <i class="bi bi-exclamation-triangle me-1"></i>
                         {{ session('error') }}
-                        <form method="POST" action="{{ route('calls.update-person') }}" class="d-inline ms-2">
-                        </form>
                         {{-- Offer provision-anyway with confirm_new --}}
                         <form method="POST" action="{{ route('prospects.store') }}" class="mt-2">
                             @csrf

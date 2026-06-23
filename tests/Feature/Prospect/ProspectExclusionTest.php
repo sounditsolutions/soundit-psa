@@ -68,4 +68,20 @@ class ProspectExclusionTest extends TestCase
         $this->assertCount(1, $fleet);
         $this->assertSame('Active Tenant', $fleet->first()->name);
     }
+
+    public function test_prospect_is_absent_from_client_create_reseller_picker(): void
+    {
+        $user = User::factory()->create();
+        Client::factory()->create(['name' => 'Acme Operational']);
+        Client::factory()->prospect()->create(['name' => 'Tirekicker Prospect']);
+
+        // The client create form has a resellerCandidates dropdown that must
+        // exclude prospects — an operational client appears; a prospect does not.
+        $resp = $this->actingAs($user)
+            ->get(route('clients.create'))
+            ->assertOk();
+
+        $resp->assertSee('Acme Operational', false);
+        $resp->assertDontSee('Tirekicker Prospect', false);
+    }
 }

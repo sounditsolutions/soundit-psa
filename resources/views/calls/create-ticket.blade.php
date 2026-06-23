@@ -58,8 +58,7 @@
                                class="form-control @error('client_id') is-invalid @enderror"
                                placeholder="Search clients by name, phone, or email…"
                                autocomplete="off"
-                               value="{{ old('client_id', $call->client_id) ? ($call->client?->name ?? '') : '' }}"
-                               required>
+                               value="{{ old('client_id', $call->client_id) ? ($call->client?->name ?? '') : '' }}">
                         <div id="ticket-client-results" class="list-group position-absolute w-100 shadow-sm"
                              style="display:none; z-index: 1050;"></div>
                     </div>
