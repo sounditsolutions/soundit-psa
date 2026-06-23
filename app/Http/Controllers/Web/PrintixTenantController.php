@@ -46,7 +46,7 @@ class PrintixTenantController extends Controller
             ->get(['id', 'name', 'printix_tenant_id'])
             ->keyBy('printix_tenant_id');
 
-        $allClients = Client::active()->orderBy('name')->get(['id', 'name']);
+        $allClients = Client::operational()->orderBy('name')->get(['id', 'name']);
 
         return view('settings.printix-tenants', [
             'tenants' => $tenants,
@@ -103,7 +103,7 @@ class PrintixTenantController extends Controller
                 ->with('error', "Could not connect to Printix: {$e->getMessage()}");
         }
 
-        $clients = Client::active()->get(['id', 'name'])->keyBy(fn ($c) => mb_strtolower($c->name));
+        $clients = Client::operational()->get(['id', 'name'])->keyBy(fn ($c) => mb_strtolower($c->name));
         $matched = 0;
 
         foreach ($tenants as $tenant) {

@@ -33,7 +33,7 @@ class StripeCustomerController extends Controller
             ->get(['id', 'name', 'stripe_customer_id'])
             ->keyBy('stripe_customer_id');
 
-        $allClients = Client::active()->orderBy('name')->get(['id', 'name']);
+        $allClients = Client::operational()->orderBy('name')->get(['id', 'name']);
 
         return view('settings.stripe-customers', [
             'customers' => $customers,

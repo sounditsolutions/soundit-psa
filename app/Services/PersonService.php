@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Enums\ClientStage;
 use App\Models\Email;
 use App\Models\Person;
 use App\Models\PersonEmail;
@@ -198,10 +199,15 @@ class PersonService
                 $survivor->is_primary = true;
             }
 
-            // Portal access — carry it to the survivor only when the survivor lacks it.
+            // Portal access — carry it to the survivor only when the survivor lacks it
+            // AND the survivor's client is Active. A duplicate provisioned while Active
+            // and later reclassified to Prospect must not grant portal/password to a
+            // prospect's contact (the lockout invariant: no path sets portal_enabled or
+            // a password for a Person whose client.stage === Prospect).
             // The 'hashed' cast returns an already-hashed value unchanged, so copying
             // the stored hash does not double-hash it.
-            if ($duplicate->portal_enabled && ! $survivor->portal_enabled) {
+            if ($duplicate->portal_enabled && ! $survivor->portal_enabled
+                && $survivor->client?->stage === ClientStage::Active) {
                 $survivor->portal_enabled = true;
                 if ($duplicate->company_wide_access) {
                     $survivor->company_wide_access = true;

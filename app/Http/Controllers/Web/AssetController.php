@@ -59,7 +59,7 @@ class AssetController extends Controller
         ];
 
         $assets = $this->assetService->getAssetList($filters);
-        $clients = Client::active()->orderBy('name')->get(['id', 'name']);
+        $clients = Client::operational()->orderBy('name')->get(['id', 'name']);
         $assetTypes = Asset::active()->whereNotNull('asset_type')
             ->where('asset_type', '!=', '')
             ->distinct()->pluck('asset_type')->sort()->values();
@@ -88,7 +88,7 @@ class AssetController extends Controller
 
     public function create(Request $request)
     {
-        $clients = Client::active()->orderBy('name')->get(['id', 'name']);
+        $clients = Client::operational()->orderBy('name')->get(['id', 'name']);
 
         return view('assets.create', [
             'clients' => $clients,
@@ -285,7 +285,7 @@ class AssetController extends Controller
             'tickets' => $tickets,
             'ticketFilters' => $filters,
             'ticketUsers' => User::active()->orderBy('name')->get(['id', 'name']),
-            'ticketClients' => Client::active()->orderBy('name')->get(['id', 'name']),
+            'ticketClients' => Client::operational()->orderBy('name')->get(['id', 'name']),
             'ticketStatuses' => TicketStatus::cases(),
             'ticketPriorities' => TicketPriority::cases(),
             'ticketTypes' => TicketType::cases(),
@@ -297,7 +297,7 @@ class AssetController extends Controller
 
     public function edit(Asset $asset)
     {
-        $clients = Client::active()->orderBy('name')->get(['id', 'name']);
+        $clients = Client::operational()->orderBy('name')->get(['id', 'name']);
 
         return view('assets.edit', [
             'asset' => $asset,

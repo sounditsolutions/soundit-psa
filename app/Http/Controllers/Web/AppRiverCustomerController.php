@@ -36,7 +36,7 @@ class AppRiverCustomerController extends Controller
             ->get(['id', 'name', 'appriver_customer_id'])
             ->keyBy('appriver_customer_id');
 
-        $allClients = Client::active()->orderBy('name')->get(['id', 'name']);
+        $allClients = Client::operational()->orderBy('name')->get(['id', 'name']);
 
         return view('settings.appriver-customers', [
             'customers' => $customers,
@@ -94,7 +94,7 @@ class AppRiverCustomerController extends Controller
         }
 
         // Build lookup: lowercase client name → client
-        $clientsByName = Client::active()
+        $clientsByName = Client::operational()
             ->whereNull('appriver_customer_id')
             ->get(['id', 'name'])
             ->keyBy(fn ($c) => mb_strtolower($c->name));

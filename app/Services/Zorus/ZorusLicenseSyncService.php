@@ -38,7 +38,7 @@ class ZorusLicenseSyncService
     public function syncLicenses(?callable $onProgress = null): SyncResult
     {
         $clients = Client::whereNotNull('zorus_customer_id')
-            ->where('is_active', true)
+            ->operational()
             ->get()
             ->keyBy('zorus_customer_id');
 

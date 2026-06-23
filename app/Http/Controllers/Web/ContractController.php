@@ -52,7 +52,7 @@ class ContractController extends Controller
         return view('contracts.index-all', [
             'contracts' => $contracts,
             'filters' => $filters,
-            'clients' => Client::active()->orderBy('name')->get(['id', 'name']),
+            'clients' => Client::operational()->orderBy('name')->get(['id', 'name']),
             'statuses' => ContractStatus::cases(),
             'types' => ContractType::cases(),
             'prepaySkus' => $prepaySkus,
@@ -320,7 +320,7 @@ class ContractController extends Controller
             'tickets' => $tickets,
             'ticketFilters' => $filters,
             'ticketUsers' => User::active()->orderBy('name')->get(['id', 'name']),
-            'ticketClients' => Client::active()->orderBy('name')->get(['id', 'name']),
+            'ticketClients' => Client::operational()->orderBy('name')->get(['id', 'name']),
             'ticketStatuses' => TicketStatus::cases(),
             'ticketPriorities' => TicketPriority::cases(),
             'ticketTypes' => TicketType::cases(),
@@ -393,7 +393,7 @@ class ContractController extends Controller
             'activeTab' => 'invoices',
             'invoices' => $invoices,
             'invoiceFilters' => $invoiceFilters,
-            'invoiceClients' => Client::active()->orderBy('name')->get(['id', 'name']),
+            'invoiceClients' => Client::operational()->orderBy('name')->get(['id', 'name']),
             'invoiceStatuses' => InvoiceStatus::cases(),
         ]);
     }

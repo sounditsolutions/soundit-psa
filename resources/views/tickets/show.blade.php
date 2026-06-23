@@ -34,6 +34,9 @@
     <div class="col-md-8 order-2 order-md-1">
         <h4 class="section-title mb-1">{{ $ticket->display_id }}</h4>
         <h5 class="mb-3">{{ $ticket->subject }}</h5>
+        @if($ticket->client && $ticket->client->stage === \App\Enums\ClientStage::Prospect)
+            <span class="badge bg-warning text-dark badge-prospect mb-3">Prospect</span>
+        @endif
 
         @if($ticket->rendered_description)
             <div class="card card-static shadow-sm mb-3">

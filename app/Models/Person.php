@@ -197,6 +197,22 @@ class Person extends Authenticatable
     // ── Portal Auth ──
 
     /**
+     * The single source of truth for "may this person use the client portal?".
+     *
+     * Security invariant: a prospect's contact must NEVER reach the portal, even
+     * if `portal_enabled`/`password` were somehow set. Every grant path (login,
+     * access-link, verify, password reset, staff invite/toggle/impersonate, and
+     * the PortalAuthenticate middleware) routes through this predicate or its
+     * `client.stage === Active` condition.
+     */
+    public function canAccessPortal(): bool
+    {
+        return $this->portal_enabled
+            && $this->is_active
+            && $this->client?->stage === \App\Enums\ClientStage::Active;
+    }
+
+    /**
      * Send the password reset notification via Graph API email.
      */
     public function sendPasswordResetNotification($token): void

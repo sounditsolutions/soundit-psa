@@ -193,7 +193,7 @@ class NinjaBackupSyncService
         ));
 
         $clients = Client::whereNotNull('ninja_org_id')
-            ->where('is_active', true)
+            ->operational()
             ->whereIn('id', $allClientIds)
             ->get()
             ->keyBy('id');
@@ -254,7 +254,7 @@ class NinjaBackupSyncService
             ->update(['is_active' => false]);
 
         $clients = Client::whereNotNull('ninja_org_id')
-            ->where('is_active', true)
+            ->operational()
             ->get();
 
         $allClientIds = [];

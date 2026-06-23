@@ -472,6 +472,8 @@ class PhoneCallService
         if (! empty($filters['status'])) {
             if ($filters['status'] === 'needs-follow-up') {
                 $query->unfollowedUp();
+            } elseif ($filters['status'] === 'unknown-caller') {
+                $query->unknownCaller();
             } else {
                 $query->where('status', $filters['status']);
             }

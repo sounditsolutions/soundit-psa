@@ -20,7 +20,7 @@ class MeshLicenseSyncService
     public function syncLicenses(?callable $onProgress = null): SyncResult
     {
         $clients = Client::whereNotNull('mesh_customer_id')
-            ->where('is_active', true)
+            ->operational()
             ->get();
 
         $result = new SyncResult;

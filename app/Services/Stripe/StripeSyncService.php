@@ -39,7 +39,7 @@ class StripeSyncService
     public function autoMatchClients(): array
     {
         $stripeCustomers = $this->fetchStripeCustomers();
-        $clients = Client::active()->whereNull('stripe_customer_id')->get();
+        $clients = Client::operational()->whereNull('stripe_customer_id')->get();
 
         $alreadyMappedIds = Client::whereNotNull('stripe_customer_id')
             ->pluck('stripe_customer_id')

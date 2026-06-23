@@ -20,7 +20,7 @@ class HuntressLicenseSyncService
     public function syncLicenses(?callable $onProgress = null): SyncResult
     {
         $clients = Client::whereNotNull('huntress_organization_id')
-            ->where('is_active', true)
+            ->operational()
             ->get()
             ->keyBy('huntress_organization_id');
 

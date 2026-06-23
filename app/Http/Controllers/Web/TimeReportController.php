@@ -14,7 +14,7 @@ class TimeReportController extends Controller
     public function index(Request $request)
     {
         $users = User::where('is_active', true)->orderBy('name')->get(['id', 'name']);
-        $clients = Client::where('is_active', true)->orderBy('name')->get(['id', 'name']);
+        $clients = Client::operational()->orderBy('name')->get(['id', 'name']);
 
         // Date range defaults to current month
         $from = $request->query('from') ? Carbon::parse($request->query('from'))->startOfDay() : now()->startOfMonth();

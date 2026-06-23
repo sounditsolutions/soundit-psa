@@ -38,6 +38,17 @@ class PortalAuthController extends Controller
             array_merge($credentials, ['portal_enabled' => true, 'is_active' => true]),
             $remember,
         )) {
+            // Defense-in-depth: the portal user provider already excludes
+            // prospect-stage contacts, but never hand out a session to anyone
+            // who fails the stage gate even if the provider were misconfigured.
+            if (! Auth::guard('portal')->user()->canAccessPortal()) {
+                Auth::guard('portal')->logout();
+
+                return back()->withErrors([
+                    'email' => 'These credentials do not match our records.',
+                ])->onlyInput('email');
+            }
+
             $request->session()->regenerate();
 
             Auth::guard('portal')->user()->update([
@@ -112,6 +123,13 @@ class PortalAuthController extends Controller
         $status = Password::broker('portal')->reset(
             $request->only('email', 'password', 'password_confirmation', 'token'),
             function ($person, string $password) {
+                // Defense-in-depth: the portal broker resolves people through
+                // PortalUserProvider (Active-stage only), but never set a password
+                // or grant a session for a contact that fails the stage gate.
+                if ($person->client?->stage !== \App\Enums\ClientStage::Active) {
+                    return;
+                }
+
                 $person->forceFill([
                     'password' => $password,
                 ])->save();
@@ -141,10 +159,12 @@ class PortalAuthController extends Controller
 
         $email = $request->input('email');
 
-        // Find eligible person: active, has email, not already portal-enabled
+        // Find eligible person: active, has email, not already portal-enabled,
+        // and belonging to an Active-stage client (prospects are never eligible).
         $person = Person::where('email', $email)
             ->where('is_active', true)
             ->where('portal_enabled', false)
+            ->whereHas('client', fn ($q) => $q->where('stage', \App\Enums\ClientStage::Active))
             ->first();
 
         if ($person) {
@@ -197,6 +217,7 @@ class PortalAuthController extends Controller
         $person = Person::where('id', $person)
             ->where('is_active', true)
             ->where('portal_enabled', false)
+            ->whereHas('client', fn ($q) => $q->where('stage', \App\Enums\ClientStage::Active))
             ->first();
 
         if (! $person) {

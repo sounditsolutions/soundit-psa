@@ -48,7 +48,7 @@ class PersonController extends Controller
             ->paginate(50)
             ->withQueryString();
 
-        $clients = Client::active()->orderBy('name')->get(['id', 'name']);
+        $clients = Client::operational()->orderBy('name')->get(['id', 'name']);
 
         return view('people.index', [
             'people' => $people,
@@ -61,7 +61,7 @@ class PersonController extends Controller
 
     public function create(Request $request)
     {
-        $clients = Client::active()->orderBy('name')->get(['id', 'name']);
+        $clients = Client::operational()->orderBy('name')->get(['id', 'name']);
 
         return view('people.create', [
             'clients' => $clients,
@@ -147,7 +147,7 @@ class PersonController extends Controller
             'tickets' => $tickets,
             'ticketFilters' => $filters,
             'ticketUsers' => User::active()->orderBy('name')->get(['id', 'name']),
-            'ticketClients' => Client::active()->orderBy('name')->get(['id', 'name']),
+            'ticketClients' => Client::operational()->orderBy('name')->get(['id', 'name']),
             'ticketStatuses' => TicketStatus::cases(),
             'ticketPriorities' => TicketPriority::cases(),
             'ticketTypes' => TicketType::cases(),
@@ -159,7 +159,7 @@ class PersonController extends Controller
     public function edit(Person $person)
     {
         $person->load('additionalEmailAddresses');
-        $clients = Client::active()->orderBy('name')->get(['id', 'name']);
+        $clients = Client::operational()->orderBy('name')->get(['id', 'name']);
 
         return view('people.edit', [
             'person' => $person,

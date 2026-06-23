@@ -72,6 +72,7 @@ class Client extends Model
     protected function casts(): array
     {
         return [
+            'stage' => \App\Enums\ClientStage::class,
             'ninja_org_id' => 'integer',
             'huntress_organization_id' => 'integer',
             'servosity_company_id' => 'integer',
@@ -187,6 +188,11 @@ class Client extends Model
     public function scopeActive(Builder $query): Builder
     {
         return $query->where('is_active', true);
+    }
+
+    public function scopeOperational(Builder $query): Builder
+    {
+        return $query->where('stage', \App\Enums\ClientStage::Active)->where('is_active', true);
     }
 
     public function scopeSearch(Builder $query, ?string $term): Builder

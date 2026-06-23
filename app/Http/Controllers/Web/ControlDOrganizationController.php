@@ -38,7 +38,7 @@ class ControlDOrganizationController extends Controller
             ->get(['id', 'name', 'controld_org_id'])
             ->keyBy('controld_org_id');
 
-        $allClients = Client::active()->orderBy('name')->get(['id', 'name']);
+        $allClients = Client::operational()->orderBy('name')->get(['id', 'name']);
 
         return view('settings.controld-organizations', [
             'subOrgs' => $subOrgs,
@@ -97,7 +97,7 @@ class ControlDOrganizationController extends Controller
         }
 
         // Build lookup: lowercase client name → client
-        $clientsByName = Client::active()
+        $clientsByName = Client::operational()
             ->whereNull('controld_org_id')
             ->get(['id', 'name'])
             ->keyBy(fn ($c) => mb_strtolower($c->name));

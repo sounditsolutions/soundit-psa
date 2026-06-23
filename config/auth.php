@@ -71,7 +71,10 @@ return [
         ],
 
         'portal' => [
-            'driver' => 'eloquent',
+            // Custom driver (see App\Auth\PortalUserProvider) constrains every
+            // retrieval to Active-stage clients so prospects can never log in or
+            // receive a portal password-reset token.
+            'driver' => 'portal-eloquent',
             'model' => App\Models\Person::class,
         ],
     ],

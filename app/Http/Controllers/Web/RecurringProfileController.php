@@ -57,7 +57,7 @@ class RecurringProfileController extends Controller
             'filters' => $filters,
             'sort' => $sort,
             'dir' => $dir,
-            'clients' => Client::active()->orderBy('name')->get(['id', 'name']),
+            'clients' => Client::operational()->orderBy('name')->get(['id', 'name']),
             'skus' => Sku::active()->orderBy('name')->get(['id', 'name']),
             'quantityTypes' => QuantityType::cases(),
         ]);

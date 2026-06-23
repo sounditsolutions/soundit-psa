@@ -21,7 +21,7 @@ class AppRiverLicenseSyncService
     public function syncLicenses(?callable $onProgress = null): SyncResult
     {
         $clients = Client::whereNotNull('appriver_customer_id')
-            ->where('is_active', true)
+            ->operational()
             ->get()
             ->keyBy('appriver_customer_id');
 

@@ -41,7 +41,7 @@ class LicenseController extends Controller
 
         return view('licenses.index', [
             'licenses' => $licenses,
-            'clients' => Client::active()->orderBy('name')->get(['id', 'name']),
+            'clients' => Client::operational()->orderBy('name')->get(['id', 'name']),
             'licenseTypes' => LicenseType::active()->orderBy('name')->get(['id', 'name']),
             'vendors' => LicenseType::distinct()->orderBy('vendor')->pluck('vendor'),
             'clientId' => $request->query('client_id'),
@@ -54,7 +54,7 @@ class LicenseController extends Controller
     public function create()
     {
         return view('licenses.create', [
-            'clients' => Client::active()->orderBy('name')->get(['id', 'name']),
+            'clients' => Client::operational()->orderBy('name')->get(['id', 'name']),
             'licenseTypes' => LicenseType::active()->orderBy('name')->get(),
         ]);
     }

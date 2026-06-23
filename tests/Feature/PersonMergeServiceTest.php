@@ -204,6 +204,25 @@ class PersonMergeServiceTest extends TestCase
         ]));
     }
 
+    public function test_merge_does_not_grant_portal_to_a_prospect_survivor(): void
+    {
+        // Invariant: no path may set portal_enabled/password on a Person whose
+        // client is a Prospect. A duplicate provisioned while Active and then
+        // reclassified to Prospect must NOT carry its grant onto the survivor.
+        $c = Client::factory()->prospect()->create();
+        $survivor = $this->person($c, ['email' => 'keep@lead.test']); // no portal
+        $dup = $this->person($c, ['email' => 'dupe@lead.test', 'portal_enabled' => true, 'company_wide_access' => true]);
+        $dup->password = 's3cret-pw';
+        $dup->save();
+
+        $this->service()->mergePeople($survivor, $dup, $this->staffUser()->id);
+
+        $survivor->refresh();
+        $this->assertFalse((bool) $survivor->portal_enabled);
+        $this->assertNull($survivor->password);
+        $this->assertFalse((bool) $survivor->company_wide_access);
+    }
+
     public function test_does_not_clobber_existing_survivor_portal_credentials(): void
     {
         $c = $this->client();

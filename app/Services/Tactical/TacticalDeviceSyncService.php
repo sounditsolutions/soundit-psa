@@ -94,7 +94,7 @@ class TacticalDeviceSyncService
 
         // Build client mapping: tactical site key ("ClientName|SiteName") → PSA client_id
         $clientMap = Client::whereNotNull('tactical_site_id')
-            ->where('is_active', true)
+            ->operational()
             ->pluck('id', 'tactical_site_id')
             ->all();
 

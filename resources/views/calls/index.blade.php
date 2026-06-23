@@ -39,6 +39,9 @@
                             {{ $status->label() }}
                         </option>
                     @endforeach
+                    <option value="unknown-caller" {{ ($filters['status'] ?? '') === 'unknown-caller' ? 'selected' : '' }}>
+                        Unknown caller — needs follow-up
+                    </option>
                 </select>
             </div>
             <div class="col-md-3">

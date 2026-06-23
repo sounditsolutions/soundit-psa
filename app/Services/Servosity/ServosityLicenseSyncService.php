@@ -32,7 +32,7 @@ class ServosityLicenseSyncService
     public function syncLicenses(?callable $onProgress = null): SyncResult
     {
         $clients = Client::whereNotNull('servosity_company_id')
-            ->where('is_active', true)
+            ->operational()
             ->get()
             ->keyBy('servosity_company_id');
 

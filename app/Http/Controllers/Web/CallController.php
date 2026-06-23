@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Web;
 
 use App\Enums\CallStatus;
+use App\Enums\ClientStage;
 use App\Enums\NoteType;
 use App\Enums\TicketPriority;
 use App\Enums\TicketSource;
@@ -79,7 +80,7 @@ class CallController extends Controller
         }
 
         $candidates = $this->phoneCallService->getCandidateCallers($call);
-        $clients = Client::active()->orderBy('name')->get(['id', 'name']);
+        $clients = Client::operational()->orderBy('name')->get(['id', 'name']);
 
         // Previous calls from/to the same number (useful when caller is unresolved)
         $callHistory = $this->getCallHistory($call);
@@ -256,7 +257,7 @@ class CallController extends Controller
             'defaultAssetId' => $suggestions['asset_id'],
             'defaultCategory' => $suggestions['category'],
             'defaultSubcategory' => $suggestions['subcategory'],
-            'clients' => Client::active()->orderBy('name')->get(['id', 'name']),
+            'clients' => Client::operational()->orderBy('name')->get(['id', 'name']),
             'users' => User::active()->orderBy('name')->get(['id', 'name']),
             'types' => TicketType::cases(),
             'priorities' => TicketPriority::cases(),
@@ -486,6 +487,13 @@ class CallController extends Controller
             'category' => null,
             'subcategory' => null,
         ];
+
+        // Prospect gate: never send transcript/summary to the LLM for prospect-stage clients.
+        // Integration point for Task 6/7 (prospect provisioning): when prospect provisioning
+        // builds tickets via this code path, the legacySubject / defaults are used instead.
+        if ($call->client?->stage === ClientStage::Prospect) {
+            return $defaults;
+        }
 
         // Source material for the AI prompt
         $source = trim((string) ($call->call_summary ?? ''));

@@ -219,6 +219,12 @@ Route::middleware('auth')->group(function () {
     Route::post('/calls/{call}/block-caller', [\App\Http\Controllers\Web\PhoneDirectoryController::class, 'blockFromCall'])->name('calls.block-caller');
     Route::post('/calls/{call}/allow-caller', [\App\Http\Controllers\Web\PhoneDirectoryController::class, 'allowFromCall'])->name('calls.allow-caller');
 
+    // Prospect intake
+    Route::post('/prospects', [\App\Http\Controllers\Web\ProspectController::class, 'store'])->name('prospects.store');
+    Route::post('/calls/{call}/dismiss', [\App\Http\Controllers\Web\ProspectController::class, 'dismiss'])->name('prospects.dismiss');
+    Route::post('/prospects/{prospect}/convert', [\App\Http\Controllers\Web\ProspectController::class, 'convert'])->name('prospects.convert');
+    Route::get('/prospects/{client}/converted', [\App\Http\Controllers\Web\ProspectController::class, 'converted'])->name('prospects.converted');
+
     // Phone Directory (IVR caller block + allow lists)
     Route::get('/phone-directory', [\App\Http\Controllers\Web\PhoneDirectoryController::class, 'index'])->name('phone-directory.index');
     Route::post('/phone-directory', [\App\Http\Controllers\Web\PhoneDirectoryController::class, 'store'])->name('phone-directory.store');
@@ -429,6 +435,7 @@ Route::middleware('auth')->group(function () {
     Route::get('/api/ninja/orgs', [NinjaOrgController::class, 'apiOrgs'])->name('api.ninja.orgs');
     Route::get('/api/level/groups', [LevelGroupController::class, 'apiGroups'])->name('api.level.groups');
     Route::get('/api/clients/search', [NinjaOrgController::class, 'apiClientSearch'])->name('api.clients.search');
+    Route::get('/api/clients/search-all', [\App\Http\Controllers\Web\ProspectController::class, 'search'])->name('clients.search');
     Route::get('/api/tickets/search', [TicketController::class, 'apiSearch'])->name('api.tickets.search');
     Route::get('/api/clients/{client}/contacts', [ClientController::class, 'contacts'])->name('api.clients.contacts');
     Route::get('/api/clients/{client}/assets', [ClientController::class, 'assets'])->name('api.clients.assets');

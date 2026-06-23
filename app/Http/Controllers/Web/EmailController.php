@@ -52,7 +52,7 @@ class EmailController extends Controller
             'filters' => $filters,
             'needsAttentionCount' => $needsAttentionCount,
             'noClientCount' => $noClientCount,
-            'clients' => Client::active()->orderBy('name')->get(['id', 'name']),
+            'clients' => Client::operational()->orderBy('name')->get(['id', 'name']),
         ]);
     }
 
@@ -122,14 +122,14 @@ class EmailController extends Controller
         $clients = collect();
         $suggestedClientId = null;
         if (! $email->client_id) {
-            $clients = Client::active()->orderBy('name')->get(['id', 'name']);
+            $clients = Client::operational()->orderBy('name')->get(['id', 'name']);
             $domain = Str::after($email->from_address, '@');
             if ($domain && ! in_array(strtolower($domain), self::FREE_EMAIL_DOMAINS)) {
                 $suggestedClientId = Person::whereEmailDomain($domain)
                     ->whereNotNull('client_id')
                     ->value('client_id');
                 if (! $suggestedClientId) {
-                    $suggestedClientId = Client::active()
+                    $suggestedClientId = Client::operational()
                         ->where('website', 'like', '%'.$domain.'%')
                         ->value('id');
                 }
@@ -221,7 +221,7 @@ class EmailController extends Controller
 
         return view('emails.create-ticket', [
             'email' => $email,
-            'clients' => Client::active()->orderBy('name')->get(['id', 'name']),
+            'clients' => Client::operational()->orderBy('name')->get(['id', 'name']),
             'users' => User::active()->orderBy('name')->get(['id', 'name']),
             'types' => TicketType::cases(),
             'priorities' => TicketPriority::cases(),

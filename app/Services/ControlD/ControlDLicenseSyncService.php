@@ -33,7 +33,7 @@ class ControlDLicenseSyncService
     public function syncLicenses(?callable $onProgress = null): SyncResult
     {
         $clients = Client::whereNotNull('controld_org_id')
-            ->where('is_active', true)
+            ->operational()
             ->get()
             ->keyBy('controld_org_id');
 

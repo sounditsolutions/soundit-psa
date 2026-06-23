@@ -266,7 +266,7 @@ class CometBackupSyncService
         ));
 
         $clients = Client::whereNotNull('comet_group_id')
-            ->where('is_active', true)
+            ->operational()
             ->whereIn('id', $allClientIds)
             ->get()
             ->keyBy('id');

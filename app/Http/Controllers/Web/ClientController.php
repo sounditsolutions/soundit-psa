@@ -61,7 +61,7 @@ class ClientController extends Controller
     {
         return view('clients.create', [
             'users' => User::active()->orderBy('name')->get(['id', 'name']),
-            'resellerCandidates' => Client::active()->orderBy('name')->get(['id', 'name']),
+            'resellerCandidates' => Client::operational()->orderBy('name')->get(['id', 'name']),
         ]);
     }
 
@@ -151,7 +151,7 @@ class ClientController extends Controller
             'tickets' => $tickets,
             'ticketFilters' => $filters,
             'ticketUsers' => User::active()->orderBy('name')->get(['id', 'name']),
-            'ticketClients' => Client::active()->orderBy('name')->get(['id', 'name']),
+            'ticketClients' => Client::operational()->orderBy('name')->get(['id', 'name']),
             'ticketStatuses' => TicketStatus::cases(),
             'ticketPriorities' => TicketPriority::cases(),
             'ticketTypes' => TicketType::cases(),
@@ -199,7 +199,7 @@ class ClientController extends Controller
             'integrations' => $integrations,
             'activeTab' => 'people',
             'people' => $people,
-            'peopleClients' => Client::active()->orderBy('name')->get(['id', 'name']),
+            'peopleClients' => Client::operational()->orderBy('name')->get(['id', 'name']),
             'peopleSearch' => $request->query('search'),
             'peopleClientId' => $request->query('client_id'),
             'peoplePersonType' => $request->query('person_type'),
@@ -244,7 +244,7 @@ class ClientController extends Controller
             'integrations' => $integrations,
             'activeTab' => 'licenses',
             'licenseList' => $licenses,
-            'licenseClients' => Client::active()->orderBy('name')->get(['id', 'name']),
+            'licenseClients' => Client::operational()->orderBy('name')->get(['id', 'name']),
             'licenseTypes' => LicenseType::where('is_active', true)->orderBy('name')->get(['id', 'name']),
             'licenseVendors' => LicenseType::distinct()->whereNotNull('vendor')->pluck('vendor')->sort()->values(),
             'licenseClientId' => (string) $client->id,
@@ -299,7 +299,7 @@ class ClientController extends Controller
             'activeTab' => 'assets',
             'assetList' => $assetList,
             'assetFilters' => $filters,
-            'assetClients' => Client::active()->orderBy('name')->get(['id', 'name']),
+            'assetClients' => Client::operational()->orderBy('name')->get(['id', 'name']),
             'assetTypes' => $assetTypes,
         ]);
     }
@@ -350,7 +350,7 @@ class ClientController extends Controller
             'activeTab' => 'contracts',
             'contractList' => $contracts,
             'contractFilters' => $filters,
-            'contractClients' => Client::active()->orderBy('name')->get(['id', 'name']),
+            'contractClients' => Client::operational()->orderBy('name')->get(['id', 'name']),
             'contractStatuses' => ContractStatus::cases(),
             'contractTypes' => ContractType::cases(),
             'prepaySkus' => $prepaySkus,
@@ -384,7 +384,7 @@ class ClientController extends Controller
     {
         $client->load(['siteNotesUpdatedBy', 'credentialsUpdatedBy']);
 
-        $resellerCandidates = Client::active()
+        $resellerCandidates = Client::operational()
             ->where('id', '!=', $client->id)
             ->orderBy('name')
             ->get(['id', 'name']);

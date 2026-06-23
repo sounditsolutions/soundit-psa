@@ -17,7 +17,7 @@ class ControlDDeviceSyncService
     public function syncDevices(?callable $onProgress = null): SyncResult
     {
         $clients = Client::whereNotNull('controld_org_id')
-            ->where('is_active', true)
+            ->operational()
             ->get();
 
         $result = new SyncResult;

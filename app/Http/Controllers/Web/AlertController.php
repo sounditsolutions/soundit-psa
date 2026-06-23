@@ -56,7 +56,7 @@ class AlertController extends Controller
             'statuses' => AlertStatus::cases(),
             'severities' => AlertSeverity::cases(),
             'sources' => AlertSource::cases(),
-            'clients' => Client::active()->orderBy('name')->get(['id', 'name']),
+            'clients' => Client::operational()->orderBy('name')->get(['id', 'name']),
             'filters' => $request->only(['status', 'severity', 'source', 'client_id']),
         ]);
     }

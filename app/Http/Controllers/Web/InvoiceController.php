@@ -61,7 +61,7 @@ class InvoiceController extends Controller
 
         return view('invoices.index', [
             'invoices' => $invoices,
-            'clients' => Client::active()->orderBy('name')->get(['id', 'name']),
+            'clients' => Client::operational()->orderBy('name')->get(['id', 'name']),
             'statuses' => InvoiceStatus::cases(),
             'filters' => $request->only(['client_id', 'contract_id', 'status', 'from_date', 'to_date']),
         ]);
@@ -69,7 +69,7 @@ class InvoiceController extends Controller
 
     public function create(Request $request)
     {
-        $clients = Client::active()->orderBy('name')->get(['id', 'name']);
+        $clients = Client::operational()->orderBy('name')->get(['id', 'name']);
         $skus = Sku::active()->orderBy('name')->get();
 
         // Pre-load contracts grouped by client for JS cascading dropdown

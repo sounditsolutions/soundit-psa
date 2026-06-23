@@ -46,20 +46,28 @@
             @csrf
 
             <div class="row g-3">
-                {{-- Client --}}
+                {{-- Client — search-first control --}}
                 <div class="col-md-6">
-                    <label for="client_id" class="form-label">Client <span class="text-danger">*</span></label>
-                    <select name="client_id" id="client_id" class="form-select @error('client_id') is-invalid @enderror" required>
-                        <option value="">Select client...</option>
-                        @foreach($clients as $c)
-                            <option value="{{ $c->id }}" {{ old('client_id', $call->client_id) == $c->id ? 'selected' : '' }}>
-                                {{ $c->name }}
-                            </option>
-                        @endforeach
-                    </select>
+                    <label for="client_search_input" class="form-label">Client <span class="text-danger">*</span></label>
+                    {{-- Hidden field that carries the real client_id on submit --}}
+                    <input type="hidden" name="client_id" id="client_id"
+                           value="{{ old('client_id', $call->client_id) }}">
+                    <div class="position-relative">
+                        <input type="text"
+                               id="client_search_input"
+                               class="form-control @error('client_id') is-invalid @enderror"
+                               placeholder="Search clients by name, phone, or email…"
+                               autocomplete="off"
+                               value="{{ old('client_id', $call->client_id) ? ($call->client?->name ?? '') : '' }}">
+                        <div id="ticket-client-results" class="list-group position-absolute w-100 shadow-sm"
+                             style="display:none; z-index: 1050;"></div>
+                    </div>
                     @error('client_id')
-                        <div class="invalid-feedback">{{ $message }}</div>
+                        <div class="invalid-feedback d-block">{{ $message }}</div>
                     @enderror
+                    @if($call->client_id && $call->client)
+                        <small class="text-muted">{{ $call->client->name }}</small>
+                    @endif
                 </div>
 
                 {{-- Contact (AJAX) --}}
@@ -181,7 +189,62 @@
 <script>
 document.addEventListener('DOMContentLoaded', function() {
     const categories = @json($categories);
-    const clientSelect = document.getElementById('client_id');
+
+    // Client search control — populates hidden #client_id and triggers contacts/assets load
+    const clientSearchInput = document.getElementById('client_search_input');
+    const clientIdHidden = document.getElementById('client_id');
+    const clientResultsDiv = document.getElementById('ticket-client-results');
+
+    if (clientSearchInput) {
+        let searchTimer;
+
+        clientSearchInput.addEventListener('input', function() {
+            clearTimeout(searchTimer);
+            clientIdHidden.value = '';  // clear selection when typing
+            const q = this.value.trim();
+            if (q.length < 2) {
+                clientResultsDiv.style.display = 'none';
+                clientResultsDiv.innerHTML = '';
+                return;
+            }
+            searchTimer = setTimeout(function() {
+                fetch('/api/clients/search-all?q=' + encodeURIComponent(q), {
+                    headers: { 'Accept': 'application/json' }
+                })
+                .then(r => r.json())
+                .then(function(clients) {
+                    clientResultsDiv.innerHTML = '';
+                    if (clients.length === 0) {
+                        clientResultsDiv.style.display = 'none';
+                        return;
+                    }
+                    clients.forEach(function(c) {
+                        const btn = document.createElement('button');
+                        btn.type = 'button';
+                        btn.className = 'list-group-item list-group-item-action py-1 px-2 small';
+                        btn.textContent = c.name + (c.stage === 'prospect' ? ' (prospect)' : '');
+                        btn.addEventListener('click', function() {
+                            clientIdHidden.value = c.id;
+                            clientSearchInput.value = c.name + (c.stage === 'prospect' ? ' (prospect)' : '');
+                            clientResultsDiv.style.display = 'none';
+                            clientResultsDiv.innerHTML = '';
+                            loadClientData(c.id, null, null);
+                        });
+                        clientResultsDiv.appendChild(btn);
+                    });
+                    clientResultsDiv.style.display = '';
+                })
+                .catch(function() { clientResultsDiv.style.display = 'none'; });
+            }, 250);
+        });
+
+        document.addEventListener('click', function(e) {
+            if (!clientResultsDiv.contains(e.target) && e.target !== clientSearchInput) {
+                clientResultsDiv.style.display = 'none';
+            }
+        });
+    }
+
     const contactSelect = document.getElementById('contact_id');
     const assetSelect = document.getElementById('asset_id');
     const categorySelect = document.getElementById('category');
@@ -248,10 +311,6 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
-    clientSelect.addEventListener('change', function() {
-        loadClientData(this.value, null, null);
-    });
-
     // Category → subcategory cascade
     function populateSubcategories(cat, preselect) {
         subcategorySelect.innerHTML = '<option value="">-- None --</option>';
@@ -289,9 +348,9 @@ document.addEventListener('DOMContentLoaded', function() {
 
     prioritySelect.addEventListener('change', updateDueDate);
 
-    // Initial load: if client is pre-selected, load contacts/assets with preselects
-    if (clientSelect.value) {
-        loadClientData(clientSelect.value, preselectedContactId, preselectedAssetId);
+    // Initial load: if client is pre-selected (call already has a client), load contacts/assets
+    if (clientIdHidden && clientIdHidden.value) {
+        loadClientData(clientIdHidden.value, preselectedContactId, preselectedAssetId);
     }
 
     // Initial subcategory population from server-side default

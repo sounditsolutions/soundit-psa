@@ -30,7 +30,7 @@ class QboClientMatchController extends Controller
             ->get(['id', 'name', 'qbo_customer_id'])
             ->keyBy('qbo_customer_id');
 
-        $allClients = Client::active()->orderBy('name')->get(['id', 'name']);
+        $allClients = Client::operational()->orderBy('name')->get(['id', 'name']);
 
         return view('settings.qbo-clients', [
             'qboCustomers' => $qboCustomers,
