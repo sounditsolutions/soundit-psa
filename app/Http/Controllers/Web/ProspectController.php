@@ -9,12 +9,59 @@ use App\Services\Prospect\ProspectIntakeService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 
 class ProspectController extends Controller
 {
     public function __construct(
         private readonly ProspectIntakeService $intake,
     ) {}
+
+    /**
+     * Convert a Prospect to an Active client (agreement threshold).
+     *
+     * Flips `stage` → Active. All history (tickets, notes, calls) stays
+     * attached via the unchanged `client_id`. Future tickets on this client
+     * will now run triage automatically.
+     *
+     * Convert = agreement, NOT payment. The seed-block/deposit invoice is
+     * the new client's FIRST invoice — created post-convert during onboarding,
+     * not as a pre-convert gate.
+     *
+     * Lands on a success screen that echoes the prospect's open tickets and
+     * captured request notes, and prompts (does not auto-run) onboarding steps.
+     */
+    public function convert(Client $prospect): RedirectResponse
+    {
+        $client = $this->intake->convert($prospect);
+
+        Log::info('[Prospect] Converted to active client', [
+            'client_id' => $client->id,
+            'client_name' => $client->name,
+            'converted_by' => auth()->id(),
+            'converted_at' => now()->toIso8601String(),
+        ]);
+
+        return redirect()
+            ->route('prospects.converted', $client)
+            ->with('success', "\"{$client->name}\" is now an active client.");
+    }
+
+    /**
+     * Success screen shown immediately after convert — echoes open tickets
+     * and the original captured request/notes, and prompts onboarding steps.
+     */
+    public function converted(Client $client)
+    {
+        $openTickets = $client->tickets()
+            ->whereIn('status', \App\Enums\TicketStatus::cases())
+            ->with('notes')
+            ->orderByDesc('opened_at')
+            ->get()
+            ->filter(fn ($t) => $t->status->isOpen());
+
+        return view('prospects.converted', compact('client', 'openTickets'));
+    }
 
     /**
      * Dismiss an unknown caller — stamps followed_up_at so it leaves the

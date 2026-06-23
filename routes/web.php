@@ -222,6 +222,8 @@ Route::middleware('auth')->group(function () {
     // Prospect intake
     Route::post('/prospects', [\App\Http\Controllers\Web\ProspectController::class, 'store'])->name('prospects.store');
     Route::post('/calls/{call}/dismiss', [\App\Http\Controllers\Web\ProspectController::class, 'dismiss'])->name('prospects.dismiss');
+    Route::post('/prospects/{prospect}/convert', [\App\Http\Controllers\Web\ProspectController::class, 'convert'])->name('prospects.convert');
+    Route::get('/prospects/{client}/converted', [\App\Http\Controllers\Web\ProspectController::class, 'converted'])->name('prospects.converted');
 
     // Phone Directory (IVR caller block + allow lists)
     Route::get('/phone-directory', [\App\Http\Controllers\Web\PhoneDirectoryController::class, 'index'])->name('phone-directory.index');

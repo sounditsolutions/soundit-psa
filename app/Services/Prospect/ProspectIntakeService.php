@@ -88,6 +88,25 @@ class ProspectIntakeService
     }
 
     /**
+     * Convert a Prospect to an Active client.
+     *
+     * Flips `stage` → Active. All attached tickets, notes, and calls retain
+     * their original `client_id` — nothing migrates. Future tickets created
+     * on this client will run triage normally (the gate in TicketObserver and
+     * RunTriagePipeline keys on `stage`; once Active, the gate is open).
+     *
+     * Convert is triggered by AGREEMENT, not payment. The seed-block invoice
+     * is the new client's first invoice, created post-convert during onboarding.
+     */
+    public function convert(Client $prospect): Client
+    {
+        $prospect->stage = ClientStage::Active;
+        $prospect->save();
+
+        return $prospect;
+    }
+
+    /**
      * Best-effort split of a company/person name into first + last for Person.
      * For company names (single token or multi-word), stores the whole name as
      * first_name and uses a single-space placeholder for last_name.
