@@ -3,6 +3,7 @@
 namespace Tests\Feature\Prospect;
 
 use App\Enums\TicketStatus;
+use App\Jobs\GenerateTicketResolution;
 use App\Jobs\MineTicketKnowledge;
 use App\Jobs\RunTriagePipeline;
 use App\Jobs\SendTicketNotification;
@@ -10,6 +11,9 @@ use App\Models\Client;
 use App\Models\Setting;
 use App\Models\Ticket;
 use App\Models\User;
+use App\Models\WikiRun;
+use App\Services\TicketResolutionDrafter;
+use App\Services\Triage\TriagePipeline;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Bus;
 use Tests\TestCase;
@@ -139,5 +143,163 @@ class ProspectAiGateTest extends TestCase
         ]);
 
         Bus::assertDispatched(MineTicketKnowledge::class);
+    }
+
+    // ── Choke-point regression: job-level guards (C1 / C2 / M1) ─────────────
+    // These prove the guard lives INSIDE the job, not only at dispatch sites.
+    // Even if a sibling dispatcher (TicketController, triage:review-open command,
+    // WikiBackfillService) pushes the job for a prospect ticket, the job returns
+    // early before touching any LLM path.
+
+    /**
+     * C1 — RunTriagePipeline::handle must early-out for prospect clients.
+     *
+     * Simulates: TicketController::triggerTriage / triggerReview / bulkAction or the
+     * triage:review-open command dispatching the job for a prospect ticket.
+     * TriagePipeline::run must never be called.
+     */
+    public function test_run_triage_pipeline_job_skips_prospect_client(): void
+    {
+        $this->enableAutoTriage();
+
+        $prospect = Client::factory()->prospect()->create();
+        $ticket = Ticket::factory()->create(['client_id' => $prospect->id]);
+
+        $pipeline = $this->createMock(TriagePipeline::class);
+        $pipeline->expects($this->never())->method('run');
+
+        $job = new RunTriagePipeline($ticket->id, 'triage');
+        $job->handle($pipeline);
+    }
+
+    /**
+     * C1 control — RunTriagePipeline::handle must still call pipeline for active clients.
+     *
+     * Uses a mock that expects run() once so an active-client job is not silently swallowed.
+     */
+    public function test_run_triage_pipeline_job_runs_for_active_client(): void
+    {
+        $this->enableAutoTriage();
+
+        $client = Client::factory()->create();
+        $ticket = Ticket::factory()->create(['client_id' => $client->id]);
+
+        $pipeline = $this->createMock(TriagePipeline::class);
+        $pipeline->expects($this->once())->method('run');
+
+        Bus::fake(); // suppress observer-fired jobs from handle()'s save()
+
+        $job = new RunTriagePipeline($ticket->id, 'triage');
+        $job->handle($pipeline);
+    }
+
+    /**
+     * C2 — MineTicketKnowledge::handle must early-out for prospect clients.
+     *
+     * Simulates: WikiBackfillService dispatching the job for a prospect ticket
+     * that already has a resolution. No WikiRun row must be created.
+     * Calls handle() directly — Bus::fake() in setUp intercepts dispatchSync.
+     */
+    public function test_mine_ticket_knowledge_job_skips_prospect_client(): void
+    {
+        $this->enableAutoMine();
+
+        $prospect = Client::factory()->prospect()->create();
+        $ticket = Ticket::factory()->create([
+            'client_id' => $prospect->id,
+            'status' => TicketStatus::Resolved,
+            'resolution' => 'Prospect issue resolved.',
+        ]);
+
+        $job = new MineTicketKnowledge($ticket->id, 'backfill');
+        app()->call([$job, 'handle']);
+
+        $this->assertSame(0, WikiRun::count());
+    }
+
+    /**
+     * C2 control — MineTicketKnowledge::handle proceeds past the prospect gate for active clients.
+     *
+     * Calls handle() directly (Bus::fake() in setUp intercepts dispatchSync, so we bypass it).
+     * Verifies the prospect gate does NOT stop an active-client ticket: WikiRun is opened.
+     * Uses a mocked AiClient that returns zero facts so no real LLM calls are made.
+     */
+    public function test_mine_ticket_knowledge_job_runs_for_active_client(): void
+    {
+        $this->enableAutoMine();
+
+        $client = Client::factory()->create();
+        $ticket = Ticket::factory()->create([
+            'client_id' => $client->id,
+            'status' => TicketStatus::Resolved,
+            'resolution' => 'Fixed the network switch.',
+        ]);
+
+        $mock = $this->mock(\App\Services\Ai\AiClient::class);
+        $mock->shouldReceive('completeJson')->andReturn(['facts' => []]);
+        $mock->shouldReceive('cumulativeInputTokens')->andReturn(100);
+        $mock->shouldReceive('cumulativeOutputTokens')->andReturn(50);
+        $mock->shouldReceive('cumulativeTotalTokens')->andReturn(150);
+
+        // Call handle() directly — Bus::fake() in setUp intercepts dispatchSync so we
+        // exercise the job logic without queue infrastructure.
+        $job = new MineTicketKnowledge($ticket->id, 'backfill');
+        app()->call([$job, 'handle']);
+
+        $this->assertSame(1, WikiRun::count());
+    }
+
+    /**
+     * M1 — GenerateTicketResolution::handle must early-out for prospect clients.
+     *
+     * A terminal prospect ticket with no resolution must NOT call TicketResolutionDrafter::draft.
+     */
+    public function test_generate_ticket_resolution_job_skips_prospect_client(): void
+    {
+        $this->enableAutoMine();
+
+        $prospect = Client::factory()->prospect()->create();
+        $ticket = Ticket::factory()->create([
+            'client_id' => $prospect->id,
+            'status' => TicketStatus::Resolved,
+            'resolution' => null,
+        ]);
+
+        $drafter = $this->createMock(TicketResolutionDrafter::class);
+        $drafter->expects($this->never())->method('draft');
+
+        $job = new GenerateTicketResolution($ticket->id);
+        $job->handle($drafter);
+
+        $ticket->refresh();
+        $this->assertNull($ticket->resolution);
+    }
+
+    /**
+     * M1 control — GenerateTicketResolution::handle runs for active clients.
+     */
+    public function test_generate_ticket_resolution_job_runs_for_active_client(): void
+    {
+        $this->enableAutoMine();
+
+        $client = Client::factory()->create();
+        $ticket = Ticket::factory()->create([
+            'client_id' => $client->id,
+            'status' => TicketStatus::Resolved,
+            'resolution' => null,
+        ]);
+
+        $drafter = $this->createMock(TicketResolutionDrafter::class);
+        $drafter->expects($this->once())
+            ->method('draft')
+            ->willReturn('Replaced the failed drive.');
+
+        Bus::fake(); // suppress observer re-fire
+
+        $job = new GenerateTicketResolution($ticket->id);
+        $job->handle($drafter);
+
+        $ticket->refresh();
+        $this->assertSame('Replaced the failed drive.', $ticket->resolution);
     }
 }
