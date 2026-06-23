@@ -600,17 +600,49 @@
                     return;
                 }
                 clients.forEach(function(c) {
-                    const a = document.createElement('a');
-                    a.href = '/clients/' + c.id;
-                    a.className = 'list-group-item list-group-item-action py-1 px-2 small';
-                    a.textContent = c.name + (c.stage === 'prospect' ? ' (prospect)' : '');
-                    results.appendChild(a);
+                    const item = document.createElement('button');
+                    item.type = 'button';
+                    item.className = 'list-group-item list-group-item-action py-1 px-2 small';
+                    item.textContent = c.name + (c.stage === 'prospect' ? ' (prospect)' : '');
+                    item.addEventListener('click', function() {
+                        selectExistingClient(c.id, c.name);
+                    });
+                    results.appendChild(item);
                 });
                 results.style.display = '';
             })
             .catch(function() { results.style.display = 'none'; });
         }, 250);
     });
+
+    // Selecting a search result drops the client into the existing "Set Caller"
+    // form (which loads its contacts) instead of navigating to the client page.
+    function selectExistingClient(id, name) {
+        const sel = document.getElementById('override-client-select');
+        if (sel) {
+            // The search can return clients not present in the select (e.g. prospects) — add the option.
+            if (! Array.from(sel.options).some(function (o) { return o.value === String(id); })) {
+                const opt = document.createElement('option');
+                opt.value = id;
+                opt.textContent = name;
+                sel.appendChild(opt);
+            }
+            sel.value = String(id);
+            sel.dispatchEvent(new Event('change'));
+            const collapseEl = document.getElementById('manual-caller-override');
+            if (collapseEl) {
+                if (window.bootstrap && window.bootstrap.Collapse) {
+                    window.bootstrap.Collapse.getOrCreateInstance(collapseEl).show();
+                } else {
+                    collapseEl.classList.add('show');
+                }
+                collapseEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            }
+        }
+        input.value = '';
+        results.style.display = 'none';
+        results.innerHTML = '';
+    }
 
     document.addEventListener('click', function(e) {
         if (!results.contains(e.target) && e.target !== input) {
