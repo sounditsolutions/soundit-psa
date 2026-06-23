@@ -1,0 +1,99 @@
+<?php
+
+namespace Tests\Feature\Settings;
+
+use App\Models\Setting;
+use App\Models\User;
+use App\Support\TechnicianConfig;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Tests\TestCase;
+
+/**
+ * Covers the "AI Technician" integrations-page toggle (feat/ai-technician-toggle).
+ *
+ * Auth gate: settings routes live inside Route::middleware('auth')->group(),
+ * so actingAs($user) with any valid user is all that is required.
+ */
+class TechnicianIntegrationToggleTest extends TestCase
+{
+    use RefreshDatabase;
+
+    private User $user;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->user = User::factory()->create();
+    }
+
+    // --- technician_enabled ---
+
+    public function test_posting_with_technician_enabled_enables_the_technician(): void
+    {
+        $this->actingAs($this->user)
+            ->post(route('settings.integrations.technician.update'), [
+                'technician_enabled' => '1',
+            ])
+            ->assertRedirect(route('settings.integrations'));
+
+        $this->assertTrue(TechnicianConfig::enabled());
+    }
+
+    public function test_posting_without_technician_enabled_disables_the_technician(): void
+    {
+        Setting::setValue('technician_enabled', '1');
+
+        $this->actingAs($this->user)
+            ->post(route('settings.integrations.technician.update'), [])
+            ->assertRedirect(route('settings.integrations'));
+
+        $this->assertFalse(TechnicianConfig::enabled());
+    }
+
+    // --- technician_action_tiers / auto-ack ---
+
+    public function test_posting_with_auto_ack_sets_send_ack_to_auto(): void
+    {
+        $this->actingAs($this->user)
+            ->post(route('settings.integrations.technician.update'), [
+                'technician_enabled' => '1',
+                'technician_auto_ack' => '1',
+            ])
+            ->assertRedirect(route('settings.integrations'));
+
+        $this->assertSame('auto', TechnicianConfig::tierMap()['send_ack'] ?? null);
+    }
+
+    public function test_posting_without_auto_ack_clears_send_ack(): void
+    {
+        Setting::setValue('technician_action_tiers', json_encode(['send_ack' => 'auto']));
+
+        $this->actingAs($this->user)
+            ->post(route('settings.integrations.technician.update'), [
+                'technician_enabled' => '1',
+                // no technician_auto_ack
+            ])
+            ->assertRedirect(route('settings.integrations'));
+
+        $this->assertArrayNotHasKey('send_ack', TechnicianConfig::tierMap());
+    }
+
+    // --- flash message ---
+
+    public function test_save_flashes_success_message(): void
+    {
+        $this->actingAs($this->user)
+            ->post(route('settings.integrations.technician.update'), [])
+            ->assertSessionHas('success', 'AI Technician settings saved.');
+    }
+
+    // --- page renders the card ---
+
+    public function test_integrations_page_renders_ai_technician_card(): void
+    {
+        $this->actingAs($this->user)
+            ->get(route('settings.integrations'))
+            ->assertOk()
+            ->assertSee('AI Technician');
+    }
+}

@@ -3124,6 +3124,45 @@
             </div>
         </div>
 
+        {{-- AI Technician Card --}}
+        <div class="card shadow-sm mb-4">
+            <div class="card-header d-flex align-items-center">
+                <span>
+                    <i class="bi bi-robot me-2"></i>AI Technician
+                    @if($technicianEnabled)
+                        <span class="badge bg-success ms-2">Active</span>
+                    @else
+                        <span class="badge bg-secondary ms-2">Disabled</span>
+                    @endif
+                </span>
+            </div>
+            <div class="card-body">
+                <p class="text-muted small">
+                    Supervised foundation (Phase 0). When enabled, the AI Technician acknowledges new tickets with a clearly-disclosed AI message, authored by your configured AI actor (set in AI Triage). All other actions require approval — coming in a later phase. Off by default.
+                </p>
+                <p class="text-muted small">
+                    <i class="bi bi-info-circle me-1"></i><strong>Requires a distinct AI System User</strong> (set in AI Triage). A ticket created by that same user is not auto-acknowledged — inbound tickets (email, the portal, another technician) are.
+                </p>
+
+                <form method="POST" action="{{ route('settings.integrations.technician.update') }}">
+                    @csrf
+                    <div class="form-check form-switch mb-3">
+                        <input class="form-check-input" type="checkbox" id="technician_enabled" name="technician_enabled" {{ $technicianEnabled ? 'checked' : '' }}>
+                        <label class="form-check-label" for="technician_enabled"><strong>Enable AI Technician</strong></label>
+                    </div>
+
+                    <div class="form-check form-switch mb-3">
+                        <input class="form-check-input" type="checkbox" id="technician_auto_ack" name="technician_auto_ack" {{ $technicianAutoAck ? 'checked' : '' }}>
+                        <label class="form-check-label" for="technician_auto_ack"><strong>Auto-acknowledge new tickets</strong></label>
+                    </div>
+
+                    <button type="submit" class="btn btn-primary">
+                        <i class="bi bi-check-lg me-1"></i>Save Technician Settings
+                    </button>
+                </form>
+            </div>
+        </div>
+
         </div>{{-- /ai tab --}}
 
         {{-- Client Portal tab --}}
