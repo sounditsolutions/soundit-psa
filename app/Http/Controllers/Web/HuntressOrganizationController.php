@@ -39,7 +39,7 @@ class HuntressOrganizationController extends Controller
             ->get(['id', 'name', 'huntress_organization_id'])
             ->keyBy('huntress_organization_id');
 
-        $allClients = Client::active()->orderBy('name')->get(['id', 'name']);
+        $allClients = Client::operational()->orderBy('name')->get(['id', 'name']);
 
         return view('settings.huntress-organizations', [
             'organizations' => $organizations,
@@ -99,7 +99,7 @@ class HuntressOrganizationController extends Controller
         }
 
         // Build lookup: lowercase client name → client
-        $clientsByName = Client::active()
+        $clientsByName = Client::operational()
             ->whereNull('huntress_organization_id')
             ->get(['id', 'name'])
             ->keyBy(fn ($c) => mb_strtolower($c->name));

@@ -97,7 +97,7 @@ class HuntressController extends Controller
     {
         $this->logRequest('GET /company/companies', $request);
 
-        $query = \App\Models\Client::active()->orderBy('name');
+        $query = \App\Models\Client::operational()->orderBy('name');
 
         // Parse CW-style conditions: name LIKE '%term%', id IN (1,2)
         $conditions = $request->query('conditions', '');
@@ -123,7 +123,7 @@ class HuntressController extends Controller
         $this->logRequest('GET /company/companies/count', $request);
 
         return response()->json([
-            'count' => \App\Models\Client::active()->count(),
+            'count' => \App\Models\Client::operational()->count(),
         ]);
     }
 

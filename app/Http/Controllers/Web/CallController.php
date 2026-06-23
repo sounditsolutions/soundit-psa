@@ -79,7 +79,7 @@ class CallController extends Controller
         }
 
         $candidates = $this->phoneCallService->getCandidateCallers($call);
-        $clients = Client::active()->orderBy('name')->get(['id', 'name']);
+        $clients = Client::operational()->orderBy('name')->get(['id', 'name']);
 
         // Previous calls from/to the same number (useful when caller is unresolved)
         $callHistory = $this->getCallHistory($call);
@@ -256,7 +256,7 @@ class CallController extends Controller
             'defaultAssetId' => $suggestions['asset_id'],
             'defaultCategory' => $suggestions['category'],
             'defaultSubcategory' => $suggestions['subcategory'],
-            'clients' => Client::active()->orderBy('name')->get(['id', 'name']),
+            'clients' => Client::operational()->orderBy('name')->get(['id', 'name']),
             'users' => User::active()->orderBy('name')->get(['id', 'name']),
             'types' => TicketType::cases(),
             'priorities' => TicketPriority::cases(),

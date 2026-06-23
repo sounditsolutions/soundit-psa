@@ -51,7 +51,7 @@ class CippTenantController extends Controller
             ->get(['id', 'name', 'cipp_tenant_domain', 'cipp_sync_group_id'])
             ->keyBy('cipp_tenant_domain');
 
-        $allClients = Client::active()->orderBy('name')->get(['id', 'name']);
+        $allClients = Client::operational()->orderBy('name')->get(['id', 'name']);
 
         return view('settings.cipp-tenants', [
             'tenants' => $tenants,

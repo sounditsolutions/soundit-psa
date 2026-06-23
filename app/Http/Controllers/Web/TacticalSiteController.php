@@ -45,7 +45,7 @@ class TacticalSiteController extends Controller
             ->get(['id', 'name', 'tactical_site_id'])
             ->keyBy('tactical_site_id');
 
-        $allClients = Client::active()->orderBy('name')->get(['id', 'name']);
+        $allClients = Client::operational()->orderBy('name')->get(['id', 'name']);
 
         return view('settings.tactical-sites', [
             'sites' => $sites,

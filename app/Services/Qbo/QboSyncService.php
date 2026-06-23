@@ -44,7 +44,7 @@ class QboSyncService
     public function autoMatchClients(): array
     {
         $qboCustomers = $this->fetchQboCustomers();
-        $clients = Client::active()->whereNull('qbo_customer_id')->get();
+        $clients = Client::operational()->whereNull('qbo_customer_id')->get();
 
         // QBO customer IDs already mapped to a client — skip these to avoid unique constraint violations
         $alreadyMappedQboIds = Client::whereNotNull('qbo_customer_id')

@@ -307,7 +307,7 @@ class HuntressService
         // Try CW company ID first (our internal client ID)
         $companyId = $data['company']['id'] ?? null;
         if ($companyId && $companyId > 0) {
-            $client = Client::where('id', $companyId)->where('is_active', true)->first();
+            $client = Client::where('id', $companyId)->operational()->first();
             if ($client) {
                 return $client;
             }
@@ -315,7 +315,7 @@ class HuntressService
 
         // Try org name match against huntress_organization_id-mapped clients
         if ($orgName) {
-            $client = Client::where('name', $orgName)->where('is_active', true)->first();
+            $client = Client::where('name', $orgName)->operational()->first();
             if ($client) {
                 Log::info('[Huntress CW] Client resolved by org name match', [
                     'org_name' => $orgName,

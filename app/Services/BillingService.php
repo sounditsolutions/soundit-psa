@@ -159,7 +159,7 @@ class BillingService
         }
 
         $childIds = Client::where('reseller_id', $client->id)
-            ->where('is_active', true)
+            ->operational()
             ->pluck('id');
 
         if ($childIds->isEmpty()) {
@@ -511,7 +511,7 @@ class BillingService
         if ($type === QuantityType::PerResellerLicenseType) {
             $client = $contract?->client ?? $line?->profile?->contract?->client;
             $childCount = $client
-                ? Client::where('reseller_id', $client->id)->where('is_active', true)->count()
+                ? Client::where('reseller_id', $client->id)->operational()->count()
                 : 0;
 
             $source = "{$quantity} per reseller license type (across {$childCount} child clients) as of {$dateStr}";
@@ -587,7 +587,7 @@ class BillingService
         }
 
         $childIds = Client::where('reseller_id', $client->id)
-            ->where('is_active', true)
+            ->operational()
             ->pluck('id');
 
         if ($childIds->isEmpty()) {

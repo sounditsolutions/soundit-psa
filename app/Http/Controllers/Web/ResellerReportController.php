@@ -27,7 +27,7 @@ class ResellerReportController extends Controller
 
             if ($reseller) {
                 $childIds = Client::where('reseller_id', $reseller->id)
-                    ->where('is_active', true)
+                    ->operational()
                     ->pluck('id');
 
                 $childClients = Client::whereIn('id', $childIds)

@@ -80,7 +80,7 @@ class NinjaOrgController extends Controller
             return response()->json([]);
         }
 
-        $clients = Client::active()
+        $clients = Client::operational()
             ->search($term)
             ->limit(20)
             ->get(['id', 'name']);

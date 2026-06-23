@@ -20,7 +20,7 @@ class PrintixLicenseSyncService
     public function syncLicenses(?callable $onProgress = null): SyncResult
     {
         $clients = Client::whereNotNull('printix_tenant_id')
-            ->where('is_active', true)
+            ->operational()
             ->get()
             ->keyBy('printix_tenant_id');
 

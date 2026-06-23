@@ -23,7 +23,7 @@ class CippTenantSecuritySyncService
     public function syncAll(): SyncResult
     {
         $clients = Client::whereNotNull('cipp_tenant_domain')
-            ->where('is_active', true)
+            ->operational()
             ->get();
 
         $result = new SyncResult;

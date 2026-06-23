@@ -46,7 +46,7 @@ class ZorusCustomerController extends Controller
             ->get(['id', 'name', 'zorus_customer_id'])
             ->keyBy('zorus_customer_id');
 
-        $allClients = Client::active()->orderBy('name')->get(['id', 'name']);
+        $allClients = Client::operational()->orderBy('name')->get(['id', 'name']);
 
         return view('settings.zorus-customers', [
             'customers' => $customers,
@@ -112,7 +112,7 @@ class ZorusCustomerController extends Controller
         }
 
         // Build lookup: lowercase client name → client
-        $clientsByName = Client::active()
+        $clientsByName = Client::operational()
             ->whereNull('zorus_customer_id')
             ->get(['id', 'name'])
             ->keyBy(fn ($c) => mb_strtolower($c->name));

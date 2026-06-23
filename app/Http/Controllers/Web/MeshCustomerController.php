@@ -39,7 +39,7 @@ class MeshCustomerController extends Controller
             ->get(['id', 'name', 'mesh_customer_id'])
             ->keyBy('mesh_customer_id');
 
-        $allClients = Client::active()->orderBy('name')->get(['id', 'name']);
+        $allClients = Client::operational()->orderBy('name')->get(['id', 'name']);
 
         return view('settings.mesh-customers', [
             'customers' => $customers,

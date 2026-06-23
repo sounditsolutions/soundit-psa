@@ -39,7 +39,7 @@ class ServosityCompanyController extends Controller
             ->get(['id', 'name', 'servosity_company_id'])
             ->keyBy('servosity_company_id');
 
-        $allClients = Client::active()->orderBy('name')->get(['id', 'name']);
+        $allClients = Client::operational()->orderBy('name')->get(['id', 'name']);
 
         return view('settings.servosity-companies', [
             'companies' => $companies,
@@ -99,7 +99,7 @@ class ServosityCompanyController extends Controller
         }
 
         // Build lookup: lowercase client name → client
-        $clientsByName = Client::active()
+        $clientsByName = Client::operational()
             ->whereNull('servosity_company_id')
             ->get(['id', 'name'])
             ->keyBy(fn ($c) => mb_strtolower($c->name));
