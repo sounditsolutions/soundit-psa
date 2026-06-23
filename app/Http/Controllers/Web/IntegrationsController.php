@@ -250,6 +250,10 @@ class IntegrationsController extends Controller
         $assistantMaxMessages = Setting::getValue('assistant_max_messages') ?? 50;
         $assistantDailyTokens = Setting::getValue('assistant_daily_token_limit') ?? 500000;
 
+        // AI Technician settings
+        $technicianEnabled = \App\Support\TechnicianConfig::enabled();
+        $technicianAutoAck = ((\App\Support\TechnicianConfig::tierMap()['send_ack'] ?? null) === 'auto');
+
         $selectedIds = array_filter([(int) $triageDefaultAssignee, (int) $triageSystemUser]);
         $users = \App\Models\User::active()->orderBy('name')->get(['id', 'name', 'is_active']);
         if ($selectedIds) {
@@ -283,6 +287,7 @@ class IntegrationsController extends Controller
             'triageEnabled', 'triageAutoNew', 'triageAutoReview', 'triageReviewFrequency', 'triageReviewAutoClose', 'triageReviewThreshold',
             'triageDefaultAssignee', 'triageSystemUser', 'triageModel', 'triageMaxTokens', 'triageDailyTokens', 'triageBatchSize', 'triageStages',
             'assistantEnabled', 'assistantMaxMessages', 'assistantDailyTokens',
+            'technicianEnabled', 'technicianAutoAck',
             'screenconnectBaseUrl', 'screenconnectWebhookSecret', 'screenconnectEnabled', 'screenconnectConfigured',
             'tacticalConfigured', 'tacticalApiUrl', 'tacticalWebUrl', 'tacticalConnected', 'tacticalEnabled',
             'tacticalWebhookLastAt', 'tacticalWebhookProcessed24h', 'tacticalWebhookFailed',
@@ -1608,6 +1613,20 @@ class IntegrationsController extends Controller
 
         return redirect()->route('settings.integrations')
             ->with('success', 'AI Assistant settings saved.');
+    }
+
+    // --- AI Technician ---
+
+    public function updateTechnician(Request $request)
+    {
+        Setting::setValue('technician_enabled', $request->has('technician_enabled') ? '1' : '0');
+        Setting::setValue(
+            'technician_action_tiers',
+            $request->has('technician_auto_ack') ? json_encode(['send_ack' => 'auto']) : json_encode([])
+        );
+
+        return redirect()->route('settings.integrations')
+            ->with('success', 'AI Technician settings saved.');
     }
 
     // --- Tactical RMM ---

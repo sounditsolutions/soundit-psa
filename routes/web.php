@@ -408,6 +408,9 @@ Route::middleware('auth')->group(function () {
     // Settings — AI Assistant
     Route::post('/settings/integrations/assistant', [IntegrationsController::class, 'updateAssistant'])->name('settings.integrations.assistant.update');
 
+    // Settings — AI Technician
+    Route::post('/settings/integrations/technician', [IntegrationsController::class, 'updateTechnician'])->name('settings.integrations.technician.update');
+
     // Settings — T2T / HelpDesk Buttons
     Route::post('/settings/integrations/t2t', [IntegrationsController::class, 'updateT2t'])->name('settings.integrations.t2t.update');
     Route::post('/settings/integrations/t2t/generate-key', [IntegrationsController::class, 'generateT2tKey'])->name('settings.integrations.t2t.generate-key');
