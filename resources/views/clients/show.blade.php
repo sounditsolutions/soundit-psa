@@ -18,6 +18,9 @@
             <x-avatar :avatarUrl="$client->logo_url" :name="$client->name" :size="48" />
             <div>
                 <h4 class="section-title mb-1">{{ $client->name }}</h4>
+                @if($client->stage === \App\Enums\ClientStage::Prospect)
+                    <span class="badge bg-warning text-dark badge-prospect">Prospect</span>
+                @endif
                 @unless($client->is_active)
                     <span class="badge bg-secondary">Inactive</span>
                 @endunless
