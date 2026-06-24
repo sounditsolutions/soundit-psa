@@ -126,6 +126,9 @@
                             <x-avatar :user="$note->author" :name="$note->display_author" :size="24" />
                         @endif
                         {{ $note->display_author }}
+                        @if(! $isClient && $note->ai_authored)
+                            <span class="badge bg-info text-dark ms-1"><i class="bi bi-robot me-1"></i>AI-authored</span>
+                        @endif
                         <span class="text-muted fw-normal">&middot; {{ $note->noted_at?->toAppTz()->format('M j, Y g:i A') ?? '' }}</span>
                     </div>
                     @if($note->email)
