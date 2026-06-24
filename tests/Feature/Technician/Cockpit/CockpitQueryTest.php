@@ -49,4 +49,51 @@ class CockpitQueryTest extends TestCase
         $b->markSuperseded();
         $this->assertSame(TechnicianRunState::Superseded, $b->fresh()->state);
     }
+
+    public function test_pending_drafts_are_urgency_sorted_and_count_matches(): void
+    {
+        $query = app(\App\Services\Technician\Cockpit\CockpitQuery::class);
+        $this->assertSame(0, $query->pendingCount());
+
+        $client = Client::factory()->create();
+        $old = Ticket::factory()->create(['client_id' => $client->id, 'due_at' => now()->addDays(5)]);
+        $overdue = Ticket::factory()->create(['client_id' => $client->id, 'due_at' => now()->subDay()]);
+
+        foreach ([$old, $overdue] as $t) {
+            TechnicianRun::create([
+                'ticket_id' => $t->id, 'client_id' => $client->id,
+                'action_type' => 'send_reply', 'content_hash' => hash('sha256', 'r'.$t->id),
+                'state' => TechnicianRunState::AwaitingApproval, 'proposed_content' => 'draft',
+            ]);
+        }
+
+        $drafts = $query->pendingDrafts();
+        $this->assertSame(2, $query->pendingCount());
+        // Overdue ticket's draft sorts first.
+        $this->assertSame($overdue->id, $drafts->first()->ticket_id);
+    }
+
+    public function test_needs_attention_lists_acked_but_undrafted_active_client_tickets(): void
+    {
+        $query = app(\App\Services\Technician\Cockpit\CockpitQuery::class);
+        $client = Client::factory()->create(); // active
+        $ticket = Ticket::factory()->create(['client_id' => $client->id, 'status' => \App\Enums\TicketStatus::New]);
+
+        // The AI acked it (ai_authored Reply note) but produced no held draft → needs a human.
+        \App\Models\TicketNote::create([
+            'ticket_id' => $ticket->id, 'author_name' => 'Chet', 'who_type' => \App\Enums\WhoType::Agent,
+            'ai_authored' => true, 'body' => 'ack', 'note_type' => \App\Enums\NoteType::Reply,
+            'is_private' => false, 'noted_at' => now(),
+        ]);
+
+        $needs = $query->needsAttention();
+        $this->assertTrue($needs->contains('id', $ticket->id));
+
+        // Once a held draft exists, it leaves the "needs you" lane (it's in the queue instead).
+        TechnicianRun::create([
+            'ticket_id' => $ticket->id, 'client_id' => $client->id, 'action_type' => 'send_reply',
+            'content_hash' => str_repeat('b', 64), 'state' => TechnicianRunState::AwaitingApproval, 'proposed_content' => 'd',
+        ]);
+        $this->assertFalse($query->needsAttention()->contains('id', $ticket->id));
+    }
 }
