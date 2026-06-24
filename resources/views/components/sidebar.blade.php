@@ -58,6 +58,17 @@
                 <i class="bi bi-ticket-perforated sidebar-icon"></i>
                 <span class="sidebar-label">Tickets</span>
             </a>
+            <a href="{{ route('cockpit.index') }}"
+               class="sidebar-link {{ request()->routeIs('cockpit.*') ? 'active' : '' }}"
+               @if(request()->routeIs('cockpit.*')) aria-current="page" @endif
+               data-bs-toggle="tooltip" data-bs-placement="right" data-bs-title="Cockpit">
+                <i class="bi bi-robot sidebar-icon"></i>
+                <span class="sidebar-label">Cockpit</span>
+                @php $cockpitPending = \Illuminate\Support\Facades\Cache::remember('sidebar:cockpit_pending', 60, fn () => app(\App\Services\Technician\Cockpit\CockpitQuery::class)->pendingCount()); @endphp
+                @if($cockpitPending > 0)
+                    <span class="sidebar-badge bg-danger">{{ $cockpitPending }}</span>
+                @endif
+            </a>
             <a href="{{ route('calls.index') }}"
                class="sidebar-link {{ request()->routeIs('calls.*') ? 'active' : '' }}"
                @if(request()->routeIs('calls.*')) aria-current="page" @endif

@@ -76,4 +76,16 @@ class CockpitControllerTest extends TestCase
 
         $this->assertSame(TechnicianRunState::Denied, $run->fresh()->state);
     }
+
+    public function test_sidebar_shows_a_cockpit_link_with_pending_badge(): void
+    {
+        $actor = User::factory()->create(['name' => 'Chet']);
+        $this->heldRun($actor); // one pending draft
+
+        $this->actingAs(User::factory()->create())
+            ->get(route('tickets.index'))
+            ->assertOk()
+            ->assertSee('Cockpit')
+            ->assertSee(route('cockpit.index'));
+    }
 }
