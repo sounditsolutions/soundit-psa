@@ -48,6 +48,35 @@ class TechnicianRun extends Model
         $this->save();
     }
 
+    /**
+     * Single-use latch (Plan 1B): atomically move awaiting_approval → executing.
+     * Returns true only for the caller that won the race; a replayed grant or a
+     * double-tap finds the run no longer awaiting and gets false (no double-send).
+     */
+    public function claimForExecution(): bool
+    {
+        $claimed = static::query()
+            ->whereKey($this->getKey())
+            ->where('state', TechnicianRunState::AwaitingApproval->value)
+            ->update(['state' => TechnicianRunState::Executing->value]) === 1;
+
+        if ($claimed) {
+            $this->state = TechnicianRunState::Executing;
+        }
+
+        return $claimed;
+    }
+
+    public function deny(): void
+    {
+        $this->advanceTo(TechnicianRunState::Denied);
+    }
+
+    public function markSuperseded(): void
+    {
+        $this->advanceTo(TechnicianRunState::Superseded);
+    }
+
     public function ticket(): BelongsTo
     {
         return $this->belongsTo(Ticket::class);
