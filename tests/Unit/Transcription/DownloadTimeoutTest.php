@@ -11,9 +11,10 @@ use GuzzleHttp\Psr7\Response;
 use PHPUnit\Framework\TestCase;
 
 /**
- * Asserts the recording download timeout strategy: no hard total cURL timeout,
- * stall-abort via CURLOPT_LOW_SPEED_LIMIT/CURLOPT_LOW_SPEED_TIME, short
- * connect_timeout, and streaming via sink.
+ * Asserts the recording download timeout strategy: no SHORT total cURL timeout
+ * (only a generous client-level backstop, DOWNLOAD_MAX_TIMEOUT = 540s, just under
+ * the 600s job timeout), stall-abort via CURLOPT_LOW_SPEED_LIMIT/CURLOPT_LOW_SPEED_TIME,
+ * short connect_timeout, and streaming via sink.
  *
  * Root cause (fixed): `new GuzzleClient(['timeout' => 300])` in downloadRecording()
  * set a hard 300 s total-transfer deadline. A 12.8 MB file at ~24 KB/s needs
@@ -76,10 +77,10 @@ class DownloadTimeoutTest extends TestCase
     }
 
     // -------------------------------------------------------------------------
-    // No hard total timeout
+    // No SHORT total timeout (a generous backstop lives at the client level)
     // -------------------------------------------------------------------------
 
-    public function test_download_does_not_set_a_hard_total_timeout(): void
+    public function test_download_does_not_impose_a_short_per_request_total_timeout(): void
     {
         $client = $this->mockClient([new Response(200, [], 'x')]);
 
@@ -90,13 +91,16 @@ class DownloadTimeoutTest extends TestCase
 
         $opts = $this->history[0]['options'];
 
-        // 'timeout' 0 means unlimited — must not be a positive integer that would
-        // impose a total-transfer ceiling and abort a slow-but-progressing download.
+        // downloadRecording() must NOT add a SHORT per-request total 'timeout' override —
+        // a slow-but-progressing large download must be allowed to finish. The only total
+        // cap is a GENEROUS client-level backstop (DOWNLOAD_MAX_TIMEOUT = 540s, just under
+        // the 600s job timeout) for graceful abort; the per-request options rely on the
+        // connect timeout + stall-abort. (The injected test client uses timeout=0.)
         $timeout = $opts['timeout'] ?? 0;
         $this->assertTrue(
-            $timeout === 0 || $timeout === null || $timeout === false,
-            "Expected no hard total timeout (timeout=0/null/false), got: {$timeout}. "
-            .'A positive total timeout will abort large recordings at slow CDN speeds.'
+            $timeout === 0 || $timeout === null || $timeout === false || $timeout >= 300,
+            "Expected no SHORT total timeout (0/unlimited, or a generous >=300s backstop), got: {$timeout}. "
+            .'A short positive total timeout would abort large recordings at slow CDN speeds.'
         );
     }
 

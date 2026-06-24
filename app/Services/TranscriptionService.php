@@ -288,15 +288,29 @@ TEMPLATE;
     private const DOWNLOAD_LOW_SPEED_TIME = 30;     // seconds
 
     /**
+     * Generous total-transfer backstop (seconds), kept just UNDER the
+     * TranscribePhoneCall job timeout (600 s). A slow-but-progressing large file
+     * still finishes (~529 s for a 12.8 MB recording at ~24 KB/s), but a slow-drip
+     * transfer that never trips the stall-abort aborts GRACEFULLY here (catchable
+     * Guzzle timeout) instead of running uncapped until the queue worker hard-kills
+     * (SIGKILL) the whole job — which would skip the temp-file cleanup in the caller's
+     * finally{}. Pairs with the stall-abort above (which catches dead transfers far
+     * sooner). NOTE: this is the download bound only; the *end-to-end* job budget for
+     * very large recordings is a separate follow-up (see psa-7jt9 review).
+     */
+    private const DOWNLOAD_MAX_TIMEOUT = 540;       // seconds
+
+    /**
      * Download recording to a temp file. Returns the temp file path.
      *
-     * Uses streaming (sink) so the file is never held in PHP memory.
-     * No hard total timeout is set — instead a connect timeout + stall-abort
-     * (CURLOPT_LOW_SPEED_LIMIT / CURLOPT_LOW_SPEED_TIME) is used so that a
-     * slow-but-progressing transfer can finish while a truly stalled one still
-     * fails promptly. The previous `['timeout' => 300]` (total cURL timeout)
-     * aborted large recordings mid-transfer: at ~24 KB/s a 12.8 MB file needs
-     * ~533 s, which exceeded the 300 s ceiling.
+     * Uses streaming (sink) so the file is never held in PHP memory. Timeout strategy:
+     * a short connect timeout + a stall-abort (CURLOPT_LOW_SPEED_LIMIT /
+     * CURLOPT_LOW_SPEED_TIME) so a slow-but-progressing transfer finishes while a truly
+     * stalled one fails promptly, PLUS a generous total-transfer backstop
+     * (DOWNLOAD_MAX_TIMEOUT, just under the job timeout) so a slow-drip aborts gracefully
+     * rather than running until the queue worker hard-kills the job. The previous
+     * `['timeout' => 300]` aborted large recordings mid-transfer: at ~24 KB/s a 12.8 MB
+     * file needs ~529 s, which exceeded the 300 s ceiling.
      *
      * @param  GuzzleClient|null  $client  Injectable for tests; production uses a fresh client.
      */
@@ -327,8 +341,10 @@ TEMPLATE;
             }
         }
 
-        // No client-level timeout — all timeouts are controlled per-request above.
-        $client ??= new GuzzleClient(['timeout' => 0]);
+        // Generous total-transfer backstop so a slow-drip aborts gracefully before the
+        // job's hard kill; the per-request connect timeout + stall-abort above catch the
+        // common failures (dead transfer, unreachable host) far sooner.
+        $client ??= new GuzzleClient(['timeout' => self::DOWNLOAD_MAX_TIMEOUT]);
 
         // Retry with backoff — Plivo's CDN may not have the MP3 ready immediately
         $maxRetries = 4;
