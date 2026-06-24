@@ -5,6 +5,7 @@ namespace App\Services\Technician\Emergency;
 use App\Enums\EmergencyState;
 use App\Models\TechnicianActionLog;
 use App\Models\TechnicianEmergency;
+use App\Models\User;
 use App\Services\Technician\Notify\OperatorNotifier;
 use App\Support\TechnicianConfig;
 
@@ -26,9 +27,13 @@ use App\Support\TechnicianConfig;
  *   - PER-TICK IDEMPOTENCY (CO-8): a target already paged within the escalation
  *     timeout is NOT paged again this tick, and the SAME target is re-paged only
  *     on the slower reping cadence;
- *   - when NOBODY is available, the last-known target is re-pinged on the reping
- *     cadence and a single `all_unavailable` audit row is written; the sweep —
- *     not this service — is what then triggers the honest max-hold to the client.
+ *   - when NOBODY is reachable (empty chain, or every member missing/inactive/away),
+ *     the last-known target is re-pinged on the reping cadence and a single throttled
+ *     audit row is written (`no_chain_configured` for an empty chain, else
+ *     `all_unavailable`); the sweep — not this service — is what then triggers the
+ *     honest max-hold to the client. "Reachable" means the User EXISTS and is active
+ *     AND is not toggled away — a stale/deleted chain member is skipped, never paged
+ *     into the void, so the chain advances to a real human in the SAME tick.
  *
  * Every page writes EXACTLY ONE append-only `emergency_escalate` audit row direct
  * to technician_action_logs (these are INTERNAL operator alerts, not client-facing
@@ -50,25 +55,33 @@ class EscalationService
             return;
         }
 
-        // (2) Resolve the ordered full chain. Nothing to escalate to ⇒ nothing to do.
+        // (2) Resolve the ordered full chain. An EMPTY chain still needs a preceding
+        //     audit row before the sweep sends the client max-hold (enable-readiness):
+        //     route it through the same throttled no-ping audit path as all-unavailable,
+        //     stamped `no_chain_configured`, so the trail exists and the audit log is
+        //     NOT spammed every minute.
         $chain = TechnicianConfig::escalationChain();
         if ($chain === []) {
+            $this->handleNoneReachable($e, ['no_chain_configured']);
+
             return;
         }
 
-        // (3) Availability is authoritative. If NOBODY is available, take the
-        //     both-unavailable path (re-ping the last target on the reping cadence,
-        //     audit `all_unavailable`, let the sweep handle max-hold) and return.
-        $anyAvailable = false;
+        // (3) Reachability is authoritative. A chain member is reachable only if their
+        //     User actually EXISTS and is active AND is not toggled away (isReachable).
+        //     If NOBODY on the chain is reachable, take the throttled no-progress path
+        //     (re-ping the last KNOWN target on the reping cadence, audit, let the sweep
+        //     handle the client max-hold) and return.
+        $anyReachable = false;
         foreach ($chain as $uid) {
-            if (TechnicianConfig::operatorAvailable($uid)) {
-                $anyAvailable = true;
+            if ($this->isReachable($uid)) {
+                $anyReachable = true;
                 break;
             }
         }
 
-        if (! $anyAvailable) {
-            $this->handleAllUnavailable($e);
+        if (! $anyReachable) {
+            $this->handleNoneReachable($e, ['all_unavailable']);
 
             return;
         }
@@ -131,32 +144,54 @@ class EscalationService
     }
 
     /**
-     * Both-unavailable path (invariant #4): re-ping the last-known target ONLY on
-     * the reping cadence, and record exactly one `all_unavailable` audit row. The
-     * sweep is what triggers the honest max-hold to the client — not this service.
+     * No-progress path (invariant #4 + enable-readiness): NOBODY on the chain is
+     * reachable — either the chain is empty (`no_chain_configured`) or every member
+     * is missing/inactive/away (`all_unavailable`). In BOTH cases the sweep, not this
+     * service, sends the honest client max-hold; this method only guarantees a
+     * preceding, THROTTLED audit trail (and re-pings the last known target where one
+     * exists).
+     *
+     * THROTTLE (CO — no per-minute spam): only act when last_pinged_at is null or
+     * older than the reping cadence. When acting:
+     *   - if a last-known target id exists AND that user is still resolvable, re-ping
+     *     them on the reping cadence (an empty chain has no target ⇒ never notifies
+     *     a null/absent user);
+     *   - write EXACTLY ONE audit row and stamp last_pinged_at so the next tick within
+     *     the window is suppressed.
+     *
+     * @param  array<int, string>  $reasons
      */
-    private function handleAllUnavailable(TechnicianEmergency $e): void
+    private function handleNoneReachable(TechnicianEmergency $e, array $reasons): void
     {
-        $lastTarget = $e->current_target_user_id;
-
+        // Throttle to the reping cadence so an open emergency with no reachable human
+        // does not append an audit row (or re-ping) every single sweep minute.
         $due = $e->last_pinged_at === null
             || $e->last_pinged_at->diffInMinutes(now()) >= TechnicianConfig::emergencyRepingMinutes();
 
-        if ($lastTarget !== null && $due) {
+        if (! $due) {
+            return;
+        }
+
+        // Re-ping the last-known target ONLY when one exists and is still resolvable.
+        // The empty-chain case has no target ⇒ this is skipped (never notifyUser(null)).
+        $lastTarget = $e->current_target_user_id;
+        if ($lastTarget !== null && User::find($lastTarget) !== null) {
             $url = $this->ackUrl($e, $lastTarget);
             $this->notifier->notifyUser(
                 $lastTarget,
                 $this->subject($e),
-                $this->body($e, $url, ['all_unavailable']),
+                $this->body($e, $url, $reasons),
                 sms: true,
                 smsText: $this->smsStub($e),
             );
-            $e->last_pinged_at = now();
-            $e->save();
         }
 
-        // Exactly one audit row per all-unavailable tick.
-        $this->audit($e, $e->escalation_step, ['all_unavailable']);
+        // Stamp last_pinged_at so the throttle suppresses the next within-window tick,
+        // then write exactly ONE audit row explaining why nobody was paged.
+        $e->last_pinged_at = now();
+        $e->save();
+
+        $this->audit($e, $e->escalation_step, $reasons);
     }
 
     /**
@@ -187,8 +222,12 @@ class EscalationService
     }
 
     /**
-     * The first AVAILABLE chain member at index >= $from, skipping unavailable
-     * members. Returns [index, userId] or [-1, null] when none qualifies.
+     * The first REACHABLE chain member at index >= $from, skipping unreachable
+     * members (missing/inactive/away). Returns [index, userId] or [-1, null] when
+     * none qualifies. Using isReachable() here means a deleted or deactivated member
+     * is skipped in this same scan rather than paged into the void — so the chain
+     * advances to a genuinely-reachable human without burning an escalation timeout
+     * on a dead slot.
      *
      * @param  array<int, int>  $chain
      * @return array{0: int, 1: int|null}
@@ -197,12 +236,32 @@ class EscalationService
     {
         $from = max(0, $from);
         for ($i = $from; $i < count($chain); $i++) {
-            if (TechnicianConfig::operatorAvailable($chain[$i])) {
+            if ($this->isReachable($chain[$i])) {
                 return [$i, $chain[$i]];
             }
         }
 
         return [-1, null];
+    }
+
+    /**
+     * Enable-readiness reachability gate. A chain member is reachable only if their
+     * User row actually EXISTS and is ACTIVE (this app's `is_active` flag) AND they
+     * are not manually toggled away (operatorAvailable — the away switch). ANDing
+     * existence/active onto the away-toggle is what stops a later-deleted or
+     * -deactivated chain member from being treated as the current target: without
+     * it, OperatorNotifier::notifyUser would silently no-op on User::find() === null
+     * while escalation_step / last_pinged_at still advanced and an audit row was
+     * written — burning a full escalation timeout before reaching a real human.
+     */
+    private function isReachable(int $userId): bool
+    {
+        $user = User::find($userId);
+        if ($user === null || ! $user->is_active) {
+            return false;
+        }
+
+        return TechnicianConfig::operatorAvailable($userId);
     }
 
     /**

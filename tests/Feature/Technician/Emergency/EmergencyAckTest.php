@@ -105,6 +105,32 @@ class EmergencyAckTest extends TestCase
         $this->assertDatabaseMissing('technician_action_logs', ['action_type' => 'emergency_ack']);
     }
 
+    public function test_expired_token_is_rejected_and_leaves_emergency_open(): void
+    {
+        // CO-5(c): the ack link is a SHORT-LIVED bearer credential — TTL is
+        // clamp(escalationTimeoutMinutes, 15, 30) minutes. A leaked/forwarded link
+        // that arrives after the window must be DEAD: verify() fails on TTL ⇒ 403,
+        // and the row never mutates (state stays Open, no emergency_ack audit row),
+        // so the deterministic sweep keeps watching.
+        $user = User::factory()->create();
+        $e = $this->emergency();
+        $token = EmergencyAckToken::issue($e->id, $user->id);
+
+        // Jump safely past the 30-minute TTL ceiling so the token has expired.
+        \Illuminate\Support\Carbon::setTestNow(now()->addMinutes(31));
+
+        try {
+            $this->get(route('emergency.ack', ['token' => $token]))->assertForbidden();
+
+            $e->refresh();
+            $this->assertSame(EmergencyState::Open, $e->state);
+            $this->assertNull($e->acknowledged_by);
+            $this->assertDatabaseMissing('technician_action_logs', ['action_type' => 'emergency_ack']);
+        } finally {
+            \Illuminate\Support\Carbon::setTestNow();
+        }
+    }
+
     /**
      * Flip a character in the signature portion of the base64url envelope so the
      * HMAC no longer verifies, while the envelope still base64url-decodes to JSON.

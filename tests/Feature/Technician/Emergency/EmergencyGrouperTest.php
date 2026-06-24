@@ -42,4 +42,20 @@ class EmergencyGrouperTest extends TestCase
         $grp->groupOrCreate($b, $det->assess($b));
         $this->assertSame(2, TechnicianEmergency::count());
     }
+
+    public function test_same_signature_different_client_creates_separate(): void
+    {
+        // Cross-client isolation: an identical emergency signature on two DIFFERENT
+        // clients must never collapse into one group — each client gets its own
+        // emergency (and therefore its own escalation + max-hold).
+        $c1 = Client::factory()->create();
+        $c2 = Client::factory()->create();
+        $t1 = Ticket::factory()->create(['client_id' => $c1->id, 'subject' => 'OUTAGE site A', 'opened_at' => now()]);
+        $t2 = Ticket::factory()->create(['client_id' => $c2->id, 'subject' => 'OUTAGE site A', 'opened_at' => now()]);
+        $det = app(EmergencyDetector::class);
+        $grp = app(EmergencyGrouper::class);
+        $grp->groupOrCreate($t1, $det->assess($t1));
+        $grp->groupOrCreate($t2, $det->assess($t2));
+        $this->assertSame(2, TechnicianEmergency::count());
+    }
 }

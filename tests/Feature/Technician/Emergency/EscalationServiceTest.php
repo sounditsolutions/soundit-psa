@@ -172,6 +172,76 @@ class EscalationServiceTest extends TestCase
         $this->assertStringContainsString('all_unavailable', $row->summary);
     }
 
+    // ── Enable-readiness: a stale/inactive chain member is SKIPPED, not pinged ──
+
+    public function test_deactivated_chain_member_is_skipped_and_chain_advances_in_one_tick(): void
+    {
+        $client = Client::factory()->create();
+        $a = User::factory()->create();
+        $b = User::factory()->create();
+        Setting::setValue('technician_escalation_chain', json_encode([$a->id, $b->id]));
+
+        // A is no longer a real, active operator (deactivated). A must be skipped —
+        // not pinged into the void burning a full escalation timeout — and the chain
+        // must advance to B in this SAME tick.
+        $a->update(['is_active' => false]);
+
+        $e = $this->emergency($client);
+        $this->mock(OperatorNotifier::class, fn (MockInterface $m) => $m->shouldReceive('notifyUser')
+            ->once()->withArgs(fn ($uid) => $uid === $b->id));
+
+        app(EscalationService::class)->escalate($e);
+        $this->assertSame($b->id, $e->fresh()->current_target_user_id);
+    }
+
+    public function test_deleted_chain_member_is_skipped_and_chain_advances_in_one_tick(): void
+    {
+        $client = Client::factory()->create();
+        $a = User::factory()->create();
+        $b = User::factory()->create();
+        Setting::setValue('technician_escalation_chain', json_encode([$a->id, $b->id]));
+
+        // A no longer exists (deleted). isReachable() must treat a missing user as
+        // unreachable and advance to B in one tick (OperatorNotifier would otherwise
+        // silently no-op on User::find() === null while last_pinged_at still advanced).
+        $aId = $a->id;
+        $a->delete();
+
+        $e = $this->emergency($client);
+        $this->mock(OperatorNotifier::class, fn (MockInterface $m) => $m->shouldReceive('notifyUser')
+            ->once()->withArgs(fn ($uid) => $uid === $b->id));
+
+        app(EscalationService::class)->escalate($e);
+        $fresh = $e->fresh();
+        $this->assertSame($b->id, $fresh->current_target_user_id);
+        $this->assertNotSame($aId, $fresh->current_target_user_id);
+    }
+
+    // ── Enable-readiness: empty chain ⇒ throttled no_chain_configured audit, no ping ──
+
+    public function test_empty_chain_audits_no_chain_configured_once_without_pinging(): void
+    {
+        $client = Client::factory()->create();
+        Setting::setValue('technician_escalation_chain', json_encode([]));
+        Setting::setValue('technician_emergency_reping', '30');
+
+        // Nobody to page ⇒ the sweep will send the client max-hold. A preceding
+        // emergency_escalate audit row (reason no_chain_configured) MUST exist to
+        // explain why — but it must NOT attempt to notify a null/absent target.
+        $this->mock(OperatorNotifier::class, fn (MockInterface $m) => $m->shouldReceive('notifyUser')->never());
+
+        $e = $this->emergency($client);
+        app(EscalationService::class)->escalate($e);
+
+        $rows = \App\Models\TechnicianActionLog::where('action_type', 'emergency_escalate')->get();
+        $this->assertCount(1, $rows);
+        $this->assertStringContainsString('no_chain_configured', $rows->first()->summary);
+
+        // A second escalate within the reping window must be THROTTLED — no spam.
+        app(EscalationService::class)->escalate($e->fresh());
+        $this->assertSame(1, \App\Models\TechnicianActionLog::where('action_type', 'emergency_escalate')->count());
+    }
+
     // ── CO-5d / CO-11a: the ack URL must NEVER reach SMS ──────────────────────
 
     public function test_sms_text_excludes_the_ack_url(): void
