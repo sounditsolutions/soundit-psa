@@ -48,11 +48,19 @@ class CockpitQuery
             ->whereDoesntHave('technicianRuns', fn ($q) => $q
                 ->where('action_type', 'send_reply')
                 ->where('state', TechnicianRunState::AwaitingApproval->value))
-            // ...and no non-AI staff reply has been added since (a human already engaged).
+            // ...and no non-AI staff reply has been added SINCE the AI ack (a human engaged after).
+            // A human reply that pre-dates the ack is irrelevant — the AI saw it and still acked.
             ->whereDoesntHave('notes', fn ($q) => $q
                 ->where('note_type', NoteType::Reply->value)
                 ->where('ai_authored', false)
-                ->where('who_type', WhoType::Agent->value))
+                ->where('who_type', WhoType::Agent->value)
+                ->where('noted_at', '>', function ($sub) {
+                    $sub->selectRaw('MAX(noted_at)')
+                        ->from('ticket_notes')
+                        ->whereColumn('ticket_id', 'tickets.id')
+                        ->where('ai_authored', true)
+                        ->where('note_type', NoteType::Reply->value);
+                }))
             ->with(['client', 'contact'])
             ->orderBy('updated_at')
             ->get();

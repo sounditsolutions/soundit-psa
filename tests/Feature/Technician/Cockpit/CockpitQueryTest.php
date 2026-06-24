@@ -96,4 +96,37 @@ class CockpitQueryTest extends TestCase
         ]);
         $this->assertFalse($query->needsAttention()->contains('id', $ticket->id));
     }
+
+    public function test_needs_attention_temporal_anchor_pre_ack_human_reply_does_not_suppress(): void
+    {
+        $query = app(\App\Services\Technician\Cockpit\CockpitQuery::class);
+        $client = Client::factory()->create();
+        $ticket = Ticket::factory()->create(['client_id' => $client->id, 'status' => \App\Enums\TicketStatus::New]);
+
+        // Human (non-AI agent) replied BEFORE the AI ack.
+        \App\Models\TicketNote::create([
+            'ticket_id' => $ticket->id, 'author_name' => 'Alice', 'who_type' => \App\Enums\WhoType::Agent,
+            'ai_authored' => false, 'body' => 'On it', 'note_type' => \App\Enums\NoteType::Reply,
+            'is_private' => false, 'noted_at' => now()->subHour(),
+        ]);
+
+        // AI ack posted after the human reply.
+        \App\Models\TicketNote::create([
+            'ticket_id' => $ticket->id, 'author_name' => 'Chet', 'who_type' => \App\Enums\WhoType::Agent,
+            'ai_authored' => true, 'body' => 'ack', 'note_type' => \App\Enums\NoteType::Reply,
+            'is_private' => false, 'noted_at' => now(),
+        ]);
+
+        // Pre-ack human reply must NOT suppress — ticket still needs attention.
+        $this->assertTrue($query->needsAttention()->contains('id', $ticket->id));
+
+        // Now a human replies AFTER the ack — ticket should leave the lane.
+        \App\Models\TicketNote::create([
+            'ticket_id' => $ticket->id, 'author_name' => 'Bob', 'who_type' => \App\Enums\WhoType::Agent,
+            'ai_authored' => false, 'body' => 'Following up', 'note_type' => \App\Enums\NoteType::Reply,
+            'is_private' => false, 'noted_at' => now()->addMinute(),
+        ]);
+
+        $this->assertFalse($query->needsAttention()->contains('id', $ticket->id));
+    }
 }
