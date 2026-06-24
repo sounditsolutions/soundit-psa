@@ -110,11 +110,17 @@ TEMPLATE;
      *
      * If ffmpeg is available and the recording is stereo, splits channels for
      * speaker-separated transcription. Falls back to mono on any failure.
+     *
+     * When the recording has already been downloaded to a stable local path
+     * (phone_calls.recording_disk_path) — e.g. by {@see \App\Jobs\DownloadRecording}
+     * — the download step is skipped and the local file is used directly.
+     * The local file is left in place after transcription; cleanup is the
+     * responsibility of the caller (DownloadRecording / TranscribePhoneCall).
      */
     public function transcribe(PhoneCall $call): void
     {
         // Guard: skip if already transcribed or no recording
-        if ($call->isTranscribed() || ! $call->recording_url) {
+        if ($call->isTranscribed() || (! $call->recording_url && ! $call->recording_disk_path)) {
             return;
         }
 
@@ -128,9 +134,21 @@ TEMPLATE;
         $tempFiles = [];
 
         try {
-            // 1. Download recording to temp file
-            $tempFile = $this->downloadRecording($call->recording_url);
-            $tempFiles[] = $tempFile;
+            // 1. Obtain recording as a local file.
+            //    Prefer an already-persisted local path (set by DownloadRecording job)
+            //    so this job's budget is not consumed by the CDN download.
+            $localDiskPath = $call->recording_disk_path
+                ? \Illuminate\Support\Facades\Storage::disk('local')->path($call->recording_disk_path)
+                : null;
+
+            if ($localDiskPath && file_exists($localDiskPath)) {
+                $tempFile = $localDiskPath;
+                // Not owned by $tempFiles — DownloadRecording is responsible for cleanup.
+            } else {
+                // Fallback: download inline (e.g. called from artisan command without split).
+                $tempFile = $this->downloadRecording($call->recording_url);
+                $tempFiles[] = $tempFile;
+            }
             $fileSize = filesize($tempFile);
 
             $needsChunking = $fileSize > self::MAX_WHISPER_SIZE;
@@ -269,6 +287,21 @@ TEMPLATE;
                 }
             }
         }
+    }
+
+    /**
+     * Download a recording URL to a temporary file and return its path.
+     *
+     * Public entry-point for {@see \App\Jobs\DownloadRecording}, which moves
+     * the result to a stable disk path after this method returns.
+     * Uses the full PR#60 timeout strategy: short connect timeout + stall-abort
+     * (CURLOPT_LOW_SPEED_LIMIT / CURLOPT_LOW_SPEED_TIME) + generous backstop.
+     *
+     * @param  GuzzleClient|null  $client  Injectable for tests.
+     */
+    public function downloadRecordingForJob(string $url, ?GuzzleClient $client = null): string
+    {
+        return $this->downloadRecording($url, $client);
     }
 
     /**

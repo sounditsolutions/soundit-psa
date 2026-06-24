@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Jobs\DownloadRecording;
 use App\Models\PhoneCall;
 use App\Services\NotificationService;
 use App\Services\PhoneCallService;
@@ -288,9 +289,11 @@ class PlivoWebhookController extends Controller
                     $call = $call ?? PhoneCall::where('call_uuid', $callUuid)->first();
                     if ($call && ! $call->isTranscribed() && ! $call->isTranscribing()) {
                         $call->update(['transcription_status' => \App\Enums\TranscriptionStatus::Pending]);
-                        // Delay 15s — Plivo's CDN needs time to finalize the MP3 after the callback fires
-                        $cmd = sprintf('sleep 15 && php %s calls:transcribe %d > /dev/null 2>&1 &', base_path('artisan'), $call->id);
-                        Process::run($cmd);
+                        // Delay 15s — Plivo's CDN needs time to finalize the MP3 after the callback fires.
+                        // DownloadRecording handles the CDN transfer under its own generous timeout;
+                        // TranscribePhoneCall (dispatched from DownloadRecording on success) runs
+                        // Whisper STT + AI analysis with its full 600 s budget.
+                        DownloadRecording::dispatch($call->id)->delay(now()->addSeconds(15));
                     }
                 }
             }

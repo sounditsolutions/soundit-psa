@@ -3,12 +3,12 @@
 namespace App\Console\Commands;
 
 use App\Enums\CallStatus;
+use App\Jobs\DownloadRecording;
 use App\Models\PhoneCall;
 use App\Services\PhoneCallService;
 use App\Support\PlivoConfig;
 use App\Support\TranscriptionConfig;
 use Illuminate\Console\Command;
-use Illuminate\Support\Facades\Process;
 
 class ResolveCallRecordings extends Command
 {
@@ -115,8 +115,7 @@ class ResolveCallRecordings extends Command
             return;
         }
 
-        $cmd = sprintf('php %s calls:transcribe %d > /dev/null 2>&1 &', base_path('artisan'), $call->id);
-        Process::run($cmd);
-        $this->line('    → transcription queued');
+        DownloadRecording::dispatch($call->id);
+        $this->line('    → download + transcription queued');
     }
 }

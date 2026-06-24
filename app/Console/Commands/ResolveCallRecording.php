@@ -2,13 +2,13 @@
 
 namespace App\Console\Commands;
 
+use App\Jobs\DownloadRecording;
 use App\Models\PhoneCall;
 use App\Services\PhoneCallService;
 use App\Support\PlivoConfig;
 use App\Support\TranscriptionConfig;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Process;
 
 class ResolveCallRecording extends Command
 {
@@ -53,8 +53,7 @@ class ResolveCallRecording extends Command
             && ($call->recording_duration ?? 0) >= TranscriptionConfig::minDurationSeconds()
         ) {
             $call->update(['transcription_status' => \App\Enums\TranscriptionStatus::Pending]);
-            $cmd = sprintf('php %s calls:transcribe %d > /dev/null 2>&1 &', base_path('artisan'), $call->id);
-            Process::run($cmd);
+            DownloadRecording::dispatch($call->id);
         }
 
         return self::SUCCESS;

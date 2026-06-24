@@ -9,13 +9,36 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 
+/**
+ * Job 2 of 2 in the split transcription pipeline.
+ *
+ * Runs Whisper STT + AI analysis on a recording that has already been
+ * downloaded to a local path by {@see DownloadRecording}.  If the call's
+ * recording_disk_path is set and the file exists, TranscriptionService
+ * skips the CDN download and goes straight to compute — keeping this
+ * job's 600 s budget for Whisper and AI only.
+ *
+ * Can also be used standalone (e.g. from the artisan command) when the
+ * download has not been pre-split; in that case TranscriptionService
+ * falls back to an inline download.
+ *
+ * File cleanup: the persisted recording file (recording_disk_path) is
+ * deleted here after transcription succeeds or fails so the disk stays
+ * clean regardless of the outcome.
+ */
 class TranscribePhoneCall implements ShouldQueue
 {
     use Queueable;
 
     public int $tries = 2;
 
+    /**
+     * Budget for Whisper STT + AI analysis only (download already handled by
+     * DownloadRecording).  600 s remains the ceiling; all of it is now
+     * available for compute rather than being shared with the CDN transfer.
+     */
     public int $timeout = 600;
 
     public function __construct(
@@ -50,6 +73,10 @@ class TranscribePhoneCall implements ShouldQueue
         });
 
         if (! $call) {
+            // Still clean up the local file if one was set — avoids orphaned files
+            // when a second attempt finds the call already completed.
+            $this->cleanupDiskFile($call ?? PhoneCall::find($this->callId));
+
             return;
         }
 
@@ -66,6 +93,27 @@ class TranscribePhoneCall implements ShouldQueue
             if ($this->attempts() < $this->tries) {
                 throw $e;
             }
+        } finally {
+            // Clean up the persisted local recording file so the disk stays tidy
+            // regardless of transcription outcome (success, failure, or skip).
+            $this->cleanupDiskFile($call);
         }
+    }
+
+    /**
+     * Delete the locally-persisted recording file (if any) and clear the DB column.
+     * Safe to call with null (e.g. if the call was deleted between jobs).
+     */
+    private function cleanupDiskFile(?PhoneCall $call): void
+    {
+        if (! $call || ! $call->recording_disk_path) {
+            return;
+        }
+
+        if (Storage::disk('local')->exists($call->recording_disk_path)) {
+            Storage::disk('local')->delete($call->recording_disk_path);
+        }
+
+        $call->update(['recording_disk_path' => null]);
     }
 }

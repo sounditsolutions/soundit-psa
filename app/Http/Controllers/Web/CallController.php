@@ -11,6 +11,7 @@ use App\Enums\TicketStatus;
 use App\Enums\TicketType;
 use App\Enums\TranscriptionStatus;
 use App\Http\Controllers\Controller;
+use App\Jobs\DownloadRecording;
 use App\Models\Asset;
 use App\Models\Client;
 use App\Models\Person;
@@ -27,7 +28,6 @@ use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Process;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rule;
 
@@ -399,9 +399,10 @@ class CallController extends Controller
 
         $call->update(['transcription_status' => TranscriptionStatus::Pending]);
 
-        // Spawn detached process — no timeout constraints for long recordings
-        $cmd = sprintf('php %s calls:transcribe %d > /dev/null 2>&1 &', base_path('artisan'), $call->id);
-        Process::run($cmd);
+        // DownloadRecording handles the CDN transfer under its own generous timeout;
+        // TranscribePhoneCall (dispatched from DownloadRecording on success) runs
+        // Whisper STT + AI analysis with its full 600 s budget.
+        DownloadRecording::dispatch($call->id);
 
         return redirect()->back()->with('success', 'Transcription started — results will appear shortly.');
     }
