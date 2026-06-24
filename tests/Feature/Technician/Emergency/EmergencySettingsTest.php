@@ -158,16 +158,23 @@ class EmergencySettingsTest extends TestCase
         $this->assertSame([$justin->id, $user->id], TechnicianConfig::escalationChain());
     }
 
-    /** Per-user availability map persisted. */
+    /** Per-user availability map persisted (checked = available, unchecked = unavailable). */
     public function test_operator_availability_persisted(): void
     {
-        $user = User::factory()->create();
+        $availableUser = User::factory()->create();
+        $awayUser = User::factory()->create();
 
-        $this->actingAs($user)->post(route('settings.integrations.technician.update'), [
-            'technician_operator_availability' => [(string) $user->id => '1'],
+        // Simulate the hidden-then-checkbox pattern: checked user sends '1',
+        // unchecked user sends only '0' (the hidden input value).
+        $this->actingAs($availableUser)->post(route('settings.integrations.technician.update'), [
+            'technician_operator_availability' => [
+                (string) $availableUser->id => '1',
+                (string) $awayUser->id => '0',
+            ],
         ])->assertRedirect();
 
-        $this->assertTrue(TechnicianConfig::operatorAvailable($user->id));
+        $this->assertTrue(TechnicianConfig::operatorAvailable($availableUser->id), 'Checked operator must be available');
+        $this->assertFalse(TechnicianConfig::operatorAvailable($awayUser->id), 'Unchecked (hidden-"0") operator must be unavailable');
     }
 
     /** Emergency age minutes p1–p4 map persisted. */

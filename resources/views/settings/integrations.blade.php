@@ -3215,6 +3215,7 @@
                                     : true;
                             @endphp
                             <div class="form-check form-switch">
+                                <input type="hidden" name="technician_operator_availability[{{ $activeUser->id }}]" value="0">
                                 <input class="form-check-input" type="checkbox"
                                        id="avail_{{ $activeUser->id }}"
                                        name="technician_operator_availability[{{ $activeUser->id }}]"
