@@ -293,6 +293,11 @@
                                 <div class="flex-grow-1" style="{{ $isSystem ? 'opacity: 0.6;' : '' }}">
                                     <div class="d-flex align-items-center gap-2 mb-1 flex-wrap">
                                         <strong class="small">{{ $note->display_author }}</strong>
+                                        @if($note->ai_authored)
+                                            <span class="badge bg-info text-dark ms-1" title="Written by the AI Technician and disclosed to the client">
+                                                <i class="bi bi-robot me-1"></i>AI-authored
+                                            </span>
+                                        @endif
                                         <span class="badge bg-light text-dark small">
                                             <i class="bi {{ $note->note_type->icon() }} me-1"></i>{{ $note->note_type->label() }}
                                         </span>
