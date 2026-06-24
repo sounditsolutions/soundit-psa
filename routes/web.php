@@ -62,6 +62,14 @@ Route::get('/setup/{token}/download', [\App\Http\Controllers\Portal\PortalInstal
 // QBO disconnect landing page — Intuit redirects users here when they disconnect from QBO
 Route::get('/auth/quickbooks/disconnected', [QboController::class, 'disconnected'])->name('auth.qbo.disconnected');
 
+// AI Technician — one-tap emergency acknowledgement (Phase 2). PUBLIC by design:
+// the signed token IS the auth (it binds the acking user id), so an away operator
+// clicking the link must NOT be bounced to SSO (CO-16). Throttled as a bearer
+// credential to blunt link-leak abuse against the backstop (CO-5b).
+Route::get('/technician/emergency/ack/{token}', [\App\Http\Controllers\Web\EmergencyAckController::class, 'ack'])
+    ->middleware('throttle:30,1')
+    ->name('emergency.ack');
+
 // CW Manage companyinfo — T2T calls GET /login/companyinfo/{companyId} at the root
 // domain (not under /api) to discover the API version before making real API calls.
 Route::get('/login/companyinfo/{companyId}', function (string $companyId) {
