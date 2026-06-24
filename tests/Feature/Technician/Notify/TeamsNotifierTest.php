@@ -37,4 +37,14 @@ class TeamsNotifierTest extends TestCase
 
         $this->assertFalse(app(TeamsNotifier::class)->post('S', 'B'));
     }
+
+    public function test_http_throw_is_caught_and_returns_false(): void
+    {
+        Setting::setValue('technician_teams_webhook_url', 'https://example.webhook.office.com/hook');
+        Http::fake(['*' => function () {
+            throw new \Illuminate\Http\Client\ConnectionException('down');
+        }]);
+
+        $this->assertFalse(app(TeamsNotifier::class)->post('S', 'B'));
+    }
 }

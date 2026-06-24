@@ -5,15 +5,6 @@ namespace App\Services\Technician\Notify;
 use App\Models\TechnicianActionLog;
 use App\Services\Technician\Cockpit\CockpitQuery;
 
-final class TechnicianDigest
-{
-    public function __construct(
-        public readonly string $subject,
-        public readonly string $body,
-        public readonly bool $isEmpty,
-    ) {}
-}
-
 /**
  * Builds the operator's daily digest from the tested 1A/1B read models: pending
  * approvals (oldest-first), how many tickets need a human, and what the AI executed
