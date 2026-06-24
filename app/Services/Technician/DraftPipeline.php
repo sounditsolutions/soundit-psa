@@ -176,9 +176,23 @@ class DraftPipeline
             ],
         );
 
-        // Idempotent: only record the held action the first time we create the run.
+        // Idempotent: only record the held action the first time we create the run — OR
+        // when we find a stale (Superseded/Done/Denied) run with the same content hash
+        // and revive it so the cockpit is never left with zero drafts after a nudge.
         if (! $run->wasRecentlyCreated) {
-            return;
+            if ($run->state !== TechnicianRunState::AwaitingApproval) {
+                // Revive: the identical-body superseded/done/denied run must be re-presented.
+                $run->update([
+                    'state' => TechnicianRunState::AwaitingApproval->value,
+                    'proposed_content' => $content,
+                    'proposed_meta' => $meta,
+                    'confidence' => $confidence,
+                    'tokens_used' => $tokensUsed,
+                ]);
+            } else {
+                // Already awaiting approval this turn — idempotent, do not re-dispatch.
+                return;
+            }
         }
 
         $this->gate->dispatch(
