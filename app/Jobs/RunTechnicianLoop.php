@@ -8,6 +8,7 @@ use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Services\Technician\AutoAcknowledge;
 use App\Services\Technician\DraftPipeline;
+use App\Support\TechnicianConfig;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Support\Facades\Log;
@@ -33,6 +34,8 @@ class RunTechnicianLoop implements ShouldQueue
 
     public function handle(): void
     {
+        TechnicianConfig::recordWorkerSeen();
+
         $ticket = Ticket::find($this->ticketId);
 
         if (! $ticket) {

@@ -183,6 +183,20 @@ class TechnicianConfig
         Setting::setValue('technician_last_digest_at', now()->toIso8601String());
     }
 
+    /** When the worker last processed a job on the technician queue; null if never. */
+    public static function workerLastSeen(): ?Carbon
+    {
+        $value = Setting::getValue('technician_worker_last_seen');
+
+        return is_string($value) && $value !== '' ? Carbon::parse($value) : null;
+    }
+
+    /** Record that the technician worker is alive right now. */
+    public static function recordWorkerSeen(): void
+    {
+        Setting::setValue('technician_worker_last_seen', now()->toIso8601String());
+    }
+
     /** @return array<string, string> */
     private static function decodeMap(string $key): array
     {

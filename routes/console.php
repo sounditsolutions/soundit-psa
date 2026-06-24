@@ -295,6 +295,12 @@ Schedule::command('wiki:maintain')
     ->runInBackground()
     ->when(fn () => \App\Support\WikiConfig::maintenanceEnabled());
 
+// AI Technician — worker-liveness ping every 5 minutes; the worker processing it proves
+// the technician queue is draining even when no tickets are flowing, and records the heartbeat.
+Schedule::job(new \App\Jobs\TechnicianPing)
+    ->everyFiveMinutes()
+    ->when(fn () => \App\Support\TechnicianConfig::enabled());
+
 // AI Technician — daily operator digest at the operator-local configured time (default 08:00).
 // Fires once per local day at the configured HH:MM minute; send is skipped inside the command
 // when the subsystem is disabled, so the schedule guard is a cheap early-exit only.
