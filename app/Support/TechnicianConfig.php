@@ -120,6 +120,14 @@ class TechnicianConfig
         return false;
     }
 
+    /** Teams incoming-webhook URL for operator notifications (spec §1C). */
+    public static function teamsWebhookUrl(): ?string
+    {
+        $value = Setting::getValue('technician_teams_webhook_url');
+
+        return is_string($value) && trim($value) !== '' ? trim($value) : null;
+    }
+
     /** The Technician's own daily token ceiling (spec §11). */
     public static function dailyTokenLimit(): int
     {
