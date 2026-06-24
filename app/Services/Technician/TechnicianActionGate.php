@@ -5,6 +5,7 @@ namespace App\Services\Technician;
 use App\Enums\TechnicianTier;
 use App\Models\TechnicianActionLog;
 use App\Support\TechnicianConfig;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
 /**
@@ -98,9 +99,18 @@ class TechnicianActionGate
             return $this->result('held', $tier, $this->audit($actionType, $tier, 'held', $ticketId, $clientId, $runId, $contentHash, $summary, $correlationId));
         }
 
-        $executor();
+        // Atomic: the executor's DB side effects and the append-only 'executed'
+        // audit row commit together or not at all (review #55 — a committed side
+        // effect with no audit row would re-send on retry). Any external send
+        // (e.g. the acknowledgment email) is performed by the caller AFTER this
+        // returns 'executed', never inside this transaction.
+        $log = DB::transaction(function () use ($executor, $actionType, $tier, $ticketId, $clientId, $runId, $contentHash, $summary, $correlationId): TechnicianActionLog {
+            $executor();
 
-        return $this->result('executed', $tier, $this->audit($actionType, $tier, 'executed', $ticketId, $clientId, $runId, $contentHash, $summary, $correlationId));
+            return $this->audit($actionType, $tier, 'executed', $ticketId, $clientId, $runId, $contentHash, $summary, $correlationId);
+        });
+
+        return $this->result('executed', $tier, $log);
     }
 
     private function result(string $status, TechnicianTier $tier, TechnicianActionLog $log): TechnicianActionResult

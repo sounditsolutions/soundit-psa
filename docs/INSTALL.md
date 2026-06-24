@@ -491,6 +491,28 @@ WantedBy=multi-user.target
 
 Then: `sudo systemctl enable --now soundit-queue`
 
+#### AI Technician queue worker (required before enabling the AI Technician)
+
+The AI Technician pipeline runs up to 3 LLM round-trips per ticket and must not share the worker that handles billing, email, and transcription. A dedicated `technician` queue worker is required.
+
+Copy the bundled unit file and enable it:
+
+```bash
+sudo cp /var/www/psa/deploy/soundit-psa-technician-queue.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now soundit-psa-technician-queue
+```
+
+> **IMPORTANT — enablement order:** the `technician` worker **MUST** be running before you flip `technician_enabled` to `1` in Settings. Enabling the feature before the worker is up will leave Loop jobs silently queued with no processor.
+
+> **IMPORTANT — after every deploy:** run `php artisan queue:restart` so the `technician` worker picks up new Loop code. Without a restart the old worker binary stays in memory and will not run any code changes deployed since it started.
+
+To verify the worker is running:
+
+```bash
+sudo systemctl status soundit-psa-technician-queue
+```
+
 ### General settings
 
 Before configuring integrations, visit **Settings > General Settings** to set your **display timezone**. All timestamps in the app display in this timezone (the database always stores UTC). For example, set `America/New_York` for US Eastern time.

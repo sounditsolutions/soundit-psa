@@ -39,6 +39,15 @@ class TechnicianConfig
         return User::orderBy('id')->value('id');
     }
 
+    /** The configured AI actor's display name (spec §3), for the disclosure persona. */
+    public static function aiActorName(): string
+    {
+        $id = self::aiActorUserId();
+        $name = $id ? User::find($id)?->name : null;
+
+        return is_string($name) && trim($name) !== '' ? $name : 'our virtual assistant';
+    }
+
     /**
      * action_type => tier-string map (data, not code). Invalid/missing → [],
      * which the classifier reads as "default-deny everything to Approve".
@@ -79,6 +88,52 @@ class TechnicianConfig
         $value = Setting::getValue('technician_ack_eta_text');
 
         return is_string($value) && $value !== '' ? $value : 'within one business day';
+    }
+
+    /** Category tokens whose inbound tickets must NOT be auto-acknowledged (spec §9). */
+    public static function ackSuppressedCategories(): array
+    {
+        $raw = Setting::getValue('technician_ack_suppressed_categories');
+        if (is_string($raw) && $raw !== '') {
+            $decoded = json_decode($raw, true);
+            if (is_array($decoded)) {
+                return array_map('strval', $decoded);
+            }
+        }
+
+        return ['billing', 'security', 'incident', 'outage'];
+    }
+
+    public static function ackSuppressedForCategory(?string $category): bool
+    {
+        if (! is_string($category) || $category === '') {
+            return false;
+        }
+
+        $haystack = mb_strtolower($category);
+        foreach (self::ackSuppressedCategories() as $needle) {
+            if ($needle !== '' && str_contains($haystack, mb_strtolower($needle))) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /** The Technician's own daily token ceiling (spec §11). */
+    public static function dailyTokenLimit(): int
+    {
+        $value = Setting::getValue('technician_daily_token_limit');
+
+        return is_numeric($value) ? (int) $value : 1_000_000;
+    }
+
+    /** Per-run token budget for a single Technician AI call. */
+    public static function maxTokensPerRun(): int
+    {
+        $value = Setting::getValue('technician_max_tokens_per_run');
+
+        return is_numeric($value) ? (int) $value : 100_000;
     }
 
     /** @return array<string, string> */

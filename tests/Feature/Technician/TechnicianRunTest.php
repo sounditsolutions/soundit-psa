@@ -84,4 +84,27 @@ class TechnicianRunTest extends TestCase
 
         $this->assertDatabaseHas('technician_runs', ['id' => $second->id]);
     }
+
+    public function test_a_run_round_trips_the_held_draft_columns(): void
+    {
+        $ticket = Ticket::factory()->create();
+
+        $run = TechnicianRun::create([
+            'ticket_id' => $ticket->id,
+            'client_id' => $ticket->client_id,
+            'action_type' => 'send_reply',
+            'content_hash' => str_repeat('d', 64),
+            'state' => TechnicianRunState::AwaitingApproval,
+            'proposed_content' => 'Hello, we can help with that.',
+            'proposed_meta' => ['to' => 'client@example.com', 'reasons' => ['known-runbook']],
+            'confidence' => 0.82,
+            'tokens_used' => 1234,
+        ]);
+
+        $fresh = $run->fresh();
+        $this->assertSame('Hello, we can help with that.', $fresh->proposed_content);
+        $this->assertSame(['to' => 'client@example.com', 'reasons' => ['known-runbook']], $fresh->proposed_meta);
+        $this->assertEqualsWithDelta(0.82, $fresh->confidence, 0.001);
+        $this->assertSame(1234, $fresh->tokens_used);
+    }
 }
