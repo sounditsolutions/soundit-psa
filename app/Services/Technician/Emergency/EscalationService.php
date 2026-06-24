@@ -253,8 +253,15 @@ class EscalationService
      * it, OperatorNotifier::notifyUser would silently no-op on User::find() === null
      * while escalation_step / last_pinged_at still advanced and an audit row was
      * written — burning a full escalation timeout before reaching a real human.
+     *
+     * PUBLIC because this is the SINGLE SOURCE OF TRUTH for "is this chain member
+     * actually reachable" — EmergencySweep::anyoneReachable() (the gate that decides
+     * whether to send the client max-hold) calls THIS so the two can never disagree.
+     * If the sweep used a weaker check (e.g. operatorAvailable() alone, which defaults
+     * an unset/deleted user to "available"), an all-deleted/-inactive chain would page
+     * nobody here AND withhold the max-hold there: a silent missed emergency.
      */
-    private function isReachable(int $userId): bool
+    public function isReachable(int $userId): bool
     {
         $user = User::find($userId);
         if ($user === null || ! $user->is_active) {

@@ -274,6 +274,58 @@ class EmergencySweepTest extends TestCase
         ]);
     }
 
+    /**
+     * Reachability must be DEFINED IDENTICALLY in the sweep and EscalationService, or
+     * the backstop has a hole: if the ENTIRE chain is deleted/inactive users,
+     * EscalationService correctly finds nobody reachable and pages no one — and the
+     * sweep MUST therefore send the client max-hold. With the OLD operatorAvailable()-
+     * only gate the sweep saw a missing user as "available" (default), withheld the
+     * max-hold, and the emergency sat open forever: nobody paged AND no client comms.
+     * This pins that an all-deleted chain still triggers the honest max-hold — the same
+     * outcome as the away-toggle path (test above) — via the shared isReachable().
+     */
+    public function test_sends_max_hold_when_whole_chain_is_deleted_users(): void
+    {
+        Setting::setValue('technician_enabled', '1');
+        Setting::setValue('technician_action_tiers', json_encode(['send_max_hold' => 'auto']));
+        $actor = User::factory()->create(['name' => 'Chet']);
+        Setting::setValue('triage_system_user_id', (string) $actor->id);
+
+        // The WHOLE escalation chain is a user that no longer exists. operatorAvailable()
+        // would default this id to "available" — so only a reachability check that ANDs
+        // in existence (isReachable) keeps the sweep and EscalationService in agreement.
+        $ghost = User::factory()->create();
+        Setting::setValue('technician_escalation_chain', json_encode([$ghost->id]));
+        $ghost->delete();
+
+        $client = $this->operationalClient();
+        $person = \App\Models\Person::create([
+            'client_id' => $client->id, 'person_type' => \App\Enums\PersonType::User,
+            'first_name' => 'Test', 'last_name' => 'Contact', 'email' => 'c@example.com', 'is_active' => true,
+        ]);
+        Ticket::factory()->create([
+            'client_id' => $client->id, 'contact_id' => $person->id,
+            'status' => TicketStatus::New->value, 'priority' => TicketPriority::P1->value,
+            'opened_at' => now()->subHour(), 'responded_at' => null, 'subject' => 'site OUTAGE',
+        ]);
+
+        // EscalationService pages no one (the deleted member is skipped); the client
+        // email is what proves the max-hold went out because the chain is unreachable.
+        $this->mock(OperatorNotifier::class, fn (MockInterface $m) => $m->shouldReceive('notifyUser')->zeroOrMoreTimes());
+        $this->mock(\App\Services\EmailService::class, function (MockInterface $m): void {
+            $m->shouldReceive('sendTicketReplyNote')->once()->andReturnNull();
+        });
+
+        $this->artisan('technician:emergency-sweep')->assertSuccessful();
+
+        $e = TechnicianEmergency::first();
+        $this->assertNotNull($e);
+        $this->assertNotNull($e->max_hold_sent_at, 'an all-deleted chain is unreachable ⇒ the max-hold must still go out (no missed emergency)');
+        $this->assertDatabaseHas('technician_action_logs', [
+            'action_type' => 'send_max_hold', 'result_status' => 'executed',
+        ]);
+    }
+
     /** CO-10: a prospect / non-operational client's aged P1 must NOT be escalated. */
     public function test_co10_prospect_client_is_not_escalated(): void
     {

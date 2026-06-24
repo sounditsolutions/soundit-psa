@@ -226,11 +226,22 @@ class EmergencySweep
         return array_values(array_unique(array_map('intval', $ids)));
     }
 
-    /** True iff at least one escalation-chain member is currently available. */
+    /**
+     * True iff at least one escalation-chain member is GENUINELY reachable.
+     *
+     * This gates the honest client max-hold, so it MUST use the exact same definition
+     * of "reachable" as EscalationService — otherwise the two can disagree and leave a
+     * missed-emergency hole: if the whole chain is deleted/inactive users, the escalation
+     * pages no one (correctly), and a weaker gate here (bare operatorAvailable(), which
+     * defaults an unset/deleted user to "available") would WITHHOLD the max-hold — nobody
+     * paged AND no client comms, emergency open forever. Delegating to the injected
+     * EscalationService::isReachable() keeps a SINGLE source of truth (existence + active
+     * + the operator away-toggle, ANDed) so the sweep and escalation can never diverge.
+     */
     private function anyoneReachable(): bool
     {
         foreach (TechnicianConfig::escalationChain() as $uid) {
-            if (TechnicianConfig::operatorAvailable($uid)) {
+            if ($this->escalation->isReachable($uid)) {
                 return true;
             }
         }
