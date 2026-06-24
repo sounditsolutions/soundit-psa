@@ -13,6 +13,7 @@ use App\Models\Ticket;
 use App\Models\TicketNote;
 use App\Models\User;
 use App\Services\EmailService;
+use App\Services\Technician\TechnicianActionGate;
 use App\Services\Technician\TechnicianApprovalService;
 use App\Services\Technician\TechnicianDisclosure;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -45,7 +46,7 @@ class TechnicianApprovalServiceTest extends TestCase
     {
         $actor = User::factory()->create(['name' => 'Chet']);
         $run = $this->heldReplyRun($actor);
-        $this->mock(EmailService::class, fn (MockInterface $m) => $m->shouldReceive('sendTicketReplyNote')->once()->andReturnNull());
+        $this->mock(EmailService::class, fn (MockInterface $m) => $m->shouldReceive('sendTicketReplyNote')->once()->with(\Mockery::any(), \Mockery::any(), 'c@example.com', \Mockery::any())->andReturnNull());
 
         $result = app(TechnicianApprovalService::class)->approveAndSend($run, 'Edited reply body.', $actor->id);
 
@@ -82,5 +83,23 @@ class TechnicianApprovalServiceTest extends TestCase
         app(TechnicianApprovalService::class)->deny($run);
 
         $this->assertSame(TechnicianRunState::Denied, $run->fresh()->state);
+    }
+
+    public function test_gate_throw_reverts_run_to_awaiting_approval(): void
+    {
+        $actor = User::factory()->create(['name' => 'Chet']);
+        $run = $this->heldReplyRun($actor);
+
+        $this->mock(TechnicianActionGate::class, fn (MockInterface $m) => $m->shouldReceive('dispatch')->andThrow(new \RuntimeException('boom')));
+
+        $caught = null;
+        try {
+            app(TechnicianApprovalService::class)->approveAndSend($run, 'Draft body.', $actor->id);
+        } catch (\RuntimeException $e) {
+            $caught = $e;
+        }
+
+        $this->assertNotNull($caught);
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
     }
 }

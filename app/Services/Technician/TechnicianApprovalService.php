@@ -49,39 +49,52 @@ class TechnicianApprovalService
         $actorId = TechnicianConfig::aiActorUserId();
         $actorName = TechnicianConfig::aiActorName();
 
-        // The grant binds the EXACT (possibly edited) body the operator approved.
-        $hash = hash('sha256', 'send_reply:'.$run->ticket_id.':'.$body);
-        $token = TechnicianApprovalGrant::issue('send_reply', $run->ticket_id, $hash, $approverId);
+        try {
+            // The grant binds the EXACT (possibly edited) body the operator approved.
+            $hash = hash('sha256', 'send_reply:'.$run->ticket_id.':'.$body);
+            $token = TechnicianApprovalGrant::issue('send_reply', $run->ticket_id, $hash, $approverId);
 
-        $disclosed = $this->disclosure->withDisclosure($body, $actorName);
-        $this->disclosure->assertPresent($disclosed); // fail-closed pre-send check
+            $disclosed = $this->disclosure->withDisclosure($body, $actorName);
+            $this->disclosure->assertPresent($disclosed); // fail-closed pre-send check
 
-        $createdNote = null;
+            $createdNote = null;
 
-        $result = $this->gate->dispatch(
-            actionType: 'send_reply',
-            ticketId: $run->ticket_id,
-            clientId: $run->client_id,
-            contentHash: $hash,
-            summary: 'Operator-approved client reply.',
-            runId: $run->id,
-            executor: function () use ($ticket, $actorId, $actorName, $disclosed, $run, &$createdNote): void {
-                $createdNote = TicketNote::create([
-                    'ticket_id' => $ticket->id,
-                    'author_id' => $actorId,
-                    'author_name' => $actorName,
-                    'who_type' => WhoType::Agent,
-                    'ai_authored' => true,
-                    'body' => $disclosed,
-                    'note_type' => NoteType::Reply,
-                    'is_private' => false,
-                    'noted_at' => now(),
-                ]);
-                $run->advanceTo(TechnicianRunState::Done); // note + audit + state commit atomically
-            },
-            approvalToken: $token,
-            approverUserId: $approverId,
-        );
+            $result = $this->gate->dispatch(
+                actionType: 'send_reply',
+                ticketId: $run->ticket_id,
+                clientId: $run->client_id,
+                contentHash: $hash,
+                summary: 'Operator-approved client reply.',
+                runId: $run->id,
+                executor: function () use ($ticket, $actorId, $actorName, $disclosed, $run, &$createdNote): void {
+                    $createdNote = TicketNote::create([
+                        'ticket_id' => $ticket->id,
+                        'author_id' => $actorId,
+                        'author_name' => $actorName,
+                        'who_type' => WhoType::Agent,
+                        'ai_authored' => true,
+                        'body' => $disclosed,
+                        'note_type' => NoteType::Reply,
+                        'is_private' => false,
+                        'noted_at' => now(),
+                    ]);
+                    $run->advanceTo(TechnicianRunState::Done); // note + audit + state commit atomically
+                },
+                approvalToken: $token,
+                approverUserId: $approverId,
+            );
+        } catch (\Throwable $e) {
+            // Unexpected throw between claim and email send — revert so the operator can retry.
+            // Use a direct query so the update is not suppressed by Eloquent dirty-tracking
+            // (claimForExecution sets state via __set, leaving original='awaiting_approval';
+            // a subsequent setAttribute back to that value would appear non-dirty to save()).
+            $run->getConnection()
+                ->table('technician_runs')
+                ->where('id', $run->getKey())
+                ->update(['state' => TechnicianRunState::AwaitingApproval->value, 'updated_at' => now()]);
+            $run->state = TechnicianRunState::AwaitingApproval;
+            throw $e;
+        }
 
         if ($result->status !== 'executed' || $createdNote === null) {
             // Gate declined (kill-switch flipped in-flight, etc.) — un-latch so the operator can retry.
