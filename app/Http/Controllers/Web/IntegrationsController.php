@@ -253,6 +253,11 @@ class IntegrationsController extends Controller
         // AI Technician settings
         $technicianEnabled = \App\Support\TechnicianConfig::enabled();
         $technicianAutoAck = ((\App\Support\TechnicianConfig::tierMap()['send_ack'] ?? null) === 'auto');
+        $technicianTeamsWebhook = \App\Support\TechnicianConfig::teamsWebhookUrl();
+        $technicianNotifyEmail = \App\Support\TechnicianConfig::notifyEmail();
+        $technicianDigestEnabled = \App\Support\TechnicianConfig::digestEnabled();
+        $technicianDigestTime = \App\Support\TechnicianConfig::digestTimeLocal();
+        $technicianHeartbeatInterval = \App\Support\TechnicianConfig::heartbeatIntervalMinutes();
 
         $selectedIds = array_filter([(int) $triageDefaultAssignee, (int) $triageSystemUser]);
         $users = \App\Models\User::active()->orderBy('name')->get(['id', 'name', 'is_active']);
@@ -288,6 +293,7 @@ class IntegrationsController extends Controller
             'triageDefaultAssignee', 'triageSystemUser', 'triageModel', 'triageMaxTokens', 'triageDailyTokens', 'triageBatchSize', 'triageStages',
             'assistantEnabled', 'assistantMaxMessages', 'assistantDailyTokens',
             'technicianEnabled', 'technicianAutoAck',
+            'technicianTeamsWebhook', 'technicianNotifyEmail', 'technicianDigestEnabled', 'technicianDigestTime', 'technicianHeartbeatInterval',
             'screenconnectBaseUrl', 'screenconnectWebhookSecret', 'screenconnectEnabled', 'screenconnectConfigured',
             'tacticalConfigured', 'tacticalApiUrl', 'tacticalWebUrl', 'tacticalConnected', 'tacticalEnabled',
             'tacticalWebhookLastAt', 'tacticalWebhookProcessed24h', 'tacticalWebhookFailed',
@@ -1624,6 +1630,12 @@ class IntegrationsController extends Controller
             'technician_action_tiers',
             $request->has('technician_auto_ack') ? json_encode(['send_ack' => 'auto']) : json_encode([])
         );
+        Setting::setValue('technician_teams_webhook_url', trim((string) $request->input('technician_teams_webhook_url', '')));
+        Setting::setValue('technician_notify_email', trim((string) $request->input('technician_notify_email', '')));
+        Setting::setValue('technician_digest_enabled', $request->has('technician_digest_enabled') ? '1' : '0');
+        $time = (string) $request->input('technician_digest_time', '08:00');
+        Setting::setValue('technician_digest_time', preg_match('/^\d{2}:\d{2}$/', $time) ? $time : '08:00');
+        Setting::setValue('technician_heartbeat_interval', (string) max(1, (int) $request->input('technician_heartbeat_interval', 15)));
 
         return redirect()->route('settings.integrations')
             ->with('success', 'AI Technician settings saved.');

@@ -3156,6 +3156,33 @@
                         <label class="form-check-label" for="technician_auto_ack"><strong>Auto-acknowledge new tickets</strong></label>
                     </div>
 
+                    <hr class="my-3">
+                    <h6 class="text-muted text-uppercase small mb-2">Notify (Plan 1C)</h6>
+                    <div class="mb-3">
+                        <label class="form-label small" for="technician_teams_webhook_url">Teams webhook URL</label>
+                        <input type="url" class="form-control" id="technician_teams_webhook_url" name="technician_teams_webhook_url"
+                               value="{{ $technicianTeamsWebhook }}" placeholder="https://…webhook.office.com/… (or a Power Automate Workflow URL)">
+                        <div class="form-text">Paste an incoming-webhook / Power Automate Workflow URL for the operator chat. Optional — email is the fallback.</div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label small" for="technician_notify_email">Notify email (fallback)</label>
+                        <input type="email" class="form-control" id="technician_notify_email" name="technician_notify_email" value="{{ $technicianNotifyEmail }}">
+                    </div>
+                    <div class="form-check form-switch mb-2">
+                        <input class="form-check-input" type="checkbox" id="technician_digest_enabled" name="technician_digest_enabled" {{ $technicianDigestEnabled ? 'checked' : '' }}>
+                        <label class="form-check-label" for="technician_digest_enabled">Send a daily digest</label>
+                    </div>
+                    <div class="row">
+                        <div class="col mb-3">
+                            <label class="form-label small" for="technician_digest_time">Digest time (local)</label>
+                            <input type="time" class="form-control" id="technician_digest_time" name="technician_digest_time" value="{{ $technicianDigestTime }}">
+                        </div>
+                        <div class="col mb-3">
+                            <label class="form-label small" for="technician_heartbeat_interval">Worker-down alert after (min)</label>
+                            <input type="number" min="1" class="form-control" id="technician_heartbeat_interval" name="technician_heartbeat_interval" value="{{ $technicianHeartbeatInterval }}">
+                        </div>
+                    </div>
+
                     <button type="submit" class="btn btn-primary">
                         <i class="bi bi-check-lg me-1"></i>Save Technician Settings
                     </button>

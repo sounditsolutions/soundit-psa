@@ -37,4 +37,22 @@ class TechnicianDigestCommandTest extends TestCase
             fn (\Mockery\MockInterface $m) => $m->shouldReceive('notify')->never());
         $this->artisan('technician:digest')->assertSuccessful();
     }
+
+    public function test_settings_save_persists_notify_config(): void
+    {
+        $user = \App\Models\User::factory()->create();
+
+        $this->actingAs($user)->post(route('settings.integrations.technician.update'), [
+            'technician_enabled' => '1',
+            'technician_teams_webhook_url' => 'https://x.webhook.office.com/h',
+            'technician_notify_email' => 'ops@example.com',
+            'technician_digest_time' => '07:30',
+            'technician_heartbeat_interval' => '20',
+        ])->assertRedirect();
+
+        $this->assertSame('https://x.webhook.office.com/h', \App\Support\TechnicianConfig::teamsWebhookUrl());
+        $this->assertSame('ops@example.com', \App\Support\TechnicianConfig::notifyEmail());
+        $this->assertSame('07:30', \App\Support\TechnicianConfig::digestTimeLocal());
+        $this->assertSame(20, \App\Support\TechnicianConfig::heartbeatIntervalMinutes());
+    }
 }
