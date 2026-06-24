@@ -619,4 +619,9 @@ Route::middleware('auth')->group(function () {
         ->name('assistant.message');
     Route::post('/assistant/conversations/{conversation}/save-note', [AssistantController::class, 'saveNote'])->name('assistant.save-note');
     Route::get('/assistant/general', [AssistantController::class, 'general'])->name('assistant.general');
+
+    // AI Technician cockpit (Plan 1B)
+    Route::get('/cockpit', [\App\Http\Controllers\Web\TechnicianCockpitController::class, 'index'])->name('cockpit.index');
+    Route::post('/cockpit/runs/{run}/approve', [\App\Http\Controllers\Web\TechnicianCockpitController::class, 'approve'])->name('cockpit.approve');
+    Route::post('/cockpit/runs/{run}/deny', [\App\Http\Controllers\Web\TechnicianCockpitController::class, 'deny'])->name('cockpit.deny');
 });
