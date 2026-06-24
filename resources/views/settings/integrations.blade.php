@@ -3179,7 +3179,7 @@
                         </div>
                         <div class="col mb-3">
                             <label class="form-label small" for="technician_heartbeat_interval">Worker-down alert after (min)</label>
-                            <input type="number" min="1" class="form-control" id="technician_heartbeat_interval" name="technician_heartbeat_interval" value="{{ $technicianHeartbeatInterval }}">
+                            <input type="number" min="10" class="form-control" id="technician_heartbeat_interval" name="technician_heartbeat_interval" value="{{ $technicianHeartbeatInterval }}">
                         </div>
                     </div>
 

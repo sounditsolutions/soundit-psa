@@ -10,7 +10,7 @@ use Illuminate\Support\Facades\Log;
  * The single seam every Technician notification flows through. Delivers to Teams
  * (if a webhook is configured) AND to the operator's email (if set) — independently
  * and fail-soft, so a Teams outage never loses the notification and an email outage
- * never stops Teams. Email is the guaranteed always-on fallback.
+ * never stops Teams. Email is the always-on fallback when configured.
  */
 class OperatorNotifier
 {

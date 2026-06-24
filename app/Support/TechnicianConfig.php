@@ -202,7 +202,7 @@ class TechnicianConfig
     {
         $value = Setting::getValue('technician_heartbeat_interval');
 
-        return is_numeric($value) ? max(1, (int) $value) : 15;
+        return is_numeric($value) ? max(10, (int) $value) : 15;
     }
 
     /** When the heartbeat last sent an alert; null if never. */
