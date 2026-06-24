@@ -85,20 +85,13 @@ class TechnicianApprovalService
             );
         } catch (\Throwable $e) {
             // Unexpected throw between claim and email send — revert so the operator can retry.
-            // Use a direct query so the update is not suppressed by Eloquent dirty-tracking
-            // (claimForExecution sets state via __set, leaving original='awaiting_approval';
-            // a subsequent setAttribute back to that value would appear non-dirty to save()).
-            $run->getConnection()
-                ->table('technician_runs')
-                ->where('id', $run->getKey())
-                ->update(['state' => TechnicianRunState::AwaitingApproval->value, 'updated_at' => now()]);
-            $run->state = TechnicianRunState::AwaitingApproval;
+            $run->releaseClaim();
             throw $e;
         }
 
         if ($result->status !== 'executed' || $createdNote === null) {
             // Gate declined (kill-switch flipped in-flight, etc.) — un-latch so the operator can retry.
-            $run->advanceTo(TechnicianRunState::AwaitingApproval);
+            $run->releaseClaim();
 
             return new TechnicianApprovalResult('gate_declined');
         }

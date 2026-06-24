@@ -67,6 +67,15 @@ class TechnicianRun extends Model
         return $claimed;
     }
 
+    /** Release a claimed run back to the queue (executing → awaiting_approval). Direct update because claimForExecution bypasses dirty tracking. */
+    public function releaseClaim(): void
+    {
+        static::query()->whereKey($this->getKey())
+            ->where('state', TechnicianRunState::Executing->value)
+            ->update(['state' => TechnicianRunState::AwaitingApproval->value]);
+        $this->state = TechnicianRunState::AwaitingApproval;
+    }
+
     public function deny(): void
     {
         $this->advanceTo(TechnicianRunState::Denied);

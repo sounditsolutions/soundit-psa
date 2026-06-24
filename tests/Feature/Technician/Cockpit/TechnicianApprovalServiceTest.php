@@ -102,4 +102,19 @@ class TechnicianApprovalServiceTest extends TestCase
         $this->assertNotNull($caught);
         $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
     }
+
+    public function test_gate_declined_reverts_run_to_awaiting_approval_in_db(): void
+    {
+        $actor = User::factory()->create(['name' => 'Chet']);
+        $run = $this->heldReplyRun($actor);
+
+        // Engage the kill-switch so the gate returns 'held' (a non-executed status).
+        Setting::setValue('technician_kill_switch', '1');
+
+        $result = app(TechnicianApprovalService::class)->approveAndSend($run, 'Draft body.', $actor->id);
+
+        $this->assertSame('gate_declined', $result->status);
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state); // NOT stuck at Executing
+        $this->assertSame(0, TicketNote::where('ticket_id', $run->ticket_id)->where('ai_authored', true)->count());
+    }
 }
