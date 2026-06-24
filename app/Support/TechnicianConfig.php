@@ -120,6 +120,14 @@ class TechnicianConfig
         return false;
     }
 
+    /** Operator email for notifications (spec §1C). Null when not configured. */
+    public static function notifyEmail(): ?string
+    {
+        $value = Setting::getValue('technician_notify_email');
+
+        return is_string($value) && trim($value) !== '' ? trim($value) : null;
+    }
+
     /** Teams incoming-webhook URL for operator notifications (spec §1C). */
     public static function teamsWebhookUrl(): ?string
     {
