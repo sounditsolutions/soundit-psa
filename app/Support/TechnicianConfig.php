@@ -4,6 +4,7 @@ namespace App\Support;
 
 use App\Models\Setting;
 use App\Models\User;
+use Illuminate\Support\Carbon;
 
 /**
  * Setting-backed coverage-profile reader (spec §5). Everything is data — no
@@ -150,6 +151,36 @@ class TechnicianConfig
         $value = Setting::getValue('technician_max_tokens_per_run');
 
         return is_numeric($value) ? (int) $value : 100_000;
+    }
+
+    /** Whether the daily digest notification is enabled (spec §1C). Default: true. */
+    public static function digestEnabled(): bool
+    {
+        $value = Setting::getValue('technician_digest_enabled');
+
+        return $value === null || (bool) $value; // default true
+    }
+
+    /** Local time (HH:MM) at which the digest should fire (spec §1C). Default: 08:00. */
+    public static function digestTimeLocal(): string
+    {
+        $value = Setting::getValue('technician_digest_time');
+
+        return is_string($value) && preg_match('/^\d{2}:\d{2}$/', $value) ? $value : '08:00';
+    }
+
+    /** When the last digest was sent; null if never. */
+    public static function lastDigestAt(): ?Carbon
+    {
+        $value = Setting::getValue('technician_last_digest_at');
+
+        return is_string($value) && $value !== '' ? Carbon::parse($value) : null;
+    }
+
+    /** Record that the digest was just sent now. */
+    public static function recordDigestSent(): void
+    {
+        Setting::setValue('technician_last_digest_at', now()->toIso8601String());
     }
 
     /** @return array<string, string> */

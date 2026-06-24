@@ -1,5 +1,7 @@
 <?php
 
+use App\Support\AppTimezone;
+use App\Support\TechnicianConfig;
 use Illuminate\Support\Facades\Schedule;
 
 // NinjaRMM alert reconciliation — catch missed RESET webhooks
@@ -292,3 +294,24 @@ Schedule::command('wiki:maintain')
     ->withoutOverlapping(60)
     ->runInBackground()
     ->when(fn () => \App\Support\WikiConfig::maintenanceEnabled());
+
+// AI Technician — daily operator digest at the operator-local configured time (default 08:00).
+// Fires once per local day at the configured HH:MM minute; send is skipped inside the command
+// when the subsystem is disabled, so the schedule guard is a cheap early-exit only.
+Schedule::command('technician:digest')
+    ->everyMinute()
+    ->withoutOverlapping(10)
+    ->runInBackground()
+    ->when(function () {
+        if (! TechnicianConfig::enabled() || ! TechnicianConfig::digestEnabled()) {
+            return false;
+        }
+        // Fire only at the operator-local digest minute, and only once per local day.
+        $localNow = now()->setTimezone(AppTimezone::get());
+        if ($localNow->format('H:i') !== TechnicianConfig::digestTimeLocal()) {
+            return false;
+        }
+        $last = TechnicianConfig::lastDigestAt();
+
+        return $last === null || $last->setTimezone(AppTimezone::get())->toDateString() !== $localNow->toDateString();
+    });
