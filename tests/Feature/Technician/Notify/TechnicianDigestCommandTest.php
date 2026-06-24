@@ -28,4 +28,13 @@ class TechnicianDigestCommandTest extends TestCase
         $this->artisan('technician:digest')->assertSuccessful();
         $this->assertNotNull(TechnicianConfig::lastDigestAt());
     }
+
+    public function test_digest_disabled_sends_nothing(): void
+    {
+        \App\Models\Setting::setValue('technician_enabled', '1');
+        \App\Models\Setting::setValue('technician_digest_enabled', '0');
+        $this->mock(\App\Services\Technician\Notify\OperatorNotifier::class,
+            fn (\Mockery\MockInterface $m) => $m->shouldReceive('notify')->never());
+        $this->artisan('technician:digest')->assertSuccessful();
+    }
 }

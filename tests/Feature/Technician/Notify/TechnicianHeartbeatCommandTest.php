@@ -41,4 +41,13 @@ class TechnicianHeartbeatCommandTest extends TestCase
 
         $this->artisan('technician:heartbeat')->assertSuccessful();
     }
+
+    public function test_heartbeat_alerts_when_worker_has_never_checked_in(): void
+    {
+        \App\Models\Setting::setValue('technician_enabled', '1');
+        // technician_worker_last_seen deliberately NOT set — fresh install, worker never started.
+        $this->mock(\App\Services\Technician\Notify\OperatorNotifier::class,
+            fn (\Mockery\MockInterface $m) => $m->shouldReceive('notify')->once());
+        $this->artisan('technician:heartbeat')->assertSuccessful();
+    }
 }
