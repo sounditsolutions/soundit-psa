@@ -44,8 +44,13 @@ class OperatorNotifier
      * directly, and — only when $sms is true and a phone is configured for that
      * user — send an SMS (CO-3: phone sourced from TechnicianConfig::operatorPhone,
      * not the users table; CO-11a: caller is responsible for non-identifying SMS text).
+     *
+     * CO-5d/CO-11a: $body may carry sensitive detail (e.g. a bearer ack URL) that
+     * must NEVER reach SMS. When $smsText is supplied it is sent verbatim to SMS
+     * instead of the body; when null the legacy "$subject — $body" is used so
+     * existing callers are unaffected. Escalation passes a non-identifying stub.
      */
-    public function notifyUser(int $userId, string $subject, string $body, bool $sms = false): void
+    public function notifyUser(int $userId, string $subject, string $body, bool $sms = false, ?string $smsText = null): void
     {
         $user = User::find($userId);
         if ($user === null) {
@@ -64,7 +69,7 @@ class OperatorNotifier
 
         $phone = TechnicianConfig::operatorPhone($userId);
         if ($sms && is_string($phone) && $phone !== '') {
-            $this->sms->send($phone, $subject.' — '.$body);
+            $this->sms->send($phone, $smsText ?? $subject.' — '.$body);
         }
     }
 }
