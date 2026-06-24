@@ -197,6 +197,28 @@ class TechnicianConfig
         Setting::setValue('technician_worker_last_seen', now()->toIso8601String());
     }
 
+    /** How often (minutes) the heartbeat command checks for a stale worker. Default: 15. */
+    public static function heartbeatIntervalMinutes(): int
+    {
+        $value = Setting::getValue('technician_heartbeat_interval');
+
+        return is_numeric($value) ? max(1, (int) $value) : 15;
+    }
+
+    /** When the heartbeat last sent an alert; null if never. */
+    public static function lastHeartbeatAlertAt(): ?Carbon
+    {
+        $value = Setting::getValue('technician_last_heartbeat_alert_at');
+
+        return is_string($value) && $value !== '' ? Carbon::parse($value) : null;
+    }
+
+    /** Record that the heartbeat alert was just sent now. */
+    public static function recordHeartbeatAlert(): void
+    {
+        Setting::setValue('technician_last_heartbeat_alert_at', now()->toIso8601String());
+    }
+
     /** @return array<string, string> */
     private static function decodeMap(string $key): array
     {

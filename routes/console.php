@@ -301,6 +301,15 @@ Schedule::job(new \App\Jobs\TechnicianPing)
     ->everyFiveMinutes()
     ->when(fn () => \App\Support\TechnicianConfig::enabled());
 
+// AI Technician — dead-man's-switch: check worker heartbeat every minute and alert the
+// operator (self-throttled to one alert per heartbeat interval) if the worker is stale.
+// Runs on the web/cron scheduler — fires even when the technician queue worker is down.
+Schedule::command('technician:heartbeat')
+    ->everyMinute()
+    ->withoutOverlapping()
+    ->runInBackground()
+    ->when(fn () => TechnicianConfig::enabled());
+
 // AI Technician — daily operator digest at the operator-local configured time (default 08:00).
 // Fires once per local day at the configured HH:MM minute; send is skipped inside the command
 // when the subsystem is disabled, so the schedule guard is a cheap early-exit only.
