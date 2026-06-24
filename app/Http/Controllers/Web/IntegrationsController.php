@@ -1657,6 +1657,15 @@ class IntegrationsController extends Controller
 
     public function updateTechnician(Request $request)
     {
+        // psa-ncl1 / CO-7: SSRF guard on the operator-set Teams webhook URL —
+        // https-only, no private/reserved/link-local/metadata targets (literal or
+        // DNS-resolved). `nullable` skips an empty/unset webhook (clearing is
+        // allowed); the request-time peer-IP pin in TeamsNotifier closes the
+        // DNS-rebind TOCTOU this save-time check cannot.
+        $request->validate([
+            'technician_teams_webhook_url' => ['nullable', 'string', new \App\Rules\SafeWebhookUrl],
+        ]);
+
         Setting::setValue('technician_enabled', $request->has('technician_enabled') ? '1' : '0');
 
         // CO-4: rebuild tier map from checkboxes — both send_ack and send_max_hold are
