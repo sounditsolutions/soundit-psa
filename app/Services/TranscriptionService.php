@@ -272,13 +272,51 @@ TEMPLATE;
     }
 
     /**
-     * Download recording to a temp file. Returns the temp file path.
+     * Connect timeout for recording downloads (seconds).
+     * Short: we only need to establish the TCP connection.
      */
-    private function downloadRecording(string $url): string
+    private const DOWNLOAD_CONNECT_TIMEOUT = 15;
+
+    /**
+     * Stall-abort threshold: abort if transfer rate drops below this many
+     * bytes per second for DOWNLOAD_LOW_SPEED_TIME consecutive seconds.
+     * 1 KB/s for 30 s catches a genuinely dead transfer while tolerating
+     * a slow-but-progressing CDN (~24 KB/s observed in production).
+     */
+    private const DOWNLOAD_LOW_SPEED_LIMIT = 1024;  // bytes/s
+
+    private const DOWNLOAD_LOW_SPEED_TIME = 30;     // seconds
+
+    /**
+     * Download recording to a temp file. Returns the temp file path.
+     *
+     * Uses streaming (sink) so the file is never held in PHP memory.
+     * No hard total timeout is set — instead a connect timeout + stall-abort
+     * (CURLOPT_LOW_SPEED_LIMIT / CURLOPT_LOW_SPEED_TIME) is used so that a
+     * slow-but-progressing transfer can finish while a truly stalled one still
+     * fails promptly. The previous `['timeout' => 300]` (total cURL timeout)
+     * aborted large recordings mid-transfer: at ~24 KB/s a 12.8 MB file needs
+     * ~533 s, which exceeded the 300 s ceiling.
+     *
+     * @param  GuzzleClient|null  $client  Injectable for tests; production uses a fresh client.
+     */
+    private function downloadRecording(string $url, ?GuzzleClient $client = null): string
     {
         $tempFile = tempnam(sys_get_temp_dir(), 'psa_recording_');
 
-        $options = ['sink' => $tempFile];
+        $options = [
+            'sink' => $tempFile,
+            // Short connection timeout — we only need to complete the TCP handshake.
+            'connect_timeout' => self::DOWNLOAD_CONNECT_TIMEOUT,
+            // Stall-abort via cURL low-speed thresholds instead of a hard total timeout.
+            // This aborts if the transfer rate stays below DOWNLOAD_LOW_SPEED_LIMIT bytes/s
+            // for DOWNLOAD_LOW_SPEED_TIME consecutive seconds, while allowing a slow-but-
+            // progressing large file to finish.
+            'curl' => [
+                CURLOPT_LOW_SPEED_LIMIT => self::DOWNLOAD_LOW_SPEED_LIMIT,
+                CURLOPT_LOW_SPEED_TIME => self::DOWNLOAD_LOW_SPEED_TIME,
+            ],
+        ];
 
         // Plivo media URLs require HTTP Basic Auth (auth_id:auth_token)
         if (str_contains($url, 'media.plivo.com')) {
@@ -289,7 +327,8 @@ TEMPLATE;
             }
         }
 
-        $client = new GuzzleClient(['timeout' => 300]);
+        // No client-level timeout — all timeouts are controlled per-request above.
+        $client ??= new GuzzleClient(['timeout' => 0]);
 
         // Retry with backoff — Plivo's CDN may not have the MP3 ready immediately
         $maxRetries = 4;
