@@ -3183,6 +3183,125 @@
                         </div>
                     </div>
 
+                    <hr class="my-3">
+                    <h6 class="text-muted text-uppercase small mb-2">Emergency backstop (Phase 2)</h6>
+
+                    {{-- Escalation chain --}}
+                    <div class="mb-3">
+                        <label class="form-label small">Escalation chain (ordered)</label>
+                        <div class="form-text mb-2">People to page when an emergency is detected. Drag to reorder, or use the checkboxes to add/remove. The Technician works down this list, waiting {{ $technicianEscalationTimeout }} min between each.</div>
+                        @foreach($activeUsers as $activeUser)
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox"
+                                       id="escchain_{{ $activeUser->id }}"
+                                       name="technician_escalation_chain[]"
+                                       value="{{ $activeUser->id }}"
+                                       {{ in_array($activeUser->id, $technicianEscalationChain, true) ? 'checked' : '' }}>
+                                <label class="form-check-label" for="escchain_{{ $activeUser->id }}">
+                                    {{ $activeUser->name }}
+                                </label>
+                            </div>
+                        @endforeach
+                    </div>
+
+                    {{-- Per-operator availability --}}
+                    <div class="mb-3">
+                        <label class="form-label small">Operator availability</label>
+                        <div class="form-text mb-2">Uncheck to mark an operator as unavailable for escalation (e.g. on leave). Default: available.</div>
+                        @foreach($activeUsers as $activeUser)
+                            @php
+                                $avail = array_key_exists((string) $activeUser->id, $technicianAvailability)
+                                    ? (bool) $technicianAvailability[(string) $activeUser->id]
+                                    : true;
+                            @endphp
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox"
+                                       id="avail_{{ $activeUser->id }}"
+                                       name="technician_operator_availability[{{ $activeUser->id }}]"
+                                       value="1"
+                                       {{ $avail ? 'checked' : '' }}>
+                                <label class="form-check-label" for="avail_{{ $activeUser->id }}">
+                                    {{ $activeUser->name }}
+                                </label>
+                            </div>
+                        @endforeach
+                    </div>
+
+                    {{-- CO-3: per-operator phone numbers --}}
+                    <div class="mb-3">
+                        <label class="form-label small">Operator SMS phones (CO-3)</label>
+                        <div class="form-text mb-2">Phone numbers for SMS escalation nudges. E.164 format (+15555551234). Leave blank to skip SMS for that operator.</div>
+                        @foreach($activeUsers as $activeUser)
+                            <div class="mb-2">
+                                <label class="form-label small" for="phone_{{ $activeUser->id }}">{{ $activeUser->name }}</label>
+                                <input type="tel" class="form-control"
+                                       id="phone_{{ $activeUser->id }}"
+                                       name="technician_operator_phones[{{ $activeUser->id }}]"
+                                       value="{{ $technicianOperatorPhones[(string) $activeUser->id] ?? '' }}"
+                                       placeholder="+15555551234">
+                            </div>
+                        @endforeach
+                    </div>
+
+                    <hr class="my-3">
+                    <h6 class="text-muted text-uppercase small mb-2">Emergency thresholds</h6>
+
+                    {{-- Emergency age per priority --}}
+                    <div class="mb-3">
+                        <label class="form-label small">Emergency age by priority (minutes)</label>
+                        <div class="form-text mb-2">A ticket older than this threshold (in minutes) is treated as an emergency for that priority.</div>
+                        <div class="row g-2">
+                            @foreach(['p1' => 'P1 Critical', 'p2' => 'P2 High', 'p3' => 'P3 Medium', 'p4' => 'P4 Low'] as $p => $label)
+                                <div class="col">
+                                    <label class="form-label small" for="age_{{ $p }}">{{ $label }}</label>
+                                    <input type="number" min="1" class="form-control"
+                                           id="age_{{ $p }}"
+                                           name="technician_emergency_age_minutes[{{ $p }}]"
+                                           value="{{ $technicianEmergencyAge[$p] }}">
+                                </div>
+                            @endforeach
+                        </div>
+                    </div>
+
+                    {{-- Emergency keywords --}}
+                    <div class="mb-3">
+                        <label class="form-label small" for="technician_emergency_keywords">Emergency keywords (one per line)</label>
+                        <textarea class="form-control font-monospace" id="technician_emergency_keywords" name="technician_emergency_keywords" rows="4">{{ $technicianEmergencyKeywords }}</textarea>
+                        <div class="form-text">Inbound ticket subject/body containing any of these words triggers the emergency path immediately.</div>
+                    </div>
+
+                    <div class="row g-2 mb-3">
+                        <div class="col">
+                            <label class="form-label small" for="technician_escalation_timeout">Escalation timeout (min)</label>
+                            <input type="number" min="5" class="form-control" id="technician_escalation_timeout" name="technician_escalation_timeout" value="{{ $technicianEscalationTimeout }}">
+                            <div class="form-text">Minutes to wait before escalating to the next person in the chain.</div>
+                        </div>
+                        <div class="col">
+                            <label class="form-label small" for="technician_emergency_reping">Re-ping interval (min)</label>
+                            <input type="number" min="5" class="form-control" id="technician_emergency_reping" name="technician_emergency_reping" value="{{ $technicianEmergencyReping }}">
+                            <div class="form-text">Minutes between repeat pings when no one has acknowledged.</div>
+                        </div>
+                        <div class="col">
+                            <label class="form-label small" for="technician_storm_window">Storm window (min)</label>
+                            <input type="number" min="1" class="form-control" id="technician_storm_window" name="technician_storm_window" value="{{ $technicianStormWindow }}">
+                            <div class="form-text">Group emergencies arriving within this window into one alert.</div>
+                        </div>
+                    </div>
+
+                    <hr class="my-3">
+                    <h6 class="text-muted text-uppercase small mb-2">Max-hold backstop</h6>
+
+                    <div class="mb-3">
+                        <label class="form-label small" for="technician_max_hold_message">Max-hold client message</label>
+                        <textarea class="form-control" id="technician_max_hold_message" name="technician_max_hold_message" rows="3">{{ $technicianMaxHoldMessage }}</textarea>
+                        <div class="form-text">Sent to the client when the Technician has exhausted its escalation chain and enters max-hold state.</div>
+                    </div>
+
+                    <div class="form-check form-switch mb-3">
+                        <input class="form-check-input" type="checkbox" id="technician_max_hold_auto" name="technician_max_hold_auto" {{ $technicianMaxHoldAuto ? 'checked' : '' }}>
+                        <label class="form-check-label" for="technician_max_hold_auto"><strong>Auto-send max-hold message</strong> (without operator approval)</label>
+                    </div>
+
                     <button type="submit" class="btn btn-primary">
                         <i class="bi bi-check-lg me-1"></i>Save Technician Settings
                     </button>

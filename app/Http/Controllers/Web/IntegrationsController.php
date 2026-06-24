@@ -259,6 +259,35 @@ class IntegrationsController extends Controller
         $technicianDigestTime = \App\Support\TechnicianConfig::digestTimeLocal();
         $technicianHeartbeatInterval = \App\Support\TechnicianConfig::heartbeatIntervalMinutes();
 
+        // Phase 2: emergency / escalation / availability / SMS view vars
+        $technicianEscalationChain = \App\Support\TechnicianConfig::escalationChain();
+        $technicianEscalationTimeout = \App\Support\TechnicianConfig::escalationTimeoutMinutes();
+        $technicianEmergencyReping = \App\Support\TechnicianConfig::emergencyRepingMinutes();
+        $technicianStormWindow = \App\Support\TechnicianConfig::stormWindowMinutes();
+        $technicianMaxHoldMessage = \App\Support\TechnicianConfig::maxHoldMessage();
+        $technicianMaxHoldAuto = ((\App\Support\TechnicianConfig::tierMap()['send_max_hold'] ?? null) === 'auto');
+        $technicianEmergencyKeywords = implode("\n", \App\Support\TechnicianConfig::emergencyKeywords());
+        $technicianEmergencyAge = [
+            'p1' => \App\Support\TechnicianConfig::emergencyAgeMinutes(\App\Enums\TicketPriority::P1),
+            'p2' => \App\Support\TechnicianConfig::emergencyAgeMinutes(\App\Enums\TicketPriority::P2),
+            'p3' => \App\Support\TechnicianConfig::emergencyAgeMinutes(\App\Enums\TicketPriority::P3),
+            'p4' => \App\Support\TechnicianConfig::emergencyAgeMinutes(\App\Enums\TicketPriority::P4),
+        ];
+        // Per-operator availability and phone maps (keyed by user id string)
+        $technicianAvailability = (function () {
+            $raw = \App\Models\Setting::getValue('technician_operator_availability');
+            $decoded = is_string($raw) && $raw !== '' ? json_decode($raw, true) : [];
+
+            return is_array($decoded) ? array_map('strval', $decoded) : [];
+        })();
+        $technicianOperatorPhones = (function () {
+            $raw = \App\Models\Setting::getValue('technician_operator_phones');
+            $decoded = is_string($raw) && $raw !== '' ? json_decode($raw, true) : [];
+
+            return is_array($decoded) ? array_map('strval', $decoded) : [];
+        })();
+        $activeUsers = \App\Models\User::active()->orderBy('name')->get(['id', 'name']);
+
         $selectedIds = array_filter([(int) $triageDefaultAssignee, (int) $triageSystemUser]);
         $users = \App\Models\User::active()->orderBy('name')->get(['id', 'name', 'is_active']);
         if ($selectedIds) {
@@ -294,6 +323,9 @@ class IntegrationsController extends Controller
             'assistantEnabled', 'assistantMaxMessages', 'assistantDailyTokens',
             'technicianEnabled', 'technicianAutoAck',
             'technicianTeamsWebhook', 'technicianNotifyEmail', 'technicianDigestEnabled', 'technicianDigestTime', 'technicianHeartbeatInterval',
+            'technicianEscalationChain', 'technicianEscalationTimeout', 'technicianEmergencyReping', 'technicianStormWindow',
+            'technicianMaxHoldMessage', 'technicianMaxHoldAuto', 'technicianEmergencyKeywords', 'technicianEmergencyAge',
+            'technicianAvailability', 'technicianOperatorPhones', 'activeUsers',
             'screenconnectBaseUrl', 'screenconnectWebhookSecret', 'screenconnectEnabled', 'screenconnectConfigured',
             'tacticalConfigured', 'tacticalApiUrl', 'tacticalWebUrl', 'tacticalConnected', 'tacticalEnabled',
             'tacticalWebhookLastAt', 'tacticalWebhookProcessed24h', 'tacticalWebhookFailed',
@@ -1626,16 +1658,86 @@ class IntegrationsController extends Controller
     public function updateTechnician(Request $request)
     {
         Setting::setValue('technician_enabled', $request->has('technician_enabled') ? '1' : '0');
-        Setting::setValue(
-            'technician_action_tiers',
-            $request->has('technician_auto_ack') ? json_encode(['send_ack' => 'auto']) : json_encode([])
-        );
+
+        // CO-4: rebuild tier map from checkboxes — both send_ack and send_max_hold are
+        // operator-toggleable auto actions. Reconstruct from scratch so we never orphan
+        // stale keys, and so unchecking either removes only that key.
+        $tiers = [];
+        if ($request->has('technician_auto_ack')) {
+            $tiers['send_ack'] = 'auto';
+        }
+        if ($request->has('technician_max_hold_auto')) {
+            $tiers['send_max_hold'] = 'auto';
+        }
+        Setting::setValue('technician_action_tiers', json_encode($tiers));
+
         Setting::setValue('technician_teams_webhook_url', trim((string) $request->input('technician_teams_webhook_url', '')));
         Setting::setValue('technician_notify_email', trim((string) $request->input('technician_notify_email', '')));
         Setting::setValue('technician_digest_enabled', $request->has('technician_digest_enabled') ? '1' : '0');
         $time = (string) $request->input('technician_digest_time', '08:00');
         Setting::setValue('technician_digest_time', preg_match('/^\d{2}:\d{2}$/', $time) ? $time : '08:00');
         Setting::setValue('technician_heartbeat_interval', (string) max(1, (int) $request->input('technician_heartbeat_interval', 15)));
+
+        // Phase 2: escalation chain (ordered user ID array)
+        $chain = $request->input('technician_escalation_chain', []);
+        $chain = is_array($chain) ? array_values(array_filter(array_map('intval', $chain))) : [];
+        Setting::setValue('technician_escalation_chain', json_encode($chain));
+
+        // Phase 2: per-operator availability map (user id → "1"/"0")
+        $availability = $request->input('technician_operator_availability', []);
+        if (is_array($availability)) {
+            Setting::setValue('technician_operator_availability', json_encode(array_map('strval', $availability)));
+        }
+
+        // CO-3: per-operator phone map — blank entries are removed
+        $phones = $request->input('technician_operator_phones', []);
+        if (is_array($phones)) {
+            $filtered = [];
+            foreach ($phones as $uid => $phone) {
+                $trimmed = trim((string) $phone);
+                if ($trimmed !== '') {
+                    $filtered[(string) $uid] = $trimmed;
+                }
+            }
+            Setting::setValue('technician_operator_phones', json_encode($filtered));
+        }
+
+        // Phase 2: emergency age minutes per priority (p1–p4 JSON map)
+        $ageInput = $request->input('technician_emergency_age_minutes', []);
+        if (is_array($ageInput)) {
+            $ageMap = [];
+            foreach (['p1', 'p2', 'p3', 'p4'] as $p) {
+                if (isset($ageInput[$p]) && is_numeric($ageInput[$p])) {
+                    $ageMap[$p] = (string) max(1, (int) $ageInput[$p]);
+                }
+            }
+            if ($ageMap !== []) {
+                Setting::setValue('technician_emergency_age_minutes', json_encode($ageMap));
+            }
+        }
+
+        // Phase 2: emergency keywords (textarea → trimmed JSON string array)
+        if ($request->has('technician_emergency_keywords')) {
+            $raw = (string) $request->input('technician_emergency_keywords', '');
+            $keywords = array_values(array_filter(array_map('trim', explode("\n", $raw))));
+            Setting::setValue('technician_emergency_keywords', json_encode($keywords));
+        }
+
+        // Phase 2: numeric timeout / reping / storm-window
+        if ($request->has('technician_escalation_timeout')) {
+            Setting::setValue('technician_escalation_timeout', (string) max(1, (int) $request->input('technician_escalation_timeout', 15)));
+        }
+        if ($request->has('technician_emergency_reping')) {
+            Setting::setValue('technician_emergency_reping', (string) max(1, (int) $request->input('technician_emergency_reping', 30)));
+        }
+        if ($request->has('technician_storm_window')) {
+            Setting::setValue('technician_storm_window', (string) max(1, (int) $request->input('technician_storm_window', 15)));
+        }
+
+        // Phase 2: max-hold message
+        if ($request->has('technician_max_hold_message')) {
+            Setting::setValue('technician_max_hold_message', (string) $request->input('technician_max_hold_message', ''));
+        }
 
         return redirect()->route('settings.integrations')
             ->with('success', 'AI Technician settings saved.');
