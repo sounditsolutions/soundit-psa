@@ -16,6 +16,7 @@ class TechnicianEmergency extends Model
         'state' => EmergencyState::class,
         'severity' => 'integer',
         'escalation_step' => 'integer',
+        'current_target_user_id' => 'integer',
         'alerted_at' => 'datetime',
         'last_pinged_at' => 'datetime',
         'acknowledged_at' => 'datetime',

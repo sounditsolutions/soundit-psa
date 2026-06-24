@@ -86,7 +86,14 @@ class EscalationService
             }
         }
 
-        $alreadyPingedThisTarget = $e->current_target_user_id === $targetUserId
+        // Belt-and-suspenders: coerce before the strict compare. current_target_user_id
+        // is an unsigned bigint; under the prod MariaDB driver (emulated prepares) an
+        // uncast column hydrates as a STRING ("5"), so "5" === 5 would be false and the
+        // per-tick idempotency guard would FAIL — re-paging the operator and writing a
+        // fresh audit row every single sweep minute until ack. The $casts entry on the
+        // model is the primary fix; this local (int) cast guards the invariant even if
+        // that cast is ever removed (SQLite returns int, so no test can catch the drift).
+        $alreadyPingedThisTarget = (int) $e->current_target_user_id === $targetUserId
             && $e->last_pinged_at !== null;
 
         if ($alreadyPingedThisTarget) {

@@ -102,6 +102,14 @@ class EscalationServiceTest extends TestCase
         $pinged = now()->subMinutes(2); // well within the 15-minute timeout
         $e->update(['escalation_step' => 0, 'current_target_user_id' => $justin->id, 'last_pinged_at' => $pinged]);
 
+        // Re-hydrate from the DB so the idempotency path runs against a CAST-exercised
+        // model, not the in-memory write above. On prod MariaDB an uncast bigint comes
+        // back as a string ("5") and breaks the strict-compare guard; this exercises the
+        // 'current_target_user_id' => 'integer' cast that prevents the every-minute storm.
+        $e = TechnicianEmergency::find($e->id);
+        // Pin the cast: the column MUST hydrate as an int (the guard's invariant).
+        $this->assertIsInt($e->current_target_user_id);
+
         // Already pinged this tick's target within the timeout ⇒ NEVER notify again.
         $this->mock(OperatorNotifier::class, fn (MockInterface $m) => $m->shouldReceive('notifyUser')->never());
 
