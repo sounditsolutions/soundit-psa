@@ -30,6 +30,7 @@ class TechnicianRun extends Model
         'proposed_meta',
         'confidence',
         'tokens_used',
+        'created_at',
     ];
 
     protected function casts(): array

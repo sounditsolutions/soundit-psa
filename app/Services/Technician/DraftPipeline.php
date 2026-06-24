@@ -4,6 +4,7 @@ namespace App\Services\Technician;
 
 use App\Enums\NoteType;
 use App\Enums\TechnicianRunState;
+use App\Enums\WhoType;
 use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Services\TicketResolutionDrafter;
@@ -44,15 +45,19 @@ class DraftPipeline
             return;
         }
 
-        // Idempotency BEFORE any AI spend (v2): if a held action already exists for
-        // this ticket, a Loop retry must not re-run the classifier/drafters. (A fresh
-        // draft on a NEW client reply is the Plan-1B reply-hook's concern, not a retry.)
-        $alreadyDrafted = TechnicianRun::where('ticket_id', $ticket->id)
-            ->whereIn('action_type', ['send_reply', 'propose_resolution'])
-            ->exists();
-        if ($alreadyDrafted) {
+        // Plan 1B: draft only when there is a client message we haven't replied to yet.
+        // A job retry with no new reply stays a no-op; a genuine new client reply re-opens
+        // drafting and supersedes the stale held draft (so the cockpit shows only the fresh one).
+        if (! $this->hasUnaddressedClientReply($ticket)) {
             return;
         }
+
+        TechnicianRun::where('ticket_id', $ticket->id)
+            ->where('action_type', 'send_reply')
+            ->where('state', TechnicianRunState::AwaitingApproval->value)
+            ->get()
+            ->each
+            ->markSuperseded();
 
         $assessment = $this->classifier->classify($ticket);
 
@@ -99,6 +104,34 @@ class DraftPipeline
                 );
             }
         }
+    }
+
+    /**
+     * True when the latest client (non-AI EndUser) reply is newer than our latest
+     * reply draft — i.e. there's an unaddressed client message. At intake (no client
+     * reply note yet) it's true iff we've never drafted a reply (preserves 1A behavior).
+     */
+    private function hasUnaddressedClientReply(Ticket $ticket): bool
+    {
+        $latestClientReply = $ticket->notes()
+            ->where('note_type', NoteType::Reply->value)
+            ->where('ai_authored', false)
+            ->where('who_type', WhoType::EndUser->value)
+            ->latest('noted_at')
+            ->first();
+
+        $latestReplyRun = TechnicianRun::where('ticket_id', $ticket->id)
+            ->where('action_type', 'send_reply')
+            ->latest('created_at')
+            ->first();
+
+        if (! $latestClientReply) {
+            return $latestReplyRun === null; // intake: draft once
+        }
+
+        return $latestReplyRun === null
+            || $latestReplyRun->created_at === null
+            || $latestReplyRun->created_at->lt($latestClientReply->noted_at);
     }
 
     /** True when a real (non-AI) client/human Reply note exists — distinct from the bot's ack. */
