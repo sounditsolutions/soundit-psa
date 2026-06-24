@@ -252,6 +252,14 @@ class TicketService
 
         $this->notificationService->notifyPortalReply($ticket, $note, $person);
 
+        // AI Technician (Plan 1B): a client reply re-opens drafting. Same guards as
+        // TicketObserver::created — enabled + not a prospect client. The pipeline's
+        // own substance/idempotency logic (Task 10) decides whether to actually draft.
+        if (\App\Support\TechnicianConfig::enabled()
+            && $ticket->client?->stage !== \App\Enums\ClientStage::Prospect) {
+            \App\Jobs\RunTechnicianLoop::dispatch($ticket->id);
+        }
+
         return $note;
     }
 

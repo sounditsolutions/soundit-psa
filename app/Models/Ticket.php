@@ -154,6 +154,11 @@ class Ticket extends Model
         return $this->hasMany(TriageRun::class)->orderByDesc('created_at');
     }
 
+    public function technicianRuns(): HasMany
+    {
+        return $this->hasMany(TechnicianRun::class);
+    }
+
     public function latestTriageRun(): HasOne
     {
         return $this->hasOne(TriageRun::class)->latestOfMany();

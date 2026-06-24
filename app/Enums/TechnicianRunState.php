@@ -14,4 +14,6 @@ enum TechnicianRunState: string
     case AwaitingApproval = 'awaiting_approval';
     case Executing = 'executing';
     case Done = 'done';
+    case Denied = 'denied';
+    case Superseded = 'superseded';
 }
