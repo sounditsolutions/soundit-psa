@@ -63,6 +63,20 @@ class AgentConfig
     }
 
     /**
+     * Quiet window (in days) the deterministic auto-close backstop requires with
+     * NO inbound client note before a propose_close may AUTO-close (CO-19). A
+     * client who wrote in within this window is, by definition, not done — so the
+     * close is held for a human instead. Setting: backlog_agent_auto_quiet_days.
+     * Default: 14. Floor: 1 (mirrors the maxPendingProposals floor idiom).
+     */
+    public static function autoQuietDays(): int
+    {
+        $value = Setting::getValue('backlog_agent_auto_quiet_days');
+
+        return is_numeric($value) ? max(1, (int) $value) : 14;
+    }
+
+    /**
      * Model id used for the lightweight significance-scoring gate.
      * Reads from Setting first; falls back to the Haiku id from AiConfig.
      * Setting: backlog_agent_significance_model.

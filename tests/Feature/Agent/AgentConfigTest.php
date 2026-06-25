@@ -36,4 +36,13 @@ class AgentConfigTest extends TestCase
         $this->assertTrue(AgentConfig::enabled());
         $this->assertSame(1, AgentConfig::maxPendingProposals());
     }
+
+    public function test_auto_quiet_days_default_and_floor(): void
+    {
+        $this->assertSame(14, AgentConfig::autoQuietDays()); // default when unset
+        Setting::setValue('backlog_agent_auto_quiet_days', '0'); // below floor
+        $this->assertSame(1, AgentConfig::autoQuietDays());
+        Setting::setValue('backlog_agent_auto_quiet_days', '30');
+        $this->assertSame(30, AgentConfig::autoQuietDays());
+    }
 }
