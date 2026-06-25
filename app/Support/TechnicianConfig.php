@@ -302,6 +302,10 @@ class TechnicianConfig
     /**
      * Minutes wide the grouping window is for storm detection.
      * Setting: technician_storm_window. Default: 15.
+     *
+     * Floor is intentionally max(1, …) — a 1-minute grouping window is valid for
+     * storm detection. This diverges deliberately from the max(5, …) floors on
+     * escalation-timeout and reping-cadence, which guard human-response windows.
      */
     public static function stormWindowMinutes(): int
     {
@@ -379,7 +383,7 @@ class TechnicianConfig
 
         $decoded = json_decode($raw, true);
 
-        return is_array($decoded) ? array_map('strval', $decoded) : [];
+        return is_array($decoded) ? array_map('strval', array_filter($decoded, 'is_scalar')) : [];
     }
 
     /** @return array<int, mixed> */

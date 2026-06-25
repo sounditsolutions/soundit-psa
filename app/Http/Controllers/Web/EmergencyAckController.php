@@ -59,11 +59,11 @@ class EmergencyAckController extends Controller
                 'acknowledged_by' => $userId,
             ]);
 
-        if ($affected > 0) {
-            $this->audit($emergencyId, $userId);
-        }
-
         $emergency = TechnicianEmergency::find($emergencyId);
+
+        if ($affected > 0) {
+            $this->audit($emergency, $userId);
+        }
 
         return response()->view('technician.emergency.ack', [
             'ticketId' => $emergency?->ticket_id,
@@ -74,9 +74,9 @@ class EmergencyAckController extends Controller
      * Append-only audit row for the acknowledgement. Supplies the FULL NOT-NULL
      * column set so the INSERT succeeds on MariaDB (prod), not just SQLite.
      */
-    private function audit(int $emergencyId, int $userId): void
+    private function audit(?TechnicianEmergency $emergency, int $userId): void
     {
-        $emergency = TechnicianEmergency::find($emergencyId);
+        $emergencyId = $emergency?->id;
 
         TechnicianActionLog::create([
             'actor_id' => $userId,

@@ -1711,7 +1711,7 @@ class IntegrationsController extends Controller
         Setting::setValue('technician_digest_enabled', $request->has('technician_digest_enabled') ? '1' : '0');
         $time = (string) $request->input('technician_digest_time', '08:00');
         Setting::setValue('technician_digest_time', preg_match('/^\d{2}:\d{2}$/', $time) ? $time : '08:00');
-        Setting::setValue('technician_heartbeat_interval', (string) max(1, (int) $request->input('technician_heartbeat_interval', 15)));
+        Setting::setValue('technician_heartbeat_interval', (string) max(10, (int) $request->input('technician_heartbeat_interval', 15)));
 
         // Phase 2: escalation chain (ordered user ID array)
         // If the operator submitted priority-order numbers via technician_escalation_order[userId],

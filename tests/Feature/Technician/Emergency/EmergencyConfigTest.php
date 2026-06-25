@@ -37,7 +37,10 @@ class EmergencyConfigTest extends TestCase
     public function test_storm_window_and_max_hold_message_defaults(): void
     {
         $this->assertSame(15, TechnicianConfig::stormWindowMinutes());
-        $this->assertStringContainsString('urgent', TechnicianConfig::maxHoldMessage());
+        $this->assertSame(
+            "Thank you for reaching out. We've flagged this as urgent and are working to get a technician to you as quickly as possible. We'll be in touch shortly.",
+            TechnicianConfig::maxHoldMessage()
+        );
     }
 
     public function test_emergency_reping_default_and_floor(): void

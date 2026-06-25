@@ -48,16 +48,17 @@ class MaxHoldSender
         //     only the tick that flips NULL → now() proceeds; a concurrent tick
         //     (or a re-run) matches 0 rows and returns. This closes the read-then-
         //     write race two sweep ticks would otherwise lose.
+        $now = now();
         $claimed = TechnicianEmergency::where('id', $e->id)
             ->whereNull('max_hold_sent_at')
-            ->update(['max_hold_sent_at' => now()]);
+            ->update(['max_hold_sent_at' => $now]);
 
         if (! $claimed) {
             return;
         }
 
         // Keep the in-memory model consistent with the row we just claimed.
-        $e->max_hold_sent_at = now();
+        $e->max_hold_sent_at = $now;
 
         try {
             // (2) Build the disclosed body and structurally assert the disclosure is
@@ -99,6 +100,9 @@ class MaxHoldSender
 
             // (5) Not executed (held / awaiting_approval / blocked) ⇒ REVERT the
             //     claim so a future legit auto-send is not permanently suppressed.
+            //     The `|| $createdNote === null` branch is defensive: the gate
+            //     cannot return 'executed' without running the executor, so this
+            //     arm is unreachable in practice — kept as a fail-closed guard.
             if ($result->status !== 'executed' || $createdNote === null) {
                 $e->update(['max_hold_sent_at' => null]);
                 $e->max_hold_sent_at = null;
