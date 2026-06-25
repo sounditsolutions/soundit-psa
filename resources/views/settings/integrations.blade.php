@@ -3160,9 +3160,10 @@
                     <h6 class="text-muted text-uppercase small mb-2">Notify (Plan 1C)</h6>
                     <div class="mb-3">
                         <label class="form-label small" for="technician_teams_webhook_url">Teams webhook URL</label>
+                        {{-- psa-uvuy: a stored secret — never echo the raw URL; show a mask and keep on blank submit. --}}
                         <input type="url" class="form-control" id="technician_teams_webhook_url" name="technician_teams_webhook_url"
-                               value="{{ $technicianTeamsWebhook }}" placeholder="https://…webhook.office.com/… (or a Power Automate Workflow URL)">
-                        <div class="form-text">Paste an incoming-webhook / Power Automate Workflow URL for the operator chat. Optional — email is the fallback.</div>
+                               value="" placeholder="{{ $technicianTeamsWebhookSet ? '••••••••  (leave blank to keep current)' : 'https://…webhook.office.com/… (or a Power Automate Workflow URL)' }}">
+                        <div class="form-text">Paste an incoming-webhook / Power Automate Workflow URL for the operator chat. Optional — email is the fallback. Stored encrypted; leave blank to keep the current URL.</div>
                     </div>
                     <div class="mb-3">
                         <label class="form-label small" for="technician_notify_email">Notify email (fallback)</label>

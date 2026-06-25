@@ -36,6 +36,13 @@ use Illuminate\Support\Facades\Log;
 
 class IntegrationsController extends Controller
 {
+    /**
+     * The masked placeholder shown for an already-stored secret. A submit equal to
+     * this (or blank) means "keep the existing value" — never overwrite the secret
+     * with the mask. Matches the existing convention used elsewhere in this controller.
+     */
+    private const SECRET_MASK = '••••••••';
+
     public function index(NinjaClient $ninja, LevelClient $level)
     {
         // Helper: format a UTC timestamp string for display in the app timezone.
@@ -253,7 +260,9 @@ class IntegrationsController extends Controller
         // AI Technician settings
         $technicianEnabled = \App\Support\TechnicianConfig::enabled();
         $technicianAutoAck = ((\App\Support\TechnicianConfig::tierMap()['send_ack'] ?? null) === 'auto');
-        $technicianTeamsWebhook = \App\Support\TechnicianConfig::teamsWebhookUrl();
+        // psa-uvuy: the Teams webhook is a masked secret — expose only whether one is
+        // stored (drives the "••••••••" placeholder), never the raw URL to the view.
+        $technicianTeamsWebhookSet = \App\Support\TechnicianConfig::teamsWebhookUrl() !== null;
         $technicianNotifyEmail = \App\Support\TechnicianConfig::notifyEmail();
         $technicianDigestEnabled = \App\Support\TechnicianConfig::digestEnabled();
         $technicianDigestTime = \App\Support\TechnicianConfig::digestTimeLocal();
@@ -322,7 +331,7 @@ class IntegrationsController extends Controller
             'triageDefaultAssignee', 'triageSystemUser', 'triageModel', 'triageMaxTokens', 'triageDailyTokens', 'triageBatchSize', 'triageStages',
             'assistantEnabled', 'assistantMaxMessages', 'assistantDailyTokens',
             'technicianEnabled', 'technicianAutoAck',
-            'technicianTeamsWebhook', 'technicianNotifyEmail', 'technicianDigestEnabled', 'technicianDigestTime', 'technicianHeartbeatInterval',
+            'technicianTeamsWebhookSet', 'technicianNotifyEmail', 'technicianDigestEnabled', 'technicianDigestTime', 'technicianHeartbeatInterval',
             'technicianEscalationChain', 'technicianEscalationTimeout', 'technicianEmergencyReping', 'technicianStormWindow',
             'technicianMaxHoldMessage', 'technicianMaxHoldAuto', 'technicianEmergencyKeywords', 'technicianEmergencyAge',
             'technicianAvailability', 'technicianOperatorPhones', 'activeUsers',
@@ -1657,14 +1666,26 @@ class IntegrationsController extends Controller
 
     public function updateTechnician(Request $request)
     {
+        // psa-uvuy: the Teams webhook URL is an operator SECRET (the URL itself
+        // authorises posting into the operator chat). It is a MASKED, encrypted
+        // secret field like the other operator secrets in this controller: a
+        // blank submit, or the masked placeholder echoed back, means "keep the
+        // existing stored value" — only a freshly typed value is (re)validated
+        // and saved. This avoids wiping the stored secret on an unrelated save.
+        $webhookSubmitted = trim((string) $request->input('technician_teams_webhook_url', ''));
+        $webhookIsNew = $webhookSubmitted !== '' && $webhookSubmitted !== self::SECRET_MASK;
+
         // psa-ncl1 / CO-7: SSRF guard on the operator-set Teams webhook URL —
         // https-only, no private/reserved/link-local/metadata targets (literal or
-        // DNS-resolved). `nullable` skips an empty/unset webhook (clearing is
-        // allowed); the request-time peer-IP pin in TeamsNotifier closes the
-        // DNS-rebind TOCTOU this save-time check cannot.
-        $request->validate([
-            'technician_teams_webhook_url' => ['nullable', 'string', new \App\Rules\SafeWebhookUrl],
-        ]);
+        // DNS-resolved). Only a NEW value is validated; blank/mask = keep, so the
+        // mask placeholder is never run through SafeWebhookUrl. The request-time
+        // peer-IP pin in TeamsNotifier closes the DNS-rebind TOCTOU this save-time
+        // check cannot.
+        if ($webhookIsNew) {
+            $request->validate([
+                'technician_teams_webhook_url' => ['required', 'string', new \App\Rules\SafeWebhookUrl],
+            ]);
+        }
 
         Setting::setValue('technician_enabled', $request->has('technician_enabled') ? '1' : '0');
 
@@ -1680,7 +1701,12 @@ class IntegrationsController extends Controller
         }
         Setting::setValue('technician_action_tiers', json_encode($tiers));
 
-        Setting::setValue('technician_teams_webhook_url', trim((string) $request->input('technician_teams_webhook_url', '')));
+        // psa-uvuy: store the webhook ENCRYPTED at rest, and ONLY when a real new
+        // value was typed — a blank/mask submit keeps the existing stored secret
+        // (parity with stripe_secret_key / level_api_key et al. in this controller).
+        if ($webhookIsNew) {
+            Setting::setEncrypted('technician_teams_webhook_url', $webhookSubmitted);
+        }
         Setting::setValue('technician_notify_email', trim((string) $request->input('technician_notify_email', '')));
         Setting::setValue('technician_digest_enabled', $request->has('technician_digest_enabled') ? '1' : '0');
         $time = (string) $request->input('technician_digest_time', '08:00');

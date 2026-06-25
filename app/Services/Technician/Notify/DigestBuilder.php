@@ -36,8 +36,13 @@ class DigestBuilder
             $lines[] = '';
             $lines[] = 'Oldest awaiting:';
             foreach ($pending->take(5) as $run) {
-                $client = $run->ticket?->client?->name ?? 'Unknown client';
-                $subject = $run->ticket?->subject ?? "Ticket #{$run->ticket_id}";
+                // psa-uvuy: the client name and ticket subject are UNTRUSTED and flow
+                // into the Teams MessageCard (markdown) sink — defang the markdown/HTML
+                // control chars at the interpolation point so a crafted subject like
+                // `[x](http://evil)` or `<b>` can't inject a link/HTML into the operator's
+                // card. We escape ONLY these dynamic fields, not the whole line.
+                $client = TeamsText::escape($run->ticket?->client?->name ?? 'Unknown client');
+                $subject = TeamsText::escape($run->ticket?->subject ?? "Ticket #{$run->ticket_id}");
                 $age = optional($run->created_at)->diffForHumans() ?? '';
                 $lines[] = "• {$client} — {$subject} ({$age})";
             }
