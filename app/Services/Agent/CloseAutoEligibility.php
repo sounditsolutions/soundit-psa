@@ -30,13 +30,15 @@ class CloseAutoEligibility
     /**
      * Statuses where it is safe to AUTO-close — the ball is NOT in our court, or
      * the work is already resolved and merely awaiting the close:
-     *   - Resolved          → work done; the grace-period auto-close.
-     *   - PendingClient     → we're waiting on the client (the classic stale ghost).
-     *   - PendingThirdParty → we're waiting on a vendor (stale, blocked on others).
+     *   - Resolved      → work done; the grace-period auto-close.
+     *   - PendingClient → we're waiting on the client (the classic stale ghost).
      *
      * Deliberately EXCLUDED (we still owe the next move → human eyes, even at 1.0):
-     *   - New, InProgress   → awaiting US.
-     *   - Closed            → already closed (never proposed); not a safe auto target.
+     *   - New, InProgress      → awaiting US.
+     *   - Closed               → already closed (never proposed); not a safe auto target.
+     *   - PendingThirdParty    → vendor-blocked, NOT abandoned. The agent can still
+     *                            *propose* closing it (held for a human), but AUTO is
+     *                            removed. Ratify/widen before enabling auto here.
      *
      * Expressed as an allow-list so any future/unknown status is excluded too —
      * fail-closed by construction (the safety boundary biases toward NOT auto-closing).
@@ -46,7 +48,8 @@ class CloseAutoEligibility
     private const AUTO_SAFE_STATUSES = [
         TicketStatus::Resolved,
         TicketStatus::PendingClient,
-        TicketStatus::PendingThirdParty,
+        // PendingThirdParty deliberately excluded from AUTO eligibility —
+        // vendor-blocked ≠ abandoned; ratify/widen before auto-enable.
     ];
 
     public static function eligible(Ticket $ticket): bool
