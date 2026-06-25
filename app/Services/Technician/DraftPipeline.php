@@ -45,6 +45,12 @@ class DraftPipeline
             return;
         }
 
+        if (\App\Models\TechnicianEmergency::hasOpenEmergency($ticket)) {
+            Log::info('[Technician] Open emergency — halting autonomous pipeline', ['ticket_id' => $ticket->id]);
+
+            return;
+        }
+
         // Plan 1B: draft only when there is a client message we haven't replied to yet.
         // A job retry with no new reply stays a no-op; a genuine new client reply re-opens
         // drafting and supersedes the stale held draft (so the cockpit shows only the fresh one).

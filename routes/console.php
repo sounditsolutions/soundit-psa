@@ -330,3 +330,15 @@ Schedule::command('technician:digest')
 
         return $last === null || $last->setTimezone(AppTimezone::get())->toDateString() !== $localNow->toDateString();
     });
+
+// AI Technician — emergency backstop sweep: every minute, detect → group → escalate →
+// honest max-hold for open tickets while the operator is away. Dormant: the ->when()
+// guard fires nothing in prod while the subsystem is disabled, and the command itself
+// early-exits on disabled too. The scan is intentionally NOT self-throttled (CO-17):
+// Ticket::open() is cheap + indexed and re-detection is deduped by the open-emergency
+// skip (CO-1), not by a cadence.
+Schedule::command('technician:emergency-sweep')
+    ->everyMinute()
+    ->withoutOverlapping()
+    ->runInBackground()
+    ->when(fn () => TechnicianConfig::enabled());
