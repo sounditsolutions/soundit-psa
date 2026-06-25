@@ -4,14 +4,16 @@ namespace App\Services\Technician;
 
 use App\Enums\NoteType;
 use App\Enums\TechnicianRunState;
+use App\Enums\TicketStatus;
 use App\Enums\WhoType;
 use App\Models\TechnicianRun;
 use App\Models\TicketNote;
 use App\Services\EmailService;
+use App\Services\TicketService;
 use App\Support\TechnicianConfig;
 use Illuminate\Support\Facades\Log;
 
-/** The outcome of an approve action. status ∈ {sent, already_handled, gate_declined}. */
+/** The outcome of an approve action. status ∈ {sent, closed, already_handled, gate_declined}. */
 final class TechnicianApprovalResult
 {
     public function __construct(
@@ -100,6 +102,67 @@ class TechnicianApprovalService
         $this->sendEmail($ticket, $createdNote);
 
         return new TechnicianApprovalResult('sent', $createdNote->id);
+    }
+
+    /**
+     * Approve a held propose_close run: closes the ticket to Closed (silent — no client
+     * notification) through the gate (atomic + audited). Mirrors approveAndSend exactly:
+     * single-use CAS latch, hash recompute, signed grant, try/catch-releaseClaim (CO-3),
+     * releaseClaim on non-executed. No body, no email, no client send.
+     */
+    public function approveClose(TechnicianRun $run, int $approverId): TechnicianApprovalResult
+    {
+        // Single-use latch: only the winner of the CAS proceeds.
+        if (! $run->claimForExecution()) {
+            return new TechnicianApprovalResult('already_handled');
+        }
+
+        try {
+            $hash = hash('sha256', 'propose_close:'.$run->ticket_id.':'.$run->proposed_content);
+            $token = TechnicianApprovalGrant::issue('propose_close', $run->ticket_id, $hash, $approverId);
+
+            $result = $this->gate->dispatch(
+                actionType: 'propose_close',
+                ticketId: $run->ticket_id,
+                clientId: $run->client_id,
+                contentHash: $hash,
+                summary: 'Operator-approved close.',
+                runId: $run->id,
+                executor: function () use ($run): void {
+                    $ticket = $run->ticket;
+                    // CO-23: re-check before closing — a human may have closed this ticket
+                    // between the gate's classify call and this executor call.
+                    if ($ticket->fresh()->status === TicketStatus::Closed) {
+                        $run->advanceTo(TechnicianRunState::Done);
+
+                        return;
+                    }
+                    app(TicketService::class)->changeStatus(
+                        $ticket,
+                        TicketStatus::Closed,
+                        TechnicianConfig::aiActorUserId(),
+                        'Closed by AI Technician (operator-approved).',
+                    );
+                    $run->advanceTo(TechnicianRunState::Done);
+                },
+                approvalToken: $token,
+                approverUserId: $approverId,
+                confidence: null,
+            );
+        } catch (\Throwable $e) {
+            // Unexpected throw between claim and execution — revert so the operator can retry.
+            $run->releaseClaim();
+            throw $e;
+        }
+
+        if ($result->status !== 'executed') {
+            // Gate declined (kill-switch, client exclusion, etc.) — un-latch so the operator can retry.
+            $run->releaseClaim();
+
+            return new TechnicianApprovalResult('gate_declined');
+        }
+
+        return new TechnicianApprovalResult('closed'); // no client notification (CO-18)
     }
 
     public function deny(TechnicianRun $run): void
