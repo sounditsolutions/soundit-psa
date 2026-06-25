@@ -150,6 +150,44 @@ class ProposeCloseToolTest extends TestCase
         Queue::assertNotPushed(SendPortalNotification::class);
     }
 
+    public function test_auto_eligible_resolved_ticket_actually_closes(): void
+    {
+        // Resolved IS auto-eligible (in CloseAutoEligibility::AUTO_SAFE_STATUSES) and
+        // Resolved → Closed is an allowed transition. The stale guard (=== Closed) must
+        // NOT short-circuit a Resolved ticket — it must actually close to Closed.
+        Queue::fake();
+
+        $this->setAutoThreshold(0.95);
+        $ticket = Ticket::factory()->create(['status' => TicketStatus::Resolved]); // eligible, no recent EndUser note
+
+        $notifier = $this->mock(OperatorNotifier::class);
+        $notifier->shouldReceive('notify')->once();
+
+        $this->tool()->execute($ticket, [
+            'reason' => 'Resolved 21 days ago; grace period elapsed with no client pushback.',
+            'confidence' => 0.98,
+        ]);
+
+        // Must actually transition Resolved → Closed (not early-return on the stale guard).
+        $ticket->refresh();
+        $this->assertSame(TicketStatus::Closed, $ticket->status);
+        $this->assertNotNull($ticket->closed_at);
+
+        $this->assertDatabaseHas('technician_action_logs', [
+            'ticket_id' => $ticket->id,
+            'action_type' => 'propose_close',
+            'result_status' => 'executed',
+        ]);
+
+        $run = TechnicianRun::where('ticket_id', $ticket->id)
+            ->where('action_type', 'propose_close')
+            ->first();
+        $this->assertSame(TechnicianRunState::Done, $run->state);
+
+        // Closed is silent: no client portal notification.
+        Queue::assertNotPushed(SendPortalNotification::class);
+    }
+
     // ── 3. Idempotency (CO-4) ─────────────────────────────────────────────────
 
     public function test_two_executes_with_same_reason_produce_exactly_one_run_and_one_audit_row(): void

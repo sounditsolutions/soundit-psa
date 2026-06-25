@@ -122,9 +122,13 @@ class ProposeCloseTool
             runId: $run->id,
             executor: function () use ($ticket, $run): void {
                 // CO-23: re-check before closing — a human may have closed this ticket
-                // between the gate's classify call and this executor call. Advance the
-                // run to Done so it does not linger, but do NOT attempt a double-close.
-                if (! $ticket->fresh()->status->isOpen()) {
+                // between the gate's classify call and this executor call. Guard ONLY
+                // against the already-at-target-state race (=== Closed): advance the run
+                // to Done so it does not linger, but do NOT attempt a double-close.
+                // A Resolved ticket IS auto-eligible (CloseAutoEligibility) and
+                // Resolved → Closed is an allowed transition — it must actually close,
+                // not early-return — so the guard is the exact terminal state, not isOpen().
+                if ($ticket->fresh()->status === TicketStatus::Closed) {
                     $run->advanceTo(TechnicianRunState::Done);
 
                     return;
