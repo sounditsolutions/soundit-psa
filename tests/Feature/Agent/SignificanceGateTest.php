@@ -95,4 +95,34 @@ class SignificanceGateTest extends TestCase
 
         $this->assertIsBool($result);
     }
+
+    // ── 5. "NOT SURE" must escalate (str_starts_with bug fix) ───────────────
+
+    /**
+     * Fix 3: str_starts_with($text, 'NO') incorrectly returns false (skip) for
+     * "NOT SURE", "NOBODY", etc. The fix uses exact match ($text === 'NO') so
+     * only an unambiguous "NO" skips — anything ambiguous escalates the agent.
+     */
+    public function test_not_sure_response_escalates_to_true(): void
+    {
+        $ai = $this->mock(AiClient::class);
+        $ai->shouldReceive('complete')->once()
+            ->andReturn(new AiResponse(text: 'NOT SURE', inputTokens: 5, outputTokens: 2));
+
+        $gate = new SignificanceGate($ai);
+
+        // "NOT SURE" is not an unambiguous NO — must escalate (true), not skip.
+        $this->assertTrue($gate->assess($this->openTicket()));
+    }
+
+    /** Guard: "NO" alone must still skip (exact match still works). */
+    public function test_exact_no_still_skips(): void
+    {
+        $ai = $this->mock(AiClient::class);
+        $ai->shouldReceive('complete')->once()->andReturn($this->noResponse());
+
+        $gate = new SignificanceGate($ai);
+
+        $this->assertFalse($gate->assess($this->openTicket()));
+    }
 }
