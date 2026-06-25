@@ -97,6 +97,94 @@ class CockpitQueryTest extends TestCase
         $this->assertFalse($query->needsAttention()->contains('id', $ticket->id));
     }
 
+    // ── Fix 4: Lane-ordering — propose_close sorts AFTER client-facing actions ──
+
+    /**
+     * A propose_close run (even an older/overdue one) must sort AFTER a send_reply run.
+     * Client-facing approvals (send_reply, propose_resolution) are time-sensitive;
+     * a stale-close proposal can wait.
+     */
+    public function test_propose_close_sorts_after_send_reply_even_when_older_and_overdue(): void
+    {
+        $query = app(\App\Services\Technician\Cockpit\CockpitQuery::class);
+        $client = Client::factory()->create();
+
+        // Close ticket: overdue AND created first (both criteria that would sort it first
+        // under the old overdue/age ordering alone).
+        $closeTicket = Ticket::factory()->create([
+            'client_id' => $client->id,
+            'due_at' => now()->subDay(), // overdue
+        ]);
+
+        // Reply ticket: not overdue, created second (newer).
+        $replyTicket = Ticket::factory()->create([
+            'client_id' => $client->id,
+            'due_at' => null,
+        ]);
+
+        $closeRun = TechnicianRun::create([
+            'ticket_id' => $closeTicket->id,
+            'client_id' => $client->id,
+            'action_type' => 'propose_close',
+            'content_hash' => hash('sha256', 'close'.$closeTicket->id),
+            'state' => TechnicianRunState::AwaitingApproval,
+            'proposed_content' => 'stale close proposal',
+            'created_at' => now()->subHour(), // older
+        ]);
+
+        $replyRun = TechnicianRun::create([
+            'ticket_id' => $replyTicket->id,
+            'client_id' => $client->id,
+            'action_type' => 'send_reply',
+            'content_hash' => hash('sha256', 'reply'.$replyTicket->id),
+            'state' => TechnicianRunState::AwaitingApproval,
+            'proposed_content' => 'reply draft',
+            'created_at' => now(), // newer
+        ]);
+
+        $drafts = $query->pendingDrafts();
+
+        // The send_reply must come first regardless of age/overdue status.
+        $this->assertSame($replyRun->id, $drafts->first()->id,
+            'send_reply must sort before propose_close.');
+        $this->assertSame($closeRun->id, $drafts->last()->id,
+            'propose_close must sort last.');
+    }
+
+    /**
+     * A reply-only set must remain ordered by overdue-first, then oldest-first
+     * (within-lane ordering preserved — no regression).
+     */
+    public function test_reply_only_set_preserves_overdue_then_age_ordering(): void
+    {
+        $query = app(\App\Services\Technician\Cockpit\CockpitQuery::class);
+        $client = Client::factory()->create();
+
+        // Older, non-overdue reply.
+        $oldTicket = Ticket::factory()->create(['client_id' => $client->id, 'due_at' => null]);
+        $oldRun = TechnicianRun::create([
+            'ticket_id' => $oldTicket->id, 'client_id' => $client->id,
+            'action_type' => 'send_reply', 'content_hash' => hash('sha256', 'a'.$oldTicket->id),
+            'state' => TechnicianRunState::AwaitingApproval, 'proposed_content' => 'old',
+            'created_at' => now()->subHour(),
+        ]);
+
+        // Newer, overdue reply — must sort first (overdue beats age within lane).
+        $overdueTicket = Ticket::factory()->create(['client_id' => $client->id, 'due_at' => now()->subDay()]);
+        $overdueRun = TechnicianRun::create([
+            'ticket_id' => $overdueTicket->id, 'client_id' => $client->id,
+            'action_type' => 'send_reply', 'content_hash' => hash('sha256', 'b'.$overdueTicket->id),
+            'state' => TechnicianRunState::AwaitingApproval, 'proposed_content' => 'overdue',
+            'created_at' => now(),
+        ]);
+
+        $drafts = $query->pendingDrafts();
+
+        $this->assertSame($overdueRun->id, $drafts->first()->id,
+            'Overdue send_reply must still sort before non-overdue send_reply (within-lane ordering preserved).');
+        $this->assertSame($oldRun->id, $drafts->last()->id);
+    }
+
     public function test_needs_attention_temporal_anchor_pre_ack_human_reply_does_not_suppress(): void
     {
         $query = app(\App\Services\Technician\Cockpit\CockpitQuery::class);

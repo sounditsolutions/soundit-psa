@@ -29,8 +29,11 @@ class CockpitQuery
             ->with(['ticket.client', 'ticket.contact'])
             ->get()
             ->sortBy(fn (TechnicianRun $run) => [
-                $this->isOverdue($run->ticket) ? 0 : 1,         // overdue first
-                optional($run->created_at)->getTimestamp() ?? 0, // then oldest
+                // Lane 0 = client-facing (send_reply, propose_resolution); Lane 1 = propose_close.
+                // A stale-close proposal must never preempt a time-sensitive reply approval.
+                $run->action_type === 'propose_close' ? 1 : 0,
+                $this->isOverdue($run->ticket) ? 0 : 1,          // overdue first within lane
+                optional($run->created_at)->getTimestamp() ?? 0,  // oldest first within lane
             ])
             ->values();
     }
