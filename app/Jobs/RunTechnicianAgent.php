@@ -11,6 +11,7 @@ use App\Services\Agent\TechnicianAgent;
 use App\Support\AgentConfig;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
+use Illuminate\Support\Facades\Cache;
 
 /**
  * RunTechnicianAgent — reactive per-ticket wake job.
@@ -26,11 +27,13 @@ use Illuminate\Foundation\Queue\Queueable;
  *   4. Ticket is open.
  *   5. Dedup (CO-5): ticket already has an AwaitingApproval propose_close run.
  *   6. Depth-cap (CO-11): global AwaitingApproval propose_close count >= maxPendingProposals.
- *   7. SignificanceGate: cheap Haiku check — skip if clearly still active.
- *   8. TechnicianAgent::run — the agent reasons and (maybe) proposes a close.
+ *   7. Change-throttle (CO-16): skip if already evaluated since the ticket last changed.
+ *   8. SignificanceGate: cheap Haiku check — skip if clearly still active.
+ *   9. TechnicianAgent::run — the agent reasons and (maybe) proposes a close.
  *
- * No cooldown. No coverage logic. Re-surfacing a ticket is fine (Haiku is cheap;
- * dedup guards prevent duplicate held proposals).
+ * No cooldown beyond the change-throttle (which re-reacts only when the ticket
+ * changes). Re-surfacing a changed ticket is fine (Haiku is cheap; dedup guards
+ * prevent duplicate held proposals).
  */
 class RunTechnicianAgent implements ShouldQueue
 {
@@ -85,12 +88,25 @@ class RunTechnicianAgent implements ShouldQueue
             return;
         }
 
-        // 7. Significance gate — cheap Haiku check; false = "clearly still active, skip".
+        // 7. Change-throttle (CO-16): skip if we already evaluated this ticket since it last
+        //    changed. A client reply or status edit bumps updated_at, clearing the lock.
+        //    Set the marker BEFORE the gate so should-stay tickets (where the gate returns
+        //    false and no run is created) are still marked evaluated — not re-evaluated next
+        //    pass. The agent's own propose_close creates a TechnicianRun, not a ticket update,
+        //    so accepting a proposal does not falsely re-trigger evaluation on the same ticket.
+        $cacheKey = "agent_eval:{$ticket->id}";
+        $lastEval = Cache::get($cacheKey);
+        if ($lastEval !== null && $ticket->updated_at !== null && $ticket->updated_at->timestamp <= $lastEval) {
+            return; // already evaluated since this ticket last changed — re-react only on change
+        }
+        Cache::put($cacheKey, now()->timestamp, now()->addDays(30)); // TTL bounds cache growth only
+
+        // 8. Significance gate — cheap Haiku check; false = "clearly still active, skip".
         if (! app(SignificanceGate::class)->assess($ticket)) {
             return;
         }
 
-        // 8. Wake the agent to reason and (maybe) propose a close.
+        // 9. Wake the agent to reason and (maybe) propose a close.
         app(TechnicianAgent::class)->run($ticket);
     }
 }

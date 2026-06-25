@@ -5,6 +5,7 @@ namespace Tests\Feature\Agent;
 use App\Enums\TechnicianRunState;
 use App\Enums\TicketStatus;
 use App\Jobs\RunTechnicianAgent;
+use App\Jobs\RunTriagePipeline;
 use App\Models\Client;
 use App\Models\Setting;
 use App\Models\TechnicianRun;
@@ -12,6 +13,7 @@ use App\Models\Ticket;
 use App\Services\Agent\SignificanceGate;
 use App\Services\Agent\TechnicianAgent;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Queue;
 use Tests\TestCase;
 
@@ -227,6 +229,88 @@ class RunTechnicianAgentTest extends TestCase
         Queue::fake();
         $this->artisan('triage:review-open');
 
+        Queue::assertPushed(RunTechnicianAgent::class, function ($job) use ($ticket) {
+            return $job->ticketId === $ticket->id;
+        });
+    }
+
+    // ── 8. Change-throttle (CO-16) ────────────────────────────────────────────
+
+    /**
+     * CO-16: The agent evaluates each ticket at most once per change cycle.
+     *   (a) First handle() on an eligible ticket → assess IS called.
+     *   (b) Second handle() on the same unchanged ticket → assess NOT called (throttled).
+     *   (c) After $ticket->touch() → assess IS called again (updated_at advanced).
+     */
+    public function test_change_throttle_skips_unchanged_tickets_and_reruns_after_touch(): void
+    {
+        $this->enableAgent();
+        $ticket = $this->openTicketWithOperationalClient();
+
+        // Expect assess called exactly twice: in (a) and (c). NOT in (b).
+        $gate = $this->mock(SignificanceGate::class);
+        $gate->shouldReceive('assess')->twice()->andReturn(false); // gate says no → no agent run
+
+        $agent = $this->mock(TechnicianAgent::class);
+        $agent->shouldReceive('run')->never(); // gate returns false each time
+
+        // (a) First evaluation: assess is called; the cache key is set.
+        (new RunTechnicianAgent($ticket->id))->handle();
+
+        // (b) Same ticket, no change — throttle fires before the gate.
+        (new RunTechnicianAgent($ticket->id))->handle();
+
+        // (c) Touch bumps updated_at past the cached marker → assess is called again.
+        // Travel forward so updated_at is strictly after the cached timestamp.
+        $this->travel(2)->seconds();
+        $ticket->touch();
+        (new RunTechnicianAgent($ticket->id))->handle();
+    }
+
+    // ── 9. Inactive client (is_active=false) ─────────────────────────────────
+
+    /**
+     * CO-8: A client with is_active=false is NOT operational — gate/agent never called.
+     * Distinct from the prospect test (#3) which uses a Prospect-stage client.
+     */
+    public function test_inactive_client_skips_gate_and_agent(): void
+    {
+        $this->enableAgent();
+
+        // stage=Active but is_active=false → NOT operational (Client::operational() requires both).
+        $inactiveClient = Client::factory()->create(['is_active' => false]);
+        $ticket = Ticket::factory()->for($inactiveClient)->create(['status' => TicketStatus::InProgress]);
+
+        $gate = $this->mock(SignificanceGate::class);
+        $gate->shouldReceive('assess')->never();
+
+        $agent = $this->mock(TechnicianAgent::class);
+        $agent->shouldReceive('run')->never();
+
+        (new RunTechnicianAgent($ticket->id))->handle();
+    }
+
+    // ── 10. Additive-preservation: review command pushes BOTH jobs ────────────
+
+    /**
+     * CO-17 additive: when agent_enabled is true, the review command pushes BOTH
+     * RunTriagePipeline (existing) AND RunTechnicianAgent (additive) for the same ticket.
+     * This proves the additive branch does NOT replace the existing review dispatch.
+     */
+    public function test_review_command_pushes_both_triage_and_agent_jobs(): void
+    {
+        $this->enableReviewCommandPrereqs();
+        $this->enableAgent();
+
+        $ticket = $this->openTicketWithOperationalClient();
+
+        Queue::fake();
+        $this->artisan('triage:review-open');
+
+        // Existing review job must still be dispatched.
+        Queue::assertPushed(RunTriagePipeline::class);
+
+        // The additive agent job must also be dispatched.
         Queue::assertPushed(RunTechnicianAgent::class, function ($job) use ($ticket) {
             return $job->ticketId === $ticket->id;
         });

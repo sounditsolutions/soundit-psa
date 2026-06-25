@@ -196,13 +196,30 @@ class ConfidenceTierTest extends TestCase
 
     public function test_eligibility_true_for_each_auto_safe_status_with_no_recent_note(): void
     {
-        foreach ([TicketStatus::Resolved, TicketStatus::PendingClient, TicketStatus::PendingThirdParty] as $status) {
+        // PendingThirdParty is deliberately excluded from AUTO (Fix 7) — only
+        // Resolved and PendingClient are auto-safe. Vendor-blocked ≠ abandoned.
+        foreach ([TicketStatus::Resolved, TicketStatus::PendingClient] as $status) {
             $ticket = Ticket::factory()->create(['status' => $status]);
             $this->assertTrue(
                 CloseAutoEligibility::eligible($ticket),
                 "{$status->value} with no recent client note should be auto-eligible",
             );
         }
+    }
+
+    /**
+     * Fix 7 (conservative default): PendingThirdParty is vendor-blocked, not
+     * abandoned — it must NOT be AUTO-eligible. The agent can still *propose*
+     * closing it (the gate holds it for a human); only AUTO is removed.
+     */
+    public function test_pending_third_party_is_not_auto_eligible(): void
+    {
+        $ticket = Ticket::factory()->create(['status' => TicketStatus::PendingThirdParty]);
+
+        $this->assertFalse(
+            CloseAutoEligibility::eligible($ticket),
+            'PendingThirdParty is vendor-blocked, not abandoned — must not be AUTO-eligible.',
+        );
     }
 
     public function test_eligibility_false_for_awaiting_us_statuses(): void

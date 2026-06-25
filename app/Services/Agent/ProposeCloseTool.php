@@ -9,6 +9,7 @@ use App\Models\Ticket;
 use App\Services\Technician\Notify\OperatorNotifier;
 use App\Services\Technician\TechnicianActionGate;
 use App\Services\TicketService;
+use App\Support\AgentConfig;
 use App\Support\TechnicianConfig;
 
 /**
@@ -74,6 +75,14 @@ class ProposeCloseTool
     {
         $reason = trim((string) ($input['reason'] ?? ''));
         $confidence = (float) ($input['confidence'] ?? 0.0);
+
+        // Leave-band (R2.2): a below-floor proposal is too weak to surface to the
+        // operator. Discarding it here avoids cockpit noise and prevents filling the
+        // global maxPendingProposals cap with low-signal proposals.
+        if ($confidence < AgentConfig::proposeCloseApproveFloor()) {
+            return "Left ticket #{$ticket->id} (below the close-confidence floor — no proposal created).";
+        }
+
         $hash = hash('sha256', 'propose_close:'.$ticket->id.':'.$reason);
 
         $run = TechnicianRun::firstOrCreate(
@@ -121,14 +130,22 @@ class ProposeCloseTool
             summary: $summary,
             runId: $run->id,
             executor: function () use ($ticket, $run): void {
-                // CO-23: re-check before closing — a human may have closed this ticket
-                // between the gate's classify call and this executor call. Guard ONLY
-                // against the already-at-target-state race (=== Closed): advance the run
-                // to Done so it does not linger, but do NOT attempt a double-close.
-                // A Resolved ticket IS auto-eligible (CloseAutoEligibility) and
-                // Resolved → Closed is an allowed transition — it must actually close,
-                // not early-return — so the guard is the exact terminal state, not isOpen().
-                if ($ticket->fresh()->status === TicketStatus::Closed) {
+                // CO-23 + CO-Fix6: capture the fresh model once so both the guard and
+                // changeStatus operate on the same (current) row. If the ticket was
+                // deleted mid-flight — hard-deleted (fresh() returns null) OR soft-deleted
+                // (fresh() strips scopes, so it comes back TRASHED, not null) — treat as
+                // already-gone: advance the run to Done without touching anything.
+                $fresh = $ticket?->fresh();
+                if ($fresh === null || $fresh->trashed()) {
+                    $run->advanceTo(TechnicianRunState::Done);
+
+                    return;
+                }
+
+                // Guard ONLY against the already-at-target-state race (=== Closed).
+                // A Resolved ticket IS auto-eligible and Resolved → Closed is an
+                // allowed transition — it must actually close, not early-return.
+                if ($fresh->status === TicketStatus::Closed) {
                     $run->advanceTo(TechnicianRunState::Done);
 
                     return;
@@ -136,8 +153,9 @@ class ProposeCloseTool
 
                 // Close to Closed (silent): Resolved dispatches a client portal email
                 // (status_resolved); Closed does not. The deliberate close path is Closed.
+                // Using $fresh ensures the status-change note's "from" state is accurate.
                 app(TicketService::class)->changeStatus(
-                    $ticket,
+                    $fresh,
                     TicketStatus::Closed,
                     TechnicianConfig::aiActorUserId(),
                     'Closed by the AI Technician (high confidence, no recent client activity).',

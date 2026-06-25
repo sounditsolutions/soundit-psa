@@ -129,16 +129,27 @@ class TechnicianApprovalService
                 summary: 'Operator-approved close.',
                 runId: $run->id,
                 executor: function () use ($run): void {
-                    $ticket = $run->ticket;
-                    // CO-23: re-check before closing — a human may have closed this ticket
-                    // between the gate's classify call and this executor call.
-                    if ($ticket->fresh()->status === TicketStatus::Closed) {
+                    $ticket = $run->ticket; // belongsTo — null if the ticket was (soft-)deleted
+                    // CO-23 + CO-Fix6: capture the fresh model once so both the guard and
+                    // changeStatus operate on the same (current) row. If the ticket is gone —
+                    // the relation returned null (soft-deleted: the default scope hides it),
+                    // hard-deleted (fresh() returns null), or soft-deleted mid-flight (fresh()
+                    // strips scopes, so it comes back TRASHED, not null) — treat as already-gone.
+                    $fresh = $ticket?->fresh();
+                    if ($fresh === null || $fresh->trashed()) {
                         $run->advanceTo(TechnicianRunState::Done);
 
                         return;
                     }
+
+                    if ($fresh->status === TicketStatus::Closed) {
+                        $run->advanceTo(TechnicianRunState::Done);
+
+                        return;
+                    }
+                    // Using $fresh ensures the status-change note's "from" state is accurate.
                     app(TicketService::class)->changeStatus(
-                        $ticket,
+                        $fresh,
                         TicketStatus::Closed,
                         TechnicianConfig::aiActorUserId(),
                         'Closed by AI Technician (operator-approved).',

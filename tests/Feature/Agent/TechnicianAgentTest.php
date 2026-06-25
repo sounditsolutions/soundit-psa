@@ -218,4 +218,29 @@ class TechnicianAgentTest extends TestCase
         // No TechnicianRun created.
         $this->assertSame(0, TechnicianRun::where('ticket_id', $ticket->id)->count());
     }
+
+    // ── 6. AI explicitly disabled (T5 branch) ────────────────────────────────
+
+    /**
+     * Fix-5 T5: AiConfig::isEnabled()=false while configured → run() no-ops.
+     * Distinct from the isConfigured()=false case above: the API key IS present,
+     * but the operator has explicitly set ai_enabled = 0.
+     */
+    public function test_run_no_ops_when_ai_is_explicitly_disabled(): void
+    {
+        $this->configureAi(); // API key present → isConfigured() = true
+
+        // Explicitly disable (default is '1' — set to '0' to disable).
+        Setting::setValue('ai_enabled', '0');
+
+        $ticket = $this->openTicketWithClient();
+
+        $ai = $this->mock(AiClient::class);
+        $ai->shouldReceive('runToolLoop')->never();
+
+        $this->agent()->run($ticket);
+
+        // No TechnicianRun created — run() returned early on isEnabled()=false.
+        $this->assertSame(0, TechnicianRun::where('ticket_id', $ticket->id)->count());
+    }
 }

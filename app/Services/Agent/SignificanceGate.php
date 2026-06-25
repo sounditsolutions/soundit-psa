@@ -51,9 +51,10 @@ class SignificanceGate
 
             $text = strtoupper(trim($response->text));
 
-            // Only skip when the model is unambiguously "NO".
-            // YES, empty, or ambiguous responses → escalate (true).
-            if (str_starts_with($text, 'NO')) {
+            // Only skip when the model is unambiguously "NO" (exact match).
+            // str_starts_with would incorrectly skip "NOT SURE", "NOBODY", etc.
+            // Escalate-when-unsure: anything other than a bare "NO" → wake the agent.
+            if ($text === 'NO') {
                 return false;
             }
 
