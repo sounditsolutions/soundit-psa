@@ -11,6 +11,7 @@ use App\Services\Agent\TechnicianAgent;
 use App\Support\AgentConfig;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
+use Illuminate\Support\Facades\Cache;
 
 /**
  * RunTechnicianAgent — reactive per-ticket wake job.
@@ -85,7 +86,20 @@ class RunTechnicianAgent implements ShouldQueue
             return;
         }
 
-        // 7. Significance gate — cheap Haiku check; false = "clearly still active, skip".
+        // 7. Change-throttle (CO-16): skip if we already evaluated this ticket since it last
+        //    changed. A client reply or status edit bumps updated_at, clearing the lock.
+        //    Set the marker BEFORE the gate so should-stay tickets (where the gate returns
+        //    false and no run is created) are still marked evaluated — not re-evaluated next
+        //    pass. The agent's own propose_close creates a TechnicianRun, not a ticket update,
+        //    so accepting a proposal does not falsely re-trigger evaluation on the same ticket.
+        $cacheKey = "agent_eval:{$ticket->id}";
+        $lastEval = Cache::get($cacheKey);
+        if ($lastEval !== null && $ticket->updated_at !== null && $ticket->updated_at->timestamp <= $lastEval) {
+            return; // already evaluated since this ticket last changed — re-react only on change
+        }
+        Cache::put($cacheKey, now()->timestamp, now()->addDays(30)); // TTL bounds cache growth only
+
+        // 8. Significance gate — cheap Haiku check; false = "clearly still active, skip".
         if (! app(SignificanceGate::class)->assess($ticket)) {
             return;
         }
