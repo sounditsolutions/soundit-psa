@@ -24,7 +24,7 @@ use Mockery\MockInterface;
 use Tests\TestCase;
 
 /**
- * ProposeCloseTool — the Backlog Agent's single gated ACT tool.
+ * ProposeCloseTool — the AI Technician's single gated ACT tool.
  *
  * Covers:
  *  1. Held by default (auto off): high confidence, no threshold → awaiting_approval; ticket untouched; notifier silent.

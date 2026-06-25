@@ -18,7 +18,7 @@ use App\Support\ZorusConfig;
 class TriageToolDefinitions
 {
     /**
-     * Read-only tool definitions available to the Backlog Agent.
+     * Read-only tool definitions available to the AI Technician.
      *
      * Exactly: search_tickets, get_ticket_notes, wiki_list_pages, wiki_search, wiki_get_page.
      * The agent reasons with these + propose_close (added separately by the agent — the only ACT tool).

@@ -13,7 +13,7 @@ use App\Support\TechnicianConfig;
  * (spec §4.3/§7). The model's self-reported tier is never consulted — only the
  * config tier map. Anything not explicitly mapped to 'auto' is ≥Approve.
  *
- * EXCEPTION — propose_close (Backlog Agent): its Auto decision is owned ENTIRELY
+ * EXCEPTION — propose_close (the AI Technician): its Auto decision is owned ENTIRELY
  * by the operator-set confidence threshold + a deterministic backstop, NOT the
  * tier map (CO-14). The $confidence/$ticket params feed only that branch; every
  * other action type ignores them and follows the unchanged legacy map path.

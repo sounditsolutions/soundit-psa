@@ -12,7 +12,7 @@ use App\Services\TicketService;
 use App\Support\TechnicianConfig;
 
 /**
- * The Backlog Agent's single gated ACT tool.
+ * The AI Technician's single gated ACT tool.
  *
  * Calling propose_close() records a held TechnicianRun and dispatches through
  * the existing TechnicianActionGate with the agent's confidence scalar:
@@ -111,7 +111,7 @@ class ProposeCloseTool
             ]);
         }
 
-        $summary = "Backlog agent proposes closing ticket #{$ticket->id}: {$reason}";
+        $summary = "The AI Technician proposes closing ticket #{$ticket->id}: {$reason}";
 
         $result = $this->gate->dispatch(
             actionType: 'propose_close',
@@ -140,7 +140,7 @@ class ProposeCloseTool
                     $ticket,
                     TicketStatus::Closed,
                     TechnicianConfig::aiActorUserId(),
-                    'Closed by backlog agent (high confidence, no recent client activity).',
+                    'Closed by the AI Technician (high confidence, no recent client activity).',
                 );
 
                 $run->advanceTo(TechnicianRunState::Done);
@@ -154,8 +154,8 @@ class ProposeCloseTool
         if ($result->status === 'executed') {
             $pct = number_format($confidence * 100, 1);
             $this->notifier->notify(
-                "Backlog agent closed ticket #{$ticket->id}",
-                "Ticket #{$ticket->id} was automatically closed by the backlog agent.\n\nReason: {$reason}\n\nConfidence: {$pct}%",
+                "The AI Technician closed ticket #{$ticket->id}",
+                "Ticket #{$ticket->id} was automatically closed by the AI Technician.\n\nReason: {$reason}\n\nConfidence: {$pct}%",
             );
 
             return "Closed #{$ticket->id} (high confidence). Operator notified.";
