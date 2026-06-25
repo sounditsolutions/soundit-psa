@@ -2,8 +2,10 @@
 
 namespace App\Console\Commands;
 
+use App\Jobs\RunTechnicianAgent;
 use App\Jobs\RunTriagePipeline;
 use App\Models\Ticket;
+use App\Support\AgentConfig;
 use App\Support\AiConfig;
 use App\Support\TriageConfig;
 use Illuminate\Console\Command;
@@ -63,6 +65,13 @@ class TriageReviewOpen extends Command
         $dispatched = 0;
         foreach ($tickets as $ticket) {
             RunTriagePipeline::dispatch($ticket->id, 'review');
+
+            // Agent rides the review pass — only wakes when triage_enabled + triage_auto_review
+            // + AI configured are all on (CO-17, the intended coupling). Flag off = no-op.
+            if (AgentConfig::enabled()) {
+                RunTechnicianAgent::dispatch($ticket->id);
+            }
+
             $dispatched++;
             $this->line("  Dispatched review for {$ticket->display_id}");
         }

@@ -14,6 +14,7 @@ use App\Observers\InvoiceObserver;
 use App\Observers\PersonObserver;
 use App\Observers\TicketNoteObserver;
 use App\Observers\TicketObserver;
+use App\Services\Agent\SignificanceGate;
 use App\Services\Cipp\CippClient;
 use App\Services\Graph\GraphClient;
 use App\Services\Level\LevelClient;
@@ -40,6 +41,10 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
+        // Bind SignificanceGate to a Haiku-configured instance for production use.
+        // Tests override this with $this->mock(SignificanceGate::class).
+        $this->app->bind(SignificanceGate::class, fn () => SignificanceGate::haiku());
+
         $this->app->singleton(NinjaClient::class, function ($app) {
             $config = config('services.ninja');
 
