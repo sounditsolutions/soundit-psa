@@ -3189,17 +3189,28 @@
                     {{-- Escalation chain --}}
                     <div class="mb-3">
                         <label class="form-label small">Escalation chain (ordered)</label>
-                        <div class="form-text mb-2">People to page when an emergency is detected. Drag to reorder, or use the checkboxes to add/remove. The Technician works down this list, waiting {{ $technicianEscalationTimeout }} min between each.</div>
+                        <div class="form-text mb-2">Tick who to page, and set a number for the order — lowest number is paged first. The Technician waits {{ $technicianEscalationTimeout }} min between each attempt before moving to the next person.</div>
                         @foreach($activeUsers as $activeUser)
-                            <div class="form-check">
-                                <input class="form-check-input" type="checkbox"
+                            @php
+                                $chainPos = array_search($activeUser->id, $technicianEscalationChain, true);
+                                $orderValue = $chainPos !== false ? $chainPos + 1 : '';
+                            @endphp
+                            <div class="d-flex align-items-center gap-2 mb-1">
+                                <input class="form-check-input mt-0" type="checkbox"
                                        id="escchain_{{ $activeUser->id }}"
                                        name="technician_escalation_chain[]"
                                        value="{{ $activeUser->id }}"
-                                       {{ in_array($activeUser->id, $technicianEscalationChain, true) ? 'checked' : '' }}>
-                                <label class="form-check-label" for="escchain_{{ $activeUser->id }}">
+                                       {{ $chainPos !== false ? 'checked' : '' }}>
+                                <label class="form-check-label mb-0" for="escchain_{{ $activeUser->id }}">
                                     {{ $activeUser->name }}
                                 </label>
+                                <input type="number" min="1"
+                                       class="form-control form-control-sm"
+                                       style="width:5rem"
+                                       aria-label="Page order for {{ $activeUser->name }}"
+                                       name="technician_escalation_order[{{ $activeUser->id }}]"
+                                       value="{{ $orderValue }}"
+                                       placeholder="#">
                             </div>
                         @endforeach
                     </div>

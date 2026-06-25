@@ -1688,8 +1688,25 @@ class IntegrationsController extends Controller
         Setting::setValue('technician_heartbeat_interval', (string) max(1, (int) $request->input('technician_heartbeat_interval', 15)));
 
         // Phase 2: escalation chain (ordered user ID array)
+        // If the operator submitted priority-order numbers via technician_escalation_order[userId],
+        // sort the checked users by their order number (ascending); ties break by submission order.
+        // When no order inputs are present the chain is stored in submission order (legacy behaviour).
         $chain = $request->input('technician_escalation_chain', []);
         $chain = is_array($chain) ? array_values(array_filter(array_map('intval', $chain))) : [];
+        $orderMap = $request->input('technician_escalation_order', []);
+        if (is_array($orderMap) && $orderMap !== []) {
+            // Build a lookup of userId → numeric priority (default to PHP_INT_MAX so unset = last)
+            $orderLookup = [];
+            foreach ($orderMap as $uid => $ord) {
+                $orderLookup[(int) $uid] = is_numeric($ord) ? (int) $ord : PHP_INT_MAX;
+            }
+            $sortIndex = 0;
+            $tagged = array_map(static function (int $uid) use ($orderLookup, &$sortIndex): array {
+                return ['uid' => $uid, 'ord' => $orderLookup[$uid] ?? PHP_INT_MAX, 'seq' => $sortIndex++];
+            }, $chain);
+            usort($tagged, static fn (array $a, array $b): int => $a['ord'] <=> $b['ord'] ?: $a['seq'] <=> $b['seq']);
+            $chain = array_column($tagged, 'uid');
+        }
         Setting::setValue('technician_escalation_chain', json_encode($chain));
 
         // Phase 2: per-operator availability map (user id → "1"/"0")
