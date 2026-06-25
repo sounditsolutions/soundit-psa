@@ -6,19 +6,19 @@ use App\Models\Ticket;
 use App\Services\Triage\TriageToolExecutor;
 
 /**
- * The Backlog Agent's tool executor — a default-deny enforcement boundary between
+ * The agent's tool executor — a default-deny enforcement boundary between
  * the LLM tool loop and the PSA's mutating actions.
  *
  * Allowlist (CO-1):
  *   READ: search_tickets, get_ticket_notes, wiki_list_pages, wiki_search, wiki_get_page
  *   ACT:  propose_close (the only gated mutator — routes through ProposeCloseTool/gate)
  *
- * Any other tool name returns ['error' => 'tool not available to the backlog agent'].
+ * Any other tool name returns ['error' => 'tool not available to the agent'].
  * TriageToolExecutor is NEVER called for an arbitrary name — the check happens first,
  * so un-gated mutators (set_ticket_*, tactical_run_diagnostic) can never reach their
  * executing paths through this class.
  */
-class BacklogAgentToolExecutor
+class TechnicianAgentToolExecutor
 {
     /** Names that are permitted for read delegation to TriageToolExecutor. */
     private const READ_TOOLS = [
@@ -37,7 +37,7 @@ class BacklogAgentToolExecutor
     ) {}
 
     /**
-     * Execute a tool call from the Backlog Agent's LLM loop.
+     * Execute a tool call from the agent's LLM loop.
      *
      * Routing (strict — default deny):
      *   propose_close       → ProposeCloseTool (the gated ACT path)
@@ -55,7 +55,7 @@ class BacklogAgentToolExecutor
         }
 
         // Default deny — every un-gated mutator and unknown tool lands here.
-        return ['error' => 'tool not available to the backlog agent'];
+        return ['error' => 'tool not available to the agent'];
     }
 
     /**

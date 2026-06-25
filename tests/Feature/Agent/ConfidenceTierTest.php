@@ -263,7 +263,7 @@ class ConfidenceTierTest extends TestCase
 
     public function test_quiet_window_honors_configured_days(): void
     {
-        Setting::setValue('backlog_agent_auto_quiet_days', '3');
+        Setting::setValue('agent_auto_quiet_days', '3');
         $ticket = $this->eligibleTicket();
         // 5 days old: outside a 3-day window → does not block.
         $this->noteAt($ticket, WhoType::EndUser, now()->subDays(5));

@@ -8,15 +8,15 @@ use App\Models\Client;
 use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Models\User;
-use App\Services\Agent\BacklogAgentToolExecutor;
 use App\Services\Agent\ProposeCloseTool;
+use App\Services\Agent\TechnicianAgentToolExecutor;
 use App\Services\Technician\Notify\OperatorNotifier;
 use App\Services\Triage\TriageToolDefinitions;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
 /**
- * BacklogAgentToolExecutor — the read-only tool fence (Task 4, CO-1 BLOCKER).
+ * TechnicianAgentToolExecutor — the read-only tool fence (Task 4, CO-1 BLOCKER).
  *
  * The executor is the enforcement boundary: a mutator tool name must NEVER
  * reach a mutating code path. All adversarial cases must fail early and leave
@@ -32,7 +32,7 @@ use Tests\TestCase;
  *  4. propose_close routes to ProposeCloseTool: held TechnicianRun created.
  *  5. readTools() shape: exactly the 5 allowed reads, no mutators.
  */
-class BacklogAgentToolExecutorTest extends TestCase
+class TechnicianAgentToolExecutorTest extends TestCase
 {
     use RefreshDatabase;
 
@@ -52,9 +52,9 @@ class BacklogAgentToolExecutorTest extends TestCase
         return Ticket::factory()->for($client)->create(['status' => TicketStatus::InProgress]);
     }
 
-    private function executor(Ticket $ticket): BacklogAgentToolExecutor
+    private function executor(Ticket $ticket): TechnicianAgentToolExecutor
     {
-        return new BacklogAgentToolExecutor($ticket, app(ProposeCloseTool::class));
+        return new TechnicianAgentToolExecutor($ticket, app(ProposeCloseTool::class));
     }
 
     private function assertNoAuditRowForTicket(Ticket $ticket): void
@@ -70,7 +70,7 @@ class BacklogAgentToolExecutorTest extends TestCase
 
         $result = $this->executor($ticket)->execute('set_ticket_status', ['status' => 'closed']);
 
-        $this->assertSame(['error' => 'tool not available to the backlog agent'], $result);
+        $this->assertSame(['error' => 'tool not available to the agent'], $result);
         $this->assertSame(TicketStatus::InProgress, $ticket->fresh()->status);
         $this->assertNoAuditRowForTicket($ticket);
     }
@@ -82,7 +82,7 @@ class BacklogAgentToolExecutorTest extends TestCase
 
         $result = $this->executor($ticket)->execute('set_ticket_priority', ['priority' => 1]);
 
-        $this->assertSame(['error' => 'tool not available to the backlog agent'], $result);
+        $this->assertSame(['error' => 'tool not available to the agent'], $result);
         $this->assertSame($originalPriority, $ticket->fresh()->priority);
         $this->assertNoAuditRowForTicket($ticket);
     }
@@ -94,7 +94,7 @@ class BacklogAgentToolExecutorTest extends TestCase
 
         $result = $this->executor($ticket)->execute('set_ticket_category', ['category' => 'hardware']);
 
-        $this->assertSame(['error' => 'tool not available to the backlog agent'], $result);
+        $this->assertSame(['error' => 'tool not available to the agent'], $result);
         $this->assertSame($originalCategory, $ticket->fresh()->category);
         $this->assertNoAuditRowForTicket($ticket);
     }
@@ -106,7 +106,7 @@ class BacklogAgentToolExecutorTest extends TestCase
 
         $result = $this->executor($ticket)->execute('set_ticket_keywords', ['keywords' => ['printer', 'offline']]);
 
-        $this->assertSame(['error' => 'tool not available to the backlog agent'], $result);
+        $this->assertSame(['error' => 'tool not available to the agent'], $result);
         $this->assertSame($originalKeywords, $ticket->fresh()->search_keywords);
         $this->assertNoAuditRowForTicket($ticket);
     }
@@ -120,7 +120,7 @@ class BacklogAgentToolExecutorTest extends TestCase
             'diagnostic' => 'event_log_errors',
         ]);
 
-        $this->assertSame(['error' => 'tool not available to the backlog agent'], $result);
+        $this->assertSame(['error' => 'tool not available to the agent'], $result);
         $this->assertSame(TicketStatus::InProgress, $ticket->fresh()->status);
         $this->assertNoAuditRowForTicket($ticket);
     }
@@ -133,7 +133,7 @@ class BacklogAgentToolExecutorTest extends TestCase
 
         $result = $this->executor($ticket)->execute('definitely_not_a_tool', []);
 
-        $this->assertSame(['error' => 'tool not available to the backlog agent'], $result);
+        $this->assertSame(['error' => 'tool not available to the agent'], $result);
         $this->assertNoAuditRowForTicket($ticket);
     }
 
@@ -144,7 +144,7 @@ class BacklogAgentToolExecutorTest extends TestCase
 
         $result = $this->executor($ticket)->execute('ninja_search_devices', ['query' => 'workstation']);
 
-        $this->assertSame(['error' => 'tool not available to the backlog agent'], $result);
+        $this->assertSame(['error' => 'tool not available to the agent'], $result);
     }
 
     // ── 3. Read delegation ────────────────────────────────────────────────────
@@ -161,7 +161,7 @@ class BacklogAgentToolExecutorTest extends TestCase
 
         // A successful (even empty) read returns an array — not the error sentinel.
         $this->assertIsArray($result);
-        $this->assertNotSame(['error' => 'tool not available to the backlog agent'], $result);
+        $this->assertNotSame(['error' => 'tool not available to the agent'], $result);
         $this->assertArrayNotHasKey('error', $result);
     }
 
@@ -177,7 +177,7 @@ class BacklogAgentToolExecutorTest extends TestCase
 
         // Notes may be empty, but the result is a read array, not the refusal error.
         $this->assertIsArray($result);
-        $this->assertNotSame(['error' => 'tool not available to the backlog agent'], $result);
+        $this->assertNotSame(['error' => 'tool not available to the agent'], $result);
         $this->assertArrayNotHasKey('error', $result);
     }
 
@@ -274,9 +274,9 @@ class BacklogAgentToolExecutorTest extends TestCase
         foreach ($mutators as [$name, $input]) {
             $result = $executor->execute($name, $input);
             $this->assertSame(
-                ['error' => 'tool not available to the backlog agent'],
+                ['error' => 'tool not available to the agent'],
                 $result,
-                "Mutator '{$name}' must be refused by BacklogAgentToolExecutor."
+                "Mutator '{$name}' must be refused by TechnicianAgentToolExecutor."
             );
         }
 

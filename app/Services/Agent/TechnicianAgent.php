@@ -10,9 +10,9 @@ use App\Support\AiConfig;
 use Illuminate\Support\Facades\Log;
 
 /**
- * The Backlog Agent's tool-loop brain.
+ * The agent's tool-loop brain.
  *
- * Reasons over one stale ticket using the read-only fence (Task 4) +
+ * Reasons over a ticket using the read-only fence (Task 4) +
  * propose_close (Task 3) and decides whether to propose closing it.
  *
  * Safety invariants:
@@ -24,16 +24,16 @@ use Illuminate\Support\Facades\Log;
  *  - The agent NEVER closes a ticket itself — only propose_close, which is
  *    the gated path (held by default; auto only above the opt-in threshold).
  */
-class BacklogAgent
+class TechnicianAgent
 {
     public function __construct(
         private readonly AiClient $ai,
     ) {}
 
     /**
-     * Reason over a stale ticket and propose closing it if clearly appropriate.
+     * Reason over a ticket and propose closing it if clearly appropriate.
      *
-     * @param  Ticket  $ticket  The stale ticket to inspect.
+     * @param  Ticket  $ticket  The ticket to inspect.
      */
     public function run(Ticket $ticket): void
     {
@@ -42,7 +42,7 @@ class BacklogAgent
         }
 
         try {
-            $system = 'You are a junior MSP technician doing an onboarding pass over an OLD ticket. '
+            $system = 'You are a junior MSP technician reviewing a ticket. '
                 .'Read it with your tools. If it is clearly resolved or abandoned with no further action '
                 .'needed, call `propose_close` ONCE with a one-line reason quoting the evidence and a '
                 .'confidence 0–1. If it is awaiting us, awaiting the client, or still active — do NOTHING, '
@@ -52,17 +52,17 @@ class BacklogAgent
 
             $tools = array_merge(TriageToolDefinitions::readTools(), [ProposeCloseTool::definition()]);
 
-            $backlogExecutor = new BacklogAgentToolExecutor($ticket, app(ProposeCloseTool::class));
+            $toolExecutor = new TechnicianAgentToolExecutor($ticket, app(ProposeCloseTool::class));
 
             // CO-4 propose-once guard: track whether a propose_close has already been
             // dispatched this run. On a SECOND call the model returns a stop string and
             // ProposeCloseTool is NOT invoked — prevents duplicate proposals with varied
             // reasons from producing multiple TechnicianRun rows in one loop.
             $proposed = false;
-            $executor = function (string $toolName, array $input) use ($backlogExecutor, &$proposed): mixed {
+            $executor = function (string $toolName, array $input) use ($toolExecutor, &$proposed): mixed {
                 if ($toolName === 'propose_close') {
                     if ($proposed) {
-                        Log::info('[BacklogAgent] Suppressed duplicate propose_close call (CO-4 guard)');
+                        Log::info('[TechnicianAgent] Suppressed duplicate propose_close call (CO-4 guard)');
 
                         return 'already proposed — stop';
                     }
@@ -70,7 +70,7 @@ class BacklogAgent
                     $proposed = true;
                 }
 
-                return $backlogExecutor->execute($toolName, $input);
+                return $toolExecutor->execute($toolName, $input);
             };
 
             $this->ai->runToolLoop(
@@ -83,7 +83,7 @@ class BacklogAgent
                 wallClockSeconds: 240,
             );
         } catch (\Throwable $e) {
-            Log::warning('[BacklogAgent] run() failed — skipping ticket', [
+            Log::warning('[TechnicianAgent] run() failed — skipping ticket', [
                 'ticket_id' => $ticket->id,
                 'error' => $e->getMessage(),
                 'class' => $e::class,

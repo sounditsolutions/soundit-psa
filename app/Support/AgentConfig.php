@@ -5,26 +5,26 @@ namespace App\Support;
 use App\Models\Setting;
 
 /**
- * Setting-backed config for the Backlog Agent (Increment 1).
+ * Setting-backed config for the agent (Increment 1).
  * Ships dormant: enabled() defaults false, proposeCloseAutoThreshold() defaults null.
  * Mirrors TechnicianConfig idioms — except the auto-threshold reader which is
  * deliberately null-preserving (absent ≠ 0.0, it means "never auto-close").
  */
 class AgentConfig
 {
-    /** Master on/off for the Backlog Agent. Absent ⇒ false (dormant by default). */
+    /** Master on/off for the agent. Absent ⇒ false (dormant by default). */
     public static function enabled(): bool
     {
-        return (bool) Setting::getValue('backlog_agent_enabled');
+        return (bool) Setting::getValue('agent_enabled');
     }
 
     /**
      * Maximum number of propose-close proposals that may sit pending approval
-     * at one time. Setting: backlog_agent_max_pending. Default: 10. Floor: 1.
+     * at one time. Setting: agent_max_pending. Default: 10. Floor: 1.
      */
     public static function maxPendingProposals(): int
     {
-        $value = Setting::getValue('backlog_agent_max_pending');
+        $value = Setting::getValue('agent_max_pending');
 
         return is_numeric($value) ? max(1, (int) $value) : 10;
     }
@@ -66,12 +66,12 @@ class AgentConfig
      * Quiet window (in days) the deterministic auto-close backstop requires with
      * NO inbound client note before a propose_close may AUTO-close (CO-19). A
      * client who wrote in within this window is, by definition, not done — so the
-     * close is held for a human instead. Setting: backlog_agent_auto_quiet_days.
+     * close is held for a human instead. Setting: agent_auto_quiet_days.
      * Default: 14. Floor: 1 (mirrors the maxPendingProposals floor idiom).
      */
     public static function autoQuietDays(): int
     {
-        $value = Setting::getValue('backlog_agent_auto_quiet_days');
+        $value = Setting::getValue('agent_auto_quiet_days');
 
         return is_numeric($value) ? max(1, (int) $value) : 14;
     }
@@ -79,11 +79,11 @@ class AgentConfig
     /**
      * Model id used for the lightweight significance-scoring gate.
      * Reads from Setting first; falls back to the Haiku id from AiConfig.
-     * Setting: backlog_agent_significance_model.
+     * Setting: agent_significance_model.
      */
     public static function significanceModel(): string
     {
-        $value = Setting::getValue('backlog_agent_significance_model');
+        $value = Setting::getValue('agent_significance_model');
 
         return (is_string($value) && trim($value) !== '') ? trim($value) : AiConfig::haikuModel();
     }

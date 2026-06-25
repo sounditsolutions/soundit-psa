@@ -9,7 +9,7 @@ use App\Models\Setting;
 use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Models\User;
-use App\Services\Agent\BacklogAgent;
+use App\Services\Agent\TechnicianAgent;
 use App\Services\Ai\AiClient;
 use App\Services\Ai\AiResponse;
 use App\Services\Technician\Notify\OperatorNotifier;
@@ -17,7 +17,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
 /**
- * BacklogAgent — the event-woken tool-loop brain (Task 5).
+ * TechnicianAgent — the event-woken tool-loop brain (Task 5).
  *
  * All five tests mock AiClient::runToolLoop to drive the loop deterministically —
  * no real HTTP calls are made.
@@ -29,7 +29,7 @@ use Tests\TestCase;
  *  4. Propose-once (CO-4): executor called twice with different reasons → only ONE TechnicianRun (second call refused).
  *  5. AI not configured: run() returns without calling runToolLoop (mock ->never()).
  */
-class BacklogAgentTest extends TestCase
+class TechnicianAgentTest extends TestCase
 {
     use RefreshDatabase;
 
@@ -56,9 +56,9 @@ class BacklogAgentTest extends TestCase
         return Ticket::factory()->for($client)->create(['status' => TicketStatus::InProgress]);
     }
 
-    private function agent(): BacklogAgent
+    private function agent(): TechnicianAgent
     {
-        return app(BacklogAgent::class);
+        return app(TechnicianAgent::class);
     }
 
     private function fakeAiResponse(): AiResponse
@@ -168,7 +168,7 @@ class BacklogAgentTest extends TestCase
     // ── 4. Propose-once (CO-4) ────────────────────────────────────────────────
 
     /**
-     * The propose-once guard in BacklogAgent must prevent a second propose_close
+     * The propose-once guard in TechnicianAgent must prevent a second propose_close
      * from reaching ProposeCloseTool even when the two calls use different reasons
      * (different content hashes — ProposeCloseTool's own idempotency guard would
      * NOT prevent a second row in that case, so the agent-level guard is critical).
