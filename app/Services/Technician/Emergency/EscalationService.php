@@ -18,10 +18,10 @@ use App\Support\TechnicianConfig;
  *
  *   - acknowledged / resolved emergencies are PAUSED here (un-snoozing is the
  *     sweep's job, not this service's);
- *   - availability is AUTHORITATIVE — a member marked not-available is skipped
+ *   - reachability is AUTHORITATIVE — a member marked not-reachable is skipped
  *     immediately, never paged;
  *   - "escalation_step" indexes the ORDERED FULL chain; the "current target" is
- *     the first AVAILABLE member at/after that index;
+ *     the first REACHABLE member at/after that index;
  *   - a target that has timed out with no ack causes the step to ADVANCE past it
  *     and the next available member to be paged (no-ack advance);
  *   - PER-TICK IDEMPOTENCY (CO-8): a target already paged within the escalation

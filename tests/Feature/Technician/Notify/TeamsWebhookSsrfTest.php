@@ -99,15 +99,20 @@ class TeamsWebhookSsrfTest extends TestCase
             ],
         )->assertSessionHasNoErrors()->assertRedirect(route('settings.integrations'));
 
-        $this->assertSame('https://93.184.216.34/hook', Setting::getValue('technician_teams_webhook_url'));
+        // psa-uvuy: stored ENCRYPTED at rest now — the raw row is ciphertext, but the
+        // decrypted accessor returns the real URL the SSRF pin posts to.
+        $this->assertNotSame('https://93.184.216.34/hook', Setting::getValue('technician_teams_webhook_url'));
+        $this->assertSame('https://93.184.216.34/hook', \App\Support\TechnicianConfig::teamsWebhookUrl());
     }
 
-    public function test_save_allows_clearing_the_webhook(): void
+    public function test_save_blank_keeps_the_existing_webhook(): void
     {
         $user = User::factory()->create();
-        Setting::setValue('technician_teams_webhook_url', 'https://example.webhook.office.com/hook');
+        Setting::setEncrypted('technician_teams_webhook_url', 'https://example.webhook.office.com/hook');
 
-        // An empty/unset webhook must NOT be rejected (nullable) and clears the value.
+        // psa-uvuy: a blank submit is NOT rejected (nullable) but, as a masked secret
+        // field, it KEEPS the existing stored value rather than wiping it (parity with
+        // the other operator secrets — a stray save must never clear the webhook).
         $this->actingAs($user)->from(route('settings.integrations'))->post(
             route('settings.integrations.technician.update'),
             [
@@ -116,7 +121,7 @@ class TeamsWebhookSsrfTest extends TestCase
             ],
         )->assertSessionHasNoErrors();
 
-        $this->assertSame('', Setting::getValue('technician_teams_webhook_url'));
+        $this->assertSame('https://example.webhook.office.com/hook', \App\Support\TechnicianConfig::teamsWebhookUrl());
     }
 
     // ── Request-time pin (post()) ────────────────────────────────────────────

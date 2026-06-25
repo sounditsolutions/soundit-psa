@@ -191,4 +191,52 @@ class EmergencySettingsTest extends TestCase
         $this->assertSame(120, TechnicianConfig::emergencyAgeMinutes(\App\Enums\TicketPriority::P3));
         $this->assertSame(720, TechnicianConfig::emergencyAgeMinutes(\App\Enums\TicketPriority::P4));
     }
+
+    /**
+     * Numeric priority order inputs let the operator choose escalation order
+     * independently of checkbox submission order or user-id order.
+     *
+     * Three users posted: userC order=1, userA order=2, userB order=3.
+     * userB is NOT checked (absent from technician_escalation_chain).
+     * Expected chain: [userC, userA] — B excluded, C before A.
+     */
+    public function test_numeric_order_inputs_determine_escalation_chain_order(): void
+    {
+        $userA = User::factory()->create();
+        $userB = User::factory()->create();
+        $userC = User::factory()->create();
+
+        $this->actingAs($userA)->post(route('settings.integrations.technician.update'), [
+            // Only A and C are checked (B is excluded)
+            'technician_escalation_chain' => [(string) $userA->id, (string) $userC->id],
+            // Order: C=1 (first paged), A=2 (second), B=3 (but unchecked — must be ignored)
+            'technician_escalation_order' => [
+                (string) $userA->id => '2',
+                (string) $userB->id => '3',
+                (string) $userC->id => '1',
+            ],
+        ])->assertRedirect();
+
+        $chain = TechnicianConfig::escalationChain();
+
+        $this->assertSame([$userC->id, $userA->id], $chain, 'Chain must follow numeric order, not submission/id order');
+        $this->assertNotContains($userB->id, $chain, 'Unchecked user must not appear in chain');
+    }
+
+    /**
+     * When order numbers are not submitted (legacy / partial form post),
+     * the chain falls back to submission order so existing behaviour is preserved.
+     */
+    public function test_chain_falls_back_to_submission_order_when_no_order_inputs(): void
+    {
+        $userA = User::factory()->create();
+        $userB = User::factory()->create();
+
+        $this->actingAs($userA)->post(route('settings.integrations.technician.update'), [
+            'technician_escalation_chain' => [(string) $userB->id, (string) $userA->id],
+            // no technician_escalation_order submitted
+        ])->assertRedirect();
+
+        $this->assertSame([$userB->id, $userA->id], TechnicianConfig::escalationChain());
+    }
 }

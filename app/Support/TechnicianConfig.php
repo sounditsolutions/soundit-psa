@@ -129,12 +129,29 @@ class TechnicianConfig
         return is_string($value) && trim($value) !== '' ? trim($value) : null;
     }
 
-    /** Teams incoming-webhook URL for operator notifications (spec §1C). */
+    /**
+     * Teams incoming-webhook URL for operator notifications (spec §1C).
+     *
+     * psa-uvuy: the webhook is now stored ENCRYPTED at rest. Read it back decrypted
+     * here so the SSRF pin and post() operate on the real host. Decryption is
+     * tolerant of a legacy PLAINTEXT value (one written before this change, or by a
+     * test using Setting::setValue): if Crypt::decryptString fails, the stored value
+     * was plaintext and is returned as-is. Either way the caller gets the real URL.
+     */
     public static function teamsWebhookUrl(): ?string
     {
-        $value = Setting::getValue('technician_teams_webhook_url');
+        $raw = Setting::getValue('technician_teams_webhook_url');
+        if (! is_string($raw) || trim($raw) === '') {
+            return null;
+        }
 
-        return is_string($value) && trim($value) !== '' ? trim($value) : null;
+        try {
+            $value = \Illuminate\Support\Facades\Crypt::decryptString($raw);
+        } catch (\Illuminate\Contracts\Encryption\DecryptException) {
+            $value = $raw; // legacy/plaintext value — use it directly
+        }
+
+        return trim($value) !== '' ? trim($value) : null;
     }
 
     /** The Technician's own daily token ceiling (spec §11). */
@@ -285,6 +302,10 @@ class TechnicianConfig
     /**
      * Minutes wide the grouping window is for storm detection.
      * Setting: technician_storm_window. Default: 15.
+     *
+     * Floor is intentionally max(1, …) — a 1-minute grouping window is valid for
+     * storm detection. This diverges deliberately from the max(5, …) floors on
+     * escalation-timeout and reping-cadence, which guard human-response windows.
      */
     public static function stormWindowMinutes(): int
     {
@@ -362,7 +383,7 @@ class TechnicianConfig
 
         $decoded = json_decode($raw, true);
 
-        return is_array($decoded) ? array_map('strval', $decoded) : [];
+        return is_array($decoded) ? array_map('strval', array_filter($decoded, 'is_scalar')) : [];
     }
 
     /** @return array<int, mixed> */
