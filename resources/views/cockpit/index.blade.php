@@ -13,6 +13,7 @@
 @forelse ($drafts as $run)
     <div class="card shadow-sm mb-3">
         <div class="card-body">
+            {{-- Header: ticket link, client badge, action badge, timestamp (common to all) --}}
             <div class="d-flex flex-wrap align-items-center gap-2 mb-2 small">
                 <a href="{{ route('tickets.show', $run->ticket_id) }}" class="fw-semibold text-decoration-none">
                     {{ optional($run->ticket)->subject ?? 'Ticket #'.$run->ticket_id }}
@@ -20,35 +21,61 @@
                 @if($run->ticket?->client)
                     <span class="badge bg-light text-dark border">{{ $run->ticket->client->name }}</span>
                 @endif
-                <span class="badge {{ $run->action_type === 'propose_resolution' ? 'bg-info' : 'bg-primary' }}">
-                    {{ $run->action_type === 'propose_resolution' ? 'Proposed resolution' : 'Reply' }}
-                </span>
+                @php
+                    [$badgeClass, $badgeLabel] = match ($run->action_type) {
+                        'propose_close'      => ['bg-warning text-dark', 'Proposed close'],
+                        'propose_resolution' => ['bg-info',              'Proposed resolution'],
+                        default              => ['bg-primary',           'Reply'],
+                    };
+                @endphp
+                <span class="badge {{ $badgeClass }}">{{ $badgeLabel }}</span>
                 <span class="ms-auto text-muted">{{ optional($run->created_at)->diffForHumans() }}</span>
             </div>
 
-            {{-- SEND-TEXT-FIRST: the exact outgoing text, editable, ABOVE the Send button --}}
-            <label class="form-label small text-muted mb-1" for="body-{{ $run->id }}">Message to the client (edit before sending):</label>
-            <textarea class="form-control mb-1" id="body-{{ $run->id }}" name="body" rows="5" form="approve-{{ $run->id }}">{{ $run->proposed_content }}</textarea>
-            <p class="text-muted small mb-2">
-                <i class="bi bi-info-circle me-1"></i>A disclosure line ("— Sent by {{ \App\Support\TechnicianConfig::aiActorName() }}, an AI assistant for our team.") is added automatically.
-            </p>
+            @if ($run->action_type === 'propose_close')
+                {{-- PROPOSE-CLOSE ARM: read-only reason; no body sent to client --}}
+                <p class="text-muted small mb-1">Reason (not sent to the client — this closes the ticket silently):</p>
+                <p class="form-control-plaintext border rounded p-2 mb-2 bg-light small">{{ $run->proposed_content }}</p>
+                @if ($run->confidence)
+                    <p class="text-muted small mb-2">Confidence: {{ number_format($run->confidence * 100, 1) }}%</p>
+                @endif
 
-            {{-- the "why", collapsed --}}
-            @if(!empty($run->proposed_meta['reasons']))
-                <p class="text-muted small mb-2">Why: {{ implode(' · ', (array) $run->proposed_meta['reasons']) }}@if($run->confidence) (confidence {{ number_format($run->confidence, 2) }})@endif</p>
+                <div class="d-flex gap-2">
+                    <form id="approve-{{ $run->id }}" method="POST" action="{{ route('cockpit.approve', $run) }}">
+                        @csrf
+                        <button type="submit" class="btn btn-warning"><i class="bi bi-archive me-1"></i>Approve close</button>
+                    </form>
+                    <form method="POST" action="{{ route('cockpit.deny', $run) }}">
+                        @csrf
+                        <button type="submit" class="btn btn-outline-secondary"><i class="bi bi-x-lg me-1"></i>Hold it</button>
+                    </form>
+                </div>
+            @else
+                {{-- REPLY/RESOLUTION ARM: editable send text, disclosure notice --}}
+                {{-- SEND-TEXT-FIRST: the exact outgoing text, editable, ABOVE the Send button --}}
+                <label class="form-label small text-muted mb-1" for="body-{{ $run->id }}">Message to the client (edit before sending):</label>
+                <textarea class="form-control mb-1" id="body-{{ $run->id }}" name="body" rows="5" form="approve-{{ $run->id }}">{{ $run->proposed_content }}</textarea>
+                <p class="text-muted small mb-2">
+                    <i class="bi bi-info-circle me-1"></i>A disclosure line ("— Sent by {{ \App\Support\TechnicianConfig::aiActorName() }}, an AI assistant for our team.") is added automatically.
+                </p>
+
+                {{-- the "why", collapsed --}}
+                @if(!empty($run->proposed_meta['reasons']))
+                    <p class="text-muted small mb-2">Why: {{ implode(' · ', (array) $run->proposed_meta['reasons']) }}@if($run->confidence) (confidence {{ number_format($run->confidence, 2) }})@endif</p>
+                @endif
+
+                {{-- Two sibling forms side by side; textarea is bound to the approve form via the `form` attribute --}}
+                <div class="d-flex gap-2">
+                    <form id="approve-{{ $run->id }}" method="POST" action="{{ route('cockpit.approve', $run) }}">
+                        @csrf
+                        <button type="submit" class="btn btn-success"><i class="bi bi-send me-1"></i>Send this</button>
+                    </form>
+                    <form method="POST" action="{{ route('cockpit.deny', $run) }}">
+                        @csrf
+                        <button type="submit" class="btn btn-outline-secondary"><i class="bi bi-x-lg me-1"></i>Hold it</button>
+                    </form>
+                </div>
             @endif
-
-            {{-- Two sibling forms side by side; textarea is bound to the approve form via the `form` attribute --}}
-            <div class="d-flex gap-2">
-                <form id="approve-{{ $run->id }}" method="POST" action="{{ route('cockpit.approve', $run) }}">
-                    @csrf
-                    <button type="submit" class="btn btn-success"><i class="bi bi-send me-1"></i>Send this</button>
-                </form>
-                <form method="POST" action="{{ route('cockpit.deny', $run) }}">
-                    @csrf
-                    <button type="submit" class="btn btn-outline-secondary"><i class="bi bi-x-lg me-1"></i>Hold it</button>
-                </form>
-            </div>
         </div>
     </div>
 @empty

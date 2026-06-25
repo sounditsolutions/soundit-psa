@@ -3,6 +3,7 @@
 namespace Tests\Feature\Technician;
 
 use App\Enums\TechnicianTier;
+use App\Enums\TicketStatus;
 use App\Models\Client;
 use App\Models\Setting;
 use App\Models\Ticket;
@@ -356,5 +357,118 @@ class TechnicianActionGateTest extends TestCase
             'action_type' => 'send_ack',
             'result_status' => 'held',
         ]);
+    }
+
+    // -------------------------------------------------------------------------
+    // propose_close — confidence channel (Task 2) + overrides still pre-empt Auto
+    // -------------------------------------------------------------------------
+
+    private function enableAutoClose(float $threshold = 0.95): void
+    {
+        Setting::setValue('propose_close_auto_threshold', (string) $threshold);
+    }
+
+    /** Resolved + no recent client note → passes the CloseAutoEligibility backstop. */
+    private function makeTicketAutoEligible(): void
+    {
+        Ticket::find($this->ticketId)->update(['status' => TicketStatus::Resolved]);
+    }
+
+    public function test_propose_close_auto_executes_through_the_gate(): void
+    {
+        $this->enableAutoClose(0.95);
+        $this->makeTicketAutoEligible();
+        $ran = false;
+
+        $result = $this->gate()->dispatch(
+            actionType: 'propose_close',
+            ticketId: $this->ticketId,
+            clientId: $this->clientId,
+            contentHash: str_repeat('a', 64),
+            summary: 'close stale ticket',
+            runId: 1,
+            executor: function () use (&$ran) {
+                $ran = true;
+            },
+            confidence: 0.98,
+        );
+
+        $this->assertTrue($ran);
+        $this->assertSame('executed', $result->status);
+        $this->assertSame(TechnicianTier::Auto, $result->tier);
+    }
+
+    public function test_propose_close_below_threshold_awaits_approval(): void
+    {
+        $this->enableAutoClose(0.95);
+        $this->makeTicketAutoEligible();
+        $ran = false;
+
+        $result = $this->gate()->dispatch(
+            actionType: 'propose_close',
+            ticketId: $this->ticketId,
+            clientId: $this->clientId,
+            contentHash: str_repeat('a', 64),
+            summary: 'close stale ticket',
+            runId: 1,
+            executor: function () use (&$ran) {
+                $ran = true;
+            },
+            confidence: 0.60,
+        );
+
+        $this->assertFalse($ran);
+        $this->assertSame('awaiting_approval', $result->status);
+        $this->assertSame(TechnicianTier::Approve, $result->tier);
+    }
+
+    public function test_kill_switch_holds_an_auto_propose_close(): void
+    {
+        $this->enableAutoClose(0.95);
+        $this->makeTicketAutoEligible();
+        Setting::setValue('technician_kill_switch', '1');
+        $ran = false;
+
+        $result = $this->gate()->dispatch(
+            actionType: 'propose_close',
+            ticketId: $this->ticketId,
+            clientId: $this->clientId,
+            contentHash: str_repeat('a', 64),
+            summary: 'close stale ticket',
+            runId: 1,
+            executor: function () use (&$ran) {
+                $ran = true;
+            },
+            confidence: 0.99,
+        );
+
+        $this->assertFalse($ran);
+        $this->assertSame('held', $result->status);
+    }
+
+    public function test_always_human_client_overrides_an_auto_propose_close(): void
+    {
+        $this->enableAutoClose(0.95);
+        $this->makeTicketAutoEligible();
+        Setting::setValue('technician_always_human_client_ids', json_encode([$this->clientId]));
+        $ran = false;
+
+        $result = $this->gate()->dispatch(
+            actionType: 'propose_close',
+            ticketId: $this->ticketId,
+            clientId: $this->clientId,
+            contentHash: str_repeat('a', 64),
+            summary: 'close stale ticket',
+            runId: 1,
+            executor: function () use (&$ran) {
+                $ran = true;
+            },
+            confidence: 0.99,
+        );
+
+        $this->assertFalse($ran);
+        $this->assertSame('awaiting_approval', $result->status);
+        // The classifier still returned Auto; the gate's always-human override forced approval.
+        $this->assertSame(TechnicianTier::Auto, $result->tier);
     }
 }

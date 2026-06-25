@@ -4,6 +4,7 @@ namespace App\Services\Technician;
 
 use App\Enums\TechnicianTier;
 use App\Models\TechnicianActionLog;
+use App\Models\Ticket;
 use App\Support\TechnicianConfig;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -57,9 +58,14 @@ class TechnicianActionGate
         callable $executor,
         ?string $approvalToken = null,
         ?int $approverUserId = null,
+        ?float $confidence = null,
     ): TechnicianActionResult {
         $correlationId = (string) Str::uuid();
-        $tier = $this->classifier->classify($actionType);
+
+        // propose_close needs the Ticket for its deterministic auto-backstop (CO-19);
+        // a missing ticket leaves $ticket null → the classifier fails closed to Approve.
+        $ticket = $actionType === 'propose_close' ? Ticket::find($ticketId) : null;
+        $tier = $this->classifier->classify($actionType, $confidence, $ticket);
 
         // Kill-switch (pre-execution barrier) — fail-closed.
         if (TechnicianConfig::killSwitchEngaged()) {
