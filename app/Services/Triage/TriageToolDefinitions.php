@@ -18,6 +18,26 @@ use App\Support\ZorusConfig;
 class TriageToolDefinitions
 {
     /**
+     * Read-only tool definitions available to the Backlog Agent.
+     *
+     * Exactly: search_tickets, get_ticket_notes, wiki_list_pages, wiki_search, wiki_get_page.
+     * The agent reasons with these + propose_close (added separately by the agent — the only ACT tool).
+     * MUST NOT include any set_ticket_* or tactical_run_diagnostic.
+     */
+    public static function readTools(): array
+    {
+        // Pull search_tickets and get_ticket_notes from psaTools() by name —
+        // keeps schemas identical without re-authoring them.
+        $readPsa = array_values(array_filter(
+            self::psaTools(),
+            fn (array $t): bool => in_array($t['name'], ['search_tickets', 'get_ticket_notes'], true)
+        ));
+
+        // All three wiki retrieval tools are included (no-op when wiki is off).
+        return array_merge($readPsa, self::wikiTools());
+    }
+
+    /**
      * Get all available tool definitions based on configured integrations.
      */
     public static function getTools(): array
