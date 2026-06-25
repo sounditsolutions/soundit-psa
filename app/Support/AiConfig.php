@@ -9,6 +9,7 @@ class AiConfig
     private const DEFAULTS = [
         'anthropic' => 'claude-sonnet-4-6',
         'openai' => 'gpt-4o',
+        'haiku' => 'claude-haiku-4-5',
     ];
 
     private static array $map = [
@@ -43,6 +44,12 @@ class AiConfig
         $provider ??= self::provider();
 
         return self::DEFAULTS[$provider] ?? self::DEFAULTS['anthropic'];
+    }
+
+    /** Cheap Haiku model id for lightweight tasks (e.g. significance scoring). */
+    public static function haikuModel(): string
+    {
+        return self::DEFAULTS['haiku'];
     }
 
     public static function isEnabled(): bool
