@@ -247,8 +247,23 @@ class TechnicianAgentSpineTest extends TestCase
         $this->configureAi();
         $this->setAutoThreshold(0.95);
 
-        // PendingClient: isOpen()=true AND in CloseAutoEligibility::AUTO_SAFE_STATUSES.
-        $ticket = $this->openAutoEligibleTicket();
+        // Fix-5: attach a portal-enabled contact so the Queue::assertNotPushed assertion
+        // has teeth — without a contact it passes vacuously (no notification possible anyway).
+        $client = Client::factory()->create();
+        $contact = Person::create([
+            'client_id' => $client->id,
+            'person_type' => PersonType::User,
+            'first_name' => 'Portal',
+            'last_name' => 'User',
+            'email' => 'portal@example.com',
+            'is_active' => true,
+            'portal_enabled' => true,
+        ]);
+        $ticket = Ticket::factory()->create([
+            'client_id' => $client->id,
+            'contact_id' => $contact->id,
+            'status' => TicketStatus::PendingClient, // no recent EndUser note
+        ]);
 
         // OperatorNotifier must be called exactly once (CO-21: post-execute notify).
         $notifier = $this->mock(OperatorNotifier::class);
