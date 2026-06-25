@@ -184,4 +184,25 @@ class ApproveProposeCloseTest extends TestCase
             'result_status' => 'executed',
         ]);
     }
+
+    // ── 6. Fail-closed: unknown action type aborts (does NOT fall into the send path) ──
+
+    public function test_route_approve_unknown_action_type_fails_closed(): void
+    {
+        [$actor, $ticket, $run] = $this->heldCloseRun();
+        // An action type the dispatch doesn't recognize must abort, not route to a send.
+        $run->update(['action_type' => 'frobnicate']);
+
+        $this->actingAs(User::factory()->create())
+            ->post(route('cockpit.approve', $run))
+            ->assertStatus(422);
+
+        // Nothing executed; the run is untouched (still AwaitingApproval) and ticket open.
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
+        $this->assertSame(TicketStatus::InProgress, $ticket->fresh()->status);
+        $this->assertDatabaseMissing('technician_action_logs', [
+            'ticket_id' => $ticket->id,
+            'result_status' => 'executed',
+        ]);
+    }
 }

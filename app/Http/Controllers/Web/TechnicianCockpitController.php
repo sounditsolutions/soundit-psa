@@ -21,13 +21,17 @@ class TechnicianCockpitController extends Controller
     public function approve(Request $request, TechnicianRun $run, TechnicianApprovalService $service)
     {
         // Dispatch on action_type so future tools (reply, escalate) plug in without rework.
-        if ($run->action_type === 'propose_close') {
-            $result = $service->approveClose($run, (int) auth()->id());
-        } else {
-            // Body is required only on the reply/resolution path, not the close path.
-            $validated = $request->validate(['body' => ['required', 'string']]);
-            $result = $service->approveAndSend($run, $validated['body'], (int) auth()->id());
-        }
+        // Fail-closed: an unrecognized action type must NOT fall through to a send.
+        $result = match ($run->action_type) {
+            'propose_close' => $service->approveClose($run, (int) auth()->id()),
+            // Body is required only on the reply/resolution path, validated inside this arm.
+            'send_reply', 'propose_resolution' => $service->approveAndSend(
+                $run,
+                $request->validate(['body' => ['required', 'string']])['body'],
+                (int) auth()->id(),
+            ),
+            default => abort(422, 'Unsupported action type for approval.'),
+        };
 
         return redirect()->route('cockpit.index')->with(
             in_array($result->status, ['sent', 'closed'], true) ? 'success' : 'error',
