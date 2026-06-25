@@ -130,15 +130,25 @@ class TechnicianApprovalService
                 runId: $run->id,
                 executor: function () use ($run): void {
                     $ticket = $run->ticket;
-                    // CO-23: re-check before closing — a human may have closed this ticket
-                    // between the gate's classify call and this executor call.
-                    if ($ticket->fresh()->status === TicketStatus::Closed) {
+                    // CO-23 + CO-Fix6: capture the fresh model once so both the guard and
+                    // changeStatus operate on the same (current) row. If the ticket was
+                    // soft-deleted in the race window, fresh() returns null — treat as
+                    // already-gone: advance the run to Done without touching anything.
+                    $fresh = $ticket->fresh();
+                    if ($fresh === null) {
                         $run->advanceTo(TechnicianRunState::Done);
 
                         return;
                     }
+
+                    if ($fresh->status === TicketStatus::Closed) {
+                        $run->advanceTo(TechnicianRunState::Done);
+
+                        return;
+                    }
+                    // Using $fresh ensures the status-change note's "from" state is accurate.
                     app(TicketService::class)->changeStatus(
-                        $ticket,
+                        $fresh,
                         TicketStatus::Closed,
                         TechnicianConfig::aiActorUserId(),
                         'Closed by AI Technician (operator-approved).',
