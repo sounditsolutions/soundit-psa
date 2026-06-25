@@ -27,11 +27,13 @@ use Illuminate\Support\Facades\Cache;
  *   4. Ticket is open.
  *   5. Dedup (CO-5): ticket already has an AwaitingApproval propose_close run.
  *   6. Depth-cap (CO-11): global AwaitingApproval propose_close count >= maxPendingProposals.
- *   7. SignificanceGate: cheap Haiku check — skip if clearly still active.
- *   8. TechnicianAgent::run — the agent reasons and (maybe) proposes a close.
+ *   7. Change-throttle (CO-16): skip if already evaluated since the ticket last changed.
+ *   8. SignificanceGate: cheap Haiku check — skip if clearly still active.
+ *   9. TechnicianAgent::run — the agent reasons and (maybe) proposes a close.
  *
- * No cooldown. No coverage logic. Re-surfacing a ticket is fine (Haiku is cheap;
- * dedup guards prevent duplicate held proposals).
+ * No cooldown beyond the change-throttle (which re-reacts only when the ticket
+ * changes). Re-surfacing a changed ticket is fine (Haiku is cheap; dedup guards
+ * prevent duplicate held proposals).
  */
 class RunTechnicianAgent implements ShouldQueue
 {
@@ -104,7 +106,7 @@ class RunTechnicianAgent implements ShouldQueue
             return;
         }
 
-        // 8. Wake the agent to reason and (maybe) propose a close.
+        // 9. Wake the agent to reason and (maybe) propose a close.
         app(TechnicianAgent::class)->run($ticket);
     }
 }

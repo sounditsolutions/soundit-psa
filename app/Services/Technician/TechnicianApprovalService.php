@@ -129,13 +129,14 @@ class TechnicianApprovalService
                 summary: 'Operator-approved close.',
                 runId: $run->id,
                 executor: function () use ($run): void {
-                    $ticket = $run->ticket;
+                    $ticket = $run->ticket; // belongsTo — null if the ticket was (soft-)deleted
                     // CO-23 + CO-Fix6: capture the fresh model once so both the guard and
-                    // changeStatus operate on the same (current) row. If the ticket was
-                    // soft-deleted in the race window, fresh() returns null — treat as
-                    // already-gone: advance the run to Done without touching anything.
-                    $fresh = $ticket->fresh();
-                    if ($fresh === null) {
+                    // changeStatus operate on the same (current) row. If the ticket is gone —
+                    // the relation returned null (soft-deleted: the default scope hides it),
+                    // hard-deleted (fresh() returns null), or soft-deleted mid-flight (fresh()
+                    // strips scopes, so it comes back TRASHED, not null) — treat as already-gone.
+                    $fresh = $ticket?->fresh();
+                    if ($fresh === null || $fresh->trashed()) {
                         $run->advanceTo(TechnicianRunState::Done);
 
                         return;

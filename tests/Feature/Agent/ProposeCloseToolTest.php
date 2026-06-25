@@ -329,6 +329,87 @@ class ProposeCloseToolTest extends TestCase
         ]);
     }
 
+    /**
+     * Soft-delete race (Fix 6 correction): a ticket SOFT-deleted between classify and
+     * execute comes back from fresh() TRASHED (fresh() strips scopes), NOT null. The
+     * executor must catch ->trashed() and early-return — never changeStatus on a
+     * soft-deleted ticket.
+     */
+    public function test_soft_deleted_ticket_advances_run_to_done_without_closing(): void
+    {
+        $this->setAutoThreshold(0.95);
+        $ticket = $this->eligibleOpenTicket(); // PendingClient
+
+        $notifier = $this->mock(OperatorNotifier::class);
+        $notifier->shouldReceive('notify')->once();
+
+        $this->mock(TechnicianActionGate::class, function (MockInterface $m) use ($ticket): void {
+            $m->shouldReceive('dispatch')
+                ->once()
+                ->andReturnUsing(function (
+                    string $actionType,
+                    int $ticketId,
+                    ?int $clientId,
+                    string $contentHash,
+                    string $summary,
+                    ?int $runId,
+                    callable $executor,
+                    ?string $approvalToken = null,
+                    ?int $approverUserId = null,
+                    ?float $confidence = null,
+                ) use ($ticket): TechnicianActionResult {
+                    // Simulate: the ticket is SOFT-deleted in the race window (deleted_at set,
+                    // status left as PendingClient — so the === Closed guard would NOT catch it).
+                    DB::table('tickets')->where('id', $ticket->id)->update([
+                        'deleted_at' => now()->toDateTimeString(),
+                        'updated_at' => now()->toDateTimeString(),
+                    ]);
+
+                    $executor();
+
+                    $log = TechnicianActionLog::create([
+                        'actor_id' => User::first()->id,
+                        'actor_label' => 'ai-technician',
+                        'action_type' => $actionType,
+                        'tier' => TechnicianTier::Auto->value,
+                        'result_status' => 'executed',
+                        'ticket_id' => $ticketId,
+                        'client_id' => $clientId,
+                        'run_id' => $runId,
+                        'content_hash' => $contentHash,
+                        'summary' => $summary,
+                        'correlation_id' => (string) Str::uuid(),
+                    ]);
+
+                    return new TechnicianActionResult('executed', TechnicianTier::Auto, $log);
+                });
+        });
+
+        // Act — must not throw.
+        $this->tool()->execute($ticket, [
+            'reason' => 'Ghost ticket — soft-deleted mid-flight.',
+            'confidence' => 0.97,
+        ]);
+
+        // Run must be Done (executor fired but early-returned on ->trashed()).
+        $run = TechnicianRun::where('ticket_id', $ticket->id)
+            ->where('action_type', 'propose_close')
+            ->first();
+        $this->assertNotNull($run);
+        $this->assertSame(TechnicianRunState::Done, $run->state);
+
+        // The soft-deleted ticket must NOT have been closed (status untouched at PendingClient).
+        $trashed = Ticket::withTrashed()->find($ticket->id);
+        $this->assertNotNull($trashed);
+        $this->assertSame(TicketStatus::PendingClient, $trashed->status);
+
+        // No status-change note was created (the executor early-returned before changeStatus).
+        $this->assertDatabaseMissing('ticket_notes', [
+            'ticket_id' => $ticket->id,
+            'note_type' => NoteType::StatusChange->value,
+        ]);
+    }
+
     // ── 5. Leave band — confidence below approve floor (R2.2) ─────────────────
 
     /**
