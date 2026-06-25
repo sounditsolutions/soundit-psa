@@ -3,10 +3,13 @@
 namespace Tests\Feature\Agent;
 
 use App\Enums\NoteType;
+use App\Enums\PersonType;
 use App\Enums\TechnicianRunState;
 use App\Enums\TechnicianTier;
 use App\Enums\TicketStatus;
 use App\Jobs\SendPortalNotification;
+use App\Models\Client;
+use App\Models\Person;
 use App\Models\Setting;
 use App\Models\TechnicianActionLog;
 use App\Models\TechnicianRun;
@@ -111,7 +114,24 @@ class ProposeCloseToolTest extends TestCase
         Queue::fake(); // captures any queued jobs so we can assert SendPortalNotification absent
 
         $this->setAutoThreshold(0.95);
-        $ticket = $this->eligibleOpenTicket(); // PendingClient, no recent EndUser note
+
+        // Fix-5: attach a portal-enabled contact so Queue::assertNotPushed has teeth
+        // (without a contact the assertion passed vacuously — nothing to trigger the notification).
+        $client = Client::factory()->create();
+        $contact = Person::create([
+            'client_id' => $client->id,
+            'person_type' => PersonType::User,
+            'first_name' => 'Portal',
+            'last_name' => 'User',
+            'email' => 'portal@example.com',
+            'is_active' => true,
+            'portal_enabled' => true,
+        ]);
+        $ticket = Ticket::factory()->create([
+            'client_id' => $client->id,
+            'contact_id' => $contact->id,
+            'status' => TicketStatus::PendingClient, // no recent EndUser note
+        ]);
 
         $notifier = $this->mock(OperatorNotifier::class);
         $notifier->shouldReceive('notify')
@@ -307,5 +327,62 @@ class ProposeCloseToolTest extends TestCase
             'ticket_id' => $ticket->id,
             'note_type' => NoteType::StatusChange->value,
         ]);
+    }
+
+    // ── 5. Leave band — confidence below approve floor (R2.2) ─────────────────
+
+    /**
+     * When confidence is below AgentConfig::proposeCloseApproveFloor() (default 0.5),
+     * execute() must return a "left it" string WITHOUT creating a TechnicianRun or
+     * dispatching through the gate. Cockpit noise + cap crowding are both avoided.
+     */
+    public function test_below_confidence_floor_leaves_ticket_without_creating_run(): void
+    {
+        // Default floor is 0.5; confidence 0.3 is clearly below it.
+        $ticket = $this->eligibleOpenTicket();
+
+        $notifier = $this->mock(OperatorNotifier::class);
+        $notifier->shouldReceive('notify')->never();
+
+        $result = $this->tool()->execute($ticket, [
+            'reason' => 'Might be stale, hard to say.',
+            'confidence' => 0.3,
+        ]);
+
+        // No TechnicianRun must be created.
+        $this->assertSame(
+            0,
+            TechnicianRun::where('ticket_id', $ticket->id)->count(),
+        );
+
+        // No audit row dispatched.
+        $this->assertDatabaseMissing('technician_action_logs', ['ticket_id' => $ticket->id]);
+
+        // Returns a "floor" leave string.
+        $this->assertStringContainsString('floor', $result);
+    }
+
+    /**
+     * Confidence exactly AT the approve floor must still create a held run
+     * (>= floor is allowed; only strictly below is refused).
+     */
+    public function test_confidence_at_floor_creates_held_run(): void
+    {
+        // Default floor is 0.5.
+        $ticket = $this->eligibleOpenTicket();
+
+        $notifier = $this->mock(OperatorNotifier::class);
+        $notifier->shouldReceive('notify')->never();
+
+        $this->tool()->execute($ticket, [
+            'reason' => 'No client response in 45 days.',
+            'confidence' => 0.5,
+        ]);
+
+        $run = TechnicianRun::where('ticket_id', $ticket->id)
+            ->where('action_type', 'propose_close')
+            ->first();
+        $this->assertNotNull($run, 'A run at exactly the floor must still be created (>= floor).');
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->state);
     }
 }

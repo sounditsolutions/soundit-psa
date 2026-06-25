@@ -9,6 +9,7 @@ use App\Models\Ticket;
 use App\Services\Technician\Notify\OperatorNotifier;
 use App\Services\Technician\TechnicianActionGate;
 use App\Services\TicketService;
+use App\Support\AgentConfig;
 use App\Support\TechnicianConfig;
 
 /**
@@ -74,6 +75,14 @@ class ProposeCloseTool
     {
         $reason = trim((string) ($input['reason'] ?? ''));
         $confidence = (float) ($input['confidence'] ?? 0.0);
+
+        // Leave-band (R2.2): a below-floor proposal is too weak to surface to the
+        // operator. Discarding it here avoids cockpit noise and prevents filling the
+        // global maxPendingProposals cap with low-signal proposals.
+        if ($confidence < AgentConfig::proposeCloseApproveFloor()) {
+            return "Left ticket #{$ticket->id} (below the close-confidence floor — no proposal created).";
+        }
+
         $hash = hash('sha256', 'propose_close:'.$ticket->id.':'.$reason);
 
         $run = TechnicianRun::firstOrCreate(
