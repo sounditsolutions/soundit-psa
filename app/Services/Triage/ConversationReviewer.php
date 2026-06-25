@@ -92,8 +92,11 @@ class ConversationReviewer
         ReviewResult $result,
         \App\Services\TicketService $ticketService,
     ): ?string {
-        // Auto-close requires the setting to be enabled
-        if (! TriageConfig::reviewAutoCloseEnabled()) {
+        // Auto-close requires the setting to be enabled; when the agent is on it owns
+        // closing via the audited, human-approvable propose_close path — this un-gated
+        // review auto-close stands down (even in held-only mode, the held phase IS the
+        // calibration; all closes route through the agent's gate).
+        if (! TriageConfig::reviewAutoCloseEnabled() || \App\Support\AgentConfig::enabled()) {
             return null;
         }
 
