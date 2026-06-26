@@ -13,6 +13,7 @@ class AssistantConversation extends Model
         'context_type',
         'context_id',
         'title',
+        'external_key',
         'total_input_tokens',
         'total_output_tokens',
     ];
