@@ -269,6 +269,14 @@ class IntegrationsController extends Controller
         $technicianDigestTime = \App\Support\TechnicianConfig::digestTimeLocal();
         $technicianHeartbeatInterval = \App\Support\TechnicianConfig::heartbeatIntervalMinutes();
 
+        // Teams bot (Bot Framework) credentials — App ID + tenant are plain; the Entra
+        // client secret is masked/write-only (only "is one stored?" reaches the view).
+        $teamsBotAppId = \App\Support\TeamsBotConfig::appId();
+        $teamsBotTenantId = \App\Support\TeamsBotConfig::tenantId();
+        $teamsBotSecretSet = \App\Support\TeamsBotConfig::clientSecret() !== null;
+        $teamsBotConfigured = \App\Support\TeamsBotConfig::configured();
+        $teamsBotEnabled = \App\Support\TeamsBotConfig::enabled();
+
         // Phase 2: emergency / escalation / availability / SMS view vars
         $technicianEscalationChain = \App\Support\TechnicianConfig::escalationChain();
         $technicianEscalationTimeout = \App\Support\TechnicianConfig::escalationTimeoutMinutes();
@@ -336,6 +344,7 @@ class IntegrationsController extends Controller
             'technicianEscalationChain', 'technicianEscalationTimeout', 'technicianEmergencyReping', 'technicianStormWindow',
             'technicianMaxHoldMessage', 'technicianMaxHoldAuto', 'technicianEmergencyKeywords', 'technicianEmergencyAge',
             'technicianAvailability', 'technicianOperatorPhones', 'activeUsers',
+            'teamsBotAppId', 'teamsBotTenantId', 'teamsBotSecretSet', 'teamsBotConfigured', 'teamsBotEnabled',
             'screenconnectBaseUrl', 'screenconnectWebhookSecret', 'screenconnectEnabled', 'screenconnectConfigured',
             'tacticalConfigured', 'tacticalApiUrl', 'tacticalWebUrl', 'tacticalConnected', 'tacticalEnabled',
             'tacticalWebhookLastAt', 'tacticalWebhookProcessed24h', 'tacticalWebhookFailed',
@@ -1661,6 +1670,33 @@ class IntegrationsController extends Controller
 
         return redirect()->route('settings.integrations')
             ->with('success', 'AI Assistant settings saved.');
+    }
+
+    // --- Teams Bot (Bot Framework) credentials (Teams bridge E1) ---
+
+    public function updateTeamsBot(Request $request)
+    {
+        $request->validate([
+            'teams_bot_app_id' => ['nullable', 'string', 'max:255'],
+            'teams_bot_tenant_id' => ['nullable', 'string', 'max:255'],
+            'teams_bot_client_secret' => ['nullable', 'string', 'max:1024'],
+        ]);
+
+        // App ID + tenant ID are non-secret identifiers — stored as plain settings.
+        Setting::setValue('teams_bot_app_id', trim((string) $request->input('teams_bot_app_id', '')));
+        Setting::setValue('teams_bot_tenant_id', trim((string) $request->input('teams_bot_tenant_id', '')));
+        Setting::setValue('teams_bot_enabled', $request->has('teams_bot_enabled') ? '1' : '0');
+
+        // The Entra client secret is a MASKED, encrypted, write-only field: a blank
+        // submit or the echoed mask placeholder means "keep the existing stored secret"
+        // — only a freshly typed value is (re)saved. Parity with the encrypted Teams
+        // webhook / stripe_secret_key, so an unrelated save never wipes the secret.
+        $secret = trim((string) $request->input('teams_bot_client_secret', ''));
+        if ($secret !== '' && $secret !== self::SECRET_MASK) {
+            \App\Support\TeamsBotConfig::setClientSecret($secret);
+        }
+
+        return redirect()->route('settings.integrations')->with('success', 'Teams Bot credentials saved.');
     }
 
     // --- AI Technician ---

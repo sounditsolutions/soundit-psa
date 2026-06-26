@@ -801,6 +801,16 @@ php artisan tickets:recalculate-sla --clear-missing
 
 Tickets without a contract, or whose contract carries no `sla_terms`, are skipped. The command is idempotent — re-running it without changing terms reports `updated=0`.
 
+### Teams Bot (PSA-native assistant)
+
+A PSA-native Microsoft Teams bot (Azure Bot / Bot Framework). Configure under **Settings > Integrations > Teams Bot** — no `.env` variables; the App ID and tenant ID are stored as plain settings and the Entra client secret is stored encrypted at rest (masked, write-only — leave blank to keep the current secret).
+
+1. In the Azure portal, create an **Azure Bot** resource and point its **messaging endpoint** at `https://psa.yourmsp.com/api/teams/messages`.
+2. Copy the bot's **Microsoft App ID** and **tenant ID** into the panel, and paste a fresh **client secret**.
+3. Inbound messages are verified **fail-closed** against the Bot Framework signing keys (issuer `https://api.botframework.com`, audience = your bot App ID; `firebase/php-jwt`, no extra dependency). The endpoint is throttled (120/min) and rejects (401) when unconfigured or unverified.
+4. Each sender is mapped to the **real staff member** by their Entra object ID (`users.microsoft_id`, set at SSO login) — never a shared service account; unknown senders are audited and ignored.
+5. Ships **dormant** behind the **Enable Teams Bot** toggle (default off). While dormant the endpoint authenticates, identifies, and acks; the conversational loop is a later increment.
+
 ### Mesh Email Security
 
 Syncs license counts from Mesh for automated billing.

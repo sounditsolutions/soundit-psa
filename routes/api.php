@@ -52,6 +52,11 @@ Route::post('plivo/{secret}/resolve-caller', [PlivoWebhookController::class, 're
 Route::post('mcp/staff', [\App\Http\Controllers\Api\McpStaffController::class, 'handle'])
     ->middleware([\App\Http\Middleware\VerifyMcpStaffToken::class, 'throttle:120,1']);
 
+// PSA-native Teams bot (Bot Framework) — inbound channel pipe (E1). FAIL-CLOSED
+// Bot Framework JWT validation; per-person identity resolved in the controller.
+Route::post('teams/messages', [\App\Http\Controllers\Api\TeamsMessagesController::class, 'handle'])
+    ->middleware([\App\Http\Middleware\VerifyBotFrameworkJwt::class, 'throttle:120,1']);
+
 // ScreenConnect webhooks — secret token in URL for authentication
 Route::post('webhooks/screenconnect/{secret}', [ScreenConnectWebhookController::class, 'handle'])
     ->middleware([VerifyScreenConnectSecret::class, 'throttle:120,1']);

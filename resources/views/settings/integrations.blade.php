@@ -3124,6 +3124,58 @@
             </div>
         </div>
 
+        {{-- Teams Bot Credentials Card (Teams bridge E1) --}}
+        <div class="card shadow-sm mb-4">
+            <div class="card-header d-flex align-items-center">
+                <span>
+                    <i class="bi bi-microsoft-teams me-2"></i>Teams Bot
+                    @if($teamsBotEnabled)
+                        <span class="badge bg-success ms-2">Active</span>
+                    @elseif($teamsBotConfigured)
+                        <span class="badge bg-secondary ms-2">Configured</span>
+                    @else
+                        <span class="badge bg-secondary ms-2">Not configured</span>
+                    @endif
+                </span>
+            </div>
+            <div class="card-body">
+                <p class="text-muted small">
+                    Credentials for the PSA-native Teams assistant (Azure Bot / Bot Framework). The inbound endpoint <code>/api/teams/messages</code> verifies every message fail-closed against these credentials and maps it to the real staff member who sent it. Off by default — the conversational loop arrives in a later increment.
+                </p>
+
+                <form method="POST" action="{{ route('settings.integrations.teams-bot.update') }}">
+                    @csrf
+                    <div class="form-check form-switch mb-3">
+                        <input class="form-check-input" type="checkbox" id="teams_bot_enabled" name="teams_bot_enabled" {{ $teamsBotEnabled ? 'checked' : '' }}>
+                        <label class="form-check-label" for="teams_bot_enabled"><strong>Enable Teams Bot</strong></label>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label small" for="teams_bot_app_id">Bot App ID (Microsoft App ID)</label>
+                        <input type="text" class="form-control" id="teams_bot_app_id" name="teams_bot_app_id"
+                               value="{{ $teamsBotAppId }}" placeholder="00000000-0000-0000-0000-000000000000" autocomplete="off">
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label small" for="teams_bot_tenant_id">Tenant ID</label>
+                        <input type="text" class="form-control" id="teams_bot_tenant_id" name="teams_bot_tenant_id"
+                               value="{{ $teamsBotTenantId }}" placeholder="00000000-0000-0000-0000-000000000000" autocomplete="off">
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label small" for="teams_bot_client_secret">Client secret (Entra app secret)</label>
+                        {{-- Masked, write-only: never echo the stored secret; show a mask and keep on blank submit. --}}
+                        <input type="password" class="form-control" id="teams_bot_client_secret" name="teams_bot_client_secret"
+                               value="" autocomplete="new-password"
+                               placeholder="{{ $teamsBotSecretSet ? '••••••••  (leave blank to keep current)' : 'Paste the Entra client secret' }}">
+                        <div class="form-text">Stored encrypted at rest; leave blank to keep the current secret.</div>
+                    </div>
+
+                    <button type="submit" class="btn btn-primary btn-sm">Save Teams Bot credentials</button>
+                </form>
+            </div>
+        </div>
+
         {{-- AI Technician Card --}}
         <div class="card shadow-sm mb-4">
             <div class="card-header d-flex align-items-center">
