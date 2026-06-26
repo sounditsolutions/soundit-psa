@@ -6,6 +6,7 @@ use App\Enums\TicketPriority;
 use App\Models\Setting;
 use App\Support\TechnicianConfig;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Carbon;
 use Tests\TestCase;
 
 class EmergencyConfigTest extends TestCase
@@ -66,5 +67,57 @@ class EmergencyConfigTest extends TestCase
         // Null clears it
         TechnicianConfig::setOperatorPhone(7, null);
         $this->assertNull(TechnicianConfig::operatorPhone(7));
+    }
+
+    // ── coverage-start anchor (psa-wmqp) ────────────────────────────────────
+
+    public function test_coverage_start_is_null_when_unset(): void
+    {
+        $this->assertNull(TechnicianConfig::coverageStartAt());
+    }
+
+    public function test_record_coverage_start_stamps_now(): void
+    {
+        $known = Carbon::parse('2026-06-26 12:00:00');
+        Carbon::setTestNow($known);
+
+        TechnicianConfig::recordCoverageStart();
+
+        $this->assertNotNull(TechnicianConfig::coverageStartAt());
+        $this->assertTrue(TechnicianConfig::coverageStartAt()->equalTo($known));
+
+        Carbon::setTestNow();
+    }
+
+    public function test_ensure_coverage_start_stamps_only_when_unset(): void
+    {
+        // Already anchored 3 days ago ⇒ ensure must NOT move it (idempotent).
+        $anchor = Carbon::parse('2026-06-23 09:00:00');
+        Setting::setValue('technician_coverage_start_at', $anchor->toIso8601String());
+
+        TechnicianConfig::ensureCoverageStart();
+
+        $this->assertTrue(TechnicianConfig::coverageStartAt()->equalTo($anchor), 'ensure must not re-anchor an existing value');
+
+        // Cleared ⇒ ensure stamps now.
+        TechnicianConfig::clearCoverageStart();
+        $now = Carbon::parse('2026-06-26 12:00:00');
+        Carbon::setTestNow($now);
+
+        TechnicianConfig::ensureCoverageStart();
+
+        $this->assertTrue(TechnicianConfig::coverageStartAt()->equalTo($now), 'ensure stamps now when unset');
+
+        Carbon::setTestNow();
+    }
+
+    public function test_clear_coverage_start_resets_to_null(): void
+    {
+        TechnicianConfig::recordCoverageStart();
+        $this->assertNotNull(TechnicianConfig::coverageStartAt());
+
+        TechnicianConfig::clearCoverageStart();
+
+        $this->assertNull(TechnicianConfig::coverageStartAt());
     }
 }

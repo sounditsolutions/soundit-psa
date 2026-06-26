@@ -338,6 +338,44 @@ class TechnicianConfig
         return is_numeric($value) ? max(5, (int) $value) : 30;
     }
 
+    // ── coverage-start anchor (psa-wmqp) ─────────────────────────────────────
+    //
+    // The flood root cause: the deterministic age signal fired for ANY open,
+    // never-responded ticket older than the per-priority floor, so on enable the
+    // whole stale backlog tripped it (~70 emergencies). Anchoring the age signal
+    // to a coverage window — "a new thing that went wrong while I'm away" == a
+    // ticket OPENED after coverage started — means enabling never retroactively
+    // alarms the pre-existing backlog. Keyword + SLA stay always-on. Mirrors the
+    // lastDigestAt()/recordDigestSent() reader/stamper pair above.
+
+    /** When coverage started (the age-detection anchor); null when not anchored. */
+    public static function coverageStartAt(): ?Carbon
+    {
+        $value = Setting::getValue('technician_coverage_start_at');
+
+        return is_string($value) && $value !== '' ? Carbon::parse($value) : null;
+    }
+
+    /** Anchor coverage start = now (re-anchors on every call). */
+    public static function recordCoverageStart(): void
+    {
+        Setting::setValue('technician_coverage_start_at', now()->toIso8601String());
+    }
+
+    /** Anchor coverage start = now only if not already set (defensive backfill). */
+    public static function ensureCoverageStart(): void
+    {
+        if (self::coverageStartAt() === null) {
+            self::recordCoverageStart();
+        }
+    }
+
+    /** Clear the coverage anchor; a later enable re-anchors fresh. */
+    public static function clearCoverageStart(): void
+    {
+        Setting::setValue('technician_coverage_start_at', null);
+    }
+
     // ── CO-3: operator phone map (users table has no phone column) ───────────
 
     /**
