@@ -19,7 +19,28 @@ class CockpitQuery
 {
     public function pendingCount(): int
     {
-        return TechnicianRun::where('state', TechnicianRunState::AwaitingApproval->value)->count();
+        // Everything the away operator must act on in the cockpit: executable
+        // proposals (AwaitingApproval) AND held flags (Flagged). Feeds the nav badge.
+        return TechnicianRun::whereIn('state', [
+            TechnicianRunState::AwaitingApproval->value,
+            TechnicianRunState::Flagged->value,
+        ])->count();
+    }
+
+    /**
+     * The "Flagged for your attention" lane (Increment H): held flag_attention
+     * notices the agent raised when it judged a ticket over its head. Distinct from
+     * the approval lane — these are NOT executable; a human acknowledges or dismisses
+     * them. Oldest first. Pure query.
+     */
+    public function flaggedForAttention(): Collection
+    {
+        return TechnicianRun::query()
+            ->where('action_type', 'flag_attention')
+            ->where('state', TechnicianRunState::Flagged->value)
+            ->with(['ticket.client'])
+            ->orderBy('created_at')
+            ->get();
     }
 
     public function pendingDrafts(): Collection

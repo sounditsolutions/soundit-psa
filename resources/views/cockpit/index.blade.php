@@ -5,7 +5,7 @@
 @section('content')
 <div class="d-flex align-items-center justify-content-between mb-3">
     <h1 class="h4 mb-0"><i class="bi bi-robot me-2"></i>Cockpit</h1>
-    <span class="text-muted small">{{ $drafts->count() }} awaiting approval · {{ $needs->count() }} need you</span>
+    <span class="text-muted small">{{ $drafts->count() }} awaiting approval · {{ $flagged->count() }} flagged · {{ $needs->count() }} need you</span>
 </div>
 
 {{-- APPROVAL QUEUE --}}
@@ -81,6 +81,42 @@
 @empty
     <p class="text-muted">Nothing waiting — you're clear.</p>
 @endforelse
+
+{{-- FLAGGED FOR ATTENTION (Increment H) — held notices, NOT executable proposals. --}}
+@if($flagged->isNotEmpty())
+    <h2 class="h6 text-muted text-uppercase mt-4 mb-2">Flagged for your attention</h2>
+    @foreach ($flagged as $run)
+        <div class="card shadow-sm mb-3 border-start border-warning border-3">
+            <div class="card-body">
+                <div class="d-flex flex-wrap align-items-center gap-2 mb-2 small">
+                    <a href="{{ route('tickets.show', $run->ticket_id) }}" class="fw-semibold text-decoration-none">
+                        {{ optional($run->ticket)->subject ?? 'Ticket #'.$run->ticket_id }}
+                    </a>
+                    @if($run->ticket?->client)
+                        <span class="badge bg-light text-dark border">{{ $run->ticket->client->name }}</span>
+                    @endif
+                    @php($flagCategory = \App\Enums\FlagAttentionCategory::fromInput(($run->proposed_meta ?? [])['category'] ?? null))
+                    <span class="badge bg-warning text-dark">{{ $flagCategory->label() }}</span>
+                    <span class="ms-auto text-muted">{{ optional($run->created_at)->diffForHumans() }}</span>
+                </div>
+
+                <p class="text-muted small mb-1">Why the assistant flagged this (it took no action on the ticket):</p>
+                <p class="form-control-plaintext border rounded p-2 mb-2 bg-light small">{{ $run->proposed_content }}</p>
+
+                <div class="d-flex gap-2">
+                    <form method="POST" action="{{ route('cockpit.acknowledge', $run) }}">
+                        @csrf
+                        <button type="submit" class="btn btn-warning"><i class="bi bi-check2 me-1"></i>I’ve got it</button>
+                    </form>
+                    <form method="POST" action="{{ route('cockpit.dismiss', $run) }}">
+                        @csrf
+                        <button type="submit" class="btn btn-outline-secondary"><i class="bi bi-x-lg me-1"></i>Dismiss</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    @endforeach
+@endif
 
 {{-- NEEDS YOU --}}
 @if($needs->isNotEmpty())

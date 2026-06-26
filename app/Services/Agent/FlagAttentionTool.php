@@ -1,0 +1,134 @@
+<?php
+
+namespace App\Services\Agent;
+
+use App\Enums\FlagAttentionCategory;
+use App\Enums\TechnicianRunState;
+use App\Models\TechnicianRun;
+use App\Models\Ticket;
+use App\Services\Technician\TechnicianActionGate;
+use App\Support\AgentConfig;
+
+/**
+ * The agent's SECOND action — "this is over my head, a human needs to look."
+ *
+ * Mirrors ProposeCloseTool's gated-run shape, with one load-bearing difference:
+ * a flag has NO execution side-effect. It is a NOTICE, not an executable action.
+ * So:
+ *  - it records a HELD run in the dedicated Flagged state (its own cockpit lane);
+ *  - it routes through the gate for the audit row + kill-switch/exclusion checks,
+ *    but with a STRICT NO-OP executor (it must never touch a ticket or client);
+ *  - it can NEVER auto-execute (the classifier hard-codes flag_attention to Approve,
+ *    so even an operator who maps it to 'auto' cannot make a flag act);
+ *  - it does NOT notify (Teams/role-routing is deferred to a later increment — the
+ *    category hint is recorded for it, but no OperatorNotifier is wired here).
+ *
+ * Resolution happens human-side in the cockpit: acknowledge (→ Done) or dismiss
+ * (→ Denied). There is no executor to approve.
+ */
+class FlagAttentionTool
+{
+    public function __construct(
+        private readonly TechnicianActionGate $gate,
+    ) {}
+
+    /** The Anthropic tool definition for `flag_attention`. */
+    public static function definition(): array
+    {
+        return [
+            'name' => 'flag_attention',
+            'description' => 'Flag this ticket for a human when it is genuinely over your head — a decision you cannot make, something you cannot resolve, or blocking ambiguity that needs a person. This is a NOTICE to a human, not a fix and NOT a close: it does nothing to the ticket. Use it sparingly and only for a real need for human attention; when unsure whether something needs a person, LEAVE IT instead (do not flag low-value or routine tickets).',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'reason' => [
+                        'type' => 'string',
+                        'description' => 'One to three sentences: what is blocking you and why this needs a person (e.g. "The client is asking for a refund I am not authorised to approve; this needs a decision from the owner").',
+                    ],
+                    'category' => [
+                        'type' => 'string',
+                        'enum' => ['needs_decision', 'needs_hands_onsite', 'needs_overflow', 'uncertain', 'other'],
+                        'description' => 'Best-fit reason shape: needs_decision (a judgement call), needs_hands_onsite (someone must physically attend), needs_overflow (real work but no capacity), uncertain (you cannot tell what is needed), or other.',
+                    ],
+                ],
+                'required' => ['reason', 'category'],
+            ],
+        ];
+    }
+
+    /**
+     * Record a held flag and route it through the gate (audit + fail-closed checks)
+     * with a no-op executor. Returns a short string the model sees in its tool_result.
+     */
+    public function execute(Ticket $ticket, array $input): string
+    {
+        $reason = trim((string) ($input['reason'] ?? ''));
+        if ($reason === '') {
+            return "Left ticket #{$ticket->id} (no flag reason given — nothing recorded).";
+        }
+
+        $category = FlagAttentionCategory::fromInput($input['category'] ?? null);
+        $hash = hash('sha256', 'flag_attention:'.$ticket->id.':'.$reason);
+
+        $existing = TechnicianRun::where('ticket_id', $ticket->id)
+            ->where('action_type', 'flag_attention')
+            ->where('content_hash', $hash)
+            ->first();
+
+        // Idempotency: an identical flag is already held — do not duplicate it.
+        if ($existing !== null && $existing->state === TechnicianRunState::Flagged) {
+            return "Already flagged ticket #{$ticket->id} for human attention.";
+        }
+
+        // Anti-flood: a NEW flag is subject to the pending-flag cap so flags can't
+        // flood the cockpit. Reviving an existing run is deliberately NOT re-counted —
+        // a recurring need re-surfacing is desirable, and capping a revive could silently
+        // drop a real escalation. The transient overshoot is bounded: the agent acts on
+        // one ticket per run and the one-action-per-run guard allows at most one
+        // create/revive per run, so revives accrue ~one at a time, not in a burst.
+        // Honors agent_max_pending, separately from close proposals so neither lane can
+        // starve the other.
+        if ($existing === null) {
+            $pending = TechnicianRun::where('action_type', 'flag_attention')
+                ->where('state', TechnicianRunState::Flagged)
+                ->count();
+
+            if ($pending >= AgentConfig::maxPendingProposals()) {
+                return "Left ticket #{$ticket->id} (the flag queue is full — bounded to avoid flooding the cockpit).";
+            }
+        }
+
+        // Create a new held flag, or revive a previously resolved one so a recurring
+        // need re-surfaces (mirrors ProposeCloseTool's revive-stale behaviour).
+        $run = TechnicianRun::updateOrCreate(
+            ['ticket_id' => $ticket->id, 'action_type' => 'flag_attention', 'content_hash' => $hash],
+            [
+                'client_id' => $ticket->client_id,
+                'state' => TechnicianRunState::Flagged,
+                'proposed_content' => $reason,
+                'proposed_meta' => ['category' => $category->value, 'reason' => $reason],
+                'confidence' => null,
+                'tokens_used' => 0,
+            ],
+        );
+
+        // Route through the gate for the durable held-audit row and the fail-closed
+        // kill-switch / client-exclusion checks. The executor is intentionally EMPTY:
+        // a flag has no execution side-effect. The classifier hard-codes flag_attention
+        // to Approve, so the gate records awaiting_approval and never runs this anyway.
+        $this->gate->dispatch(
+            actionType: 'flag_attention',
+            ticketId: $ticket->id,
+            clientId: $ticket->client_id,
+            contentHash: $hash,
+            summary: "The AI Technician flagged ticket #{$ticket->id} for human attention: {$reason}",
+            runId: $run->id,
+            executor: function (): void {
+                // Intentionally empty — a flag is a notice, never an executable action.
+            },
+            confidence: null,
+        );
+
+        return "Flagged ticket #{$ticket->id} for human attention ({$category->label()}).";
+    }
+}

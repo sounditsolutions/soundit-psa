@@ -208,6 +208,123 @@ class TechnicianAgentTest extends TestCase
         );
     }
 
+    // ── H. flag_attention wiring + one-action-per-run guard ──────────────────
+
+    public function test_calling_flag_attention_creates_exactly_one_held_flagged_run(): void
+    {
+        $this->configureAi();
+        $ticket = $this->openTicketWithClient();
+
+        $ai = $this->mock(AiClient::class);
+        $ai->shouldReceive('runToolLoop')
+            ->once()
+            ->andReturnUsing(function ($system, $user, $tools, $executor): AiResponse {
+                $executor('flag_attention', ['reason' => 'Needs an owner decision I cannot make.', 'category' => 'needs_decision']);
+
+                return $this->fakeAiResponse();
+            });
+
+        $this->agent($ai)->run($ticket);
+
+        $run = TechnicianRun::where('ticket_id', $ticket->id)->where('action_type', 'flag_attention')->first();
+        $this->assertNotNull($run, 'A held flag_attention run must be created.');
+        $this->assertSame(TechnicianRunState::Flagged, $run->state);
+        $this->assertSame(1, TechnicianRun::where('ticket_id', $ticket->id)->count());
+    }
+
+    /**
+     * The one-action-per-run guard is action-AGNOSTIC: a propose_close THEN a
+     * flag_attention (or vice versa) must yield exactly ONE run — the agent takes
+     * at most one action per ticket (propose_close OR flag_attention OR nothing).
+     */
+    public function test_one_action_per_run_guard_blocks_a_flag_after_a_close(): void
+    {
+        $this->configureAi();
+        $ticket = $this->openTicketWithClient();
+
+        $notifier = $this->mock(OperatorNotifier::class);
+        $notifier->shouldReceive('notify')->never();
+
+        $ai = $this->mock(AiClient::class);
+        $ai->shouldReceive('runToolLoop')
+            ->once()
+            ->andReturnUsing(function ($system, $user, $tools, $executor): AiResponse {
+                $executor('propose_close', ['reason' => 'client confirmed sorted 100d ago', 'confidence' => 0.5]);
+                $executor('flag_attention', ['reason' => 'second action — must be blocked', 'category' => 'other']);
+
+                return $this->fakeAiResponse();
+            });
+
+        $this->agent($ai)->run($ticket);
+
+        $this->assertSame(1, TechnicianRun::where('ticket_id', $ticket->id)->count(), 'only the first action may land');
+        $this->assertSame(0, TechnicianRun::where('ticket_id', $ticket->id)->where('action_type', 'flag_attention')->count());
+    }
+
+    public function test_one_action_per_run_guard_blocks_a_close_after_a_flag(): void
+    {
+        $this->configureAi();
+        $ticket = $this->openTicketWithClient();
+
+        $notifier = $this->mock(OperatorNotifier::class);
+        $notifier->shouldReceive('notify')->never();
+
+        $ai = $this->mock(AiClient::class);
+        $ai->shouldReceive('runToolLoop')
+            ->once()
+            ->andReturnUsing(function ($system, $user, $tools, $executor): AiResponse {
+                $executor('flag_attention', ['reason' => 'needs a person', 'category' => 'uncertain']);
+                $executor('propose_close', ['reason' => 'second action — must be blocked', 'confidence' => 0.9]);
+
+                return $this->fakeAiResponse();
+            });
+
+        $this->agent($ai)->run($ticket);
+
+        $this->assertSame(1, TechnicianRun::where('ticket_id', $ticket->id)->count(), 'only the first action may land');
+        $this->assertSame(0, TechnicianRun::where('ticket_id', $ticket->id)->where('action_type', 'propose_close')->count());
+    }
+
+    public function test_tool_list_includes_flag_attention(): void
+    {
+        $this->configureAi();
+        $ticket = $this->openTicketWithClient();
+
+        $capturedTools = null;
+        $ai = $this->mock(AiClient::class);
+        $ai->shouldReceive('runToolLoop')
+            ->once()
+            ->andReturnUsing(function ($system, $user, $tools, $executor) use (&$capturedTools): AiResponse {
+                $capturedTools = $tools;
+
+                return $this->fakeAiResponse();
+            });
+
+        $this->agent($ai)->run($ticket);
+
+        $names = array_column($capturedTools ?? [], 'name');
+        $this->assertContains('flag_attention', $names, 'Tool list must include flag_attention.');
+        $this->assertContains('propose_close', $names);
+    }
+
+    public function test_taking_no_action_leaves_the_ticket_with_no_run(): void
+    {
+        // The conservative leave-it path: when the model takes no tool action, the
+        // agent records nothing — no spurious flag, no close. (Whether the model
+        // SHOULD flag a given ticket is the prompt's job, calibrated in the soak.)
+        $this->configureAi();
+        $ticket = $this->openTicketWithClient();
+
+        $ai = $this->mock(AiClient::class);
+        $ai->shouldReceive('runToolLoop')
+            ->once()
+            ->andReturnUsing(fn ($system, $user, $tools, $executor): AiResponse => $this->fakeAiResponse());
+
+        $this->agent($ai)->run($ticket);
+
+        $this->assertSame(0, TechnicianRun::where('ticket_id', $ticket->id)->count());
+    }
+
     // ── 5. AI not configured ──────────────────────────────────────────────────
 
     public function test_run_no_ops_when_ai_is_not_configured(): void

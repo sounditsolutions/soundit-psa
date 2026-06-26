@@ -632,4 +632,7 @@ Route::middleware('auth')->group(function () {
     Route::get('/cockpit', [\App\Http\Controllers\Web\TechnicianCockpitController::class, 'index'])->name('cockpit.index');
     Route::post('/cockpit/runs/{run}/approve', [\App\Http\Controllers\Web\TechnicianCockpitController::class, 'approve'])->name('cockpit.approve');
     Route::post('/cockpit/runs/{run}/deny', [\App\Http\Controllers\Web\TechnicianCockpitController::class, 'deny'])->name('cockpit.deny');
+    // Increment H — resolve a held flag (no execution): acknowledge (→ Done) or dismiss (→ Denied).
+    Route::post('/cockpit/runs/{run}/acknowledge', [\App\Http\Controllers\Web\TechnicianCockpitController::class, 'acknowledge'])->name('cockpit.acknowledge');
+    Route::post('/cockpit/runs/{run}/dismiss', [\App\Http\Controllers\Web\TechnicianCockpitController::class, 'dismiss'])->name('cockpit.dismiss');
 });
