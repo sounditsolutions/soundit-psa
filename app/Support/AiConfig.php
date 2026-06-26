@@ -10,6 +10,7 @@ class AiConfig
         'anthropic' => 'claude-sonnet-4-6',
         'openai' => 'gpt-4o',
         'haiku' => 'claude-haiku-4-5',
+        'opus' => 'claude-opus-4-8',
     ];
 
     private static array $map = [
@@ -50,6 +51,12 @@ class AiConfig
     public static function haikuModel(): string
     {
         return self::DEFAULTS['haiku'];
+    }
+
+    /** Full Opus model id for reasoning-heavy tasks (e.g. the TechnicianAgent loop). */
+    public static function opusModel(): string
+    {
+        return self::DEFAULTS['opus'];
     }
 
     public static function isEnabled(): bool

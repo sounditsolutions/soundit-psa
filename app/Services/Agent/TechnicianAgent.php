@@ -6,6 +6,7 @@ use App\Models\Ticket;
 use App\Services\Ai\AiClient;
 use App\Services\Triage\ContextBuilder;
 use App\Services\Triage\TriageToolDefinitions;
+use App\Support\AgentConfig;
 use App\Support\AiConfig;
 use Illuminate\Support\Facades\Log;
 
@@ -29,6 +30,16 @@ class TechnicianAgent
     public function __construct(
         private readonly AiClient $ai,
     ) {}
+
+    /**
+     * Convenience factory that builds an Opus-configured instance for production use.
+     * Tests should inject a mock AiClient via the constructor instead.
+     * Mirrors SignificanceGate::haiku().
+     */
+    public static function withConfiguredModel(): self
+    {
+        return new self(new AiClient(AgentConfig::agentModel()));
+    }
 
     /**
      * Reason over a ticket and propose closing it if clearly appropriate.
