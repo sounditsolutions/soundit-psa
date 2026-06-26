@@ -44,7 +44,7 @@ class SignificanceGate
 
         try {
             $response = $this->ai->complete(
-                'You are triaging an MSP ticket queue. Given only the summary below, decide if this ticket is plausibly resolved or abandoned and worth a technician\'s closer look (as opposed to clearly still active and progressing). Answer with only YES or NO.',
+                'You are triaging an MSP ticket queue. Given only the summary below, decide if this ticket is worth a technician\'s closer look for possible closing — i.e. it appears resolved, abandoned, or junk/spam/automated-noise (delivery-failure bounces, monitoring or cron notifications, unsubscribe confirmations, marketing, and the like) — as opposed to a real ticket that is clearly still active and progressing. Answer with only YES or NO.',
                 $context,
                 10,
             );
