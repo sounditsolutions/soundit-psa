@@ -8,6 +8,7 @@ use App\Models\Client;
 use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Models\User;
+use App\Services\Agent\FlagAttentionTool;
 use App\Services\Agent\ProposeCloseTool;
 use App\Services\Agent\TechnicianAgentToolExecutor;
 use App\Services\Technician\Notify\OperatorNotifier;
@@ -54,7 +55,7 @@ class TechnicianAgentToolExecutorTest extends TestCase
 
     private function executor(Ticket $ticket): TechnicianAgentToolExecutor
     {
-        return new TechnicianAgentToolExecutor($ticket, app(ProposeCloseTool::class));
+        return new TechnicianAgentToolExecutor($ticket, app(ProposeCloseTool::class), app(FlagAttentionTool::class));
     }
 
     private function assertNoAuditRowForTicket(Ticket $ticket): void
@@ -211,6 +212,32 @@ class TechnicianAgentToolExecutorTest extends TestCase
         $this->assertSame(TechnicianRunState::AwaitingApproval, $run->state);
 
         // Ticket must NOT be closed by a held run.
+        $this->assertNotSame(TicketStatus::Closed, $ticket->fresh()->status);
+    }
+
+    // ── 4b. flag_attention routes to FlagAttentionTool ───────────────────────
+
+    /**
+     * execute('flag_attention', …) must delegate to FlagAttentionTool and produce
+     * a held TechnicianRun in the Flagged state — and never touch the ticket.
+     */
+    public function test_flag_attention_routes_to_flag_attention_tool_and_creates_held_flag(): void
+    {
+        User::factory()->create(); // AI actor fallback
+
+        $ticket = $this->openTicketWithClient();
+
+        $this->executor($ticket)->execute('flag_attention', [
+            'reason' => 'Needs an owner decision I cannot make.',
+            'category' => 'needs_decision',
+        ]);
+
+        $run = TechnicianRun::where('ticket_id', $ticket->id)
+            ->where('action_type', 'flag_attention')
+            ->first();
+
+        $this->assertNotNull($run, 'A TechnicianRun(flag_attention) must be created.');
+        $this->assertSame(TechnicianRunState::Flagged, $run->state);
         $this->assertNotSame(TicketStatus::Closed, $ticket->fresh()->status);
     }
 

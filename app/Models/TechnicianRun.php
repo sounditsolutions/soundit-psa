@@ -81,6 +81,42 @@ class TechnicianRun extends Model
         $this->advanceTo(TechnicianRunState::Denied);
     }
 
+    /**
+     * Acknowledge a held flag ("a human has got it") — Flagged → Done.
+     * A flag has no execution; resolving it is a pure state transition.
+     */
+    public function acknowledgeFlag(): bool
+    {
+        return $this->resolveFlag(TechnicianRunState::Done);
+    }
+
+    /** Dismiss a held flag ("not something a person needs after all") — Flagged → Denied. */
+    public function dismissFlag(): bool
+    {
+        return $this->resolveFlag(TechnicianRunState::Denied);
+    }
+
+    /**
+     * CAS-guarded flag resolution: only a run that is BOTH a flag_attention AND
+     * still Flagged transitions. So acknowledge/dismiss is a no-op on a proposal
+     * (wrong action_type) or an already-resolved flag (wrong state) — and a
+     * double-tap can never double-resolve. Returns true only for the winner.
+     */
+    private function resolveFlag(TechnicianRunState $to): bool
+    {
+        $resolved = static::query()
+            ->whereKey($this->getKey())
+            ->where('action_type', 'flag_attention')
+            ->where('state', TechnicianRunState::Flagged->value)
+            ->update(['state' => $to->value]) === 1;
+
+        if ($resolved) {
+            $this->state = $to;
+        }
+
+        return $resolved;
+    }
+
     public function markSuperseded(): void
     {
         $this->advanceTo(TechnicianRunState::Superseded);

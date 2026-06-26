@@ -44,6 +44,15 @@ class TechnicianTierClassifier
             return $auto ? TechnicianTier::Auto : TechnicianTier::Approve;
         }
 
+        // ── flag_attention: a NOTICE, never an executable action (Increment H) ──
+        // A flag has no execution side-effect, so it must ALWAYS be held — never auto,
+        // regardless of the tier map. Hard-coding Approve here means an operator who
+        // (mis)maps flag_attention to 'auto' still cannot make a flag act. Defense in
+        // depth alongside FlagAttentionTool's no-op executor.
+        if ($actionType === 'flag_attention') {
+            return TechnicianTier::Approve;
+        }
+
         // ── every other action type: unchanged legacy default-deny path ──
         $mapped = TechnicianConfig::tierMap()[$actionType] ?? null;
 

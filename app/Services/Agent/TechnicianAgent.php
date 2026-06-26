@@ -53,32 +53,45 @@ class TechnicianAgent
         }
 
         try {
-            $system = 'You are a junior MSP technician reviewing a ticket. '
-                .'Read it with your tools. If it is clearly resolved or abandoned with no further action '
-                .'needed, call `propose_close` ONCE with a one-line reason quoting the evidence and a '
-                .'confidence 0–1. If it is awaiting us, awaiting the client, or still active — do NOTHING, '
-                .'leave it. When unsure, leave it.';
+            $system = 'You are a junior MSP technician reviewing a ticket. Read it with your tools, then take '
+                .'AT MOST ONE action. If it is clearly resolved or abandoned with no further action needed, call '
+                .'`propose_close` ONCE with a one-line reason quoting the evidence and a confidence 0–1. '
+                .'If instead it genuinely needs a human — a decision you cannot make, something you cannot resolve, '
+                .'or blocking ambiguity that needs a person — call `flag_attention` ONCE with a 1–3 sentence reason '
+                .'and the best-fit category. A flag means "a person needs to look at this", NOT "I did not close it"; '
+                .'it does nothing to the ticket. Use it sparingly, only for a genuine need for human attention. '
+                .'Otherwise — awaiting us, awaiting the client, still active, or simply low-value — do NOTHING, leave '
+                .'it. When unsure whether to close OR to flag, LEAVE IT. Take only ONE action per ticket.';
 
             $userMessage = ContextBuilder::buildForTicket($ticket);
 
-            $tools = array_merge(TriageToolDefinitions::readTools(), [ProposeCloseTool::definition()]);
+            $tools = array_merge(TriageToolDefinitions::readTools(), [
+                ProposeCloseTool::definition(),
+                FlagAttentionTool::definition(),
+            ]);
 
-            $toolExecutor = new TechnicianAgentToolExecutor($ticket, app(ProposeCloseTool::class));
+            $toolExecutor = new TechnicianAgentToolExecutor(
+                $ticket,
+                app(ProposeCloseTool::class),
+                app(FlagAttentionTool::class),
+            );
 
-            // CO-4 propose-once guard: track whether a propose_close has already been
-            // dispatched this run. On a SECOND call the model returns a stop string and
-            // ProposeCloseTool is NOT invoked — prevents duplicate proposals with varied
-            // reasons from producing multiple TechnicianRun rows in one loop.
-            $proposed = false;
-            $executor = function (string $toolName, array $input) use ($toolExecutor, &$proposed): mixed {
-                if ($toolName === 'propose_close') {
-                    if ($proposed) {
-                        Log::info('[TechnicianAgent] Suppressed duplicate propose_close call (CO-4 guard)');
+            // One-action-per-run guard (CO-4, generalised for Increment H): the agent
+            // takes AT MOST one action per ticket — propose_close OR flag_attention OR
+            // nothing. The FIRST of either lands; any SECOND action call (of either type)
+            // returns a stop string and is NOT dispatched, so a single loop can never
+            // produce two TechnicianRun rows (e.g. a close AND a flag, or two flags with
+            // different reasons that would each pass the tools' own idempotency).
+            $acted = false;
+            $executor = function (string $toolName, array $input) use ($toolExecutor, &$acted): mixed {
+                if (in_array($toolName, ['propose_close', 'flag_attention'], true)) {
+                    if ($acted) {
+                        Log::info('[TechnicianAgent] Suppressed a second action call (one-action-per-run guard)', ['tool' => $toolName]);
 
-                        return 'already proposed — stop';
+                        return 'already acted on this ticket — stop';
                     }
 
-                    $proposed = true;
+                    $acted = true;
                 }
 
                 return $toolExecutor->execute($toolName, $input);

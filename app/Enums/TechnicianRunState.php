@@ -16,4 +16,12 @@ enum TechnicianRunState: string
     case Done = 'done';
     case Denied = 'denied';
     case Superseded = 'superseded';
+
+    /**
+     * A held flag_attention notice (Increment H). Distinct from AwaitingApproval
+     * because a flag is NOT an executable proposal — it has no gate execution. It
+     * is surfaced in its own cockpit lane and resolved by a human acknowledging
+     * (→ Done) or dismissing (→ Denied), never executed.
+     */
+    case Flagged = 'flagged';
 }

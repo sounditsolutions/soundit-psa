@@ -11,7 +11,8 @@ use App\Services\Triage\TriageToolExecutor;
  *
  * Allowlist (CO-1):
  *   READ: search_tickets, get_ticket_notes, wiki_list_pages, wiki_search, wiki_get_page
- *   ACT:  propose_close (the only gated mutator — routes through ProposeCloseTool/gate)
+ *   ACT:  propose_close (gated mutator → ProposeCloseTool/gate)
+ *         flag_attention (held NOTICE → FlagAttentionTool/gate; no execution side-effect)
  *
  * Any other tool name returns ['error' => 'tool not available to the agent'].
  * TriageToolExecutor is NEVER called for an arbitrary name — the check happens first,
@@ -34,6 +35,7 @@ class TechnicianAgentToolExecutor
     public function __construct(
         private readonly Ticket $ticket,
         private readonly ProposeCloseTool $proposeClose,
+        private readonly FlagAttentionTool $flagAttention,
     ) {}
 
     /**
@@ -41,6 +43,7 @@ class TechnicianAgentToolExecutor
      *
      * Routing (strict — default deny):
      *   propose_close       → ProposeCloseTool (the gated ACT path)
+     *   flag_attention      → FlagAttentionTool (the held NOTICE path; no side-effect)
      *   allowlisted READ    → TriageToolExecutor (read-only; client-scoped)
      *   anything else       → error (never falls through to TriageToolExecutor)
      */
@@ -48,6 +51,10 @@ class TechnicianAgentToolExecutor
     {
         if ($name === 'propose_close') {
             return $this->proposeClose->execute($this->ticket, $input);
+        }
+
+        if ($name === 'flag_attention') {
+            return $this->flagAttention->execute($this->ticket, $input);
         }
 
         if (in_array($name, self::READ_TOOLS, true)) {

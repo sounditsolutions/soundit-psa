@@ -14,6 +14,7 @@ class TechnicianCockpitController extends Controller
     {
         return view('cockpit.index', [
             'drafts' => $query->pendingDrafts(),
+            'flagged' => $query->flaggedForAttention(),
             'needs' => $query->needsAttention(),
         ]);
     }
@@ -49,5 +50,25 @@ class TechnicianCockpitController extends Controller
         $service->deny($run);
 
         return redirect()->route('cockpit.index')->with('success', 'Draft dismissed; the ticket is back with your team.');
+    }
+
+    /**
+     * Acknowledge a held flag (Increment H): the operator has it. Flagged → Done,
+     * no execution, no client-facing consequence. The CAS guard on the model makes
+     * this a safe no-op on anything that is not a held flag.
+     */
+    public function acknowledge(TechnicianRun $run)
+    {
+        $run->acknowledgeFlag();
+
+        return redirect()->route('cockpit.index')->with('success', 'Flag acknowledged — it’s with you now.');
+    }
+
+    /** Dismiss a held flag: not something a person needs after all. Flagged → Denied. */
+    public function dismiss(TechnicianRun $run)
+    {
+        $run->dismissFlag();
+
+        return redirect()->route('cockpit.index')->with('success', 'Flag dismissed.');
     }
 }
