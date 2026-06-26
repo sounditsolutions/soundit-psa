@@ -15,6 +15,7 @@ use App\Observers\PersonObserver;
 use App\Observers\TicketNoteObserver;
 use App\Observers\TicketObserver;
 use App\Services\Agent\SignificanceGate;
+use App\Services\Agent\TechnicianAgent;
 use App\Services\Cipp\CippClient;
 use App\Services\Graph\GraphClient;
 use App\Services\Level\LevelClient;
@@ -44,6 +45,10 @@ class AppServiceProvider extends ServiceProvider
         // Bind SignificanceGate to a Haiku-configured instance for production use.
         // Tests override this with $this->mock(SignificanceGate::class).
         $this->app->bind(SignificanceGate::class, fn () => SignificanceGate::haiku());
+
+        // Bind TechnicianAgent to an Opus-configured instance (AgentConfig::agentModel()) for production.
+        // Tests inject a mock AiClient directly (new TechnicianAgent($mock)) or rebind this.
+        $this->app->bind(TechnicianAgent::class, fn () => TechnicianAgent::withConfiguredModel());
 
         $this->app->singleton(NinjaClient::class, function ($app) {
             $config = config('services.ninja');

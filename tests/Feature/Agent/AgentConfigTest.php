@@ -3,7 +3,9 @@
 namespace Tests\Feature\Agent;
 
 use App\Models\Setting;
+use App\Services\Agent\TechnicianAgent;
 use App\Support\AgentConfig;
+use App\Support\AiConfig;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -44,5 +46,44 @@ class AgentConfigTest extends TestCase
         $this->assertSame(1, AgentConfig::autoQuietDays());
         Setting::setValue('agent_auto_quiet_days', '30');
         $this->assertSame(30, AgentConfig::autoQuietDays());
+    }
+
+    // ── Opus model (agent_model) ──────────────────────────────────────────────
+
+    /** AiConfig::opusModel() must return the canonical Opus 4.8 model id. */
+    public function test_opus_model_returns_the_expected_id(): void
+    {
+        $this->assertSame('claude-opus-4-8', AiConfig::opusModel());
+    }
+
+    /** agentModel() must default to the Opus id when no Setting is stored. */
+    public function test_agent_model_defaults_to_opus(): void
+    {
+        $this->assertSame(AiConfig::opusModel(), AgentConfig::agentModel());
+        $this->assertSame('claude-opus-4-8', AgentConfig::agentModel());
+    }
+
+    /** agentModel() must honour an operator-set override (e.g. a future Sonnet id). */
+    public function test_agent_model_is_overridable_via_setting(): void
+    {
+        Setting::setValue('agent_model', 'claude-sonnet-4-6');
+        $this->assertSame('claude-sonnet-4-6', AgentConfig::agentModel());
+    }
+
+    /** Blank/whitespace Setting must fall back to the Opus default (mirrors significanceModel). */
+    public function test_agent_model_blank_setting_falls_back_to_default(): void
+    {
+        Setting::setValue('agent_model', '   ');
+        $this->assertSame('claude-opus-4-8', AgentConfig::agentModel());
+    }
+
+    /**
+     * The production binding must yield a TechnicianAgent instance.
+     * This is a smoke test that withConfiguredModel() is callable and the binding is wired.
+     */
+    public function test_production_binding_resolves_a_technician_agent(): void
+    {
+        $agent = app(TechnicianAgent::class);
+        $this->assertInstanceOf(TechnicianAgent::class, $agent);
     }
 }

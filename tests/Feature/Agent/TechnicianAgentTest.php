@@ -56,9 +56,14 @@ class TechnicianAgentTest extends TestCase
         return Ticket::factory()->for($client)->create(['status' => TicketStatus::InProgress]);
     }
 
-    private function agent(): TechnicianAgent
+    /**
+     * Construct the agent with the supplied mock AiClient injected directly.
+     * After the AppServiceProvider binding, app(TechnicianAgent::class) builds a
+     * real Opus AiClient — tests must bypass the container and inject the mock.
+     */
+    private function agent(AiClient $ai): TechnicianAgent
     {
-        return app(TechnicianAgent::class);
+        return new TechnicianAgent($ai);
     }
 
     private function fakeAiResponse(): AiResponse
@@ -87,7 +92,7 @@ class TechnicianAgentTest extends TestCase
                 return $this->fakeAiResponse();
             });
 
-        $this->agent()->run($ticket);
+        $this->agent($ai)->run($ticket);
 
         $run = TechnicianRun::where('ticket_id', $ticket->id)
             ->where('action_type', 'propose_close')
@@ -115,7 +120,7 @@ class TechnicianAgentTest extends TestCase
             ->andThrow(new \RuntimeException('model hiccup'));
 
         // Must not throw — run() is fail-soft.
-        $this->agent()->run($ticket);
+        $this->agent($ai)->run($ticket);
 
         // No TechnicianRun created (loop threw before any executor call).
         $this->assertSame(0, TechnicianRun::where('ticket_id', $ticket->id)->count());
@@ -145,7 +150,7 @@ class TechnicianAgentTest extends TestCase
                 return $this->fakeAiResponse();
             });
 
-        $this->agent()->run($ticket);
+        $this->agent($ai)->run($ticket);
 
         $this->assertNotNull($capturedTools, 'runToolLoop must have been called.');
         $names = array_column($capturedTools, 'name');
@@ -194,7 +199,7 @@ class TechnicianAgentTest extends TestCase
                 return $this->fakeAiResponse();
             });
 
-        $this->agent()->run($ticket);
+        $this->agent($ai)->run($ticket);
 
         // Exactly ONE TechnicianRun must exist — the second call was refused.
         $this->assertSame(
@@ -213,7 +218,7 @@ class TechnicianAgentTest extends TestCase
         $ai = $this->mock(AiClient::class);
         $ai->shouldReceive('runToolLoop')->never();
 
-        $this->agent()->run($ticket);
+        $this->agent($ai)->run($ticket);
 
         // No TechnicianRun created.
         $this->assertSame(0, TechnicianRun::where('ticket_id', $ticket->id)->count());
@@ -238,7 +243,7 @@ class TechnicianAgentTest extends TestCase
         $ai = $this->mock(AiClient::class);
         $ai->shouldReceive('runToolLoop')->never();
 
-        $this->agent()->run($ticket);
+        $this->agent($ai)->run($ticket);
 
         // No TechnicianRun created — run() returned early on isEnabled()=false.
         $this->assertSame(0, TechnicianRun::where('ticket_id', $ticket->id)->count());

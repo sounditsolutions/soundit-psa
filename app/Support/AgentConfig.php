@@ -87,4 +87,16 @@ class AgentConfig
 
         return (is_string($value) && trim($value) !== '') ? trim($value) : AiConfig::haikuModel();
     }
+
+    /**
+     * Model id used for the TechnicianAgent reasoning loop.
+     * Reads from Setting first; falls back to the Opus id from AiConfig.
+     * Setting: agent_model. Default: claude-opus-4-8.
+     */
+    public static function agentModel(): string
+    {
+        $value = Setting::getValue('agent_model');
+
+        return (is_string($value) && trim($value) !== '') ? trim($value) : AiConfig::opusModel();
+    }
 }

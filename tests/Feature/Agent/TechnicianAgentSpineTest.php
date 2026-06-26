@@ -112,6 +112,10 @@ class TechnicianAgentSpineTest extends TestCase
      * The executor closure is captured from runToolLoop's 4th parameter and
      * immediately invoked with the supplied tool + input, simulating the LLM
      * calling that tool in its first round.
+     *
+     * Also overrides the AppServiceProvider binding so handle() → app(TechnicianAgent::class)
+     * resolves a mock-injected instance rather than the Opus-real AiClient from the
+     * production binding. Direct binding override mirrors the comment in AppServiceProvider.
      */
     private function mockAiClientProposesClose(float $confidence, string $reason = 'No client response in 30 days.'): void
     {
@@ -123,6 +127,10 @@ class TechnicianAgentSpineTest extends TestCase
 
                 return $this->fakeAiResponse();
             });
+
+        // Override the production binding so RunTechnicianAgent::handle() resolves
+        // a mock-injected TechnicianAgent, not one with a real Opus AiClient.
+        $this->app->bind(TechnicianAgent::class, fn () => new TechnicianAgent($ai));
     }
 
     // ── 1. Full spine: held → cockpit surface → approve → silent close ────────
