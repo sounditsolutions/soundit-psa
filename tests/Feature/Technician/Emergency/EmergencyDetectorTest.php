@@ -5,9 +5,11 @@ namespace Tests\Feature\Technician\Emergency;
 use App\Enums\TicketPriority;
 use App\Enums\TicketStatus;
 use App\Models\Client;
+use App\Models\Setting;
 use App\Models\Ticket;
 use App\Services\Technician\Emergency\EmergencyDetector;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Carbon;
 use Tests\TestCase;
 
 class EmergencyDetectorTest extends TestCase
@@ -101,5 +103,96 @@ class EmergencyDetectorTest extends TestCase
         $this->assertTrue($aFloored->isEmergency);
         $this->assertContains('keyword', $aFloored->reasons);
         $this->assertGreaterThanOrEqual(2, $aFloored->severity);
+    }
+
+    // ── coverage-start anchor (psa-wmqp): the age signal only fires for tickets
+    //    OPENED during the coverage window; keyword + SLA stay always-on. ──────
+
+    public function test_age_does_not_fire_for_a_ticket_opened_before_coverage_start(): void
+    {
+        // Coverage started now; a benign backlog ticket opened an hour ago predates it.
+        Setting::setValue('technician_coverage_start_at', now()->toIso8601String());
+        $t = $this->ticket(['opened_at' => now()->subHour(), 'subject' => 'Printer is a little slow', 'description' => 'minor']);
+
+        $a = app(EmergencyDetector::class)->assess($t);
+
+        $this->assertFalse($a->isEmergency, 'a pre-coverage backlog ticket must not flag by age');
+        $this->assertNotContains('age', $a->reasons);
+    }
+
+    public function test_age_fires_for_a_ticket_opened_exactly_at_coverage_start(): void
+    {
+        // Inclusive start boundary (gte): a ticket that arrived at the very moment
+        // coverage began is within the window. Pins the gte vs gt decision so a
+        // future regression to a strict `>` would fail here. Frozen time + a
+        // second-precision anchor make the equality exact.
+        Carbon::setTestNow(Carbon::parse('2026-06-26 13:00:00'));
+        $start = Carbon::parse('2026-06-26 12:00:00'); // 1h before now, past the 15m P1 floor
+        Setting::setValue('technician_coverage_start_at', $start->toIso8601String());
+        $t = $this->ticket(['opened_at' => $start->copy(), 'subject' => 'Printer is a little slow', 'description' => 'minor']);
+
+        $a = app(EmergencyDetector::class)->assess($t);
+
+        $this->assertTrue($a->isEmergency);
+        $this->assertContains('age', $a->reasons);
+
+        Carbon::setTestNow();
+    }
+
+    public function test_age_fires_for_a_ticket_opened_after_coverage_start(): void
+    {
+        // Coverage started two hours ago; a ticket opened an hour ago is within the
+        // window and now past the 15m P1 floor while still untouched.
+        Setting::setValue('technician_coverage_start_at', now()->subHours(2)->toIso8601String());
+        $t = $this->ticket(['opened_at' => now()->subHour(), 'subject' => 'Printer is a little slow', 'description' => 'minor']);
+
+        $a = app(EmergencyDetector::class)->assess($t);
+
+        $this->assertTrue($a->isEmergency);
+        $this->assertContains('age', $a->reasons);
+    }
+
+    public function test_keyword_still_fires_for_a_pre_coverage_ticket(): void
+    {
+        // Always-on: the anchor gates ONLY the age signal, so a pre-coverage ticket
+        // with an emergency keyword still flags (by keyword, not age).
+        Setting::setValue('technician_coverage_start_at', now()->toIso8601String());
+        $t = $this->ticket(['opened_at' => now()->subHour(), 'subject' => 'Server OUTAGE at site']);
+
+        $a = app(EmergencyDetector::class)->assess($t);
+
+        $this->assertTrue($a->isEmergency);
+        $this->assertContains('keyword', $a->reasons);
+        $this->assertNotContains('age', $a->reasons);
+    }
+
+    public function test_sla_breach_still_fires_for_a_pre_coverage_ticket(): void
+    {
+        // Always-on: a pre-coverage ticket past its response SLA still flags by SLA.
+        Setting::setValue('technician_coverage_start_at', now()->toIso8601String());
+        $t = $this->ticket([
+            'opened_at' => now()->subHour(),
+            'subject' => 'Printer is a little slow',
+            'description' => 'minor',
+            'response_due_at' => now()->subMinutes(5), // breached, responded_at is null
+        ]);
+
+        $a = app(EmergencyDetector::class)->assess($t);
+
+        $this->assertTrue($a->isEmergency);
+        $this->assertContains('sla', $a->reasons);
+        $this->assertNotContains('age', $a->reasons);
+    }
+
+    public function test_null_coverage_start_leaves_age_unanchored(): void
+    {
+        // No anchor ⇒ the age signal behaves as the isolated unit always has (an aged
+        // untouched ticket flags), preserving every existing detector test.
+        $t = $this->ticket(['opened_at' => now()->subHour(), 'subject' => 'Printer is a little slow', 'description' => 'minor']);
+
+        $a = app(EmergencyDetector::class)->assess($t);
+
+        $this->assertTrue($a->isEmergency);
+        $this->assertContains('age', $a->reasons);
     }
 }

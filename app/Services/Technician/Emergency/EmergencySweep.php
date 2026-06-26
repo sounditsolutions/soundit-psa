@@ -52,6 +52,14 @@ class EmergencySweep
 
     public function run(): void
     {
+        // psa-wmqp: anchor the age signal to a coverage window. ensureCoverageStart()
+        // is a defensive backfill for the upgrade case — a subsystem already enabled
+        // before this fix shipped never got a coverage_start stamped by the toggle, so
+        // stamp it on the first tick. It is idempotent (no-op once set) and only runs
+        // when enabled (the command early-exits on disabled + the schedule ->when()
+        // gate), so it can never stamp while the Technician is off.
+        TechnicianConfig::ensureCoverageStart();
+
         $this->scan();
         // Reap closed-out emergencies BEFORE driving, so an emergency whose tickets are
         // all already resolved is never spuriously escalated on its final tick.

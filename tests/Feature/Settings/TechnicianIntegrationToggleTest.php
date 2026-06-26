@@ -6,6 +6,7 @@ use App\Models\Setting;
 use App\Models\User;
 use App\Support\TechnicianConfig;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Carbon;
 use Tests\TestCase;
 
 /**
@@ -76,6 +77,55 @@ class TechnicianIntegrationToggleTest extends TestCase
             ->assertRedirect(route('settings.integrations'));
 
         $this->assertArrayNotHasKey('send_ack', TechnicianConfig::tierMap());
+    }
+
+    // --- coverage-start anchor (psa-wmqp): stamp on OFF→ON, clear on disable ---
+
+    public function test_enabling_off_to_on_stamps_coverage_start(): void
+    {
+        $this->assertNull(TechnicianConfig::coverageStartAt());
+
+        $this->actingAs($this->user)
+            ->post(route('settings.integrations.technician.update'), [
+                'technician_enabled' => '1',
+            ])
+            ->assertRedirect(route('settings.integrations'));
+
+        $this->assertTrue(TechnicianConfig::enabled());
+        $this->assertNotNull(TechnicianConfig::coverageStartAt(), 'enabling stamps the coverage anchor');
+    }
+
+    public function test_disabling_clears_coverage_start(): void
+    {
+        Setting::setValue('technician_enabled', '1');
+        TechnicianConfig::recordCoverageStart();
+        $this->assertNotNull(TechnicianConfig::coverageStartAt());
+
+        $this->actingAs($this->user)
+            ->post(route('settings.integrations.technician.update'), [])
+            ->assertRedirect(route('settings.integrations'));
+
+        $this->assertFalse(TechnicianConfig::enabled());
+        $this->assertNull(TechnicianConfig::coverageStartAt(), 'disabling clears the anchor so a later enable re-anchors fresh');
+    }
+
+    public function test_saving_while_already_enabled_does_not_re_anchor_coverage_start(): void
+    {
+        // Already covering since three days ago; an unrelated in-place settings save
+        // must NOT reset the window — only an OFF→ON transition re-anchors.
+        Setting::setValue('technician_enabled', '1');
+        $anchor = Carbon::parse('2026-06-23 09:00:00');
+        Setting::setValue('technician_coverage_start_at', $anchor->toIso8601String());
+
+        $this->actingAs($this->user)
+            ->post(route('settings.integrations.technician.update'), [
+                'technician_enabled' => '1',
+                'technician_digest_time' => '09:30', // an unrelated field change
+            ])
+            ->assertRedirect(route('settings.integrations'));
+
+        $this->assertTrue(TechnicianConfig::enabled());
+        $this->assertTrue(TechnicianConfig::coverageStartAt()->equalTo($anchor), 'an in-place save must not move the coverage anchor');
     }
 
     // --- flash message ---

@@ -16,6 +16,7 @@ use App\Models\Ticket;
 use App\Models\TicketNote;
 use App\Models\User;
 use App\Services\Technician\Notify\OperatorNotifier;
+use App\Support\TechnicianConfig;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
 use Mockery\MockInterface;
@@ -324,6 +325,56 @@ class EmergencySweepTest extends TestCase
         $this->assertDatabaseHas('technician_action_logs', [
             'action_type' => 'send_max_hold', 'result_status' => 'executed',
         ]);
+    }
+
+    /**
+     * THE FLOOD REGRESSION (psa-wmqp). On enable the sweep stamps coverage_start = now,
+     * so a pre-existing aged backlog ticket — untouched and past the floor, but BENIGN
+     * (no keyword, no SLA breach) — is anchored OUT of the age signal and produces NO
+     * emergency and NO page. Before the anchor, the age rule alone flagged the whole
+     * stale backlog (~70 emergencies) the moment the Technician was switched on.
+     */
+    public function test_flood_a_preexisting_aged_backlog_ticket_does_not_page_on_enable(): void
+    {
+        Setting::setValue('technician_enabled', '1');
+        $justin = User::factory()->create();
+        Setting::setValue('technician_escalation_chain', json_encode([$justin->id]));
+
+        $client = $this->operationalClient();
+        Ticket::factory()->create([
+            'client_id' => $client->id,
+            'status' => TicketStatus::New->value,
+            'priority' => TicketPriority::P1->value,
+            'opened_at' => now()->subHour(), // aged past the 15m P1 floor…
+            'responded_at' => null,           // …and untouched…
+            'subject' => 'Printer is a little slow', // …but benign: no keyword
+            'description' => 'minor cosmetic issue',
+        ]);
+
+        // No one is paged — the backlog predates coverage.
+        $this->mock(OperatorNotifier::class, fn (MockInterface $m) => $m->shouldReceive('notifyUser')->never());
+
+        $this->artisan('technician:emergency-sweep')->assertSuccessful();
+
+        $this->assertSame(0, TechnicianEmergency::count(), 'a pre-existing aged backlog ticket must not flood on enable');
+    }
+
+    /**
+     * Defensive backfill (psa-wmqp): the run() preamble stamps coverage_start for the
+     * already-enabled upgrade case — but only when enabled. A disabled invocation
+     * early-exits (schedule ->when() + command guard) and must never stamp.
+     */
+    public function test_sweep_backfills_coverage_start_only_when_enabled(): void
+    {
+        // Disabled ⇒ the command early-exits, run() is never reached, nothing is stamped.
+        $this->assertNull(TechnicianConfig::coverageStartAt());
+        $this->artisan('technician:emergency-sweep')->assertSuccessful();
+        $this->assertNull(TechnicianConfig::coverageStartAt(), 'a disabled sweep must not stamp coverage start');
+
+        // Enabled ⇒ the run() preamble backfills the anchor.
+        Setting::setValue('technician_enabled', '1');
+        $this->artisan('technician:emergency-sweep')->assertSuccessful();
+        $this->assertNotNull(TechnicianConfig::coverageStartAt(), 'an enabled sweep backfills coverage start');
     }
 
     /** CO-10: a prospect / non-operational client's aged P1 must NOT be escalated. */

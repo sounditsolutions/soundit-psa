@@ -25,6 +25,7 @@ use App\Support\ServosityConfig;
 use App\Support\StripeConfig;
 use App\Support\T2TConfig;
 use App\Support\TacticalConfig;
+use App\Support\TechnicianConfig;
 use App\Support\TranscriptionConfig;
 use App\Support\ZorusConfig;
 use GuzzleHttp\Client as GuzzleClient;
@@ -1687,7 +1688,20 @@ class IntegrationsController extends Controller
             ]);
         }
 
-        Setting::setValue('technician_enabled', $request->has('technician_enabled') ? '1' : '0');
+        // psa-wmqp: anchor age-detection to the coverage window. Stamp coverage_start
+        // on the OFF→ON transition (the window opens now, so the pre-existing backlog
+        // is never retroactively alarmed) and clear it on disable (a later re-enable
+        // re-anchors fresh). An in-place save while already enabled must NOT move the
+        // anchor — only the transition does — so capture the prior state first.
+        $wasEnabled = TechnicianConfig::enabled();
+        $nowEnabled = $request->has('technician_enabled');
+        Setting::setValue('technician_enabled', $nowEnabled ? '1' : '0');
+
+        if ($nowEnabled && ! $wasEnabled) {
+            TechnicianConfig::recordCoverageStart();
+        } elseif (! $nowEnabled) {
+            TechnicianConfig::clearCoverageStart();
+        }
 
         // CO-4: rebuild tier map from checkboxes — both send_ack and send_max_hold are
         // operator-toggleable auto actions. Reconstruct from scratch so we never orphan
