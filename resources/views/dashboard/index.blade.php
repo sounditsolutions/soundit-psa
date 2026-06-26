@@ -104,7 +104,7 @@
                 </div>
                 <div>
                     <div class="fs-3 fw-bold {{ $profitability['profit'] >= 0 ? 'text-success' : 'text-danger' }}">
-                        ${{ number_format(abs($profitability['profit']), 0) }}
+                        {{ round($profitability['profit']) < 0 ? '-$' : '$' }}{{ number_format(abs($profitability['profit']), 0) }}
                     </div>
                     <div class="text-muted small">
                         Est. Monthly Profit
