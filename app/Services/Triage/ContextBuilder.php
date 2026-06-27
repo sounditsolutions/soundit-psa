@@ -895,9 +895,9 @@ class ContextBuilder
 
         $concatenated = $messages->pluck('content')->implode("\n");
 
-        // Operator display name from the latest correction conversation.
-        $latestConv = \App\Models\AssistantConversation::where('context_type', 'ticket_correction')
-            ->where('context_id', $ticket->id)
+        // Operator display name from the latest correction conversation (reuse the ids
+        // already fetched above — no second scan of the table).
+        $latestConv = \App\Models\AssistantConversation::whereIn('id', $convIds)
             ->latest()
             ->first();
 

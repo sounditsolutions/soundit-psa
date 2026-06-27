@@ -81,7 +81,10 @@ class TechnicianCockpitController extends Controller
     {
         $validated = $request->validate(['correction' => ['required', 'string', 'max:2000']]);
 
+        // A run whose ticket was (soft-)deleted has nothing to re-assess — fail gracefully
+        // rather than 500 on the non-nullable CorrectionRecorder/ReassessTrigger signatures.
         $ticket = $run->ticket;
+        abort_unless($ticket, 404, 'The ticket for this proposal no longer exists.');
 
         // Record first so the conversation exists before re-assessment starts.
         app(\App\Services\Agent\Steering\CorrectionRecorder::class)

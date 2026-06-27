@@ -135,6 +135,46 @@ class ProposalProvenanceTest extends TestCase
             "provenance must carry a 'summary' key.");
     }
 
+    /**
+     * With MORE THAN ONE same-day correction (appended to the same conversation), the
+     * provenance summary must capture the LATEST correction — the one that triggered this
+     * re-assessment — not the first. Guards the messages()->reorder() fix: the relation's
+     * default orderBy('id') would otherwise return the oldest message.
+     */
+    public function test_provenance_summary_uses_the_latest_same_day_correction(): void
+    {
+        $this->enableAgent();
+        $this->configureAi();
+
+        $operator = User::factory()->create();
+        [$ticket] = $this->openTicketWithOperationalClient();
+
+        // Two corrections the same day → same conversation, two user messages.
+        app(CorrectionRecorder::class)->record($ticket, $operator, 'FIRST correction — stale, must not win.');
+        app(CorrectionRecorder::class)->record($ticket, $operator, 'SECOND correction — the latest, this should be the summary.');
+
+        $gate = $this->mock(SignificanceGate::class);
+        $gate->shouldReceive('assess')->once()->andReturn(true);
+        $notifier = $this->mock(OperatorNotifier::class);
+        $notifier->shouldReceive('notify')->never();
+
+        $ai = \Mockery::mock(AiClient::class);
+        $ai->shouldReceive('runToolLoop')->once()
+            ->andReturnUsing(function ($system, $user, $tools, $executor): AiResponse {
+                $executor('propose_close', ['reason' => 'dormant', 'confidence' => 0.8]);
+
+                return $this->fakeAiResponse();
+            });
+        $this->app->bind(\App\Services\Agent\TechnicianAgent::class, fn () => new \App\Services\Agent\TechnicianAgent($ai));
+
+        (new RunTechnicianAgent($ticket->id, correctionDriven: true))->handle();
+
+        $run = TechnicianRun::where('ticket_id', $ticket->id)->where('action_type', 'propose_close')->first();
+        $summary = $run->proposed_meta['informed_by_correction']['summary'];
+        $this->assertStringContainsString('SECOND correction', $summary, 'summary must reflect the latest correction');
+        $this->assertStringNotContainsString('FIRST correction', $summary);
+    }
+
     // ── 2. Normal run → no 'informed_by_correction' key ─────────────────────
 
     /**

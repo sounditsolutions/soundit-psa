@@ -139,7 +139,10 @@ class RunTechnicianAgent implements ShouldQueue
                 ->first();
 
             if ($conv !== null) {
-                $latestUserMessage = $conv->messages()->where('role', 'user')->latest()->first();
+                // reorder() clears the messages() relation's default orderBy('id') ASC — without
+                // it, ->latest() only appends a SECONDARY sort and the ASC default still wins,
+                // returning the OLDEST message (wrong provenance with >1 same-day correction).
+                $latestUserMessage = $conv->messages()->where('role', 'user')->reorder()->orderByDesc('id')->first();
                 $correctionContext = [
                     'conversation_id' => $conv->id,
                     'operator_id' => $conv->user_id,

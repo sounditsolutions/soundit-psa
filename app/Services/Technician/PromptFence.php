@@ -32,10 +32,12 @@ class PromptFence
      * SAFETY DESIGN — deliberately does NOT call neutralize():
      *   • neutralize() role-defangs "System:"/"Assistant:" and stomps "ignore
      *     previous instructions" — both useful things for an operator to write.
-     *   • The downstream gate (ConsentGate / SafetyGuard) enforces the content
-     *     policy (no removing disclosure, no raising autonomy). This method's
-     *     only jobs are anti-homoglyph normalization, length-capping, and
-     *     wrapping with a recognisably trusted marker.
+     *   • The downstream TechnicianActionGate (+ TechnicianDisclosure, the
+     *     server-side tier classifier, and the recipient re-derivation at send)
+     *     enforces the policy structurally — no removing disclosure, no changing
+     *     recipient, no raising autonomy — regardless of what the directive says.
+     *     This method's only jobs are anti-homoglyph normalization, length-capping,
+     *     and wrapping with a recognisably trusted marker.
      *
      * @param  string  $operatorName  Display name of the correcting operator.
      * @param  string  $trusted  The operator's directive (e.g. "close it, the contract says no auto-close").
