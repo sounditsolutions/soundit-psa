@@ -8,10 +8,11 @@ namespace App\Services\Technician;
  * the model treats it as DATA, never as instructions. Mirrors the proven
  * Tactical telemetry fence (TacticalContextProvider::fence/neutralizeInjection).
  *
- * Hardened (psa-uohr): NFKC normalization + a zero-width-character strip run BEFORE
- * the ASCII role/override defang, so compatibility-homoglyph (full-width, styled,
- * ligature, full-width punctuation) and zero-width-spliced injections are folded into
- * a form the regexes catch. NFKC comes from ext-intl; a host without the Normalizer
+ * Hardened (psa-uohr): NFKC normalization + an invisible-character strip (zero-width
+ * spaces/joiners, soft hyphen, word-joiner/invisible operators, BOM) run BEFORE the
+ * ASCII role/override defang, so compatibility-homoglyph (full-width, styled, ligature,
+ * full-width punctuation) and invisible-spliced injections are folded into a form the
+ * regexes catch. NFKC comes from ext-intl; a host without the Normalizer
  * class degrades to the zero-width strip alone (never a fatal). Out of scope: cross-
  * script confusables (e.g. Cyrillic look-alikes), which NFKC does not fold — the
  * wrap-as-data framing + the WikiRedactor output scan remain the backstops there.
@@ -65,12 +66,18 @@ class PromptFence
      *
      * NFKC maps compatibility homoglyphs (full-width latin/punctuation, styled letters,
      * ligatures) to their canonical ASCII-ish form so an obfuscated "Ｓｙｓｔｅｍ：" or
-     * "ｉｇｎｏｒｅ…" reduces to text the regexes recognise. The zero-width strip then
-     * removes ZWSP/ZWNJ/ZWJ/WORD-JOINER/BOM — which NFKC leaves intact — that splice
-     * into role markers / override phrases to dodge the same regexes.
+     * "ｉｇｎｏｒｅ…" reduces to text the regexes recognise. The strip then removes the
+     * invisible token-splicing characters NFKC leaves intact — zero-width spaces/joiners,
+     * the word-joiner & invisible operators, the soft hyphen, and the BOM — which splice
+     * into role markers / override phrases ("ig{U+00AD}nore…") to dodge the same regexes.
      *
-     * Guarded on ext-intl: without the Normalizer class we still strip zero-width chars
-     * (strictly more neutralization than before), never a fatal. Invalid UTF-8 falls
+     * Deliberately NOT stripped: bidirectional / "Trojan Source" controls (U+200E/200F,
+     * U+202A–202E, U+2066–2069). They have legitimate use in RTL text, so removing them
+     * from untrusted data risks mangling it; that is a separate hardening with its own
+     * trade-off, left for a future pass rather than guessed at here.
+     *
+     * Guarded on ext-intl: without the Normalizer class we still strip the invisible
+     * chars (strictly more neutralization than before), never a fatal. Invalid UTF-8 falls
      * through unchanged (NFKC returns non-string; the /u preg returns null → keep input).
      */
     private function normalizeUnicode(string $text): string
@@ -82,7 +89,8 @@ class PromptFence
             }
         }
 
-        // ZWSP, ZWNJ, ZWJ (U+200B–U+200D), WORD JOINER (U+2060), BOM/ZWNBSP (U+FEFF).
-        return preg_replace('/[\x{200B}-\x{200D}\x{2060}\x{FEFF}]/u', '', $text) ?? $text;
+        // SOFT HYPHEN (U+00AD), ZWSP/ZWNJ/ZWJ (U+200B–U+200D), WORD JOINER + invisible
+        // operators (U+2060–U+2064), BOM/ZWNBSP (U+FEFF). NOT the bidi controls (above).
+        return preg_replace('/[\x{00AD}\x{200B}-\x{200D}\x{2060}-\x{2064}\x{FEFF}]/u', '', $text) ?? $text;
     }
 }
