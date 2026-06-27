@@ -3,11 +3,13 @@
 namespace Tests\Feature\Agent;
 
 use App\Enums\EmergencyState;
+use App\Enums\TechnicianRunState;
 use App\Enums\TicketStatus;
 use App\Jobs\RunTechnicianAgent;
 use App\Models\Client;
 use App\Models\Setting;
 use App\Models\TechnicianEmergency;
+use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Services\Agent\SignificanceGate;
 use App\Services\Agent\TechnicianAgent;
@@ -19,8 +21,10 @@ use Tests\TestCase;
  * RunTechnicianAgent — correctionDriven re-run behaviour (Task 4, psa-gofv).
  *
  * Safety contract:
- *   - correctionDriven=true SKIPS guard #5 (dedup) and guard #7 (change-throttle).
- *   - correctionDriven=true does NOT skip #4.5 (emergency halt) — the key safety invariant.
+ *   - correctionDriven=true SKIPS #5 (dedup), #6 (depth-cap), #7 (change-throttle),
+ *     #8 (significance gate) — an operator correction ALWAYS re-assesses (psa-rmus).
+ *   - correctionDriven=true does NOT skip #1 (dormancy) or #4.5 (emergency halt) — the key
+ *     safety invariants.
  *   - correctionDriven=false (default) keeps ALL guards — no regression.
  */
 class RunTechnicianAgentCorrectionTest extends TestCase
@@ -74,9 +78,10 @@ class RunTechnicianAgentCorrectionTest extends TestCase
         $this->travel(2)->seconds();
         Cache::put("agent_eval:{$ticket->id}", now()->timestamp, now()->addDays(30));
 
-        // A normal run would be throttled here — but correction-driven must proceed.
+        // A normal run would be throttled here — but correction-driven must proceed (and the
+        // significance gate is now skipped too, psa-rmus — so assess is never consulted).
         $gate = $this->mock(SignificanceGate::class);
-        $gate->shouldReceive('assess')->once()->andReturn(true);
+        $gate->shouldReceive('assess')->never();
 
         $agent = $this->mock(TechnicianAgent::class);
         $agent->shouldReceive('run')->once();
@@ -124,6 +129,70 @@ class RunTechnicianAgentCorrectionTest extends TestCase
 
         $gate = $this->mock(SignificanceGate::class);
         $gate->shouldReceive('assess')->never();
+
+        $agent = $this->mock(TechnicianAgent::class);
+        $agent->shouldReceive('run')->never();
+
+        (new RunTechnicianAgent($ticket->id, correctionDriven: true))->handle();
+    }
+
+    // ── (d) psa-rmus FIX 1 — the SignificanceGate must NOT veto an operator correction ──
+
+    /**
+     * THE prod bug: the cheap Haiku "is this worth a look?" gate exists for the autonomous
+     * review pass — it must NEVER veto an EXPLICIT operator correction (which silently
+     * no-op'd Charlie's corrections). For a correction-driven run the gate is not consulted.
+     */
+    public function test_correction_driven_skips_the_significance_gate(): void
+    {
+        $this->enableAgent();
+        $ticket = $this->openTicketWithOperationalClient();
+
+        // The gate must NEVER be reached — a correction always re-assesses.
+        $gate = $this->mock(SignificanceGate::class);
+        $gate->shouldReceive('assess')->never();
+
+        $agent = $this->mock(TechnicianAgent::class);
+        $agent->shouldReceive('run')->once();
+
+        (new RunTechnicianAgent($ticket->id, correctionDriven: true))->handle();
+    }
+
+    /**
+     * A correction SUPERSEDES an existing proposal (replaces, doesn't add to the flood), so
+     * the anti-flood depth-cap must not silently drop it.
+     */
+    public function test_correction_driven_skips_the_depth_cap(): void
+    {
+        $this->enableAgent();
+        Setting::setValue('agent_max_pending', '1');
+
+        // Fill the global pending-propose_close cap with a proposal on ANOTHER ticket.
+        $other = $this->openTicketWithOperationalClient();
+        TechnicianRun::create([
+            'ticket_id' => $other->id, 'client_id' => $other->client_id,
+            'action_type' => 'propose_close', 'content_hash' => str_repeat('a', 64),
+            'state' => TechnicianRunState::AwaitingApproval, 'proposed_content' => 'pending', 'tokens_used' => 0,
+        ]);
+
+        $ticket = $this->openTicketWithOperationalClient();
+
+        $gate = $this->mock(SignificanceGate::class);
+        $gate->shouldReceive('assess')->never(); // also skipped for correction-driven
+        $agent = $this->mock(TechnicianAgent::class);
+        $agent->shouldReceive('run')->once(); // depth-cap skipped → the correction still re-assesses
+
+        (new RunTechnicianAgent($ticket->id, correctionDriven: true))->handle();
+    }
+
+    /**
+     * Safety unchanged: with the agent disabled (dormancy guard #1), even a correction-driven
+     * run must NOT fire.
+     */
+    public function test_dormancy_still_blocks_correction_driven_run(): void
+    {
+        // agent_enabled deliberately NOT set → dormant.
+        $ticket = $this->openTicketWithOperationalClient();
 
         $agent = $this->mock(TechnicianAgent::class);
         $agent->shouldReceive('run')->never();

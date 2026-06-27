@@ -94,8 +94,10 @@ class ProposalProvenanceTest extends TestCase
         );
 
         // SignificanceGate passes.
+        // psa-rmus: the significance gate is skipped for correction-driven runs (it must never
+        // veto an explicit operator correction), so assess is never consulted here.
         $gate = $this->mock(SignificanceGate::class);
-        $gate->shouldReceive('assess')->once()->andReturn(true);
+        $gate->shouldReceive('assess')->never();
 
         // No auto-close threshold → held; operator notifier must NOT fire.
         $notifier = $this->mock(OperatorNotifier::class);
@@ -153,8 +155,10 @@ class ProposalProvenanceTest extends TestCase
         app(CorrectionRecorder::class)->record($ticket, $operator, 'FIRST correction — stale, must not win.');
         app(CorrectionRecorder::class)->record($ticket, $operator, 'SECOND correction — the latest, this should be the summary.');
 
+        // psa-rmus: the significance gate is skipped for correction-driven runs (it must never
+        // veto an explicit operator correction), so assess is never consulted here.
         $gate = $this->mock(SignificanceGate::class);
-        $gate->shouldReceive('assess')->once()->andReturn(true);
+        $gate->shouldReceive('assess')->never();
         $notifier = $this->mock(OperatorNotifier::class);
         $notifier->shouldReceive('notify')->never();
 
