@@ -2,9 +2,12 @@
 
 namespace App\Services\Agent\Steering;
 
+use App\Enums\ToolingGapClassification;
+use App\Enums\ToolingGapSource;
 use App\Jobs\ComposeClientOverview;
 use App\Models\AssistantConversation;
 use App\Models\Ticket;
+use App\Models\ToolingGap;
 use App\Models\WikiPage;
 use App\Services\Triage\ContextBuilder;
 use App\Services\Wiki\Mining\WikiFactExtractor;
@@ -26,11 +29,6 @@ class LessonCapture
     public function capture(Ticket $ticket, AssistantConversation $correction): void
     {
         try {
-            // Gate: no wiki = nowhere to store/inject the lesson → no-op (additive, dormant-safe).
-            if (! WikiConfig::isEnabled()) {
-                return;
-            }
-
             $client = $ticket->client;
             if ($client === null) {
                 return; // a lesson is client-scoped knowledge
@@ -51,19 +49,29 @@ class LessonCapture
             }
 
             if ($candidate->isTooling()) {
-                // SEAM for Increment 3 (request_tool / tooling-gap backlog). Do NOT build it here —
-                // only record that a retrievability gap occurred, grounded in the correction.
-                Log::info('[Steering][LessonSeam] tooling-gap recorded (Inc 3 will act on these)', [
-                    'ticket_id' => $ticket->id,
-                    'client_id' => $client->id,
-                    'conversation_id' => $correction->id,
-                    'gap' => $candidate->statement,
-                ]);
+                // RETRIEVE loop (Inc 3): a correction revealing the agent missed retrievable info becomes a
+                // DURABLE, VISIBLE tooling-gap backlog row (replacing Inc 2's filtered Log::info seam). The
+                // abstract, forwardable capability_gap is stored SEPARATELY from the instance-private evidence
+                // (multi-MSP seam). Independent of the wiki — recorded whenever the agent ran (dormancy already
+                // gated upstream).
+                ToolingGap::record(
+                    ticketId: $ticket->id,
+                    clientId: $client->id,
+                    capabilityGap: $candidate->statement,                         // abstract / forwardable
+                    evidence: "Ticket #{$ticket->id}: ".mb_substr($text, 0, 300), // instance-private (the correction)
+                    class: ToolingGapClassification::ToolUnused,                  // a correction = the data WAS available, not used
+                    source: ToolingGapSource::Correction,
+                );
 
                 return;
             }
 
             // knowledge → write a durable, pinned, Correction-sourced fact (NO approval queue).
+
+            // Gate: no wiki = nowhere to store/inject the lesson → no-op (additive, dormant-safe).
+            if (! WikiConfig::isEnabled()) {
+                return;
+            }
 
             // Belt-and-suspenders: only ever write to a staff TARGETS page — NEVER the injection-guarded
             // Overview. The distiller already enforces this, but re-check at the write point because 'overview'

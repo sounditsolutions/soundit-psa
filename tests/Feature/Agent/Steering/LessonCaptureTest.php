@@ -2,6 +2,8 @@
 
 namespace Tests\Feature\Agent\Steering;
 
+use App\Enums\ToolingGapClassification;
+use App\Enums\ToolingGapSource;
 use App\Enums\WikiFactSource;
 use App\Enums\WikiFactStatus;
 use App\Jobs\ComposeClientOverview;
@@ -10,6 +12,7 @@ use App\Models\Client;
 use App\Models\Setting;
 use App\Models\TechnicianRun;
 use App\Models\Ticket;
+use App\Models\ToolingGap;
 use App\Models\User;
 use App\Models\WikiFact;
 use App\Services\Agent\Steering\CorrectionRecorder;
@@ -19,7 +22,6 @@ use App\Services\Agent\Steering\LessonDistiller;
 use App\Services\Wiki\Mining\WikiFactExtractor;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Bus;
-use Illuminate\Support\Facades\Log;
 use Tests\TestCase;
 
 /**
@@ -27,10 +29,10 @@ use Tests\TestCase;
  *
  * Tests the six behavioral contracts:
  *  1. knowledge → durable Correction-sourced fact written (no approval queue).
- *  2. tooling   → no fact; seam logged at info level.
+ *  2. tooling   → durable ToolingGap row written (source=Correction, class=ToolUnused); no wiki fact.
  *  3. none      → nothing written, no overview dispatch.
  *  4. null      → nothing written, no exception.
- *  5. wiki off  → gate short-circuits even for a knowledge candidate.
+ *  5. wiki off  → gate short-circuits only the knowledge branch; tooling still records.
  *  6. fail-soft → internal distiller error must never surface as an exception.
  */
 class LessonCaptureTest extends TestCase
@@ -100,9 +102,9 @@ class LessonCaptureTest extends TestCase
         );
     }
 
-    // ── 2. tooling → no fact, seam logged ────────────────────────────────────
+    // ── 2. tooling → durable ToolingGap written, no wiki fact ───────────────
 
-    public function test_tooling_candidate_logs_seam_no_fact_written(): void
+    public function test_tooling_candidate_writes_tooling_gap_no_fact(): void
     {
         $this->enableWiki();
 
@@ -115,17 +117,19 @@ class LessonCaptureTest extends TestCase
             ->shouldReceive('distill')
             ->andReturn($candidate);
 
-        Log::spy();
-
         app(LessonCapture::class)->capture($ticket, $conv);
 
-        // No Correction fact must be written.
+        // No Correction wiki fact must be written.
         $this->assertSame(0, WikiFact::where('source_type', WikiFactSource::Correction->value)->count());
 
-        // Seam must be logged at info level with the LessonSeam marker.
-        Log::shouldHaveReceived('info')->withArgs(function ($message, $context = []) {
-            return str_contains($message, '[Steering][LessonSeam]');
-        })->once();
+        // A ToolingGap row must be recorded with the correct source and classification.
+        $gap = ToolingGap::first();
+        $this->assertNotNull($gap, 'A ToolingGap row must be written for a tooling candidate.');
+        $this->assertSame(ToolingGapSource::Correction, $gap->source);
+        $this->assertSame(ToolingGapClassification::ToolUnused, $gap->classification);
+        $this->assertSame($candidate->statement, $gap->capability_gap);
+        $this->assertStringContainsString((string) $ticket->id, $gap->evidence);
+        $this->assertNotSame($gap->capability_gap, $gap->evidence, 'capability_gap and evidence must be stored separately.');
     }
 
     // ── 3. none → nothing written, no dispatch ───────────────────────────────
@@ -169,7 +173,7 @@ class LessonCaptureTest extends TestCase
         $this->assertSame(0, WikiFact::where('source_type', WikiFactSource::Correction->value)->count());
     }
 
-    // ── 5. wiki disabled → gate short-circuits, no fact written ─────────────
+    // ── 5. wiki disabled → knowledge branch blocked, no fact written ────────
 
     public function test_wiki_disabled_noop_even_for_knowledge_candidate(): void
     {
@@ -186,7 +190,7 @@ class LessonCaptureTest extends TestCase
 
         app(LessonCapture::class)->capture($ticket, $conv);
 
-        // Wiki gate is before the distiller call; no fact must be written.
+        // Wiki gate now guards only the knowledge branch; no wiki fact must be written.
         $this->assertSame(0, WikiFact::where('source_type', WikiFactSource::Correction->value)->count());
     }
 
