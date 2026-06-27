@@ -116,6 +116,12 @@ class ContextBuilder
             $sections[] = $phoneCallSection;
         }
 
+        // Operator corrections — TRUSTED guidance injected OUTSIDE any untrusted fence
+        $operatorDirective = self::recentCorrectionsSection($ticket);
+        if ($operatorDirective) {
+            $sections[] = $operatorDirective;
+        }
+
         $context = implode("\n\n", array_filter($sections));
 
         Log::debug('[Triage] Context built', [
@@ -854,6 +860,51 @@ class ContextBuilder
         }
 
         return "## Available Integrations for This Client\n".implode("\n", $available);
+    }
+
+    /**
+     * Build an OPERATOR DIRECTIVE section from the latest ticket_correction
+     * AssistantConversations for this ticket. Returns '' when none exist.
+     *
+     * Trusted: injected OUTSIDE any untrusted fence so the model treats it as
+     * authoritative guidance, not client-supplied data.
+     */
+    private static function recentCorrectionsSection(Ticket $ticket): string
+    {
+        $convIds = \App\Models\AssistantConversation::where('context_type', 'ticket_correction')
+            ->where('context_id', $ticket->id)
+            ->pluck('id');
+
+        if ($convIds->isEmpty()) {
+            return '';
+        }
+
+        // Latest 3 user-role messages across all correction conversations,
+        // then reverse to chronological (oldest → newest) order.
+        $messages = \App\Models\AssistantMessage::whereIn('conversation_id', $convIds)
+            ->where('role', 'user')
+            ->orderByDesc('created_at')
+            ->limit(3)
+            ->get()
+            ->sortBy('created_at')
+            ->values();
+
+        if ($messages->isEmpty()) {
+            return '';
+        }
+
+        $concatenated = $messages->pluck('content')->implode("\n");
+
+        // Operator display name from the latest correction conversation.
+        $latestConv = \App\Models\AssistantConversation::where('context_type', 'ticket_correction')
+            ->where('context_id', $ticket->id)
+            ->latest()
+            ->first();
+
+        $operator = $latestConv?->user_id ? \App\Models\User::find($latestConv->user_id) : null;
+        $operatorName = $operator?->name ?? 'the operator';
+
+        return (new \App\Services\Technician\PromptFence)->operatorDirective($operatorName, $concatenated);
     }
 
     /**
