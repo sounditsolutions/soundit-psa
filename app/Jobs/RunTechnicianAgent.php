@@ -73,7 +73,21 @@ class RunTechnicianAgent implements ShouldQueue
             return;
         }
 
-        // 5. Dedup (CO-5): don't re-propose if one is already waiting for approval.
+        // 4.5. Emergency halt (A2b): during an open emergency the autonomous agent must
+        //      NOT act — no client reply, no close, no flag. This mirrors DraftPipeline's
+        //      halt, which used to cover the reply path before A2b moved replies here; the
+        //      agent is the single chokepoint for both the inbound reply-wake and the
+        //      review-pass close-wake, so this restores (and broadens) the emergency cover.
+        if (\App\Models\TechnicianEmergency::hasOpenEmergency($ticket)) {
+            return;
+        }
+
+        // 5. Dedup (CO-5): don't re-propose if a propose_close is already waiting for
+        //    approval. A2b note: this now ALSO defers the reply-wake — when a close
+        //    proposal is pending, the agent leaves the ticket entirely (no reply draft is
+        //    stacked alongside an unresolved close). Conservative by design; resolving the
+        //    pending close re-opens evaluation (its content changes the ticket → throttle
+        //    clears). A known, tested limitation — refine later if replies should pre-empt.
         if (TechnicianRun::where('ticket_id', $this->ticketId)
             ->where('action_type', 'propose_close')
             ->where('state', TechnicianRunState::AwaitingApproval)

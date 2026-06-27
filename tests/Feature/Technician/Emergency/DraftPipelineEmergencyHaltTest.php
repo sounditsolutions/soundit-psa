@@ -16,8 +16,6 @@ use App\Models\TicketNote;
 use App\Services\Technician\DraftPipeline;
 use App\Services\Technician\TechnicianAssessment;
 use App\Services\Technician\TechnicianClassifier;
-use App\Services\Technician\TechnicianDraft;
-use App\Services\Technician\TechnicianReplyDrafter;
 use App\Services\TicketResolutionDrafter;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Mockery\MockInterface;
@@ -72,9 +70,6 @@ class DraftPipelineEmergencyHaltTest extends TestCase
         $this->mock(TechnicianClassifier::class, fn (MockInterface $m) => $m->shouldReceive('classify')
             ->andReturn(new TechnicianAssessment(0.85, true, ['known-runbook'], 160)));
 
-        $this->mock(TechnicianReplyDrafter::class, fn (MockInterface $m) => $m->shouldReceive('draft')
-            ->andReturn(new TechnicianDraft('Hello, we can help.', 'c@example.com', 700)));
-
         $this->mock(TicketResolutionDrafter::class, fn (MockInterface $m) => $m->shouldReceive('draft')
             ->andReturn('Reset the print spooler; printer back online.'));
     }
@@ -114,8 +109,8 @@ class DraftPipelineEmergencyHaltTest extends TestCase
 
         $this->assertSame(
             0,
-            TechnicianRun::where('ticket_id', $ticket->id)->where('action_type', 'send_reply')->count(),
-            'Expected no send_reply run — open emergency should halt the pipeline before drafting.'
+            TechnicianRun::where('ticket_id', $ticket->id)->where('action_type', 'propose_resolution')->count(),
+            'Expected no propose_resolution run — open emergency should halt the pipeline before drafting.'
         );
     }
 
@@ -156,8 +151,31 @@ class DraftPipelineEmergencyHaltTest extends TestCase
 
         $this->assertSame(
             0,
-            TechnicianRun::where('ticket_id', $ticketB->id)->where('action_type', 'send_reply')->count(),
-            'Expected no send_reply run — storm-member ticket B should be halted by the open emergency on ticket A.'
+            TechnicianRun::where('ticket_id', $ticketB->id)->where('action_type', 'propose_resolution')->count(),
+            'Expected no propose_resolution run — storm-member ticket B should be halted by the open emergency on ticket A.'
         );
+    }
+
+    /**
+     * A2b: client REPLIES now come from the agent path, so the emergency halt must cover
+     * RunTechnicianAgent too (it used to be enforced by DraftPipeline). With an open
+     * emergency the agent must NOT even reach the SignificanceGate — it halts first, so
+     * no reply (or close/flag) is drafted during a crisis.
+     */
+    public function test_open_emergency_halts_the_agent_before_it_can_draft_a_reply(): void
+    {
+        Setting::setValue('agent_enabled', '1');
+        // If the guard fails, the agent would proceed to the (cheap) SignificanceGate; we
+        // assert it is NEVER reached — proving the emergency halt fires before any agent work.
+        $this->mock(\App\Services\Agent\SignificanceGate::class, fn (MockInterface $m) => $m->shouldReceive('assess')->never());
+
+        $client = Client::factory()->create();
+        $ticket = Ticket::factory()->for($client)->create(['status' => \App\Enums\TicketStatus::InProgress]);
+        $this->openEmergencyFor($ticket);
+
+        (new \App\Jobs\RunTechnicianAgent($ticket->id))->handle();
+
+        $this->assertSame(0, TechnicianRun::where('ticket_id', $ticket->id)->count(),
+            'the agent must take no action on a ticket under an open emergency');
     }
 }

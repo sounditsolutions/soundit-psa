@@ -56,23 +56,26 @@ class TechnicianAgent
             $system = 'You are a junior MSP technician reviewing a ticket. Read it with your tools, then take '
                 .'AT MOST ONE action. If it is clearly resolved or abandoned with no further action needed, call '
                 .'`propose_close` ONCE with a one-line reason quoting the evidence and a confidence 0–1. '
+                .'If the client is awaiting a substantive reply and you can genuinely move the ticket forward, call '
+                .'`send_reply` ONCE with a short reason — the system drafts the message body in house voice and it is '
+                .'ALWAYS held for a person to approve, never sent automatically (you do not write the body yourself). '
                 .'If instead it genuinely needs a human — a decision you cannot make, something you cannot resolve, '
                 .'or blocking ambiguity that needs a person — call `flag_attention` ONCE with a 1–3 sentence reason '
                 .'and the best-fit category. A flag means "a person needs to look at this", NOT "I did not close it"; '
                 .'it does nothing to the ticket. Use it sparingly, only for a genuine need for human attention. '
-                .'Otherwise — awaiting us, awaiting the client, still active, or simply low-value — do NOTHING, leave '
-                .'it. When unsure whether to close OR to flag, LEAVE IT. Take only ONE action per ticket.';
+                .'Otherwise — awaiting us internally, awaiting the client, still active, or simply low-value — do '
+                .'NOTHING, leave it. When unsure, LEAVE IT. Take only ONE action per ticket.';
 
             $userMessage = ContextBuilder::buildForTicket($ticket);
 
-            // A2a (INERT): send_reply is NOT in this $tools list yet, so the model cannot
-            // call it. SendReplyTool is built, guarded, and wired into the executor below
-            // (and unit-tested directly), but it is intentionally not OFFERED until A2b
-            // wires it in atomically with the DraftPipeline reply-branch subsumption — so
-            // the agent and DraftPipeline can never double-produce a held client reply.
+            // A2b: send_reply is now OFFERED to the model — the agent is the SOLE producer
+            // of held client replies (DraftPipeline's reply branch is retired). It is always
+            // held for operator approval (Approve-tier, never auto-sent). The whole reply
+            // capability stays dormant until the operator enables the agent (AgentConfig).
             $tools = array_merge(TriageToolDefinitions::readTools(), [
                 ProposeCloseTool::definition(),
                 FlagAttentionTool::definition(),
+                SendReplyTool::definition(),
             ]);
 
             $toolExecutor = new TechnicianAgentToolExecutor(
