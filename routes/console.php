@@ -298,14 +298,16 @@ Schedule::job(new \App\Jobs\TechnicianPing)
     ->everyFiveMinutes()
     ->when(fn () => \App\Support\TechnicianConfig::enabled());
 
-// AI Technician — dead-man's-switch: check worker heartbeat every minute and alert the
-// operator (self-throttled to one alert per heartbeat interval) if the worker is stale.
-// Runs on the web/cron scheduler — fires even when the technician queue worker is down.
+// AI Technician — dead-man's-switch: check the worker heartbeat AND the agent review-pass
+// recency every minute, alerting the operator (self-throttled) if either is stale. Runs on
+// the web/cron scheduler — fires even when the technician queue worker is down. Gated by
+// EITHER subsystem so the review-pass staleness alarm still fires when only auto-review is on
+// (psa-lqlu: the alarm must not be blind to the very stall it exists to catch).
 Schedule::command('technician:heartbeat')
     ->everyMinute()
     ->withoutOverlapping()
     ->runInBackground()
-    ->when(fn () => TechnicianConfig::enabled());
+    ->when(fn () => TechnicianConfig::enabled() || \App\Support\TriageConfig::autoReviewEnabled());
 
 // AI Technician — daily operator digest at the operator-local configured time (default 08:00).
 // Fires once per local day at the configured HH:MM minute; send is skipped inside the command

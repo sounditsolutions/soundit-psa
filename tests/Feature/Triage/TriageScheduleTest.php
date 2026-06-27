@@ -91,4 +91,13 @@ class TriageScheduleTest extends TestCase
 
         $this->assertTrue(TriageSchedule::reviewPassDue(), 'after 61 min (> 60 freq) the pass must be due again');
     }
+
+    public function test_a_negative_frequency_is_floored_to_a_safe_positive(): void
+    {
+        // Defense-in-depth (psa-lqlu): a negative freq must not make the throttle window
+        // non-positive (which would flood the pass / the staleness alarm's TTL).
+        Setting::setValue('triage_review_frequency_minutes', '-5');
+
+        $this->assertGreaterThanOrEqual(1, \App\Support\TriageConfig::reviewFrequencyMinutes());
+    }
 }

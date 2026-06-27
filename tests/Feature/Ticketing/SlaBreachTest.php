@@ -59,4 +59,21 @@ class SlaBreachTest extends TestCase
 
         $this->assertNotNull($ticket->fresh()->sla_breach_recorded_at, 'a genuinely overdue ticket must record a breach');
     }
+
+    public function test_no_npe_and_no_breach_when_opened_at_is_null(): void
+    {
+        // The sign-safe form calls diffInMinutes ON opened_at; opened_at is nullable in this
+        // codebase, so a null must short-circuit (no NPE, no breach) rather than throw.
+        $ticket = Ticket::factory()->for(Client::factory())->create([
+            'status' => TicketStatus::InProgress,
+            'opened_at' => null,
+            'due_at' => now()->subMinutes(50),
+            'sla_breach_recorded_at' => null,
+            'total_pending_minutes' => 0,
+        ]);
+
+        $this->checkSlaBreach($ticket); // must not throw
+
+        $this->assertNull($ticket->fresh()->sla_breach_recorded_at);
+    }
 }
