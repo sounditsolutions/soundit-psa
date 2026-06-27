@@ -86,6 +86,11 @@ class TechnicianActionGate
         $requiresApproval = $tier !== TechnicianTier::Auto
             || ($clientId !== null && TechnicianConfig::clientAlwaysHuman($clientId));
 
+        // Forensic attribution (psa-uohr): the approver is recorded on the executed row
+        // ONLY when a verified human grant actually gated this execution — never for an
+        // AUTO action (which has no human approver, even if a token was incidentally passed).
+        $attributedApproverId = null;
+
         if ($requiresApproval) {
             $granted = $approvalToken !== null && TechnicianApprovalGrant::verify(
                 $approvalToken,
@@ -98,6 +103,9 @@ class TechnicianActionGate
             if (! $granted) {
                 return $this->result('awaiting_approval', $tier, $this->audit($actionType, $tier, 'awaiting_approval', $ticketId, $clientId, $runId, $contentHash, $summary, $correlationId));
             }
+
+            // Grant verified against $approverUserId — bind that identity to the audit row.
+            $attributedApproverId = $approverUserId;
         }
 
         // In-flight kill-switch re-check immediately before execution — fail-closed.
@@ -110,10 +118,10 @@ class TechnicianActionGate
         // effect with no audit row would re-send on retry). Any external send
         // (e.g. the acknowledgment email) is performed by the caller AFTER this
         // returns 'executed', never inside this transaction.
-        $log = DB::transaction(function () use ($executor, $actionType, $tier, $ticketId, $clientId, $runId, $contentHash, $summary, $correlationId): TechnicianActionLog {
+        $log = DB::transaction(function () use ($executor, $actionType, $tier, $ticketId, $clientId, $runId, $contentHash, $summary, $correlationId, $attributedApproverId): TechnicianActionLog {
             $executor();
 
-            return $this->audit($actionType, $tier, 'executed', $ticketId, $clientId, $runId, $contentHash, $summary, $correlationId);
+            return $this->audit($actionType, $tier, 'executed', $ticketId, $clientId, $runId, $contentHash, $summary, $correlationId, $attributedApproverId);
         });
 
         return $this->result('executed', $tier, $log);
@@ -134,9 +142,11 @@ class TechnicianActionGate
         string $contentHash,
         string $summary,
         string $correlationId,
+        ?int $approverUserId = null,
     ): TechnicianActionLog {
         return TechnicianActionLog::create([
             'actor_id' => TechnicianConfig::aiActorUserId(),
+            'approver_user_id' => $approverUserId,
             'actor_label' => 'ai-technician',
             'action_type' => $actionType,
             'tier' => $tier->value,

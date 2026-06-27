@@ -124,6 +124,62 @@ class TechnicianActionGateTest extends TestCase
         $this->assertSame('executed', $result->status);
     }
 
+    public function test_executed_audit_row_persists_the_approver_user_id(): void
+    {
+        // Durable forensic attribution (psa-uohr): the approver lived only in the
+        // 600s-TTL grant; the executed audit row must record WHO approved the send.
+        $approver = User::factory()->create();
+        $hash = str_repeat('c', 64);
+        $token = TechnicianApprovalGrant::issue('send_reply', $this->ticketId, $hash, $approver->id);
+
+        $result = $this->gate()->dispatch(
+            actionType: 'send_reply',
+            ticketId: $this->ticketId,
+            clientId: $this->clientId,
+            contentHash: $hash,
+            summary: 'reply',
+            runId: 7,
+            executor: function () {},
+            approvalToken: $token,
+            approverUserId: $approver->id,
+        );
+
+        $this->assertSame('executed', $result->status);
+        $this->assertSame($approver->id, $result->log->approver_user_id);
+        // It survives to the immutable log alongside the run id.
+        $this->assertDatabaseHas('technician_action_logs', [
+            'action_type' => 'send_reply',
+            'result_status' => 'executed',
+            'approver_user_id' => $approver->id,
+            'run_id' => 7,
+        ]);
+    }
+
+    public function test_auto_executed_action_records_no_approver(): void
+    {
+        // An AUTO action has no human approver — the column stays null (attribution is
+        // set ONLY when a verified grant gated the execution).
+        $this->autoTier('send_ack');
+
+        $result = $this->gate()->dispatch(
+            actionType: 'send_ack',
+            ticketId: $this->ticketId,
+            clientId: $this->clientId,
+            contentHash: str_repeat('a', 64),
+            summary: 'ack',
+            runId: 1,
+            executor: function () {},
+        );
+
+        $this->assertSame('executed', $result->status);
+        $this->assertNull($result->log->approver_user_id);
+        $this->assertDatabaseHas('technician_action_logs', [
+            'action_type' => 'send_ack',
+            'result_status' => 'executed',
+            'approver_user_id' => null,
+        ]);
+    }
+
     public function test_grant_for_a_different_hash_is_rejected(): void
     {
         $approver = User::factory()->create();
