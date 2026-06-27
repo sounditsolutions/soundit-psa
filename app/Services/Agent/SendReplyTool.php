@@ -63,8 +63,13 @@ class SendReplyTool
     /**
      * Draft a held client reply (or leave the ticket). Returns a short string the model
      * sees in its tool_result.
+     *
+     * @param  array|null  $correctionContext  When the run was correction-driven, merged into
+     *                                         proposed_meta as 'informed_by_correction' so the run
+     *                                         is traceable to the operator correction. Null on a
+     *                                         normal run — key absent from proposed_meta.
      */
-    public function execute(Ticket $ticket, array $input): string
+    public function execute(Ticket $ticket, array $input, ?array $correctionContext = null): string
     {
         $reason = trim((string) ($input['reason'] ?? ''));
 
@@ -85,6 +90,9 @@ class SendReplyTool
         $body = $draft->body;
         $hash = hash('sha256', 'send_reply:'.$ticket->id.':'.$body);
         $meta = ['to' => $draft->to, 'reasons' => $reason !== '' ? [$reason] : []];
+        if ($correctionContext !== null) {
+            $meta['informed_by_correction'] = $correctionContext;
+        }
 
         $run = TechnicianRun::firstOrCreate(
             [
@@ -110,10 +118,14 @@ class SendReplyTool
                 return "Already drafted a reply for ticket #{$ticket->id}; awaiting approval.";
             }
 
+            $reviveMeta = ['to' => $draft->to, 'reasons' => $reason !== '' ? [$reason] : []];
+            if ($correctionContext !== null) {
+                $reviveMeta['informed_by_correction'] = $correctionContext;
+            }
             $run->update([
                 'state' => TechnicianRunState::AwaitingApproval->value,
                 'proposed_content' => $body,
-                'proposed_meta' => $meta,
+                'proposed_meta' => $reviveMeta,
                 'confidence' => null,
                 'tokens_used' => $draft->tokensUsed,
             ]);

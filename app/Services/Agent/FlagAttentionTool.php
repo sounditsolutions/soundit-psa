@@ -59,8 +59,13 @@ class FlagAttentionTool
     /**
      * Record a held flag and route it through the gate (audit + fail-closed checks)
      * with a no-op executor. Returns a short string the model sees in its tool_result.
+     *
+     * @param  array|null  $correctionContext  When the run was correction-driven, merged into
+     *                                         proposed_meta as 'informed_by_correction' so the run
+     *                                         is traceable to the operator correction. Null on a
+     *                                         normal run — key absent from proposed_meta.
      */
-    public function execute(Ticket $ticket, array $input): string
+    public function execute(Ticket $ticket, array $input, ?array $correctionContext = null): string
     {
         $reason = trim((string) ($input['reason'] ?? ''));
         if ($reason === '') {
@@ -100,13 +105,18 @@ class FlagAttentionTool
 
         // Create a new held flag, or revive a previously resolved one so a recurring
         // need re-surfaces (mirrors ProposeCloseTool's revive-stale behaviour).
+        $flagMeta = ['category' => $category->value, 'reason' => $reason];
+        if ($correctionContext !== null) {
+            $flagMeta['informed_by_correction'] = $correctionContext;
+        }
+
         $run = TechnicianRun::updateOrCreate(
             ['ticket_id' => $ticket->id, 'action_type' => 'flag_attention', 'content_hash' => $hash],
             [
                 'client_id' => $ticket->client_id,
                 'state' => TechnicianRunState::Flagged,
                 'proposed_content' => $reason,
-                'proposed_meta' => ['category' => $category->value, 'reason' => $reason],
+                'proposed_meta' => $flagMeta,
                 'confidence' => null,
                 'tokens_used' => 0,
             ],

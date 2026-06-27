@@ -3,6 +3,7 @@
 namespace App\Jobs;
 
 use App\Enums\TechnicianRunState;
+use App\Models\AssistantConversation;
 use App\Models\Client;
 use App\Models\TechnicianRun;
 use App\Models\Ticket;
@@ -128,7 +129,26 @@ class RunTechnicianAgent implements ShouldQueue
             return;
         }
 
-        // 9. Wake the agent to reason and (maybe) propose a close.
-        app(TechnicianAgent::class)->run($ticket);
+        // 9. Resolve correction context (correction-driven runs only) so the agent can
+        //    thread provenance into the resulting TechnicianRun's proposed_meta.
+        $correctionContext = null;
+        if ($this->correctionDriven) {
+            $conv = AssistantConversation::where('context_type', 'ticket_correction')
+                ->where('context_id', $ticket->id)
+                ->latest()
+                ->first();
+
+            if ($conv !== null) {
+                $latestUserMessage = $conv->messages()->where('role', 'user')->latest()->first();
+                $correctionContext = [
+                    'conversation_id' => $conv->id,
+                    'operator_id' => $conv->user_id,
+                    'summary' => mb_substr((string) optional($latestUserMessage)->content, 0, 200),
+                ];
+            }
+        }
+
+        // 10. Wake the agent to reason and (maybe) propose a close.
+        app(TechnicianAgent::class)->run($ticket, $correctionContext);
     }
 }

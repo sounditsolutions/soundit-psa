@@ -69,9 +69,15 @@ class ProposeCloseTool
     /**
      * Record a held TechnicianRun proposal and dispatch through the gate.
      *
+     * @param  array|null  $correctionContext  When the run was correction-driven, carries
+     *                                         ['conversation_id', 'operator_id', 'summary'] so
+     *                                         the produced TechnicianRun is traceable back to the
+     *                                         operator correction that triggered re-assessment.
+     *                                         Null on a normal (non-correction) run — key absent.
+     *
      * Returns a short string the model sees in its tool_result.
      */
-    public function execute(Ticket $ticket, array $input): string
+    public function execute(Ticket $ticket, array $input, ?array $correctionContext = null): string
     {
         $reason = trim((string) ($input['reason'] ?? ''));
         $confidence = (float) ($input['confidence'] ?? 0.0);
@@ -85,6 +91,11 @@ class ProposeCloseTool
 
         $hash = hash('sha256', 'propose_close:'.$ticket->id.':'.$reason);
 
+        $baseMeta = ['confidence' => $confidence];
+        if ($correctionContext !== null) {
+            $baseMeta['informed_by_correction'] = $correctionContext;
+        }
+
         $run = TechnicianRun::firstOrCreate(
             [
                 'ticket_id' => $ticket->id,
@@ -95,7 +106,7 @@ class ProposeCloseTool
                 'client_id' => $ticket->client_id,
                 'state' => TechnicianRunState::AwaitingApproval,
                 'proposed_content' => $reason,
-                'proposed_meta' => ['confidence' => $confidence],
+                'proposed_meta' => $baseMeta,
                 'confidence' => $confidence,
                 'tokens_used' => 0,
             ],
@@ -111,10 +122,14 @@ class ProposeCloseTool
                 return "Already proposed closing ticket #{$ticket->id}; awaiting approval.";
             }
             // Revive a stale run so the cockpit can re-surface it.
+            $reviveMeta = ['confidence' => $confidence];
+            if ($correctionContext !== null) {
+                $reviveMeta['informed_by_correction'] = $correctionContext;
+            }
             $run->update([
                 'state' => TechnicianRunState::AwaitingApproval->value,
                 'proposed_content' => $reason,
-                'proposed_meta' => ['confidence' => $confidence],
+                'proposed_meta' => $reviveMeta,
                 'confidence' => $confidence,
                 'tokens_used' => 0,
             ]);
