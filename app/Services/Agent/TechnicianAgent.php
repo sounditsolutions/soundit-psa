@@ -45,8 +45,13 @@ class TechnicianAgent
      * Reason over a ticket and propose closing it if clearly appropriate.
      *
      * @param  Ticket  $ticket  The ticket to inspect.
+     * @param  array|null  $correctionContext  When the run was triggered by an operator
+     *                                         correction, carries ['conversation_id', 'operator_id',
+     *                                         'summary'] so each ACT tool can record provenance in
+     *                                         the resulting TechnicianRun's proposed_meta. Null on
+     *                                         a normal (non-correction) run.
      */
-    public function run(Ticket $ticket): void
+    public function run(Ticket $ticket, ?array $correctionContext = null): void
     {
         if (! AiConfig::isConfigured() || ! AiConfig::isEnabled()) {
             return;
@@ -83,6 +88,7 @@ class TechnicianAgent
                 app(ProposeCloseTool::class),
                 app(FlagAttentionTool::class),
                 app(SendReplyTool::class),
+                $correctionContext,
             );
 
             // One-action-per-run guard (CO-4, generalised for Increment H): the agent

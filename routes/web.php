@@ -636,4 +636,7 @@ Route::middleware('auth')->group(function () {
     // Increment H — resolve a held flag (no execution): acknowledge (→ Done) or dismiss (→ Denied).
     Route::post('/cockpit/runs/{run}/acknowledge', [\App\Http\Controllers\Web\TechnicianCockpitController::class, 'acknowledge'])->name('cockpit.acknowledge');
     Route::post('/cockpit/runs/{run}/dismiss', [\App\Http\Controllers\Web\TechnicianCockpitController::class, 'dismiss'])->name('cockpit.dismiss');
+    // Throttled: each correction dispatches an Opus re-assessment, so cap the rate (parity
+    // with the assistant message route) — bounded already by the agent's depth-cap + token budget.
+    Route::post('/cockpit/runs/{run}/correct', [\App\Http\Controllers\Web\TechnicianCockpitController::class, 'correct'])->name('cockpit.correct')->middleware('throttle:20,1');
 });

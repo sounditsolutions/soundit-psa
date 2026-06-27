@@ -76,6 +76,24 @@
                     </form>
                 </div>
             @endif
+
+            {{-- CORRECTION LANE — operator can decline with context or add context & re-assess --}}
+            <div class="mt-3 border-top pt-3">
+                @if(data_get($run->proposed_meta, 'informed_by_correction'))
+                    <p class="text-muted small mb-2"><i class="bi bi-arrow-repeat me-1"></i>↻ Re-assessed from your correction.</p>
+                @endif
+                <form method="POST" action="{{ route('cockpit.correct', $run) }}">
+                    @csrf
+                    <label class="form-label small text-muted mb-1" for="correction-{{ $run->id }}">
+                        Correction or context for the assistant:
+                    </label>
+                    <textarea class="form-control form-control-sm mb-2" id="correction-{{ $run->id }}" name="correction" rows="2" placeholder="e.g. client is on a no-auto-close contract"></textarea>
+                    <div class="d-flex gap-2">
+                        <button type="submit" class="btn btn-sm btn-outline-danger"><i class="bi bi-x-circle me-1"></i>Decline &amp; correct</button>
+                        <button type="submit" class="btn btn-sm btn-outline-secondary"><i class="bi bi-arrow-repeat me-1"></i>Add context &amp; re-assess</button>
+                    </div>
+                </form>
+            </div>
         </div>
     </div>
 @empty

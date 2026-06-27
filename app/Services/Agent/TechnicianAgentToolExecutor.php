@@ -38,6 +38,7 @@ class TechnicianAgentToolExecutor
         private readonly ProposeCloseTool $proposeClose,
         private readonly FlagAttentionTool $flagAttention,
         private readonly SendReplyTool $sendReply,
+        private readonly ?array $correctionContext = null,
     ) {}
 
     /**
@@ -53,15 +54,15 @@ class TechnicianAgentToolExecutor
     public function execute(string $name, array $input): mixed
     {
         if ($name === 'propose_close') {
-            return $this->proposeClose->execute($this->ticket, $input);
+            return $this->proposeClose->execute($this->ticket, $input, $this->correctionContext);
         }
 
         if ($name === 'flag_attention') {
-            return $this->flagAttention->execute($this->ticket, $input);
+            return $this->flagAttention->execute($this->ticket, $input, $this->correctionContext);
         }
 
         if ($name === 'send_reply') {
-            return $this->sendReply->execute($this->ticket, $input);
+            return $this->sendReply->execute($this->ticket, $input, $this->correctionContext);
         }
 
         if (in_array($name, self::READ_TOOLS, true)) {
