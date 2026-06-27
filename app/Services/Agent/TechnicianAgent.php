@@ -69,7 +69,9 @@ class TechnicianAgent
                 .'and the best-fit category. A flag means "a person needs to look at this", NOT "I did not close it"; '
                 .'it does nothing to the ticket. Use it sparingly, only for a genuine need for human attention. '
                 .'Otherwise — awaiting us internally, awaiting the client, still active, or simply low-value — do '
-                .'NOTHING, leave it. When unsure, LEAVE IT. Take only ONE action per ticket.';
+                .'NOTHING, leave it. When unsure, LEAVE IT. Take only ONE action per ticket. '
+                .'If you needed a tool or data you lacked, you may also call `request_tool` to flag it for the team '
+                .'— it does not count as your action.';
 
             $userMessage = ContextBuilder::buildForTicket($ticket);
 
@@ -81,6 +83,7 @@ class TechnicianAgent
                 ProposeCloseTool::definition(),
                 FlagAttentionTool::definition(),
                 SendReplyTool::definition(),
+                RequestToolTool::definition(),
             ]);
 
             $toolExecutor = new TechnicianAgentToolExecutor(
@@ -88,6 +91,7 @@ class TechnicianAgent
                 app(ProposeCloseTool::class),
                 app(FlagAttentionTool::class),
                 app(SendReplyTool::class),
+                app(RequestToolTool::class),
                 $correctionContext,
             );
 

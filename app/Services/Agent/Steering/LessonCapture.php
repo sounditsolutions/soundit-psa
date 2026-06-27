@@ -59,7 +59,7 @@ class LessonCapture
                     clientId: $client->id,
                     capabilityGap: $candidate->statement,                         // abstract / forwardable
                     evidence: "Ticket #{$ticket->id}: ".mb_substr($text, 0, 300), // instance-private (the correction)
-                    class: ToolingGapClassification::ToolUnused,                  // a correction = the data WAS available, not used
+                    classification: ToolingGapClassification::ToolUnused,          // a correction = the data WAS available, not used
                     source: ToolingGapSource::Correction,
                 );
 

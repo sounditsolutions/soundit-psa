@@ -10,10 +10,11 @@ use App\Services\Triage\TriageToolExecutor;
  * the LLM tool loop and the PSA's mutating actions.
  *
  * Allowlist (CO-1):
- *   READ: search_tickets, get_ticket_notes, wiki_list_pages, wiki_search, wiki_get_page
- *   ACT:  propose_close (gated mutator → ProposeCloseTool/gate)
- *         flag_attention (held NOTICE → FlagAttentionTool/gate; no execution side-effect)
- *         send_reply     (held client reply → SendReplyTool/gate; never auto-sent)
+ *   READ:    search_tickets, get_ticket_notes, wiki_list_pages, wiki_search, wiki_get_page
+ *   ACT:     propose_close (gated mutator → ProposeCloseTool/gate)
+ *            flag_attention (held NOTICE → FlagAttentionTool/gate; no execution side-effect)
+ *            send_reply     (held client reply → SendReplyTool/gate; never auto-sent)
+ *   RECORD:  request_tool  (recording-only, internal → RequestToolTool; no ticket/client mutation)
  *
  * Any other tool name returns ['error' => 'tool not available to the agent'].
  * TriageToolExecutor is NEVER called for an arbitrary name — the check happens first,
@@ -38,6 +39,7 @@ class TechnicianAgentToolExecutor
         private readonly ProposeCloseTool $proposeClose,
         private readonly FlagAttentionTool $flagAttention,
         private readonly SendReplyTool $sendReply,
+        private readonly RequestToolTool $requestTool,
         private readonly ?array $correctionContext = null,
     ) {}
 
@@ -63,6 +65,10 @@ class TechnicianAgentToolExecutor
 
         if ($name === 'send_reply') {
             return $this->sendReply->execute($this->ticket, $input, $this->correctionContext);
+        }
+
+        if ($name === 'request_tool') {
+            return $this->requestTool->execute($this->ticket, $input);
         }
 
         if (in_array($name, self::READ_TOOLS, true)) {

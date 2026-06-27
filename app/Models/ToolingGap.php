@@ -67,7 +67,7 @@ class ToolingGap extends Model
         ?int $clientId,
         string $capabilityGap,
         ?string $evidence,
-        ToolingGapClassification $class,
+        ToolingGapClassification $classification,
         ToolingGapSource $source,
         ?string $agentNote = null,
     ): self {
@@ -76,7 +76,7 @@ class ToolingGap extends Model
             'client_id' => $clientId,
             'capability_gap' => $capabilityGap,
             'evidence' => $evidence,
-            'classification' => $class,
+            'classification' => $classification,
             'source' => $source,
             'status' => ToolingGapStatus::Open,
             'agent_note' => $agentNote,
