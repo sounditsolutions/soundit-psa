@@ -65,6 +65,11 @@ class TechnicianAgent
 
             $userMessage = ContextBuilder::buildForTicket($ticket);
 
+            // A2a (INERT): send_reply is NOT in this $tools list yet, so the model cannot
+            // call it. SendReplyTool is built, guarded, and wired into the executor below
+            // (and unit-tested directly), but it is intentionally not OFFERED until A2b
+            // wires it in atomically with the DraftPipeline reply-branch subsumption — so
+            // the agent and DraftPipeline can never double-produce a held client reply.
             $tools = array_merge(TriageToolDefinitions::readTools(), [
                 ProposeCloseTool::definition(),
                 FlagAttentionTool::definition(),
@@ -74,6 +79,7 @@ class TechnicianAgent
                 $ticket,
                 app(ProposeCloseTool::class),
                 app(FlagAttentionTool::class),
+                app(SendReplyTool::class),
             );
 
             // One-action-per-run guard (CO-4, generalised for Increment H): the agent
@@ -84,7 +90,7 @@ class TechnicianAgent
             // different reasons that would each pass the tools' own idempotency).
             $acted = false;
             $executor = function (string $toolName, array $input) use ($toolExecutor, &$acted): mixed {
-                if (in_array($toolName, ['propose_close', 'flag_attention'], true)) {
+                if (in_array($toolName, ['propose_close', 'flag_attention', 'send_reply'], true)) {
                     if ($acted) {
                         Log::info('[TechnicianAgent] Suppressed a second action call (one-action-per-run guard)', ['tool' => $toolName]);
 

@@ -53,6 +53,16 @@ class TechnicianTierClassifier
             return TechnicianTier::Approve;
         }
 
+        // ── send_reply: a CLIENT-FACING send, ALWAYS held (A2) ──
+        // Auto-reply is explicitly descoped: AI-shaped text must never reach a client
+        // without a human's approval. Hard-coding Approve means even an operator who
+        // (mis)maps send_reply to 'auto' — and any confidence — cannot auto-send. There
+        // is no ReplyAutoEligibility; confidence does NOT gate a client send. Defense in
+        // depth alongside SendReplyTool's throwing tripwire executor.
+        if ($actionType === 'send_reply') {
+            return TechnicianTier::Approve;
+        }
+
         // ── every other action type: unchanged legacy default-deny path ──
         $mapped = TechnicianConfig::tierMap()[$actionType] ?? null;
 

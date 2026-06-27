@@ -8,11 +8,14 @@ use App\Models\Client;
 use App\Models\Setting;
 use App\Models\TechnicianRun;
 use App\Models\Ticket;
+use App\Models\TicketNote;
 use App\Models\User;
 use App\Services\Agent\TechnicianAgent;
 use App\Services\Ai\AiClient;
 use App\Services\Ai\AiResponse;
 use App\Services\Technician\Notify\OperatorNotifier;
+use App\Services\Technician\TechnicianDraft;
+use App\Services\Technician\TechnicianReplyDrafter;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -323,6 +326,110 @@ class TechnicianAgentTest extends TestCase
         $this->agent($ai)->run($ticket);
 
         $this->assertSame(0, TechnicianRun::where('ticket_id', $ticket->id)->count());
+    }
+
+    // ── A2a: send_reply is built + guarded, but NOT yet offered (inert) ───────
+
+    private function unaddressedClientReply(Ticket $ticket): void
+    {
+        TicketNote::create([
+            'ticket_id' => $ticket->id, 'author_name' => 'Client',
+            'who_type' => \App\Enums\WhoType::EndUser, 'ai_authored' => false,
+            'body' => 'Any update?', 'note_type' => \App\Enums\NoteType::Reply,
+            'is_private' => false, 'noted_at' => now(),
+        ]);
+    }
+
+    /**
+     * A2a INERT GUARANTEE: send_reply must NOT be in the agent's live $tools yet, so the
+     * model cannot call it in production. A2b wires it in atomically with the DraftPipeline
+     * subsumption (avoiding double-production of held replies).
+     */
+    public function test_send_reply_is_not_yet_offered_to_the_model(): void
+    {
+        $this->configureAi();
+        $ticket = $this->openTicketWithClient();
+
+        $capturedTools = null;
+        $ai = $this->mock(AiClient::class);
+        $ai->shouldReceive('runToolLoop')->once()
+            ->andReturnUsing(function ($system, $user, $tools, $executor) use (&$capturedTools): AiResponse {
+                $capturedTools = $tools;
+
+                return $this->fakeAiResponse();
+            });
+
+        $this->agent($ai)->run($ticket);
+
+        $names = array_column($capturedTools ?? [], 'name');
+        $this->assertNotContains('send_reply', $names, 'send_reply must NOT be offered to the model in A2a (inert).');
+        // The existing action tools are still present.
+        $this->assertContains('propose_close', $names);
+        $this->assertContains('flag_attention', $names);
+    }
+
+    /**
+     * The one-action-per-run guard must cover send_reply too: a propose_close THEN a
+     * send_reply yields exactly ONE run — the send_reply is refused BEFORE it reaches
+     * SendReplyTool (so the drafter is never even consulted).
+     */
+    public function test_one_action_guard_blocks_send_reply_after_a_close(): void
+    {
+        $this->configureAi();
+        $notifier = $this->mock(OperatorNotifier::class);
+        $notifier->shouldReceive('notify')->never();
+        // The drafter must NEVER be consulted — the one-action guard refuses send_reply
+        // BEFORE it reaches SendReplyTool (the unaddressed-reply fixture below means the
+        // tool WOULD draft if the guard ever let it through, so ->never() proves the guard).
+        $this->mock(TechnicianReplyDrafter::class, fn ($m) => $m->shouldReceive('draft')->never());
+
+        $ticket = $this->openTicketWithClient();
+        $this->unaddressedClientReply($ticket);
+
+        $ai = $this->mock(AiClient::class);
+        $ai->shouldReceive('runToolLoop')->once()
+            ->andReturnUsing(function ($system, $user, $tools, $executor): AiResponse {
+                $executor('propose_close', ['reason' => 'client confirmed sorted', 'confidence' => 0.5]);
+                $executor('send_reply', ['reason' => 'second action — must be blocked']);
+
+                return $this->fakeAiResponse();
+            });
+
+        $this->agent($ai)->run($ticket);
+
+        $this->assertSame(1, TechnicianRun::where('ticket_id', $ticket->id)->count(), 'only the first action may land');
+        $this->assertSame(0, TechnicianRun::where('ticket_id', $ticket->id)->where('action_type', 'send_reply')->count());
+    }
+
+    /**
+     * Reverse direction: a send_reply THEN a propose_close yields exactly ONE run — the
+     * send_reply lands first and the close is refused.
+     */
+    public function test_one_action_guard_blocks_a_close_after_send_reply(): void
+    {
+        $this->configureAi();
+        $notifier = $this->mock(OperatorNotifier::class);
+        $notifier->shouldReceive('notify')->never();
+        $this->mock(TechnicianReplyDrafter::class, fn ($m) => $m->shouldReceive('draft')
+            ->andReturn(new TechnicianDraft('Held reply body.', 'c@example.com', 50)));
+
+        $ticket = $this->openTicketWithClient();
+        $this->unaddressedClientReply($ticket);
+
+        $ai = $this->mock(AiClient::class);
+        $ai->shouldReceive('runToolLoop')->once()
+            ->andReturnUsing(function ($system, $user, $tools, $executor): AiResponse {
+                $executor('send_reply', ['reason' => 'client awaiting a reply']);
+                $executor('propose_close', ['reason' => 'second action — must be blocked', 'confidence' => 0.9]);
+
+                return $this->fakeAiResponse();
+            });
+
+        $this->agent($ai)->run($ticket);
+
+        $this->assertSame(1, TechnicianRun::where('ticket_id', $ticket->id)->count(), 'only the first action may land');
+        $this->assertSame(1, TechnicianRun::where('ticket_id', $ticket->id)->where('action_type', 'send_reply')->count());
+        $this->assertSame(0, TechnicianRun::where('ticket_id', $ticket->id)->where('action_type', 'propose_close')->count());
     }
 
     // ── 5. AI not configured ──────────────────────────────────────────────────

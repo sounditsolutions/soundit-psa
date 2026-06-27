@@ -125,4 +125,36 @@ class SignificanceGateTest extends TestCase
 
         $this->assertFalse($gate->assess($this->openTicket()));
     }
+
+    // ── A2: broadened beyond close-only to also wake for reply-worthy tickets ──
+
+    /**
+     * A2 needs the agent to wake for tickets where a client is awaiting a REPLY, not
+     * only for possible closing — else the held send_reply tool never gets a chance to
+     * fire. The YES/NO contract is unchanged (the logic tests above still hold); only
+     * the question the model is asked is broadened. Empirical calibration (it actually
+     * wakes on a reply-worthy ticket and stays quiet on an in-hand one) is verified in
+     * the agent soak; here we assert the prompt now poses the broader question.
+     */
+    public function test_prompt_also_wakes_for_a_client_awaiting_a_reply(): void
+    {
+        $captured = null;
+        $ai = $this->mock(AiClient::class);
+        $ai->shouldReceive('complete')->once()->andReturnUsing(function ($system, $context, $max) use (&$captured): AiResponse {
+            $captured = $system;
+
+            return $this->yesResponse();
+        });
+
+        (new SignificanceGate($ai))->assess($this->openTicket());
+
+        $this->assertNotNull($captured);
+        $lower = strtolower($captured);
+        $this->assertTrue(
+            str_contains($lower, 'await') || str_contains($lower, 'reply') || str_contains($lower, 'response'),
+            'the significance prompt must also consider a client awaiting a reply, not only closing',
+        );
+        // Still covers the close/junk case (not a regression to reply-only).
+        $this->assertStringContainsString('clos', $lower);
+    }
 }
