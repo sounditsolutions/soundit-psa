@@ -3171,7 +3171,41 @@
                         <div class="form-text">Stored encrypted at rest; leave blank to keep the current secret.</div>
                     </div>
 
-                    <button type="submit" class="btn btn-primary btn-sm">Save Teams Bot credentials</button>
+                    {{-- Ambient "culture" controls (psa-i4cf): each MSP sets how its assistant participates. --}}
+                    <hr class="my-3">
+                    <h6 class="text-muted text-uppercase small mb-2">Ambient participation</h6>
+                    <p class="text-muted small mb-3">How your assistant joins the team chat — set the culture that fits your shop. These only apply while the Teams Bot is enabled above.</p>
+
+                    <div class="form-check form-switch mb-3">
+                        <input class="form-check-input" type="checkbox" id="teams_ambient_enabled" name="teams_ambient_enabled" {{ $teamsBotAmbientEnabled ? 'checked' : '' }}>
+                        <label class="form-check-label" for="teams_ambient_enabled"><strong>Let the assistant chime in unprompted</strong></label>
+                        <div class="form-text">When on, it watches the chat and joins in when it has something useful — not just when @mentioned.</div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label small" for="teams_ambient_eagerness">Eagerness</label>
+                        <select class="form-select" id="teams_ambient_eagerness" name="teams_ambient_eagerness">
+                            <option value="low" @selected($teamsBotEagerness === 'low')>Reserved</option>
+                            <option value="normal" @selected($teamsBotEagerness === 'normal')>Balanced</option>
+                            <option value="high" @selected($teamsBotEagerness === 'high')>Eager</option>
+                        </select>
+                        <div class="form-text">How readily it speaks up.</div>
+                    </div>
+
+                    <div class="form-check form-switch mb-3">
+                        <input class="form-check-input" type="checkbox" id="teams_ambient_banter" name="teams_ambient_banter" {{ $teamsBotBanter ? 'checked' : '' }}>
+                        <label class="form-check-label" for="teams_ambient_banter"><strong>Allow casual / banter participation</strong></label>
+                        <div class="form-text">A little personality vs strictly-business.</div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label small" for="teams_ambient_cooldown_seconds">Quiet gap between unprompted messages (seconds)</label>
+                        <input type="number" class="form-control" id="teams_ambient_cooldown_seconds" name="teams_ambient_cooldown_seconds"
+                               value="{{ $teamsBotCooldown }}" min="0" max="3600">
+                        <div class="form-text">Minimum seconds between unprompted messages — higher = less chatty.</div>
+                    </div>
+
+                    <button type="submit" class="btn btn-primary btn-sm">Save Teams Bot settings</button>
                 </form>
             </div>
         </div>
