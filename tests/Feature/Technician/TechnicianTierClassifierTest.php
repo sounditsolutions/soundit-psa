@@ -63,4 +63,29 @@ class TechnicianTierClassifierTest extends TestCase
             (new TechnicianTierClassifier)->classify('send_ack'),
         );
     }
+
+    public function test_send_reply_can_never_be_auto_even_when_the_tier_map_says_auto(): void
+    {
+        // ADVERSARIAL (A2 landmine): a client-facing reply must ALWAYS be held —
+        // even an operator who (mis)maps send_reply to 'auto' cannot make it auto-send.
+        // send_reply is hard-coded to Approve, exactly like flag_attention.
+        $this->setTiers(['send_reply' => 'auto']);
+
+        $this->assertSame(
+            TechnicianTier::Approve,
+            (new TechnicianTierClassifier)->classify('send_reply'),
+        );
+    }
+
+    public function test_send_reply_with_confidence_still_cannot_be_auto(): void
+    {
+        // Even passing a high confidence (the propose_close auto channel) must not
+        // make send_reply auto — confidence does NOT gate a client send.
+        $this->setTiers(['send_reply' => 'auto']);
+
+        $this->assertSame(
+            TechnicianTier::Approve,
+            (new TechnicianTierClassifier)->classify('send_reply', 0.99),
+        );
+    }
 }

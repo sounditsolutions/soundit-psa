@@ -10,6 +10,7 @@ use App\Models\Ticket;
 use App\Models\User;
 use App\Services\Agent\FlagAttentionTool;
 use App\Services\Agent\ProposeCloseTool;
+use App\Services\Agent\SendReplyTool;
 use App\Services\Agent\TechnicianAgentToolExecutor;
 use App\Services\Technician\Notify\OperatorNotifier;
 use App\Services\Triage\TriageToolDefinitions;
@@ -55,7 +56,7 @@ class TechnicianAgentToolExecutorTest extends TestCase
 
     private function executor(Ticket $ticket): TechnicianAgentToolExecutor
     {
-        return new TechnicianAgentToolExecutor($ticket, app(ProposeCloseTool::class), app(FlagAttentionTool::class));
+        return new TechnicianAgentToolExecutor($ticket, app(ProposeCloseTool::class), app(FlagAttentionTool::class), app(SendReplyTool::class));
     }
 
     private function assertNoAuditRowForTicket(Ticket $ticket): void
@@ -239,6 +240,40 @@ class TechnicianAgentToolExecutorTest extends TestCase
         $this->assertNotNull($run, 'A TechnicianRun(flag_attention) must be created.');
         $this->assertSame(TechnicianRunState::Flagged, $run->state);
         $this->assertNotSame(TicketStatus::Closed, $ticket->fresh()->status);
+    }
+
+    // ── 4c. send_reply routes to SendReplyTool (A2 — held, never sent) ────────
+
+    /**
+     * execute('send_reply', …) must delegate to SendReplyTool and produce a held
+     * TechnicianRun(send_reply) in AwaitingApproval — never an executed send. The
+     * drafter is mocked so no AI call is made; the fence/scan is exercised in the
+     * drafter's own tests.
+     */
+    public function test_send_reply_routes_to_send_reply_tool_and_creates_held_run(): void
+    {
+        User::factory()->create(); // AI actor fallback for the audit row
+        \App\Models\Setting::setValue('ai_provider', 'anthropic');
+        \App\Models\Setting::setEncrypted('ai_api_key', 'test-key');
+        $this->mock(
+            \App\Services\Technician\TechnicianReplyDrafter::class,
+            fn ($m) => $m->shouldReceive('draft')->andReturn(new \App\Services\Technician\TechnicianDraft('Held reply body.', 'c@example.com', 100))
+        );
+
+        $ticket = $this->openTicketWithClient();
+        \App\Models\TicketNote::create([
+            'ticket_id' => $ticket->id, 'author_name' => 'Client',
+            'who_type' => \App\Enums\WhoType::EndUser, 'ai_authored' => false,
+            'body' => 'Any update?', 'note_type' => \App\Enums\NoteType::Reply,
+            'is_private' => false, 'noted_at' => now(),
+        ]);
+
+        $this->executor($ticket)->execute('send_reply', ['reason' => 'client awaiting a reply']);
+
+        $run = TechnicianRun::where('ticket_id', $ticket->id)->where('action_type', 'send_reply')->first();
+        $this->assertNotNull($run, 'A TechnicianRun(send_reply) must be created.');
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->state);
+        $this->assertDatabaseMissing('technician_action_logs', ['action_type' => 'send_reply', 'result_status' => 'executed']);
     }
 
     // ── 5. readTools() shape ──────────────────────────────────────────────────
