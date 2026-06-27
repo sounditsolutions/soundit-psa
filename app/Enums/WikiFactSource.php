@@ -8,4 +8,5 @@ enum WikiFactSource: string
     case Ticket = 'ticket';
     case Triage = 'triage';
     case Human = 'human';
+    case Correction = 'correction';
 }
