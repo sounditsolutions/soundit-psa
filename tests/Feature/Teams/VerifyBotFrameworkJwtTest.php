@@ -74,7 +74,8 @@ class VerifyBotFrameworkJwtTest extends TestCase
             'iat' => $now,
             'nbf' => $now,
             'exp' => $now + 3600,
-            'serviceUrl' => 'https://smba.trafficmanager.net/teams/',
+            // Bot Framework emits this claim LOWERCASED — mirror the real token shape.
+            'serviceurl' => 'https://smba.trafficmanager.net/teams/',
         ], $overrides);
 
         return JWT::encode($payload, $privatePem, 'RS256', $kid);
@@ -175,6 +176,29 @@ class VerifyBotFrameworkJwtTest extends TestCase
         $this->primeJwks($jwk);
 
         $this->assertSame(200, $this->runMiddleware($this->sign($priv)), 'a correctly-signed channel token must pass');
+    }
+
+    public function test_lowercase_serviceurl_claim_is_surfaced_for_pinning(): void
+    {
+        // Bot Framework emits the destination claim as lowercase "serviceurl". The
+        // middleware must surface it (not the camelCase name) or the controller's
+        // pin sees null and the bot silently never replies — the live prod bug.
+        $this->configureBot();
+        [$priv, $jwk] = $this->keypair();
+        $this->primeJwks($jwk);
+
+        $token = $this->sign($priv, ['serviceurl' => 'https://smba.trafficmanager.net/amer/']);
+
+        $captured = 'UNSET';
+        $request = Request::create('/api/teams/messages', 'POST');
+        $request->headers->set('Authorization', 'Bearer '.$token);
+        (new VerifyBotFrameworkJwt)->handle($request, function ($req) use (&$captured) {
+            $captured = $req->attributes->get('teams_bot_service_url');
+
+            return response('ok', 200);
+        });
+
+        $this->assertSame('https://smba.trafficmanager.net/amer/', $captured);
     }
 
     public function test_array_audience_containing_our_app_id_passes(): void

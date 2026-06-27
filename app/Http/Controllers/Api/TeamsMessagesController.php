@@ -95,9 +95,19 @@ class TeamsMessagesController extends Controller
         $claim = $request->attributes->get('teams_bot_service_url');
         $activityUrl = $activity['serviceUrl'] ?? null;
 
-        if (! is_string($claim) || $claim === '' || ! is_string($activityUrl) || $claim !== $activityUrl) {
+        // A trailing slash on the serviceUrl is not security-relevant (same host +
+        // path); normalise it away so an inconsequential "/" difference between the
+        // signed claim and the activity body can't fail the pin closed.
+        $matches = is_string($claim) && $claim !== '' && is_string($activityUrl)
+            && rtrim($claim, '/') === rtrim($activityUrl, '/');
+
+        if (! $matches) {
+            // serviceUrls are not secrets — log both so a residual mismatch is
+            // self-diagnosing instead of needing another live round-trip.
             Log::warning('[Teams Bot] serviceUrl not pinned to the signed claim — not replying', [
                 'conversation_id' => $activity['conversation']['id'] ?? null,
+                'claim' => is_string($claim) ? $claim : '(missing)',
+                'activity_service_url' => is_string($activityUrl) ? $activityUrl : '(missing)',
             ]);
 
             return false;
