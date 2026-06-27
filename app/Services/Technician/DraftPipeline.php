@@ -54,10 +54,19 @@ class DraftPipeline
 
         // A2b: the client-REPLY drafting that used to live here is RETIRED — the reactive
         // agent's send_reply tool is the SOLE producer of held replies now (so the two can
-        // never double-produce). What remains is the held resolution proposal. The
-        // unaddressed-client-reply gate is preserved as resolution's existing trigger: only
-        // propose after a genuine new client message, so a job retry with nothing new is a
-        // no-op. (The supersede of stale held replies moved with the reply, into SendReplyTool.)
+        // never double-produce). What remains is the held resolution proposal.
+        //
+        // Both cheap gates run BEFORE any AI classify: propose ONLY when there is genuine
+        // client substance to resolve (a real, non-AI reply — NOT intake, where the lone
+        // Reply note is the bot's own ack) AND that substance is newer than our last
+        // proposed resolution. Ordering substance + the unaddressed gate ahead of classify
+        // means intake (no substance) and a job retry (nothing new) both short-circuit
+        // without spending a classify call. (The supersede of stale held replies moved with
+        // the reply, into SendReplyTool.)
+        if (! $this->hasClientSubstance($ticket)) {
+            return;
+        }
+
         if (! $this->hasUnaddressedClientReply($ticket)) {
             return;
         }
@@ -74,22 +83,17 @@ class DraftPipeline
             return;
         }
 
-        // Proposed resolution — ONLY when there is genuine client substance to resolve
-        // (a real, non-AI reply), NOT at intake where the lone Reply note is the bot's
-        // own ack (which would fire a needless AI call + a WikiRun on every inbound). (v2)
-        if ($this->hasClientSubstance($ticket)) {
-            $resolution = $this->resolutionDrafter->draft($ticket, 'technician');
-            if (is_string($resolution) && trim($resolution) !== '') {
-                $this->recordHeld(
-                    $ticket,
-                    'propose_resolution',
-                    $resolution,
-                    ['reasons' => $assessment->reasons],
-                    $assessment->confidence,
-                    0, // resolution tokens are governed by WikiBudget, not TechnicianBudget
-                    'Proposed a resolution (awaiting approval).',
-                );
-            }
+        $resolution = $this->resolutionDrafter->draft($ticket, 'technician');
+        if (is_string($resolution) && trim($resolution) !== '') {
+            $this->recordHeld(
+                $ticket,
+                'propose_resolution',
+                $resolution,
+                ['reasons' => $assessment->reasons],
+                $assessment->confidence,
+                0, // resolution tokens are governed by WikiBudget, not TechnicianBudget
+                'Proposed a resolution (awaiting approval).',
+            );
         }
     }
 

@@ -87,7 +87,30 @@ class DraftPipelineTest extends TestCase
         $this->mock(TicketResolutionDrafter::class, fn (MockInterface $m) => $m->shouldReceive('draft')->never());
 
         $ticket = $this->ticket();
+        // A client reply so the substance gate passes and we actually reach the ownable check.
+        \App\Models\TicketNote::create([
+            'ticket_id' => $ticket->id, 'author_name' => 'Client',
+            'who_type' => \App\Enums\WhoType::EndUser, 'ai_authored' => false,
+            'body' => 'Any update on this?', 'note_type' => \App\Enums\NoteType::Reply,
+            'is_private' => false, 'noted_at' => now(),
+        ]);
         app(DraftPipeline::class)->run($ticket);
+
+        $this->assertSame(0, TechnicianRun::where('ticket_id', $ticket->id)->whereIn('action_type', ['send_reply', 'propose_resolution'])->count());
+    }
+
+    public function test_at_intake_with_no_client_substance_it_does_not_even_classify(): void
+    {
+        // A2b idempotency: a staff-created ticket at intake (no real client reply) has nothing
+        // to resolve — the substance gate short-circuits BEFORE any AI classify, even across a
+        // job retry, so there is no wasted re-spend.
+        $this->mock(TechnicianClassifier::class, fn (MockInterface $m) => $m->shouldReceive('classify')->never());
+        $this->mock(TicketResolutionDrafter::class, fn (MockInterface $m) => $m->shouldReceive('draft')->never());
+
+        $ticket = $this->ticket(); // no client reply note
+
+        app(DraftPipeline::class)->run($ticket);
+        app(DraftPipeline::class)->run($ticket); // retry — still no classify
 
         $this->assertSame(0, TechnicianRun::where('ticket_id', $ticket->id)->whereIn('action_type', ['send_reply', 'propose_resolution'])->count());
     }
