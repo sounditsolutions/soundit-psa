@@ -637,6 +637,8 @@ Route::middleware('auth')->group(function () {
     Route::post('/cockpit/runs/{run}/acknowledge', [\App\Http\Controllers\Web\TechnicianCockpitController::class, 'acknowledge'])->name('cockpit.acknowledge');
     Route::post('/cockpit/runs/{run}/dismiss', [\App\Http\Controllers\Web\TechnicianCockpitController::class, 'dismiss'])->name('cockpit.dismiss');
     // Throttled: each correction dispatches an Opus re-assessment, so cap the rate (parity
-    // with the assistant message route) — bounded already by the agent's depth-cap + token budget.
+    // with the assistant message route). A correction-driven run skips the depth-cap (psa-rmus),
+    // so the bounds for this path are: this rate-limit + supersede-first (it replaces the pending
+    // proposal rather than accumulating) + the agent's daily token budget.
     Route::post('/cockpit/runs/{run}/correct', [\App\Http\Controllers\Web\TechnicianCockpitController::class, 'correct'])->name('cockpit.correct')->middleware('throttle:20,1');
 });
