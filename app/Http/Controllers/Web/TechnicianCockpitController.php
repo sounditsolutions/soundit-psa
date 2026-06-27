@@ -71,4 +71,26 @@ class TechnicianCockpitController extends Controller
 
         return redirect()->route('cockpit.index')->with('success', 'Flag dismissed.');
     }
+
+    /**
+     * Record an operator correction on a held proposal and trigger an immediate
+     * correction-driven re-assessment.  "Decline & correct" and "Add context &
+     * re-assess" both route here — same action, different operator framing (v1).
+     */
+    public function correct(Request $request, TechnicianRun $run)
+    {
+        $validated = $request->validate(['correction' => ['required', 'string', 'max:2000']]);
+
+        $ticket = $run->ticket;
+
+        // Record first so the conversation exists before re-assessment starts.
+        app(\App\Services\Agent\Steering\CorrectionRecorder::class)
+            ->record($ticket, $request->user(), $validated['correction'], $run);
+
+        // Supersede the current run and dispatch a correctionDriven RunTechnicianAgent.
+        app(\App\Services\Agent\Steering\ReassessTrigger::class)->reassess($ticket, $run);
+
+        return redirect()->route('cockpit.index')
+            ->with('success', "Re-assessing #{$ticket->id} with your correction.");
+    }
 }
