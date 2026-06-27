@@ -6,6 +6,7 @@ use App\Enums\ToolingGapClassification;
 use App\Enums\ToolingGapSource;
 use App\Models\Ticket;
 use App\Models\ToolingGap;
+use App\Services\Wiki\Mining\WikiRedactor;
 
 /**
  * The agent's recording-only self-report tool.
@@ -25,6 +26,8 @@ use App\Models\ToolingGap;
  */
 class RequestToolTool
 {
+    public function __construct(private readonly WikiRedactor $redactor) {}
+
     /** The Anthropic tool definition for `request_tool`. */
     public static function definition(): array
     {
@@ -73,6 +76,13 @@ class RequestToolTool
         }
 
         $note = isset($input['note']) ? mb_substr(trim((string) $input['note']), 0, 500) : null;
+
+        // Security: capability_gap is the forwardable ABSTRACT column — scan both fields
+        // before storing. A model-emitted secret or injection pattern must never reach the DB.
+        if ($this->redactor->scan($gap) !== [] || ($note !== null && $this->redactor->scan($note) !== [])) {
+            return 'Report rejected: the capability description contained sensitive or injection-like content. '
+                .'Please re-describe the capability in abstract terms with no secrets, credentials, or specific values.';
+        }
 
         ToolingGap::record(
             ticketId: $ticket->id,
