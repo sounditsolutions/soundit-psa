@@ -1,0 +1,211 @@
+<?php
+
+namespace Tests\Feature\Agent\Steering;
+
+use App\Enums\WikiFactSource;
+use App\Enums\WikiFactStatus;
+use App\Jobs\ComposeClientOverview;
+use App\Models\AssistantConversation;
+use App\Models\Client;
+use App\Models\Setting;
+use App\Models\TechnicianRun;
+use App\Models\Ticket;
+use App\Models\User;
+use App\Models\WikiFact;
+use App\Services\Agent\Steering\CorrectionRecorder;
+use App\Services\Agent\Steering\LessonCandidate;
+use App\Services\Agent\Steering\LessonCapture;
+use App\Services\Agent\Steering\LessonDistiller;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Bus;
+use Illuminate\Support\Facades\Log;
+use Tests\TestCase;
+
+/**
+ * LessonCapture — focused unit tests (mock the distiller; real wiki services).
+ *
+ * Tests the six behavioral contracts:
+ *  1. knowledge → durable Correction-sourced fact written (no approval queue).
+ *  2. tooling   → no fact; seam logged at info level.
+ *  3. none      → nothing written, no overview dispatch.
+ *  4. null      → nothing written, no exception.
+ *  5. wiki off  → gate short-circuits even for a knowledge candidate.
+ *  6. fail-soft → internal distiller error must never surface as an exception.
+ */
+class LessonCaptureTest extends TestCase
+{
+    use RefreshDatabase;
+
+    // ── helpers ──────────────────────────────────────────────────────────────
+
+    private function enableWiki(): void
+    {
+        Setting::setValue('wiki_enabled', '1');
+    }
+
+    private function makeClientAndTicket(): array
+    {
+        $client = Client::factory()->create();
+        $ticket = Ticket::factory()->for($client)->create();
+
+        return [$client, $ticket];
+    }
+
+    private function seedCorrection(Ticket $ticket, User $operator, string $text): AssistantConversation
+    {
+        return app(CorrectionRecorder::class)->record($ticket, $operator, $text);
+    }
+
+    // ── 1. knowledge → fact written (Confirmed, pinned, Correction source) ──
+
+    public function test_knowledge_candidate_writes_fact_no_approval_queue(): void
+    {
+        $this->enableWiki();
+        Bus::fake([ComposeClientOverview::class]);
+
+        $operator = User::factory()->create();
+        [$client, $ticket] = $this->makeClientAndTicket();
+        $conv = $this->seedCorrection($ticket, $operator, 'client is on a no-auto-close contract');
+
+        $candidate = new LessonCandidate('knowledge', 'known-issues', 'active', 'acme:no-auto-close', 'Acme is on a no-auto-close contract.', 0.9);
+        $this->mock(LessonDistiller::class)
+            ->shouldReceive('distill')
+            ->andReturn($candidate);
+
+        app(LessonCapture::class)->capture($ticket, $conv);
+
+        // A Correction-sourced fact must exist, born Confirmed + pinned.
+        $fact = WikiFact::where('source_type', WikiFactSource::Correction->value)->first();
+        $this->assertNotNull($fact, 'A WikiFact with source_type=Correction must be written.');
+        $this->assertSame(WikiFactStatus::Confirmed, $fact->status);
+        $this->assertTrue((bool) $fact->pinned);
+        $this->assertSame('Acme is on a no-auto-close contract.', $fact->statement);
+        $this->assertSame($client->id, $fact->client_id);
+        $this->assertSame('active', $fact->section_anchor);
+
+        // source_refs must carry the correction conversation_id.
+        $refs = $fact->source_refs ?? [];
+        $this->assertNotEmpty($refs);
+        $this->assertSame($conv->id, $refs[0]['conversation_id'] ?? null);
+        $this->assertSame('correction', $refs[0]['type'] ?? null);
+
+        // NO approval queue — capture writes the fact directly (no TechnicianRun).
+        $this->assertSame(0, TechnicianRun::count());
+
+        // Overview recompose dispatched for this client.
+        Bus::assertDispatched(
+            ComposeClientOverview::class,
+            fn (ComposeClientOverview $j) => $j->clientId === $client->id,
+        );
+    }
+
+    // ── 2. tooling → no fact, seam logged ────────────────────────────────────
+
+    public function test_tooling_candidate_logs_seam_no_fact_written(): void
+    {
+        $this->enableWiki();
+
+        $operator = User::factory()->create();
+        [$client, $ticket] = $this->makeClientAndTicket();
+        $conv = $this->seedCorrection($ticket, $operator, 'agent did not search sibling tickets');
+
+        $candidate = new LessonCandidate('tooling', statement: 'agent did not search sibling tickets');
+        $this->mock(LessonDistiller::class)
+            ->shouldReceive('distill')
+            ->andReturn($candidate);
+
+        Log::spy();
+
+        app(LessonCapture::class)->capture($ticket, $conv);
+
+        // No Correction fact must be written.
+        $this->assertSame(0, WikiFact::where('source_type', WikiFactSource::Correction->value)->count());
+
+        // Seam must be logged at info level with the LessonSeam marker.
+        Log::shouldHaveReceived('info')->withArgs(function ($message, $context = []) {
+            return str_contains($message, '[Steering][LessonSeam]');
+        })->once();
+    }
+
+    // ── 3. none → nothing written, no dispatch ───────────────────────────────
+
+    public function test_none_candidate_writes_nothing_and_does_not_dispatch(): void
+    {
+        $this->enableWiki();
+        Bus::fake([ComposeClientOverview::class]);
+
+        $operator = User::factory()->create();
+        [, $ticket] = $this->makeClientAndTicket();
+        $conv = $this->seedCorrection($ticket, $operator, 'just routine feedback');
+
+        $this->mock(LessonDistiller::class)
+            ->shouldReceive('distill')
+            ->andReturn(LessonCandidate::none());
+
+        app(LessonCapture::class)->capture($ticket, $conv);
+
+        $this->assertSame(0, WikiFact::where('source_type', WikiFactSource::Correction->value)->count());
+        Bus::assertNotDispatched(ComposeClientOverview::class);
+    }
+
+    // ── 4. null from distiller → nothing, no exception ───────────────────────
+
+    public function test_null_from_distiller_writes_nothing_does_not_throw(): void
+    {
+        $this->enableWiki();
+
+        $operator = User::factory()->create();
+        [, $ticket] = $this->makeClientAndTicket();
+        $conv = $this->seedCorrection($ticket, $operator, 'some feedback');
+
+        $this->mock(LessonDistiller::class)
+            ->shouldReceive('distill')
+            ->andReturn(null);
+
+        // Must not throw — null is a graceful "AI call failed, skip".
+        app(LessonCapture::class)->capture($ticket, $conv);
+
+        $this->assertSame(0, WikiFact::where('source_type', WikiFactSource::Correction->value)->count());
+    }
+
+    // ── 5. wiki disabled → gate short-circuits, no fact written ─────────────
+
+    public function test_wiki_disabled_noop_even_for_knowledge_candidate(): void
+    {
+        Setting::setValue('wiki_enabled', '0');
+
+        $operator = User::factory()->create();
+        [, $ticket] = $this->makeClientAndTicket();
+        $conv = $this->seedCorrection($ticket, $operator, 'client is on a no-auto-close contract');
+
+        $candidate = new LessonCandidate('knowledge', 'known-issues', 'active', 'acme:no-auto-close', 'Acme is on a no-auto-close contract.', 0.9);
+        $this->mock(LessonDistiller::class)
+            ->shouldReceive('distill')
+            ->andReturn($candidate);
+
+        app(LessonCapture::class)->capture($ticket, $conv);
+
+        // Wiki gate is before the distiller call; no fact must be written.
+        $this->assertSame(0, WikiFact::where('source_type', WikiFactSource::Correction->value)->count());
+    }
+
+    // ── 6. fail-soft: internal error must never surface ──────────────────────
+
+    public function test_capture_is_fail_soft_on_internal_error(): void
+    {
+        $this->enableWiki();
+
+        $operator = User::factory()->create();
+        [, $ticket] = $this->makeClientAndTicket();
+        $conv = $this->seedCorrection($ticket, $operator, 'some feedback');
+
+        $this->mock(LessonDistiller::class)
+            ->shouldReceive('distill')
+            ->andThrow(new \RuntimeException('boom — distiller exploded'));
+
+        // Must NOT propagate the exception — the agent has already acted.
+        app(LessonCapture::class)->capture($ticket, $conv);
+
+        $this->assertSame(0, WikiFact::where('source_type', WikiFactSource::Correction->value)->count());
+    }
+}
