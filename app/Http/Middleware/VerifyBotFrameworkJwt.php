@@ -88,7 +88,10 @@ class VerifyBotFrameworkJwt
         // influenceable; this signed claim is not. The controller asserts
         // claim === activity.serviceUrl before replying (requirement 7 of the Bot
         // Connector spec) — defence in depth alongside TeamsBotClient's host allowlist.
-        $request->attributes->set('teams_bot_service_url', is_string($claims->serviceUrl ?? null) ? $claims->serviceUrl : null);
+        // Bot Framework emits this claim LOWERCASED as "serviceurl"; tolerate either
+        // case (camelCase kept as a fallback) so the pin doesn't silently fail closed.
+        $serviceUrlClaim = $claims->serviceurl ?? $claims->serviceUrl ?? null;
+        $request->attributes->set('teams_bot_service_url', is_string($serviceUrlClaim) ? $serviceUrlClaim : null);
 
         return $next($request);
     }

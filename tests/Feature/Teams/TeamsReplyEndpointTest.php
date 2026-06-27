@@ -58,7 +58,8 @@ class TeamsReplyEndpointTest extends TestCase
             'iss' => 'https://api.botframework.com',
             'aud' => $this->appId,
             'iat' => $now, 'nbf' => $now, 'exp' => $now + 3600,
-            'serviceUrl' => $serviceUrl ?? $this->serviceUrl,
+            // Bot Framework emits this claim LOWERCASED — mirror the real token shape.
+            'serviceurl' => $serviceUrl ?? $this->serviceUrl,
         ], $this->privatePem, 'RS256', 'k1');
     }
 
@@ -157,6 +158,21 @@ class TeamsReplyEndpointTest extends TestCase
         // (both are trusted hosts) — the pin to the signed claim must fail closed.
         $token = $this->token('https://smba.trafficmanager.net/amer/');
         $activity = $this->activity('aad-charlie', mention: true, serviceUrl: 'https://smba.trafficmanager.net/emea/');
+
+        $this->sendActivity($token, $activity)->assertOk();
+    }
+
+    public function test_service_url_trailing_slash_difference_still_pins_and_replies(): void
+    {
+        Setting::setValue('teams_bot_enabled', '1');
+        User::factory()->create(['microsoft_id' => 'aad-charlie', 'is_active' => true]);
+
+        // An inconsequential trailing-slash difference between the signed claim and
+        // the activity body (same host + path) must NOT fail the pin closed.
+        $this->mock(TeamsReplyService::class, fn (MockInterface $m) => $m->shouldReceive('reply')->once());
+
+        $token = $this->token('https://smba.trafficmanager.net/amer/');
+        $activity = $this->activity('aad-charlie', mention: true, serviceUrl: 'https://smba.trafficmanager.net/amer');
 
         $this->sendActivity($token, $activity)->assertOk();
     }
