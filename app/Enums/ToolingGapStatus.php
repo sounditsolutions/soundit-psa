@@ -13,6 +13,15 @@ enum ToolingGapStatus: string
     case Resolved = 'resolved';
     case WontFix = 'wontfix';
 
+    /**
+     * Normalise option-supplied input to a known status, failing safe to Open.
+     * Allows a typo from `--status=garbage` to default to Open without crashing.
+     */
+    public static function fromInput(?string $value): self
+    {
+        return self::tryFrom(trim((string) $value)) ?? self::Open;
+    }
+
     public function label(): string
     {
         return match ($this) {
