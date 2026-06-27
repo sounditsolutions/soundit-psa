@@ -16,6 +16,7 @@ use App\Services\Agent\Steering\CorrectionRecorder;
 use App\Services\Agent\Steering\LessonCandidate;
 use App\Services\Agent\Steering\LessonCapture;
 use App\Services\Agent\Steering\LessonDistiller;
+use App\Services\Wiki\Mining\WikiFactExtractor;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Log;
@@ -187,6 +188,46 @@ class LessonCaptureTest extends TestCase
 
         // Wiki gate is before the distiller call; no fact must be written.
         $this->assertSame(0, WikiFact::where('source_type', WikiFactSource::Correction->value)->count());
+    }
+
+    // ── 7. backstop: 'overview' (a real skeleton page) must NEVER be written ──
+
+    /**
+     * Simulates a hypothetical distiller that slipped an 'overview' page through.
+     * 'overview' IS a real skeleton page, so the "page missing" guard would NOT save us.
+     * The write-point TARGETS check is the only thing that stops the fact being written.
+     * Without that guard this test FAILS — upsertCorrectionFact would be called and a
+     * Correction WikiFact would be persisted for the overview page.
+     */
+    public function test_refuses_to_write_a_fact_targeting_the_overview_page(): void
+    {
+        $this->enableWiki();
+        Bus::fake([ComposeClientOverview::class]);
+
+        $operator = User::factory()->create();
+        [$client, $ticket] = $this->makeClientAndTicket();
+        $conv = $this->seedCorrection($ticket, $operator, 'some client background info');
+
+        // 'overview' is not in WikiFactExtractor::TARGETS — this is the invariant we guard.
+        $this->assertArrayNotHasKey('overview', WikiFactExtractor::TARGETS, 'Precondition: overview must remain absent from TARGETS.');
+
+        // A distiller that — hypothetically — slipped 'overview' through as a knowledge target.
+        $candidate = new LessonCandidate('knowledge', 'overview', 'summary', 'acme:background', 'Acme background info.', 0.9);
+        $this->mock(LessonDistiller::class)
+            ->shouldReceive('distill')
+            ->andReturn($candidate);
+
+        app(LessonCapture::class)->capture($ticket, $conv);
+
+        // The write-point backstop must have blocked this — zero Correction facts written.
+        $this->assertSame(
+            0,
+            WikiFact::where('source_type', WikiFactSource::Correction->value)->count(),
+            'LessonCapture must NEVER write a fact targeting the Overview page.'
+        );
+
+        // No overview recompose should be triggered either.
+        Bus::assertNotDispatched(ComposeClientOverview::class);
     }
 
     // ── 6. fail-soft: internal error must never surface ──────────────────────

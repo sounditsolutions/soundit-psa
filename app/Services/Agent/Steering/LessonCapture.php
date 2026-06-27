@@ -7,6 +7,7 @@ use App\Models\AssistantConversation;
 use App\Models\Ticket;
 use App\Models\WikiPage;
 use App\Services\Triage\ContextBuilder;
+use App\Services\Wiki\Mining\WikiFactExtractor;
 use App\Services\Wiki\WikiComposerService;
 use App\Services\Wiki\WikiFactService;
 use App\Services\Wiki\WikiSkeletonService;
@@ -63,6 +64,14 @@ class LessonCapture
             }
 
             // knowledge → write a durable, pinned, Correction-sourced fact (NO approval queue).
+
+            // Belt-and-suspenders: only ever write to a staff TARGETS page — NEVER the injection-guarded
+            // Overview. The distiller already enforces this, but re-check at the write point because 'overview'
+            // is a real skeleton page that the "page missing" guard below would NOT catch.
+            if (! array_key_exists((string) $candidate->page, WikiFactExtractor::TARGETS)) {
+                return;
+            }
+
             $this->skeleton->ensureForClient($client);
             $page = WikiPage::forClient($client->id)->where('slug', $candidate->page)->first();
             if ($page === null) {
