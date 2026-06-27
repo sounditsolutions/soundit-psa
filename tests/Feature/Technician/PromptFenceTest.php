@@ -93,4 +93,41 @@ class PromptFenceTest extends TestCase
 
         $this->assertStringContainsString($legit, $out);
     }
+
+    // ── psa-gofv: operatorDirective — trusted-but-bounded correction wrapper ──
+
+    public function test_operator_directive_wraps_with_trusted_marker_and_contains_directive_text(): void
+    {
+        $out = (new PromptFence)->operatorDirective('Charlie', 'close it, the contract says no auto-close');
+
+        $this->assertStringContainsString('=== OPERATOR DIRECTIVE', $out);
+        $this->assertStringContainsString('Charlie', $out);
+        $this->assertStringContainsString('close it, the contract says no auto-close', $out);
+    }
+
+    public function test_operator_directive_caps_long_input_to_2000_chars_between_markers(): void
+    {
+        $input = str_repeat('A', 5000);
+        $out = (new PromptFence)->operatorDirective('Charlie', $input);
+
+        // Extract the directive text: everything between "===\n" and "\n===".
+        // Non-greedy .*? stops at the first \n=== (the closing marker), not the last.
+        preg_match('/===\n(.*?)\n===/s', $out, $m);
+        $this->assertLessThanOrEqual(2000, mb_strlen($m[1] ?? ''));
+    }
+
+    public function test_operator_directive_strips_zero_width_chars_from_directive_text(): void
+    {
+        $input = "clo\u{200B}se i\u{200B}t";
+        $out = (new PromptFence)->operatorDirective('Charlie', $input);
+
+        $this->assertStringNotContainsString("\u{200B}", $out);
+    }
+
+    public function test_operator_directive_does_not_use_the_untrusted_fence_marker(): void
+    {
+        $out = (new PromptFence)->operatorDirective('Charlie', 'close it');
+
+        $this->assertStringNotContainsString('=== UNTRUSTED', $out);
+    }
 }
