@@ -378,9 +378,10 @@ class TechnicianAgentTest extends TestCase
         $this->configureAi();
         $notifier = $this->mock(OperatorNotifier::class);
         $notifier->shouldReceive('notify')->never();
-        // The drafter WOULD produce a held reply if reached — proving the GUARD blocks it.
-        $this->mock(TechnicianReplyDrafter::class, fn ($m) => $m->shouldReceive('draft')
-            ->andReturn(new TechnicianDraft('would-be reply', 'c@example.com', 50)));
+        // The drafter must NEVER be consulted — the one-action guard refuses send_reply
+        // BEFORE it reaches SendReplyTool (the unaddressed-reply fixture below means the
+        // tool WOULD draft if the guard ever let it through, so ->never() proves the guard).
+        $this->mock(TechnicianReplyDrafter::class, fn ($m) => $m->shouldReceive('draft')->never());
 
         $ticket = $this->openTicketWithClient();
         $this->unaddressedClientReply($ticket);

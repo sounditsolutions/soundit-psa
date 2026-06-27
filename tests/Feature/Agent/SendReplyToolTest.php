@@ -189,7 +189,10 @@ class SendReplyToolTest extends TestCase
     public function test_a_duplicate_reply_does_not_create_a_second_run(): void
     {
         // Idempotency (mirrors ProposeCloseTool): the same drafted body held twice = one run.
-        $this->mockDrafter(new TechnicianDraft('Identical body.', 'c@example.com', 100));
+        // The drafter is consulted exactly ONCE — the second call is suppressed by
+        // ack-suppression (the first held draft addresses the client reply), so no AI re-spend.
+        $this->mock(TechnicianReplyDrafter::class, fn (MockInterface $m) => $m->shouldReceive('draft')->once()
+            ->andReturn(new TechnicianDraft('Identical body.', 'c@example.com', 100)));
         $ticket = $this->ticketAwaitingReply();
         $tool = app(SendReplyTool::class);
 
