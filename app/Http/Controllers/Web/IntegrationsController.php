@@ -276,6 +276,11 @@ class IntegrationsController extends Controller
         $teamsBotSecretSet = \App\Support\TeamsBotConfig::clientSecret() !== null;
         $teamsBotConfigured = \App\Support\TeamsBotConfig::configured();
         $teamsBotEnabled = \App\Support\TeamsBotConfig::enabled();
+        // Ambient "culture" dials (psa-i4cf) — surfaced as operator controls, pre-populated.
+        $teamsBotAmbientEnabled = \App\Support\TeamsBotConfig::ambientEnabled();
+        $teamsBotEagerness = \App\Support\TeamsBotConfig::ambientEagerness();
+        $teamsBotBanter = \App\Support\TeamsBotConfig::ambientBanter();
+        $teamsBotCooldown = \App\Support\TeamsBotConfig::ambientCooldownSeconds();
 
         // Phase 2: emergency / escalation / availability / SMS view vars
         $technicianEscalationChain = \App\Support\TechnicianConfig::escalationChain();
@@ -345,6 +350,7 @@ class IntegrationsController extends Controller
             'technicianMaxHoldMessage', 'technicianMaxHoldAuto', 'technicianEmergencyKeywords', 'technicianEmergencyAge',
             'technicianAvailability', 'technicianOperatorPhones', 'activeUsers',
             'teamsBotAppId', 'teamsBotTenantId', 'teamsBotSecretSet', 'teamsBotConfigured', 'teamsBotEnabled',
+            'teamsBotAmbientEnabled', 'teamsBotEagerness', 'teamsBotBanter', 'teamsBotCooldown',
             'screenconnectBaseUrl', 'screenconnectWebhookSecret', 'screenconnectEnabled', 'screenconnectConfigured',
             'tacticalConfigured', 'tacticalApiUrl', 'tacticalWebUrl', 'tacticalConnected', 'tacticalEnabled',
             'tacticalWebhookLastAt', 'tacticalWebhookProcessed24h', 'tacticalWebhookFailed',
@@ -1696,7 +1702,19 @@ class IntegrationsController extends Controller
             \App\Support\TeamsBotConfig::setClientSecret($secret);
         }
 
-        return redirect()->route('settings.integrations')->with('success', 'Teams Bot credentials saved.');
+        // Ambient "culture" dials (psa-i4cf): operator-tunable so each MSP sets its own
+        // chat culture. Toggles via has(); eagerness normalised to the known set (junk →
+        // normal); cooldown clamped to a sane range (the reader applies its own floor).
+        Setting::setValue('teams_ambient_enabled', $request->has('teams_ambient_enabled') ? '1' : '0');
+        Setting::setValue('teams_ambient_banter', $request->has('teams_ambient_banter') ? '1' : '0');
+
+        $eagerness = $request->input('teams_ambient_eagerness');
+        Setting::setValue('teams_ambient_eagerness', in_array($eagerness, ['low', 'normal', 'high'], true) ? $eagerness : 'normal');
+
+        $cooldown = max(0, min(3600, (int) $request->input('teams_ambient_cooldown_seconds', 60)));
+        Setting::setValue('teams_ambient_cooldown_seconds', (string) $cooldown);
+
+        return redirect()->route('settings.integrations')->with('success', 'Teams Bot settings saved.');
     }
 
     // --- AI Technician ---

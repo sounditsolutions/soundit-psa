@@ -102,4 +102,103 @@ class TeamsBotIntegrationUiTest extends TestCase
             ->assertSee('Teams Bot')
             ->assertDontSee('top-secret-value'); // never render the raw secret
     }
+
+    // ── psa-i4cf: ambient "culture" controls ─────────────────────────────────
+
+    public function test_panel_renders_the_ambient_controls_prepopulated(): void
+    {
+        // The live-tuned values that must be surfaced (not changed).
+        Setting::setValue('teams_ambient_enabled', '1');
+        Setting::setValue('teams_ambient_eagerness', 'high');
+        Setting::setValue('teams_ambient_banter', '1');
+        Setting::setValue('teams_ambient_cooldown_seconds', '90');
+
+        $response = $this->actingAs($this->user)->get(route('settings.integrations'))->assertOk();
+
+        // The four operator controls exist, framed as culture.
+        $response->assertSee('Ambient participation');
+        $response->assertSee('teams_ambient_enabled', false);
+        $response->assertSee('teams_ambient_eagerness', false);
+        $response->assertSee('teams_ambient_banter', false);
+        $response->assertSee('teams_ambient_cooldown_seconds', false);
+        // Operator-friendly eagerness labels.
+        $response->assertSee('Reserved');
+        $response->assertSee('Balanced');
+        $response->assertSee('Eager');
+        // Pre-populated from the live settings: the cooldown shows 90 and the current
+        // eagerness ('high') is the selected option.
+        $response->assertSee('value="90"', false);
+        $response->assertSee('value="high" selected', false);
+    }
+
+    public function test_saving_persists_the_ambient_dials(): void
+    {
+        $this->actingAs($this->user)
+            ->post(route('settings.integrations.teams-bot.update'), [
+                'teams_ambient_enabled' => '1',
+                'teams_ambient_eagerness' => 'high',
+                'teams_ambient_banter' => '1',
+                'teams_ambient_cooldown_seconds' => '90',
+            ])
+            ->assertRedirect(route('settings.integrations'));
+
+        $this->assertTrue(TeamsBotConfig::ambientEnabled());
+        $this->assertSame('high', TeamsBotConfig::ambientEagerness());
+        $this->assertTrue(TeamsBotConfig::ambientBanter());
+        $this->assertSame(90, TeamsBotConfig::ambientCooldownSeconds());
+    }
+
+    public function test_unchecking_the_ambient_toggles_disables_them(): void
+    {
+        Setting::setValue('teams_ambient_enabled', '1');
+        Setting::setValue('teams_ambient_banter', '1');
+
+        $this->actingAs($this->user)
+            ->post(route('settings.integrations.teams-bot.update'), [
+                'teams_ambient_eagerness' => 'normal',
+                'teams_ambient_cooldown_seconds' => '60',
+                // no teams_ambient_enabled, no teams_ambient_banter
+            ])
+            ->assertRedirect(route('settings.integrations'));
+
+        $this->assertFalse(TeamsBotConfig::ambientEnabled());
+        $this->assertFalse(TeamsBotConfig::ambientBanter());
+    }
+
+    public function test_invalid_eagerness_falls_back_to_normal(): void
+    {
+        $this->actingAs($this->user)
+            ->post(route('settings.integrations.teams-bot.update'), [
+                'teams_ambient_eagerness' => 'bananas',
+                'teams_ambient_cooldown_seconds' => '60',
+            ])
+            ->assertRedirect(route('settings.integrations'));
+
+        $this->assertSame('normal', TeamsBotConfig::ambientEagerness());
+    }
+
+    public function test_cooldown_is_clamped_to_a_sane_maximum(): void
+    {
+        $this->actingAs($this->user)
+            ->post(route('settings.integrations.teams-bot.update'), [
+                'teams_ambient_eagerness' => 'normal',
+                'teams_ambient_cooldown_seconds' => '99999',
+            ])
+            ->assertRedirect(route('settings.integrations'));
+
+        $this->assertSame(3600, TeamsBotConfig::ambientCooldownSeconds());
+    }
+
+    public function test_cooldown_floor_and_absent_eagerness_default(): void
+    {
+        $this->actingAs($this->user)
+            ->post(route('settings.integrations.teams-bot.update'), [
+                'teams_ambient_cooldown_seconds' => '0', // below the reader's floor
+                // no teams_ambient_eagerness submitted
+            ])
+            ->assertRedirect(route('settings.integrations'));
+
+        $this->assertSame(5, TeamsBotConfig::ambientCooldownSeconds()); // reader floors at 5
+        $this->assertSame('normal', TeamsBotConfig::ambientEagerness()); // absent → normal
+    }
 }
