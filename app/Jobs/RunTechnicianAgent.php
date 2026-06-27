@@ -101,10 +101,15 @@ class RunTechnicianAgent implements ShouldQueue
         }
 
         // 6. Depth-cap (CO-11): anti-flood — don't accumulate an unbounded held-proposal queue.
-        if (TechnicianRun::where('action_type', 'propose_close')
-            ->where('state', TechnicianRunState::AwaitingApproval)
-            ->count() >= AgentConfig::maxPendingProposals()) {
-            return;
+        //    Skipped for correction-driven runs (psa-rmus): a correction SUPERSEDES an existing
+        //    proposal (replaces, doesn't add to the flood), and the operator explicitly asked —
+        //    so the anti-flood cap must not silently drop their correction.
+        if (! $this->correctionDriven) {
+            if (TechnicianRun::where('action_type', 'propose_close')
+                ->where('state', TechnicianRunState::AwaitingApproval)
+                ->count() >= AgentConfig::maxPendingProposals()) {
+                return;
+            }
         }
 
         // 7. Change-throttle (CO-16): skip if we already evaluated this ticket since it last
@@ -125,8 +130,14 @@ class RunTechnicianAgent implements ShouldQueue
         }
 
         // 8. Significance gate — cheap Haiku check; false = "clearly still active, skip".
-        if (! app(SignificanceGate::class)->assess($ticket)) {
-            return;
+        //    Skipped for correction-driven runs (psa-rmus, P1): this "is it worth the agent's
+        //    attention?" filter exists for the AUTONOMOUS review pass — it must NEVER veto an
+        //    EXPLICIT operator correction (which silently no-op'd real operator corrections on
+        //    prod). An operator who declined + corrected has already decided it's worth a look.
+        if (! $this->correctionDriven) {
+            if (! app(SignificanceGate::class)->assess($ticket)) {
+                return;
+            }
         }
 
         // 9. Resolve correction context (correction-driven runs only) so the agent can
