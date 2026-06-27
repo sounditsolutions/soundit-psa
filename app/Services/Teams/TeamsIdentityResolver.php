@@ -22,8 +22,12 @@ class TeamsIdentityResolver
         // 1. The activity must be addressed to a REGISTERED bot. recipient.id is the
         //    bot's App ID; resolving it picks the MSP context. (Defense in depth — the
         //    JWT audience was already checked, but the activity body is re-validated.)
-        $appId = $activity['recipient']['id'] ?? null;
-        $msp = TeamsBotConfig::forAppId(is_string($appId) ? $appId : null);
+        //    Teams encodes a bot's channel-account id as "28:<appId>", so strip that
+        //    documented prefix to recover the bare App ID before the registered-set
+        //    match (a bare id, e.g. from the emulator, passes through unchanged).
+        $recipientId = $activity['recipient']['id'] ?? null;
+        $appId = is_string($recipientId) ? preg_replace('/^28:/', '', $recipientId) : null;
+        $msp = TeamsBotConfig::forAppId($appId);
         if ($msp === null) {
             $this->audit('unregistered bot recipient', $activity);
 

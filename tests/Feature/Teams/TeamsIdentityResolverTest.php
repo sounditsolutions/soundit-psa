@@ -60,6 +60,23 @@ class TeamsIdentityResolverTest extends TestCase
         $this->assertSame('https://smba.trafficmanager.net/teams/', $resolved->serviceUrl);
     }
 
+    public function test_teams_28_prefixed_bot_recipient_resolves(): void
+    {
+        // Teams encodes a bot's channel-account id as "28:<appId>". The resolver must
+        // recover the bare App ID before matching it against the registered set, or a
+        // real Teams message (which always carries the 28: prefix) never resolves and
+        // the bot silently refuses every message ("unregistered bot recipient").
+        $user = User::factory()->create(['microsoft_id' => 'aad-charlie', 'is_active' => true]);
+
+        $resolved = app(TeamsIdentityResolver::class)->resolve(
+            $this->activity('aad-charlie', ['recipient' => ['id' => '28:'.$this->appId]])
+        );
+
+        $this->assertInstanceOf(ResolvedSender::class, $resolved);
+        $this->assertSame($user->id, $resolved->user->id);
+        $this->assertSame($this->appId, $resolved->appId, 'the resolved appId is the bare id, not 28:-prefixed');
+    }
+
     public function test_unknown_sender_resolves_to_null_and_is_audited(): void
     {
         Log::spy();
