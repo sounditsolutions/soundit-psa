@@ -95,10 +95,15 @@ class TriageConfig
 
     /**
      * How often (in minutes) the review cron should run. Default: 60.
+     *
+     * Floored at 1 (psa-lqlu, defense-in-depth): a zero/negative value would make the
+     * throttle window non-positive and the staleness-alarm TTL non-future — flooding the
+     * pass + the operator alert. The Settings UI already validates min:5; this guards a
+     * future unvalidated write path.
      */
     public static function reviewFrequencyMinutes(): int
     {
-        return (int) (Setting::getValue('triage_review_frequency_minutes') ?: 60);
+        return max(1, (int) (Setting::getValue('triage_review_frequency_minutes') ?: 60));
     }
 
     /**

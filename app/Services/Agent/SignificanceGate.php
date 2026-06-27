@@ -76,8 +76,10 @@ class SignificanceGate
      */
     private function buildContext(Ticket $ticket): string
     {
+        // Sign-safe (psa-lqlu): $past->diffInDays(now()) is positive; now()->diffInDays($past)
+        // is NEGATIVE in Carbon 3 and would feed the gate a "-5 days ago" age.
         $ageDays = $ticket->updated_at
-            ? (int) now()->diffInDays($ticket->updated_at)
+            ? (int) $ticket->updated_at->diffInDays(now())
             : 0;
 
         $status = $ticket->status instanceof TicketStatus

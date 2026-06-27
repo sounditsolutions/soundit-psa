@@ -1398,7 +1398,9 @@ class TriageToolExecutor
 
         $daysSinceBackup = null;
         if ($jobData['last_success']) {
-            $daysSinceBackup = now()->diffInDays(\Carbon\Carbon::parse($jobData['last_success']['started']));
+            // Sign-safe (psa-lqlu): $past->diffInDays(now()) is positive; the now()-first form
+            // is NEGATIVE in Carbon 3 and reported a negative "days since backup" to the agent.
+            $daysSinceBackup = (int) \Carbon\Carbon::parse($jobData['last_success']['started'])->diffInDays(now());
         }
 
         return [

@@ -794,12 +794,17 @@ class TicketService
 
     private function checkSlaBreach(Ticket $ticket): void
     {
-        if (! $ticket->due_at || $ticket->sla_breach_recorded_at) {
+        // opened_at guarded too: the sign-safe form below calls diffInMinutes ON opened_at,
+        // and the codebase treats opened_at as nullable (cf. net_elapsed_minutes) — no SLA
+        // window without it.
+        if (! $ticket->due_at || ! $ticket->opened_at || $ticket->sla_breach_recorded_at) {
             return;
         }
 
         $netElapsed = $ticket->net_elapsed_minutes;
-        $slaMinutes = $ticket->due_at->diffInMinutes($ticket->opened_at);
+        // Sign-safe (psa-lqlu): the SLA window is (due − opened). due_at->diffInMinutes(opened_at)
+        // is NEGATIVE in Carbon 3, so `netElapsed > negative` recorded a breach on EVERY check.
+        $slaMinutes = (int) $ticket->opened_at->diffInMinutes($ticket->due_at);
 
         if ($netElapsed > $slaMinutes) {
             $ticket->update(['sla_breach_recorded_at' => now()]);
