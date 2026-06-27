@@ -2,9 +2,11 @@
 
 namespace App\Services\Technician\Notify;
 
+use App\Enums\ToolingGapStatus;
 use App\Enums\WikiFactSource;
 use App\Enums\WikiFactStatus;
 use App\Models\TechnicianActionLog;
+use App\Models\ToolingGap;
 use App\Models\WikiFact;
 use App\Services\Technician\Cockpit\CockpitQuery;
 
@@ -33,7 +35,14 @@ class DigestBuilder
             ->get();
         $learnedCount = $learned->count();
 
-        $isEmpty = $pending->isEmpty() && $needsYou === 0 && $done === 0 && $learnedCount === 0;
+        $toolingGaps = ToolingGap::query()
+            ->where('status', ToolingGapStatus::Open->value)
+            ->where('created_at', '>=', now()->subDay())
+            ->latest()
+            ->get();
+        $toolingGapCount = $toolingGaps->count();
+
+        $isEmpty = $pending->isEmpty() && $needsYou === 0 && $done === 0 && $learnedCount === 0 && $toolingGapCount === 0;
 
         $lines = [
             'AI Technician — daily summary',
@@ -42,6 +51,7 @@ class DigestBuilder
             "Need a human (couldn't draft): {$needsYou}",
             "Handled autonomously (last 24h): {$done}",
             "Learned from your corrections (last 24h): {$learnedCount}",
+            "Tooling gaps to review (last 24h): {$toolingGapCount}",
         ];
 
         if ($pending->isNotEmpty()) {
@@ -65,6 +75,16 @@ class DigestBuilder
             $lines[] = 'What I learned (from your corrections):';
             foreach ($learned->take(5) as $fact) {
                 $lines[] = '• '.TeamsText::escape($fact->statement);
+            }
+        }
+
+        if ($toolingGapCount > 0) {
+            $lines[] = '';
+            $lines[] = 'Tooling gaps to review:';
+            foreach ($toolingGaps->take(5) as $gap) {
+                // Privacy contract: only the ABSTRACT capability_gap is shown here.
+                // The instance-private evidence is NEVER surfaced in the digest.
+                $lines[] = '• '.TeamsText::escape($gap->capability_gap);
             }
         }
 

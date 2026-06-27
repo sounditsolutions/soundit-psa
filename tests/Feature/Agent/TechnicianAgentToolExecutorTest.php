@@ -4,12 +4,15 @@ namespace Tests\Feature\Agent;
 
 use App\Enums\TechnicianRunState;
 use App\Enums\TicketStatus;
+use App\Enums\ToolingGapSource;
 use App\Models\Client;
 use App\Models\TechnicianRun;
 use App\Models\Ticket;
+use App\Models\ToolingGap;
 use App\Models\User;
 use App\Services\Agent\FlagAttentionTool;
 use App\Services\Agent\ProposeCloseTool;
+use App\Services\Agent\RequestToolTool;
 use App\Services\Agent\SendReplyTool;
 use App\Services\Agent\TechnicianAgentToolExecutor;
 use App\Services\Technician\Notify\OperatorNotifier;
@@ -56,7 +59,7 @@ class TechnicianAgentToolExecutorTest extends TestCase
 
     private function executor(Ticket $ticket): TechnicianAgentToolExecutor
     {
-        return new TechnicianAgentToolExecutor($ticket, app(ProposeCloseTool::class), app(FlagAttentionTool::class), app(SendReplyTool::class));
+        return new TechnicianAgentToolExecutor($ticket, app(ProposeCloseTool::class), app(FlagAttentionTool::class), app(SendReplyTool::class), app(RequestToolTool::class));
     }
 
     private function assertNoAuditRowForTicket(Ticket $ticket): void
@@ -347,5 +350,68 @@ class TechnicianAgentToolExecutorTest extends TestCase
 
         // No audit rows written for any of the refused calls.
         $this->assertNoAuditRowForTicket($ticket);
+    }
+
+    // ── 6. request_tool routes to the recording path ─────────────────────────
+
+    /**
+     * execute('request_tool', …) must route to RequestToolTool, NOT return the
+     * default-deny error, and must write a ToolingGap row.
+     */
+    public function test_request_tool_routes_to_recording_path_and_writes_gap(): void
+    {
+        $ticket = $this->openTicketWithClient();
+
+        $result = $this->executor($ticket)->execute('request_tool', [
+            'capability_gap' => 'needs NinjaRMM device health lookup',
+            'classification' => 'tool_missing',
+        ]);
+
+        // Must NOT return the default-deny error.
+        $this->assertNotSame(['error' => 'tool not available to the agent'], $result);
+        $this->assertIsString($result);
+
+        // A ToolingGap must exist.
+        $gap = ToolingGap::where('source', ToolingGapSource::Agent)->first();
+        $this->assertNotNull($gap, 'A ToolingGap(source=Agent) must be created.');
+        $this->assertSame('needs NinjaRMM device health lookup', $gap->capability_gap);
+    }
+
+    // ── 7. request_tool NEVER mutates (adversarial) ───────────────────────────
+
+    /**
+     * Even via the executor, request_tool must not touch the ticket, the client,
+     * or create any TechnicianRun row.
+     */
+    public function test_request_tool_never_mutates_ticket_or_creates_technician_run(): void
+    {
+        $ticket = $this->openTicketWithClient();
+        $originalStatus = $ticket->status;
+
+        $this->executor($ticket)->execute('request_tool', [
+            'capability_gap' => 'needs vendor contract lookup',
+            'classification' => 'tool_missing',
+        ]);
+
+        $this->assertSame($originalStatus, $ticket->fresh()->status, 'Ticket status must be unchanged.');
+        $this->assertSame(0, TechnicianRun::count(), 'No TechnicianRun must be created by request_tool.');
+        $this->assertNoAuditRowForTicket($ticket);
+    }
+
+    // ── 8. default-deny still holds for unknown verbs ─────────────────────────
+
+    /**
+     * 'set_ticket_status' and other unknowns must STILL return the error sentinel
+     * after the request_tool arm is added. Also asserts no ToolingGap is written.
+     */
+    public function test_default_deny_still_holds_for_unknown_verb(): void
+    {
+        $ticket = $this->openTicket();
+
+        $result = $this->executor($ticket)->execute('set_ticket_status', ['status' => 'closed']);
+
+        $this->assertSame(['error' => 'tool not available to the agent'], $result);
+        $this->assertSame(0, ToolingGap::count(), 'No ToolingGap must be written for a refused tool.');
+        $this->assertSame(TicketStatus::InProgress, $ticket->fresh()->status);
     }
 }
