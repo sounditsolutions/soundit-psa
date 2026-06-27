@@ -241,16 +241,13 @@ Schedule::command('triage:review-open')
     ->withoutOverlapping(10)
     ->runInBackground()
     ->when(function () {
-        if (! \App\Support\TriageConfig::autoReviewEnabled()) {
+        // Trip-critical: the whole agent (close + reply + flag + emergency review) rides
+        // this pass. The throttle decision lives in TriageSchedule (sign-safe + unit-tested)
+        // after a Carbon-3 signed-diffInMinutes bug wedged it dead for 12.7h (psa-lqlu).
+        if (! \App\Support\TriageSchedule::reviewPassDue()) {
             return false;
         }
-        $freq = \App\Support\TriageConfig::reviewFrequencyMinutes();
-        $cacheKey = 'triage:review-open:last-run';
-        $lastRun = cache($cacheKey);
-        if ($lastRun && now()->diffInMinutes($lastRun) < $freq) {
-            return false;
-        }
-        cache([$cacheKey => now()], now()->addHours(24));
+        \App\Support\TriageSchedule::markReviewPassRun();
 
         return true;
     });

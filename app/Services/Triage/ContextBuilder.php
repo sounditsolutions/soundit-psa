@@ -715,8 +715,10 @@ class ContextBuilder
                     if ($jobData['last_failure'] && (! $jobData['last_success'] || $jobData['last_failure']['started'] > $jobData['last_success']['started'])) {
                         $info .= "\n    ⚠ Last backup FAILED: ".$jobData['last_failure']['started'];
                     }
+                    // Sign-safe (psa-lqlu): now()->diffInDays($past) is NEGATIVE in Carbon 3,
+                    // so the > 2 backup-staleness warning never fired. $past->diffInDays(now()) is positive.
                     $daysSinceBackup = $jobData['last_success']
-                        ? now()->diffInDays(\Carbon\Carbon::parse($jobData['last_success']['started']))
+                        ? (int) \Carbon\Carbon::parse($jobData['last_success']['started'])->diffInDays(now())
                         : null;
                     if ($daysSinceBackup !== null && $daysSinceBackup > 2) {
                         $info .= "\n    ⚠ No successful backup in {$daysSinceBackup} days";

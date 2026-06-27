@@ -799,7 +799,9 @@ class TicketService
         }
 
         $netElapsed = $ticket->net_elapsed_minutes;
-        $slaMinutes = $ticket->due_at->diffInMinutes($ticket->opened_at);
+        // Sign-safe (psa-lqlu): the SLA window is (due − opened). due_at->diffInMinutes(opened_at)
+        // is NEGATIVE in Carbon 3, so `netElapsed > negative` recorded a breach on EVERY check.
+        $slaMinutes = (int) $ticket->opened_at->diffInMinutes($ticket->due_at);
 
         if ($netElapsed > $slaMinutes) {
             $ticket->update(['sla_breach_recorded_at' => now()]);

@@ -573,7 +573,9 @@ class BillingService
             return null; // Manual licenses have no synced_at — not stale
         }
 
-        return (int) now()->diffInHours(\Illuminate\Support\Carbon::parse($oldestSync));
+        // Sign-safe (psa-lqlu): $past->diffInHours(now()) is positive; the now()-first form is
+        // NEGATIVE in Carbon 3, reporting negative "hours since sync".
+        return (int) \Illuminate\Support\Carbon::parse($oldestSync)->diffInHours(now());
     }
 
     /**
@@ -608,7 +610,9 @@ class BillingService
             return null;
         }
 
-        return (int) now()->diffInHours(\Illuminate\Support\Carbon::parse($oldestSync));
+        // Sign-safe (psa-lqlu): $past->diffInHours(now()) is positive; the now()-first form is
+        // NEGATIVE in Carbon 3, reporting negative "hours since sync".
+        return (int) \Illuminate\Support\Carbon::parse($oldestSync)->diffInHours(now());
     }
 
     /**

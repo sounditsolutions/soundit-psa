@@ -388,7 +388,9 @@ class PhoneCallService
             }
             $latest = $person->tickets()->orderByDesc('opened_at')->value('opened_at');
             if ($latest) {
-                $score += max(0, 30 - now()->diffInDays($latest));
+                // Sign-safe (psa-lqlu): recency should DECREASE with age. now()->diffInDays($past)
+                // is NEGATIVE in Carbon 3, which made the score grow with age (backwards).
+                $score += max(0, 30 - (int) $latest->diffInDays(now()));
             }
 
             return $score;
