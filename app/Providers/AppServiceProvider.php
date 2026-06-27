@@ -50,6 +50,10 @@ class AppServiceProvider extends ServiceProvider
         // Tests inject a mock AiClient directly (new TechnicianAgent($mock)) or rebind this.
         $this->app->bind(TechnicianAgent::class, fn () => TechnicianAgent::withConfiguredModel());
 
+        // Bind TeamsReplyService to an Opus-configured instance for production (Teams E2a).
+        // Tests override this with $this->mock(TeamsReplyService::class).
+        $this->app->bind(\App\Services\Teams\TeamsReplyService::class, fn () => \App\Services\Teams\TeamsReplyService::withConfiguredModel());
+
         $this->app->singleton(NinjaClient::class, function ($app) {
             $config = config('services.ninja');
 

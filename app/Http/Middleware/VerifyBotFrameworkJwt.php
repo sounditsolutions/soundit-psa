@@ -83,11 +83,12 @@ class VerifyBotFrameworkJwt
             return $this->reject($request, 'bad audience');
         }
 
-        // E2 NOTE: the token also carries a `serviceUrl` claim. E1 never sends an
-        // outbound reply, so it is not pinned here — but E2 MUST assert
-        // $claims->serviceUrl === $activity['serviceUrl'] before using serviceUrl as a
-        // proactive-reply destination, or a valid token could redirect a reply to an
-        // attacker-influenced host. (Documented requirement 7 of the Bot Connector spec.)
+        // Surface the VALIDATED serviceUrl claim so the receiver can pin the outbound
+        // reply destination to it (E2). The activity body's serviceUrl is attacker-
+        // influenceable; this signed claim is not. The controller asserts
+        // claim === activity.serviceUrl before replying (requirement 7 of the Bot
+        // Connector spec) — defence in depth alongside TeamsBotClient's host allowlist.
+        $request->attributes->set('teams_bot_service_url', is_string($claims->serviceUrl ?? null) ? $claims->serviceUrl : null);
 
         return $next($request);
     }
