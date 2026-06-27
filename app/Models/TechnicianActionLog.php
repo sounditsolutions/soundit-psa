@@ -15,6 +15,7 @@ use LogicException;
  *
  * @property int $id
  * @property int|null $actor_id
+ * @property int|null $approver_user_id
  * @property string $actor_label
  * @property string $action_type
  * @property string $tier
@@ -34,6 +35,7 @@ class TechnicianActionLog extends Model
 
     protected $fillable = [
         'actor_id',
+        'approver_user_id',
         'actor_label',
         'action_type',
         'tier',
@@ -69,6 +71,12 @@ class TechnicianActionLog extends Model
     public function actor(): BelongsTo
     {
         return $this->belongsTo(User::class, 'actor_id');
+    }
+
+    /** The human who approved a non-AUTO action (null for AUTO actions). */
+    public function approver(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'approver_user_id');
     }
 
     public function ticket(): BelongsTo
