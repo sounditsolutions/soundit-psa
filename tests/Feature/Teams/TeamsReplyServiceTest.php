@@ -208,6 +208,30 @@ class TeamsReplyServiceTest extends TestCase
         $this->assertStringContainsString('read-only', $capturedSystem, 'The read-only constraint must be stated.');
     }
 
+    public function test_banter_setting_adds_personality_to_the_persona(): void
+    {
+        $sender = $this->sender($this->makeUser('Charlie Coutts'));
+
+        $captured = null;
+        $ai = $this->aiMock();
+        $ai->shouldReceive('runChatWithTools')->twice()
+            ->andReturnUsing(function ($system, ...$rest) use (&$captured): AiResponse {
+                $captured = $system;
+
+                return $this->aiResponse('ok');
+            });
+        $client = $this->clientMock();
+
+        // Banter on (default) → a personality clause is present.
+        $this->service($ai, $client)->reply($sender, 'hi', 'BlueTier IT');
+        $this->assertStringContainsString('personality', (string) $captured);
+
+        // Banter off → the clause is gone.
+        Setting::setValue('teams_ambient_banter', '0');
+        $this->service($ai, $client)->reply($sender, 'hi', 'BlueTier IT');
+        $this->assertStringNotContainsString('personality', (string) $captured);
+    }
+
     // ── 6. Runs as the resolved user, never a system user ────────────────────
 
     public function test_runs_as_the_resolved_user_not_the_system_user(): void

@@ -3,6 +3,8 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Services\Teams\ResolvedSender;
+use App\Services\Teams\TeamsAmbientService;
 use App\Services\Teams\TeamsIdentityResolver;
 use App\Services\Teams\TeamsReplyService;
 use App\Support\TeamsBotConfig;
@@ -28,6 +30,7 @@ class TeamsMessagesController extends Controller
     public function __construct(
         private readonly TeamsIdentityResolver $resolver,
         private readonly TeamsReplyService $replyService,
+        private readonly TeamsAmbientService $ambient,
     ) {}
 
     public function handle(Request $request): JsonResponse
@@ -41,11 +44,10 @@ class TeamsMessagesController extends Controller
 
         if (TeamsBotConfig::enabled()
             && $sender !== null
-            && $this->botMentioned($activity)
             && $this->serviceUrlPinned($request, $activity)
         ) {
             $text = $this->stripMention((string) ($activity['text'] ?? ''));
-            if ($text !== '') {
+            if ($text !== '' && $this->shouldReply($sender, $text, $activity)) {
                 // Run as the resolved user; the reply service is fail-soft (never throws).
                 $this->replyService->reply($sender, $text, (string) config('app.name', 'our team'));
             }
@@ -58,6 +60,16 @@ class TeamsMessagesController extends Controller
         }
 
         return response()->json(['status' => 'ok']);
+    }
+
+    /**
+     * An @mention always replies (E2a) — no gate. A non-mention replies only when the
+     * E2b ambient service decides to chime in (its own double-dormancy flag + cooldown
+     * + the conservative Haiku gate). Short-circuit: an @mention never runs the gate.
+     */
+    private function shouldReply(ResolvedSender $sender, string $text, array $activity): bool
+    {
+        return $this->botMentioned($activity) || $this->ambient->shouldChimeIn($sender, $text);
     }
 
     /** True iff the activity @mentions THIS bot (its recipient.id). */

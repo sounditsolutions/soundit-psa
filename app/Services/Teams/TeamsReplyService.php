@@ -6,6 +6,7 @@ use App\Models\AssistantConversation;
 use App\Models\AssistantMessage;
 use App\Services\Ai\AiClient;
 use App\Support\AgentConfig;
+use App\Support\TeamsBotConfig;
 use App\Support\TechnicianConfig;
 use Illuminate\Support\Facades\Log;
 
@@ -128,8 +129,14 @@ class TeamsReplyService
     {
         $persona = TechnicianConfig::aiActorName();
 
+        // Banter dial (E2b): a bit of warmth/personality when enabled — Charlie wants a
+        // teammate, not a form. Tuned live via teams_ambient_banter.
+        $banter = TeamsBotConfig::ambientBanter()
+            ? ' A little warmth and friendly personality is welcome — you are a teammate, not a form.'
+            : '';
+
         return "You are {$persona}, a helpful teammate in {$mspName}'s internal staff Teams chat. "
             .'Be concise, friendly, and genuinely useful. You can look things up with your tools '
-            .'but you cannot change anything (read-only). If you are unsure, say so.';
+            ."but you cannot change anything (read-only). If you are unsure, say so.{$banter}";
     }
 }

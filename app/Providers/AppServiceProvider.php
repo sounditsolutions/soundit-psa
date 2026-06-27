@@ -54,6 +54,10 @@ class AppServiceProvider extends ServiceProvider
         // Tests override this with $this->mock(TeamsReplyService::class).
         $this->app->bind(\App\Services\Teams\TeamsReplyService::class, fn () => \App\Services\Teams\TeamsReplyService::withConfiguredModel());
 
+        // Bind ChimeInGate to a Haiku-configured instance for production (Teams E2b ambient).
+        // Tests inject a mock AiClient directly (new ChimeInGate($mock)) or mock the gate.
+        $this->app->bind(\App\Services\Teams\ChimeInGate::class, fn () => \App\Services\Teams\ChimeInGate::haiku());
+
         $this->app->singleton(NinjaClient::class, function ($app) {
             $config = config('services.ninja');
 
