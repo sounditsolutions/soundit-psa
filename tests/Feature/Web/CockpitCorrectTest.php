@@ -50,6 +50,23 @@ class CockpitCorrectTest extends TestCase
         ]);
     }
 
+    public function test_correction_lane_shows_one_decline_and_reassess_button(): void
+    {
+        // psa-gt66 (Charlie's UX feedback): the two confusing buttons — 'Decline & correct'
+        // and 'Add context & re-assess' (identical behaviour in v1) — are collapsed into ONE
+        // 'Decline & re-assess'. Same /cockpit/runs/{run}/correct flow; the note field stays.
+        $run = $this->awaitingRun();
+
+        $response = $this->actingAs(User::factory()->create())->get(route('cockpit.index'));
+
+        $response->assertOk();
+        $response->assertSee('Looks resolved.'); // the approval card (and its correction lane) renders
+        $response->assertSee('Decline & re-assess'); // the single collapsed button
+        $response->assertDontSee('Add context & re-assess'); // the removed sibling
+        $response->assertDontSee('Decline & correct'); // the removed label
+        $response->assertSee('name="correction"', false); // the note field remains
+    }
+
     public function test_authed_staff_can_submit_correction_and_triggers_reassess(): void
     {
         Queue::fake();

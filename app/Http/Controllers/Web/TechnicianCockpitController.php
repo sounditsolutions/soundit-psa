@@ -74,8 +74,8 @@ class TechnicianCockpitController extends Controller
 
     /**
      * Record an operator correction on a held proposal and trigger an immediate
-     * correction-driven re-assessment.  "Decline & correct" and "Add context &
-     * re-assess" both route here — same action, different operator framing (v1).
+     * correction-driven re-assessment. The cockpit's single "Decline & re-assess"
+     * control posts here (psa-gt66 collapsed the prior two same-behaviour buttons).
      */
     public function correct(Request $request, TechnicianRun $run)
     {
