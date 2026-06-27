@@ -341,11 +341,10 @@ class TechnicianAgentTest extends TestCase
     }
 
     /**
-     * A2a INERT GUARANTEE: send_reply must NOT be in the agent's live $tools yet, so the
-     * model cannot call it in production. A2b wires it in atomically with the DraftPipeline
-     * subsumption (avoiding double-production of held replies).
+     * A2b: send_reply is now OFFERED to the model — the agent is the sole producer of held
+     * client replies (DraftPipeline's reply branch retired). Still no mutators in the list.
      */
-    public function test_send_reply_is_not_yet_offered_to_the_model(): void
+    public function test_send_reply_is_offered_to_the_model(): void
     {
         $this->configureAi();
         $ticket = $this->openTicketWithClient();
@@ -362,10 +361,14 @@ class TechnicianAgentTest extends TestCase
         $this->agent($ai)->run($ticket);
 
         $names = array_column($capturedTools ?? [], 'name');
-        $this->assertNotContains('send_reply', $names, 'send_reply must NOT be offered to the model in A2a (inert).');
-        // The existing action tools are still present.
+        $this->assertContains('send_reply', $names, 'send_reply must be offered to the model in A2b.');
         $this->assertContains('propose_close', $names);
         $this->assertContains('flag_attention', $names);
+        // The CO-1 fence still holds: no mutators leak in.
+        foreach ($names as $name) {
+            $this->assertFalse(str_starts_with($name, 'set_ticket_'), "mutator '{$name}' must not be offered.");
+        }
+        $this->assertNotContains('tactical_run_diagnostic', $names);
     }
 
     /**

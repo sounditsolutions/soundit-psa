@@ -9,25 +9,26 @@ use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Services\TicketResolutionDrafter;
 use App\Support\AiConfig;
-use App\Support\TechnicianConfig;
 use Illuminate\Support\Facades\Log;
 use LogicException;
 
 /**
- * The Phase-1 "safe core" brain (spec §4.2/§6). After the acknowledgment it
- * gathers, judges ownability, drafts a reply + proposes a resolution, and records
- * each as a HELD awaiting_approval gate action carrying its text on a run row for
- * the cockpit (Plan 1B). It NEVER sends anything substantive: send_reply /
- * propose_resolution are Approve tier (default-deny) with no grant, so the gate
- * records awaiting_approval without executing. Budget-guarded, idempotent,
- * fail-closed.
+ * The Phase-1 "safe core" brain (spec §4.2/§6). After the acknowledgment it judges
+ * ownability and proposes a resolution, recorded as a HELD awaiting_approval gate
+ * action carrying its text on a run row for the cockpit (Plan 1B). It NEVER sends
+ * anything substantive: propose_resolution is Approve tier (default-deny) with no
+ * grant, so the gate records awaiting_approval without executing. Budget-guarded,
+ * idempotent, fail-closed.
+ *
+ * A2b: the client-REPLY drafting this pipeline used to do is RETIRED — the reactive
+ * agent's send_reply tool is the sole producer of held replies now. This class is
+ * reduced to the propose_resolution branch (Mayor Decision A: keep it, no feature loss).
  */
 class DraftPipeline
 {
     public function __construct(
         private readonly TechnicianActionGate $gate,
         private readonly TechnicianClassifier $classifier,
-        private readonly TechnicianReplyDrafter $replyDrafter,
         private readonly TicketResolutionDrafter $resolutionDrafter,
         private readonly TechnicianBudget $budget,
     ) {}
@@ -51,19 +52,15 @@ class DraftPipeline
             return;
         }
 
-        // Plan 1B: draft only when there is a client message we haven't replied to yet.
-        // A job retry with no new reply stays a no-op; a genuine new client reply re-opens
-        // drafting and supersedes the stale held draft (so the cockpit shows only the fresh one).
+        // A2b: the client-REPLY drafting that used to live here is RETIRED — the reactive
+        // agent's send_reply tool is the SOLE producer of held replies now (so the two can
+        // never double-produce). What remains is the held resolution proposal. The
+        // unaddressed-client-reply gate is preserved as resolution's existing trigger: only
+        // propose after a genuine new client message, so a job retry with nothing new is a
+        // no-op. (The supersede of stale held replies moved with the reply, into SendReplyTool.)
         if (! $this->hasUnaddressedClientReply($ticket)) {
             return;
         }
-
-        TechnicianRun::where('ticket_id', $ticket->id)
-            ->where('action_type', 'send_reply')
-            ->where('state', TechnicianRunState::AwaitingApproval->value)
-            ->get()
-            ->each
-            ->markSuperseded();
 
         $assessment = $this->classifier->classify($ticket);
 
@@ -75,22 +72,6 @@ class DraftPipeline
             ]);
 
             return;
-        }
-
-        $actorName = TechnicianConfig::aiActorName();
-
-        // Substantive reply — HELD for approval (never sent here).
-        $draft = $this->replyDrafter->draft($ticket, $actorName);
-        if ($draft !== null) {
-            $this->recordHeld(
-                $ticket,
-                'send_reply',
-                $draft->body,
-                ['to' => $draft->to, 'reasons' => $assessment->reasons],
-                $assessment->confidence,
-                $assessment->tokensUsed + $draft->tokensUsed,
-                'Drafted a client reply (awaiting approval).',
-            );
         }
 
         // Proposed resolution — ONLY when there is genuine client substance to resolve
@@ -114,8 +95,13 @@ class DraftPipeline
 
     /**
      * True when the latest client (non-AI EndUser) reply is newer than our latest
-     * reply draft — i.e. there's an unaddressed client message. At intake (no client
-     * reply note yet) it's true iff we've never drafted a reply (preserves 1A behavior).
+     * propose_resolution run — i.e. a client message we haven't yet proposed a resolution
+     * for. This is the pre-AI short-circuit: a job retry with nothing new stays a no-op
+     * (no re-spend), while a genuine new client reply re-opens the resolution proposal.
+     *
+     * A2b: this now keys on the pipeline's OWN propose_resolution output (it formerly keyed
+     * on send_reply, which the agent produces now — keying on that would never short-circuit
+     * here and would re-spend AI on every run).
      */
     private function hasUnaddressedClientReply(Ticket $ticket): bool
     {
@@ -126,18 +112,18 @@ class DraftPipeline
             ->latest('noted_at')
             ->first();
 
-        $latestReplyRun = TechnicianRun::where('ticket_id', $ticket->id)
-            ->where('action_type', 'send_reply')
+        $latestResolutionRun = TechnicianRun::where('ticket_id', $ticket->id)
+            ->where('action_type', 'propose_resolution')
             ->latest('created_at')
             ->first();
 
         if (! $latestClientReply) {
-            return $latestReplyRun === null; // intake: draft once
+            return $latestResolutionRun === null; // intake: act once
         }
 
-        return $latestReplyRun === null
-            || $latestReplyRun->created_at === null
-            || $latestReplyRun->created_at->lt($latestClientReply->noted_at);
+        return $latestResolutionRun === null
+            || $latestResolutionRun->created_at === null
+            || $latestResolutionRun->created_at->lt($latestClientReply->noted_at);
     }
 
     /** True when a real (non-AI) client/human Reply note exists — distinct from the bot's ack. */

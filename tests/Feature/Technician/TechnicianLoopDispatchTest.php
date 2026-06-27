@@ -3,6 +3,7 @@
 namespace Tests\Feature\Technician;
 
 use App\Enums\TechnicianRunState;
+use App\Jobs\RunTechnicianAgent;
 use App\Jobs\RunTechnicianLoop;
 use App\Models\Client;
 use App\Models\Setting;
@@ -86,5 +87,32 @@ class TechnicianLoopDispatchTest extends TestCase
             'action_type' => 'send_ack',
             'state' => TechnicianRunState::Gathering->value,
         ]);
+    }
+
+    // ── A2b: the loop wakes the reactive agent for client replies (gated, dormant) ──
+
+    public function test_handle_wakes_the_agent_for_replies_when_the_agent_is_enabled(): void
+    {
+        // A2b: with the agent enabled, an inbound trigger wakes RunTechnicianAgent so the
+        // agent can draft a held reply — it is the sole producer of held send_reply runs.
+        Setting::setValue('agent_enabled', '1');
+        $client = Client::factory()->create();
+        $ticket = Ticket::factory()->create(['client_id' => $client->id]);
+
+        (new RunTechnicianLoop($ticket->id))->handle();
+
+        Bus::assertDispatched(RunTechnicianAgent::class, fn (RunTechnicianAgent $job) => $job->ticketId === $ticket->id);
+    }
+
+    public function test_handle_does_not_wake_the_agent_when_the_agent_is_disabled(): void
+    {
+        // Dormant by default: the reply capability ships off until the operator enables the
+        // agent. The ack + resolution pipeline still run; only the agent wake is withheld.
+        $client = Client::factory()->create(); // agent_enabled unset → off
+        $ticket = Ticket::factory()->create(['client_id' => $client->id]);
+
+        (new RunTechnicianLoop($ticket->id))->handle();
+
+        Bus::assertNotDispatched(RunTechnicianAgent::class);
     }
 }

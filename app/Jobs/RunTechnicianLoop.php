@@ -8,6 +8,7 @@ use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Services\Technician\AutoAcknowledge;
 use App\Services\Technician\DraftPipeline;
+use App\Support\AgentConfig;
 use App\Support\TechnicianConfig;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
@@ -71,9 +72,18 @@ class RunTechnicianLoop implements ShouldQueue
             app(AutoAcknowledge::class)->run($run, $ticket);
         }
 
-        // Phase 1A: the autonomous draft pipeline — gathers, judges ownability,
-        // drafts a reply + proposes a resolution, and HOLDS them for approval.
-        // Idempotent + budget-guarded; nothing substantive is sent here.
+        // Phase 1A: the autonomous draft pipeline — judges ownability and proposes a
+        // resolution, HELD for approval. Idempotent + budget-guarded; nothing is sent.
+        // (A2b: its client-REPLY drafting was retired — the reactive agent owns that now.)
         app(DraftPipeline::class)->run($ticket);
+
+        // A2b: wake the reactive agent so it can draft a client REPLY (held) for an
+        // unaddressed message — the SOLE producer of held send_reply runs now that
+        // DraftPipeline's reply branch is retired (no double-production). Gated by
+        // AgentConfig so the whole reply capability stays dormant until the operator
+        // enables the agent, mirroring the review-pass dispatch (TriageReviewOpen).
+        if (AgentConfig::enabled()) {
+            RunTechnicianAgent::dispatch($ticket->id);
+        }
     }
 }

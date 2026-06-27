@@ -52,8 +52,12 @@ class ClientReplyReopensDraftTest extends TestCase
 
     public function test_a_new_client_reply_redrafts_and_supersedes_the_stale_draft(): void
     {
+        // A2b: the redraft+supersede behavior moved from DraftPipeline to the agent's
+        // SendReplyTool (the SOLE producer of held replies). A new client reply → a fresh
+        // held draft; the stale one is superseded so the cockpit shows only the newest.
         Setting::setValue('ai_provider', 'anthropic');
         Setting::setEncrypted('ai_api_key', 'test-key');
+        \App\Models\User::factory()->create(); // AI actor for the audit row
         $client = Client::factory()->create();
         $person = Person::create([
             'client_id' => $client->id, 'person_type' => \App\Enums\PersonType::User,
@@ -61,7 +65,7 @@ class ClientReplyReopensDraftTest extends TestCase
         ]);
         $ticket = Ticket::factory()->create(['client_id' => $client->id, 'contact_id' => $person->id]);
 
-        // An existing held draft from an earlier turn (backdated so hasUnaddressedClientReply sees it as older).
+        // An existing held draft from an earlier turn (backdated so it is seen as older).
         $stale = \App\Models\TechnicianRun::create([
             'ticket_id' => $ticket->id, 'client_id' => $client->id, 'action_type' => 'send_reply',
             'content_hash' => str_repeat('a', 64), 'state' => \App\Enums\TechnicianRunState::AwaitingApproval,
@@ -76,16 +80,13 @@ class ClientReplyReopensDraftTest extends TestCase
             'is_private' => false, 'noted_at' => now(),
         ]);
 
-        // Mock the collaborators so the pipeline produces a fresh held reply.
-        $this->mock(\App\Services\Technician\TechnicianClassifier::class, fn ($m) => $m->shouldReceive('classify')
-            ->andReturn(new \App\Services\Technician\TechnicianAssessment(0.8, true, ['x'], 10)));
+        // The fenced drafter returns a fresh (different) body.
         $this->mock(\App\Services\Technician\TechnicianReplyDrafter::class, fn ($m) => $m->shouldReceive('draft')
             ->andReturn(new \App\Services\Technician\TechnicianDraft('fresh draft', 'c@example.com', 50)));
-        $this->mock(\App\Services\TicketResolutionDrafter::class, fn ($m) => $m->shouldReceive('draft')->andReturnNull());
 
-        app(\App\Services\Technician\DraftPipeline::class)->run($ticket->fresh());
+        app(\App\Services\Agent\SendReplyTool::class)->execute($ticket->fresh(), ['reason' => 'the client replied again']);
 
-        // The stale draft is superseded; a fresh held draft exists.
+        // The stale draft is superseded; exactly one fresh held draft exists.
         $this->assertSame(\App\Enums\TechnicianRunState::Superseded, $stale->fresh()->state);
         $this->assertSame(1, \App\Models\TechnicianRun::where('ticket_id', $ticket->id)
             ->where('action_type', 'send_reply')
@@ -93,14 +94,15 @@ class ClientReplyReopensDraftTest extends TestCase
     }
 
     /**
-     * Regression: identical-body nudge ("any update?") was silenced because
-     * firstOrCreate found the just-superseded row (same hash) and skipped the gate.
-     * The fix revives the stale run rather than leaving the cockpit empty.
+     * Regression (carried to A2b's SendReplyTool): identical-body nudge ("any update?") was
+     * silenced because firstOrCreate found the just-superseded row (same hash) and skipped
+     * the gate. The fix revives the stale run rather than leaving the cockpit empty.
      */
     public function test_identical_body_nudge_revives_the_superseded_draft(): void
     {
         Setting::setValue('ai_provider', 'anthropic');
         Setting::setEncrypted('ai_api_key', 'test-key');
+        \App\Models\User::factory()->create(); // AI actor for the audit row
         $client = Client::factory()->create();
         $person = Person::create([
             'client_id' => $client->id, 'person_type' => \App\Enums\PersonType::User,
@@ -110,8 +112,8 @@ class ClientReplyReopensDraftTest extends TestCase
 
         $body = 'Thank you for reaching out. I am looking into this and will follow up shortly.';
 
-        // Pre-existing AwaitingApproval run with the SAME body hash the pipeline will produce
-        // (backdated so hasUnaddressedClientReply will see the upcoming client reply as newer).
+        // Pre-existing AwaitingApproval run with the SAME body hash the tool will produce
+        // (backdated so the upcoming client reply is seen as newer).
         $hash = hash('sha256', 'send_reply:'.$ticket->id.':'.$body);
         $existing = \App\Models\TechnicianRun::create([
             'ticket_id' => $ticket->id, 'client_id' => $client->id, 'action_type' => 'send_reply',
@@ -120,7 +122,7 @@ class ClientReplyReopensDraftTest extends TestCase
         ]);
         $existing->forceFill(['created_at' => now()->subHour()])->saveQuietly();
 
-        // Supersede it (simulating what run() does on a new client reply).
+        // Supersede it (simulating an earlier turn).
         $existing->markSuperseded();
         $this->assertSame(\App\Enums\TechnicianRunState::Superseded, $existing->fresh()->state);
 
@@ -132,13 +134,10 @@ class ClientReplyReopensDraftTest extends TestCase
         ]);
 
         // The drafter returns the SAME body → same hash → firstOrCreate finds the superseded row.
-        $this->mock(\App\Services\Technician\TechnicianClassifier::class, fn ($m) => $m->shouldReceive('classify')
-            ->andReturn(new \App\Services\Technician\TechnicianAssessment(0.9, true, ['x'], 10)));
         $this->mock(\App\Services\Technician\TechnicianReplyDrafter::class, fn ($m) => $m->shouldReceive('draft')
             ->andReturn(new \App\Services\Technician\TechnicianDraft($body, 'c@example.com', 20)));
-        $this->mock(\App\Services\TicketResolutionDrafter::class, fn ($m) => $m->shouldReceive('draft')->andReturnNull());
 
-        app(\App\Services\Technician\DraftPipeline::class)->run($ticket->fresh());
+        app(\App\Services\Agent\SendReplyTool::class)->execute($ticket->fresh(), ['reason' => 'identical nudge']);
 
         // Must NOT be zero — the cockpit must show exactly ONE AwaitingApproval draft.
         $this->assertSame(1, \App\Models\TechnicianRun::where('ticket_id', $ticket->id)

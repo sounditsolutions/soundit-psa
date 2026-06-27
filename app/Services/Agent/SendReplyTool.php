@@ -119,6 +119,18 @@ class SendReplyTool
             ]);
         }
 
+        // Latest-held-reply-wins (carried from DraftPipeline): a fresh draft supersedes any
+        // OTHER held reply for this ticket, so the cockpit shows only the newest. Safe now
+        // that the agent is the SOLE producer of send_reply runs (A2b) — this can never
+        // clobber another producer's draft, the very collision A2b was designed to prevent.
+        TechnicianRun::where('ticket_id', $ticket->id)
+            ->where('action_type', 'send_reply')
+            ->where('state', TechnicianRunState::AwaitingApproval->value)
+            ->where('id', '!=', $run->id)
+            ->get()
+            ->each
+            ->markSuperseded();
+
         $this->gate->dispatch(
             actionType: 'send_reply',
             ticketId: $ticket->id,
