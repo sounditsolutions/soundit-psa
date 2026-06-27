@@ -8,6 +8,7 @@ use App\Models\Client;
 use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Services\Agent\SignificanceGate;
+use App\Services\Agent\Steering\LessonCapture;
 use App\Services\Agent\TechnicianAgent;
 use App\Support\AgentConfig;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -142,21 +143,23 @@ class RunTechnicianAgent implements ShouldQueue
 
         // 9. Resolve correction context (correction-driven runs only) so the agent can
         //    thread provenance into the resulting TechnicianRun's proposed_meta.
+        //    $correctionConversation is hoisted outside the if so step 11 can reference it.
         $correctionContext = null;
+        $correctionConversation = null;
         if ($this->correctionDriven) {
-            $conv = AssistantConversation::where('context_type', 'ticket_correction')
+            $correctionConversation = AssistantConversation::where('context_type', 'ticket_correction')
                 ->where('context_id', $ticket->id)
                 ->latest()
                 ->first();
 
-            if ($conv !== null) {
+            if ($correctionConversation !== null) {
                 // reorder() clears the messages() relation's default orderBy('id') ASC — without
                 // it, ->latest() only appends a SECONDARY sort and the ASC default still wins,
                 // returning the OLDEST message (wrong provenance with >1 same-day correction).
-                $latestUserMessage = $conv->messages()->where('role', 'user')->reorder()->orderByDesc('id')->first();
+                $latestUserMessage = $correctionConversation->messages()->where('role', 'user')->reorder()->orderByDesc('id')->first();
                 $correctionContext = [
-                    'conversation_id' => $conv->id,
-                    'operator_id' => $conv->user_id,
+                    'conversation_id' => $correctionConversation->id,
+                    'operator_id' => $correctionConversation->user_id,
                     'summary' => mb_substr((string) optional($latestUserMessage)->content, 0, 200),
                 ];
             }
@@ -164,5 +167,13 @@ class RunTechnicianAgent implements ShouldQueue
 
         // 10. Wake the agent to reason and (maybe) propose a close.
         app(TechnicianAgent::class)->run($ticket, $correctionContext);
+
+        // 11. LEARN (psa-ck6x): distill the operator's correction into a durable wiki fact so the agent
+        //     never needs that correction twice. Reached ONLY on a correction-driven run that already
+        //     passed the unconditional dormancy (#1) + emergency-halt (#4.5) guards above, and only after
+        //     the agent actually re-assessed (step 10). LessonCapture is fail-soft internally.
+        if ($this->correctionDriven && $correctionConversation !== null) {
+            app(LessonCapture::class)->capture($ticket, $correctionConversation);
+        }
     }
 }

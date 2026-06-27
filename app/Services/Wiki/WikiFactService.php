@@ -82,6 +82,69 @@ class WikiFactService
     }
 
     /**
+     * Upsert an operator-correction-sourced fact.
+     *
+     * Born status=Confirmed, pinned=true, source_type=WikiFactSource::Correction.
+     * Unlike upsertSyncFact, a fresh operator correction SUPERSEDES even a prior
+     * pinned correction — the operator is re-asserting and the newest correction wins.
+     * Same statement → reaffirm only (bump last_affirmed_at, no duplicate row).
+     */
+    public function upsertCorrectionFact(
+        WikiPage $page,
+        string $anchor,
+        string $subjectKey,
+        string $statement,
+        array $sourceRefs,
+    ): WikiFact {
+        $subjectKey = self::normalizeSubjectKey($subjectKey);
+
+        return DB::transaction(function () use ($page, $anchor, $subjectKey, $statement, $sourceRefs) {
+            $existing = WikiFact::query()
+                ->where('client_id', $page->client_id)
+                ->where('subject_key', $subjectKey)
+                ->whereNot('status', WikiFactStatus::Retired->value)
+                ->lockForUpdate()
+                ->orderByDesc('id')
+                ->first();
+
+            // Reaffirm: same statement — just bump the timestamp, no new row.
+            if ($existing && trim($existing->statement) === trim($statement)) {
+                $existing->update(['last_affirmed_at' => now()]);
+
+                return $existing;
+            }
+
+            // Different statement (or no existing row) — create a new correction fact.
+            // Note: we do NOT early-return for pinned existing rows here — a re-correction
+            // must supersede even a prior pinned correction (operator re-asserts; newest wins).
+            $new = WikiFact::create([
+                'scope' => $page->client_id ? WikiScope::Client : WikiScope::Global,
+                'client_id' => $page->client_id,
+                'page_id' => $page->id,
+                'section_anchor' => $anchor,
+                'subject_key' => $subjectKey,
+                'statement' => $statement,
+                'status' => WikiFactStatus::Confirmed,
+                'pinned' => true,
+                'volatility' => WikiFactVolatility::Durable,
+                'source_type' => WikiFactSource::Correction,
+                'source_refs' => $sourceRefs,
+                'confidence' => null,
+                'last_affirmed_at' => now(),
+            ]);
+
+            if ($existing) {
+                $existing->update([
+                    'status' => WikiFactStatus::Retired,
+                    'superseded_by_fact_id' => $new->id,
+                ]);
+            }
+
+            return $new;
+        });
+    }
+
+    /**
      * Upsert an AI-mined fact (spec §5.2 merge stage, trigger 2).
      *
      * Born unverified. Semantics:

@@ -2,7 +2,10 @@
 
 namespace App\Services\Technician\Notify;
 
+use App\Enums\WikiFactSource;
+use App\Enums\WikiFactStatus;
 use App\Models\TechnicianActionLog;
+use App\Models\WikiFact;
 use App\Services\Technician\Cockpit\CockpitQuery;
 
 /**
@@ -22,7 +25,15 @@ class DigestBuilder
             ->where('created_at', '>=', now()->subDay())
             ->count();
 
-        $isEmpty = $pending->isEmpty() && $needsYou === 0 && $done === 0;
+        $learned = WikiFact::query()
+            ->where('source_type', WikiFactSource::Correction)
+            ->whereNot('status', WikiFactStatus::Retired->value)
+            ->where('created_at', '>=', now()->subDay())
+            ->latest()
+            ->get();
+        $learnedCount = $learned->count();
+
+        $isEmpty = $pending->isEmpty() && $needsYou === 0 && $done === 0 && $learnedCount === 0;
 
         $lines = [
             'AI Technician — daily summary',
@@ -30,6 +41,7 @@ class DigestBuilder
             "Awaiting your approval: {$pending->count()}",
             "Need a human (couldn't draft): {$needsYou}",
             "Handled autonomously (last 24h): {$done}",
+            "Learned from your corrections (last 24h): {$learnedCount}",
         ];
 
         if ($pending->isNotEmpty()) {
@@ -45,6 +57,14 @@ class DigestBuilder
                 $subject = TeamsText::escape($run->ticket?->subject ?? "Ticket #{$run->ticket_id}");
                 $age = optional($run->created_at)->diffForHumans() ?? '';
                 $lines[] = "• {$client} — {$subject} ({$age})";
+            }
+        }
+
+        if ($learnedCount > 0) {
+            $lines[] = '';
+            $lines[] = 'What I learned (from your corrections):';
+            foreach ($learned->take(5) as $fact) {
+                $lines[] = '• '.TeamsText::escape($fact->statement);
             }
         }
 
