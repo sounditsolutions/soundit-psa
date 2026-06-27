@@ -69,7 +69,7 @@ PROMPT;
     ) {}
 
     /**
-     * Distil a single operator correction into a lesson candidate.
+     * Distill a single operator correction into a lesson candidate.
      *
      * Returns null when the AI call fails entirely (Task 3 treats null as "do nothing").
      * Returns LessonCandidate::none() for unrecognised/invalid/redactor-flagged responses.
