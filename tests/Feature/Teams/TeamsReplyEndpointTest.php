@@ -5,6 +5,7 @@ namespace Tests\Feature\Teams;
 use App\Http\Middleware\VerifyBotFrameworkJwt;
 use App\Models\Setting;
 use App\Models\User;
+use App\Services\Teams\TeamsAmbientService;
 use App\Services\Teams\TeamsReplyService;
 use App\Support\TeamsBotConfig;
 use Firebase\JWT\JWT;
@@ -103,14 +104,51 @@ class TeamsReplyEndpointTest extends TestCase
         $this->sendActivity($this->token(), $this->activity('aad-charlie', mention: true))->assertOk();
     }
 
-    public function test_a_non_mention_message_does_not_reply(): void
+    public function test_a_non_mention_message_does_not_reply_when_ambient_is_off(): void
     {
         Setting::setValue('teams_bot_enabled', '1');
+        // teams_ambient_enabled unset ⇒ the real TeamsAmbientService returns false.
         User::factory()->create(['microsoft_id' => 'aad-charlie', 'is_active' => true]);
 
         $this->mock(TeamsReplyService::class, fn (MockInterface $m) => $m->shouldReceive('reply')->never());
 
         $this->sendActivity($this->token(), $this->activity('aad-charlie', mention: false))->assertOk();
+    }
+
+    // ── E2b ambient chiming-in ───────────────────────────────────────────────
+
+    public function test_a_non_mention_chimes_in_when_the_ambient_gate_says_yes(): void
+    {
+        Setting::setValue('teams_bot_enabled', '1');
+        User::factory()->create(['microsoft_id' => 'aad-charlie', 'is_active' => true]);
+
+        $this->mock(TeamsAmbientService::class, fn (MockInterface $m) => $m->shouldReceive('shouldChimeIn')->once()->andReturnTrue());
+        $this->mock(TeamsReplyService::class, fn (MockInterface $m) => $m->shouldReceive('reply')->once());
+
+        $this->sendActivity($this->token(), $this->activity('aad-charlie', mention: false))->assertOk();
+    }
+
+    public function test_a_non_mention_stays_silent_when_the_ambient_gate_says_no(): void
+    {
+        Setting::setValue('teams_bot_enabled', '1');
+        User::factory()->create(['microsoft_id' => 'aad-charlie', 'is_active' => true]);
+
+        $this->mock(TeamsAmbientService::class, fn (MockInterface $m) => $m->shouldReceive('shouldChimeIn')->once()->andReturnFalse());
+        $this->mock(TeamsReplyService::class, fn (MockInterface $m) => $m->shouldReceive('reply')->never());
+
+        $this->sendActivity($this->token(), $this->activity('aad-charlie', mention: false))->assertOk();
+    }
+
+    public function test_a_mention_replies_without_consulting_the_ambient_gate(): void
+    {
+        Setting::setValue('teams_bot_enabled', '1');
+        User::factory()->create(['microsoft_id' => 'aad-charlie', 'is_active' => true]);
+
+        // The @mention path always replies (E2a) and must NOT run the ambient gate.
+        $this->mock(TeamsAmbientService::class, fn (MockInterface $m) => $m->shouldReceive('shouldChimeIn')->never());
+        $this->mock(TeamsReplyService::class, fn (MockInterface $m) => $m->shouldReceive('reply')->once());
+
+        $this->sendActivity($this->token(), $this->activity('aad-charlie', mention: true))->assertOk();
     }
 
     public function test_dormant_when_the_flag_is_off_does_not_reply(): void

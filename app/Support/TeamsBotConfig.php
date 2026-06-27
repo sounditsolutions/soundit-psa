@@ -93,4 +93,42 @@ class TeamsBotConfig
 
         return ['app_id' => $appId, 'tenant_id' => self::tenantId()];
     }
+
+    // ── E2b: ambient chiming-in dials (Setting-backed, tuned live in the chat) ─
+
+    /**
+     * Whether the bot may chime in UNPROMPTED (non-@mention). A second dormancy
+     * layer on top of enabled(): ambient requires BOTH on. Default OFF.
+     */
+    public static function ambientEnabled(): bool
+    {
+        return (bool) Setting::getValue('teams_ambient_enabled');
+    }
+
+    /**
+     * How eager the "should I speak?" gate is: low | normal | high. Shapes the gate
+     * prompt's threshold. Default 'normal'; junk falls back to the safe default.
+     */
+    public static function ambientEagerness(): string
+    {
+        $value = Setting::getValue('teams_ambient_eagerness');
+
+        return in_array($value, ['low', 'normal', 'high'], true) ? $value : 'normal';
+    }
+
+    /** Whether the teammate may show some friendly personality. Default on (light). */
+    public static function ambientBanter(): bool
+    {
+        $value = Setting::getValue('teams_ambient_banter');
+
+        return $value === null || (bool) $value; // default true
+    }
+
+    /** Minimum seconds between unprompted chime-ins per conversation. Default 60, floor 5. */
+    public static function ambientCooldownSeconds(): int
+    {
+        $value = Setting::getValue('teams_ambient_cooldown_seconds');
+
+        return is_numeric($value) ? max(5, (int) $value) : 60;
+    }
 }

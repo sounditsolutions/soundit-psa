@@ -72,4 +72,47 @@ class TeamsBotConfigTest extends TestCase
         Setting::setValue('teams_bot_enabled', '0');
         $this->assertFalse(TeamsBotConfig::enabled());
     }
+
+    // ── E2b ambient dials (Setting-backed, tuned live) ───────────────────────
+
+    public function test_ambient_is_double_dormant_by_default(): void
+    {
+        // Off by default — a second dormancy layer on top of the Teams enable flag.
+        $this->assertFalse(TeamsBotConfig::ambientEnabled());
+
+        Setting::setValue('teams_ambient_enabled', '1');
+        $this->assertTrue(TeamsBotConfig::ambientEnabled());
+    }
+
+    public function test_eagerness_defaults_to_normal_and_validates(): void
+    {
+        $this->assertSame('normal', TeamsBotConfig::ambientEagerness());
+
+        Setting::setValue('teams_ambient_eagerness', 'high');
+        $this->assertSame('high', TeamsBotConfig::ambientEagerness());
+
+        // Junk falls back to the safe default.
+        Setting::setValue('teams_ambient_eagerness', 'bananas');
+        $this->assertSame('normal', TeamsBotConfig::ambientEagerness());
+    }
+
+    public function test_banter_defaults_on(): void
+    {
+        $this->assertTrue(TeamsBotConfig::ambientBanter());
+
+        Setting::setValue('teams_ambient_banter', '0');
+        $this->assertFalse(TeamsBotConfig::ambientBanter());
+    }
+
+    public function test_cooldown_defaults_and_floors(): void
+    {
+        $this->assertSame(60, TeamsBotConfig::ambientCooldownSeconds());
+
+        Setting::setValue('teams_ambient_cooldown_seconds', '120');
+        $this->assertSame(120, TeamsBotConfig::ambientCooldownSeconds());
+
+        // Below the floor clamps up (anti-spam can't be disabled to 0).
+        Setting::setValue('teams_ambient_cooldown_seconds', '1');
+        $this->assertSame(5, TeamsBotConfig::ambientCooldownSeconds());
+    }
 }
