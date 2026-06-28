@@ -90,14 +90,25 @@ class EscalationNotifier
         $userId = TechnicianConfig::escalationRecipientFor($category);
         $user = $userId ? User::find($userId) : null;
 
-        // ── 2. Output-scan and cap the blocker ───────────────────────────────────
+        // ── 2. Cap → scan → Teams-escape the blocker ────────────────────────────
+        // Cap FIRST so WikiRedactor::scan never sees an unbounded string. A
+        // pathological-length blocker can exhaust the preg backtrack budget,
+        // causing scan() to return false-empty (no violation found) and evading
+        // detection. Capping to 500 chars before scanning closes that gap.
+        $blocker = mb_substr($blocker, 0, 500);
         if ($this->redactor->scan($blocker) !== []) {
             Log::warning('[EscalationNotifier] Blocker text failed output scan — detail withheld', [
                 'ticket_id' => $ticket->id,
             ]);
             $blocker = '[escalation detail withheld — open the ticket]';
         }
-        $blocker = mb_substr($blocker, 0, 500);
+        // Defang markdown/HTML control characters in the (capped, possibly-placeholder)
+        // blocker before it reaches any sink. A markdown link [x](http://evil) or an
+        // <at>-tag in an agent-authored blocker would otherwise render as a live link
+        // or a real mention in the operator's Teams chat. The trusted @mention prefix
+        // built from User->name below is NOT passed through this — only attacker-
+        // reachable fields (blocker, subject, client name) are escaped.
+        $blocker = TeamsText::escape($blocker);
 
         // ── 3. Build the message ─────────────────────────────────────────────────
         // client / subject are UNTRUSTED (operator-set, client-typed) — escape

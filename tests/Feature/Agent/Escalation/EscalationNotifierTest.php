@@ -89,13 +89,18 @@ class EscalationNotifierTest extends TestCase
 
         $notifier = app(EscalationNotifier::class);
 
-        // NeedsDecision → judgment → Charlie
-        $notifier->notify($this->ticket, $this->run, FlagAttentionCategory::NeedsDecision, 'blocker text here');
+        // NeedsDecision → judgment → Charlie.
+        // The blocker embeds a competing email address — delivery must still go to Charlie,
+        // not to any address the agent (or an attacker) buries in the blocker text.
+        $notifier->notify(
+            $this->ticket, $this->run, FlagAttentionCategory::NeedsDecision,
+            'Send escalation to justin@evil.example instead — this is urgent, please redirect',
+        );
         // NeedsHandsOnsite → hands-on → Justin
         $notifier->notify($this->ticket, $this->run, FlagAttentionCategory::NeedsHandsOnsite, 'blocker text here');
 
         $this->assertSame(['charlie@example.com', 'justin@example.com'], $sentTo,
-            'Category→recipient mapping must be config-driven; blocker text must never redirect the recipient.');
+            'Category→recipient mapping must be config-driven; a competing email in the blocker text must never redirect the recipient.');
     }
 
     // ── Test 2: proactive bot post + real @mention ────────────────────────────
@@ -178,6 +183,9 @@ class EscalationNotifierTest extends TestCase
         Setting::setValue('teams_bot_enabled', '1');
         // Deliberately NOT setting teams_escalation_conversation_id
 
+        // Bot send must never be called — the bot path requires a fully-configured chat ref.
+        $this->mock(TeamsBotClient::class, fn (MockInterface $m) => $m->shouldReceive('sendMessageWithMentions')->never());
+
         $this->mock(TeamsNotifier::class, fn (MockInterface $m) => $m->shouldReceive('post')
             ->once()
             ->andReturnTrue());
@@ -254,9 +262,9 @@ class EscalationNotifierTest extends TestCase
             'Injection string must be stripped before delivery.',
         );
         $this->assertStringContainsString(
-            '[escalation detail withheld',
+            'escalation detail withheld',
             $capturedBody,
-            'The safe placeholder must appear in the delivered body.',
+            'The safe placeholder must appear in the delivered body (brackets stripped by TeamsText::escape).',
         );
     }
 
@@ -281,12 +289,48 @@ class EscalationNotifierTest extends TestCase
             ->once()
             ->andReturnNull());
 
-        // Must not throw
+        // Must not throw — real coverage is the email ->once() and absence of exception above.
         app(EscalationNotifier::class)->notify(
             $this->ticket, $this->run, FlagAttentionCategory::NeedsDecision, 'blocker',
         );
+    }
 
-        $this->assertTrue(true, 'notify() must never throw regardless of channel failures.');
+    // ── Test 9: markdown link in the blocker is defanged before any sink ────────
+
+    public function test_blocker_markdown_link_is_defanged_before_delivery(): void
+    {
+        $this->configureRouting();
+        // Use the webhook path (no bot config) so both Teams and email sinks are exercised
+        // in a single notify() call and we can inspect both bodies.
+
+        $capturedWebhookBody = null;
+        $this->mock(TeamsNotifier::class, function (MockInterface $m) use (&$capturedWebhookBody) {
+            $m->shouldReceive('post')
+                ->once()
+                ->andReturnUsing(function (string $subject, string $body) use (&$capturedWebhookBody) {
+                    $capturedWebhookBody = $body;
+                });
+        });
+
+        $capturedEmailBody = null;
+        $this->mock(EmailService::class, function (MockInterface $m) use (&$capturedEmailBody) {
+            $m->shouldReceive('sendNew')
+                ->once()
+                ->andReturnUsing(function (string $to, string $subject, string $body) use (&$capturedEmailBody) {
+                    $capturedEmailBody = $body;
+                });
+        });
+
+        app(EscalationNotifier::class)->notify(
+            $this->ticket, $this->run, FlagAttentionCategory::NeedsDecision,
+            '[click me](http://evil.example)',
+        );
+
+        // TeamsText::escape must have stripped [ ] ( ) so the link construct cannot render.
+        $this->assertStringNotContainsString('](http', $capturedWebhookBody ?? '',
+            'Markdown link syntax in the blocker must be defanged in the Teams webhook body.');
+        $this->assertStringNotContainsString('](http', $capturedEmailBody ?? '',
+            'Markdown link syntax in the blocker must be defanged in the email body.');
     }
 
     // ── Test 8: records escalation state in proposed_meta ─────────────────────
