@@ -45,9 +45,15 @@ class ProcessNinjaWebhook implements ShouldQueue
 
             $asset = Asset::where('ninja_id', $deviceId)->first();
             if ($asset) {
-                $asset->update(['is_active' => false]);
-                $asset->delete();
-                Log::info('[NinjaSync] Device deleted via webhook', [
+                // psa-u97k: a device leaving Ninja via webhook must NEVER delete/deactivate
+                // the shared PSA Asset — it may still be managed by another RMM (Tactical etc.).
+                // Clear ONLY Ninja's own vendor fields; the Asset persists.
+                $asset->update([
+                    'ninja_id' => null,
+                    'ninja_url' => null,
+                    'ninja_synced_at' => null,
+                ]);
+                Log::info('[NinjaSync] Device removed from Ninja via webhook — unlinked, asset retained', [
                     'ninja_id' => $deviceId,
                     'asset_id' => $asset->id,
                 ]);
