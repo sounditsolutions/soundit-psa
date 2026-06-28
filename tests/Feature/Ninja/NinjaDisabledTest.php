@@ -6,6 +6,7 @@ use App\Jobs\ProcessNinjaWebhook;
 use App\Models\Client;
 use App\Models\NinjaWebhook;
 use App\Models\Setting;
+use App\Models\User;
 use App\Services\Ninja\NinjaBackupSyncService;
 use App\Services\Ninja\NinjaSyncService;
 use App\Services\SyncResult;
@@ -119,5 +120,47 @@ class NinjaDisabledTest extends TestCase
         (new ProcessNinjaWebhook($webhook->id))->handle(app(NinjaSyncService::class));
 
         $this->assertSame('skipped', $webhook->fresh()->status, 'Webhook must be marked skipped when Ninja is disabled');
+    }
+
+    // -----------------------------------------------------------------------
+    // 6. Settings-UI "Sync Backup Usage" button is gated when disabled
+    // -----------------------------------------------------------------------
+
+    public function test_ui_sync_backup_is_blocked_when_disabled(): void
+    {
+        // Ninja disabled by default — no setting needed.
+        $this->mock(NinjaBackupSyncService::class, function (MockInterface $m): void {
+            $m->shouldReceive('syncBackupUsage')->never();
+        });
+
+        $user = User::factory()->create();
+
+        $this->actingAs($user)
+            ->post(route('settings.integrations.ninja.sync-backup'))
+            ->assertRedirect()
+            ->assertSessionHas('error', 'NinjaRMM integration is disabled.');
+    }
+
+    // -----------------------------------------------------------------------
+    // 7. Settings-UI "Sync Backup Usage" button reaches the service when enabled
+    // -----------------------------------------------------------------------
+
+    public function test_ui_sync_backup_calls_service_when_enabled(): void
+    {
+        Setting::setValue('ninja_enabled', '1');
+
+        $result = new SyncResult;
+
+        $this->mock(NinjaBackupSyncService::class, function (MockInterface $m) use ($result): void {
+            $m->shouldReceive('syncBackupUsage')
+                ->once()
+                ->andReturn($result);
+        });
+
+        $user = User::factory()->create();
+
+        $this->actingAs($user)
+            ->post(route('settings.integrations.ninja.sync-backup'))
+            ->assertRedirect();
     }
 }

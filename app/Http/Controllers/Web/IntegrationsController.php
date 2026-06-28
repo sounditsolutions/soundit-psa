@@ -199,7 +199,7 @@ class IntegrationsController extends Controller
         }
 
         // Integration enabled toggles
-        $ninjaEnabled = Setting::getValue('ninja_enabled', '1') === '1';
+        $ninjaEnabled = \App\Support\NinjaConfig::isEnabled();
         $levelEnabled = LevelConfig::isEnabled();
         $meshEnabled = MeshConfig::isEnabled();
         $cippEnabled = CippConfig::isEnabled();
@@ -1991,6 +1991,10 @@ class IntegrationsController extends Controller
 
     public function syncNinjaBackup(NinjaBackupSyncService $service)
     {
+        if (! \App\Support\NinjaConfig::isEnabled()) {
+            return back()->with('error', 'NinjaRMM integration is disabled.');
+        }
+
         try {
             $result = $service->syncBackupUsage();
 
