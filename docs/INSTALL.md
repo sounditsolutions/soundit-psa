@@ -517,6 +517,17 @@ sudo systemctl status soundit-psa-technician-queue
 
 - `agent:escalation-sweep` — every 30 min, re-delivers unacked flag escalations up the operator chain. **Gated**: only fires when `agent_escalation_enabled = 1`. Default-dormant: enabling the AI Technician does NOT enable escalation notifications; they must be enabled separately under Settings > Integrations > AI Technician > Escalation Notifications.
 
+**Escalation notification settings** (all optional, all default-dormant — configure under Settings > Integrations > AI Technician > Escalation Notifications):
+
+| Setting | Description | Default |
+|---------|-------------|---------|
+| `agent_escalation_enabled` | Master on/off for escalation notifications. Must be `1` before the sweep command or any notify fires. | `0` |
+| `technician_escalation_judgment_user` | Staff user ID routed for judgment/business-decision flags (`needs_decision` category). | — |
+| `technician_escalation_handson_user` | Staff user ID routed for hands-on/overflow flags (`needs_hands_onsite`, `needs_overflow`). | — |
+| `teams_escalation_conversation_id` | Teams conversation ID for the shared Day-to-Day chat where escalation pings are posted (bot proactive post). | — |
+| `teams_escalation_service_url` | Teams service URL matching the conversation (required for Bot Framework proactive delivery). | — |
+| `agent_escalation_reping_minutes` | Minutes before an unacknowledged escalation is re-delivered up the chain. | `120` |
+
 ### General settings
 
 Before configuring integrations, visit **Settings > General Settings** to set your **display timezone**. All timestamps in the app display in this timezone (the database always stores UTC). For example, set `America/New_York` for US Eastern time.

@@ -2,10 +2,12 @@
 
 namespace App\Services\Technician\Notify;
 
+use App\Enums\FlagAttentionCategory;
 use App\Enums\ToolingGapStatus;
 use App\Enums\WikiFactSource;
 use App\Enums\WikiFactStatus;
 use App\Models\TechnicianActionLog;
+use App\Models\TechnicianRun;
 use App\Models\ToolingGap;
 use App\Models\WikiFact;
 use App\Services\Technician\Cockpit\CockpitQuery;
@@ -42,7 +44,13 @@ class DigestBuilder
             ->get();
         $toolingGapCount = $toolingGaps->count();
 
-        $isEmpty = $pending->isEmpty() && $needsYou === 0 && $done === 0 && $learnedCount === 0 && $toolingGapCount === 0;
+        $escalations = TechnicianRun::query()
+            ->where('action_type', 'flag_attention')
+            ->where('created_at', '>=', now()->subDay())
+            ->get();
+        $escalationCount = $escalations->count();
+
+        $isEmpty = $pending->isEmpty() && $needsYou === 0 && $done === 0 && $learnedCount === 0 && $toolingGapCount === 0 && $escalationCount === 0;
 
         $lines = [
             'AI Technician — daily summary',
@@ -52,6 +60,7 @@ class DigestBuilder
             "Handled autonomously (last 24h): {$done}",
             "Learned from your corrections (last 24h): {$learnedCount}",
             "Tooling gaps to review (last 24h): {$toolingGapCount}",
+            "Escalations raised (last 24h): {$escalationCount}",
         ];
 
         if ($pending->isNotEmpty()) {
@@ -85,6 +94,16 @@ class DigestBuilder
                 // Privacy contract: only the ABSTRACT capability_gap is shown here.
                 // The instance-private evidence is NEVER surfaced in the digest.
                 $lines[] = '• '.TeamsText::escape($gap->capability_gap);
+            }
+        }
+
+        if ($escalationCount > 0) {
+            $lines[] = '';
+            $lines[] = 'Escalations (by category):';
+            $byCategory = $escalations->countBy(fn ($run) => FlagAttentionCategory::fromInput($run->proposed_meta['category'] ?? null)->label()
+            );
+            foreach ($byCategory as $label => $count) {
+                $lines[] = "• {$label}: {$count}";
             }
         }
 
