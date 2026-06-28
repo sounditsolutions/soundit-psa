@@ -131,4 +131,22 @@ class TeamsBotConfig
 
         return is_numeric($value) ? max(5, (int) $value) : 60;
     }
+
+    // ── Increment H: escalation chat ref ─────────────────────────────────────
+
+    /** The Teams conversation id of the shared 'Day to Day' chat escalations are posted to. Null when unset. */
+    public static function escalationConversationId(): ?string
+    {
+        $v = Setting::getValue('teams_escalation_conversation_id');
+
+        return is_string($v) && trim($v) !== '' ? trim($v) : null;
+    }
+
+    /** The Bot Framework serviceUrl for that chat (needed for a proactive bot post). Null when unset. */
+    public static function escalationServiceUrl(): ?string
+    {
+        $v = Setting::getValue('teams_escalation_service_url');
+
+        return is_string($v) && trim($v) !== '' ? trim($v) : null;
+    }
 }

@@ -409,6 +409,48 @@ class TechnicianConfig
         Setting::setValue('technician_operator_phones', json_encode($map));
     }
 
+    // ── Increment H: flag_attention role routing ─────────────────────────────
+
+    /** The operator who owns JUDGMENT / business-decision escalations (e.g. Charlie). Null when unset. */
+    public static function escalationJudgmentUserId(): ?int
+    {
+        $v = Setting::getValue('technician_escalation_judgment_user');
+
+        return is_numeric($v) ? (int) $v : null;
+    }
+
+    /** The operator who owns HANDS-ON / on-site / overflow escalations (e.g. Justin). Null when unset. */
+    public static function escalationHandsOnUserId(): ?int
+    {
+        $v = Setting::getValue('technician_escalation_handson_user');
+
+        return is_numeric($v) ? (int) $v : null;
+    }
+
+    /**
+     * Server-side recipient routing from the flag CATEGORY (the agent's only escalation signal). The agent
+     * never picks the person — this mapping does, from config. Returns null only when neither role is configured.
+     *   NeedsDecision / Uncertain / Other  -> judgment (owner triages ambiguity)
+     *   NeedsHandsOnsite / NeedsOverflow    -> hands-on
+     * Cross-fallback: if the routed role's user is unset, use the other role's user; else null.
+     */
+    public static function escalationRecipientFor(\App\Enums\FlagAttentionCategory $category): ?int
+    {
+        $judgment = self::escalationJudgmentUserId();
+        $handsOn = self::escalationHandsOnUserId();
+
+        $primary = match ($category) {
+            \App\Enums\FlagAttentionCategory::NeedsHandsOnsite, \App\Enums\FlagAttentionCategory::NeedsOverflow => $handsOn,
+            default => $judgment, // NeedsDecision, Uncertain, Other
+        };
+        $secondary = match ($category) {
+            \App\Enums\FlagAttentionCategory::NeedsHandsOnsite, \App\Enums\FlagAttentionCategory::NeedsOverflow => $judgment,
+            default => $handsOn,
+        };
+
+        return $primary ?? $secondary; // null only when neither role is configured
+    }
+
     // ── private helpers ──────────────────────────────────────────────────────
 
     /** @return array<string, string> */

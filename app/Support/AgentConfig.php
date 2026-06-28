@@ -77,6 +77,15 @@ class AgentConfig
     }
 
     /**
+     * Increment H dormancy gate: when off, flag_attention records exactly as today (no notification).
+     * Separate from agent_enabled so escalation notifications can be enabled/calibrated independently.
+     */
+    public static function escalationEnabled(): bool
+    {
+        return Setting::getValue('agent_escalation_enabled') === '1';
+    }
+
+    /**
      * Model id used for the lightweight significance-scoring gate.
      * Reads from Setting first; falls back to the Haiku id from AiConfig.
      * Setting: agent_significance_model.
