@@ -513,6 +513,10 @@ To verify the worker is running:
 sudo systemctl status soundit-psa-technician-queue
 ```
 
+**AI Technician scheduled commands** (run by the Laravel scheduler via cron — no extra setup required):
+
+- `agent:escalation-sweep` — every 30 min, re-delivers unacked flag escalations up the operator chain. **Gated**: only fires when `agent_escalation_enabled = 1`. Default-dormant: enabling the AI Technician does NOT enable escalation notifications; they must be enabled separately under Settings > Integrations > AI Technician > Escalation Notifications.
+
 ### General settings
 
 Before configuring integrations, visit **Settings > General Settings** to set your **display timezone**. All timestamps in the app display in this timezone (the database always stores UTC). For example, set `America/New_York` for US Eastern time.

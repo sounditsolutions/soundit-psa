@@ -409,6 +409,20 @@ class TechnicianConfig
         Setting::setValue('technician_operator_phones', json_encode($map));
     }
 
+    // ── Increment H: escalation sweep + flag_attention role routing ─────────
+
+    /**
+     * Minutes an agent-flagged escalation may sit UNACKED before the sweep re-delivers
+     * and escalates it up the chain. Long by default — a traveling operator may not
+     * acknowledge within an hour. Setting: agent_escalation_reping_minutes. Floor: 15.
+     */
+    public static function agentEscalationRepingMinutes(): int
+    {
+        $v = Setting::getValue('agent_escalation_reping_minutes');
+
+        return is_numeric($v) ? max(15, (int) $v) : 120;
+    }
+
     // ── Increment H: flag_attention role routing ─────────────────────────────
 
     /** The operator who owns JUDGMENT / business-decision escalations (e.g. Charlie). Null when unset. */
