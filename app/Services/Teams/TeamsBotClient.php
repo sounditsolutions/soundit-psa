@@ -58,6 +58,80 @@ class TeamsBotClient
         return $this->sendActivity($serviceUrl, $conversationId, ['type' => 'message', 'text' => $text]);
     }
 
+    /**
+     * Best-effort GET of a specific member from a conversation (Bot Framework
+     * `GET /v3/conversations/{conversationId}/members/{aadObjectId}`).
+     *
+     * Returns the member array (containing `id` = the conversation-scoped mention
+     * id, and `name`) or null on any failure. Fail-soft: never throws.
+     *
+     * Reuses the same fail-closed trusted-serviceUrl guard as sendActivity — the
+     * Bot Framework API host is validated before any token is acquired.
+     */
+    public function getConversationMember(string $serviceUrl, string $conversationId, string $aadObjectId): ?array
+    {
+        if (! $this->isTrustedServiceUrl($serviceUrl)) {
+            Log::warning('[Teams Bot] Refusing getConversationMember for untrusted serviceUrl', ['service_url' => $serviceUrl]);
+
+            return null;
+        }
+
+        $token = $this->token();
+        if ($token === null) {
+            return null;
+        }
+
+        try {
+            $url = rtrim($serviceUrl, '/').'/v3/conversations/'.rawurlencode($conversationId).'/members/'.rawurlencode($aadObjectId);
+            $response = Http::withToken($token)->get($url);
+
+            if (! $response->successful()) {
+                Log::info('[Teams Bot] getConversationMember non-2xx', [
+                    'status' => $response->status(),
+                    'conversation_id' => $conversationId,
+                ]);
+
+                return null;
+            }
+
+            return $response->json();
+        } catch (\Throwable $e) {
+            Log::warning('[Teams Bot] getConversationMember failed', ['error' => $e->getMessage()]);
+
+            return null;
+        }
+    }
+
+    /**
+     * Post a message to a conversation, optionally with @mention entities pre-built
+     * by the caller. Each element of `$mentions` must have:
+     *   - `mentionId`: the conversation-scoped member id (e.g. `29:…`)
+     *   - `name`: the display name rendered as `<at>name</at>` in `$text`
+     *
+     * When `$mentions` is empty, behaves exactly like `sendMessage` (plain text).
+     * Reuses the fail-closed trusted-serviceUrl guard and token path via sendActivity.
+     *
+     * @param  array<int, array{mentionId: string, name: string}>  $mentions
+     */
+    public function sendMessageWithMentions(string $serviceUrl, string $conversationId, string $text, array $mentions): bool
+    {
+        $activity = ['type' => 'message', 'text' => $text];
+
+        if (! empty($mentions)) {
+            $entities = [];
+            foreach ($mentions as $m) {
+                $entities[] = [
+                    'type' => 'mention',
+                    'mentioned' => ['id' => $m['mentionId'], 'name' => $m['name']],
+                    'text' => '<at>'.$m['name'].'</at>',
+                ];
+            }
+            $activity['entities'] = $entities;
+        }
+
+        return $this->sendActivity($serviceUrl, $conversationId, $activity);
+    }
+
     public function sendTyping(string $serviceUrl, string $conversationId): void
     {
         // Best-effort: a failed typing indicator must never break the actual reply.
