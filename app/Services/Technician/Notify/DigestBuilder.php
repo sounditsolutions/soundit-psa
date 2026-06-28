@@ -11,6 +11,7 @@ use App\Models\TechnicianRun;
 use App\Models\ToolingGap;
 use App\Models\WikiFact;
 use App\Services\Technician\Cockpit\CockpitQuery;
+use App\Support\AgentConfig;
 
 /**
  * Builds the operator's daily digest from the tested 1A/1B read models: pending
@@ -44,11 +45,17 @@ class DigestBuilder
             ->get();
         $toolingGapCount = $toolingGaps->count();
 
-        $escalations = TechnicianRun::query()
-            ->where('action_type', 'flag_attention')
-            ->where('created_at', '>=', now()->subDay())
-            ->get();
-        $escalationCount = $escalations->count();
+        $escalationEnabled = AgentConfig::escalationEnabled();
+        $escalations = collect();
+        $escalationCount = 0;
+
+        if ($escalationEnabled) {
+            $escalations = TechnicianRun::query()
+                ->where('action_type', 'flag_attention')
+                ->where('created_at', '>=', now()->subDay())
+                ->get();
+            $escalationCount = $escalations->count();
+        }
 
         $isEmpty = $pending->isEmpty() && $needsYou === 0 && $done === 0 && $learnedCount === 0 && $toolingGapCount === 0 && $escalationCount === 0;
 
@@ -60,8 +67,11 @@ class DigestBuilder
             "Handled autonomously (last 24h): {$done}",
             "Learned from your corrections (last 24h): {$learnedCount}",
             "Tooling gaps to review (last 24h): {$toolingGapCount}",
-            "Escalations raised (last 24h): {$escalationCount}",
         ];
+
+        if ($escalationEnabled) {
+            $lines[] = "Escalations raised (last 24h): {$escalationCount}";
+        }
 
         if ($pending->isNotEmpty()) {
             $lines[] = '';

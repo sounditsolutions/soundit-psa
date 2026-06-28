@@ -515,9 +515,9 @@ sudo systemctl status soundit-psa-technician-queue
 
 **AI Technician scheduled commands** (run by the Laravel scheduler via cron — no extra setup required):
 
-- `agent:escalation-sweep` — every 30 min, re-delivers unacked flag escalations up the operator chain. **Gated**: only fires when `agent_escalation_enabled = 1`. Default-dormant: enabling the AI Technician does NOT enable escalation notifications; they must be enabled separately under Settings > Integrations > AI Technician > Escalation Notifications.
+- `agent:escalation-sweep` — every 30 min, re-delivers unacked flag escalations up the operator chain. **Gated**: only fires when `agent_escalation_enabled = 1`. Default-dormant: enabling the AI Technician does NOT enable escalation notifications; they must be enabled separately by setting `agent_escalation_enabled` to `1` directly in the settings store (see below) — there is no in-app UI for escalation settings yet (a UI is a follow-up).
 
-**Escalation notification settings** (all optional, all default-dormant — configure under Settings > Integrations > AI Technician > Escalation Notifications):
+**Escalation notification settings** (all optional, all default-dormant — no in-app UI yet; set these directly via `php artisan tinker` with `Setting::setValue('key', 'value')`, or write to the `settings` table directly):
 
 | Setting | Description | Default |
 |---------|-------------|---------|

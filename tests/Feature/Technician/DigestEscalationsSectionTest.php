@@ -3,6 +3,7 @@
 namespace Tests\Feature\Technician;
 
 use App\Enums\TechnicianRunState;
+use App\Models\Setting;
 use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Services\Technician\Notify\DigestBuilder;
@@ -46,6 +47,7 @@ class DigestEscalationsSectionTest extends TestCase
     // 1. Section present with category breakdown (2 runs, 2 categories)
     public function test_section_present_with_category_breakdown(): void
     {
+        Setting::setValue('agent_escalation_enabled', '1');
         $this->flagRun('needs_decision');
         $this->flagRun('needs_hands_onsite');
 
@@ -69,6 +71,7 @@ class DigestEscalationsSectionTest extends TestCase
     // 3. 24h boundary has teeth: too-old run excluded, recent run counted
     public function test_24h_boundary_has_teeth(): void
     {
+        Setting::setValue('agent_escalation_enabled', '1');
         // Too old — should be excluded
         $this->flagRun('needs_overflow', ['created_at' => now()->subDays(2)]);
 
@@ -85,11 +88,25 @@ class DigestEscalationsSectionTest extends TestCase
     // 4. Escalations-only digest still sends (isEmpty = false)
     public function test_escalations_only_digest_still_sends(): void
     {
+        Setting::setValue('agent_escalation_enabled', '1');
         // No pending drafts, no needs-human, no executed actions, no learned facts, no gaps — only a flag
         $this->flagRun('uncertain');
 
         $digest = app(DigestBuilder::class)->build();
 
         $this->assertFalse($digest->isEmpty);
+    }
+
+    // 5. Escalation section entirely absent when feature is disabled (dormant-shipping gate)
+    public function test_section_absent_when_escalation_disabled(): void
+    {
+        // Flag off (default — agent_escalation_enabled unset); create a run anyway so only
+        // the feature gate, not an empty DB, is responsible for the absence.
+        $this->flagRun('needs_decision');
+
+        $digest = app(DigestBuilder::class)->build();
+
+        $this->assertStringNotContainsString('Escalations raised', $digest->body);
+        $this->assertStringNotContainsString('Escalations (by category):', $digest->body);
     }
 }
