@@ -14,6 +14,12 @@ class NinjaSyncDevices extends Command
 
     public function handle(NinjaSyncService $sync): int
     {
+        if (! \App\Support\NinjaConfig::isEnabled()) {
+            $this->warn('NinjaRMM integration is disabled (set ninja_enabled=1 to re-enable). Skipping.');
+
+            return self::SUCCESS;
+        }
+
         if ($clientId = $this->option('client')) {
             $client = Client::find($clientId);
             if (! $client) {

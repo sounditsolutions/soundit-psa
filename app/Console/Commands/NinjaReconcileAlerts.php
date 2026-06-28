@@ -18,6 +18,12 @@ class NinjaReconcileAlerts extends Command
 
     public function handle(NinjaClient $client, AlertService $alertService): int
     {
+        if (! \App\Support\NinjaConfig::isEnabled()) {
+            $this->warn('NinjaRMM integration is disabled (set ninja_enabled=1 to re-enable). Skipping.');
+
+            return self::SUCCESS;
+        }
+
         $dryRun = $this->option('dry-run');
 
         // Fetch all active alerts from Ninja API

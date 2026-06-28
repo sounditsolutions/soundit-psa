@@ -18,7 +18,7 @@ class AssetService
 
         // Active scope (default: active only)
         // When show_deleted is on, include inactive trashed records automatically
-        // (Ninja sets is_active=false alongside soft-delete)
+        // (the show_deleted branch also surfaces soft-deleted rows regardless of is_active)
         if (empty($filters['show_inactive'])) {
             if (! empty($filters['show_deleted'])) {
                 $query->where(fn ($q) => $q->where('assets.is_active', true)->orWhereNotNull('assets.deleted_at'));
@@ -126,6 +126,11 @@ class AssetService
         return $asset->fresh();
     }
 
+    /**
+     * Deliberately offboard (soft-delete) an Asset at operator request.
+     * This is the ONLY place a PSA Asset is ever soft-deleted — RMM sync jobs
+     * must NEVER call delete() on an Asset; they clear only their own vendor fields.
+     */
     public function deleteAsset(Asset $asset): void
     {
         // Block deletion if asset has open tickets

@@ -93,21 +93,24 @@ class NinjaSyncService
             usleep(100_000); // 100ms between devices to avoid API rate limits
         }
 
-        // Orphan detection: soft-delete local assets no longer in Ninja
+        // psa-u97k: a device leaving Ninja must NEVER delete/deactivate the shared PSA Asset — it may still be
+        // managed by another RMM (Tactical etc.), and offboarding is a DELIBERATE operator action. Clear ONLY
+        // Ninja's own fields; the Asset (and its other RMM links + hardware data) persists. Mirrors the
+        // Cipp/ControlD/Zorus stale-clear pattern. The non-empty-remote guard prevents wiping on an empty fetch.
         $remoteIds = collect($devices)->pluck('id')->filter()->all();
         if (! empty($remoteIds)) {
-            $orphans = Asset::where('client_id', $client->id)
+            $cleared = Asset::where('client_id', $client->id)
                 ->whereNotNull('ninja_id')
                 ->whereNotIn('ninja_id', $remoteIds)
-                ->get();
+                ->update([
+                    'ninja_id' => null,
+                    'ninja_url' => null,
+                    'ninja_synced_at' => null,
+                ]);
 
-            foreach ($orphans as $orphan) {
-                $orphan->update(['is_active' => false, 'rmm_online' => null]);
-                $orphan->delete();
-                $result->deactivated++;
-                Log::info('[NinjaSync] Orphan device removed', [
-                    'ninja_id' => $orphan->ninja_id,
-                    'asset_id' => $orphan->id,
+            if ($cleared > 0) {
+                $result->deactivated += $cleared;
+                Log::info("[NinjaSync] {$cleared} device(s) left Ninja — unlinked from Ninja, asset retained", [
                     'client' => $client->name,
                 ]);
             }

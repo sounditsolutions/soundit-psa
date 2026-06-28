@@ -14,6 +14,12 @@ class NinjaSyncBackup extends Command
 
     public function handle(NinjaBackupSyncService $sync): int
     {
+        if (! \App\Support\NinjaConfig::isEnabled()) {
+            $this->warn('NinjaRMM integration is disabled (set ninja_enabled=1 to re-enable). Skipping.');
+
+            return self::SUCCESS;
+        }
+
         $mappedCount = Client::whereNotNull('ninja_org_id')->count();
         if ($mappedCount === 0) {
             $this->warn('No clients are mapped to NinjaRMM organizations.');

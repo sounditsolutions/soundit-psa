@@ -38,9 +38,15 @@ class ProcessLevelWebhook implements ShouldQueue
         if ($type === 'device_deleted') {
             $asset = $deviceId ? Asset::where('level_id', $deviceId)->first() : null;
             if ($asset) {
-                $asset->update(['is_active' => false]);
-                $asset->delete();
-                Log::info('[LevelSync] Device deleted via webhook', [
+                // psa-u97k: a device leaving Level via webhook must NEVER delete/deactivate
+                // the shared PSA Asset — it may still be managed by another RMM (Tactical etc.).
+                // Clear ONLY Level's own vendor fields; the Asset persists.
+                $asset->update([
+                    'level_id' => null,
+                    'level_url' => null,
+                    'level_synced_at' => null,
+                ]);
+                Log::info('[LevelSync] Device removed from Level via webhook — unlinked, asset retained', [
                     'level_id' => $deviceId,
                     'asset_id' => $asset->id,
                 ]);

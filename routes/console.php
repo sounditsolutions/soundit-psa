@@ -8,13 +8,15 @@ use Illuminate\Support\Facades\Schedule;
 Schedule::command('ninja:reconcile-alerts')
     ->everyFifteenMinutes()
     ->withoutOverlapping()
-    ->runInBackground();
+    ->runInBackground()
+    ->when(fn () => \App\Support\NinjaConfig::isEnabled());
 
 // NinjaRMM full device sync — every 4 hours (inventory, hardware detail, status, creates, deletes)
 Schedule::command('ninja:sync-devices')
     ->everyFourHours()
     ->withoutOverlapping()
-    ->runInBackground();
+    ->runInBackground()
+    ->when(fn () => \App\Support\NinjaConfig::isEnabled());
 
 // Level RMM device sync — every 4 hours for mapped clients
 Schedule::command('level:sync-devices')
@@ -106,7 +108,7 @@ Schedule::command('ninja:sync-backup')
     ->dailyAt('05:30')
     ->withoutOverlapping()
     ->runInBackground()
-    ->when(fn () => \App\Models\Client::whereNotNull('ninja_org_id')->exists());
+    ->when(fn () => \App\Support\NinjaConfig::isEnabled() && \App\Models\Client::whereNotNull('ninja_org_id')->exists());
 
 // Comet Backup usage + license sync — daily (only if configured + clients mapped)
 Schedule::command('comet:sync-backup')
