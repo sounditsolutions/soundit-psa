@@ -64,21 +64,24 @@ class LevelSyncService
             }
         }
 
-        // Orphan detection: soft-delete local assets no longer in Level
+        // psa-u97k: a device leaving Level must NEVER delete/deactivate the shared PSA Asset — it may still be
+        // managed by another RMM (Tactical etc.), and offboarding is a DELIBERATE operator action. Clear ONLY
+        // Level's own fields; the Asset (and its other RMM links + hardware data) persists. Mirrors the
+        // Cipp/ControlD/Zorus stale-clear pattern. The non-empty-remote guard prevents wiping on an empty fetch.
         $remoteIds = collect($devices)->pluck('id')->filter()->all();
         if (! empty($remoteIds)) {
-            $orphans = Asset::where('client_id', $client->id)
+            $cleared = Asset::where('client_id', $client->id)
                 ->whereNotNull('level_id')
                 ->whereNotIn('level_id', $remoteIds)
-                ->get();
+                ->update([
+                    'level_id' => null,
+                    'level_url' => null,
+                    'level_synced_at' => null,
+                ]);
 
-            foreach ($orphans as $orphan) {
-                $orphan->update(['is_active' => false, 'rmm_online' => null]);
-                $orphan->delete();
-                $result->deactivated++;
-                Log::info('[LevelSync] Orphan device removed', [
-                    'level_id' => $orphan->level_id,
-                    'asset_id' => $orphan->id,
+            if ($cleared > 0) {
+                $result->deactivated += $cleared;
+                Log::info("[LevelSync] {$cleared} device(s) left Level — unlinked from Level, asset retained", [
                     'client' => $client->name,
                 ]);
             }

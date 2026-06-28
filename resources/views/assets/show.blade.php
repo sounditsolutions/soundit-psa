@@ -62,7 +62,7 @@
             <a href="{{ route('assets.edit', $asset) }}" class="btn btn-outline-primary btn-sm">
                 <i class="bi bi-pencil me-1"></i>Edit
             </a>
-            <button type="button" class="btn btn-outline-danger btn-sm" title="Delete device"
+            <button type="button" class="btn btn-outline-danger btn-sm" title="Offboard device"
                     data-bs-toggle="modal" data-bs-target="#deleteAssetModal">
                 <i class="bi bi-trash"></i>
             </button>
@@ -2219,7 +2219,7 @@
     <div class="modal-dialog">
         <div class="modal-content">
             <div class="modal-header">
-                <h5 class="modal-title text-danger"><i class="bi bi-exclamation-triangle me-2"></i>Delete Device</h5>
+                <h5 class="modal-title text-danger"><i class="bi bi-exclamation-triangle me-2"></i>Offboard Device</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body">
@@ -2236,7 +2236,7 @@
                     @csrf
                     @method('DELETE')
                     <button type="submit" class="btn btn-danger" id="deleteAssetBtn" disabled>
-                        <i class="bi bi-trash me-1"></i>Delete Device
+                        <i class="bi bi-trash me-1"></i>Offboard Device
                     </button>
                 </form>
             </div>
