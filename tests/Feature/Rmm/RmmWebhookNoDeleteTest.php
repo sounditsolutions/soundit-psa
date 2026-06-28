@@ -8,6 +8,7 @@ use App\Models\Asset;
 use App\Models\Client;
 use App\Models\LevelWebhook;
 use App\Models\NinjaWebhook;
+use App\Models\Setting;
 use App\Models\TacticalAsset;
 use App\Services\Level\LevelSyncService;
 use App\Services\Ninja\NinjaSyncService;
@@ -37,6 +38,10 @@ class RmmWebhookNoDeleteTest extends TestCase
      */
     public function test_ninja_node_deleted_webhook_unlinks_not_deletes(): void
     {
+        // Enable Ninja for this test — it verifies real webhook processing behaviour,
+        // not the disabled-gate path (that is covered by NinjaDisabledTest).
+        Setting::setValue('ninja_enabled', '1');
+
         $client = Client::factory()->create();
 
         // Asset has both a Ninja link and a Tactical link

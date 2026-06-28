@@ -327,7 +327,7 @@ These commands execute automatically based on their schedule:
 
 | Command | Schedule | Purpose |
 |---------|----------|---------|
-| `ninja:sync-devices` | Every 4 hours | Full device sync from NinjaRMM (inventory, hardware detail, status, creates, deletes) |
+| `ninja:sync-devices` | Every 4 hours | Full device sync from NinjaRMM (inventory, hardware detail, status, creates, deletes) — only runs when `ninja_enabled=1` |
 | `level:sync-devices` | Every 4 hours | Sync devices from Level RMM (online status updated in real-time via webhooks) |
 | `tactical:reconcile-alerts` | Hourly | Resolve PSA alerts whose Tactical alerts have closed — the at-least-once backstop for dropped resolve webhooks (resolves the alert only; does not auto-resolve a linked auto-ticket — only if Tactical configured) |
 | `tactical:sync-devices` | Daily at 05:32 | Sync devices from Tactical RMM into `tactical_assets` and hostname-link to assets (only if configured + clients mapped to a Tactical site) |
@@ -340,7 +340,7 @@ These commands execute automatically based on their schedule:
 | `zorus:sync-licenses` | Daily at 05:18 | Sync DNS endpoint counts from Zorus (only if configured + clients mapped) |
 | `zorus:sync-devices` | Daily at 05:20 | Sync DNS endpoint data from Zorus to local assets (only if configured + clients mapped) |
 | `contracts:evaluate-rules` | Daily at 05:15 | Evaluate contract assignment rules (reconciliation) |
-| `ninja:sync-backup` | Daily at 05:30 | Sync backup storage usage and license counts from NinjaRMM (only if Ninja orgs mapped) |
+| `ninja:sync-backup` | Daily at 05:30 | Sync backup storage usage and license counts from NinjaRMM (only if `ninja_enabled=1` and orgs mapped) |
 | `comet:sync-backup` | Daily at 05:40 | Sync backup storage usage and license counts from Comet Backup (only if configured + orgs mapped) |
 | `servosity:sync-licenses` | Daily at 05:45 | Sync backup license counts from Servosity (only if configured + clients mapped) |
 | `appriver:sync-licenses` | Daily at 05:50 | Sync M365 subscription seat counts from AppRiver (only if configured + clients mapped) |
@@ -520,6 +520,8 @@ Before configuring integrations, visit **Settings > General Settings** to set yo
 All other integrations are configured through the **Settings > Integrations** page in the web UI. None require `.env` changes.
 
 ### NinjaRMM
+
+> **Disabled by default** (psa-u97k): NinjaRMM sync is off on fresh deployments. Set the `ninja_enabled` setting to `1` in Settings > Integrations to re-enable it.
 
 1. Settings > Integrations > NinjaRMM
 2. Enter your Ninja **client ID** and **client secret**

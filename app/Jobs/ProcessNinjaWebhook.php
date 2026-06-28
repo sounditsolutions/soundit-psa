@@ -31,6 +31,12 @@ class ProcessNinjaWebhook implements ShouldQueue
             return;
         }
 
+        if (! \App\Support\NinjaConfig::isEnabled()) {
+            $webhook->markSkipped('NinjaRMM integration is disabled');
+
+            return;
+        }
+
         $type = $webhook->activity_type;
         $deviceId = $webhook->ninja_device_id;
 
