@@ -343,3 +343,13 @@ Schedule::command('technician:emergency-sweep')
     ->withoutOverlapping()
     ->runInBackground()
     ->when(fn () => TechnicianConfig::enabled());
+
+// AI Technician — escalation degradation sweep: re-deliver unacked flag_attention
+// escalations and advance them up the operator chain so nothing is ever silently
+// stuck. Cadence (30 min) is less than the default reping window (120 min), so the
+// sweep fires at least once before any window lapses. Dormant when escalation is off.
+Schedule::command('agent:escalation-sweep')
+    ->everyThirtyMinutes()
+    ->withoutOverlapping()
+    ->runInBackground()
+    ->when(fn () => \App\Support\AgentConfig::escalationEnabled());

@@ -6,6 +6,7 @@ use App\Enums\FlagAttentionCategory;
 use App\Enums\TechnicianRunState;
 use App\Models\TechnicianRun;
 use App\Models\Ticket;
+use App\Services\Agent\Escalation\EscalationNotifier;
 use App\Services\Technician\TechnicianActionGate;
 use App\Support\AgentConfig;
 
@@ -20,8 +21,10 @@ use App\Support\AgentConfig;
  *    but with a STRICT NO-OP executor (it must never touch a ticket or client);
  *  - it can NEVER auto-execute (the classifier hard-codes flag_attention to Approve,
  *    so even an operator who maps it to 'auto' cannot make a flag act);
- *  - it does NOT notify (Teams/role-routing is deferred to a later increment — the
- *    category hint is recorded for it, but no OperatorNotifier is wired here).
+ *  - Increment H: when agent_escalation_enabled is on, calls EscalationNotifier to
+ *    deliver the flag to the role-routed human. Dormant when off (flag records exactly
+ *    as before). The "already flagged" duplicate returns BEFORE the wire-in, so
+ *    re-flagging the same blocker does NOT re-notify (no spam).
  *
  * Resolution happens human-side in the cockpit: acknowledge (→ Done) or dismiss
  * (→ Denied). There is no executor to approve.
@@ -30,6 +33,7 @@ class FlagAttentionTool
 {
     public function __construct(
         private readonly TechnicianActionGate $gate,
+        private readonly EscalationNotifier $escalation,
     ) {}
 
     /** The Anthropic tool definition for `flag_attention`. */
@@ -138,6 +142,13 @@ class FlagAttentionTool
             },
             confidence: null,
         );
+
+        // Increment H: when escalation notifications are enabled, notify the role-routed human. Dormant when off
+        // (flag records exactly as before). Reached only for a NEW/revived flag — the "already flagged" duplicate
+        // returned earlier, so re-flagging the same blocker does NOT re-notify (no spam). Fail-soft inside notify().
+        if (AgentConfig::escalationEnabled()) {
+            $this->escalation->notify($ticket, $run, $category, $reason);
+        }
 
         return "Flagged ticket #{$ticket->id} for human attention ({$category->label()}).";
     }
