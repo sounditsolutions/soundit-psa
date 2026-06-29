@@ -243,7 +243,7 @@ class TriageToolExecutor
     private function listClientCalls(array $input): array
     {
         try {
-            $limit = min((int) ($input['limit'] ?? 10), 20);
+            $limit = max(1, min((int) ($input['limit'] ?? 10), 20));
 
             $calls = \App\Models\PhoneCall::forClient($this->clientId)
                 ->recent($limit)
