@@ -62,6 +62,7 @@ class TriageToolExecutor
             'search_tickets' => $this->searchTickets($input),
             'get_ticket_notes' => $this->getTicketNotes($input),
             'list_client_tickets' => $this->listClientTickets($input), // agent-only (readTools + READ_TOOLS)
+            'list_client_calls' => $this->listClientCalls($input),     // agent-only (readTools + READ_TOOLS)
             'set_ticket_priority' => $this->setTicketPriority($input),
             'set_ticket_status' => $this->setTicketStatus($input),
             'set_ticket_category' => $this->setTicketCategory($input),
@@ -219,6 +220,42 @@ class TriageToolExecutor
 
                 return $row;
             })->toArray();
+        } catch (\Throwable) {
+            return ['error' => 'lookup failed'];
+        }
+    }
+
+    /**
+     * AGENT-ONLY situation drill-down: list THIS client's recent phone calls with
+     * summaries + sentiment — no keyword needed, scoped to $this->clientId.
+     *
+     * Data-minimisation boundary: the column allowlist EXCLUDES the three raw
+     * transcript columns (transcription, transcription_summary, cleaned_transcript),
+     * matching the recentCalls() allowlist in ClientSituationContextBuilder. Transcripts
+     * stay on the existing per-ticket call tool only.
+     *
+     * All free-text (call_summary, next_steps) passes through ClientSituationContextBuilder::
+     * scrub(). Nullable enums (charge_classification) and nullable int (sentiment_score)
+     * are null-guarded. Hard-cap: ≤ 20 calls. Generic error only.
+     */
+    private function listClientCalls(array $input): array
+    {
+        try {
+            $limit = min((int) ($input['limit'] ?? 10), 20);
+
+            $calls = \App\Models\PhoneCall::forClient($this->clientId)
+                ->recent($limit)
+                ->get(['id', 'direction', 'started_at', 'call_summary', 'next_steps', 'charge_classification', 'sentiment_score']);
+
+            return $calls->map(fn (\App\Models\PhoneCall $call): array => [
+                'id' => $call->id,
+                'direction' => $call->direction?->value,
+                'date' => $call->started_at?->toDateString(),
+                'summary' => ClientSituationContextBuilder::scrub($call->call_summary, 400),
+                'next_steps' => ClientSituationContextBuilder::scrub($call->next_steps, 400),
+                'charge' => $call->charge_classification?->value,
+                'sentiment' => $call->sentiment_score,
+            ])->toArray();
         } catch (\Throwable) {
             return ['error' => 'lookup failed'];
         }

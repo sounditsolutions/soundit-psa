@@ -29,6 +29,7 @@ class TechnicianAgentToolExecutor
         'search_tickets',
         'get_ticket_notes',
         'list_client_tickets',
+        'list_client_calls',
         'wiki_list_pages',
         'wiki_search',
         'wiki_get_page',

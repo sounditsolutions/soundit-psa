@@ -281,20 +281,21 @@ class TechnicianAgentToolExecutorTest extends TestCase
 
     // ── 5. readTools() shape ──────────────────────────────────────────────────
 
-    public function test_read_tools_contains_exactly_the_six_allowed_reads(): void
+    public function test_read_tools_contains_exactly_the_seven_allowed_reads(): void
     {
         $tools = TriageToolDefinitions::readTools();
         $names = array_column($tools, 'name');
 
         $this->assertContains('search_tickets', $names);
         $this->assertContains('get_ticket_notes', $names);
-        // Agent-only situation drill-down (Task 8) — offered to the agent, never the triage loop.
+        // Agent-only situation drill-downs (Task 8 + Task 9) — offered to the agent, never the triage loop.
         $this->assertContains('list_client_tickets', $names);
+        $this->assertContains('list_client_calls', $names);
         $this->assertContains('wiki_list_pages', $names);
         $this->assertContains('wiki_search', $names);
         $this->assertContains('wiki_get_page', $names);
 
-        $this->assertCount(6, $names, 'readTools() must return exactly the 6 allowed reads.');
+        $this->assertCount(7, $names, 'readTools() must return exactly the 7 allowed reads.');
     }
 
     public function test_read_tools_contains_no_set_ticket_mutators(): void

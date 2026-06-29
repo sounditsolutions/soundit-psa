@@ -70,6 +70,20 @@ class TriageToolDefinitions
                     'required' => [],
                 ],
             ],
+            [
+                'name' => 'list_client_calls',
+                'description' => 'List this client\'s recent phone calls — summaries, sentiment, and charge classification. Use it to understand the call history and tone of recent interactions before responding. Scoped to the current ticket\'s client; no keyword needed.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'limit' => [
+                            'type' => 'integer',
+                            'description' => 'Max results to return (default 10, max 20).',
+                        ],
+                    ],
+                    'required' => [],
+                ],
+            ],
         ];
     }
 
