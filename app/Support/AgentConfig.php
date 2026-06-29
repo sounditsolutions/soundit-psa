@@ -108,4 +108,38 @@ class AgentConfig
 
         return (is_string($value) && trim($value) !== '') ? trim($value) : AiConfig::opusModel();
     }
+
+    // ── Intake front-door ─────────────────────────────────────────────────────
+
+    /**
+     * Intake front-door dormancy gate. Off (default) → email ingestion behaves exactly
+     * as today. Setting: intake_enabled.
+     */
+    public static function intakeEnabled(): bool
+    {
+        return Setting::getValue('intake_enabled') === '1';
+    }
+
+    /**
+     * Confidence at/above which a high-confidence ATTACH auto-applies (graduates from
+     * held to auto). NULL-PRESERVING: absent/blank → null = NEVER auto-attach (held-first;
+     * the safe default). Else max(0.80, (float)$v). Mirrors proposeCloseAutoThreshold —
+     * absent ≠ 0.0.
+     *
+     * SAFETY: do NOT naively cast getValue() to float before the null-check.
+     * An absent setting yields getValue() = null → (float) null = 0.0 →
+     * max(0.80, 0.0) = 0.80, silently enabling auto-attach with nothing configured.
+     * The null-preserving check below is intentional and load-bearing.
+     *
+     * Setting: intake_attach_auto_threshold. Floor when set: 0.80.
+     */
+    public static function intakeAttachAutoThreshold(): ?float
+    {
+        $v = Setting::getValue('intake_attach_auto_threshold');
+        if ($v === null || trim((string) $v) === '') {
+            return null; // unset = never auto-attach (the safe default)
+        }
+
+        return max(0.80, (float) $v); // floor: can't auto-attach below 0.80
+    }
 }
