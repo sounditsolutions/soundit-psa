@@ -1,0 +1,27 @@
+{
+  "run_label": "Verify-a-change: Prospect intake (PRs #51–54) 2026-06-23",
+  "results": [
+    { "scenario": "capture: search-first 'Attach to existing client' control renders on unresolved call (PR #51)", "status": "pass" },
+    { "scenario": "capture: '+ New client' provisions Client(stage=Prospect)+Person+Ticket, lands on ticket (PR #51)", "status": "pass" },
+    { "scenario": "gates: prospect Person is portal-inert (portal_enabled=0, password=null); phone normalized+seeded (PR #51)", "status": "pass" },
+    { "scenario": "gates: prospect ticket is inert — 0 triage runs, contract_id/due_at null (no SLA) (PR #51)", "status": "pass" },
+    { "scenario": "badge: 'Prospect' badge on client detail + ticket detail headers (PR #51)", "status": "pass" },
+    { "scenario": "client-list: stage filter chips All/Active/Prospects (PR #53)", "status": "pass" },
+    { "scenario": "client-list: gold 'Prospect' badge on list row under Prospects filter (PR #53)", "status": "pass" },
+    { "scenario": "calls: 'Unknown caller' facet — correct predicate (client_id NULL & followed_up_at NULL); surfaces answered too (PR #51)", "status": "pass" },
+    { "scenario": "search-select: clicking a search result populates the caller form and does NOT navigate (PR #52)", "status": "pass" },
+    { "scenario": "dedup: repeat-caller number surfaces 'already on [X]' confirm + 'Create new client anyway' (PR #51)", "status": "pass" },
+    { "scenario": "dismiss: 'Not a lead / dismiss' removes call from facet, preserves Call Log history, creates nothing (PR #51)", "status": "pass" },
+    { "scenario": "convert: backend POST prospects.convert flips stage prospect->active, redirects to success screen (PR #51)", "status": "pass" },
+    { "scenario": "convert: a UI trigger exists to reach the convert flow (PR #51)", "status": "fail" },
+    { "scenario": "converted-screen: echoes open tickets ('Original captured request') + onboarding checklist (PR #51)", "status": "pass" },
+    { "scenario": "design-audit: mobile tickets-list stacks into cards, no horizontal overflow, triage signal visible (PR #54 / psa-6zs7)", "status": "pass" },
+    { "scenario": "design-audit: mobile ticket-detail leads with content (subject+resolution+notes), sidebar stacks below (PR #54 / psa-i2e7)", "status": "pass" },
+    { "scenario": "design-audit: prospect capture UI — search-first hierarchy holds across mobile/tablet/desktop", "status": "pass" },
+    { "scenario": "design-audit: converted success screen — clean checklist + captured-request echo across breakpoints", "status": "pass" }
+  ],
+  "findings": [
+    { "id": "psa-s6ov", "kind": "bug", "title": "Prospect 'Convert to client' has no UI trigger — convert flow is unreachable from the product" },
+    { "id": "psa-wjlv", "kind": "ux", "title": "Dedup warning asks 'attach to that client instead?' but offers no attach action" }
+  ]
+}

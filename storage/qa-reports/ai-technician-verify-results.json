@@ -1,0 +1,11 @@
+{
+  "run_label": "Verify AI Technician feature (feat/ai-technician-toggle)",
+  "results": [
+    {"scenario": "step1: toggle renders (Disabled badge) + persists (Active, both switches checked after save+reload)", "status": "pass"},
+    {"scenario": "step2: auto-ack fires within seconds via live worker + body contains BOTH disclosure lines, AI-authored (ai_authored=1, who_type=Agent)", "status": "pass"},
+    {"scenario": "step3: idempotent — exactly ONE ack note after re-dispatching the loop twice more (1 run/1 append-only log)", "status": "pass"},
+    {"scenario": "step4: disabled = no ack — feature OFF, new ticket gets 0 runs / 0 ack notes (loop never dispatched)", "status": "pass"},
+    {"scenario": "step5: design audit of AI Technician card (impeccable + axe + 3 viewports) — 19/20 Excellent, no fileable card-specific design defect", "status": "pass"}
+  ],
+  "findings": []
+}

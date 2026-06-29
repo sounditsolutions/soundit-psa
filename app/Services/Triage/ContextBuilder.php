@@ -120,17 +120,18 @@ class ContextBuilder
             $sections[] = $phoneCallSection;
         }
 
-        // Operator corrections — TRUSTED guidance injected OUTSIDE any untrusted fence
-        $operatorDirective = self::recentCorrectionsSection($ticket);
-        if ($operatorDirective) {
-            $sections[] = $operatorDirective;
-        }
-
-        // Client Situation — opt-in (agent only), fenced UNTRUSTED reference data. The gate
-        // is re-checked HERE so the section is byte-absent when the flag is off OR the caller
+        // Client Situation — opt-in (agent only), fenced UNTRUSTED reference data. Placed BEFORE
+        // the operator directive so the TRUSTED directive remains the authoritative last word. The
+        // gate is re-checked HERE so the section is byte-absent when the flag is off OR the caller
         // didn't opt in; build() returns '' when empty → array_filter drops it.
         if ($includeClientSituation && \App\Support\AgentConfig::situationContextEnabled() && $ticket->client_id) {
             $sections[] = app(\App\Services\Triage\ClientSituationContextBuilder::class)->build($ticket);
+        }
+
+        // Operator corrections — TRUSTED guidance injected OUTSIDE any untrusted fence (the last word)
+        $operatorDirective = self::recentCorrectionsSection($ticket);
+        if ($operatorDirective) {
+            $sections[] = $operatorDirective;
         }
 
         $context = implode("\n\n", array_filter($sections));

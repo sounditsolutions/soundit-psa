@@ -1,0 +1,20 @@
+{
+  "run_label": "Clients, Assets & Billing",
+  "results": [
+    { "scenario": "client-overview", "status": "fail" },
+    { "scenario": "client-search-create", "status": "pass" },
+    { "scenario": "client-contacts", "status": "pass" },
+    { "scenario": "asset-inventory", "status": "pass" },
+    { "scenario": "asset-detail", "status": "fail" },
+    { "scenario": "asset-ticket-link", "status": "fail" },
+    { "scenario": "invoice-list", "status": "fail" },
+    { "scenario": "invoice-detail", "status": "pass" },
+    { "scenario": "contract-to-invoice", "status": "pass" }
+  ],
+  "findings": [
+    { "id": "psa-aayf", "kind": "bug", "title": "Asset detail 500s when Tactical local_ips is a string (count() TypeError) — both VAN-DC01 and VAN-APP01 [high/P1]" },
+    { "id": "psa-d0yp", "kind": "bug", "title": "Client sub-tab pages throw JS TypeError (activity-tab listener on null) [medium/P2]" },
+    { "id": "psa-bpd6", "kind": "ux", "title": "Invoice list never shows 'Overdue' — past-due Posted invoices look identical to current ones [medium/P2]" },
+    { "id": "psa-o1go", "kind": "ux", "title": "Asset 'Alerts & Tickets' tab hides resolved tickets by default, shows (0) / 'No tickets found' [medium/P2]" }
+  ]
+}

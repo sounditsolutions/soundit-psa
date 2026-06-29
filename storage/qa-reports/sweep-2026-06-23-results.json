@@ -1,0 +1,26 @@
+{
+  "run_label": "Functional scenario sweep (tickets/clients/assets/billing/wiki) 2026-06-23",
+  "results": [
+    { "scenario": "tix-create-manual: New Ticket -> form -> Create lands T-24 with entered client/subject/priority/type", "status": "pass" },
+    { "scenario": "tix-resolve: Resolve modal captures a resolution (recommended, AI-draft offered); status->Resolved + audit note", "status": "pass" },
+    { "scenario": "tix-statuses: New->Resolved->In Progress->Pending Client all persist with status-change audit notes", "status": "pass" },
+    { "scenario": "tix-reopen: Reopen returns Resolved->In Progress, preserves prior resolution ('Prior resolution (ticket reopened)')", "status": "pass" },
+    { "scenario": "client-overview: tabbed whole-picture (Tickets/People/Assets/Contracts/Licenses counts); Tickets(3) count matches list", "status": "pass" },
+    { "scenario": "client-search-create: search narrows to one client; create needs only name, lands on detail with success alert", "status": "pass" },
+    { "scenario": "client-contacts: primary contact 1 click from client, 'Primary' badge + full contact info + M365 staleness", "status": "pass" },
+    { "scenario": "asset-inventory: 23 assets, sortable cols + Online/Offline/Unlinked filters, color+text status badges", "status": "pass" },
+    { "scenario": "asset-detail: VAN-APP01 full context (identity, status/hardware, RMM recency, warranty, client/contract)", "status": "pass" },
+    { "scenario": "asset-ticket-link: bidirectional — asset Alerts&Tickets tab shows #T-1/#T-9; ticket T-9 shows VAN-APP01 (primary) link", "status": "pass" },
+    { "scenario": "invoice-list: client/status/date filters; status badges color+text; money right-aligned and legible", "status": "pass" },
+    { "scenario": "invoice-detail: 7 line items reconcile to $3,337.04 subtotal + $308.68 tax = $3,645.72; cost/margin + sync state shown", "status": "pass" },
+    { "scenario": "contract-to-invoice: contract terms visible; 'Invoices 3' tab lists the 3 driven invoices (count accurate)", "status": "pass" },
+    { "scenario": "wiki-gate (enabled path): /wiki global index + client Wiki tab reachable; wiki pages carry a proper H1", "status": "pass" },
+    { "scenario": "wiki-client-nav: client wiki skeleton pages grouped (Environment/Notes/Overview) + per-page nav rail + search", "status": "pass" },
+    { "scenario": "wiki-mine-verify: mined facts on correct pages (SonicWall firmware fix from ticket #4), provenance panel with badges + source refs", "status": "pass" },
+    { "scenario": "wiki-fact-actions: Confirm(1-click)/Correct(inline)/Retire(confirm) present + correct; proven working in prior-QA data", "status": "pass" }
+  ],
+  "findings": [
+    { "id": "psa-8yhp", "kind": "ux", "title": "Invoices have no 'Mark as Paid' — standalone (no Stripe/QBO) invoices can't be completed" },
+    { "id": "psa-txh4", "kind": "bug", "title": "asset-badge hover handler throws TypeError: e.target.closest is not a function (no Element guard) — app-wide console error" }
+  ]
+}
