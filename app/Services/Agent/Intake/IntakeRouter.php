@@ -67,14 +67,35 @@ PROMPT;
      */
     public function route(Email $email): IntakeDecision
     {
-        // 1. Client-scope guard — be defensive even though T2 only calls this for known senders.
         if ($email->client_id === null) {
             return IntakeDecision::create('no resolved client');
         }
 
-        // 2. Fetch candidate tickets SERVER-SIDE from the resolved client_id (injection floor).
-        //    The email content never influences which tickets are considered.
-        $candidates = Ticket::where('client_id', $email->client_id)
+        return $this->routeContent(
+            $email->client_id,
+            (string) $email->subject,
+            (string) $email->body_text,
+            'email:'.$email->id,
+        );
+    }
+
+    /**
+     * Channel-neutral intake routing core.
+     *
+     * Fetches candidates server-side (injection floor), calls the AI, validates the
+     * result, and returns an IntakeDecision. Fail-soft: any Throwable returns
+     * IntakeDecision::create('router unavailable').
+     *
+     * @param  int  $clientId  Resolved client (non-null — callers must guard).
+     * @param  string  $subject  Content subject line.
+     * @param  string  $body  Content body (truncated internally to BODY_MAX_LENGTH).
+     * @param  string  $contentKey  Trace key for logging (e.g. 'email:42', 'call:7'). Does not affect the decision.
+     */
+    public function routeContent(int $clientId, string $subject, string $body, string $contentKey): IntakeDecision
+    {
+        // 1. Fetch candidate tickets SERVER-SIDE from the resolved client_id (injection floor).
+        //    The content never influences which tickets are considered.
+        $candidates = Ticket::where('client_id', $clientId)
             ->open()
             ->latest()
             ->limit(self::CANDIDATE_LIMIT)
@@ -84,12 +105,11 @@ PROMPT;
             return IntakeDecision::create('no open tickets'); // no AI call — cheap
         }
 
-        // 3. Build user payload: fenced email content + numbered candidate list.
+        // 2. Build user payload: fenced content + numbered candidate list.
         //    Subject and body are wrapped in PromptFence delimiters so the model treats
         //    them as DATA, not instructions (belt-and-suspenders on top of the injection
-        //    floor — candidate IDs are always server-fetched regardless of email content).
-        $subject = (string) $email->subject;
-        $body = mb_substr((string) $email->body_text, 0, self::BODY_MAX_LENGTH);
+        //    floor — candidate IDs are always server-fetched regardless of content).
+        $body = mb_substr($body, 0, self::BODY_MAX_LENGTH);
 
         $candidateLines = $candidates->map(function (Ticket $t): string {
             $desc = mb_substr((string) $t->description, 0, self::CANDIDATE_DESCRIPTION_MAX);
@@ -103,7 +123,7 @@ PROMPT;
         $userPayload = "{$fencedSubject}\n\n{$fencedBody}\n\n"
             ."OPEN TICKETS FOR THIS CLIENT:\n{$candidateLines}";
 
-        // 4. AI match + validation (fail-soft wraps everything).
+        // 3. AI match + validation (fail-soft wraps everything).
         try {
             $raw = $this->ai->completeJson(self::SYSTEM_PROMPT, $userPayload, self::AI_MAX_TOKENS);
 
