@@ -2,6 +2,8 @@
 
 namespace App\Services\Triage;
 
+use App\Models\Contract;
+use App\Models\Person;
 use App\Models\PhoneCall;
 use App\Models\Ticket;
 use App\Services\Technician\PromptFence;
@@ -138,9 +140,84 @@ class ClientSituationContextBuilder
 
     // ── Stubs (later tasks). Built now to lock the digest order + fail-soft contract. ──
 
+    /**
+     * The decision-changing lead block (CO-8 ①): the client's SLA tier for THIS ticket's
+     * priority, the primary contact, and the two scariest security key-indicators
+     * (BEC external mail-forward + MFA gaps) — each a yes/no flag.
+     *
+     * Deliberately omits contract TYPE (the base ## Contracts section already prints it) and
+     * device-alert counts (ops-health — those live in timeSensitive()). NEVER surfaces the raw
+     * mailbox_forwarding_smtp: only the boolean BEC flag (the validated-domain detail is a later
+     * tool). Every contact free-text field is scrubbed through safe().
+     */
     private function header(int $clientId, Ticket $current): string
     {
-        return '';
+        try {
+            $lines = [];
+
+            // ── SLA tier — the active contract's response/resolution targets for this priority ──
+            $contract = Contract::forClient($clientId)->active()->first();
+            if (! $contract) {
+                $lines[] = 'SLA: no active contract';
+            } elseif (! $contract->hasSla()) {
+                $lines[] = 'SLA: active contract, no SLA terms';
+            } else {
+                $resp = $contract->slaResponseHours($current->priority);
+                $reso = $contract->slaResolutionHours($current->priority);
+
+                $targets = [];
+                if ($resp !== null) {
+                    $targets[] = "response {$resp}h";
+                }
+                if ($reso !== null) {
+                    $targets[] = "resolution {$reso}h";
+                }
+
+                $lines[] = "SLA ({$current->priority->value}): "
+                    .($targets === [] ? 'targets not set for this priority' : implode(' / ', $targets));
+            }
+
+            // ── Primary contact — every free-text field through safe() ──
+            $primary = Person::where('client_id', $clientId)
+                ->where('is_primary', true)
+                ->first();
+            if ($primary) {
+                $name = $this->safe($primary->full_name, 120);
+                $title = $this->safe($primary->job_title, 80);
+                $email = $this->safe($primary->email, 120);
+
+                $line = 'Primary contact: '.$name;
+                if ($title !== '') {
+                    $line .= " ({$title})";
+                }
+                if ($email !== '') {
+                    $line .= " · {$email}";
+                }
+                $lines[] = $line;
+            }
+
+            // ── Security key-indicators (yes/no flags only) ──
+            // BEC: the domain compare in hasExternalForward() can't be expressed in SQL, so we
+            // load the (rare) forwarders and filter in PHP — ->limit(50) bounds that work. The
+            // raw mailbox_forwarding_smtp is NEVER rendered; only the boolean flag.
+            $bec = Person::where('client_id', $clientId)
+                ->whereNotNull('mailbox_forwarding_smtp')
+                ->limit(50)
+                ->get()
+                ->contains(fn (Person $p) => $p->hasExternalForward());
+
+            // MFA: tri-state — only an explicit FALSE is a gap (NULL = unknown, not a gap).
+            $mfaGap = Person::where('client_id', $clientId)
+                ->where('mfa_enabled', false)
+                ->exists();
+
+            $lines[] = 'External mail-forward (BEC): '.($bec ? 'yes' : 'no')
+                .' · MFA gaps: '.($mfaGap ? 'yes' : 'no');
+
+            return $lines === [] ? '' : implode("\n", $lines);
+        } catch (\Throwable) {
+            return '';
+        }
     }
 
     private function inMotion(int $clientId, Ticket $current): string

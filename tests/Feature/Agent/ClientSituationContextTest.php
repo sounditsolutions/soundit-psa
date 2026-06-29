@@ -4,8 +4,12 @@ namespace Tests\Feature\Agent;
 
 use App\Enums\CallDirection;
 use App\Enums\ChargeClassification;
+use App\Enums\ContractStatus;
+use App\Enums\ContractType;
 use App\Enums\TicketStatus;
 use App\Models\Client;
+use App\Models\Contract;
+use App\Models\Person;
 use App\Models\PhoneCall;
 use App\Models\Setting;
 use App\Models\Ticket;
@@ -79,6 +83,31 @@ class ClientSituationContextTest extends TestCase
         $c->save();
 
         return $c;
+    }
+
+    /** Persist a Person for a client (defaults to a non-primary, MFA-unknown contact). */
+    private function makePerson(int $clientId, array $attrs = []): Person
+    {
+        return Person::create(array_merge([
+            'client_id' => $clientId,
+            'first_name' => 'Test',
+            'last_name' => 'Person',
+            'email' => 'person'.uniqid().'@example.test',
+            'is_active' => true,
+            'is_primary' => false,
+        ], $attrs));
+    }
+
+    /** Persist an active Contract for a client (start_date is NOT NULL on the table). */
+    private function makeContract(int $clientId, array $attrs = []): Contract
+    {
+        return Contract::create(array_merge([
+            'client_id' => $clientId,
+            'name' => 'Managed Services Agreement',
+            'type' => ContractType::Managed->value,
+            'status' => ContractStatus::Active->value,
+            'start_date' => now()->subYear(),
+        ], $attrs));
     }
 
     // ── 1. Flag ON: an open sibling appears (display_id + subject) ─────────────
@@ -556,13 +585,224 @@ class ClientSituationContextTest extends TestCase
         $this->assertStringNotContainsString('FOREIGN-CALL-SUMMARY-XYZ', (string) $block);
     }
 
+    // ── 22. Header: SLA tier renders response/resolution for the ticket's priority ─
+
+    public function test_header_renders_sla_tier_for_active_contract_with_terms(): void
+    {
+        $this->enableFlag();
+        $client = Client::factory()->create();
+        $current = $this->current($client); // factory priority = p3
+        $this->makeContract($client->id, [
+            'sla_terms' => [
+                'response' => ['p3' => 8],
+                'resolution' => ['p3' => 24],
+            ],
+        ]);
+
+        $block = $this->situationBlock(
+            ContextBuilder::buildForTicket($current, includeClientSituation: true)
+        );
+
+        $this->assertNotNull($block);
+        $this->assertStringContainsString('SLA (p3):', $block, "The ticket's priority tier is shown.");
+        $this->assertStringContainsString('response 8h', $block);
+        $this->assertStringContainsString('resolution 24h', $block);
+    }
+
+    // ── 23. Header: SLA fallbacks (no contract / no SLA terms) render without crashing ─
+
+    public function test_header_sla_renders_no_active_contract_fallback(): void
+    {
+        $this->enableFlag();
+        $client = Client::factory()->create();
+        $current = $this->current($client); // no contract created
+
+        $block = $this->situationBlock(
+            ContextBuilder::buildForTicket($current, includeClientSituation: true)
+        );
+
+        $this->assertNotNull($block, 'The header alone (SLA + security flags) materialises the situation block.');
+        $this->assertStringContainsString('SLA: no active contract', $block);
+    }
+
+    public function test_header_sla_renders_active_contract_without_terms_fallback(): void
+    {
+        $this->enableFlag();
+        $client = Client::factory()->create();
+        $current = $this->current($client);
+        $this->makeContract($client->id, ['sla_terms' => null]);
+
+        $block = $this->situationBlock(
+            ContextBuilder::buildForTicket($current, includeClientSituation: true)
+        );
+
+        $this->assertNotNull($block);
+        $this->assertStringContainsString('SLA: active contract, no SLA terms', $block);
+    }
+
+    // ── 24. Header: primary contact shown; a non-primary contact is NOT ───────────
+
+    public function test_header_renders_primary_contact_and_excludes_non_primary(): void
+    {
+        $this->enableFlag();
+        $client = Client::factory()->create();
+        $current = $this->current($client);
+        $this->makePerson($client->id, [
+            'first_name' => 'Pat', 'last_name' => 'Primary',
+            'job_title' => 'IT Director', 'email' => 'pat.primary@acme.test',
+            'is_primary' => true,
+        ]);
+        $this->makePerson($client->id, [
+            'first_name' => 'Nora', 'last_name' => 'NonPrimary',
+            'email' => 'nora@acme.test', 'is_primary' => false,
+        ]);
+
+        $block = $this->situationBlock(
+            ContextBuilder::buildForTicket($current, includeClientSituation: true)
+        );
+
+        $this->assertNotNull($block);
+        $this->assertStringContainsString('Primary contact: Pat Primary', $block);
+        $this->assertStringContainsString('(IT Director)', $block);
+        $this->assertStringContainsString('pat.primary@acme.test', $block);
+        $this->assertStringNotContainsString('Nora NonPrimary', $block, 'A non-primary contact is never rendered as the primary.');
+    }
+
+    // ── 25. Header: BEC flag = yes for an external forward; raw SMTP never leaks ───
+
+    public function test_header_bec_flag_is_yes_for_external_forward_and_hides_raw_smtp(): void
+    {
+        $this->enableFlag();
+        $client = Client::factory()->create();
+        $current = $this->current($client);
+        $this->makePerson($client->id, [
+            'cipp_upn' => 'vic@acme.test',
+            'mailbox_forwarding_smtp' => 'exfil@attacker-domain.test', // different domain → external
+        ]);
+
+        $context = ContextBuilder::buildForTicket($current, includeClientSituation: true);
+        $block = $this->situationBlock($context);
+
+        $this->assertNotNull($block);
+        $this->assertStringContainsString('External mail-forward (BEC): yes', $block);
+        // The raw forwarding target must NEVER appear anywhere in the assembled context.
+        $this->assertStringNotContainsString('exfil@attacker-domain.test', $context);
+        $this->assertStringNotContainsString('attacker-domain.test', $context);
+    }
+
+    // ── 26. Header: BEC flag = no for an internal (same-domain) forward ───────────
+
+    public function test_header_bec_flag_is_no_for_internal_forward(): void
+    {
+        $this->enableFlag();
+        $client = Client::factory()->create();
+        $current = $this->current($client);
+        $this->makePerson($client->id, [
+            'cipp_upn' => 'user@acme.test',
+            'mailbox_forwarding_smtp' => 'archive@acme.test', // same domain → internal, not BEC
+        ]);
+
+        $block = $this->situationBlock(
+            ContextBuilder::buildForTicket($current, includeClientSituation: true)
+        );
+
+        $this->assertNotNull($block);
+        $this->assertStringContainsString('External mail-forward (BEC): no', $block);
+    }
+
+    // ── 27. Header: MFA gaps flag (false = gap; true/null = no gap, tri-state) ─────
+
+    public function test_header_mfa_gaps_flag_is_yes_when_a_contact_has_mfa_disabled(): void
+    {
+        $this->enableFlag();
+        $client = Client::factory()->create();
+        $current = $this->current($client);
+        $this->makePerson($client->id, ['mfa_enabled' => false]);
+
+        $block = $this->situationBlock(
+            ContextBuilder::buildForTicket($current, includeClientSituation: true)
+        );
+
+        $this->assertNotNull($block);
+        $this->assertStringContainsString('MFA gaps: yes', $block);
+    }
+
+    public function test_header_mfa_gaps_flag_is_no_when_all_enabled_or_null(): void
+    {
+        $this->enableFlag();
+        $client = Client::factory()->create();
+        $current = $this->current($client);
+        $this->makePerson($client->id, ['mfa_enabled' => true]);
+        $this->makePerson($client->id, ['mfa_enabled' => null]); // tri-state: unknown ≠ gap
+
+        $block = $this->situationBlock(
+            ContextBuilder::buildForTicket($current, includeClientSituation: true)
+        );
+
+        $this->assertNotNull($block);
+        $this->assertStringContainsString('MFA gaps: no', $block);
+    }
+
+    // ── 28. Header: cross-client contacts / indicators never bleed in ─────────────
+
+    public function test_header_excludes_cross_client_contacts_and_indicators(): void
+    {
+        $this->enableFlag();
+        $client = Client::factory()->create();
+        $other = Client::factory()->create();
+        $current = $this->current($client);
+
+        // Every scary signal belongs to ANOTHER client — none may surface in $client's header.
+        $this->makePerson($other->id, [
+            'first_name' => 'Other', 'last_name' => 'PrimaryXYZ',
+            'is_primary' => true,
+            'mfa_enabled' => false,
+            'cipp_upn' => 'o@other.test',
+            'mailbox_forwarding_smtp' => 'exfil@evil.test',
+        ]);
+
+        $block = $this->situationBlock(
+            ContextBuilder::buildForTicket($current, includeClientSituation: true)
+        );
+
+        $this->assertNotNull($block);
+        $this->assertStringNotContainsString('Other PrimaryXYZ', $block);
+        $this->assertStringNotContainsString('Primary contact:', $block, '$client has no primary contact of its own.');
+        $this->assertStringContainsString('External mail-forward (BEC): no', $block);
+        $this->assertStringContainsString('MFA gaps: no', $block);
+    }
+
+    // ── 29. Header: contract TYPE is not duplicated (base context already prints it) ─
+
+    public function test_header_does_not_duplicate_contract_type(): void
+    {
+        $this->enableFlag();
+        $client = Client::factory()->create();
+        $current = $this->current($client);
+        $this->makeContract($client->id, [
+            'type' => ContractType::Managed->value,
+            'sla_terms' => ['response' => ['p3' => 8]],
+        ]);
+
+        $context = ContextBuilder::buildForTicket($current, includeClientSituation: true);
+        $block = $this->situationBlock($context);
+
+        $this->assertNotNull($block);
+        // The base ## Contracts section prints the contract type exactly once...
+        $this->assertStringContainsString('Type: managed', $context);
+        $this->assertSame(1, substr_count($context, 'Type: managed'), 'Contract type is printed once (base context), not re-rendered by the header.');
+        // ...and the situation header itself renders no contract "Type:" line.
+        $this->assertStringNotContainsString('Type:', $block);
+    }
+
     // ── 9. Orchestrator fail-soft smoke ───────────────────────────────────────
 
     /**
      * A sub-builder throwing must be swallowed (per-sub-builder try/catch → '')
      * so build() returns gracefully without throwing. safe() is overridden to throw;
-     * openTickets()'s internal guard catches it, the stubs return '', body is empty,
-     * and build() returns '' — never propagating the exception.
+     * both openTickets() and header() route a free-text field through it (the sibling
+     * subject and the primary contact's name), each guard catches it, every section
+     * returns '', body is empty, and build() returns '' — never propagating.
      */
     public function test_build_is_fail_soft_when_a_sub_builder_throws(): void
     {
@@ -570,6 +810,9 @@ class ClientSituationContextTest extends TestCase
         $client = Client::factory()->create();
         $current = $this->current($client);
         $this->sibling($client, ['subject' => 'A-SIBLING']);
+        // A primary contact forces header() to call safe() too, so the throw collapses
+        // the header (not just openTickets) and the whole digest resolves to ''.
+        $this->makePerson($client->id, ['first_name' => 'Pat', 'is_primary' => true]);
 
         $builder = new class extends ClientSituationContextBuilder
         {
