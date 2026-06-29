@@ -3,6 +3,7 @@
 namespace App\Services\Agent\Escalation;
 
 use App\Enums\FlagAttentionCategory;
+use App\Models\AssistantConversation;
 use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Models\User;
@@ -171,7 +172,16 @@ class EscalationNotifier
                     }
                 }
 
-                $this->bot->sendMessageWithMentions($serviceUrl, $convId, $postBody, $mentions);
+                $posted = $this->bot->sendMessageWithMentions($serviceUrl, $convId, $postBody, $mentions);
+
+                // Record the escalation in the teammate's own conversation transcript so the bot
+                // remembers having posted it and can engage when a human replies in-chat (psa-f7ft).
+                // The escalation chat IS the teammate conversation (same conversationId), so this
+                // lands in the row TeamsReplyService reads. Only the initial post (step 0) — a
+                // Task-4 sweep re-ping re-posts the same message and must not duplicate the entry.
+                if ($posted && $step === 0) {
+                    $this->recordInTeammateTranscript($convId, $body);
+                }
             } catch (\Throwable $e) {
                 Log::warning('[EscalationNotifier] Bot send failed — escalation not lost; email follows', [
                     'ticket_id' => $ticket->id,
@@ -225,5 +235,29 @@ class EscalationNotifier
         ]);
         $flagRun->proposed_meta = $meta;
         $flagRun->save();
+    }
+
+    /**
+     * Record the just-posted escalation as an 'assistant' turn in the teammate conversation for
+     * this chat, so the bot's reply loop (TeamsReplyService::history) sees its own escalation and
+     * can engage when a human replies in-chat. Fail-soft: a transcript write must never lose the
+     * escalation or surface to the caller.
+     */
+    private function recordInTeammateTranscript(string $conversationId, string $body): void
+    {
+        try {
+            // Key MUST match TeamsReplyService::conversation() ('teams:'.<conversationId>) so the
+            // escalation lands in the same row the teammate reads from and writes to.
+            $conversation = AssistantConversation::createOrFirst(
+                ['external_key' => 'teams:'.$conversationId],
+                ['context_type' => 'teams_chat', 'user_id' => TechnicianConfig::aiActorUserId()],
+            );
+            $conversation->messages()->create(['role' => 'assistant', 'content' => $body]);
+        } catch (\Throwable $e) {
+            Log::warning('[EscalationNotifier] Failed to record escalation in teammate transcript — escalation still delivered', [
+                'conversation_id' => $conversationId,
+                'error' => $e->getMessage(),
+            ]);
+        }
     }
 }
