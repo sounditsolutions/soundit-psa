@@ -2,6 +2,7 @@
 
 namespace App\Services\Triage;
 
+use App\Models\PhoneCall;
 use App\Models\Ticket;
 use App\Services\Technician\PromptFence;
 use App\Services\Wiki\Mining\WikiRedactor;
@@ -247,7 +248,30 @@ class ClientSituationContextBuilder
 
     private function recentCalls(int $clientId, Ticket $current): string
     {
-        return '';
+        try {
+            // Explicit column allowlist — NEVER loads transcript columns
+            // (transcription, transcription_summary, cleaned_transcript are excluded).
+            $calls = PhoneCall::forClient($clientId)
+                ->recent(self::MAX_CALLS)
+                ->get(['id', 'direction', 'started_at', 'call_summary', 'next_steps', 'charge_classification', 'sentiment_score']);
+
+            if ($calls->isEmpty()) {
+                return '';
+            }
+
+            $lines = ["Recent calls ({$calls->count()}):"];
+            foreach ($calls as $call) {
+                $lines[] = '- '.($call->started_at?->format('M j') ?? '—')
+                    .' · '.($call->direction?->value ?? 'call')
+                    .($call->sentiment_score !== null ? " · sentiment {$call->sentiment_score}/10" : '')
+                    .' · '.$this->safe($call->call_summary, self::MAX_CALL_SUMMARY)
+                    .($call->charge_classification?->value !== null ? " · {$call->charge_classification->value}" : '');
+            }
+
+            return implode("\n", $lines);
+        } catch (\Throwable) {
+            return '';
+        }
     }
 
     private function timeSensitive(int $clientId, Ticket $current): string

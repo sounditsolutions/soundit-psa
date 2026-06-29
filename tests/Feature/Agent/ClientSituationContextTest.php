@@ -2,8 +2,11 @@
 
 namespace Tests\Feature\Agent;
 
+use App\Enums\CallDirection;
+use App\Enums\ChargeClassification;
 use App\Enums\TicketStatus;
 use App\Models\Client;
+use App\Models\PhoneCall;
 use App\Models\Setting;
 use App\Models\Ticket;
 use App\Models\User;
@@ -57,6 +60,25 @@ class ClientSituationContextTest extends TestCase
         $start = strpos($context, '## Client Situation');
 
         return $start === false ? null : substr($context, $start);
+    }
+
+    /**
+     * Creates and persists a PhoneCall, satisfying all NOT NULL DB constraints
+     * (call_uuid, from_number) while allowing callers to override any fillable field.
+     * Sets client_id and started_at directly (non-fillable / needs an explicit value).
+     */
+    private function makeCall(int $clientId, array $attrs = [], ?int $minutesAgo = null): PhoneCall
+    {
+        $c = new PhoneCall(array_merge([
+            'call_uuid' => (string) str()->uuid(),
+            'direction' => CallDirection::Inbound,
+            'from_number' => '+10000000000',
+        ], $attrs));
+        $c->client_id = $clientId;
+        $c->started_at = now()->subMinutes($minutesAgo ?? 60);
+        $c->save();
+
+        return $c;
     }
 
     // ── 1. Flag ON: an open sibling appears (display_id + subject) ─────────────
@@ -404,6 +426,134 @@ class ClientSituationContextTest extends TestCase
         $this->assertNotNull($block);
         $this->assertStringContainsString('[withheld]', $block, 'safe() must withhold the injection phrase in the resolution.');
         $this->assertStringNotContainsString('ignore all previous instructions', $block);
+    }
+
+    // ── 16. Recent calls: call_summary + sentiment appear ─────────────────────
+
+    public function test_recent_call_summary_and_sentiment_appear_in_block(): void
+    {
+        $this->enableFlag();
+        $client = Client::factory()->create();
+        $current = $this->current($client);
+
+        $this->makeCall($client->id, [
+            'call_summary' => 'Customer asked about invoice UNIQUE-SUMMARY-TEXT',
+            'sentiment_score' => 8,
+            'charge_classification' => ChargeClassification::Billable,
+        ]);
+
+        $context = ContextBuilder::buildForTicket($current, includeClientSituation: true);
+        $block = $this->situationBlock($context);
+
+        $this->assertNotNull($block);
+        $this->assertStringContainsString('Recent calls (1):', $block);
+        $this->assertStringContainsString('sentiment 8/10', $block);
+        $this->assertStringContainsString('UNIQUE-SUMMARY-TEXT', $block);
+    }
+
+    // ── 17. Recent calls: transcript columns are NEVER loaded (security boundary) ─
+
+    public function test_transcript_columns_are_never_loaded_in_recent_calls(): void
+    {
+        $this->enableFlag();
+        $client = Client::factory()->create();
+        $current = $this->current($client);
+
+        $this->makeCall($client->id, [
+            'call_summary' => 'SUMMARY-DISTINCT-TOKEN',
+            'transcription' => 'TRANSCRIPT-SECRET-TOKEN',
+            'transcription_summary' => 'TRANSCRIPT-SUMMARY-SECRET-TOKEN',
+            'cleaned_transcript' => 'CLEANED-TRANSCRIPT-SECRET-TOKEN',
+        ]);
+
+        $context = ContextBuilder::buildForTicket($current, includeClientSituation: true);
+        $block = $this->situationBlock($context);
+
+        $this->assertNotNull($block);
+        $this->assertStringContainsString('SUMMARY-DISTINCT-TOKEN', $block, 'call_summary must appear.');
+        $this->assertStringNotContainsString('TRANSCRIPT-SECRET-TOKEN', $block, 'transcription must never appear.');
+        $this->assertStringNotContainsString('TRANSCRIPT-SUMMARY-SECRET-TOKEN', $block, 'transcription_summary must never appear.');
+        $this->assertStringNotContainsString('CLEANED-TRANSCRIPT-SECRET-TOKEN', $block, 'cleaned_transcript must never appear.');
+    }
+
+    // ── 18. Recent calls: null charge_classification → no TypeError ───────────
+
+    public function test_null_charge_classification_renders_without_type_error(): void
+    {
+        $this->enableFlag();
+        $client = Client::factory()->create();
+        $current = $this->current($client);
+
+        $this->makeCall($client->id, [
+            'call_summary' => 'SUMMARY-NULL-CHARGE',
+            'charge_classification' => null,
+        ]);
+
+        $context = ContextBuilder::buildForTicket($current, includeClientSituation: true);
+        $block = $this->situationBlock($context);
+
+        $this->assertNotNull($block);
+        $this->assertStringContainsString('SUMMARY-NULL-CHARGE', $block, 'Call with null charge_classification must render.');
+        $this->assertStringNotContainsString('billable', $block, 'No charge token when charge_classification is null.');
+        $this->assertStringNotContainsString('no_charge', $block, 'No charge token when charge_classification is null.');
+    }
+
+    // ── 19. Recent calls: null sentiment_score → no garbage "sentiment /10" ──
+
+    public function test_null_sentiment_score_renders_without_garbage(): void
+    {
+        $this->enableFlag();
+        $client = Client::factory()->create();
+        $current = $this->current($client);
+
+        $this->makeCall($client->id, [
+            'call_summary' => 'SUMMARY-NULL-SENTIMENT',
+            'sentiment_score' => null,
+        ]);
+
+        $context = ContextBuilder::buildForTicket($current, includeClientSituation: true);
+        $block = $this->situationBlock($context);
+
+        $this->assertNotNull($block);
+        $this->assertStringContainsString('SUMMARY-NULL-SENTIMENT', $block, 'Call with null sentiment must render.');
+        $this->assertStringNotContainsString('sentiment /10', $block, 'Null sentiment must not produce garbage "sentiment /10".');
+    }
+
+    // ── 20. Recent calls: cap at MAX_CALLS (10) ───────────────────────────────
+
+    public function test_recent_calls_are_capped_at_ten(): void
+    {
+        $this->enableFlag();
+        $client = Client::factory()->create();
+        $current = $this->current($client);
+
+        for ($i = 0; $i < 15; $i++) {
+            $this->makeCall($client->id, ['call_summary' => "Call summary {$i}"], $i);
+        }
+
+        $context = ContextBuilder::buildForTicket($current, includeClientSituation: true);
+        $block = $this->situationBlock($context);
+
+        $this->assertNotNull($block);
+        $this->assertStringContainsString('Recent calls (10):', $block, 'Header shows capped count (10, not 15).');
+        $this->assertSame(10, substr_count($block, "\n- "), 'At most MAX_CALLS (10) call lines may render.');
+    }
+
+    // ── 21. Recent calls: cross-client call is excluded ───────────────────────
+
+    public function test_cross_client_call_is_excluded_from_recent_calls(): void
+    {
+        $this->enableFlag();
+        $client = Client::factory()->create();
+        $other = Client::factory()->create();
+        $current = $this->current($client);
+
+        $this->makeCall($other->id, ['call_summary' => 'FOREIGN-CALL-SUMMARY-XYZ'], 0);
+
+        $context = ContextBuilder::buildForTicket($current, includeClientSituation: true);
+        $block = $this->situationBlock($context);
+
+        $this->assertStringNotContainsString('FOREIGN-CALL-SUMMARY-XYZ', (string) $block);
     }
 
     // ── 9. Orchestrator fail-soft smoke ───────────────────────────────────────
