@@ -52,11 +52,15 @@ class CallerResolver
         // row stored the customer number in to_number instead of from_number.
         // Single-match safety is inherent: we pick the most recent already-resolved call,
         // trusting that prior resolution was itself validated.
+        // Guard on client_id (not person_id): a CLIENT is what Stage 2 reuses. A prior call
+        // resolved to a client but no specific person (the 'content_company' outcome —
+        // client_id set, person_id null) is a valid reuse; we carry the client over and let
+        // person_id stay null. Also hardens the floor — never reuse a fully-unresolved prior.
         $num = $call->from_number;
         if ($num !== null && $num !== '') {
             $prior = PhoneCall::query()
                 ->where('id', '!=', $call->id)
-                ->whereNotNull('person_id')
+                ->whereNotNull('client_id')
                 ->where(fn ($q) => $q->where('from_number', $num)->orWhere('to_number', $num))
                 ->latest('id')
                 ->first();

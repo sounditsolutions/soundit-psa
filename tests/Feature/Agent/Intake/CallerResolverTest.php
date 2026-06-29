@@ -154,6 +154,34 @@ class CallerResolverTest extends TestCase
         $this->assertSame('unresolved', $result->source);
     }
 
+    // ── Test 3b: Stage 2 — company-only prior (client set, person null) reused ─
+
+    /**
+     * L1: a prior call resolved to a CLIENT but no specific person (the 'content_company'
+     * outcome — client_id set, person_id null) must be reusable by Stage 2. The next call
+     * from the same number carries the client over (source 'call_history', person_id null)
+     * instead of needlessly HOLDing. The guard is whereNotNull('client_id') — a client is
+     * what Stage 2 reuses; the person may legitimately be null.
+     */
+    public function test_stage2_reuses_company_only_prior_with_null_person_id(): void
+    {
+        $client = Client::factory()->create();
+        $num = '+15556660001';
+
+        // Prior call resolved to a client only (company-only match): client_id set, person_id null.
+        $this->makeCall(['from_number' => $num, 'client_id' => $client->id, 'person_id' => null]);
+
+        // New call from the same number.
+        $call = $this->makeCall(['from_number' => $num]);
+
+        $result = $this->resolver()->resolve($call);
+
+        $this->assertTrue($result->resolved, 'A company-only prior (client set, person null) must be reused');
+        $this->assertSame('call_history', $result->source);
+        $this->assertSame($client->id, $result->clientId, 'The client is carried over from the prior call');
+        $this->assertNull($result->personId, 'person_id remains null — no specific person was known');
+    }
+
     // ── Test 4: Stage 3a+3b — company + name (corroborated) ─────────────────
 
     /**

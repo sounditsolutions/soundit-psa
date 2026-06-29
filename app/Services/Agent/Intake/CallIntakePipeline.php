@@ -84,7 +84,7 @@ class CallIntakePipeline
             $subject = Str::limit((string) $call->call_summary, 200);
             $body = (string) ($call->call_summary ?: $call->cleaned_transcript ?: $call->transcription ?: '');
 
-            $decision = app(IntakeRouter::class)->routeContent($clientId, $subject, $body, 'call:'.$call->id);
+            $decision = app(IntakeRouter::class)->routeContent($clientId, $subject, $body, 'call:'.$call->id, 'phone call');
             $threshold = AgentConfig::intakeAttachAutoThreshold();
 
             // GRADUATED auto-attach — only when confident AND the threshold is set.
