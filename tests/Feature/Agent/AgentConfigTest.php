@@ -86,4 +86,29 @@ class AgentConfigTest extends TestCase
         $agent = app(TechnicianAgent::class);
         $this->assertInstanceOf(TechnicianAgent::class, $agent);
     }
+
+    // ── situationContextEnabled ───────────────────────────────────────────────
+
+    public function test_situation_context_enabled_defaults_false(): void
+    {
+        $this->assertFalse(AgentConfig::situationContextEnabled());
+    }
+
+    public function test_situation_context_enabled_true_when_set_to_1(): void
+    {
+        Setting::setValue('agent_situation_context_enabled', '1');
+        $this->assertTrue(AgentConfig::situationContextEnabled());
+    }
+
+    public function test_situation_context_enabled_false_for_string_true(): void
+    {
+        Setting::setValue('agent_situation_context_enabled', 'true');
+        $this->assertFalse(AgentConfig::situationContextEnabled());
+    }
+
+    public function test_situation_context_enabled_false_for_zero(): void
+    {
+        Setting::setValue('agent_situation_context_enabled', '0');
+        $this->assertFalse(AgentConfig::situationContextEnabled());
+    }
 }
