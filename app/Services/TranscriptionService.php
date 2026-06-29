@@ -264,6 +264,15 @@ TEMPLATE;
                 'transcribed_at' => now(),
                 'transcription_error' => null,
             ]);
+
+            // 6. AI call-intake front-door (psa-xcyo): when enabled, hand the now-transcribed
+            //    call to the CallIntakePipeline (resolve → attach/create) on the success path
+            //    only. Gating the dispatch on intakeEnabled keeps transcription byte-identical
+            //    when intake is off (no job churn); the pipeline re-checks dormancy as defence
+            //    in depth. afterCommit() so the queued job sees the completed row.
+            if (\App\Support\AgentConfig::intakeEnabled()) {
+                \App\Jobs\CallIntakeJob::dispatch($call->id)->afterCommit();
+            }
         } catch (\Throwable $e) {
             $call->update([
                 'transcription_status' => TranscriptionStatus::Failed,
