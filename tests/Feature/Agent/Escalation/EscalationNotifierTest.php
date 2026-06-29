@@ -4,6 +4,7 @@ namespace Tests\Feature\Agent\Escalation;
 
 use App\Enums\FlagAttentionCategory;
 use App\Enums\TechnicianRunState;
+use App\Models\AssistantConversation;
 use App\Models\Client;
 use App\Models\Setting;
 use App\Models\TechnicianRun;
@@ -356,5 +357,117 @@ class EscalationNotifierTest extends TestCase
         $this->assertArrayHasKey('notified_at', $escalation);
         $this->assertSame(0, $escalation['step'],
             'step=0 marks the first escalation attempt for the Task-4 degradation sweep.');
+    }
+
+    // ── Test 10: the escalation is recorded in the teammate transcript (psa-f7ft) ──
+    // So when a human replies to the in-chat escalation, the bot remembers posting it.
+
+    public function test_records_the_escalation_in_the_teammate_transcript_after_a_successful_bot_post(): void
+    {
+        $this->configureRouting();
+        $this->configureBotChat();
+        // The teammate conversation is owned by the AI actor user (as on prod).
+        Setting::setValue('triage_system_user_id', (string) $this->charlie->id);
+
+        $this->mock(TeamsBotClient::class, function (MockInterface $m) {
+            $m->shouldReceive('getConversationMember')->andReturn(['id' => '29:abc', 'name' => 'Charlie']);
+            $m->shouldReceive('sendMessageWithMentions')->once()->andReturnTrue();
+        });
+        $this->mock(TeamsNotifier::class, fn (MockInterface $m) => $m->shouldReceive('post')->never());
+        $this->mock(EmailService::class, fn (MockInterface $m) => $m->shouldReceive('sendNew')->andReturnNull());
+
+        app(EscalationNotifier::class)->notify(
+            $this->ticket, $this->run, FlagAttentionCategory::NeedsDecision, 'need a decision',
+        );
+
+        // The escalation chat IS the teammate conversation (same conversationId), so the post
+        // must land in the row keyed 'teams:<conversationId>' that TeamsReplyService reads.
+        $conversation = AssistantConversation::where('external_key', 'teams:conv-test-123')->first();
+        $this->assertNotNull($conversation,
+            'The escalation Chet posted must be recorded in the teammate conversation for this chat.');
+        $this->assertSame('teams_chat', $conversation->context_type);
+
+        $messages = $conversation->messages()->get();
+        $this->assertCount(1, $messages, 'Exactly one assistant turn — the escalation Chet just posted.');
+        $this->assertSame('assistant', $messages->first()->role,
+            'The escalation is the bot speaking, so it is an assistant turn.');
+        $this->assertStringContainsString("#{$this->ticket->id}", $messages->first()->content,
+            'The recorded turn must be the escalation body so the bot can engage when a human replies.');
+    }
+
+    // ── Test 11: a re-ping does not duplicate the transcript entry (psa-f7ft) ──
+
+    public function test_a_repinged_escalation_does_not_duplicate_the_transcript_entry(): void
+    {
+        $this->configureRouting();
+        $this->configureBotChat();
+        Setting::setValue('triage_system_user_id', (string) $this->charlie->id);
+
+        $this->mock(TeamsBotClient::class, function (MockInterface $m) {
+            $m->shouldReceive('getConversationMember')->andReturn(['id' => '29:abc', 'name' => 'Charlie']);
+            $m->shouldReceive('sendMessageWithMentions')->andReturnTrue();
+        });
+        $this->mock(TeamsNotifier::class, fn (MockInterface $m) => $m->shouldReceive('post')->never());
+        $this->mock(EmailService::class, fn (MockInterface $m) => $m->shouldReceive('sendNew')->andReturnNull());
+
+        $notifier = app(EscalationNotifier::class);
+        // Initial escalation (step 0) records the transcript turn.
+        $notifier->notify($this->ticket, $this->run, FlagAttentionCategory::NeedsDecision, 'need a decision');
+        // A Task-4 sweep re-ping (step 1) re-posts the SAME escalation — it must NOT duplicate the entry.
+        $notifier->deliverTo($this->ticket, $this->run->fresh(), $this->charlie, 'need a decision', 1);
+
+        $conversation = AssistantConversation::where('external_key', 'teams:conv-test-123')->first();
+        $this->assertNotNull($conversation);
+        $this->assertCount(1, $conversation->messages()->get(),
+            'Only the initial escalation is recorded; re-pings must not add duplicate transcript turns.');
+    }
+
+    // ── Test 12: a webhook-fallback escalation is NOT recorded as a teammate turn (psa-f7ft) ──
+    // It never appeared in the teammate chat, so the bot must not "remember" posting it there.
+
+    public function test_webhook_fallback_escalation_is_not_recorded_in_the_teammate_transcript(): void
+    {
+        $this->configureRouting();
+        Setting::setValue('teams_bot_enabled', '1'); // bot enabled but NO escalation chat ref → webhook path
+        Setting::setValue('triage_system_user_id', (string) $this->charlie->id);
+
+        $this->mock(TeamsBotClient::class, fn (MockInterface $m) => $m->shouldReceive('sendMessageWithMentions')->never());
+        $this->mock(TeamsNotifier::class, fn (MockInterface $m) => $m->shouldReceive('post')->andReturnTrue());
+        $this->mock(EmailService::class, fn (MockInterface $m) => $m->shouldReceive('sendNew')->andReturnNull());
+
+        app(EscalationNotifier::class)->notify(
+            $this->ticket, $this->run, FlagAttentionCategory::NeedsDecision, 'need a decision',
+        );
+
+        $this->assertNull(
+            AssistantConversation::where('external_key', 'like', 'teams:%')->first(),
+            'An escalation delivered via the webhook fallback (not the teammate chat) must not be recorded as a teammate turn.',
+        );
+    }
+
+    // ── Test 13: a failed bot post (returns false, no throw) is NOT recorded (psa-f7ft) ──
+    // If the post didn't land in the chat, the bot must not "remember" posting it.
+
+    public function test_a_failed_bot_post_is_not_recorded_in_the_teammate_transcript(): void
+    {
+        $this->configureRouting();
+        $this->configureBotChat();
+        Setting::setValue('triage_system_user_id', (string) $this->charlie->id);
+
+        $this->mock(TeamsBotClient::class, function (MockInterface $m) {
+            $m->shouldReceive('getConversationMember')->andReturn(['id' => '29:abc', 'name' => 'Charlie']);
+            $m->shouldReceive('sendMessageWithMentions')->once()->andReturnFalse(); // post failed, no throw
+        });
+        $this->mock(TeamsNotifier::class, fn (MockInterface $m) => $m->shouldReceive('post')->never());
+        $this->mock(EmailService::class, fn (MockInterface $m) => $m->shouldReceive('sendNew')->andReturnNull());
+
+        app(EscalationNotifier::class)->notify(
+            $this->ticket, $this->run, FlagAttentionCategory::NeedsDecision, 'need a decision',
+        );
+
+        $this->assertNull(
+            AssistantConversation::where('external_key', 'teams:conv-test-123')->first(),
+            'When the bot post does not succeed, the escalation never appeared in the chat, so it must not be recorded.',
+        );
     }
 }
