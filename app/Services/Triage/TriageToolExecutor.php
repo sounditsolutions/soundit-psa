@@ -61,6 +61,7 @@ class TriageToolExecutor
             // PSA tools
             'search_tickets' => $this->searchTickets($input),
             'get_ticket_notes' => $this->getTicketNotes($input),
+            'list_client_tickets' => $this->listClientTickets($input), // agent-only (readTools + READ_TOOLS)
             'set_ticket_priority' => $this->setTicketPriority($input),
             'set_ticket_status' => $this->setTicketStatus($input),
             'set_ticket_category' => $this->setTicketCategory($input),
@@ -163,6 +164,64 @@ class TriageToolExecutor
             'created_at' => $t->created_at?->toDateTimeString(),
             'resolved_at' => $t->resolved_at?->toDateTimeString(),
         ])->toArray();
+    }
+
+    /**
+     * AGENT-ONLY situation drill-down: list THIS client's tickets by status with NO
+     * keyword — the gap search_tickets (which requires a keyword) cannot close.
+     *
+     * Client scope is the ctor's $this->clientId (the ctor throws on a clientless ticket),
+     * so the tool is implicitly client-bound: no client/ticket id is accepted and
+     * cross-client reads are impossible. The current ticket is excluded; limit is hard-capped
+     * at 20. Every free-text field passes through the shared ClientSituationContextBuilder::
+     * scrub() (homoglyph-fold → strip_tags → withhold credential/injection hits → cap), the
+     * same control the situation digest uses. status=closed additionally returns the
+     * (scrubbed) resolution for verbatim fix-reuse. Any failure returns a generic error —
+     * never $e->getMessage() — so no internal detail leaks to the model.
+     */
+    private function listClientTickets(array $input): array
+    {
+        try {
+            $status = $input['status'] ?? 'open';
+            $limit = max(1, min((int) ($input['limit'] ?? 20), 20));
+
+            $query = Ticket::where('client_id', $this->clientId)
+                ->where('id', '!=', $this->ticket->id);
+
+            // Status map (there is intentionally NO scopePending): open() already includes
+            // the pending statuses, so 'pending' narrows via an explicit whereIn.
+            $query = match ($status) {
+                'pending' => $query->whereIn('status', [TicketStatus::PendingClient, TicketStatus::PendingThirdParty]),
+                'closed' => $query->closed(),
+                'all' => $query,
+                default => $query->open(), // 'open' and any unexpected value → the safe default
+            };
+
+            $tickets = $query->orderByDesc('opened_at')
+                ->limit($limit)
+                ->get(['id', 'halo_id', 'subject', 'status', 'priority', 'opened_at', 'resolution']);
+
+            $includeResolution = $status === 'closed';
+
+            return $tickets->map(function (Ticket $t) use ($includeResolution): array {
+                $row = [
+                    'id' => $t->id,
+                    'display_id' => $t->display_id,
+                    'subject' => ClientSituationContextBuilder::scrub($t->subject, 120),
+                    'status' => $t->status->value,
+                    'priority' => $t->priority->value,
+                    'opened_at' => $t->opened_at?->toIso8601String(),
+                ];
+
+                if ($includeResolution) {
+                    $row['resolution'] = ClientSituationContextBuilder::scrub($t->resolution, 600);
+                }
+
+                return $row;
+            })->toArray();
+        } catch (\Throwable) {
+            return ['error' => 'lookup failed'];
+        }
     }
 
     private function getTicketNotes(array $input): array

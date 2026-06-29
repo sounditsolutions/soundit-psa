@@ -10,7 +10,8 @@ use App\Services\Triage\TriageToolExecutor;
  * the LLM tool loop and the PSA's mutating actions.
  *
  * Allowlist (CO-1):
- *   READ:    search_tickets, get_ticket_notes, wiki_list_pages, wiki_search, wiki_get_page
+ *   READ:    search_tickets, get_ticket_notes, list_client_tickets,
+ *            wiki_list_pages, wiki_search, wiki_get_page
  *   ACT:     propose_close (gated mutator → ProposeCloseTool/gate)
  *            flag_attention (held NOTICE → FlagAttentionTool/gate; no execution side-effect)
  *            send_reply     (held client reply → SendReplyTool/gate; never auto-sent)
@@ -27,6 +28,7 @@ class TechnicianAgentToolExecutor
     private const READ_TOOLS = [
         'search_tickets',
         'get_ticket_notes',
+        'list_client_tickets',
         'wiki_list_pages',
         'wiki_search',
         'wiki_get_page',

@@ -33,8 +33,44 @@ class TriageToolDefinitions
             fn (array $t): bool => in_array($t['name'], ['search_tickets', 'get_ticket_notes'], true)
         ));
 
-        // All three wiki retrieval tools are included (no-op when wiki is off).
-        return array_merge($readPsa, self::wikiTools());
+        // Agent-only situation drill-downs + all three wiki retrieval tools (the latter
+        // no-op when wiki is off). The drill-downs come from agentReadTools(), which is
+        // deliberately NOT part of psaTools()/getTools() — those feed the deterministic
+        // triage loop and must never gain these read tools.
+        return array_merge($readPsa, self::agentReadTools(), self::wikiTools());
+    }
+
+    /**
+     * Agent-only read tools — the AI Technician's "client situation" drill-downs.
+     *
+     * Kept OUT of psaTools()/getTools() so they can never leak into the deterministic
+     * triage tool loop; offered ONLY via readTools() here, allowlisted in
+     * TechnicianAgentToolExecutor::READ_TOOLS, and handled in TriageToolExecutor::execute().
+     * Tasks 9 & 10 append further drill-downs to this single seam.
+     */
+    public static function agentReadTools(): array
+    {
+        return [
+            [
+                'name' => 'list_client_tickets',
+                'description' => 'List this client\'s tickets BY STATUS — no keyword needed (unlike search_tickets, which requires one). Use it to see what else is open for the client, review recent closes (their resolutions come back for fix-reuse), or check what is currently pending. Scoped to the current ticket\'s client; the current ticket is excluded.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'status' => [
+                            'type' => 'string',
+                            'description' => 'Which tickets to list: "open" (new / in-progress / pending — the default), "pending" (only those awaiting the client or a third party), "closed" (resolved / closed — also returns the resolution text), or "all".',
+                            'enum' => ['open', 'pending', 'closed', 'all'],
+                        ],
+                        'limit' => [
+                            'type' => 'integer',
+                            'description' => 'Max results to return (default 20, max 20).',
+                        ],
+                    ],
+                    'required' => [],
+                ],
+            ],
+        ];
     }
 
     /**

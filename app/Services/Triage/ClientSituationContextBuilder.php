@@ -106,12 +106,16 @@ class ClientSituationContextBuilder
 
     /**
      * The shared scrub for EVERY untrusted free-text field surfaced by this builder
-     * (and the situation tools). Folds homoglyphs / strips zero-width (homoglyph parity
-     * with the fence), strips HTML, withholds anything WikiRedactor flags as a credential
-     * / injection / marker, then caps. Returns '[withheld]' on a scan hit so the offending
-     * value never reaches the model even inside the fence.
+     * AND the situation drill-down tools. Folds homoglyphs / strips zero-width (homoglyph
+     * parity with the fence), strips HTML, withholds anything WikiRedactor flags as a
+     * credential / injection / marker, then caps. Returns '[withheld]' on a scan hit so the
+     * offending value never reaches the model even inside the fence.
+     *
+     * PUBLIC + STATIC so the situation tools (TriageToolExecutor) reuse the exact same scrub
+     * without needing an instance — this is the portable, load-bearing security control. The
+     * instance safe() below is a thin delegate kept for the sub-builders and the fail-soft test.
      */
-    protected function safe(?string $text, int $cap): string
+    public static function scrub(?string $text, int $cap): string
     {
         $t = (string) $text;
         $t = app(PromptFence::class)->normalizeUntrusted($t);
@@ -121,6 +125,16 @@ class ClientSituationContextBuilder
         }
 
         return mb_substr(trim($t), 0, $cap);
+    }
+
+    /**
+     * Instance entry point retained so sub-builders keep calling $this->safe(...) and the
+     * fail-soft test (which overrides safe() to throw) still exercises the per-section guards.
+     * Thin delegate to the shared static scrub().
+     */
+    protected function safe(?string $text, int $cap): string
+    {
+        return self::scrub($text, $cap);
     }
 
     /**
