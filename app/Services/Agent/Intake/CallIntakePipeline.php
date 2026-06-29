@@ -2,10 +2,14 @@
 
 namespace App\Services\Agent\Intake;
 
+use App\Enums\PhoneDirectoryListType;
 use App\Models\PhoneCall;
+use App\Models\PhoneDirectoryEntry;
 use App\Models\Ticket;
 use App\Services\PhoneCallService;
 use App\Support\AgentConfig;
+use App\Support\PhoneNumber;
+use App\Support\TriageConfig;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
@@ -67,7 +71,10 @@ class CallIntakePipeline
             }
 
             // ── Stage 5: route (held-first, mirroring routeInboundEmail) ──────
-            if (! $resolution->resolved && $call->client_id === null) {
+            // M1 hardening (T5 review): a resolved-but-null-client result (resolved=true
+            // yet clientId=null) is NOT applied by stage 4, so it must ALSO route to HOLD
+            // — otherwise it falls through to routeContent($clientId=null,…) → TypeError.
+            if (($resolution->resolved === false || $resolution->clientId === null) && $call->client_id === null) {
                 $this->handleUnresolved($call); // HOLD (stage 6)
 
                 return;
@@ -132,15 +139,66 @@ class CallIntakePipeline
     }
 
     /**
-     * UNRESOLVED → HOLD. For now this simply returns: the call stays in the existing
-     * unknown-caller facet for a human to triage.
+     * UNRESOLVED → assess for spam, then HOLD or (rarely) AUTO-block.
      *
-     * Stage 6 (next task): spam assessment hooks in here; until then HOLD.
-     * (Kept as a separate method so the next task has a clean extension point — do not
-     * inline it.)
+     * A genuinely-new unknown call still HOLDs (returns) for a human to triage. A
+     * suspected-spam call persists its confidence as intake_spam_score so the cockpit can
+     * surface a one-tap "block & dismiss" suggestion (next task). Only ABOVE an operator-set
+     * threshold (null by default = NEVER) does it graduate to an AUTO mark+block.
+     *
+     * Runs inside handle()'s fail-soft try/catch (the spam assessment is itself fail-soft to
+     * notSpam, so an AI failure simply HOLDs).
      */
     private function handleUnresolved(PhoneCall $call): void
     {
-        // Stage 6 (next task): spam assessment hooks in here; until then HOLD.
+        $verdict = app(SpamAssessor::class)->assess($call);
+        if (! $verdict->isSpam) {
+            return; // real-looking unknown → HOLD (unknown-caller facet), unchanged
+        }
+
+        // Suspected spam: graduate to AUTO mark+block ONLY above an operator-set threshold.
+        // Requires ALL of: a non-null threshold, confidence ≥ it, AND a system user for
+        // attribution. Any missing → fall through to the safe suggest (persist) path.
+        $threshold = AgentConfig::intakeSpamBlockAutoThreshold();
+        $systemUserId = TriageConfig::systemUserId();
+        if ($threshold !== null && $verdict->confidence >= $threshold && $systemUserId !== null) {
+            $this->autoBlockSpam($call, $verdict, $systemUserId);
+
+            return;
+        }
+
+        // Default (day-1): persist the suspicion for the cockpit one-tap suggestion.
+        $call->intake_spam_score = $verdict->confidence;
+        $call->save();
+    }
+
+    /**
+     * AUTO mark-followed-up + block the caller's number. The one semi-destructive automated
+     * path in the intake leg — reached ONLY when an operator set a non-null block threshold
+     * the confidence cleared, with a system user to attribute the action to.
+     *
+     * Idempotent: updateOrCreate keys on the normalized number, so a repeat spam call from
+     * the same number re-asserts the block rather than erroring on the unique index.
+     */
+    private function autoBlockSpam(PhoneCall $call, SpamVerdict $verdict, int $systemUserId): void
+    {
+        app(PhoneCallService::class)->markFollowedUp($call, $systemUserId);
+
+        $normalized = PhoneNumber::normalize($call->from_number);
+        if ($normalized !== null) {
+            PhoneDirectoryEntry::updateOrCreate(
+                ['phone_number' => $normalized],
+                [
+                    'list_type' => PhoneDirectoryListType::Blocked,
+                    'reason' => 'AI intake: auto-blocked suspected spam',
+                    'added_by_user_id' => $systemUserId,
+                ],
+            );
+        }
+
+        Log::warning('[CallIntake] auto-blocked suspected spam', [
+            'call_id' => $call->id,
+            'confidence' => $verdict->confidence,
+        ]);
     }
 }

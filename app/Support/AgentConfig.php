@@ -142,4 +142,29 @@ class AgentConfig
 
         return max(0.80, (float) $v); // floor: can't auto-attach below 0.80
     }
+
+    /**
+     * Confidence at/above which a suspected-spam UNRESOLVED call graduates from a held
+     * one-tap suggestion to an AUTO mark-followed-up + block-the-number. NULL-PRESERVING:
+     * absent/blank → null = NEVER auto-block (the safe default — the only semi-destructive
+     * automated path in the intake leg ships off). Else max(0.90, (float)$v). Mirrors
+     * intakeAttachAutoThreshold — absent ≠ 0.0.
+     *
+     * SAFETY: do NOT naively cast getValue() to float before the null-check.
+     * An absent setting yields getValue() = null → (float) null = 0.0 →
+     * max(0.90, 0.0) = 0.90, silently enabling auto-block with nothing configured.
+     * The null-preserving check below is intentional and load-bearing.
+     *
+     * Setting: intake_spam_block_auto_threshold. Floor when set: 0.90 (auto-blocking a
+     * caller demands high confidence — a higher floor than auto-attach's 0.80).
+     */
+    public static function intakeSpamBlockAutoThreshold(): ?float
+    {
+        $v = Setting::getValue('intake_spam_block_auto_threshold');
+        if ($v === null || trim((string) $v) === '') {
+            return null; // unset = never auto-block (the safe default)
+        }
+
+        return max(0.90, (float) $v); // floor: can't auto-block below 0.90
+    }
 }

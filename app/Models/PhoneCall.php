@@ -40,6 +40,7 @@ class PhoneCall extends Model
         'caller_identified_name',
         'caller_identified_company',
         'caller_identity_confidence',
+        'intake_spam_score',
     ];
 
     protected function casts(): array
@@ -54,6 +55,7 @@ class PhoneCall extends Model
             'is_billable' => 'boolean',
             'sentiment_score' => 'integer',
             'caller_identity_confidence' => 'float',
+            'intake_spam_score' => 'float',
             'started_at' => 'datetime',
             'answered_at' => 'datetime',
             'ended_at' => 'datetime',

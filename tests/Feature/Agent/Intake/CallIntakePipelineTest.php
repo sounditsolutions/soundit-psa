@@ -17,6 +17,8 @@ use App\Models\User;
 use App\Services\Agent\Intake\CallIntakePipeline;
 use App\Services\Agent\Intake\IntakeDecision;
 use App\Services\Agent\Intake\IntakeRouter;
+use App\Services\Agent\Intake\SpamAssessor;
+use App\Services\Agent\Intake\SpamVerdict;
 use App\Services\TranscriptionService;
 use App\Support\AgentConfig;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -348,6 +350,9 @@ class CallIntakePipelineTest extends TestCase
         ]);
 
         $this->mock(IntakeRouter::class)->shouldReceive('routeContent')->never();
+        // The unresolved branch now runs spam assessment (Task 6a). Mock it to the safe
+        // not-spam verdict so this stays a pure HOLD test (and makes no live AI call).
+        $this->mock(SpamAssessor::class)->shouldReceive('assess')->once()->andReturn(SpamVerdict::notSpam());
 
         $this->pipeline()->handle($call);
 
