@@ -59,6 +59,24 @@ class CockpitQuery
             ->get();
     }
 
+    /**
+     * Suspected-spam calls awaiting operator review (psa-xcyo Task 6b).
+     * Surfaces un-actioned calls flagged by the AI intake spam assessor so the
+     * operator can one-tap mark-followed-up + block. A call leaves this lane as
+     * soon as followed_up_at is set (by the block action or the plain dismiss).
+     */
+    public function intakeSpamReview(): Collection
+    {
+        return \App\Models\PhoneCall::query()
+            ->whereNotNull('intake_spam_score')
+            ->whereNull('followed_up_at')
+            ->whereNull('ticket_id')
+            ->whereNull('client_id')
+            ->latest('id')
+            ->limit(20)
+            ->get();
+    }
+
     public function pendingDrafts(): Collection
     {
         return TechnicianRun::query()

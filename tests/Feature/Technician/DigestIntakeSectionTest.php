@@ -2,7 +2,9 @@
 
 namespace Tests\Feature\Technician;
 
+use App\Enums\CallStatus;
 use App\Enums\TechnicianRunState;
+use App\Models\PhoneCall;
 use App\Models\Setting;
 use App\Models\TechnicianRun;
 use App\Models\Ticket;
@@ -116,5 +118,64 @@ class DigestIntakeSectionTest extends TestCase
         $digest = app(DigestBuilder::class)->build();
 
         $this->assertStringContainsString('Intake routed (last 24h): 1', $digest->body);
+    }
+
+    // ── Spam counts (Task 6b) ────────────────────────────────────────────────
+
+    /** Create a PhoneCall with a spam score, defaulting to within the last 24h. */
+    private function spamCall(?int $hoursAgo = 1): PhoneCall
+    {
+        $call = new PhoneCall([
+            'call_uuid' => uniqid('dig_spam_', true),
+            'from_number' => '+19998887777',
+            'status' => CallStatus::Completed,
+        ]);
+        $call->intake_spam_score = 0.85;
+        $call->save();
+
+        if ($hoursAgo !== null) {
+            PhoneCall::whereKey($call->id)->update(['created_at' => now()->subHours($hoursAgo)]);
+        }
+
+        return $call->fresh();
+    }
+
+    // 5. Intake ENABLED + spam call in 24h → digest contains the count line.
+
+    public function test_spam_count_line_present_when_intake_enabled_and_call_in_24h(): void
+    {
+        Setting::setValue('intake_enabled', '1');
+        $this->spamCall(hoursAgo: 1);
+
+        $digest = app(DigestBuilder::class)->build();
+
+        $this->assertStringContainsString(
+            'Suspected-spam calls flagged (last 24h): 1',
+            $digest->body,
+        );
+    }
+
+    // 6. Intake DISABLED → the "Suspected-spam" line is absent (byte-identical when off).
+
+    public function test_spam_count_line_absent_when_intake_disabled(): void
+    {
+        // intake_enabled deliberately unset → intakeEnabled() returns false
+        $this->spamCall(hoursAgo: 1);
+
+        $digest = app(DigestBuilder::class)->build();
+
+        $this->assertStringNotContainsString('Suspected-spam', $digest->body);
+    }
+
+    // 7. Spam-only digest is NOT empty (the count contributes to the isEmpty conjunction).
+
+    public function test_spam_only_digest_is_not_empty(): void
+    {
+        Setting::setValue('intake_enabled', '1');
+        $this->spamCall(hoursAgo: 1);
+
+        $digest = app(DigestBuilder::class)->build();
+
+        $this->assertFalse($digest->isEmpty);
     }
 }

@@ -43,6 +43,17 @@ Analyze the provided call transcript and return a structured markdown-formatted 
 - A clear summary of the call's purpose, outcome, and resolution (up to ~300 words)
 - Include key technical topics, troubleshooting steps, ticket references, and configuration changes
 
+## Caller Identity
+- Identify the CALLER — the customer/end-user on the call seeking support, NOT the MSP technician.
+- Determine their identity from what is actually said on the call: self-identification ("this is John from
+  Acme"), how other speakers address them, an email/company mentioned, or clear context. Do NOT just repeat the
+  expected participant from the call context — report who the transcript shows actually called.
+- Name: <caller's full name as stated, or "Unknown">
+- Company: <caller's company/organization as stated, or "Unknown">
+- Confidence: <a number 0.0-1.0 — how certain the transcript makes this identification; 1.0 = explicit
+  self-identification, 0.0 = no identifying information at all>
+- Signals: <one brief line on what identified them, or "none">
+
 ## Sentiment Score
 - Score from 1-10 (1 = extremely negative, 10 = extremely positive)
 - Consider tone, cooperation, frustration, and emotional cues as inferred from the text
@@ -161,10 +172,18 @@ TEMPLATE;
                 $isStereo = ($channels === 2);
             }
 
+            // Ensure participant relations are loaded (needed by both the name hint
+            // and, later, buildAnalysisPrompt + resolveSpeakerLabels).
+            $call->loadMissing(['person', 'client', 'answeredBy']);
+
+            // Build Whisper name-bias hint once (null when no participants are known).
+            // When null the Whisper request is byte-identical to the base case.
+            $nameHint = $this->buildWhisperNameHint($call);
+
             if ($isStereo) {
                 try {
                     // Get word-level timestamps (chunked if needed)
-                    $allWords = $this->whisperTranscribeAllWords($tempFile, $apiKey, $tempFiles);
+                    $allWords = $this->whisperTranscribeAllWords($tempFile, $apiKey, $tempFiles, $nameHint);
 
                     if (! empty($allWords)) {
                         // Build per-channel energy profiles from full file (ffmpeg, no size limit)
@@ -197,7 +216,7 @@ TEMPLATE;
 
             // 3. Fallback: mono transcription (chunked if needed)
             if ($rawTranscript === null) {
-                $rawTranscript = $this->whisperTranscribeAll($tempFile, $apiKey, $tempFiles);
+                $rawTranscript = $this->whisperTranscribeAll($tempFile, $apiKey, $tempFiles, $nameHint);
             }
 
             // Save raw transcript immediately (partial success if AI analysis fails)
@@ -215,6 +234,8 @@ TEMPLATE;
                     $prompt = $this->buildAnalysisPrompt($call, $rawTranscript, $isDiarized);
                     $analysis = $this->analyzeWithAi($prompt);
 
+                    $identity = $this->parseCallerIdentity($analysis);
+
                     $call->update([
                         'transcription_summary' => $analysis,
                         'call_summary' => $this->parseSection($analysis, 'Call Summary'),
@@ -223,6 +244,9 @@ TEMPLATE;
                         'sentiment_score' => $this->parseSentimentScore($analysis),
                         'charge_classification' => $this->parseChargeClassification($analysis),
                         'coaching_notes' => $this->parseCoachingNotes($analysis),
+                        'caller_identified_name' => $identity['name'],
+                        'caller_identified_company' => $identity['company'],
+                        'caller_identity_confidence' => $identity['confidence'],
                     ]);
 
                     Log::info('[Transcription] AI analysis complete', ['call_id' => $call->id]);
@@ -240,6 +264,15 @@ TEMPLATE;
                 'transcribed_at' => now(),
                 'transcription_error' => null,
             ]);
+
+            // 6. AI call-intake front-door (psa-xcyo): when enabled, hand the now-transcribed
+            //    call to the CallIntakePipeline (resolve → attach/create) on the success path
+            //    only. Gating the dispatch on intakeEnabled keeps transcription byte-identical
+            //    when intake is off (no job churn); the pipeline re-checks dormancy as defence
+            //    in depth. afterCommit() so the queued job sees the completed row.
+            if (\App\Support\AgentConfig::intakeEnabled()) {
+                \App\Jobs\CallIntakeJob::dispatch($call->id)->afterCommit();
+            }
         } catch (\Throwable $e) {
             $call->update([
                 'transcription_status' => TranscriptionStatus::Failed,
@@ -385,30 +418,40 @@ TEMPLATE;
 
     /**
      * Send audio file to OpenAI Whisper for speech-to-text transcription.
+     *
+     * @param  string|null  $namePrompt  Optional name-bias hint for Whisper's `prompt` field.
+     *                                   When null/empty the multipart request is byte-identical
+     *                                   to the base case (no `prompt` field appended).
      */
-    private function whisperTranscribe(string $filePath, string $apiKey): string
+    private function whisperTranscribe(string $filePath, string $apiKey, ?string $namePrompt = null): string
     {
         $client = new GuzzleClient(['timeout' => 300]);
+
+        $multipart = [
+            [
+                'name' => 'file',
+                'contents' => fopen($filePath, 'r'),
+                'filename' => 'recording.mp3',
+            ],
+            [
+                'name' => 'model',
+                'contents' => 'whisper-1',
+            ],
+            [
+                'name' => 'response_format',
+                'contents' => 'text',
+            ],
+        ];
+
+        if ($namePrompt !== null && $namePrompt !== '') {
+            $multipart[] = ['name' => 'prompt', 'contents' => $namePrompt];
+        }
 
         $response = $client->post('https://api.openai.com/v1/audio/transcriptions', [
             'headers' => [
                 'Authorization' => "Bearer {$apiKey}",
             ],
-            'multipart' => [
-                [
-                    'name' => 'file',
-                    'contents' => fopen($filePath, 'r'),
-                    'filename' => 'recording.mp3',
-                ],
-                [
-                    'name' => 'model',
-                    'contents' => 'whisper-1',
-                ],
-                [
-                    'name' => 'response_format',
-                    'contents' => 'text',
-                ],
-            ],
+            'multipart' => $multipart,
         ]);
 
         $transcript = trim((string) $response->getBody());
@@ -523,35 +566,42 @@ TEMPLATE;
      * Returns both segment-level and word-level data. Word timestamps enable
      * fine-grained speaker assignment for stereo diarization.
      *
+     * @param  string|null  $namePrompt  Optional name-bias hint; see whisperTranscribe().
      * @return array{text: string, words: array<array{start: float, end: float, word: string}>}
      */
-    private function whisperTranscribeWithWords(string $filePath, string $apiKey): array
+    private function whisperTranscribeWithWords(string $filePath, string $apiKey, ?string $namePrompt = null): array
     {
         $client = new GuzzleClient(['timeout' => 300]);
+
+        $multipart = [
+            [
+                'name' => 'file',
+                'contents' => fopen($filePath, 'r'),
+                'filename' => 'recording.mp3',
+            ],
+            [
+                'name' => 'model',
+                'contents' => 'whisper-1',
+            ],
+            [
+                'name' => 'response_format',
+                'contents' => 'verbose_json',
+            ],
+            [
+                'name' => 'timestamp_granularities[]',
+                'contents' => 'word',
+            ],
+        ];
+
+        if ($namePrompt !== null && $namePrompt !== '') {
+            $multipart[] = ['name' => 'prompt', 'contents' => $namePrompt];
+        }
 
         $response = $client->post('https://api.openai.com/v1/audio/transcriptions', [
             'headers' => [
                 'Authorization' => "Bearer {$apiKey}",
             ],
-            'multipart' => [
-                [
-                    'name' => 'file',
-                    'contents' => fopen($filePath, 'r'),
-                    'filename' => 'recording.mp3',
-                ],
-                [
-                    'name' => 'model',
-                    'contents' => 'whisper-1',
-                ],
-                [
-                    'name' => 'response_format',
-                    'contents' => 'verbose_json',
-                ],
-                [
-                    'name' => 'timestamp_granularities[]',
-                    'contents' => 'word',
-                ],
-            ],
+            'multipart' => $multipart,
         ]);
 
         $data = json_decode((string) $response->getBody(), true);
@@ -569,11 +619,13 @@ TEMPLATE;
     /**
      * Transcribe audio with Whisper, splitting into chunks if over the size limit.
      * Returns concatenated plain text transcript.
+     *
+     * @param  string|null  $namePrompt  Optional name-bias hint; see whisperTranscribe().
      */
-    private function whisperTranscribeAll(string $filePath, string $apiKey, array &$tempFiles): string
+    private function whisperTranscribeAll(string $filePath, string $apiKey, array &$tempFiles, ?string $namePrompt = null): string
     {
         if (filesize($filePath) <= self::MAX_WHISPER_SIZE) {
-            return $this->whisperTranscribe($filePath, $apiKey);
+            return $this->whisperTranscribe($filePath, $apiKey, $namePrompt);
         }
 
         $chunks = $this->splitAudioIntoChunks($filePath, $tempFiles);
@@ -581,7 +633,7 @@ TEMPLATE;
 
         foreach ($chunks as $i => $chunkPath) {
             Log::info('[Transcription] Transcribing chunk', ['chunk' => $i + 1, 'total' => count($chunks)]);
-            $transcripts[] = $this->whisperTranscribe($chunkPath, $apiKey);
+            $transcripts[] = $this->whisperTranscribe($chunkPath, $apiKey, $namePrompt);
         }
 
         return implode(' ', $transcripts);
@@ -591,12 +643,13 @@ TEMPLATE;
      * Transcribe audio with word-level timestamps, splitting into chunks if over the size limit.
      * Returns a single array of words with timestamps adjusted for chunk offsets.
      *
+     * @param  string|null  $namePrompt  Optional name-bias hint; see whisperTranscribe().
      * @return array<array{start: float, end: float, word: string}>
      */
-    private function whisperTranscribeAllWords(string $filePath, string $apiKey, array &$tempFiles): array
+    private function whisperTranscribeAllWords(string $filePath, string $apiKey, array &$tempFiles, ?string $namePrompt = null): array
     {
         if (filesize($filePath) <= self::MAX_WHISPER_SIZE) {
-            return $this->whisperTranscribeWithWords($filePath, $apiKey)['words'];
+            return $this->whisperTranscribeWithWords($filePath, $apiKey, $namePrompt)['words'];
         }
 
         $chunks = $this->splitAudioIntoChunks($filePath, $tempFiles);
@@ -606,7 +659,7 @@ TEMPLATE;
             $offset = $i * self::CHUNK_DURATION;
             Log::info('[Transcription] Transcribing chunk (words)', ['chunk' => $i + 1, 'total' => count($chunks), 'offset' => $offset]);
 
-            $result = $this->whisperTranscribeWithWords($chunkPath, $apiKey);
+            $result = $this->whisperTranscribeWithWords($chunkPath, $apiKey, $namePrompt);
 
             foreach ($result['words'] as $word) {
                 $allWords[] = [
@@ -974,5 +1027,73 @@ TEMPLATE;
         }
 
         return null;
+    }
+
+    /**
+     * Parse the structured Caller Identity block from the AI analysis.
+     *
+     * Tolerantly matches `Name:`/`Company:`/`Confidence:` lines with optional leading
+     * `- `, `* `, or `**` decorators emitted by the model. Maps sentinel values
+     * ("Unknown", "N/A", "none", "") to null.
+     *
+     * @return array{name: ?string, company: ?string, confidence: ?float}
+     */
+    private function parseCallerIdentity(string $analysis): array
+    {
+        $section = $this->parseSection($analysis, 'Caller Identity');
+
+        if ($section === null) {
+            return ['name' => null, 'company' => null, 'confidence' => null];
+        }
+
+        $nullSentinels = ['unknown', 'n/a', 'none', ''];
+
+        // Name
+        $name = null;
+        if (preg_match('/Name\**\s*:\s*(.+)/i', $section, $m)) {
+            $raw = trim(trim($m[1]), '*');
+            if (! in_array(strtolower($raw), $nullSentinels, true)) {
+                $name = $raw;
+            }
+        }
+
+        // Company
+        $company = null;
+        if (preg_match('/Company\**\s*:\s*(.+)/i', $section, $m)) {
+            $raw = trim(trim($m[1]), '*');
+            if (! in_array(strtolower($raw), $nullSentinels, true)) {
+                $company = $raw;
+            }
+        }
+
+        // Confidence: matches 0, 1, 0.X, 1.X — clamped to [0, 1]
+        $confidence = null;
+        if (preg_match('/Confidence\**\s*:\s*([01](?:\.\d+)?)/i', $section, $m)) {
+            $confidence = min(1.0, max(0.0, (float) $m[1]));
+        }
+
+        return ['name' => $name, 'company' => $company, 'confidence' => $confidence];
+    }
+
+    /**
+     * Build a Whisper name-bias hint from call metadata.
+     *
+     * Caller must ensure person/client/answeredBy are loaded before calling
+     * (transcribe() calls loadMissing() immediately before this method).
+     *
+     * Returns a comma-joined string of the available participant names
+     * (person → client → answeredBy), or null when none are known.
+     * When null, the Whisper `multipart` request is byte-identical to the base
+     * case — no `prompt` field is appended.
+     */
+    private function buildWhisperNameHint(PhoneCall $call): ?string
+    {
+        $names = array_filter([
+            $call->person?->fullName,
+            $call->client?->name,
+            $call->answeredBy?->name,
+        ]);
+
+        return $names !== [] ? implode(', ', $names) : null;
     }
 }
