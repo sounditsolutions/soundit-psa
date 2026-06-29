@@ -3,10 +3,13 @@
 namespace App\Http\Controllers\Web;
 
 use App\Http\Controllers\Controller;
+use App\Models\PhoneDirectoryEntry;
 use App\Models\TechnicianRun;
+use App\Services\PhoneCallService;
 use App\Services\Technician\Cockpit\CockpitQuery;
 use App\Services\Technician\TechnicianApprovalService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 class TechnicianCockpitController extends Controller
 {
@@ -17,6 +20,7 @@ class TechnicianCockpitController extends Controller
             'flagged' => $query->flaggedForAttention(),
             'needs' => $query->needsAttention(),
             'intake' => $query->intakeReview(),
+            'intakeSpam' => $query->intakeSpamReview(),
         ]);
     }
 
@@ -83,6 +87,35 @@ class TechnicianCockpitController extends Controller
         $run->dismissIntake();
 
         return redirect()->route('cockpit.index')->with('success', 'Intake suggestion dismissed.');
+    }
+
+    /**
+     * One-tap "mark followed-up + block number" for a suspected-spam call (psa-xcyo Task 6b).
+     *
+     * Stamps followed_up_at (removing the call from the spam lane) AND adds the caller to the
+     * Blocked phone directory. Both writes are wrapped in a transaction. The action is idempotent:
+     * a repeat tap re-stamps followed_up_at (harmless) and updateOrCreate is a no-op-or-update
+     * (no duplicate / no crash). A null from_number (non-normalizable) blocks nothing but still
+     * marks the call followed-up.
+     */
+    public function intakeSpamBlock(\App\Models\PhoneCall $call, PhoneCallService $phoneCallService)
+    {
+        DB::transaction(function () use ($call, $phoneCallService) {
+            $phoneCallService->markFollowedUp($call, (int) auth()->id());
+            $normalized = \App\Support\PhoneNumber::normalize($call->from_number);
+            if ($normalized !== null) {
+                PhoneDirectoryEntry::updateOrCreate(
+                    ['phone_number' => $normalized],
+                    [
+                        'list_type' => \App\Enums\PhoneDirectoryListType::Blocked,
+                        'reason' => 'AI intake: marked spam by operator',
+                        'added_by_user_id' => (int) auth()->id(),
+                    ],
+                );
+            }
+        });
+
+        return redirect()->route('cockpit.index')->with('success', 'Caller marked followed-up and the number was blocked.');
     }
 
     /**

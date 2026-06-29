@@ -643,4 +643,6 @@ Route::middleware('auth')->group(function () {
     Route::post('/cockpit/runs/{run}/correct', [\App\Http\Controllers\Web\TechnicianCockpitController::class, 'correct'])->name('cockpit.correct')->middleware('throttle:20,1');
     // psa-xcyo Task 3: intake calibration lane — dismiss a held intake suggestion (no merge).
     Route::post('/cockpit/runs/{run}/intake-dismiss', [\App\Http\Controllers\Web\TechnicianCockpitController::class, 'intakeDismiss'])->name('cockpit.intake-dismiss')->middleware('throttle:60,1');
+    // psa-xcyo Task 6b: spam lane — one-tap mark-followed-up + block number for a suspected-spam call.
+    Route::post('/cockpit/calls/{call}/intake-spam-block', [\App\Http\Controllers\Web\TechnicianCockpitController::class, 'intakeSpamBlock'])->name('cockpit.intake-spam-block')->middleware('throttle:60,1');
 });

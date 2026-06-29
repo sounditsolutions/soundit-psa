@@ -63,6 +63,7 @@ class DigestBuilder
         $intakeCount = 0;
         $intakeAutoCount = 0;
         $intakeSuggestedCount = 0;
+        $spamSuggestedCount = 0;
 
         if ($intakeEnabled) {
             $intakeRuns = TechnicianRun::query()
@@ -76,9 +77,12 @@ class DigestBuilder
             $intakeSuggestedCount = $intakeRuns->filter(
                 fn ($r) => $r->state === TechnicianRunState::AwaitingApproval
             )->count();
+            $spamSuggestedCount = \App\Models\PhoneCall::whereNotNull('intake_spam_score')
+                ->where('created_at', '>=', now()->subDay())
+                ->count();
         }
 
-        $isEmpty = $pending->isEmpty() && $needsYou === 0 && $done === 0 && $learnedCount === 0 && $toolingGapCount === 0 && $escalationCount === 0 && $intakeCount === 0;
+        $isEmpty = $pending->isEmpty() && $needsYou === 0 && $done === 0 && $learnedCount === 0 && $toolingGapCount === 0 && $escalationCount === 0 && $intakeCount === 0 && $spamSuggestedCount === 0;
 
         $lines = [
             'AI Technician — daily summary',
@@ -96,6 +100,7 @@ class DigestBuilder
 
         if ($intakeEnabled) {
             $lines[] = "Intake routed (last 24h): {$intakeCount} ({$intakeAutoCount} auto-attached, {$intakeSuggestedCount} flagged for review)";
+            $lines[] = "Suspected-spam calls flagged (last 24h): {$spamSuggestedCount}";
         }
 
         if ($pending->isNotEmpty()) {

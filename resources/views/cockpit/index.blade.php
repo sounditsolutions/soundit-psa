@@ -143,9 +143,10 @@
     <h2 class="h6 text-muted text-uppercase mt-4 mb-2">Intake — possible duplicates the AI flagged (review)</h2>
     @foreach ($intake as $run)
         @php($meta = $run->proposed_meta ?? [])
+        @php($isCall = ($meta['source'] ?? null) === 'call')
         <div class="card mb-2">
             <div class="card-body">
-                <div>New ticket <strong>#{{ $run->ticket?->id }}</strong>
+                <div>{{ $isCall ? '📞 Call → ticket' : 'New ticket' }} <strong>#{{ $run->ticket?->id }}</strong>
                     looks like the same issue as open ticket <strong>#{{ $meta['suggested_ticket_id'] ?? '?' }}</strong>
                     ({{ (int) round(($meta['confidence'] ?? 0) * 100) }}% confidence)</div>
                 <div class="text-muted small">{{ $run->proposed_content }}</div>
@@ -154,6 +155,31 @@
                     @csrf
                     <button class="btn btn-sm btn-outline-secondary">Dismiss</button>
                 </form>
+            </div>
+        </div>
+    @endforeach
+@endif
+
+{{-- INTAKE — suspected spam calls the AI flagged (psa-xcyo Task 6b).
+     Only rendered when non-empty so the page is byte-identical when quiet. --}}
+@if ($intakeSpam->isNotEmpty())
+    <h2 class="h6 text-muted text-uppercase mt-4 mb-2">Intake — suspected spam calls (block or dismiss)</h2>
+    @foreach ($intakeSpam as $call)
+        <div class="card mb-2">
+            <div class="card-body">
+                <div>Call from <strong>{{ $call->from_number }}</strong> looks like spam
+                    ({{ (int) round(($call->intake_spam_score ?? 0) * 100) }}% confidence)</div>
+                <div class="text-muted small">{{ \Illuminate\Support\Str::limit($call->call_summary, 200) }}</div>
+                <div class="d-flex gap-2 mt-2">
+                    <form method="POST" action="{{ route('cockpit.intake-spam-block', $call) }}">
+                        @csrf
+                        <button class="btn btn-sm btn-outline-danger">Mark followed-up + block #</button>
+                    </form>
+                    <form method="POST" action="{{ route('prospects.dismiss', $call) }}">
+                        @csrf
+                        <button class="btn btn-sm btn-outline-secondary">Not spam — dismiss</button>
+                    </form>
+                </div>
             </div>
         </div>
     @endforeach
