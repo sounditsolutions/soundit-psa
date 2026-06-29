@@ -149,7 +149,100 @@ class ClientSituationContextBuilder
 
     private function recentClosed(int $clientId, Ticket $current): string
     {
-        return '';
+        try {
+            $parts = [];
+
+            // ── Part A: recurring-pattern detector ─────────────────────────────
+            // Bounded per-client aggregate (90-day window, both open + closed).
+            $allRecent = Ticket::forClient($clientId)
+                ->where('opened_at', '>=', now()->subDays(90))
+                ->get(['subject', 'opened_at']);
+
+            if ($allRecent->isNotEmpty()) {
+                $groups = [];
+
+                foreach ($allRecent as $t) {
+                    $normalized = $this->normalizeSubject((string) $t->subject);
+                    if (! isset($groups[$normalized])) {
+                        $groups[$normalized] = [
+                            'count' => 0,
+                            'representative' => $t->subject,
+                            'latest' => $t->opened_at,
+                        ];
+                    }
+                    $groups[$normalized]['count']++;
+                    // Keep the most recent ticket's subject as the representative.
+                    if ($t->opened_at && $groups[$normalized]['latest'] && $t->opened_at->gt($groups[$normalized]['latest'])) {
+                        $groups[$normalized]['representative'] = $t->subject;
+                        $groups[$normalized]['latest'] = $t->opened_at;
+                    }
+                }
+
+                // Surface genuine recurring patterns only (count ≥ 3), top 5 by count.
+                $recurring = array_filter($groups, fn ($g) => $g['count'] >= 3);
+                uasort($recurring, fn ($a, $b) => $b['count'] <=> $a['count']);
+                $recurring = array_slice($recurring, 0, 5);
+
+                if ($recurring !== []) {
+                    $lines = ['Recurring patterns (a repeating subject = ONE consolidated root-cause flag, not a re-flag/re-close of each):'];
+                    foreach ($recurring as $group) {
+                        $label = $this->safe($group['representative'], self::MAX_SUBJECT);
+                        $lines[] = "- {$label} ×{$group['count']} / 90d";
+                    }
+                    $parts[] = implode("\n", $lines);
+                }
+            }
+
+            // ── Part B: detailed closed history (fix-reuse) ────────────────────
+            $closed = Ticket::forClient($clientId)
+                ->closed()
+                ->where('id', '!=', $current->id)
+                ->orderByRaw('COALESCE(resolved_at, closed_at, updated_at) DESC')
+                ->limit(self::MAX_CLOSED)
+                ->get();
+
+            if ($closed->isEmpty() && $parts === []) {
+                return '';
+            }
+
+            if ($closed->isNotEmpty()) {
+                $lines = ['Closed history (reuse a known fix; repeated subjects = a recurring problem to root-cause, not re-close):'];
+                foreach ($closed as $t) {
+                    $subject = $this->safe($t->subject, self::MAX_SUBJECT);
+                    $resolvedTime = $t->resolved_at?->diffForHumans()
+                        ?? $t->closed_at?->diffForHumans()
+                        ?? 'recently';
+                    $resolution = $t->resolution !== null
+                        ? ' — '.$this->safe($t->resolution, self::MAX_RESOLUTION)
+                        : '';
+                    $lines[] = "- {$t->display_id} {$subject} · resolved {$resolvedTime}{$resolution}";
+                }
+                $parts[] = implode("\n", $lines);
+            }
+
+            return implode("\n\n", $parts);
+        } catch (\Throwable) {
+            return '';
+        }
+    }
+
+    /**
+     * Normalises an email-style subject for recurring-pattern detection.
+     * Strips leading Re:/Fwd:/Fw: prefixes (case-insensitive, repeated),
+     * lowercases, collapses whitespace.
+     */
+    private function normalizeSubject(string $subject): string
+    {
+        $s = $subject;
+        do {
+            $prev = $s;
+            $s = (string) preg_replace('/^(?:re|fwd|fw)\s*:\s*/iu', '', $s);
+        } while ($s !== $prev);
+
+        $s = mb_strtolower($s, 'UTF-8');
+        $s = (string) preg_replace('/\s+/', ' ', $s);
+
+        return trim($s);
     }
 
     private function recentCalls(int $clientId, Ticket $current): string
