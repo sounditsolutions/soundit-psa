@@ -20,7 +20,8 @@ class TriageToolDefinitions
     /**
      * Read-only tool definitions available to the AI Technician.
      *
-     * Exactly: search_tickets, get_ticket_notes, wiki_list_pages, wiki_search, wiki_get_page.
+     * Exactly: search_tickets, get_ticket_notes, list_client_tickets, list_client_calls,
+     * get_client_security_posture, wiki_list_pages, wiki_search, wiki_get_page.
      * The agent reasons with these + propose_close (added separately by the agent — the only ACT tool).
      * MUST NOT include any set_ticket_* or tactical_run_diagnostic.
      */
@@ -33,8 +34,77 @@ class TriageToolDefinitions
             fn (array $t): bool => in_array($t['name'], ['search_tickets', 'get_ticket_notes'], true)
         ));
 
-        // All three wiki retrieval tools are included (no-op when wiki is off).
-        return array_merge($readPsa, self::wikiTools());
+        // Agent-only situation drill-downs + all three wiki retrieval tools (the latter
+        // no-op when wiki is off). The drill-downs come from agentReadTools(), which is
+        // deliberately NOT part of psaTools()/getTools() — those feed the deterministic
+        // triage loop and must never gain these read tools.
+        //
+        // DORMANCY: the situation drill-downs are OFFERED only when the situation-context
+        // flag is on. Off (the default) → they are never merged here, so the model is never
+        // offered them and cannot call them — true dormancy, matching the AgentConfig
+        // docblock contract that this flag gates the digest AND the tools.
+        return array_merge(
+            $readPsa,
+            \App\Support\AgentConfig::situationContextEnabled() ? self::agentReadTools() : [],
+            self::wikiTools(),
+        );
+    }
+
+    /**
+     * Agent-only read tools — the AI Technician's "client situation" drill-downs.
+     *
+     * Kept OUT of psaTools()/getTools() so they can never leak into the deterministic
+     * triage tool loop; offered ONLY via readTools() here, allowlisted in
+     * TechnicianAgentToolExecutor::READ_TOOLS, and handled in TriageToolExecutor::execute().
+     * All three situation drill-downs (list_client_tickets, list_client_calls,
+     * get_client_security_posture) live on this single seam.
+     */
+    public static function agentReadTools(): array
+    {
+        return [
+            [
+                'name' => 'list_client_tickets',
+                'description' => 'List this client\'s tickets BY STATUS — no keyword needed (unlike search_tickets, which requires one). Use it to see what else is open for the client, review recent closes (their resolutions come back for fix-reuse), or check what is currently pending. Scoped to the current ticket\'s client; the current ticket is excluded.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'status' => [
+                            'type' => 'string',
+                            'description' => 'Which tickets to list: "open" (new / in-progress / pending — the default), "pending" (only those awaiting the client or a third party), "closed" (resolved / closed — also returns the resolution text), or "all".',
+                            'enum' => ['open', 'pending', 'closed', 'all'],
+                        ],
+                        'limit' => [
+                            'type' => 'integer',
+                            'description' => 'Max results to return (default 20, max 20).',
+                        ],
+                    ],
+                    'required' => [],
+                ],
+            ],
+            [
+                'name' => 'list_client_calls',
+                'description' => 'List this client\'s recent phone calls — summaries, sentiment, and charge classification. Use it to understand the call history and tone of recent interactions before responding. Scoped to the current ticket\'s client; no keyword needed.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'limit' => [
+                            'type' => 'integer',
+                            'description' => 'Max results to return (default 10, max 20).',
+                        ],
+                    ],
+                    'required' => [],
+                ],
+            ],
+            [
+                'name' => 'get_client_security_posture',
+                'description' => 'Full M365/security posture for THIS client (mail-security, MFA gaps, external mail-forwards by domain, inactive accounts, open device alerts) — use for security-relevant tickets.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => (object) [],
+                    'required' => [],
+                ],
+            ],
+        ];
     }
 
     /**

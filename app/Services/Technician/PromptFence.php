@@ -69,6 +69,19 @@ class PromptFence
             ."=== END UNTRUSTED {$label} ===";
     }
 
+    /**
+     * Public access to the anti-homoglyph normalization (NFKC fold + zero-width strip)
+     * that fronts the fence, so callers scrubbing untrusted free-text BEFORE it reaches
+     * the fence (e.g. ClientSituationContextBuilder::safe) fold the same compatibility
+     * homoglyphs / invisible splices the fence's own regexes rely on — keeping their
+     * WikiRedactor scan in homoglyph parity with neutralize(). A thin wrapper over the
+     * private normalizeUnicode() so the two can never drift.
+     */
+    public function normalizeUntrusted(string $s): string
+    {
+        return $this->normalizeUnicode($s);
+    }
+
     private function neutralize(string $text): string
     {
         // psa-uohr: fold unicode homoglyphs + strip zero-width chars FIRST, so an

@@ -5,6 +5,7 @@ namespace App\Services\Triage;
 use App\Enums\TicketPriority;
 use App\Enums\TicketStatus;
 use App\Models\Asset;
+use App\Models\Person;
 use App\Models\TacticalAsset;
 use App\Models\Ticket;
 use App\Models\TicketNote;
@@ -61,6 +62,9 @@ class TriageToolExecutor
             // PSA tools
             'search_tickets' => $this->searchTickets($input),
             'get_ticket_notes' => $this->getTicketNotes($input),
+            'list_client_tickets' => $this->listClientTickets($input), // agent-only (readTools + READ_TOOLS)
+            'list_client_calls' => $this->listClientCalls($input),     // agent-only (readTools + READ_TOOLS)
+            'get_client_security_posture' => $this->getClientSecurityPosture(), // agent-only (readTools + READ_TOOLS)
             'set_ticket_priority' => $this->setTicketPriority($input),
             'set_ticket_status' => $this->setTicketStatus($input),
             'set_ticket_category' => $this->setTicketCategory($input),
@@ -163,6 +167,170 @@ class TriageToolExecutor
             'created_at' => $t->created_at?->toDateTimeString(),
             'resolved_at' => $t->resolved_at?->toDateTimeString(),
         ])->toArray();
+    }
+
+    /**
+     * AGENT-ONLY situation drill-down: list THIS client's tickets by status with NO
+     * keyword — the gap search_tickets (which requires a keyword) cannot close.
+     *
+     * Client scope is the ctor's $this->clientId (the ctor throws on a clientless ticket),
+     * so the tool is implicitly client-bound: no client/ticket id is accepted and
+     * cross-client reads are impossible. The current ticket is excluded; limit is hard-capped
+     * at 20. Every free-text field passes through the shared ClientSituationContextBuilder::
+     * scrub() (homoglyph-fold → strip_tags → withhold credential/injection hits → cap), the
+     * same control the situation digest uses. status=closed additionally returns the
+     * (scrubbed) resolution for verbatim fix-reuse. Any failure returns a generic error —
+     * never $e->getMessage() — so no internal detail leaks to the model.
+     */
+    private function listClientTickets(array $input): array
+    {
+        try {
+            $status = $input['status'] ?? 'open';
+            $limit = max(1, min((int) ($input['limit'] ?? 20), 20));
+
+            $query = Ticket::where('client_id', $this->clientId)
+                ->where('id', '!=', $this->ticket->id);
+
+            // Status map (there is intentionally NO scopePending): open() already includes
+            // the pending statuses, so 'pending' narrows via an explicit whereIn.
+            $query = match ($status) {
+                'pending' => $query->whereIn('status', [TicketStatus::PendingClient, TicketStatus::PendingThirdParty]),
+                'closed' => $query->closed(),
+                'all' => $query,
+                default => $query->open(), // 'open' and any unexpected value → the safe default
+            };
+
+            $tickets = $query->orderByDesc('opened_at')
+                ->limit($limit)
+                ->get(['id', 'halo_id', 'subject', 'status', 'priority', 'opened_at', 'resolution']);
+
+            $includeResolution = $status === 'closed';
+
+            return $tickets->map(function (Ticket $t) use ($includeResolution): array {
+                $row = [
+                    'id' => $t->id,
+                    'display_id' => $t->display_id,
+                    'subject' => ClientSituationContextBuilder::scrub($t->subject, 120),
+                    'status' => $t->status->value,
+                    'priority' => $t->priority->value,
+                    'opened_at' => $t->opened_at?->toIso8601String(),
+                ];
+
+                if ($includeResolution) {
+                    $row['resolution'] = ClientSituationContextBuilder::scrub($t->resolution, 600);
+                }
+
+                return $row;
+            })->toArray();
+        } catch (\Throwable) {
+            return ['error' => 'lookup failed'];
+        }
+    }
+
+    /**
+     * AGENT-ONLY situation drill-down: list THIS client's recent phone calls with
+     * summaries + sentiment — no keyword needed, scoped to $this->clientId.
+     *
+     * Data-minimisation boundary: the column allowlist EXCLUDES the three raw
+     * transcript columns (transcription, transcription_summary, cleaned_transcript),
+     * matching the recentCalls() allowlist in ClientSituationContextBuilder. Transcripts
+     * stay on the existing per-ticket call tool only.
+     *
+     * All free-text (call_summary, next_steps) passes through ClientSituationContextBuilder::
+     * scrub(). Nullable enums (charge_classification) and nullable int (sentiment_score)
+     * are null-guarded. Hard-cap: ≤ 20 calls. Generic error only.
+     */
+    private function listClientCalls(array $input): array
+    {
+        try {
+            $limit = max(1, min((int) ($input['limit'] ?? 10), 20));
+
+            $calls = \App\Models\PhoneCall::forClient($this->clientId)
+                ->recent($limit)
+                ->get(['id', 'direction', 'started_at', 'call_summary', 'next_steps', 'charge_classification', 'sentiment_score']);
+
+            return $calls->map(fn (\App\Models\PhoneCall $call): array => [
+                'id' => $call->id,
+                'direction' => $call->direction?->value,
+                'date' => $call->started_at?->toDateString(),
+                'summary' => ClientSituationContextBuilder::scrub($call->call_summary, 400),
+                'next_steps' => ClientSituationContextBuilder::scrub($call->next_steps, 400),
+                'charge' => $call->charge_classification?->value,
+                'sentiment' => $call->sentiment_score,
+            ])->toArray();
+        } catch (\Throwable) {
+            return ['error' => 'lookup failed'];
+        }
+    }
+
+    /**
+     * AGENT-ONLY situation drill-down: the full, client-scoped M365/security
+     * picture — the depth behind the digest header's BEC/MFA key-indicator flags.
+     * Used for security-relevant tickets. Scoped to $this->clientId; no id args.
+     *
+     * MED-1 (load-bearing): external mail-forwards are rendered DOMAIN ONLY. The
+     * raw mailbox_forwarding_smtp is NEVER surfaced — a full email is both PII and
+     * an attacker-settable value that would survive scrub()/the fence, so only the
+     * extracted @-domain is returned. hasExternalForward()'s own-domain compare
+     * can't be expressed in SQL, so the (rare) forwarders are loaded and filtered
+     * in PHP — ->limit(50) bounds that work.
+     *
+     * mail_security comes straight from Client::securitySnapshot(), which returns
+     * null until a CIPP sync has run (null-guarded — never fabricated). Every
+     * contact name passes through the shared ClientSituationContextBuilder::scrub().
+     * Generic error only.
+     */
+    private function getClientSecurityPosture(): array
+    {
+        try {
+            $externalForwards = Person::where('client_id', $this->clientId)
+                ->whereNotNull('mailbox_forwarding_smtp')
+                ->limit(50) // bound the in-PHP own-domain filter (security CO)
+                ->get()
+                ->filter(fn (Person $p): bool => $p->hasExternalForward())
+                ->map(fn (Person $p): array => [
+                    'contact' => ClientSituationContextBuilder::scrub($p->full_name, 120),
+                    // DOMAIN ONLY — never the raw mailbox_forwarding_smtp (MED-1).
+                    // Through scrub() for field-level parity with every other tool field.
+                    'forward_domain' => ClientSituationContextBuilder::scrub(mb_strtolower(substr(strrchr((string) $p->mailbox_forwarding_smtp, '@') ?: '', 1)), 120),
+                ])
+                ->values()
+                ->all();
+
+            return [
+                'mail_security' => $this->ticket->client?->securitySnapshot(), // null until a CIPP sync runs
+                'mfa_gaps' => $this->securityContactGroup(
+                    Person::where('client_id', $this->clientId)->where('mfa_enabled', false)
+                ),
+                'external_forwards' => $externalForwards,
+                'inactive_accounts' => $this->securityContactGroup(
+                    Person::where('client_id', $this->clientId)->where('cipp_inactive', true)
+                ),
+                'open_device_alerts' => Asset::where('client_id', $this->clientId)
+                    ->withCount('activeAlerts')
+                    ->get()
+                    ->sum('active_alerts_count'),
+            ];
+        } catch (\Throwable) {
+            return ['error' => 'lookup failed'];
+        }
+    }
+
+    /**
+     * Shared {count, contacts[]} shape for a client-scoped Person gap query: the
+     * FULL count plus up to 20 scrubbed contact names (every name through scrub()).
+     */
+    private function securityContactGroup(\Illuminate\Database\Eloquent\Builder $query): array
+    {
+        return [
+            'count' => (clone $query)->count(),
+            'contacts' => (clone $query)
+                ->limit(20)
+                ->get(['first_name', 'last_name'])
+                ->map(fn (Person $p): string => ClientSituationContextBuilder::scrub($p->full_name, 120))
+                ->values()
+                ->all(),
+        ];
     }
 
     private function getTicketNotes(array $input): array

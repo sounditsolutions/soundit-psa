@@ -51,8 +51,12 @@ class ContextBuilder
      * Build full context for a ticket, suitable for AI system prompt injection.
      *
      * @param  bool  $skipNotes  Skip the notes section (useful when a separate conversation context is provided)
+     * @param  bool  $includeClientSituation  Opt in to the fenced "Client Situation" digest (agent only). Appended
+     *                                        AFTER $skipNotes so the positional LessonCapture caller never shifts;
+     *                                        the situationContextEnabled() gate is re-checked below, so the section
+     *                                        stays byte-absent unless BOTH the caller opts in AND the flag is on.
      */
-    public static function buildForTicket(Ticket $ticket, bool $skipNotes = false): string
+    public static function buildForTicket(Ticket $ticket, bool $skipNotes = false, bool $includeClientSituation = false): string
     {
         $eagerLoads = [
             'client',
@@ -116,7 +120,15 @@ class ContextBuilder
             $sections[] = $phoneCallSection;
         }
 
-        // Operator corrections — TRUSTED guidance injected OUTSIDE any untrusted fence
+        // Client Situation — opt-in (agent only), fenced UNTRUSTED reference data. Placed BEFORE
+        // the operator directive so the TRUSTED directive remains the authoritative last word. The
+        // gate is re-checked HERE so the section is byte-absent when the flag is off OR the caller
+        // didn't opt in; build() returns '' when empty → array_filter drops it.
+        if ($includeClientSituation && \App\Support\AgentConfig::situationContextEnabled() && $ticket->client_id) {
+            $sections[] = app(\App\Services\Triage\ClientSituationContextBuilder::class)->build($ticket);
+        }
+
+        // Operator corrections — TRUSTED guidance injected OUTSIDE any untrusted fence (the last word)
         $operatorDirective = self::recentCorrectionsSection($ticket);
         if ($operatorDirective) {
             $sections[] = $operatorDirective;

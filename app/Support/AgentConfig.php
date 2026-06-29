@@ -109,6 +109,12 @@ class AgentConfig
         return (is_string($value) && trim($value) !== '') ? trim($value) : AiConfig::opusModel();
     }
 
+    /** Gates the always-inject client-situation digest and agent-only situation tools (default off; agent is held-only on prod). */
+    public static function situationContextEnabled(): bool
+    {
+        return Setting::getValue('agent_situation_context_enabled') === '1';
+    }
+
     // ── Intake front-door ─────────────────────────────────────────────────────
 
     /**
