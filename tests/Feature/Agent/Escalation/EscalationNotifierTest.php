@@ -444,4 +444,30 @@ class EscalationNotifierTest extends TestCase
             'An escalation delivered via the webhook fallback (not the teammate chat) must not be recorded as a teammate turn.',
         );
     }
+
+    // ── Test 13: a failed bot post (returns false, no throw) is NOT recorded (psa-f7ft) ──
+    // If the post didn't land in the chat, the bot must not "remember" posting it.
+
+    public function test_a_failed_bot_post_is_not_recorded_in_the_teammate_transcript(): void
+    {
+        $this->configureRouting();
+        $this->configureBotChat();
+        Setting::setValue('triage_system_user_id', (string) $this->charlie->id);
+
+        $this->mock(TeamsBotClient::class, function (MockInterface $m) {
+            $m->shouldReceive('getConversationMember')->andReturn(['id' => '29:abc', 'name' => 'Charlie']);
+            $m->shouldReceive('sendMessageWithMentions')->once()->andReturnFalse(); // post failed, no throw
+        });
+        $this->mock(TeamsNotifier::class, fn (MockInterface $m) => $m->shouldReceive('post')->never());
+        $this->mock(EmailService::class, fn (MockInterface $m) => $m->shouldReceive('sendNew')->andReturnNull());
+
+        app(EscalationNotifier::class)->notify(
+            $this->ticket, $this->run, FlagAttentionCategory::NeedsDecision, 'need a decision',
+        );
+
+        $this->assertNull(
+            AssistantConversation::where('external_key', 'teams:conv-test-123')->first(),
+            'When the bot post does not succeed, the escalation never appeared in the chat, so it must not be recorded.',
+        );
+    }
 }
