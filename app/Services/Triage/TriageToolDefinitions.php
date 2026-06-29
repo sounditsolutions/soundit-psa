@@ -20,7 +20,8 @@ class TriageToolDefinitions
     /**
      * Read-only tool definitions available to the AI Technician.
      *
-     * Exactly: search_tickets, get_ticket_notes, wiki_list_pages, wiki_search, wiki_get_page.
+     * Exactly: search_tickets, get_ticket_notes, list_client_tickets, list_client_calls,
+     * get_client_security_posture, wiki_list_pages, wiki_search, wiki_get_page.
      * The agent reasons with these + propose_close (added separately by the agent — the only ACT tool).
      * MUST NOT include any set_ticket_* or tactical_run_diagnostic.
      */
@@ -46,7 +47,8 @@ class TriageToolDefinitions
      * Kept OUT of psaTools()/getTools() so they can never leak into the deterministic
      * triage tool loop; offered ONLY via readTools() here, allowlisted in
      * TechnicianAgentToolExecutor::READ_TOOLS, and handled in TriageToolExecutor::execute().
-     * Tasks 9 & 10 append further drill-downs to this single seam.
+     * All three situation drill-downs (list_client_tickets, list_client_calls,
+     * get_client_security_posture) live on this single seam.
      */
     public static function agentReadTools(): array
     {
@@ -81,6 +83,15 @@ class TriageToolDefinitions
                             'description' => 'Max results to return (default 10, max 20).',
                         ],
                     ],
+                    'required' => [],
+                ],
+            ],
+            [
+                'name' => 'get_client_security_posture',
+                'description' => 'Full M365/security posture for THIS client (mail-security, MFA gaps, external mail-forwards by domain, inactive accounts, open device alerts) — use for security-relevant tickets.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => (object) [],
                     'required' => [],
                 ],
             ],

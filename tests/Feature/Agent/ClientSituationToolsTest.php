@@ -410,4 +410,145 @@ class ClientSituationToolsTest extends TestCase
         $this->assertNull($row['charge'], 'Null charge_classification must pass through as null.');
         $this->assertNull($row['sentiment'], 'Null sentiment_score must pass through as null.');
     }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // get_client_security_posture — Task 10 (the third agent-only drill-down)
+    // ══════════════════════════════════════════════════════════════════════════
+
+    /** Hand-roll a Person for $client (no factory exists). */
+    private function makePerson(Client $client, array $attrs = []): \App\Models\Person
+    {
+        static $seq = 0;
+        $seq++;
+
+        return \App\Models\Person::create(array_merge([
+            'client_id' => $client->id,
+            'person_type' => \App\Enums\PersonType::User,
+            'first_name' => 'Test',
+            'last_name' => 'Person'.$seq,
+            'email' => "person{$seq}@example.com",
+            'is_active' => true,
+        ], $attrs));
+    }
+
+    /** Persist one active Alert against a fresh asset for $client. */
+    private function makeAssetAlert(Client $client): void
+    {
+        $asset = \App\Models\Asset::factory()->create(['client_id' => $client->id]);
+
+        \App\Models\Alert::create([
+            'asset_id' => $asset->id,
+            'client_id' => $client->id,
+            'source' => \App\Enums\AlertSource::Ninja,
+            'source_alert_id' => 'alert-'.uniqid(),
+            'severity' => \App\Enums\AlertSeverity::Warning,
+            'status' => \App\Enums\AlertStatus::Active,
+            'title' => 'Test alert',
+        ]);
+    }
+
+    // ── 1. The client's full security picture is returned ────────────────────
+
+    public function test_security_posture_returns_the_clients_data(): void
+    {
+        $client = Client::factory()->create();
+        $current = $this->current($client);
+
+        $this->makePerson($client, ['first_name' => 'Mona', 'last_name' => 'NoMfa', 'mfa_enabled' => false]);
+        $this->makePerson($client, ['first_name' => 'Eve', 'last_name' => 'Forwarder', 'mailbox_forwarding_smtp' => 'exfil@attacker.test']);
+        $this->makePerson($client, ['first_name' => 'Ivan', 'last_name' => 'Inactive', 'cipp_inactive' => true]);
+        $this->makeAssetAlert($client);
+
+        $result = $this->executor($current)->execute('get_client_security_posture', []);
+
+        $this->assertIsArray($result);
+        $this->assertArrayNotHasKey('error', $result);
+
+        $this->assertGreaterThanOrEqual(1, $result['mfa_gaps']['count'], 'The no-MFA contact must be counted.');
+        $this->assertNotEmpty($result['external_forwards'], 'The external-forwarding contact must surface.');
+        $this->assertGreaterThanOrEqual(1, $result['inactive_accounts']['count'], 'The inactive account must be counted.');
+        $this->assertGreaterThanOrEqual(1, $result['open_device_alerts'], 'The active device alert must be counted.');
+    }
+
+    // ── 2. MED-1: external forwards rendered DOMAIN ONLY, never the raw address ─
+
+    public function test_security_posture_renders_forward_domain_only_not_raw_address(): void
+    {
+        $client = Client::factory()->create();
+        $current = $this->current($client);
+
+        $this->makePerson($client, [
+            'first_name' => 'Eve',
+            'last_name' => 'Forwarder',
+            'mailbox_forwarding_smtp' => 'exfil@attacker.test',
+        ]);
+
+        $result = $this->executor($current)->execute('get_client_security_posture', []);
+
+        $encoded = (string) json_encode($result);
+
+        // The @-domain IS surfaced (it's the actionable BEC signal)...
+        $this->assertStringContainsString('attacker.test', $encoded);
+        // ...but the full raw forwarding address (PII + an attacker-settable value that
+        // would survive scrub()) must NEVER appear anywhere in the return.
+        $this->assertStringNotContainsString('exfil@attacker.test', $encoded,
+            'MED-1: the raw mailbox_forwarding_smtp must never be rendered — domain only.');
+
+        // Structurally: forward_domain is exactly the extracted domain.
+        $this->assertSame('attacker.test', $result['external_forwards'][0]['forward_domain']);
+    }
+
+    // ── 3. mail_security is null until a CIPP sync has run (no fabrication) ────
+
+    public function test_security_posture_mail_security_is_null_without_cipp_sync(): void
+    {
+        $client = Client::factory()->create(); // no cipp_mail_security_synced_at
+        $current = $this->current($client);
+
+        $result = $this->executor($current)->execute('get_client_security_posture', []);
+
+        $this->assertIsArray($result);
+        $this->assertArrayNotHasKey('error', $result);
+        $this->assertArrayHasKey('mail_security', $result);
+        $this->assertNull($result['mail_security'], 'mail_security must be null until a CIPP sync has run.');
+    }
+
+    // ── 4. Cross-client isolation: a foreign client's data never appears ──────
+
+    public function test_security_posture_excludes_other_clients_data(): void
+    {
+        $client = Client::factory()->create();
+        $other = Client::factory()->create();
+        $current = $this->current($client);
+
+        // EVERY piece of security data belongs to the OTHER client.
+        $this->makePerson($other, ['first_name' => 'Foreign', 'last_name' => 'NoMfa', 'mfa_enabled' => false]);
+        $this->makePerson($other, ['first_name' => 'Foreign', 'last_name' => 'Forwarder', 'mailbox_forwarding_smtp' => 'leak@other-attacker.test']);
+        $this->makePerson($other, ['first_name' => 'Foreign', 'last_name' => 'Inactive', 'cipp_inactive' => true]);
+        $this->makeAssetAlert($other);
+
+        $result = $this->executor($current)->execute('get_client_security_posture', []);
+
+        $this->assertArrayNotHasKey('error', $result);
+        $this->assertSame(0, $result['mfa_gaps']['count'], 'A foreign no-MFA contact must not count.');
+        $this->assertSame([], $result['external_forwards'], 'A foreign external forward must not appear.');
+        $this->assertSame(0, $result['inactive_accounts']['count'], 'A foreign inactive account must not count.');
+        $this->assertSame(0, $result['open_device_alerts'], 'A foreign device alert must not count.');
+
+        $encoded = (string) json_encode($result);
+        $this->assertStringNotContainsString('other-attacker.test', $encoded, 'A foreign forward domain must never leak.');
+    }
+
+    // ── 5. Agent-only: offered via readTools(), never the triage loop (getTools) ─
+
+    public function test_security_posture_is_agent_only_not_in_triage_loop(): void
+    {
+        $readNames = array_column(\App\Services\Triage\TriageToolDefinitions::readTools(), 'name');
+        $loopNames = array_column(\App\Services\Triage\TriageToolDefinitions::getTools(), 'name');
+
+        $this->assertContains('get_client_security_posture', $readNames,
+            'The tool must be offered to the agent via readTools().');
+        $this->assertNotContains('get_client_security_posture', $loopNames,
+            'The tool must NEVER leak into the deterministic triage loop (getTools()/psaTools()).');
+    }
 }

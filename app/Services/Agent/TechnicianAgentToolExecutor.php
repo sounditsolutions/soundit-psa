@@ -11,6 +11,7 @@ use App\Services\Triage\TriageToolExecutor;
  *
  * Allowlist (CO-1):
  *   READ:    search_tickets, get_ticket_notes, list_client_tickets,
+ *            list_client_calls, get_client_security_posture,
  *            wiki_list_pages, wiki_search, wiki_get_page
  *   ACT:     propose_close (gated mutator → ProposeCloseTool/gate)
  *            flag_attention (held NOTICE → FlagAttentionTool/gate; no execution side-effect)
@@ -30,6 +31,7 @@ class TechnicianAgentToolExecutor
         'get_ticket_notes',
         'list_client_tickets',
         'list_client_calls',
+        'get_client_security_posture',
         'wiki_list_pages',
         'wiki_search',
         'wiki_get_page',

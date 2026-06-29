@@ -35,7 +35,8 @@ use Tests\TestCase;
  *  3. Read delegation: search_tickets (and get_ticket_notes) routes through
  *     TriageToolExecutor and returns a read result (no error).
  *  4. propose_close routes to ProposeCloseTool: held TechnicianRun created.
- *  5. readTools() shape: exactly the 6 allowed reads (incl. list_client_tickets), no mutators.
+ *  5. readTools() shape: exactly the 8 allowed reads (incl. the three situation
+ *     drill-downs: list_client_tickets, list_client_calls, get_client_security_posture), no mutators.
  */
 class TechnicianAgentToolExecutorTest extends TestCase
 {
@@ -281,21 +282,22 @@ class TechnicianAgentToolExecutorTest extends TestCase
 
     // ── 5. readTools() shape ──────────────────────────────────────────────────
 
-    public function test_read_tools_contains_exactly_the_seven_allowed_reads(): void
+    public function test_read_tools_contains_exactly_the_eight_allowed_reads(): void
     {
         $tools = TriageToolDefinitions::readTools();
         $names = array_column($tools, 'name');
 
         $this->assertContains('search_tickets', $names);
         $this->assertContains('get_ticket_notes', $names);
-        // Agent-only situation drill-downs (Task 8 + Task 9) — offered to the agent, never the triage loop.
+        // Agent-only situation drill-downs (Tasks 8-10) — offered to the agent, never the triage loop.
         $this->assertContains('list_client_tickets', $names);
         $this->assertContains('list_client_calls', $names);
+        $this->assertContains('get_client_security_posture', $names);
         $this->assertContains('wiki_list_pages', $names);
         $this->assertContains('wiki_search', $names);
         $this->assertContains('wiki_get_page', $names);
 
-        $this->assertCount(7, $names, 'readTools() must return exactly the 7 allowed reads.');
+        $this->assertCount(8, $names, 'readTools() must return exactly the 8 allowed reads.');
     }
 
     public function test_read_tools_contains_no_set_ticket_mutators(): void

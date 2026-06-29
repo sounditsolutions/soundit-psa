@@ -5,6 +5,7 @@ namespace App\Services\Triage;
 use App\Enums\TicketPriority;
 use App\Enums\TicketStatus;
 use App\Models\Asset;
+use App\Models\Person;
 use App\Models\TacticalAsset;
 use App\Models\Ticket;
 use App\Models\TicketNote;
@@ -63,6 +64,7 @@ class TriageToolExecutor
             'get_ticket_notes' => $this->getTicketNotes($input),
             'list_client_tickets' => $this->listClientTickets($input), // agent-only (readTools + READ_TOOLS)
             'list_client_calls' => $this->listClientCalls($input),     // agent-only (readTools + READ_TOOLS)
+            'get_client_security_posture' => $this->getClientSecurityPosture(), // agent-only (readTools + READ_TOOLS)
             'set_ticket_priority' => $this->setTicketPriority($input),
             'set_ticket_status' => $this->setTicketStatus($input),
             'set_ticket_category' => $this->setTicketCategory($input),
@@ -259,6 +261,75 @@ class TriageToolExecutor
         } catch (\Throwable) {
             return ['error' => 'lookup failed'];
         }
+    }
+
+    /**
+     * AGENT-ONLY situation drill-down: the full, client-scoped M365/security
+     * picture — the depth behind the digest header's BEC/MFA key-indicator flags.
+     * Used for security-relevant tickets. Scoped to $this->clientId; no id args.
+     *
+     * MED-1 (load-bearing): external mail-forwards are rendered DOMAIN ONLY. The
+     * raw mailbox_forwarding_smtp is NEVER surfaced — a full email is both PII and
+     * an attacker-settable value that would survive scrub()/the fence, so only the
+     * extracted @-domain is returned. hasExternalForward()'s own-domain compare
+     * can't be expressed in SQL, so the (rare) forwarders are loaded and filtered
+     * in PHP — ->limit(50) bounds that work.
+     *
+     * mail_security comes straight from Client::securitySnapshot(), which returns
+     * null until a CIPP sync has run (null-guarded — never fabricated). Every
+     * contact name passes through the shared ClientSituationContextBuilder::scrub().
+     * Generic error only.
+     */
+    private function getClientSecurityPosture(): array
+    {
+        try {
+            $externalForwards = Person::where('client_id', $this->clientId)
+                ->whereNotNull('mailbox_forwarding_smtp')
+                ->limit(50) // bound the in-PHP own-domain filter (security CO)
+                ->get()
+                ->filter(fn (Person $p): bool => $p->hasExternalForward())
+                ->map(fn (Person $p): array => [
+                    'contact' => ClientSituationContextBuilder::scrub($p->full_name, 120),
+                    // DOMAIN ONLY — never the raw mailbox_forwarding_smtp (MED-1).
+                    'forward_domain' => mb_strtolower(substr(strrchr((string) $p->mailbox_forwarding_smtp, '@') ?: '', 1)),
+                ])
+                ->values()
+                ->all();
+
+            return [
+                'mail_security' => $this->ticket->client?->securitySnapshot(), // null until a CIPP sync runs
+                'mfa_gaps' => $this->securityContactGroup(
+                    Person::where('client_id', $this->clientId)->where('mfa_enabled', false)
+                ),
+                'external_forwards' => $externalForwards,
+                'inactive_accounts' => $this->securityContactGroup(
+                    Person::where('client_id', $this->clientId)->where('cipp_inactive', true)
+                ),
+                'open_device_alerts' => Asset::where('client_id', $this->clientId)
+                    ->withCount('activeAlerts')
+                    ->get()
+                    ->sum('active_alerts_count'),
+            ];
+        } catch (\Throwable) {
+            return ['error' => 'lookup failed'];
+        }
+    }
+
+    /**
+     * Shared {count, contacts[]} shape for a client-scoped Person gap query: the
+     * FULL count plus up to 20 scrubbed contact names (every name through scrub()).
+     */
+    private function securityContactGroup(\Illuminate\Database\Eloquent\Builder $query): array
+    {
+        return [
+            'count' => (clone $query)->count(),
+            'contacts' => (clone $query)
+                ->limit(20)
+                ->get(['first_name', 'last_name'])
+                ->map(fn (Person $p): string => ClientSituationContextBuilder::scrub($p->full_name, 120))
+                ->values()
+                ->all(),
+        ];
     }
 
     private function getTicketNotes(array $input): array
