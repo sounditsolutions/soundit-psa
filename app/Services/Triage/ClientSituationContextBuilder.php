@@ -3,12 +3,18 @@
 namespace App\Services\Triage;
 
 use App\Enums\InvoiceStatus;
+use App\Enums\NoteType;
+use App\Enums\TechnicianRunState;
+use App\Enums\WhoType;
 use App\Models\Asset;
 use App\Models\Contract;
 use App\Models\Invoice;
 use App\Models\Person;
 use App\Models\PhoneCall;
+use App\Models\TechnicianActionLog;
+use App\Models\TechnicianRun;
 use App\Models\Ticket;
+use App\Models\TicketNote;
 use App\Services\Technician\PromptFence;
 use App\Services\Wiki\Mining\WikiRedactor;
 use Illuminate\Support\Facades\Log;
@@ -48,6 +54,13 @@ class ClientSituationContextBuilder
     private const MAX_SUBJECT = 120;
 
     private const MAX_CALL_SUMMARY = 400;
+
+    private const MAX_ENGAGED = 5;
+
+    private const MAX_ASSIGNEE = 80;
+
+    /** Recency window that means a human-agent note counts as "currently engaged". */
+    private const HUMAN_NOTE_DAYS = 7;
 
     public function build(Ticket $ticket): string
     {
@@ -223,9 +236,155 @@ class ClientSituationContextBuilder
         }
     }
 
+    /**
+     * ③ "Already in front of a human" — the trip-critical anti-burial block.
+     *
+     * Surfaces BOTH (A) the AI's own footprint for this client (open attention
+     * flags + held proposals + the most recent logged AI action) AND (B) the
+     * client's OPEN sibling tickets a HUMAN is already engaged on. Its whole job
+     * is to stop Chet re-escalating / re-proposing on something a peer run already
+     * raised or a person already owns.
+     *
+     * The current ticket is excluded from BOTH the last-AI-action line and the
+     * engaged-sibling set — a row about THIS ticket is self-reference noise (the
+     * agent is, by definition, already on it).
+     *
+     * NOTE: this is the SOFT digest approximation only. The DETERMINISTIC
+     * client-level escalation de-dup is a separate fast-follow (psa-hziu).
+     *
+     * The human-touch predicate is REPLICATED from EmergencySweep::hasHumanTouch()
+     * (which is private AND keyed off an emergency `alerted_at` timestamp, so it
+     * cannot be reused as-is): a sibling is human-engaged if assignee_id is set, OR
+     * it carries a genuine human-agent note (who_type = Agent, ai_authored = false,
+     * a NON-system note_type) within the last HUMAN_NOTE_DAYS — the recency window
+     * standing in for the alerted_at gate to mean "currently engaged".
+     */
     private function inMotion(int $clientId, Ticket $current): string
     {
-        return '';
+        try {
+            $sections = array_filter([
+                $this->inMotionAiFootprint($clientId, $current),
+                $this->inMotionHumanSiblings($clientId, $current),
+            ]);
+
+            return $sections === [] ? '' : implode("\n\n", $sections);
+        } catch (\Throwable) {
+            return '';
+        }
+    }
+
+    /**
+     * Part A — Chet's own / peer-run footprint for this client. TechnicianRun and
+     * TechnicianActionLog both carry a NULLABLE client_id, so we hand-roll the
+     * where('client_id', …) (no scopeForClient) and never let cross-client bleed.
+     */
+    private function inMotionAiFootprint(int $clientId, Ticket $current): string
+    {
+        $openFlags = TechnicianRun::where('client_id', $clientId)
+            ->where('action_type', 'flag_attention')
+            ->where('state', TechnicianRunState::Flagged)
+            ->count();
+
+        $heldProposals = TechnicianRun::where('client_id', $clientId)
+            ->where('state', TechnicianRunState::AwaitingApproval)
+            ->count();
+
+        // Most recent AI action for this client, EXCLUDING the current ticket
+        // (NULL-ticket rows — client-wide actions — still count).
+        $lastAction = TechnicianActionLog::where('client_id', $clientId)
+            ->where(fn ($q) => $q->whereNull('ticket_id')->orWhere('ticket_id', '!=', $current->id))
+            ->latest()
+            ->first();
+
+        if ($openFlags === 0 && $heldProposals === 0 && $lastAction === null) {
+            return '';
+        }
+
+        $line = "⚠ Already in motion: {$openFlags} open flag(s), {$heldProposals} held proposal(s)";
+
+        if ($lastAction !== null) {
+            $when = $lastAction->created_at?->diffForHumans();
+            if ($when !== null && $when !== '') {
+                $line .= ", last AI action {$when}";
+            }
+            if ($lastAction->ticket_id !== null) {
+                $line .= " on ticket #{$lastAction->ticket_id}";
+            }
+        }
+
+        return $line;
+    }
+
+    /**
+     * Part B — open siblings a HUMAN is already on (REPLICATED human-touch
+     * predicate). The human-note arm is pre-loaded for ALL siblings in ONE query
+     * (N+1-safe), keyed ticket_id => latest matching noted_at; the sibling set is
+     * the client's open tickets, bounded in practice.
+     */
+    private function inMotionHumanSiblings(int $clientId, Ticket $current): string
+    {
+        $siblings = Ticket::forClient($clientId)->open()
+            ->where('id', '!=', $current->id)
+            ->orderBy('priority')->orderBy('opened_at')
+            ->with('assignee')
+            ->get();
+
+        if ($siblings->isEmpty()) {
+            return '';
+        }
+
+        // REPLICATED (b): a genuine human Agent note (non-AI, non-system) within the
+        // recency window. Same column predicate as EmergencySweep::hasHumanTouch().
+        $systemTypes = array_map(fn (NoteType $t) => $t->value, NoteType::systemGenerated());
+
+        $humanNoteAt = [];
+        TicketNote::query()
+            ->whereIn('ticket_id', $siblings->modelKeys())
+            ->where('who_type', WhoType::Agent->value)
+            ->where('ai_authored', false)
+            ->whereNotIn('note_type', $systemTypes)
+            ->where('noted_at', '>=', now()->subDays(self::HUMAN_NOTE_DAYS))
+            ->get(['ticket_id', 'noted_at'])
+            ->each(function (TicketNote $n) use (&$humanNoteAt): void {
+                $prev = $humanNoteAt[$n->ticket_id] ?? null;
+                if ($prev === null || ($n->noted_at !== null && $n->noted_at->gt($prev))) {
+                    $humanNoteAt[$n->ticket_id] = $n->noted_at;
+                }
+            });
+
+        $lines = [];
+        foreach ($siblings as $t) {
+            $assigned = $t->assignee_id !== null;
+            $noteAt = $humanNoteAt[$t->id] ?? null;
+
+            if (! $assigned && $noteAt === null) {
+                continue; // not human-engaged
+            }
+
+            $bits = [];
+            if ($assigned) {
+                $name = $this->safe($t->assignee?->name, self::MAX_ASSIGNEE);
+                $bits[] = ($name !== '' ? $name.' ' : '').'assigned';
+            }
+            if ($noteAt !== null) {
+                $bits[] = 'staff replied '.$noteAt->diffForHumans();
+            }
+
+            // display_id self-prefixes (#… for Halo, T-… native) — render AS-IS.
+            $lines[] = "👤 {$t->display_id} — ".implode(', ', $bits);
+
+            if (count($lines) >= self::MAX_ENGAGED) {
+                break;
+            }
+        }
+
+        if ($lines === []) {
+            return '';
+        }
+
+        array_unshift($lines, 'Human-engaged (a person is already on these — do NOT re-escalate/re-propose):');
+
+        return implode("\n", $lines);
     }
 
     private function recentClosed(int $clientId, Ticket $current): string

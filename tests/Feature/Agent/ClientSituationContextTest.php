@@ -10,7 +10,10 @@ use App\Enums\ChargeClassification;
 use App\Enums\ContractStatus;
 use App\Enums\ContractType;
 use App\Enums\InvoiceStatus;
+use App\Enums\NoteType;
+use App\Enums\TechnicianRunState;
 use App\Enums\TicketStatus;
+use App\Enums\WhoType;
 use App\Models\Alert;
 use App\Models\Asset;
 use App\Models\Client;
@@ -19,7 +22,10 @@ use App\Models\Invoice;
 use App\Models\Person;
 use App\Models\PhoneCall;
 use App\Models\Setting;
+use App\Models\TechnicianActionLog;
+use App\Models\TechnicianRun;
 use App\Models\Ticket;
+use App\Models\TicketNote;
 use App\Models\User;
 use App\Services\Agent\TechnicianAgent;
 use App\Services\Ai\AiClient;
@@ -28,6 +34,7 @@ use App\Services\Technician\PromptFence;
 use App\Services\Triage\ClientSituationContextBuilder;
 use App\Services\Triage\ContextBuilder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Tests\TestCase;
 
@@ -1055,5 +1062,213 @@ class ClientSituationContextTest extends TestCase
         $result = $builder->build($current); // must NOT throw
 
         $this->assertSame('', $result, 'A throwing sub-builder is swallowed; build() returns empty, never throws.');
+    }
+
+    // ── Task 6 helpers: "already in front of a human" (inMotion) ───────────────
+
+    /** Persist a TechnicianRun for a client (defaults to a Flagged flag_attention). */
+    private function technicianRun(
+        Client $client,
+        Ticket $ticket,
+        string $actionType = 'flag_attention',
+        TechnicianRunState $state = TechnicianRunState::Flagged,
+    ): TechnicianRun {
+        return TechnicianRun::create([
+            'ticket_id' => $ticket->id,
+            'client_id' => $client->id,
+            'action_type' => $actionType,
+            'content_hash' => str_pad(md5(uniqid('', true)), 64, '0'),
+            'state' => $state,
+        ]);
+    }
+
+    /** Append a TechnicianActionLog row (append-only). client_id nullable, ticket_id nullable. */
+    private function actionLog(int $clientId, ?int $ticketId): TechnicianActionLog
+    {
+        return TechnicianActionLog::create([
+            'actor_label' => 'ai-technician',
+            'action_type' => 'send_ack',
+            'tier' => 'auto',
+            'result_status' => 'executed',
+            'client_id' => $clientId,
+            'ticket_id' => $ticketId,
+            'content_hash' => str_pad(md5(uniqid('', true)), 64, '0'),
+            'summary' => 'Auto-acknowledged the client.',
+            'correlation_id' => uniqid('corr', true),
+        ]);
+    }
+
+    /** Persist a human-agent reply note (who_type Agent, ai_authored false, non-system type). */
+    private function humanNote(Ticket $ticket, array $attrs = []): TicketNote
+    {
+        return TicketNote::create(array_merge([
+            'ticket_id' => $ticket->id,
+            'author_name' => 'Tech Human',
+            'who_type' => WhoType::Agent,
+            'ai_authored' => false,
+            'body' => 'Looking into this now.',
+            'note_type' => NoteType::Reply,
+            'is_private' => false,
+            'noted_at' => now(),
+        ], $attrs));
+    }
+
+    // ── 36. inMotion: an open flag_attention run surfaces ─────────────────────
+
+    public function test_in_motion_open_flag_surfaces(): void
+    {
+        $this->enableFlag();
+        $client = Client::factory()->create();
+        $current = $this->current($client);
+        $sibling = $this->sibling($client);
+        $this->technicianRun($client, $sibling, 'flag_attention', TechnicianRunState::Flagged);
+
+        $block = $this->situationBlock(
+            ContextBuilder::buildForTicket($current, includeClientSituation: true)
+        );
+
+        $this->assertNotNull($block);
+        $this->assertStringContainsString('Already in motion: 1 open flag(s)', $block);
+    }
+
+    // ── 37. inMotion: an AwaitingApproval run is counted as a held proposal ────
+
+    public function test_in_motion_held_proposal_surfaces(): void
+    {
+        $this->enableFlag();
+        $client = Client::factory()->create();
+        $current = $this->current($client);
+        $sibling = $this->sibling($client);
+        $this->technicianRun($client, $sibling, 'send_reply', TechnicianRunState::AwaitingApproval);
+
+        $block = $this->situationBlock(
+            ContextBuilder::buildForTicket($current, includeClientSituation: true)
+        );
+
+        $this->assertNotNull($block);
+        $this->assertStringContainsString('0 open flag(s), 1 held proposal(s)', $block);
+    }
+
+    // ── 38. inMotion: last AI action EXCLUDES the current ticket ──────────────
+
+    public function test_in_motion_last_action_excludes_current_ticket(): void
+    {
+        $this->enableFlag();
+        $client = Client::factory()->create();
+        $current = $this->current($client);
+        $sibling = $this->sibling($client);
+
+        // A NEWER action on the CURRENT ticket (must be excluded as self-reference)...
+        $this->actionLog($client->id, $current->id);
+        // ...and an OLDER action on a SIBLING (must be the rendered "last action").
+        $siblingLog = $this->actionLog($client->id, $sibling->id);
+        DB::table('technician_action_logs')->where('id', $siblingLog->id)
+            ->update(['created_at' => now()->subHours(2)->toDateTimeString()]);
+
+        $block = (string) $this->situationBlock(
+            ContextBuilder::buildForTicket($current, includeClientSituation: true)
+        );
+
+        // \b after the id so #1 cannot match #10 etc.
+        $this->assertMatchesRegularExpression('/on ticket #'.$sibling->id.'\b/', $block,
+            'The sibling action is the rendered last AI action.');
+        $this->assertDoesNotMatchRegularExpression('/on ticket #'.$current->id.'\b/', $block,
+            'The current ticket is excluded from the last-AI-action line even though it is newest.');
+    }
+
+    // ── 39. inMotion: a human-engaged sibling (assignee set) surfaces ─────────
+
+    public function test_in_motion_human_engaged_sibling_by_assignee(): void
+    {
+        $this->enableFlag();
+        $client = Client::factory()->create();
+        $current = $this->current($client);
+        $tech = User::factory()->create(['name' => 'Alice Tech']);
+        $sibling = $this->sibling($client, ['assignee_id' => $tech->id]);
+
+        $block = $this->situationBlock(
+            ContextBuilder::buildForTicket($current, includeClientSituation: true)
+        );
+
+        $this->assertNotNull($block);
+        $this->assertStringContainsString("👤 {$sibling->display_id} — Alice Tech assigned", $block);
+    }
+
+    // ── 40. inMotion: a recent human-agent NOTE engages; an AI note does NOT ──
+
+    public function test_in_motion_human_engaged_sibling_by_note_not_ai_note(): void
+    {
+        $this->enableFlag();
+        $client = Client::factory()->create();
+        $current = $this->current($client);
+
+        // Sibling with a recent GENUINE human-agent note → engaged.
+        $humanSib = $this->sibling($client);
+        $this->humanNote($humanSib, ['noted_at' => now()->subHours(2)]);
+
+        // Sibling whose only note is AI-authored → NOT engaged.
+        $aiSib = $this->sibling($client);
+        $this->humanNote($aiSib, [
+            'ai_authored' => true, 'author_name' => 'Chet', 'noted_at' => now()->subHour(),
+        ]);
+
+        $block = (string) $this->situationBlock(
+            ContextBuilder::buildForTicket($current, includeClientSituation: true)
+        );
+
+        $this->assertStringContainsString("👤 {$humanSib->display_id} — staff replied", $block);
+        // Exactly one engaged line — the AI-only sibling did not add a second.
+        $this->assertSame(1, substr_count($block, '👤'),
+            'Only the genuine human-agent note marks a sibling as engaged; an AI-authored note does not.');
+    }
+
+    // ── 41. inMotion: cross-client in-motion activity never bleeds in ─────────
+
+    public function test_in_motion_excludes_cross_client_activity(): void
+    {
+        $this->enableFlag();
+        $client = Client::factory()->create();
+        $other = Client::factory()->create();
+        $current = $this->current($client);
+        // Own client has ONE plain open sibling so the situation block materialises,
+        // but NO in-motion activity of its own.
+        $this->sibling($client, ['subject' => 'PLAIN-OPEN-SIBLING']);
+
+        // EVERY piece of in-motion activity belongs to the OTHER client.
+        $otherSibling = $this->sibling($other);
+        $this->technicianRun($other, $otherSibling, 'flag_attention', TechnicianRunState::Flagged);
+        $this->technicianRun($other, $otherSibling, 'send_reply', TechnicianRunState::AwaitingApproval);
+        $this->actionLog($other->id, $otherSibling->id);
+        $foreignTech = User::factory()->create(['name' => 'Foreign Tech']);
+        $this->sibling($other, ['assignee_id' => $foreignTech->id]);
+
+        $block = (string) $this->situationBlock(
+            ContextBuilder::buildForTicket($current, includeClientSituation: true)
+        );
+
+        $this->assertStringContainsString('PLAIN-OPEN-SIBLING', $block, 'The block exists for the own client.');
+        $this->assertStringNotContainsString('Already in motion', $block, 'Cross-client AI footprint must not bleed.');
+        $this->assertStringNotContainsString('👤', $block, 'Cross-client engaged sibling must not bleed.');
+        $this->assertStringNotContainsString('Foreign Tech', $block);
+    }
+
+    // ── 42. inMotion: omitted entirely when there is no in-motion activity ────
+
+    public function test_in_motion_omitted_when_no_activity(): void
+    {
+        $this->enableFlag();
+        $client = Client::factory()->create();
+        $current = $this->current($client);
+        // A plain open sibling (no assignee, no note, no runs/logs) materialises the
+        // block via openTickets() but contributes nothing to inMotion.
+        $this->sibling($client, ['subject' => 'PLAIN-OPEN-SIBLING']);
+
+        $block = (string) $this->situationBlock(
+            ContextBuilder::buildForTicket($current, includeClientSituation: true)
+        );
+
+        $this->assertStringContainsString('PLAIN-OPEN-SIBLING', $block);
+        $this->assertStringNotContainsString('Already in motion', $block);
+        $this->assertStringNotContainsString('👤', $block);
     }
 }
