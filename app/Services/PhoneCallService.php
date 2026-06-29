@@ -4,6 +4,10 @@ namespace App\Services;
 
 use App\Enums\CallDirection;
 use App\Enums\CallStatus;
+use App\Enums\NoteType;
+use App\Enums\TicketPriority;
+use App\Enums\TicketSource;
+use App\Enums\TicketType;
 use App\Jobs\ResolveCallerFromPeople;
 use App\Models\Person;
 use App\Models\PhoneCall;
@@ -11,11 +15,13 @@ use App\Models\SipEndpoint;
 use App\Models\Ticket;
 use App\Support\PhoneNumber;
 use App\Support\PlivoConfig;
+use App\Support\TriageConfig;
 use GuzzleHttp\Client as GuzzleClient;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 
 class PhoneCallService
 {
@@ -422,6 +428,81 @@ class PhoneCallService
         }
 
         return $call;
+    }
+
+    /**
+     * Link a call to an existing ticket AND drop an internal phone-call note.
+     *
+     * Wraps linkCallToTicket (keeps the billability + prepay behaviour) and then
+     * records a best-effort private note authored by the AI/system user. The note
+     * step is fail-soft: a missing system user, a missing ticket, or any note
+     * failure must NEVER undo the link — the link is the durable outcome.
+     */
+    public function linkCallToTicketWithNote(PhoneCall $call, int $ticketId, string $noteBody): PhoneCall
+    {
+        $this->linkCallToTicket($call, $ticketId);
+
+        // Best-effort note — wrapped so a note failure can't unwind the (already
+        // committed) link. We only author when a system user resolves.
+        try {
+            $authorId = TriageConfig::systemUserId();
+            $ticket = $authorId !== null ? Ticket::find($ticketId) : null;
+
+            if ($authorId !== null && $ticket !== null) {
+                app(TicketService::class)->addNote(
+                    $ticket,
+                    $noteBody,
+                    NoteType::PhoneCall,
+                    isPrivate: true,
+                    authorUserId: $authorId,
+                );
+            }
+        } catch (\Throwable $e) {
+            Log::warning('[PhoneCall] Failed to add call note after link', [
+                'call_id' => $call->id,
+                'ticket_id' => $ticketId,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        return $call;
+    }
+
+    /**
+     * Create a new ticket from a resolved call and link the call to it.
+     *
+     * PRECONDITION: the call is already resolved ($call->client_id !== null) — the
+     * pipeline applies caller resolution before calling this. Mirrors
+     * EmailService::autoCreateTicketFromEmail: builds the ticket data and delegates
+     * to the canonical TicketService::createTicket with a null createdBy so the
+     * TicketObserver runs triage exactly as it does for an auto-created email.
+     */
+    public function createTicketFromCall(PhoneCall $call): Ticket
+    {
+        $caller = $call->caller_identified_name
+            ?: $call->person?->fullName
+            ?: $call->client?->name
+            ?: $call->from_number;
+
+        $subject = Str::limit('Phone call from '.$caller, 250);
+
+        $ticketData = [
+            'subject' => $subject,
+            'client_id' => $call->client_id,
+            'contact_id' => $call->person_id,
+            'priority' => TicketPriority::P3->value,
+            'source' => TicketSource::Phone->value,
+            'type' => TicketType::ServiceRequest->value,
+            'description' => $call->call_summary
+                ?: $call->cleaned_transcript
+                ?: 'Inbound phone call — see linked call for transcript.',
+        ];
+
+        $ticket = app(TicketService::class)->createTicket($ticketData, null);
+
+        $this->linkCallToTicketWithNote($call, $ticket->id, "Ticket created from phone call #{$call->id}.");
+
+        return $ticket;
     }
 
     /**
