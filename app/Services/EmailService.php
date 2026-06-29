@@ -697,6 +697,12 @@ PROMPT;
      *  - enabled + attach, threshold null / below threshold (held-first): autoCreate + AwaitingApproval record.
      *  - enabled + attach but ticket vanished/closed/cross-client: falls through to autoCreate (safe).
      *  - any exception: fail-soft → autoCreateTicketFromEmail, never loses an email.
+     *
+     * DOUBLE-CREATE GUARD: autoCreateTicketFromEmail is called ONCE, OUTSIDE the try block.
+     * The old pattern (autoCreate inside try + retry in catch when ticket_id is null) created
+     * an orphan ticket when autoCreate threw after persisting the ticket row but before
+     * linkEmailToTicket set ticket_id. The restructured path has a single call site with no
+     * catch-block retry — a throw propagates immediately rather than triggering a second create.
      */
     private function routeInboundEmail(Email $email): void
     {
@@ -706,11 +712,14 @@ PROMPT;
             return;
         }
 
+        // Initialise with a safe "router unavailable" fallback so $decision is always defined
+        // after the try block, even when the router throws.
+        $decision = \App\Services\Agent\Intake\IntakeDecision::create('router unavailable');
         try {
             $decision = app(IntakeRouter::class)->route($email);
             $threshold = AgentConfig::intakeAttachAutoThreshold();
 
-            // GRADUATED auto-attach (kills the duplicate) — only when confident AND the threshold is set.
+            // GRADUATED auto-attach — only when confident AND the threshold is set.
             if ($decision->isAttach() && $threshold !== null && $decision->confidence >= $threshold) {
                 $ticket = Ticket::find($decision->ticketId);
                 // Re-validate server-side: still the same client + still open (may have changed since route).
@@ -720,23 +729,26 @@ PROMPT;
 
                     return;
                 }
-                // ticket vanished/closed/cross-client → fall through to the safe create below.
-            }
-
-            // Held-first / below-threshold / create → create the new ticket (the SAFE default).
-            // If the router SUGGESTED an attach (held, observational — merge is deferred), record it.
-            $this->autoCreateTicketFromEmail($email);
-            if ($decision->isAttach()) {
-                $this->recordIntakeRoute($email, $decision, attachedTicketId: null, createdTicketId: $email->fresh()->ticket_id);
+                // ticket vanished/closed/cross-client → fall through to the single safe create below.
             }
         } catch (\Throwable $e) {
-            Log::warning('[Intake] route failed — creating ticket (fail-soft)', [
+            Log::warning('[Intake] route/attach failed — falling back to create', [
                 'email_id' => $email->id,
                 'error' => $e->getMessage(),
             ]);
-            if ($email->fresh()->ticket_id === null) {
-                $this->autoCreateTicketFromEmail($email);
-            }
+            // fall through to the single safe create below
+        }
+
+        // Single create path — runs at most once, OUTSIDE the try (no retry double-create).
+        // The ticket_id guard handles the rare case linkEmailToTicket (inside try) already ticketed
+        // the email before throwing, so we don't double-create on attach-path exceptions either.
+        if ($email->fresh()->ticket_id === null) {
+            $this->autoCreateTicketFromEmail($email);
+        }
+        // If the router suggested an attach (held-first / below threshold) record it as an
+        // observational suggestion even though we created a new ticket (the safe default).
+        if ($decision->isAttach()) {
+            $this->recordIntakeRoute($email, $decision, attachedTicketId: null, createdTicketId: $email->fresh()->ticket_id);
         }
     }
 

@@ -325,4 +325,58 @@ class IntakeRoutingTest extends TestCase
         $this->assertNotNull($email->fresh()->ticket_id,
             'The email must be linked to the new ticket after fail-soft recovery');
     }
+
+    // ── Test 8: no double-create when autoCreateTicketFromEmail throws ─────────
+
+    /**
+     * Double-create guard: in the OLD code autoCreateTicketFromEmail ran INSIDE the
+     * try block, and the catch also re-called it when ticket_id was null — so a
+     * partial-persist failure (ticket row written, email not yet linked) would
+     * produce a second orphan ticket.
+     *
+     * The restructured routeInboundEmail moves the single create call OUTSIDE the try,
+     * so a throw from autoCreate propagates immediately with no catch-block retry.
+     *
+     * We simulate a partial-persist by mocking TicketService::createTicket to throw
+     * (the ticket "was written" but an exception fires before email.ticket_id is set).
+     * The mock's counter proves createTicket is called EXACTLY ONCE regardless of the
+     * exception — the old code would have called it twice.
+     */
+    public function test_no_double_create_when_auto_create_throws_after_partial_persist(): void
+    {
+        Setting::setValue('intake_enabled', '1');
+
+        $client = Client::factory()->create();
+        $email = $this->makeInboundEmail($client);
+
+        // Router succeeds (returns 'create') — the exception comes from autoCreate, not the router.
+        $this->mock(IntakeRouter::class)
+            ->shouldReceive('route')
+            ->once()
+            ->andReturn(IntakeDecision::create('brand-new issue', 0.9));
+
+        // Count createTicket calls via andReturnUsing closure (avoids Mockery constraint edge-cases).
+        // Throw on every call to simulate a partial-persist (ticket "exists" in DB, email not linked).
+        $callCount = 0;
+        $this->mock(\App\Services\TicketService::class)
+            ->shouldReceive('createTicket')
+            ->andReturnUsing(function () use (&$callCount): never {
+                $callCount++;
+                throw new \RuntimeException('Simulated DB error after partial persist');
+            });
+
+        // In the new code: autoCreate is outside the try — its exception propagates from
+        // routeInboundEmail → processInbound. Catch it here so the test doesn't error.
+        // In the OLD code: the catch block would re-call autoCreate (callCount would reach 2).
+        try {
+            app(EmailService::class)->processInbound($email);
+        } catch (\Throwable) {
+            // Expected: the single create attempt threw. No double-create happened.
+        }
+
+        $this->assertSame(1, $callCount,
+            'createTicket must be called exactly once — the catch path must not retry');
+        $this->assertNull($email->fresh()->ticket_id,
+            'email.ticket_id stays null — create threw before linking');
+    }
 }
