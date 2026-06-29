@@ -2,13 +2,20 @@
 
 namespace Tests\Feature\Agent;
 
+use App\Enums\AlertSeverity;
+use App\Enums\AlertSource;
+use App\Enums\AlertStatus;
 use App\Enums\CallDirection;
 use App\Enums\ChargeClassification;
 use App\Enums\ContractStatus;
 use App\Enums\ContractType;
+use App\Enums\InvoiceStatus;
 use App\Enums\TicketStatus;
+use App\Models\Alert;
+use App\Models\Asset;
 use App\Models\Client;
 use App\Models\Contract;
+use App\Models\Invoice;
 use App\Models\Person;
 use App\Models\PhoneCall;
 use App\Models\Setting;
@@ -21,6 +28,7 @@ use App\Services\Technician\PromptFence;
 use App\Services\Triage\ClientSituationContextBuilder;
 use App\Services\Triage\ContextBuilder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Schema;
 use Tests\TestCase;
 
 /**
@@ -793,6 +801,228 @@ class ClientSituationContextTest extends TestCase
         $this->assertSame(1, substr_count($context, 'Type: managed'), 'Contract type is printed once (base context), not re-rendered by the header.');
         // ...and the situation header itself renders no contract "Type:" line.
         $this->assertStringNotContainsString('Type:', $block);
+    }
+
+    // ── Helpers for Task 5b tests ─────────────────────────────────────────────
+
+    /** Persist a Posted or Draft Invoice for a client. */
+    private function makeInvoice(int $clientId, array $attrs = []): Invoice
+    {
+        static $seq = 0;
+        $seq++;
+
+        return Invoice::create(array_merge([
+            'client_id' => $clientId,
+            'invoice_number' => 'INV-TEST-'.str_pad((string) $seq, 6, '0', STR_PAD_LEFT),
+            'invoice_date' => now()->subDays(30)->toDateString(),
+            'due_date' => now()->subDays(10)->toDateString(),
+            'subtotal' => '100.00',
+            'total' => '100.00',
+            'status' => InvoiceStatus::Posted,
+        ], $attrs));
+    }
+
+    /** Persist an Asset for a client. */
+    private function makeAsset(int $clientId, array $attrs = []): Asset
+    {
+        return Asset::factory()->create(array_merge([
+            'client_id' => $clientId,
+        ], $attrs));
+    }
+
+    /** Persist an active Alert for an asset/client. */
+    private function makeAlert(int $assetId, int $clientId, array $attrs = []): Alert
+    {
+        return Alert::create(array_merge([
+            'asset_id' => $assetId,
+            'client_id' => $clientId,
+            'source' => AlertSource::Ninja,
+            'source_alert_id' => 'alert-'.uniqid(),
+            'severity' => AlertSeverity::Warning,
+            'status' => AlertStatus::Active,
+            'title' => 'Test alert',
+        ], $attrs));
+    }
+
+    // ── 30. timeSensitive: overdue ticket surfaces ────────────────────────────
+
+    public function test_overdue_ticket_surfaces_in_time_sensitive(): void
+    {
+        $this->enableFlag();
+        $client = Client::factory()->create();
+        $current = $this->current($client);
+        // A sibling with due_at in the past and still open → breaching
+        $this->sibling($client, ['due_at' => now()->subHours(3)]);
+
+        $context = ContextBuilder::buildForTicket($current, includeClientSituation: true);
+        $block = $this->situationBlock($context);
+
+        $this->assertNotNull($block);
+        $this->assertStringContainsString('ticket(s) overdue/breaching SLA', $block);
+        $this->assertStringContainsString('nearest due', $block);
+    }
+
+    // ── 31. timeSensitive: calls awaiting follow-up are counted ──────────────
+
+    public function test_calls_awaiting_follow_up_are_counted_in_time_sensitive(): void
+    {
+        $this->enableFlag();
+        $client = Client::factory()->create();
+        $current = $this->current($client);
+
+        // A Missed call with null followed_up_at → unfollowed (followed_up_at defaults to null)
+        $this->makeCall($client->id, ['status' => \App\Enums\CallStatus::Missed]);
+
+        // A followed-up Voicemail → must NOT be counted.
+        // followed_up_at is not mass-assignable, so set it directly after creation.
+        $followedCall = $this->makeCall($client->id, ['status' => \App\Enums\CallStatus::Voicemail]);
+        $followedCall->followed_up_at = now()->subHour();
+        $followedCall->save();
+
+        $context = ContextBuilder::buildForTicket($current, includeClientSituation: true);
+        $block = $this->situationBlock($context);
+
+        $this->assertNotNull($block);
+        $this->assertStringContainsString('1 call(s) awaiting follow-up', $block, 'Exactly 1 unfollowed call should be counted.');
+    }
+
+    // ── 32. timeSensitive: RMM device-alert count is client-scoped ───────────
+
+    public function test_rmm_device_alert_count_is_client_scoped(): void
+    {
+        $this->enableFlag();
+        $client = Client::factory()->create();
+        $other = Client::factory()->create();
+        $current = $this->current($client);
+
+        // 2 active alerts for THIS client's asset
+        $asset = $this->makeAsset($client->id);
+        $this->makeAlert($asset->id, $client->id);
+        $this->makeAlert($asset->id, $client->id);
+
+        // 5 alerts for ANOTHER client's asset — must not bleed
+        $otherAsset = $this->makeAsset($other->id);
+        for ($i = 0; $i < 5; $i++) {
+            $this->makeAlert($otherAsset->id, $other->id);
+        }
+
+        $context = ContextBuilder::buildForTicket($current, includeClientSituation: true);
+        $block = $this->situationBlock($context);
+
+        $this->assertNotNull($block);
+        $this->assertStringContainsString('2 open RMM device alert(s)', $block, 'Only this client\'s 2 alerts should appear.');
+        $this->assertStringNotContainsString('7 open RMM device alert(s)', $block, 'Cross-client alerts must not bleed in.');
+    }
+
+    // ── 33. accountsReceivable: overdue AR shown; Draft + future-due excluded ─
+
+    public function test_overdue_ar_shown_and_draft_and_future_excluded(): void
+    {
+        $this->enableFlag();
+        $client = Client::factory()->create();
+        $current = $this->current($client);
+
+        // Posted + past due → MUST appear
+        $this->makeInvoice($client->id, [
+            'status' => InvoiceStatus::Posted,
+            'due_date' => now()->subDays(15)->toDateString(),
+            'total' => '250.00',
+        ]);
+
+        // Draft + past due → MUST be excluded (proves we don't use scopeUnpaid)
+        $this->makeInvoice($client->id, [
+            'status' => InvoiceStatus::Draft,
+            'due_date' => now()->subDays(5)->toDateString(),
+            'total' => '999.00',
+        ]);
+
+        // Posted + due in future → MUST be excluded
+        $this->makeInvoice($client->id, [
+            'status' => InvoiceStatus::Posted,
+            'due_date' => now()->addDays(30)->toDateString(),
+            'total' => '500.00',
+        ]);
+
+        $context = ContextBuilder::buildForTicket($current, includeClientSituation: true);
+        $block = $this->situationBlock($context);
+
+        $this->assertNotNull($block);
+        $this->assertStringContainsString('Accounts receivable:', $block, 'AR section must appear.');
+        $this->assertStringContainsString('250.00', $block, 'Only the overdue Posted invoice total should appear.');
+        $this->assertStringNotContainsString('999.00', $block, 'Draft invoice must be excluded.');
+        $this->assertStringNotContainsString('500.00', $block, 'Future-due Posted invoice must be excluded.');
+        $this->assertStringContainsString('1 overdue invoice(s)', $block, 'Only 1 invoice is overdue.');
+        $this->assertStringContainsString('past due.', $block, 'Oldest past-due label must render.');
+    }
+
+    // ── 34. timeSensitive + AR: cross-client data never appears ──────────────
+
+    public function test_cross_client_data_excluded_from_time_sensitive_and_ar(): void
+    {
+        $this->enableFlag();
+        $client = Client::factory()->create();
+        $other = Client::factory()->create();
+        $current = $this->current($client);
+
+        // Other client's breaching ticket
+        $this->sibling($other, ['due_at' => now()->subHours(5)]);
+
+        // Other client's unfollowed call
+        $this->makeCall($other->id, [
+            'status' => \App\Enums\CallStatus::Missed,
+            'followed_up_at' => null,
+        ]);
+
+        // Other client's overdue AR
+        $this->makeInvoice($other->id, [
+            'status' => InvoiceStatus::Posted,
+            'due_date' => now()->subDays(20)->toDateString(),
+            'total' => '777.00',
+        ]);
+
+        $context = ContextBuilder::buildForTicket($current, includeClientSituation: true);
+        $block = (string) $this->situationBlock($context);
+
+        // No time-sensitive lines from the other client
+        $this->assertStringNotContainsString('ticket(s) overdue/breaching SLA', $block,
+            'Cross-client breaching ticket must not surface.');
+        $this->assertStringNotContainsString('call(s) awaiting follow-up', $block,
+            'Cross-client unfollowed call must not surface.');
+        // No AR from the other client
+        $this->assertStringNotContainsString('777.00', $block,
+            'Cross-client overdue invoice must not surface.');
+    }
+
+    // ── 35. REAL per-section fail-soft: Schema::drop('invoices') ─────────────
+
+    /**
+     * The deferred Task-2 assertion: with the flag ON, drop the invoices table,
+     * then build the digest for a ticket whose client has open siblings.
+     * accountsReceivable() faults (table gone) → its try/catch returns '' →
+     * the digest STILL contains the open-ticket block and buildForTicket never throws.
+     */
+    public function test_per_section_fail_soft_dropped_invoices_table(): void
+    {
+        $this->enableFlag();
+        $client = Client::factory()->create();
+        $current = $this->current($client);
+        $sibling = $this->sibling($client, ['subject' => 'OPEN-SIBLING-VISIBLE']);
+
+        // Nuke the invoices table to force accountsReceivable() to throw.
+        // SQLite wraps DDL in transactions, so RefreshDatabase's rollback restores it.
+        Schema::drop('invoices');
+
+        // Must not throw — accountsReceivable()'s try/catch absorbs the exception.
+        $context = ContextBuilder::buildForTicket($current, includeClientSituation: true);
+
+        // The open-tickets sub-builder is unaffected — its section must still render.
+        $block = $this->situationBlock($context);
+        $this->assertNotNull($block, 'Digest must still be present when only one sub-builder fails.');
+        $this->assertStringContainsString('OPEN-SIBLING-VISIBLE', $block,
+            'openTickets() section must survive accountsReceivable() failing.');
+        // AR section must be absent (try/catch returned '')
+        $this->assertStringNotContainsString('Accounts receivable:', $block,
+            'Silenced section must not appear in digest.');
     }
 
     // ── 9. Orchestrator fail-soft smoke ───────────────────────────────────────

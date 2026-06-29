@@ -2,7 +2,10 @@
 
 namespace App\Services\Triage;
 
+use App\Enums\InvoiceStatus;
+use App\Models\Asset;
 use App\Models\Contract;
+use App\Models\Invoice;
 use App\Models\Person;
 use App\Models\PhoneCall;
 use App\Models\Ticket;
@@ -353,11 +356,64 @@ class ClientSituationContextBuilder
 
     private function timeSensitive(int $clientId, Ticket $current): string
     {
-        return '';
+        try {
+            $breaching = Ticket::forClient($clientId)->breaching()->get(['id', 'due_at']);
+            $breachingCount = $breaching->count();
+
+            $unfollowed = PhoneCall::forClient($clientId)->unfollowedUp()->count();
+
+            $alerts = Asset::where('client_id', $clientId)
+                ->withCount('activeAlerts')
+                ->get()
+                ->sum('active_alerts_count');
+
+            if ($breachingCount === 0 && $unfollowed === 0 && $alerts === 0) {
+                return '';
+            }
+
+            $line = "Time-sensitive / ops: {$breachingCount} ticket(s) overdue/breaching SLA";
+
+            $nearest = $breaching->whereNotNull('due_at')->min('due_at');
+            if ($nearest !== null) {
+                $line .= ' (nearest due '.$nearest->diffForHumans().')';
+            }
+
+            if ($unfollowed > 0) {
+                $line .= " · {$unfollowed} call(s) awaiting follow-up";
+            }
+
+            if ($alerts > 0) {
+                $line .= " · {$alerts} open RMM device alert(s)";
+            }
+
+            return $line;
+        } catch (\Throwable) {
+            return '';
+        }
     }
 
     private function accountsReceivable(int $clientId, Ticket $current): string
     {
-        return '';
+        try {
+            $overdue = Invoice::forClient($clientId)
+                ->where('status', InvoiceStatus::Posted)
+                ->get()
+                ->filter(fn (Invoice $i) => $i->isOverdue());
+
+            if ($overdue->isEmpty()) {
+                return '';
+            }
+
+            $sum = $overdue->sum('total');
+            $count = $overdue->count();
+            $oldest = $overdue->min('due_date');
+
+            $formattedSum = number_format((float) $sum, 2);
+            $oldestStr = $oldest?->diffForHumans() ?? '';
+
+            return "Accounts receivable: \${$formattedSum} across {$count} overdue invoice(s), oldest {$oldestStr} past due.";
+        } catch (\Throwable) {
+            return '';
+        }
     }
 }
