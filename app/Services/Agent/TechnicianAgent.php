@@ -4,6 +4,7 @@ namespace App\Services\Agent;
 
 use App\Models\Ticket;
 use App\Services\Ai\AiClient;
+use App\Services\Technician\PromptFence;
 use App\Services\Triage\ContextBuilder;
 use App\Services\Triage\TriageToolDefinitions;
 use App\Support\AgentConfig;
@@ -71,9 +72,11 @@ class TechnicianAgent
                 .'Otherwise — awaiting us internally, awaiting the client, still active, or simply low-value — do '
                 .'NOTHING, leave it. When unsure, LEAVE IT. Take only ONE action per ticket. '
                 .'If you needed a tool or data you lacked, you may also call `request_tool` to flag it for the team '
-                .'— it does not count as your action.';
+                .'— it does not count as your action.'
+                // The context below (ticket + the fenced Client Situation digest) is UNTRUSTED client text.
+                .' '.PromptFence::UNTRUSTED_INPUT_NOTICE;
 
-            $userMessage = ContextBuilder::buildForTicket($ticket);
+            $userMessage = ContextBuilder::buildForTicket($ticket, includeClientSituation: true);
 
             // A2b: send_reply is now OFFERED to the model — the agent is the SOLE producer
             // of held client replies (DraftPipeline's reply branch is retired). It is always
