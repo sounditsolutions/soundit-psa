@@ -16,6 +16,7 @@ class TechnicianCockpitController extends Controller
             'drafts' => $query->pendingDrafts(),
             'flagged' => $query->flaggedForAttention(),
             'needs' => $query->needsAttention(),
+            'intake' => $query->intakeReview(),
         ]);
     }
 
@@ -70,6 +71,18 @@ class TechnicianCockpitController extends Controller
         $run->dismissFlag();
 
         return redirect()->route('cockpit.index')->with('success', 'Flag dismissed.');
+    }
+
+    /**
+     * Dismiss a held intake suggestion (operator has reviewed the calibration signal).
+     * Transitions intake_route AwaitingApproval → Done via CAS guard (no-op if already
+     * resolved or if the run is not an intake_route). Visibility only — no merge action.
+     */
+    public function intakeDismiss(TechnicianRun $run)
+    {
+        $run->dismissIntake();
+
+        return redirect()->route('cockpit.index')->with('success', 'Intake suggestion dismissed.');
     }
 
     /**

@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Enums\EmailDirection;
 use App\Enums\NoteType;
+use App\Enums\TechnicianRunState;
 use App\Enums\TicketPriority;
 use App\Enums\TicketSource;
 use App\Enums\TicketStatus;
@@ -15,14 +16,18 @@ use App\Models\Client;
 use App\Models\Email;
 use App\Models\Person;
 use App\Models\Setting;
+use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Models\TicketNote;
 use App\Models\User;
+use App\Services\Agent\Intake\IntakeDecision;
+use App\Services\Agent\Intake\IntakeRouter;
 use App\Services\Email\ForwardedEmailParser;
 use App\Services\Graph\GraphClient;
 use App\Services\Graph\GraphClientException;
 use App\Services\Mesh\MeshEmailParser;
 use App\Services\Zorus\ZorusEmailParser;
+use App\Support\AgentConfig;
 use App\Support\AiConfig;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Carbon;
@@ -260,7 +265,7 @@ class EmailService
             && $email->client_id
             && $email->received_at >= now()->subHours(24)
         ) {
-            $this->autoCreateTicketFromEmail($email);
+            $this->routeInboundEmail($email);
         }
 
         // Notify if email remains unresolved after all processing paths
@@ -678,6 +683,105 @@ PROMPT;
                 'noted_at' => now(),
             ]);
         }
+    }
+
+    /**
+     * Intake front-door (psa-xcyo): when enabled, ask the IntakeRouter whether this
+     * known-sender email belongs to an existing OPEN ticket (attach) or is a new issue
+     * (create). DORMANT → calls autoCreateTicketFromEmail exactly as before.
+     *
+     * Behaviour:
+     *  - DORMANT (intake_enabled off): autoCreateTicketFromEmail — byte-identical.
+     *  - enabled + create decision: autoCreateTicketFromEmail, no intake_route record.
+     *  - enabled + attach, conf >= threshold (set): linkEmailToTicket (no new ticket) + Done record.
+     *  - enabled + attach, threshold null / below threshold (held-first): autoCreate + AwaitingApproval record.
+     *  - enabled + attach but ticket vanished/closed/cross-client: falls through to autoCreate (safe).
+     *  - any exception: fail-soft → autoCreateTicketFromEmail, never loses an email.
+     *
+     * DOUBLE-CREATE GUARD: autoCreateTicketFromEmail is called ONCE, OUTSIDE the try block.
+     * The old pattern (autoCreate inside try + retry in catch when ticket_id is null) created
+     * an orphan ticket when autoCreate threw after persisting the ticket row but before
+     * linkEmailToTicket set ticket_id. The restructured path has a single call site with no
+     * catch-block retry — a throw propagates immediately rather than triggering a second create.
+     */
+    private function routeInboundEmail(Email $email): void
+    {
+        if (! AgentConfig::intakeEnabled()) {
+            $this->autoCreateTicketFromEmail($email);
+
+            return;
+        }
+
+        // Initialise with a safe "router unavailable" fallback so $decision is always defined
+        // after the try block, even when the router throws.
+        $decision = \App\Services\Agent\Intake\IntakeDecision::create('router unavailable');
+        try {
+            $decision = app(IntakeRouter::class)->route($email);
+            $threshold = AgentConfig::intakeAttachAutoThreshold();
+
+            // GRADUATED auto-attach — only when confident AND the threshold is set.
+            if ($decision->isAttach() && $threshold !== null && $decision->confidence >= $threshold) {
+                $ticket = Ticket::find($decision->ticketId);
+                // Re-validate server-side: still the same client + still open (may have changed since route).
+                if ($ticket && $ticket->client_id === $email->client_id && $ticket->status->isOpen()) {
+                    $this->linkEmailToTicket($email, $ticket);
+                    $this->recordIntakeRoute($email, $decision, attachedTicketId: $ticket->id, createdTicketId: null);
+
+                    return;
+                }
+                // ticket vanished/closed/cross-client → fall through to the single safe create below.
+            }
+        } catch (\Throwable $e) {
+            Log::warning('[Intake] route/attach failed — falling back to create', [
+                'email_id' => $email->id,
+                'error' => $e->getMessage(),
+            ]);
+            // fall through to the single safe create below
+        }
+
+        // Single create path — runs at most once, OUTSIDE the try (no retry double-create).
+        // The ticket_id guard handles the rare case linkEmailToTicket (inside try) already ticketed
+        // the email before throwing, so we don't double-create on attach-path exceptions either.
+        if ($email->fresh()->ticket_id === null) {
+            $this->autoCreateTicketFromEmail($email);
+        }
+        // If the router suggested an attach (held-first / below threshold) record it as an
+        // observational suggestion even though we created a new ticket (the safe default).
+        if ($decision->isAttach()) {
+            $this->recordIntakeRoute($email, $decision, attachedTicketId: null, createdTicketId: $email->fresh()->ticket_id);
+        }
+    }
+
+    /**
+     * Write an observational intake_route TechnicianRun for the cockpit Intake lane.
+     *
+     * - attachedTicketId non-null → auto-attach already actioned → Done state.
+     * - createdTicketId non-null → held suggestion (duplicate created) → AwaitingApproval state.
+     *
+     * content_hash is keyed on the email id so re-runs on the same email are idempotent.
+     * ticket_id is the attached or newly created ticket (non-null FK required by the schema).
+     */
+    private function recordIntakeRoute(Email $email, IntakeDecision $decision, ?int $attachedTicketId, ?int $createdTicketId): void
+    {
+        $auto = $attachedTicketId !== null;
+
+        TechnicianRun::create([
+            'ticket_id' => $attachedTicketId ?? $createdTicketId,
+            'client_id' => $email->client_id,
+            'action_type' => 'intake_route',
+            'content_hash' => hash('sha256', 'intake:'.$email->id),
+            'state' => $auto ? TechnicianRunState::Done : TechnicianRunState::AwaitingApproval,
+            'proposed_content' => mb_substr($decision->reason, 0, 1000),
+            'proposed_meta' => [
+                'email_id' => $email->id,
+                'decision' => $decision->decision,
+                'suggested_ticket_id' => $decision->ticketId,
+                'confidence' => $decision->confidence,
+                'attached' => $auto,
+                'created_ticket_id' => $createdTicketId,
+            ],
+            'tokens_used' => 0,
+        ]);
     }
 
     /**

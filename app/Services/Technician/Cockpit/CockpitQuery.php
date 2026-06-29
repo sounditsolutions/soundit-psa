@@ -43,10 +43,30 @@ class CockpitQuery
             ->get();
     }
 
+    /**
+     * Held intake suggestions awaiting operator review (psa-xcyo Task 3).
+     * Surfaces intake_route AwaitingApproval runs so the operator can calibrate
+     * the auto-attach threshold. Visibility only — no merge action (deferred).
+     */
+    public function intakeReview(): Collection
+    {
+        return TechnicianRun::query()
+            ->where('action_type', 'intake_route')
+            ->where('state', TechnicianRunState::AwaitingApproval->value)
+            ->with('ticket')
+            ->latest()
+            ->limit(20)
+            ->get();
+    }
+
     public function pendingDrafts(): Collection
     {
         return TechnicianRun::query()
             ->where('state', TechnicianRunState::AwaitingApproval->value)
+            // intake_route runs go to the dedicated Intake lane, not the approval queue.
+            // flag_attention runs are Flagged-state so excluded by the state filter above,
+            // but explicitly excluded here for clarity and future-safety.
+            ->whereNotIn('action_type', ['intake_route', 'flag_attention'])
             ->with(['ticket.client', 'ticket.contact'])
             ->get()
             ->sortBy(fn (TechnicianRun $run) => [
