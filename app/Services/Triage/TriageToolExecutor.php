@@ -291,7 +291,8 @@ class TriageToolExecutor
                 ->map(fn (Person $p): array => [
                     'contact' => ClientSituationContextBuilder::scrub($p->full_name, 120),
                     // DOMAIN ONLY — never the raw mailbox_forwarding_smtp (MED-1).
-                    'forward_domain' => mb_strtolower(substr(strrchr((string) $p->mailbox_forwarding_smtp, '@') ?: '', 1)),
+                    // Through scrub() for field-level parity with every other tool field.
+                    'forward_domain' => ClientSituationContextBuilder::scrub(mb_strtolower(substr(strrchr((string) $p->mailbox_forwarding_smtp, '@') ?: '', 1)), 120),
                 ])
                 ->values()
                 ->all();

@@ -38,7 +38,16 @@ class TriageToolDefinitions
         // no-op when wiki is off). The drill-downs come from agentReadTools(), which is
         // deliberately NOT part of psaTools()/getTools() — those feed the deterministic
         // triage loop and must never gain these read tools.
-        return array_merge($readPsa, self::agentReadTools(), self::wikiTools());
+        //
+        // DORMANCY: the situation drill-downs are OFFERED only when the situation-context
+        // flag is on. Off (the default) → they are never merged here, so the model is never
+        // offered them and cannot call them — true dormancy, matching the AgentConfig
+        // docblock contract that this flag gates the digest AND the tools.
+        return array_merge(
+            $readPsa,
+            \App\Support\AgentConfig::situationContextEnabled() ? self::agentReadTools() : [],
+            self::wikiTools(),
+        );
     }
 
     /**

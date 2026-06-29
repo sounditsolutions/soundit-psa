@@ -543,6 +543,9 @@ class ClientSituationToolsTest extends TestCase
 
     public function test_security_posture_is_agent_only_not_in_triage_loop(): void
     {
+        // The drill-downs are OFFERED only when the situation-context flag is on (Fix 1 gate).
+        \App\Models\Setting::setValue('agent_situation_context_enabled', '1');
+
         $readNames = array_column(\App\Services\Triage\TriageToolDefinitions::readTools(), 'name');
         $loopNames = array_column(\App\Services\Triage\TriageToolDefinitions::getTools(), 'name');
 
@@ -550,5 +553,36 @@ class ClientSituationToolsTest extends TestCase
             'The tool must be offered to the agent via readTools().');
         $this->assertNotContains('get_client_security_posture', $loopNames,
             'The tool must NEVER leak into the deterministic triage loop (getTools()/psaTools()).');
+    }
+
+    // ── 6. Dormancy gate: the 3 situation tools are OFFERED only when the flag is on ─
+
+    /**
+     * Fix 1 (the dormancy contract): readTools() — the OFFERING seam the agent loop reads
+     * (TechnicianAgent builds its tool list from it) — must EXCLUDE all three situation
+     * drill-downs when agent_situation_context_enabled is off (the default) and INCLUDE all
+     * three when it is on. This is true dormancy: flag off → the model is never offered the
+     * tools → it cannot call them. (The execute()-path tests above route through the
+     * READ_TOOLS allowlist, an unreachable defense-in-depth path when the tools aren't
+     * offered, so they are flag-independent and stay green either way.)
+     */
+    public function test_situation_tools_are_offered_only_when_the_flag_is_enabled(): void
+    {
+        $situationTools = ['list_client_tickets', 'list_client_calls', 'get_client_security_posture'];
+
+        // Flag OFF (default) → none of the three are offered.
+        $offNames = array_column(\App\Services\Triage\TriageToolDefinitions::readTools(), 'name');
+        foreach ($situationTools as $tool) {
+            $this->assertNotContains($tool, $offNames,
+                "Flag OFF: '{$tool}' must NOT be offered via readTools() (true dormancy).");
+        }
+
+        // Flag ON → all three are offered.
+        \App\Models\Setting::setValue('agent_situation_context_enabled', '1');
+        $onNames = array_column(\App\Services\Triage\TriageToolDefinitions::readTools(), 'name');
+        foreach ($situationTools as $tool) {
+            $this->assertContains($tool, $onNames,
+                "Flag ON: '{$tool}' must be offered via readTools().");
+        }
     }
 }

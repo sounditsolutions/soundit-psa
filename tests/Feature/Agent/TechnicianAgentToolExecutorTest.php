@@ -284,6 +284,9 @@ class TechnicianAgentToolExecutorTest extends TestCase
 
     public function test_read_tools_contains_exactly_the_eight_allowed_reads(): void
     {
+        // The three situation drill-downs are OFFERED only when the flag is on (Fix 1 gate).
+        \App\Models\Setting::setValue('agent_situation_context_enabled', '1');
+
         $tools = TriageToolDefinitions::readTools();
         $names = array_column($tools, 'name');
 
