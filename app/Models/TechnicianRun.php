@@ -117,6 +117,26 @@ class TechnicianRun extends Model
         return $resolved;
     }
 
+    /**
+     * Dismiss a held intake suggestion (operator has reviewed the calibration signal).
+     * CAS guard: only an intake_route run still in AwaitingApproval transitions → Done.
+     * A double-tap or a wrong-type call is a safe no-op. Returns true for the winner.
+     */
+    public function dismissIntake(): bool
+    {
+        $resolved = static::query()
+            ->whereKey($this->getKey())
+            ->where('action_type', 'intake_route')
+            ->where('state', TechnicianRunState::AwaitingApproval->value)
+            ->update(['state' => TechnicianRunState::Done->value]) === 1;
+
+        if ($resolved) {
+            $this->state = TechnicianRunState::Done;
+        }
+
+        return $resolved;
+    }
+
     public function markSuperseded(): void
     {
         $this->advanceTo(TechnicianRunState::Superseded);

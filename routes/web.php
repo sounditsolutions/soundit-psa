@@ -641,4 +641,6 @@ Route::middleware('auth')->group(function () {
     // so the bounds for this path are: this rate-limit + supersede-first (it replaces the pending
     // proposal rather than accumulating) + the agent's daily token budget.
     Route::post('/cockpit/runs/{run}/correct', [\App\Http\Controllers\Web\TechnicianCockpitController::class, 'correct'])->name('cockpit.correct')->middleware('throttle:20,1');
+    // psa-xcyo Task 3: intake calibration lane — dismiss a held intake suggestion (no merge).
+    Route::post('/cockpit/runs/{run}/intake-dismiss', [\App\Http\Controllers\Web\TechnicianCockpitController::class, 'intakeDismiss'])->name('cockpit.intake-dismiss')->middleware('throttle:60,1');
 });

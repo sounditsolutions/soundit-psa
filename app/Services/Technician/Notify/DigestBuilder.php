@@ -3,6 +3,7 @@
 namespace App\Services\Technician\Notify;
 
 use App\Enums\FlagAttentionCategory;
+use App\Enums\TechnicianRunState;
 use App\Enums\ToolingGapStatus;
 use App\Enums\WikiFactSource;
 use App\Enums\WikiFactStatus;
@@ -57,7 +58,27 @@ class DigestBuilder
             $escalationCount = $escalations->count();
         }
 
-        $isEmpty = $pending->isEmpty() && $needsYou === 0 && $done === 0 && $learnedCount === 0 && $toolingGapCount === 0 && $escalationCount === 0;
+        // Intake front-door counts — gated on intakeEnabled so digest is byte-identical when off.
+        $intakeEnabled = AgentConfig::intakeEnabled();
+        $intakeCount = 0;
+        $intakeAutoCount = 0;
+        $intakeSuggestedCount = 0;
+
+        if ($intakeEnabled) {
+            $intakeRuns = TechnicianRun::query()
+                ->where('action_type', 'intake_route')
+                ->where('created_at', '>=', now()->subDay())
+                ->get();
+            $intakeCount = $intakeRuns->count();
+            $intakeAutoCount = $intakeRuns->filter(
+                fn ($r) => $r->state === TechnicianRunState::Done && ($r->proposed_meta['attached'] ?? false) === true
+            )->count();
+            $intakeSuggestedCount = $intakeRuns->filter(
+                fn ($r) => $r->state === TechnicianRunState::AwaitingApproval
+            )->count();
+        }
+
+        $isEmpty = $pending->isEmpty() && $needsYou === 0 && $done === 0 && $learnedCount === 0 && $toolingGapCount === 0 && $escalationCount === 0 && $intakeCount === 0;
 
         $lines = [
             'AI Technician — daily summary',
@@ -71,6 +92,10 @@ class DigestBuilder
 
         if ($escalationEnabled) {
             $lines[] = "Escalations raised (last 24h): {$escalationCount}";
+        }
+
+        if ($intakeEnabled) {
+            $lines[] = "Intake routed (last 24h): {$intakeCount} ({$intakeAutoCount} auto-attached, {$intakeSuggestedCount} flagged for review)";
         }
 
         if ($pending->isNotEmpty()) {

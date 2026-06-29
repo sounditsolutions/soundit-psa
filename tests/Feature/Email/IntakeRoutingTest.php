@@ -260,6 +260,43 @@ class IntakeRoutingTest extends TestCase
             'The email must NOT be attached to the closed ticket');
     }
 
+    // ── Test 7: idempotency — second processInbound call is a safe no-op ────────
+
+    /**
+     * When processInbound is called twice on the same email (e.g. a poll race or
+     * retry), the `ticket_id !== null` guard at the top of processInbound returns
+     * early on the second call. Exactly ONE ticket and ONE intake_route record must
+     * exist — no second ticket, no second run, no unique-constraint violation.
+     */
+    public function test_process_inbound_idempotent_on_held_attach(): void
+    {
+        Setting::setValue('intake_enabled', '1');
+        // intake_attach_auto_threshold deliberately NOT set → null → held-first
+
+        $client = Client::factory()->create();
+        $existing = $this->openTicket($client, 'Printer offline');
+        $email = $this->makeInboundEmail($client);
+        $ticketsBefore = Ticket::count();
+
+        // Router must only be called ONCE — on the first processInbound.
+        // The second call returns early before the router is reached.
+        $this->mock(IntakeRouter::class)
+            ->shouldReceive('route')
+            ->once()
+            ->andReturn(new IntakeDecision('attach', $existing->id, 0.9, 'same printer issue'));
+
+        app(EmailService::class)->processInbound($email);
+        app(EmailService::class)->processInbound($email); // second call — must be a no-op
+
+        $this->assertSame($ticketsBefore + 1, Ticket::count(),
+            'Only one ticket should be created — second call is a no-op');
+        $this->assertSame(
+            1,
+            TechnicianRun::where('action_type', 'intake_route')->count(),
+            'Only one intake_route record should exist',
+        );
+    }
+
     // ── Test 6: fail-soft → autoCreate; no exception escapes ─────────────────
 
     /**

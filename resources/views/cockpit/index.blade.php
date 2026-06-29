@@ -136,6 +136,29 @@
     @endforeach
 @endif
 
+{{-- INTAKE — possible duplicate suggestions the AI held for operator calibration (psa-xcyo).
+     No merge action: merge is deferred. This lane is a calibration/observation surface only.
+     Only rendered when there are held suggestions so the page is byte-identical when quiet. --}}
+@if ($intake->isNotEmpty())
+    <h2 class="h6 text-muted text-uppercase mt-4 mb-2">Intake — possible duplicates the AI flagged (review)</h2>
+    @foreach ($intake as $run)
+        @php($meta = $run->proposed_meta ?? [])
+        <div class="card mb-2">
+            <div class="card-body">
+                <div>New ticket <strong>#{{ $run->ticket?->id }}</strong>
+                    looks like the same issue as open ticket <strong>#{{ $meta['suggested_ticket_id'] ?? '?' }}</strong>
+                    ({{ (int) round(($meta['confidence'] ?? 0) * 100) }}% confidence)</div>
+                <div class="text-muted small">{{ $run->proposed_content }}</div>
+                {{-- No merge action: merge is deferred. This is a calibration signal. --}}
+                <form method="POST" action="{{ route('cockpit.intake-dismiss', $run) }}" class="mt-2">
+                    @csrf
+                    <button class="btn btn-sm btn-outline-secondary">Dismiss</button>
+                </form>
+            </div>
+        </div>
+    @endforeach
+@endif
+
 {{-- NEEDS YOU --}}
 @if($needs->isNotEmpty())
     <h2 class="h6 text-muted text-uppercase mt-4 mb-2">Needs you — the assistant couldn't draft these</h2>
