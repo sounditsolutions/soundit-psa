@@ -11,6 +11,7 @@ use App\Models\Person;
 use App\Models\PhoneCall;
 use App\Models\Ticket;
 use App\Models\TicketNote;
+use App\Services\Agent\ProposeCloseTool;
 use App\Services\Cipp\CippClient;
 use App\Services\Level\LevelClient;
 use App\Services\Mesh\MeshClient;
@@ -63,6 +64,7 @@ class AssistantToolExecutor
             'list_my_tickets' => $this->listMyTickets($input),
             'list_open_tickets' => $this->listOpenTickets($input),
             'get_ticket_detail' => $this->getTicketDetail($input),
+            'propose_close' => $this->proposeClose($input),
             'get_ticket_calls' => $this->getTicketCalls($input),
             'get_queue_stats' => $this->getQueueStats(),
 
@@ -291,6 +293,49 @@ class AssistantToolExecutor
                     : ($c->transcription_summary ? mb_substr($c->transcription_summary, 0, 500) : null),
                 'has_transcript' => $c->isTranscribed() && ($c->cleaned_transcript || $c->transcription),
             ])->toArray(),
+        ];
+    }
+
+    private function proposeClose(array $input): array
+    {
+        $ticketId = $input['ticket_id'] ?? null;
+        if (! is_numeric($ticketId) || (int) $ticketId <= 0) {
+            return ['error' => 'ticket_id is required'];
+        }
+
+        $reason = trim((string) ($input['reason'] ?? $input['evidence'] ?? ''));
+        if ($reason === '') {
+            return ['error' => 'reason is required'];
+        }
+
+        $confidence = $input['confidence'] ?? null;
+        if (! is_numeric($confidence)) {
+            return ['error' => 'confidence must be a number between 0 and 1'];
+        }
+        $confidence = (float) $confidence;
+        if ($confidence < 0.0 || $confidence > 1.0) {
+            return ['error' => 'confidence must be a number between 0 and 1'];
+        }
+
+        $ticket = Ticket::with('client')->find((int) $ticketId);
+        if (! $ticket) {
+            return ['error' => 'Ticket not found'];
+        }
+
+        if (! $ticket->client_id || ! $ticket->client) {
+            return ['error' => 'Ticket has no valid client'];
+        }
+
+        $message = app(ProposeCloseTool::class)->executeHeld($ticket, [
+            'reason' => $reason,
+            'confidence' => $confidence,
+        ]);
+
+        return [
+            'success' => true,
+            'ticket_id' => $ticket->id,
+            'ticket_display_id' => $ticket->display_id,
+            'message' => $message,
         ];
     }
 

@@ -7,6 +7,7 @@ use App\Models\McpAuditLog;
 use App\Models\User;
 use App\Services\Assistant\AssistantToolDefinitions;
 use App\Services\Assistant\AssistantToolExecutor;
+use App\Support\McpStaffToken;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -136,6 +137,10 @@ class McpStaffController extends Controller
             $merged[$t['name']] = $t;
         }
         $allTools = array_values($merged);
+        $allTools = array_values(array_filter(
+            $allTools,
+            fn (array $tool): bool => $this->toolAllowed($request, (string) ($tool['name'] ?? '')),
+        ));
 
         // find_persons / find_assets accept an OPTIONAL client_id — they
         // cross-client search when omitted. The wiki tools accept an optional
@@ -189,6 +194,20 @@ class McpStaffController extends Controller
 
         if (! $name) {
             return $this->error($id, -32602, 'Missing tool name');
+        }
+
+        if (! $this->toolAllowed($request, (string) $name)) {
+            $message = "Tool not allowed for this token: {$name}";
+            $this->audit('tools/call', (string) $name, $arguments, 'error', $message, $start, $request);
+
+            return response()->json([
+                'jsonrpc' => '2.0',
+                'id' => $id,
+                'result' => [
+                    'content' => [['type' => 'text', 'text' => $message]],
+                    'isError' => true,
+                ],
+            ]);
         }
 
         // Extract client_id from the arguments — this is how client-scoped
@@ -268,11 +287,25 @@ class McpStaffController extends Controller
                 'status' => $status,
                 'error_message' => $error ? mb_substr($error, 0, 1000) : null,
                 'duration_ms' => (int) round((microtime(true) - $start) * 1000),
-                'actor_label' => 'teams-bot',
+                'actor_label' => $this->actorLabel($request),
                 'source_ip' => $request->ip(),
             ]);
         } catch (\Throwable $e) {
             Log::warning('[MCP/staff] Audit log write failed: '.$e->getMessage());
         }
+    }
+
+    private function toolAllowed(Request $request, string $toolName): bool
+    {
+        $token = $request->attributes->get('mcp_staff_token');
+
+        return ! $token instanceof McpStaffToken || $token->allows($toolName);
+    }
+
+    private function actorLabel(Request $request): string
+    {
+        $token = $request->attributes->get('mcp_staff_token');
+
+        return $token instanceof McpStaffToken ? $token->actorLabel() : 'teams-bot';
     }
 }

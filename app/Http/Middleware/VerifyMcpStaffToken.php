@@ -11,8 +11,7 @@ class VerifyMcpStaffToken
 {
     public function handle(Request $request, Closure $next): Response
     {
-        $expected = McpConfig::staffToken();
-        if (! $expected) {
+        if (! McpConfig::isStaffEnabled()) {
             return response()->json([
                 'jsonrpc' => '2.0',
                 'error' => ['code' => -32001, 'message' => 'Staff MCP server not configured'],
@@ -25,9 +24,12 @@ class VerifyMcpStaffToken
             return $this->unauthorized();
         }
 
-        if (! hash_equals($expected, trim($m[1]))) {
+        $token = McpConfig::resolveStaffToken(trim($m[1]));
+        if (! $token) {
             return $this->unauthorized();
         }
+
+        $request->attributes->set('mcp_staff_token', $token);
 
         return $next($request);
     }
