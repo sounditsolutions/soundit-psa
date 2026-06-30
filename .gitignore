@@ -44,3 +44,6 @@ Thumbs.db
 !.beads/config.yaml
 !.beads/metadata.json
 !.beads/identity.toml
+
+# Beads / Dolt files (added by bd init)
+.beads/proxieddb/
