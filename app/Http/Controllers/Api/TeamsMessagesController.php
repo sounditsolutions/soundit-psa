@@ -47,7 +47,13 @@ class TeamsMessagesController extends Controller
         $sender = $this->resolver->resolve($activity);
 
         if ($this->routedToChet($activity)) {
-            $this->enqueueOperatorMessage($sender, $activity);
+            if ($sender !== null) {
+                $this->enqueueOperatorMessage($sender, $activity);
+            } else {
+                Log::warning('[Teams Bot] Chet-routed turn from unresolved sender dropped', [
+                    'conversation_id' => $activity['conversation']['id'] ?? null,
+                ]);
+            }
 
             return response()->json(['status' => 'ok']);
         }
@@ -86,9 +92,9 @@ class TeamsMessagesController extends Controller
             && $conversationId === $chetConversationId;
     }
 
-    private function enqueueOperatorMessage(?ResolvedSender $sender, array $activity): void
+    private function enqueueOperatorMessage(ResolvedSender $sender, array $activity): void
     {
-        $senderUserId = $sender?->user->id;
+        $senderUserId = $sender->user->id;
 
         OperatorInbox::create([
             'conversation_id' => (string) ($activity['conversation']['id'] ?? ''),

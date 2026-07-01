@@ -1570,11 +1570,17 @@ use Illuminate\Support\Carbon;
         $sender = $this->resolver->resolve($activity);
 
         // ── GC Chet routing (reversible, per-conversation, DEFAULT OFF) ──────────
-        // When on for Chet's chat, the native teammate is muted here and the turn is
-        // captured for Chet instead. Off ⇒ this branch is never taken and behavior is
-        // byte-for-byte today's.
+        // When on for Chet's chat, the native teammate is muted here. Resolved
+        // staff turns are captured for Chet; unresolved turns are acked but dropped.
+        // Off ⇒ this branch is never taken and behavior is byte-for-byte today's.
         if ($this->routedToChet($activity)) {
-            $this->enqueueOperatorMessage($sender, $activity);
+            if ($sender !== null) {
+                $this->enqueueOperatorMessage($sender, $activity);
+            } else {
+                Log::warning('[Teams Bot] Chet-routed turn from unresolved sender dropped', [
+                    'conversation_id' => $activity['conversation']['id'] ?? null,
+                ]);
+            }
 
             return response()->json(['status' => 'ok']);
         }
@@ -1619,11 +1625,11 @@ use Illuminate\Support\Carbon;
     /**
      * Append the inbound turn to operator_inbox. authorized_steer is true ONLY for a
      * resolved sender on the server-side allowlist — everything else is chatter Chet
-     * may see but never obey. A null (unresolved) sender is still captured for context.
+     * may see but never obey. Unresolved senders are dropped before this point.
      */
-    private function enqueueOperatorMessage(?ResolvedSender $sender, array $activity): void
+    private function enqueueOperatorMessage(ResolvedSender $sender, array $activity): void
     {
-        $senderUserId = $sender?->user->id;
+        $senderUserId = $sender->user->id;
         $allowlist = TeamsBotConfig::operatorAllowlistUserIds();
 
         OperatorInbox::create([
@@ -1912,7 +1918,7 @@ These are the deliberate "turn it on" steps — do NOT run them in the build; th
 
 **Spec coverage (§ → tasks)**
 - §4.1 `find_staff`/`get_staff` → Task 1; `post_to_operator` → Task 3; `poll_operator_messages` → Task 6. All four registered at the boundary (not the shared assistant surface) and per-token scoped. ✓
-- §4.2 `operator_inbox` (all columns incl. nullable `sender_user_id`, `direct_mention`, `authorized_steer`, `delivered_at`) → Task 4; enqueue-all-turns-with-authorized_steer-only-for-allowlist → Task 5; drain-undelivered + re-deliver → Task 6. ✓
+- §4.2 `operator_inbox` (all columns incl. nullable `sender_user_id`, `direct_mention`, `authorized_steer`, `delivered_at`) → Task 4; enqueue resolved staff turns with `authorized_steer` only for allowlist and drop unresolved senders → Task 5; drain-undelivered + re-deliver → Task 6. ✓
 - §4.3 reversible per-conversation routing flag (default off), one bot identity routed by conversation, direct-mention from BF mention entities → Task 5 (`routedToChet` + `botMentioned` reuse). ✓
 - §5 token scoping (two least-privilege tokens; server-side authz; recipient server-side from category; allowlist server-side; output-scan + escape) → Task 1 (scope plumbing) + Task 3 (routing/scan/escape) + Task 5 (allowlist) + Enablement (two tokens). ✓
 - §6 dormancy (token scope + default-off flag; no live change) → Global Constraints + Task 5 regression + Enablement. ✓
@@ -1933,4 +1939,4 @@ These are the deliberate "turn it on" steps — do NOT run them in the build; th
 3. **Category enum = new `OperatorMessageCategory` {escalation, steer_request, daily_report, reply}** (not an extension of `FlagAttentionCategory`). `FlagAttentionCategory` encodes the PSA-native technician's judgment-vs-hands-on flag routing; the bridge categories encode the KIND of operator message. Recipient routing reuses the escalation role owners via `TechnicianConfig::operatorRecipientFor` (escalation/steer → judgment owner = paged; daily_report/reply → no targeted page). Unknown category → tool error (no silent default).
 4. **No `chet_service_url` config.** The BF `serviceUrl` is a tenant/region endpoint (not chat-specific), so `post_to_operator` reuses `teams_escalation_service_url` for Chet's chat — keeping the contract's config surface to the three named keys.
 5. **Bridge tools wired at the MCP boundary, not in `AssistantToolDefinitions`.** Discovered from source that the shared assistant surface also feeds `AssistantService` (in-app assistant) and `TeamsReadOnlyToolset` (PSA-native teammate); registering there would leak `post_to_operator`/`poll_operator_messages` into those surfaces. The dedicated `OperatorBridgeToolExecutor` keeps them isolated while still inheriting the boundary's token scope + audit.
-6. **`operator_inbox` captures ALL turns in Chet's chat (chatter included), not only allowlisted ones** — matching §4.2 ("all messages route here, giving Chet full conversational context") and the contract's per-message `authorized_steer` flag; the allowlist gates only `authorized_steer`, never capture. An unresolved sender is still captured (`sender_user_id=null`, `authorized_steer=false`).
+6. **`operator_inbox` captures resolved staff turns in Chet's chat (chatter included), not only allowlisted ones** — matching §4.2's goal of giving Chet conversational context while preserving the resolver's hard boundary. The allowlist gates only `authorized_steer`, never capture; unresolved, deactivated, and cross-tenant senders are acked but not enqueued because a null resolver result means the PSA refused to vouch for the sender below Chet's prompt stream.

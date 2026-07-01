@@ -145,6 +145,19 @@ class ChetRoutingTest extends TestCase
         $this->assertFalse($row->direct_mention);
     }
 
+    public function test_unresolved_sender_in_chet_chat_is_acked_but_not_enqueued(): void
+    {
+        Setting::setValue('teams_bot_enabled', '1');
+        Setting::setValue('teams_chet_routing_enabled', '1');
+        Setting::setValue('teams_chet_conversation_id', 'a:conv-1');
+
+        $this->mock(TeamsReplyService::class, fn (MockInterface $m) => $m->shouldReceive('reply')->never());
+
+        $this->sendActivity($this->activity('aad-unknown', mention: true))->assertOk();
+
+        $this->assertSame(0, OperatorInbox::count());
+    }
+
     public function test_routed_message_redacts_credentials_before_inbox_storage(): void
     {
         Setting::setValue('teams_bot_enabled', '1');

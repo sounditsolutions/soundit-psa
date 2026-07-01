@@ -152,9 +152,11 @@ inject).
 When `TeamsMessagesController` resolves an inbound message for **Chet's conversation** and the
 routing flag is on, append a row: `{conversation_id, sender_user_id, text, ts, direct_mention,
 authorized_steer, delivered_at:null}`. **`authorized_steer` is true only for allowlisted senders
-(Charlie/Justin)** — everything else is chatter Chet can *see* but must never treat as an
-authorized steer. The native teammate stays uniformly muted in Chet's chat when routing is on
-(§4.3), so *all* messages route here, giving Chet full conversational context.
+(Charlie/Justin)** — other resolved staff chatter is context Chet can *see* but must never treat
+as an authorized steer. Unresolved, deactivated, or cross-tenant senders are acked to Teams but
+not enqueued; the resolver's null result remains a hard "do not act" boundary below Chet's prompt
+stream. The native teammate stays uniformly muted in Chet's chat when routing is on (§4.3), so all
+resolved messages route here, giving Chet full conversational context from vouched staff.
 `poll_operator_messages` reads undelivered rows and marks them delivered on ack. Re-delivering
 unacked rows is what makes a dropped wake self-heal.
 
