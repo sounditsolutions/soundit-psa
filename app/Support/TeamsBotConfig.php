@@ -149,4 +149,31 @@ class TeamsBotConfig
 
         return is_string($v) && trim($v) !== '' ? trim($v) : null;
     }
+
+    // ── GC Chet Teams bridge ────────────────────────────────────────────────
+
+    /** The Teams conversation id GC Chet owns. Null when unset. */
+    public static function chetConversationId(): ?string
+    {
+        $v = Setting::getValue('teams_chet_conversation_id');
+
+        return is_string($v) && trim($v) !== '' ? trim($v) : null;
+    }
+
+    /** Whether Chet owns its configured Teams conversation. Default OFF. */
+    public static function chetRoutingEnabled(): bool
+    {
+        return (bool) Setting::getValue('teams_chet_routing_enabled');
+    }
+
+    /** @return array<int, int> */
+    public static function operatorAllowlistUserIds(): array
+    {
+        $raw = Setting::getValue('teams_operator_allowlist_user_ids');
+        $list = is_string($raw) && $raw !== '' ? json_decode($raw, true) : null;
+
+        return is_array($list)
+            ? array_values(array_map('intval', array_filter($list, 'is_numeric')))
+            : [];
+    }
 }
