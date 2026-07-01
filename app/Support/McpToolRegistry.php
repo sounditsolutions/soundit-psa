@@ -3,6 +3,7 @@
 namespace App\Support;
 
 use App\Services\Assistant\AssistantToolDefinitions;
+use App\Services\Chet\ChetDataSurfaceTools;
 use App\Services\Chet\OperatorBridgeTools;
 use App\Services\Triage\TriageToolDefinitions;
 
@@ -16,6 +17,7 @@ class McpToolRegistry
         $general = self::shape(array_merge(
             AssistantToolDefinitions::getTools(hasClient: false),
             [self::proposeCloseTool()],
+            ChetDataSurfaceTools::registryGeneralTools(),
         ));
         $generalNames = array_flip(array_column($general, 'name'));
 
@@ -24,6 +26,7 @@ class McpToolRegistry
             TriageToolDefinitions::levelTools(),
             TriageToolDefinitions::meshTools(),
             TriageToolDefinitions::cippTools(),
+            ChetDataSurfaceTools::registryIntegrationTools(),
         ));
         $integrationNames = array_flip(array_column($integration, 'name'));
 

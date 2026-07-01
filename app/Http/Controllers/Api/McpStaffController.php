@@ -8,6 +8,8 @@ use App\Models\Setting;
 use App\Models\User;
 use App\Services\Assistant\AssistantToolDefinitions;
 use App\Services\Assistant\AssistantToolExecutor;
+use App\Services\Chet\ChetDataSurfaceToolExecutor;
+use App\Services\Chet\ChetDataSurfaceTools;
 use App\Services\Chet\OperatorBridgeTextSanitizer;
 use App\Services\Chet\OperatorBridgeToolExecutor;
 use App\Services\Chet\OperatorBridgeTools;
@@ -44,6 +46,7 @@ class McpStaffController extends Controller
         'propose_close',
         'send_reply',
         'close_ticket',
+        'tactical_run_diagnostic',
     ];
 
     private const NOTE_BODY_AUDIT_PLACEHOLDER = '[note body withheld]';
@@ -144,11 +147,15 @@ class McpStaffController extends Controller
         $generalTools = array_merge(
             AssistantToolDefinitions::getTools(hasClient: false),
             [McpToolRegistry::proposeCloseTool()],
+            ChetDataSurfaceTools::generalTools(),
             OperatorBridgeTools::definitions(),
         );
         $generalNames = array_flip(array_column($generalTools, 'name'));
 
-        $clientScopedTools = AssistantToolDefinitions::getTools(hasClient: true);
+        $clientScopedTools = array_merge(
+            AssistantToolDefinitions::getTools(hasClient: true),
+            ChetDataSurfaceTools::clientTools(),
+        );
 
         // Merge by tool name (general tools win on duplicate names).
         $merged = [];
@@ -253,9 +260,25 @@ class McpStaffController extends Controller
             ]);
         }
 
+        if (ChetDataSurfaceTools::requiresClient((string) $name) && $clientId === null) {
+            $message = "client_id is required for {$name}.";
+            $this->audit('tools/call', (string) $name, $arguments, 'error', $message, $start, $request);
+
+            return response()->json([
+                'jsonrpc' => '2.0',
+                'id' => $id,
+                'result' => [
+                    'content' => [['type' => 'text', 'text' => $message]],
+                    'isError' => true,
+                ],
+            ]);
+        }
+
         try {
             if (OperatorBridgeTools::handles((string) $name)) {
                 $result = app(OperatorBridgeToolExecutor::class)->execute((string) $name, $arguments);
+            } elseif (ChetDataSurfaceTools::handles((string) $name)) {
+                $result = app(ChetDataSurfaceToolExecutor::class)->execute((string) $name, $arguments, $clientId);
             } else {
                 $userId = $this->userIdForToolCall($request, (string) $name);
                 $executor = new AssistantToolExecutor(ticket: null, clientId: $clientId, userId: $userId);
@@ -388,7 +411,7 @@ class McpStaffController extends Controller
             return false;
         }
 
-        if (OperatorBridgeTools::handles($toolName)) {
+        if (OperatorBridgeTools::handles($toolName) || ChetDataSurfaceTools::handles($toolName)) {
             return $token->allowedTools !== null
                 && $token->allows($toolName);
         }

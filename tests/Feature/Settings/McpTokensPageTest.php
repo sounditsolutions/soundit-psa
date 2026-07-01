@@ -5,6 +5,9 @@ namespace Tests\Feature\Settings;
 use App\Models\McpAuditLog;
 use App\Models\McpToken;
 use App\Models\User;
+use App\Services\Chet\TeamsChatReadToolset;
+use App\Services\Tactical\TacticalReadOnlyToolset;
+use App\Services\Triage\TriageToolDefinitions;
 use App\Support\McpConfig;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
@@ -37,6 +40,32 @@ class McpTokensPageTest extends TestCase
             ->assertSee('chet')
             ->assertSee('post_to_operator')
             ->assertSee('list_open_tickets');
+    }
+
+    public function test_data_surface_read_tools_are_grantable_from_registry_ui(): void
+    {
+        $tools = array_values(array_unique(array_merge(
+            array_column(TacticalReadOnlyToolset::definitions(), 'name'),
+            array_column(TeamsChatReadToolset::definitions(), 'name'),
+            array_column(TriageToolDefinitions::cippTools(), 'name'),
+        )));
+
+        $page = $this->actingAs($this->user)
+            ->get(route('settings.mcp-tokens.index'));
+
+        $page->assertOk();
+        foreach ($tools as $tool) {
+            $page->assertSee('value="'.$tool.'"', false);
+        }
+
+        $this->actingAs($this->user)
+            ->post(route('settings.mcp-tokens.store'), [
+                'label' => 'chet-data',
+                'tools' => $tools,
+            ])
+            ->assertOk();
+
+        $this->assertSame($tools, McpToken::where('label', 'chet-data')->firstOrFail()->tools);
     }
 
     public function test_store_mints_a_scoped_token_shown_once_and_hashed_at_rest(): void
