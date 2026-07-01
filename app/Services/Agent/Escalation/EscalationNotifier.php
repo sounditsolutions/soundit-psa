@@ -7,11 +7,7 @@ use App\Models\AssistantConversation;
 use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Models\User;
-use App\Services\EmailService;
-use App\Services\Teams\TeamsBotClient;
-use App\Services\Technician\Notify\TeamsNotifier;
 use App\Services\Technician\Notify\TeamsText;
-use App\Services\Wiki\Mining\WikiRedactor;
 use App\Support\TeamsBotConfig;
 use App\Support\TechnicianConfig;
 use Illuminate\Support\Facades\Log;
@@ -57,10 +53,7 @@ use Illuminate\Support\Facades\Log;
 class EscalationNotifier
 {
     public function __construct(
-        private readonly TeamsBotClient $bot,
-        private readonly TeamsNotifier $teamsWebhook,
-        private readonly EmailService $email,
-        private readonly WikiRedactor $redactor,
+        private readonly OperatorDelivery $delivery,
     ) {}
 
     /**
@@ -121,24 +114,7 @@ class EscalationNotifier
         int $step = 0,
     ): void {
         // ── 1. Cap → scan → Teams-escape the blocker ────────────────────────────
-        // Cap FIRST so WikiRedactor::scan never sees an unbounded string. A
-        // pathological-length blocker can exhaust the preg backtrack budget,
-        // causing scan() to return false-empty (no violation found) and evading
-        // detection. Capping to 500 chars before scanning closes that gap.
-        $blocker = mb_substr($blocker, 0, 500);
-        if ($this->redactor->scan($blocker) !== []) {
-            Log::warning('[EscalationNotifier] Blocker text failed output scan — detail withheld', [
-                'ticket_id' => $ticket->id,
-            ]);
-            $blocker = '[escalation detail withheld — open the ticket]';
-        }
-        // Defang markdown/HTML control characters in the (capped, possibly-placeholder)
-        // blocker before it reaches any sink. A markdown link [x](http://evil) or an
-        // <at>-tag in an agent-authored blocker would otherwise render as a live link
-        // or a real mention in the operator's Teams chat. The trusted @mention prefix
-        // built from User->name below is NOT passed through this — only attacker-
-        // reachable fields (blocker, subject, client name) are escaped.
-        $blocker = TeamsText::escape($blocker);
+        $blocker = $this->delivery->sanitize($blocker, '[escalation detail withheld - open the ticket]');
 
         // ── 2. Build the message ─────────────────────────────────────────────────
         // client / subject are UNTRUSTED (operator-set, client-typed) — escape
@@ -156,70 +132,11 @@ class EscalationNotifier
         // ── 3. Deliver to the Day-to-Day chat ────────────────────────────────────
         $convId = TeamsBotConfig::escalationConversationId();
         $serviceUrl = TeamsBotConfig::escalationServiceUrl();
+        $result = $this->delivery->send($recipient, $convId, $serviceUrl, $subject, $body);
 
-        if (TeamsBotConfig::enabled() && $convId !== null && $serviceUrl !== null) {
-            // Bot proactive-post path.
-            try {
-                $mentions = [];
-                $postBody = $body;
-
-                // Best-effort @mention: look up the conversation-scoped member id.
-                if ($recipient?->microsoft_id !== null) {
-                    $member = $this->bot->getConversationMember($serviceUrl, $convId, $recipient->microsoft_id);
-                    if ($member !== null && isset($member['id'])) {
-                        $mentions = [['mentionId' => $member['id'], 'name' => $recipient->name]];
-                        $postBody = "<at>{$recipient->name}</at> ".$body;
-                    }
-                }
-
-                $posted = $this->bot->sendMessageWithMentions($serviceUrl, $convId, $postBody, $mentions);
-
-                // Record the escalation in the teammate's own conversation transcript so the bot
-                // remembers having posted it and can engage when a human replies in-chat (psa-f7ft).
-                // The escalation chat IS the teammate conversation (same conversationId), so this
-                // lands in the row TeamsReplyService reads. Only the initial post (step 0) — a
-                // Task-4 sweep re-ping re-posts the same message and must not duplicate the entry.
-                if ($posted && $step === 0) {
-                    $this->recordInTeammateTranscript($convId, $body);
-                }
-            } catch (\Throwable $e) {
-                Log::warning('[EscalationNotifier] Bot send failed — escalation not lost; email follows', [
-                    'ticket_id' => $ticket->id,
-                    'error' => $e->getMessage(),
-                ]);
-            }
-        } else {
-            // Webhook fallback: bot chat ref not fully configured.
-            try {
-                $this->teamsWebhook->post($subject, $body);
-            } catch (\Throwable $e) {
-                Log::warning('[EscalationNotifier] Teams webhook post failed', [
-                    'ticket_id' => $ticket->id,
-                    'error' => $e->getMessage(),
-                ]);
-            }
-        }
-
-        // ── 4. Email the recipient (always, secondary channel) ───────────────────
-        if ($recipient?->email !== null && $recipient->email !== '') {
-            try {
-                $this->email->sendNew($recipient->email, $subject, $body, null, null, null);
-            } catch (\Throwable $e) {
-                Log::warning('[EscalationNotifier] Email delivery failed', [
-                    'ticket_id' => $ticket->id,
-                    'user_id' => $recipient->id,
-                    'error' => $e->getMessage(),
-                ]);
-            }
-        } elseif ($recipient !== null) {
-            Log::warning('[EscalationNotifier] Routed user has no email address — email skipped', [
-                'ticket_id' => $ticket->id,
-                'user_id' => $recipient->id,
-            ]);
-        } else {
-            Log::warning('[EscalationNotifier] No recipient resolved — no email sent', [
-                'ticket_id' => $ticket->id,
-            ]);
+        // Record only the initial successful bot post in the teammate transcript.
+        if ($result->postedToChat && $step === 0 && $convId !== null) {
+            $this->recordInTeammateTranscript($convId, $body);
         }
 
         // ── 5. Record escalation state on the run (merge — no migration) ─────────
