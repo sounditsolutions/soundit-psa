@@ -63,6 +63,35 @@ class OperatorDeliveryTest extends TestCase
         $this->assertTrue($result->postedToChat);
     }
 
+    public function test_send_escapes_recipient_name_inside_the_trusted_mention_wrapper(): void
+    {
+        Setting::setValue('teams_bot_enabled', '1');
+        $charlie = User::factory()->create([
+            'name' => 'Charlie</at> [click](http://evil.example)',
+            'email' => 'charlie@soundit.co',
+            'microsoft_id' => 'oid-charlie',
+        ]);
+
+        $this->mock(TeamsBotClient::class, function (MockInterface $m) {
+            $m->shouldReceive('getConversationMember')->once()
+                ->with('https://smba.trafficmanager.net/amer/', 'conv-x', 'oid-charlie')
+                ->andReturn(['id' => '29:abc']);
+            $m->shouldReceive('sendMessageWithMentions')->once()
+                ->with(
+                    'https://smba.trafficmanager.net/amer/',
+                    'conv-x',
+                    Mockery::on(fn ($t) => str_contains($t, '<at>Charlie /at click http://evil.example</at>')
+                        && ! str_contains($t, '</at> [click](http://evil.example)')),
+                    [['mentionId' => '29:abc', 'name' => 'Charlie /at click http://evil.example']],
+                )
+                ->andReturnTrue();
+        });
+        $this->mock(TeamsNotifier::class, fn (MockInterface $m) => $m->shouldReceive('post')->never());
+        $this->mock(EmailService::class, fn (MockInterface $m) => $m->shouldReceive('sendNew')->once()->andReturnNull());
+
+        app(OperatorDelivery::class)->send($charlie, 'conv-x', 'https://smba.trafficmanager.net/amer/', 'Subject', 'Body');
+    }
+
     public function test_send_falls_back_to_webhook_when_no_conversation_is_configured(): void
     {
         Setting::setValue('teams_bot_enabled', '1');

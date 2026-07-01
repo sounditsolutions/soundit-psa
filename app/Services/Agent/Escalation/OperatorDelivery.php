@@ -51,8 +51,10 @@ class OperatorDelivery
                 if ($recipient?->microsoft_id !== null) {
                     $member = $this->bot->getConversationMember($serviceUrl, $conversationId, $recipient->microsoft_id);
                     if ($member !== null && isset($member['id'])) {
-                        $mentions = [['mentionId' => $member['id'], 'name' => $recipient->name]];
-                        $postBody = "<at>{$recipient->name}</at> ".$body;
+                        $mentionName = TeamsText::escape($recipient->name);
+                        $mentionName = $mentionName !== '' ? $mentionName : 'operator';
+                        $mentions = [['mentionId' => $member['id'], 'name' => $mentionName]];
+                        $postBody = "<at>{$mentionName}</at> ".$body;
                     }
                 }
 
