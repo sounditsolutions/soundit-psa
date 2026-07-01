@@ -64,6 +64,17 @@ class OperatorBridgeTools
                     'required' => ['category', 'message'],
                 ],
             ],
+            [
+                'name' => 'poll_operator_messages',
+                'description' => 'Drain inbound operator messages for the configured Chet Teams chat. Pass cursor equal to the highest message id whose processing was confirmed; the server acks rows up to that cursor and returns the next still-undelivered batch plus next_cursor.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'cursor' => ['type' => 'string', 'description' => 'Last confirmed message id. Omit or leave empty to re-pull the current undelivered batch.'],
+                    ],
+                    'required' => [],
+                ],
+            ],
         ];
     }
 }

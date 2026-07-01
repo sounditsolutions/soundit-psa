@@ -3,6 +3,7 @@
 namespace App\Services\Chet;
 
 use App\Enums\OperatorMessageCategory;
+use App\Models\OperatorInbox;
 use App\Models\Ticket;
 use App\Models\User;
 use App\Services\Agent\Escalation\OperatorDelivery;
@@ -23,6 +24,7 @@ class OperatorBridgeToolExecutor
             'find_staff' => $this->findStaff($input),
             'get_staff' => $this->getStaff($input),
             'post_to_operator' => $this->postToOperator($input),
+            'poll_operator_messages' => $this->pollOperatorMessages($input),
             default => ['error' => "Unknown tool: {$name}"],
         };
     }
@@ -117,6 +119,48 @@ class OperatorBridgeToolExecutor
         return [
             'posted' => $result->posted,
             'remote_message_id' => $result->remoteMessageId,
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private function pollOperatorMessages(array $input): array
+    {
+        $conversationId = TeamsBotConfig::chetConversationId();
+        $cursor = isset($input['cursor']) && is_numeric($input['cursor']) ? (int) $input['cursor'] : 0;
+
+        if ($conversationId === null) {
+            return ['messages' => [], 'next_cursor' => (string) $cursor];
+        }
+
+        if ($cursor > 0) {
+            OperatorInbox::query()
+                ->where('conversation_id', $conversationId)
+                ->where('id', '<=', $cursor)
+                ->whereNull('delivered_at')
+                ->update(['delivered_at' => now()]);
+        }
+
+        $rows = OperatorInbox::with('sender:id,name')
+            ->where('conversation_id', $conversationId)
+            ->whereNull('delivered_at')
+            ->orderBy('id')
+            ->limit(50)
+            ->get();
+
+        $messages = $rows->map(fn (OperatorInbox $row): array => [
+            'id' => $row->id,
+            'conversation_id' => $row->conversation_id,
+            'sender_user_id' => $row->sender_user_id,
+            'sender_name' => $row->sender?->name,
+            'text' => $row->text,
+            'ts' => $row->ts?->toIso8601String(),
+            'direct_mention' => (bool) $row->direct_mention,
+            'authorized_steer' => (bool) $row->authorized_steer,
+        ])->all();
+
+        return [
+            'messages' => $messages,
+            'next_cursor' => $rows->isNotEmpty() ? (string) $rows->last()->id : (string) $cursor,
         ];
     }
 
