@@ -12,8 +12,8 @@ use App\Services\Assistant\AssistantToolExecutor;
  */
 class TeamsReadOnlyToolset
 {
-    /** The only two mutating tools in the whole assistant surface. */
-    public const MUTATING = ['create_ticket', 'add_ticket_note'];
+    /** Tools that Teams staff chat must never expose or execute. */
+    public const MUTATING = ['create_ticket', 'add_ticket_note', 'propose_close'];
 
     /** What the executor returns if a mutating tool is somehow requested. */
     private const REFUSAL = ['error' => 'That tool is not available in chat (read-only).'];
@@ -23,7 +23,7 @@ class TeamsReadOnlyToolset
      * tools (getTools(false): list_open_tickets, list_my_tickets, search_all_tickets,
      * get_queue_stats …) MERGED with the PSA entity lookups + integration reads
      * (getTools(true): find_persons, find_assets, get_*, ninja/cipp …), deduplicated
-     * by name, with the two mutators removed. This is the surface the teammate needs
+     * by name, with unavailable action tools removed. This is the surface the teammate needs
      * to answer both "what's open?" and "find this person". Client-scoped tools return
      * a graceful "no client context" when used without one.
      *

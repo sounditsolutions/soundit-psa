@@ -8,6 +8,7 @@ use App\Models\Ticket;
 use App\Models\User;
 use App\Services\Agent\Escalation\OperatorDelivery;
 use App\Services\Technician\Notify\TeamsText;
+use App\Services\Technician\PromptFence;
 use App\Support\TeamsBotConfig;
 use App\Support\TechnicianConfig;
 
@@ -16,6 +17,7 @@ class OperatorBridgeToolExecutor
     public function __construct(
         private readonly OperatorDelivery $delivery,
         private readonly OperatorBridgeTextSanitizer $textSanitizer,
+        private readonly PromptFence $promptFence,
     ) {}
 
     /** @return array<string, mixed> */
@@ -153,7 +155,10 @@ class OperatorBridgeToolExecutor
             'conversation_id' => $row->conversation_id,
             'sender_user_id' => $row->sender_user_id,
             'sender_name' => $row->sender?->name,
-            'text' => $this->textSanitizer->sanitizeForPrompt($row->text),
+            'text' => $this->promptFence->fence(
+                'operator message',
+                $this->textSanitizer->sanitizeForPrompt($row->text),
+            ),
             'ts' => $row->ts?->toIso8601String(),
             'direct_mention' => (bool) $row->direct_mention,
             'authorized_steer' => (bool) $row->authorized_steer,

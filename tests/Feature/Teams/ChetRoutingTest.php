@@ -63,7 +63,7 @@ class ChetRoutingTest extends TestCase
         ], $this->privatePem, 'RS256', 'k1');
     }
 
-    private function activity(string $aadObjectId, bool $mention): array
+    private function activity(string $aadObjectId, bool $mention, ?string $serviceUrl = null): array
     {
         $activity = [
             'type' => 'message',
@@ -72,7 +72,7 @@ class ChetRoutingTest extends TestCase
             'channelData' => ['tenant' => ['id' => $this->tenantId]],
             'from' => ['aadObjectId' => $aadObjectId, 'name' => 'Charlie'],
             'conversation' => ['id' => 'a:conv-1'],
-            'serviceUrl' => $this->serviceUrl,
+            'serviceUrl' => $serviceUrl ?? $this->serviceUrl,
             'timestamp' => '2026-07-01T10:00:00Z',
         ];
 
@@ -154,6 +154,21 @@ class ChetRoutingTest extends TestCase
         $this->mock(TeamsReplyService::class, fn (MockInterface $m) => $m->shouldReceive('reply')->never());
 
         $this->sendActivity($this->activity('aad-unknown', mention: true))->assertOk();
+
+        $this->assertSame(0, OperatorInbox::count());
+    }
+
+    public function test_routing_requires_service_url_pin_before_enqueuing(): void
+    {
+        Setting::setValue('teams_bot_enabled', '1');
+        Setting::setValue('teams_chet_routing_enabled', '1');
+        Setting::setValue('teams_chet_conversation_id', 'a:conv-1');
+        User::factory()->create(['microsoft_id' => 'aad-charlie', 'is_active' => true]);
+
+        $this->mock(TeamsReplyService::class, fn (MockInterface $m) => $m->shouldReceive('reply')->never());
+
+        $activity = $this->activity('aad-charlie', mention: true, serviceUrl: 'https://smba.trafficmanager.net/emea/');
+        $this->sendActivity($activity)->assertOk();
 
         $this->assertSame(0, OperatorInbox::count());
     }

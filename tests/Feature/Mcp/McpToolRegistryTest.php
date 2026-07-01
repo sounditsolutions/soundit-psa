@@ -19,6 +19,7 @@ class McpToolRegistryTest extends TestCase
         $names = fn (string $group): array => array_column($groups[$group]['tools'], 'name');
 
         $this->assertContains('list_open_tickets', $names('general'));
+        $this->assertContains('propose_close', $names('general'));
         $this->assertContains('create_ticket', $names('client'));
         $this->assertContains('ninja_get_device', $names('integration'));
         $this->assertContains('post_to_operator', $names('bridge'));
@@ -47,6 +48,7 @@ class McpToolRegistryTest extends TestCase
         $all = McpToolRegistry::allToolNames();
 
         $this->assertContains('list_open_tickets', $all);
+        $this->assertContains('propose_close', $all);
         $this->assertContains('create_ticket', $all);
         $this->assertContains('post_to_operator', $all);
         $this->assertSame(array_values(array_unique($all)), $all, 'no duplicates');

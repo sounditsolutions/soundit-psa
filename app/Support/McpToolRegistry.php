@@ -13,7 +13,10 @@ class McpToolRegistry
      */
     public static function groups(): array
     {
-        $general = self::shape(AssistantToolDefinitions::getTools(hasClient: false));
+        $general = self::shape(array_merge(
+            AssistantToolDefinitions::getTools(hasClient: false),
+            [self::proposeCloseTool()],
+        ));
         $generalNames = array_flip(array_column($general, 'name'));
 
         $integration = self::shape(array_merge(
@@ -52,6 +55,33 @@ class McpToolRegistry
         }
 
         return array_keys($names);
+    }
+
+    /** @return array<string, mixed> */
+    public static function proposeCloseTool(): array
+    {
+        return [
+            'name' => 'propose_close',
+            'description' => 'Submit a held AI Technician close proposal for a ticket. This never closes the ticket directly; it records a proposal in the Technician cockpit for human approval. Provide concrete ticket-specific evidence in the reason.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'ticket_id' => [
+                        'type' => 'integer',
+                        'description' => 'The ticket ID to propose closing. The server derives and re-validates the ticket client from this ID.',
+                    ],
+                    'reason' => [
+                        'type' => 'string',
+                        'description' => 'Specific evidence for why a human should approve closing this ticket.',
+                    ],
+                    'confidence' => [
+                        'type' => 'number',
+                        'description' => 'Confidence from 0 to 1 that closing is the right action. MCP proposals are always held for human approval regardless of this value.',
+                    ],
+                ],
+                'required' => ['ticket_id', 'reason', 'confidence'],
+            ],
+        ];
     }
 
     /**

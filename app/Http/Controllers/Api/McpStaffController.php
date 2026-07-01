@@ -12,6 +12,7 @@ use App\Services\Chet\OperatorBridgeToolExecutor;
 use App\Services\Chet\OperatorBridgeTools;
 use App\Services\Tactical\Actions\ActionRedactor;
 use App\Support\McpStaffToken;
+use App\Support\McpToolRegistry;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -132,6 +133,7 @@ class McpStaffController extends Controller
         // to know about MCP.
         $generalTools = array_merge(
             AssistantToolDefinitions::getTools(hasClient: false),
+            [McpToolRegistry::proposeCloseTool()],
             OperatorBridgeTools::definitions(),
         );
         $generalNames = array_flip(array_column($generalTools, 'name'));

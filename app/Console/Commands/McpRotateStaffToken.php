@@ -20,6 +20,7 @@ class McpRotateStaffToken extends Command
         $tools = $this->allowedTools();
         $scoped = $tools !== [];
         $label = $this->option('label') ?: null;
+        $effectiveScopedLabel = $label ?: 'scoped';
 
         $existing = McpConfig::staffToken();
         if (! $scoped && $existing && ! $this->option('force')) {
@@ -29,8 +30,8 @@ class McpRotateStaffToken extends Command
             }
         }
 
-        if ($scoped && $label && McpConfig::hasScopedStaffTokenLabel($label) && ! $this->option('force')) {
-            $this->warn("A scoped staff MCP token labeled [{$label}] is set. Rotating will invalidate it.");
+        if ($scoped && McpConfig::hasScopedStaffTokenLabel($effectiveScopedLabel) && ! $this->option('force')) {
+            $this->warn("A scoped staff MCP token labeled [{$effectiveScopedLabel}] is set. Rotating will invalidate it.");
             if (! $this->confirm('Rotate this scoped staff MCP token?', false)) {
                 return self::SUCCESS;
             }
@@ -49,7 +50,7 @@ class McpRotateStaffToken extends Command
         $this->line("  Token: {$token}");
         if ($scoped) {
             $this->line('  Tools: '.implode(', ', $tools));
-            $this->line('  Label: '.($label ?: 'scoped'));
+            $this->line('  Label: '.$effectiveScopedLabel);
         }
         $this->newLine();
         $this->warn('This token will not be shown again. Capture it now.');
