@@ -15,15 +15,7 @@ class McpTokensController extends Controller
 {
     public function index()
     {
-        return view('settings.mcp-tokens.index', [
-            'tokens' => McpToken::query()
-                ->orderByRaw('(revoked_at IS NULL) DESC')
-                ->orderByDesc('created_at')
-                ->get(),
-            'groups' => McpToolRegistry::groups(),
-            'newToken' => session('mcp_new_token'),
-            'newTokenLabel' => session('mcp_new_token_label'),
-        ]);
+        return $this->indexView();
     }
 
     public function store(Request $request)
@@ -49,16 +41,18 @@ class McpTokensController extends Controller
             ['tools' => $tools],
         );
 
-        return redirect()->route('settings.mcp-tokens.index')
-            ->with('mcp_new_token', $token)
-            ->with('mcp_new_token_label', $validated['label'])
-            ->with('success', 'Token "'.$validated['label'].'" created. Copy it now - it will not be shown again.');
+        return $this->indexView($token, $validated['label']);
     }
 
     public function revoke(Request $request, McpToken $token)
     {
         $label = $token->label;
         $tools = $token->tools;
+
+        if ($token->isRevoked()) {
+            return redirect()->route('settings.mcp-tokens.index')
+                ->with('success', 'Token "'.$label.'" is already revoked.');
+        }
 
         $token->forceFill(['revoked_at' => now()])->save();
 
@@ -86,5 +80,18 @@ class McpTokensController extends Controller
         } catch (\Throwable $e) {
             Log::warning('[Settings/McpTokens] Audit write failed: '.$e->getMessage());
         }
+    }
+
+    private function indexView(?string $newToken = null, ?string $newTokenLabel = null)
+    {
+        return view('settings.mcp-tokens.index', [
+            'tokens' => McpToken::query()
+                ->orderByRaw('(revoked_at IS NULL) DESC')
+                ->orderByDesc('created_at')
+                ->get(),
+            'groups' => McpToolRegistry::groups(),
+            'newToken' => $newToken,
+            'newTokenLabel' => $newTokenLabel,
+        ]);
     }
 }

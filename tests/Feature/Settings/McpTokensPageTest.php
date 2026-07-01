@@ -2,8 +2,8 @@
 
 namespace Tests\Feature\Settings;
 
-use App\Models\McpToken;
 use App\Models\McpAuditLog;
+use App\Models\McpToken;
 use App\Models\User;
 use App\Support\McpConfig;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -46,8 +46,10 @@ class McpTokensPageTest extends TestCase
             'tools' => ['find_staff', 'get_staff'],
         ]);
 
-        $response->assertRedirect(route('settings.mcp-tokens.index'));
-        $plain = $response->getSession()->get('mcp_new_token');
+        $response->assertOk();
+        $this->assertFalse(session()->has('mcp_new_token'));
+        preg_match('/psa-mcp-[A-Za-z0-9]{48}/', $response->getContent(), $matches);
+        $plain = $matches[0] ?? null;
         $this->assertIsString($plain);
         $this->assertStringStartsWith('psa-mcp-', $plain);
 
@@ -87,14 +89,13 @@ class McpTokensPageTest extends TestCase
         $this->assertNull(McpConfig::resolveStaffToken($plain));
     }
 
-    public function test_one_time_secret_card_renders_after_mint(): void
+    public function test_index_does_not_render_plaintext_from_session_flash(): void
     {
         $this->actingAs($this->user)
             ->withSession(['mcp_new_token' => 'psa-mcp-EXAMPLEONETIME', 'mcp_new_token_label' => 'chet'])
             ->get(route('settings.mcp-tokens.index'))
             ->assertOk()
-            ->assertSee('psa-mcp-EXAMPLEONETIME')
-            ->assertSee('will not be shown again');
+            ->assertDontSee('psa-mcp-EXAMPLEONETIME');
     }
 
     public function test_minted_secret_is_rendered_for_one_request_only(): void
@@ -103,11 +104,12 @@ class McpTokensPageTest extends TestCase
             'label' => 'chet',
             'tools' => ['find_staff', 'get_staff'],
         ]);
-        $plain = $response->getSession()->get('mcp_new_token');
+        preg_match('/psa-mcp-[A-Za-z0-9]{48}/', $response->getContent(), $matches);
+        $plain = $matches[0] ?? null;
 
-        $this->actingAs($this->user)
-            ->get(route('settings.mcp-tokens.index'))
-            ->assertSee($plain);
+        $response->assertOk()
+            ->assertSee($plain)
+            ->assertSee('will not be shown again');
 
         $this->actingAs($this->user)
             ->get(route('settings.mcp-tokens.index'))
@@ -181,5 +183,18 @@ class McpTokensPageTest extends TestCase
             'method' => 'token/revoke',
             'tool_name' => 'chet',
         ]);
+    }
+
+    public function test_revoking_an_already_revoked_token_is_idempotent_without_duplicate_audit(): void
+    {
+        McpConfig::rotateStaffToken(allowedTools: ['find_staff'], label: 'chet');
+        $token = McpToken::where('label', 'chet')->firstOrFail();
+
+        $this->actingAs($this->user)->delete(route('settings.mcp-tokens.revoke', $token));
+        $this->actingAs($this->user)->delete(route('settings.mcp-tokens.revoke', $token->fresh()));
+
+        $this->assertSame(1, McpAuditLog::where('method', 'token/revoke')
+            ->where('tool_name', 'chet')
+            ->count());
     }
 }

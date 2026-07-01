@@ -324,14 +324,16 @@ class McpStaffController extends Controller
     private function toolAllowed(Request $request, string $toolName): bool
     {
         $token = $request->attributes->get('mcp_staff_token');
+        if (! $token instanceof McpStaffToken) {
+            return false;
+        }
 
         if (OperatorBridgeTools::handles($toolName)) {
-            return $token instanceof McpStaffToken
-                && $token->allowedTools !== null
+            return $token->allowedTools !== null
                 && $token->allows($toolName);
         }
 
-        return ! $token instanceof McpStaffToken || $token->allows($toolName);
+        return $token->allows($toolName);
     }
 
     private function actorLabel(Request $request): string
