@@ -15,6 +15,7 @@ class OperatorBridgeToolExecutor
 {
     public function __construct(
         private readonly OperatorDelivery $delivery,
+        private readonly OperatorBridgeTextSanitizer $textSanitizer,
     ) {}
 
     /** @return array<string, mixed> */
@@ -152,7 +153,7 @@ class OperatorBridgeToolExecutor
             'conversation_id' => $row->conversation_id,
             'sender_user_id' => $row->sender_user_id,
             'sender_name' => $row->sender?->name,
-            'text' => $row->text,
+            'text' => $this->textSanitizer->sanitizeForPrompt($row->text),
             'ts' => $row->ts?->toIso8601String(),
             'direct_mention' => (bool) $row->direct_mention,
             'authorized_steer' => (bool) $row->authorized_steer,

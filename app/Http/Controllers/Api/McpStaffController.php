@@ -8,7 +8,9 @@ use App\Models\User;
 use App\Services\Assistant\AssistantToolDefinitions;
 use App\Services\Assistant\AssistantToolExecutor;
 use App\Services\Chet\OperatorBridgeToolExecutor;
+use App\Services\Chet\OperatorBridgeTextSanitizer;
 use App\Services\Chet\OperatorBridgeTools;
+use App\Services\Tactical\Actions\ActionRedactor;
 use App\Support\McpStaffToken;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -292,7 +294,7 @@ class McpStaffController extends Controller
                 'server_name' => 'staff',
                 'method' => $method,
                 'tool_name' => $tool,
-                'arguments' => is_array($args) ? $args : null,
+                'arguments' => is_array($args) ? $this->auditArguments($tool, $args) : null,
                 'status' => $status,
                 'error_message' => $error ? mb_substr($error, 0, 1000) : null,
                 'duration_ms' => (int) round((microtime(true) - $start) * 1000),
@@ -302,6 +304,19 @@ class McpStaffController extends Controller
         } catch (\Throwable $e) {
             Log::warning('[MCP/staff] Audit log write failed: '.$e->getMessage());
         }
+    }
+
+    /** @return array<string, mixed> */
+    private function auditArguments(?string $tool, array $args): array
+    {
+        $redacted = app(ActionRedactor::class)->redactParams($args);
+
+        if ($tool === 'post_to_operator' && isset($redacted['message']) && is_string($redacted['message'])) {
+            $redacted['message'] = app(OperatorBridgeTextSanitizer::class)
+                ->sanitizeForPrompt($redacted['message'], '[message detail withheld - unsafe content]');
+        }
+
+        return $redacted;
     }
 
     private function toolAllowed(Request $request, string $toolName): bool

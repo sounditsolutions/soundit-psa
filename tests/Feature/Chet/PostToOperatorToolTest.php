@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Chet;
 
+use App\Models\McpAuditLog;
 use App\Models\Setting;
 use App\Models\TechnicianRun;
 use App\Models\User;
@@ -139,6 +140,24 @@ class PostToOperatorToolTest extends TestCase
         $this->assertSame(0, TechnicianRun::count());
     }
 
+    public function test_successful_post_redacts_free_text_before_mcp_audit_storage(): void
+    {
+        $this->mock(TeamsNotifier::class, fn (MockInterface $m) => $m->shouldReceive('post')->once()->andReturnTrue());
+        $this->mock(EmailService::class, fn (MockInterface $m) => $m->shouldReceive('sendNew')->andReturnNull());
+
+        $this->callTool(['category' => 'reply', 'message' => 'The password is Hunter2 for the NAS.'])->assertOk();
+
+        $audit = McpAuditLog::where('tool_name', 'post_to_operator')
+            ->where('status', 'success')
+            ->latest('id')
+            ->first();
+
+        $this->assertNotNull($audit);
+        $encoded = json_encode($audit->arguments, JSON_UNESCAPED_SLASHES);
+        $this->assertStringContainsString('[REDACTED:credential]', (string) $encoded);
+        $this->assertStringNotContainsString('Hunter2', (string) $encoded);
+    }
+
     public function test_posts_to_chet_conversation_via_bot_with_at_mention(): void
     {
         Setting::setValue('teams_bot_enabled', '1');
@@ -189,5 +208,34 @@ class PostToOperatorToolTest extends TestCase
         $r->assertOk();
         $this->assertTrue((bool) $r->json('result.isError'));
         $this->assertStringContainsString('not allowed for this token', (string) $r->json('result.content.0.text'));
+    }
+
+    public function test_denied_post_redacts_free_text_before_mcp_audit_storage(): void
+    {
+        $chet = McpConfig::rotateStaffToken(allowedTools: ['find_staff', 'get_staff'], label: 'chet');
+
+        $r = $this->withHeaders(['Authorization' => 'Bearer '.$chet])
+            ->postJson('/api/mcp/staff', [
+                'jsonrpc' => '2.0',
+                'id' => 1,
+                'method' => 'tools/call',
+                'params' => [
+                    'name' => 'post_to_operator',
+                    'arguments' => ['category' => 'reply', 'message' => 'The password is Hunter2 for the NAS.'],
+                ],
+            ]);
+
+        $r->assertOk();
+        $this->assertTrue((bool) $r->json('result.isError'));
+
+        $audit = McpAuditLog::where('tool_name', 'post_to_operator')
+            ->where('status', 'error')
+            ->latest('id')
+            ->first();
+
+        $this->assertNotNull($audit);
+        $encoded = json_encode($audit->arguments, JSON_UNESCAPED_SLASHES);
+        $this->assertStringContainsString('[REDACTED:credential]', (string) $encoded);
+        $this->assertStringNotContainsString('Hunter2', (string) $encoded);
     }
 }

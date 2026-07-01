@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\OperatorInbox;
+use App\Services\Chet\OperatorBridgeTextSanitizer;
 use App\Services\Teams\ResolvedSender;
 use App\Services\Teams\TeamsAmbientService;
 use App\Services\Teams\TeamsIdentityResolver;
@@ -33,6 +34,7 @@ class TeamsMessagesController extends Controller
         private readonly TeamsIdentityResolver $resolver,
         private readonly TeamsReplyService $replyService,
         private readonly TeamsAmbientService $ambient,
+        private readonly OperatorBridgeTextSanitizer $textSanitizer,
     ) {}
 
     public function handle(Request $request): JsonResponse
@@ -91,7 +93,7 @@ class TeamsMessagesController extends Controller
         OperatorInbox::create([
             'conversation_id' => (string) ($activity['conversation']['id'] ?? ''),
             'sender_user_id' => $senderUserId,
-            'text' => $this->stripMention((string) ($activity['text'] ?? '')),
+            'text' => $this->textSanitizer->sanitizeForPrompt($this->stripMention((string) ($activity['text'] ?? ''))),
             'ts' => $this->activityTimestamp($activity),
             'direct_mention' => $this->botMentioned($activity),
             'authorized_steer' => $senderUserId !== null
