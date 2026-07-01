@@ -85,4 +85,52 @@ class McpTokensPageTest extends TestCase
         $this->assertNotNull($token->fresh()->revoked_at);
         $this->assertNull(McpConfig::resolveStaffToken($plain));
     }
+
+    public function test_one_time_secret_card_renders_after_mint(): void
+    {
+        $this->actingAs($this->user)
+            ->withSession(['mcp_new_token' => 'psa-mcp-EXAMPLEONETIME', 'mcp_new_token_label' => 'chet'])
+            ->get(route('settings.mcp-tokens.index'))
+            ->assertOk()
+            ->assertSee('psa-mcp-EXAMPLEONETIME')
+            ->assertSee('will not be shown again');
+    }
+
+    public function test_minted_secret_is_rendered_for_one_request_only(): void
+    {
+        $response = $this->actingAs($this->user)->post(route('settings.mcp-tokens.store'), [
+            'label' => 'chet',
+            'tools' => ['find_staff', 'get_staff'],
+        ]);
+        $plain = $response->getSession()->get('mcp_new_token');
+
+        $this->actingAs($this->user)
+            ->get(route('settings.mcp-tokens.index'))
+            ->assertSee($plain);
+
+        $this->actingAs($this->user)
+            ->get(route('settings.mcp-tokens.index'))
+            ->assertDontSee($plain);
+    }
+
+    public function test_tool_descriptions_and_sensitive_group_are_rendered(): void
+    {
+        $this->actingAs($this->user)
+            ->get(route('settings.mcp-tokens.index'))
+            ->assertOk()
+            ->assertSee('Operator bridge (sensitive)')
+            ->assertSee('Post a message to the operator Teams chat', false);
+    }
+
+    public function test_revoked_tokens_show_as_revoked_without_a_revoke_button(): void
+    {
+        McpConfig::rotateStaffToken(allowedTools: ['find_staff'], label: 'dead');
+        McpToken::where('label', 'dead')->update(['revoked_at' => now()]);
+
+        $this->actingAs($this->user)
+            ->get(route('settings.mcp-tokens.index'))
+            ->assertOk()
+            ->assertSee('Revoked')
+            ->assertDontSee('>Revoke<', false);
+    }
 }
