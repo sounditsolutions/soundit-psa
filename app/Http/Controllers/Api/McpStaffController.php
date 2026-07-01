@@ -7,6 +7,8 @@ use App\Models\McpAuditLog;
 use App\Models\User;
 use App\Services\Assistant\AssistantToolDefinitions;
 use App\Services\Assistant\AssistantToolExecutor;
+use App\Services\Chet\OperatorBridgeToolExecutor;
+use App\Services\Chet\OperatorBridgeTools;
 use App\Support\McpStaffToken;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -126,7 +128,10 @@ class McpStaffController extends Controller
         // up via find_clients() and passes it along on the call. The boundary
         // strips client_id off before dispatch, so the executor doesn't need
         // to know about MCP.
-        $generalTools = AssistantToolDefinitions::getTools(hasClient: false);
+        $generalTools = array_merge(
+            AssistantToolDefinitions::getTools(hasClient: false),
+            OperatorBridgeTools::definitions(),
+        );
         $generalNames = array_flip(array_column($generalTools, 'name'));
 
         $clientScopedTools = AssistantToolDefinitions::getTools(hasClient: true);
@@ -225,10 +230,14 @@ class McpStaffController extends Controller
         // when we add proper Teams-sender forwarding (see psa-axy notes) the
         // actor field will reflect the real user.
         $userId = \App\Support\TriageConfig::systemUserId();
-        $executor = new AssistantToolExecutor(ticket: null, clientId: $clientId, userId: $userId);
 
         try {
-            $result = $executor->execute($name, is_array($arguments) ? $arguments : []);
+            if (OperatorBridgeTools::handles((string) $name)) {
+                $result = app(OperatorBridgeToolExecutor::class)->execute((string) $name, $arguments);
+            } else {
+                $executor = new AssistantToolExecutor(ticket: null, clientId: $clientId, userId: $userId);
+                $result = $executor->execute($name, is_array($arguments) ? $arguments : []);
+            }
             $isError = is_array($result) && isset($result['error']);
 
             $this->audit(
@@ -298,6 +307,12 @@ class McpStaffController extends Controller
     private function toolAllowed(Request $request, string $toolName): bool
     {
         $token = $request->attributes->get('mcp_staff_token');
+
+        if (OperatorBridgeTools::handles($toolName)) {
+            return $token instanceof McpStaffToken
+                && $token->allowedTools !== null
+                && $token->allows($toolName);
+        }
 
         return ! $token instanceof McpStaffToken || $token->allows($toolName);
     }
