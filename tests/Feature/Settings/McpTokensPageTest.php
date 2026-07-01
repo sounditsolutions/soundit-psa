@@ -3,6 +3,7 @@
 namespace Tests\Feature\Settings;
 
 use App\Models\McpToken;
+use App\Models\McpAuditLog;
 use App\Models\User;
 use App\Support\McpConfig;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -132,5 +133,53 @@ class McpTokensPageTest extends TestCase
             ->assertOk()
             ->assertSee('Revoked')
             ->assertDontSee('>Revoke<', false);
+    }
+
+    public function test_minting_writes_a_token_mint_audit_row(): void
+    {
+        $this->actingAs($this->user)->post(route('settings.mcp-tokens.store'), [
+            'label' => 'chet',
+            'tools' => ['find_staff', 'get_staff'],
+        ]);
+
+        $this->assertDatabaseHas('mcp_audit_logs', [
+            'server_name' => 'staff',
+            'method' => 'token/mint',
+            'tool_name' => 'chet',
+            'status' => 'success',
+        ]);
+
+        $row = McpAuditLog::where('method', 'token/mint')->firstOrFail();
+        $this->assertStringContainsString($this->user->email, (string) $row->actor_label);
+        $this->assertSame(['tools' => ['find_staff', 'get_staff']], $row->arguments);
+    }
+
+    public function test_re_minting_an_existing_label_is_audited_as_rotate(): void
+    {
+        McpConfig::rotateStaffToken(allowedTools: ['find_staff'], label: 'chet');
+
+        $this->actingAs($this->user)->post(route('settings.mcp-tokens.store'), [
+            'label' => 'chet',
+            'tools' => ['get_staff'],
+        ]);
+
+        $this->assertDatabaseHas('mcp_audit_logs', [
+            'method' => 'token/rotate',
+            'tool_name' => 'chet',
+        ]);
+    }
+
+    public function test_revoking_writes_a_token_revoke_audit_row(): void
+    {
+        McpConfig::rotateStaffToken(allowedTools: ['find_staff'], label: 'chet');
+        $token = McpToken::where('label', 'chet')->firstOrFail();
+
+        $this->actingAs($this->user)->delete(route('settings.mcp-tokens.revoke', $token));
+
+        $this->assertDatabaseHas('mcp_audit_logs', [
+            'server_name' => 'staff',
+            'method' => 'token/revoke',
+            'tool_name' => 'chet',
+        ]);
     }
 }
