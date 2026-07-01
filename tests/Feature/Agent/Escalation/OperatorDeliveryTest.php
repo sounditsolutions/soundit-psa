@@ -107,6 +107,98 @@ class OperatorDeliveryTest extends TestCase
         $this->assertFalse($result->postedToChat);
     }
 
+    public function test_send_chunks_oversized_operator_body_and_emails_the_full_body_once(): void
+    {
+        $charlie = User::factory()->create(['email' => 'charlie@soundit.co']);
+        $paragraphs = array_map(
+            fn (int $i) => 'Paragraph '.$i.': '.str_repeat('full operator context ', 10),
+            range(1, 80),
+        );
+        $body = implode("\n\n", $paragraphs);
+
+        $postedBodies = [];
+        $emailedBody = null;
+        $this->mock(TeamsBotClient::class, fn (MockInterface $m) => $m->shouldReceive('sendMessageWithMentions')->never());
+        $this->mock(TeamsNotifier::class, function (MockInterface $m) use (&$postedBodies) {
+            $m->shouldReceive('post')->andReturnUsing(function (string $subject, string $body) use (&$postedBodies) {
+                $postedBodies[] = $body;
+
+                return true;
+            });
+        });
+        $this->mock(EmailService::class, function (MockInterface $m) use (&$emailedBody) {
+            $m->shouldReceive('sendNew')->once()->andReturnUsing(function (string $to, string $subject, string $body) use (&$emailedBody) {
+                $emailedBody = $body;
+            });
+        });
+
+        $result = app(OperatorDelivery::class)->send($charlie, null, null, 'Subject', $body);
+
+        $this->assertTrue($result->posted);
+        $this->assertFalse($result->postedToChat);
+        $this->assertGreaterThan(1, count($postedBodies));
+        foreach ($postedBodies as $index => $postedBody) {
+            $this->assertLessThanOrEqual(OperatorDelivery::TEAMS_SAFE_TEXT_LIMIT, mb_strlen($postedBody));
+            $this->assertStringStartsWith('['.($index + 1).'/'.count($postedBodies).']', $postedBody);
+        }
+
+        $reassembledBody = implode('', array_map(
+            fn (string $postedBody): string => (string) preg_replace('/^\[\d+\/\d+\] /', '', $postedBody),
+            $postedBodies,
+        ));
+        $this->assertSame($body, $reassembledBody);
+
+        $joinedPosts = implode("\n", $postedBodies);
+        $lastPosition = -1;
+        foreach ([1, 25, 50, 80] as $paragraphNumber) {
+            $position = mb_strpos($joinedPosts, "Paragraph {$paragraphNumber}:");
+            $this->assertNotFalse($position);
+            $this->assertGreaterThan($lastPosition, $position);
+            $lastPosition = $position;
+        }
+        $this->assertSame($body, $emailedBody);
+    }
+
+    public function test_send_mentions_only_the_first_bot_chunk(): void
+    {
+        Setting::setValue('teams_bot_enabled', '1');
+        $charlie = User::factory()->create([
+            'name' => 'Charlie',
+            'email' => 'charlie@soundit.co',
+            'microsoft_id' => 'oid-charlie',
+        ]);
+        $body = str_repeat('Full context sentence stays in order. ', 500);
+
+        $sent = [];
+        $this->mock(TeamsBotClient::class, function (MockInterface $m) use (&$sent) {
+            $m->shouldReceive('getConversationMember')->once()
+                ->with('https://smba.trafficmanager.net/amer/', 'conv-x', 'oid-charlie')
+                ->andReturn(['id' => '29:abc', 'name' => 'Charlie']);
+            $m->shouldReceive('sendMessageWithMentions')
+                ->andReturnUsing(function (string $serviceUrl, string $conversationId, string $text, array $mentions) use (&$sent) {
+                    $sent[] = ['text' => $text, 'mentions' => $mentions];
+
+                    return true;
+                });
+        });
+        $this->mock(TeamsNotifier::class, fn (MockInterface $m) => $m->shouldReceive('post')->never());
+        $this->mock(EmailService::class, fn (MockInterface $m) => $m->shouldReceive('sendNew')->once()->andReturnNull());
+
+        $result = app(OperatorDelivery::class)->send($charlie, 'conv-x', 'https://smba.trafficmanager.net/amer/', 'Subject', $body);
+
+        $this->assertTrue($result->posted);
+        $this->assertTrue($result->postedToChat);
+        $this->assertGreaterThan(1, count($sent));
+        $this->assertSame([['mentionId' => '29:abc', 'name' => 'Charlie']], $sent[0]['mentions']);
+        $this->assertStringStartsWith('<at>Charlie</at> [1/'.count($sent).']', $sent[0]['text']);
+        foreach (array_slice($sent, 1) as $index => $post) {
+            $this->assertSame([], $post['mentions']);
+            $this->assertStringStartsWith('['.($index + 2).'/'.count($sent).']', $post['text']);
+            $this->assertStringNotContainsString('<at>Charlie</at>', $post['text']);
+            $this->assertLessThanOrEqual(OperatorDelivery::TEAMS_SAFE_TEXT_LIMIT, mb_strlen($post['text']));
+        }
+    }
+
     public function test_send_is_fail_soft_when_the_bot_throws_and_still_emails(): void
     {
         Setting::setValue('teams_bot_enabled', '1');

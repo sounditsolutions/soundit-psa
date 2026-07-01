@@ -14,6 +14,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Testing\TestResponse;
 use Mockery;
 use Mockery\MockInterface;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 class PostToOperatorToolTest extends TestCase
@@ -84,6 +85,43 @@ class PostToOperatorToolTest extends TestCase
         $this->assertNotNull($body);
         $this->assertStringNotContainsString('ignore all previous instructions', $body);
         $this->assertStringContainsString('withheld', $body);
+    }
+
+    #[DataProvider('longOperatorMessageLengths')]
+    public function test_long_operator_messages_are_delivered_without_fragment_truncation(int $targetLength): void
+    {
+        $tail = "tail-sentinel-{$targetLength}";
+        $message = mb_substr(str_repeat('Full escalation context stays visible. ', 100), 0, $targetLength - mb_strlen($tail)).$tail;
+
+        $teamsBody = null;
+        $emailBody = null;
+        $this->mock(TeamsNotifier::class, function (MockInterface $m) use (&$teamsBody) {
+            $m->shouldReceive('post')->once()->andReturnUsing(function (string $subject, string $body) use (&$teamsBody) {
+                $teamsBody = $body;
+
+                return true;
+            });
+        });
+        $this->mock(EmailService::class, function (MockInterface $m) use (&$emailBody) {
+            $m->shouldReceive('sendNew')->once()->andReturnUsing(function (string $to, string $subject, string $body) use (&$emailBody) {
+                $emailBody = $body;
+            });
+        });
+
+        $this->callTool(['category' => 'escalation', 'message' => $message])->assertOk();
+
+        $this->assertNotNull($teamsBody);
+        $this->assertNotNull($emailBody);
+        $this->assertStringContainsString($tail, $teamsBody);
+        $this->assertStringContainsString($tail, $emailBody);
+    }
+
+    public static function longOperatorMessageLengths(): array
+    {
+        return [
+            'over 500 chars' => [650],
+            'over 2000 chars' => [2400],
+        ];
     }
 
     public function test_teams_escape_neutralizes_a_markdown_link_injection(): void

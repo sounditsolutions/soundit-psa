@@ -95,7 +95,7 @@ class OperatorBridgeToolExecutor
         $recipientId = TechnicianConfig::operatorRecipientFor($category);
         $recipient = $recipientId ? User::find($recipientId) : null;
 
-        $safeMessage = $this->delivery->sanitize($message);
+        $safeMessage = $this->delivery->sanitizeMessage($message);
 
         $persona = TeamsText::escape(TechnicianConfig::aiActorName());
         $label = $category->label();
