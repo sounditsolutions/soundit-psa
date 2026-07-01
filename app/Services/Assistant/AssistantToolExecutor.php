@@ -571,9 +571,9 @@ class AssistantToolExecutor
                 'ticket_display_id' => $ticket->display_id,
             ];
         } catch (\Throwable $e) {
-            Log::warning('[Assistant] Note creation failed', ['error' => $e->getMessage()]);
+            Log::warning('[Assistant] Note creation failed', ['exception' => $e::class]);
 
-            return ['error' => 'Failed to add note: '.mb_substr($e->getMessage(), 0, 200)];
+            return ['error' => 'Failed to add note.'];
         }
     }
 

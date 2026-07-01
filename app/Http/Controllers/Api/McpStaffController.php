@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\McpAuditLog;
+use App\Models\Setting;
 use App\Models\User;
 use App\Services\Assistant\AssistantToolDefinitions;
 use App\Services\Assistant\AssistantToolExecutor;
@@ -37,6 +38,15 @@ class McpStaffController extends Controller
     private const SERVER_NAME = 'PSA Staff';
 
     private const SERVER_VERSION = '1.0.0';
+
+    private const CHET_DENIED_WRITE_TOOLS = [
+        'create_ticket',
+        'propose_close',
+        'send_reply',
+        'close_ticket',
+    ];
+
+    private const NOTE_BODY_AUDIT_PLACEHOLDER = '[note body withheld]';
 
     public function handle(Request $request): JsonResponse
     {
@@ -226,19 +236,28 @@ class McpStaffController extends Controller
         // Isolation control (spec §6): only a positive, numeric client_id is
         // honored. Anything malformed — 0, negative, non-numeric "garbage" —
         // collapses to null (GLOBAL-only scope), never a `client_id = 0` query.
-        $clientId = (isset($arguments['client_id']) && is_numeric($arguments['client_id']) && (int) $arguments['client_id'] > 0)
-            ? (int) $arguments['client_id'] : null;
+        $clientId = $this->positiveIntegerArgument($arguments['client_id'] ?? null);
         unset($arguments['client_id']);
 
-        // Service-account identity. The triage system user is repurposed here —
-        // when we add proper Teams-sender forwarding (see psa-axy notes) the
-        // actor field will reflect the real user.
-        $userId = \App\Support\TriageConfig::systemUserId();
+        if ($this->isChetTicketNoteWrite($request, (string) $name) && $clientId === null) {
+            $message = 'client_id is required for Chet ticket-note writes.';
+            $this->audit('tools/call', (string) $name, $arguments, 'error', $message, $start, $request);
+
+            return response()->json([
+                'jsonrpc' => '2.0',
+                'id' => $id,
+                'result' => [
+                    'content' => [['type' => 'text', 'text' => $message]],
+                    'isError' => true,
+                ],
+            ]);
+        }
 
         try {
             if (OperatorBridgeTools::handles((string) $name)) {
                 $result = app(OperatorBridgeToolExecutor::class)->execute((string) $name, $arguments);
             } else {
+                $userId = $this->userIdForToolCall($request, (string) $name);
                 $executor = new AssistantToolExecutor(ticket: null, clientId: $clientId, userId: $userId);
                 $result = $executor->execute($name, is_array($arguments) ? $arguments : []);
             }
@@ -318,7 +337,44 @@ class McpStaffController extends Controller
                 ->sanitizeForPrompt($redacted['message'], '[message detail withheld - unsafe content]');
         }
 
+        if ($tool === 'add_ticket_note') {
+            return $this->auditTicketNoteArguments($redacted);
+        }
+
         return $redacted;
+    }
+
+    /** @return array<string, mixed> */
+    private function auditTicketNoteArguments(array $arguments): array
+    {
+        $safe = [];
+
+        foreach ($arguments as $key => $value) {
+            $normalized = mb_strtolower((string) $key);
+
+            if (in_array($normalized, ['client_id', 'ticket_id'], true)) {
+                $safe[$normalized] = $value;
+            }
+
+            if ($normalized === 'body') {
+                $safe['body'] = self::NOTE_BODY_AUDIT_PLACEHOLDER;
+            }
+        }
+
+        return $safe;
+    }
+
+    private function positiveIntegerArgument(mixed $value): ?int
+    {
+        if (is_int($value)) {
+            return $value > 0 ? $value : null;
+        }
+
+        if (is_string($value) && preg_match('/^[1-9][0-9]*$/', $value) === 1) {
+            return (int) $value;
+        }
+
+        return null;
     }
 
     private function toolAllowed(Request $request, string $toolName): bool
@@ -328,12 +384,55 @@ class McpStaffController extends Controller
             return false;
         }
 
+        if ($this->isChetToken($request) && in_array($toolName, self::CHET_DENIED_WRITE_TOOLS, true)) {
+            return false;
+        }
+
         if (OperatorBridgeTools::handles($toolName)) {
             return $token->allowedTools !== null
                 && $token->allows($toolName);
         }
 
         return $token->allows($toolName);
+    }
+
+    private function userIdForToolCall(Request $request, string $toolName): ?int
+    {
+        if ($this->isChetTicketNoteWrite($request, $toolName)) {
+            return $this->requiredChetAiActorUserId();
+        }
+
+        // Existing service-account identity for non-Chet MCP calls.
+        return \App\Support\TriageConfig::systemUserId();
+    }
+
+    private function isChetToken(Request $request): bool
+    {
+        $token = $request->attributes->get('mcp_staff_token');
+
+        return $token instanceof McpStaffToken
+            && mb_strtolower((string) $token->label) === 'chet';
+    }
+
+    private function isChetTicketNoteWrite(Request $request, string $toolName): bool
+    {
+        return $toolName === 'add_ticket_note' && $this->isChetToken($request);
+    }
+
+    private function requiredChetAiActorUserId(): int
+    {
+        $configured = Setting::getValue('triage_system_user_id');
+
+        if (! is_numeric($configured) || (int) $configured <= 0) {
+            throw new \RuntimeException('AI actor user is not configured for Chet ticket-note writes.');
+        }
+
+        $actorId = (int) $configured;
+        if (! User::whereKey($actorId)->exists()) {
+            throw new \RuntimeException('Configured AI actor user does not exist for Chet ticket-note writes.');
+        }
+
+        return $actorId;
     }
 
     private function actorLabel(Request $request): string
