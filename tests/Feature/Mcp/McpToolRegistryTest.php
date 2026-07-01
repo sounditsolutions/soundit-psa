@@ -22,6 +22,9 @@ class McpToolRegistryTest extends TestCase
         $this->assertContains('propose_close', $names('general'));
         $this->assertContains('create_ticket', $names('client'));
         $this->assertContains('ninja_get_device', $names('integration'));
+        $this->assertContains('tactical_get_device', $names('integration'));
+        $this->assertContains('list_teams_chats', $names('general'));
+        $this->assertNotContains('tactical_run_diagnostic', $names('integration'));
         $this->assertContains('post_to_operator', $names('bridge'));
         $this->assertTrue($groups['bridge']['sensitive']);
         $this->assertFalse($groups['general']['sensitive']);
@@ -50,6 +53,8 @@ class McpToolRegistryTest extends TestCase
         $this->assertContains('list_open_tickets', $all);
         $this->assertContains('propose_close', $all);
         $this->assertContains('create_ticket', $all);
+        $this->assertContains('tactical_get_device', $all);
+        $this->assertContains('list_teams_chats', $all);
         $this->assertContains('post_to_operator', $all);
         $this->assertSame(array_values(array_unique($all)), $all, 'no duplicates');
     }
