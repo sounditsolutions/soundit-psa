@@ -1,0 +1,97 @@
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Carbon;
+
+/**
+ * A staff MCP bearer token. Only the sha256 hash is stored; plaintext is shown
+ * once at mint. Null tools preserves legacy full-surface semantics.
+ */
+class McpToken extends Model
+{
+    protected $fillable = [
+        'label',
+        'token_hash',
+        'token_prefix',
+        'tools',
+        'last_used_at',
+        'revoked_at',
+    ];
+
+    protected function casts(): array
+    {
+        return [
+            'tools' => 'array',
+            'last_used_at' => 'datetime',
+            'revoked_at' => 'datetime',
+        ];
+    }
+
+    /** @param  Builder<McpToken>  $query */
+    public function scopeActive(Builder $query): void
+    {
+        $query->whereNull('revoked_at');
+    }
+
+    public function isRevoked(): bool
+    {
+        return $this->revoked_at !== null;
+    }
+
+    public static function importLegacyBlob(): int
+    {
+        try {
+            $raw = Setting::getEncrypted('mcp_staff_scoped_tokens');
+        } catch (\Throwable) {
+            return 0;
+        }
+
+        if (! is_string($raw) || trim($raw) === '') {
+            return 0;
+        }
+
+        $decoded = json_decode($raw, true);
+        if (! is_array($decoded)) {
+            return 0;
+        }
+
+        $imported = 0;
+        foreach ($decoded as $record) {
+            if (! is_array($record)) {
+                continue;
+            }
+
+            $label = trim((string) ($record['label'] ?? ''));
+            $hash = trim((string) ($record['hash'] ?? ''));
+            if ($label === '' || $hash === '') {
+                continue;
+            }
+
+            $tools = array_values(array_filter(
+                array_map(fn ($tool): string => trim((string) $tool), (array) ($record['tools'] ?? [])),
+                fn (string $tool): bool => $tool !== '',
+            ));
+
+            $createdAt = ! empty($record['created_at'])
+                ? Carbon::parse((string) $record['created_at'])
+                : now();
+
+            $token = static::firstOrNew(['label' => $label]);
+            $isNew = ! $token->exists;
+            $token->token_hash = $hash;
+            $token->token_prefix = null;
+            $token->tools = $tools;
+            $token->revoked_at = null;
+            if ($isNew) {
+                $token->created_at = $createdAt;
+            }
+            $token->save();
+            $imported++;
+        }
+
+        return $imported;
+    }
+}
