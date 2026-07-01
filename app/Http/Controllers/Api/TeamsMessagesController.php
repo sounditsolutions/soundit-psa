@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\OperatorInbox;
 use App\Services\Teams\ResolvedSender;
 use App\Services\Teams\TeamsAmbientService;
 use App\Services\Teams\TeamsIdentityResolver;
@@ -10,6 +11,7 @@ use App\Services\Teams\TeamsReplyService;
 use App\Support\TeamsBotConfig;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -42,6 +44,12 @@ class TeamsMessagesController extends Controller
         // audited inside the resolver; we never act on an unresolved sender.
         $sender = $this->resolver->resolve($activity);
 
+        if ($this->routedToChet($activity)) {
+            $this->enqueueOperatorMessage($sender, $activity);
+
+            return response()->json(['status' => 'ok']);
+        }
+
         if (TeamsBotConfig::enabled()
             && $sender !== null
             && $this->serviceUrlPinned($request, $activity)
@@ -60,6 +68,50 @@ class TeamsMessagesController extends Controller
         }
 
         return response()->json(['status' => 'ok']);
+    }
+
+    private function routedToChet(array $activity): bool
+    {
+        if (! TeamsBotConfig::chetRoutingEnabled()) {
+            return false;
+        }
+
+        $chetConversationId = TeamsBotConfig::chetConversationId();
+        $conversationId = $activity['conversation']['id'] ?? null;
+
+        return $chetConversationId !== null
+            && is_string($conversationId)
+            && $conversationId === $chetConversationId;
+    }
+
+    private function enqueueOperatorMessage(?ResolvedSender $sender, array $activity): void
+    {
+        $senderUserId = $sender?->user->id;
+
+        OperatorInbox::create([
+            'conversation_id' => (string) ($activity['conversation']['id'] ?? ''),
+            'sender_user_id' => $senderUserId,
+            'text' => $this->stripMention((string) ($activity['text'] ?? '')),
+            'ts' => $this->activityTimestamp($activity),
+            'direct_mention' => $this->botMentioned($activity),
+            'authorized_steer' => $senderUserId !== null
+                && in_array($senderUserId, TeamsBotConfig::operatorAllowlistUserIds(), true),
+            'delivered_at' => null,
+        ]);
+    }
+
+    private function activityTimestamp(array $activity): Carbon
+    {
+        $ts = $activity['timestamp'] ?? null;
+        if (is_string($ts) && $ts !== '') {
+            try {
+                return Carbon::parse($ts);
+            } catch (\Throwable) {
+                // Use the receive time when Teams sends a malformed timestamp.
+            }
+        }
+
+        return now();
     }
 
     /**
