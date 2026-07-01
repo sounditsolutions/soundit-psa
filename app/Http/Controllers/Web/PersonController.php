@@ -48,7 +48,7 @@ class PersonController extends Controller
             ->paginate(50)
             ->withQueryString();
 
-        $clients = Client::operational()->orderBy('name')->get(['id', 'name']);
+        $clients = Client::active()->orderBy('name')->get(['id', 'name']);
 
         return view('people.index', [
             'people' => $people,
@@ -61,7 +61,9 @@ class PersonController extends Controller
 
     public function create(Request $request)
     {
-        $clients = Client::operational()->orderBy('name')->get(['id', 'name']);
+        // active(), not operational(): prospects have people too (psa-57wv) —
+        // operational() excludes stage=Prospect, which blanked the client field.
+        $clients = Client::active()->orderBy('name')->get(['id', 'name']);
 
         return view('people.create', [
             'clients' => $clients,
@@ -159,7 +161,17 @@ class PersonController extends Controller
     public function edit(Person $person)
     {
         $person->load('additionalEmailAddresses');
-        $clients = Client::operational()->orderBy('name')->get(['id', 'name']);
+        $clients = Client::active()->orderBy('name')->get(['id', 'name']);
+
+        // The person's own client must always be selectable — even if it has
+        // since gone inactive — or the edit form renders with a blank client
+        // field and can never submit (psa-57wv).
+        if ($person->client_id && ! $clients->contains('id', $person->client_id)) {
+            $current = Client::query()->find($person->client_id, ['id', 'name']);
+            if ($current) {
+                $clients = $clients->push($current)->sortBy('name')->values();
+            }
+        }
 
         return view('people.edit', [
             'person' => $person,

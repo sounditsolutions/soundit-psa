@@ -212,7 +212,7 @@ class ClientController extends Controller
             'integrations' => $integrations,
             'activeTab' => 'people',
             'people' => $people,
-            'peopleClients' => Client::operational()->orderBy('name')->get(['id', 'name']),
+            'peopleClients' => Client::active()->orderBy('name')->get(['id', 'name']),
             'peopleSearch' => $request->query('search'),
             'peopleClientId' => $request->query('client_id'),
             'peoplePersonType' => $request->query('person_type'),
