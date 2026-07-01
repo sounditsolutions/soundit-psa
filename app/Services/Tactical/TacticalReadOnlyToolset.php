@@ -3,8 +3,10 @@
 namespace App\Services\Tactical;
 
 use App\Models\TacticalAsset;
+use App\Services\Chet\ChetDataSurfaceTextSanitizer;
 use App\Services\Triage\TriageToolDefinitions;
 use App\Support\TacticalConfig;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Log;
 
 class TacticalReadOnlyToolset
@@ -17,6 +19,10 @@ class TacticalReadOnlyToolset
         'tactical_get_device_services',
         'tactical_get_device_disks',
     ];
+
+    public function __construct(
+        private readonly ChetDataSurfaceTextSanitizer $textSanitizer,
+    ) {}
 
     /** @return array<int, array<string, mixed>> */
     public static function definitions(): array
@@ -56,9 +62,10 @@ class TacticalReadOnlyToolset
     {
         $tacticalAsset = TacticalAsset::with('asset')
             ->whereRaw('LOWER(hostname) = ?', [mb_strtolower($hostname)])
+            ->whereHas('asset', fn (Builder $query) => $query->where('client_id', $clientId))
             ->first();
 
-        if (! $tacticalAsset || ! $tacticalAsset->asset || $tacticalAsset->asset->client_id !== $clientId) {
+        if (! $tacticalAsset || ! $tacticalAsset->asset) {
             return null;
         }
 
@@ -115,9 +122,12 @@ class TacticalReadOnlyToolset
             'make_model' => $agent['make_model'] ?? null,
             'public_ip' => $agent['public_ip'] ?? null,
             'local_ips' => $agent['local_ips'] ?? null,
-            'logged_in_user' => in_array($agent['logged_in_username'] ?? null, [null, '', 'None'], true)
-                ? null
-                : $agent['logged_in_username'],
+            'logged_in_user' => $this->textSanitizer->sanitizeNullable(
+                'Tactical logged in user',
+                $agent['logged_in_username'] ?? null,
+                200,
+                ['None'],
+            ),
             'needs_reboot' => $agent['needs_reboot'] ?? false,
             'uptime' => TacticalFieldMap::uptimeFromBootTime($agent['boot_time'] ?? null),
             'checks_summary' => $checksSummary,
@@ -145,7 +155,7 @@ class TacticalReadOnlyToolset
             'name' => $check['name'] ?? $check['readable_desc'] ?? 'Unknown',
             'status' => $check['check_result']['status'] ?? $check['status'] ?? 'unknown',
             'retcode' => $check['check_result']['retcode'] ?? null,
-            'stdout' => mb_substr($check['check_result']['stdout'] ?? '', 0, 500),
+            'stdout' => $this->textSanitizer->sanitize('Tactical check stdout', $check['check_result']['stdout'] ?? '', 500),
         ], array_slice($checks, 0, 50));
     }
 

@@ -14,6 +14,10 @@ class TeamsChatReadToolset
         'get_teams_chat_history',
     ];
 
+    public function __construct(
+        private readonly ChetDataSurfaceTextSanitizer $textSanitizer,
+    ) {}
+
     /** @return array<int, array<string, mixed>> */
     public static function definitions(): array
     {
@@ -268,8 +272,26 @@ class TeamsChatReadToolset
             'created_at' => $chat['createdDateTime'] ?? null,
             'last_updated_at' => $chat['lastUpdatedDateTime'] ?? null,
             'web_url' => $chat['webUrl'] ?? null,
-            'last_message_preview' => $chat['lastMessagePreview'] ?? null,
+            'last_message_preview' => $this->sanitizeLastMessagePreview($chat['lastMessagePreview'] ?? null),
         ];
+    }
+
+    private function sanitizeLastMessagePreview(mixed $preview): mixed
+    {
+        if (! is_array($preview)) {
+            return $preview;
+        }
+
+        $bodyContent = $preview['body']['content'] ?? null;
+        if (is_scalar($bodyContent)) {
+            $preview['body']['content'] = $this->textSanitizer->sanitize(
+                'Teams chat last message preview body',
+                $this->plainText($bodyContent),
+                1000,
+            );
+        }
+
+        return $preview;
     }
 
     private function sanitizeMember(array $member): array
@@ -296,7 +318,11 @@ class TeamsChatReadToolset
             'subject' => $message['subject'] ?? null,
             'from' => $this->sanitizeMessageFrom($message['from'] ?? null),
             'body_content_type' => $message['body']['contentType'] ?? null,
-            'body' => $this->plainText($message['body']['content'] ?? ''),
+            'body' => $this->textSanitizer->sanitize(
+                'Teams chat message body',
+                $this->plainText($message['body']['content'] ?? ''),
+                4000,
+            ),
         ];
     }
 
@@ -324,7 +350,7 @@ class TeamsChatReadToolset
         $text = html_entity_decode(strip_tags((string) $value), ENT_QUOTES | ENT_HTML5, 'UTF-8');
         $text = preg_replace('/\s+/u', ' ', trim($text)) ?? '';
 
-        return mb_substr($text, 0, 4000);
+        return $text;
     }
 
     private function botAppId(): ?string
