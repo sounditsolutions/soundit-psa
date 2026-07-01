@@ -47,12 +47,16 @@ class TeamsMessagesController extends Controller
         $sender = $this->resolver->resolve($activity);
 
         if ($this->routedToChet($activity)) {
-            if ($sender !== null) {
-                $this->enqueueOperatorMessage($sender, $activity);
-            } else {
+            if (! TeamsBotConfig::enabled()) {
+                Log::info('[Teams Bot] Chet-routed turn ignored because Teams bot is disabled', [
+                    'conversation_id' => $activity['conversation']['id'] ?? null,
+                ]);
+            } elseif ($sender === null) {
                 Log::warning('[Teams Bot] Chet-routed turn from unresolved sender dropped', [
                     'conversation_id' => $activity['conversation']['id'] ?? null,
                 ]);
+            } elseif ($this->serviceUrlPinned($request, $activity)) {
+                $this->enqueueOperatorMessage($sender, $activity);
             }
 
             return response()->json(['status' => 'ok']);

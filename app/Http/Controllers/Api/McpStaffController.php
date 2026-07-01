@@ -12,6 +12,7 @@ use App\Services\Chet\OperatorBridgeToolExecutor;
 use App\Services\Chet\OperatorBridgeTools;
 use App\Services\Tactical\Actions\ActionRedactor;
 use App\Support\McpStaffToken;
+use App\Support\McpToolRegistry;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -132,6 +133,7 @@ class McpStaffController extends Controller
         // to know about MCP.
         $generalTools = array_merge(
             AssistantToolDefinitions::getTools(hasClient: false),
+            [McpToolRegistry::proposeCloseTool()],
             OperatorBridgeTools::definitions(),
         );
         $generalNames = array_flip(array_column($generalTools, 'name'));
@@ -322,14 +324,16 @@ class McpStaffController extends Controller
     private function toolAllowed(Request $request, string $toolName): bool
     {
         $token = $request->attributes->get('mcp_staff_token');
+        if (! $token instanceof McpStaffToken) {
+            return false;
+        }
 
         if (OperatorBridgeTools::handles($toolName)) {
-            return $token instanceof McpStaffToken
-                && $token->allowedTools !== null
+            return $token->allowedTools !== null
                 && $token->allows($toolName);
         }
 
-        return ! $token instanceof McpStaffToken || $token->allows($toolName);
+        return $token->allows($toolName);
     }
 
     private function actorLabel(Request $request): string

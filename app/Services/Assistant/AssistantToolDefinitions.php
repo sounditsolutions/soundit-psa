@@ -140,28 +140,6 @@ class AssistantToolDefinitions
                 ],
             ],
             [
-                'name' => 'propose_close',
-                'description' => 'Submit a held AI Technician close proposal for a ticket. This never closes the ticket directly; it records a proposal in the Technician cockpit for human approval. Provide concrete ticket-specific evidence in the reason.',
-                'input_schema' => [
-                    'type' => 'object',
-                    'properties' => [
-                        'ticket_id' => [
-                            'type' => 'integer',
-                            'description' => 'The ticket ID to propose closing. The server derives and re-validates the ticket client from this ID.',
-                        ],
-                        'reason' => [
-                            'type' => 'string',
-                            'description' => 'Specific evidence for why a human should approve closing this ticket.',
-                        ],
-                        'confidence' => [
-                            'type' => 'number',
-                            'description' => 'Confidence from 0 to 1 that closing is the right action. MCP proposals are always held for human approval regardless of this value.',
-                        ],
-                    ],
-                    'required' => ['ticket_id', 'reason', 'confidence'],
-                ],
-            ],
-            [
                 'name' => 'get_ticket_calls',
                 'description' => 'Get the phone calls linked to a ticket, including each call\'s direction, sentiment, billing classification, summary, next steps, coaching notes, and full transcript. Use whenever the user asks about phone calls, voicemails, what a caller said, or call transcripts/summaries for a ticket.',
                 'input_schema' => [

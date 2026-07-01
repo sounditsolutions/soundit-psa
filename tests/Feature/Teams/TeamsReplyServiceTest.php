@@ -2,9 +2,12 @@
 
 namespace Tests\Feature\Teams;
 
+use App\Enums\TicketStatus;
 use App\Models\AssistantConversation;
 use App\Models\AssistantMessage;
 use App\Models\Setting;
+use App\Models\TechnicianRun;
+use App\Models\Ticket;
 use App\Models\User;
 use App\Services\Ai\AiClient;
 use App\Services\Ai\AiResponse;
@@ -129,16 +132,19 @@ class TeamsReplyServiceTest extends TestCase
 
         $this->assertNotContains('create_ticket', $names, 'No mutating tool may reach the chat loop.');
         $this->assertNotContains('add_ticket_note', $names, 'No mutating tool may reach the chat loop.');
+        $this->assertNotContains('propose_close', $names, 'Held close proposals are not part of Teams read-only chat.');
         $this->assertContains('wiki_search', $names, 'At least one read tool must be present.');
 
         // Prove the filter genuinely strips mutators: the CLIENT-scoped raw surface
-        // DOES contain them, and definitions() removes exactly those two.
+        // DOES contain them, and definitions() removes them.
         $rawClient = array_column(AssistantToolDefinitions::getTools(true), 'name');
         $this->assertContains('create_ticket', $rawClient, 'Sanity: the raw client surface still has the mutators.');
+        $this->assertNotContains('propose_close', array_column(AssistantToolDefinitions::getTools(false), 'name'));
 
         $filteredClient = array_column(TeamsReadOnlyToolset::definitions(true), 'name');
         $this->assertNotContains('create_ticket', $filteredClient);
         $this->assertNotContains('add_ticket_note', $filteredClient);
+        $this->assertNotContains('propose_close', $filteredClient);
     }
 
     // ── 3. The executor refuses mutating tools without touching the inner one ─
@@ -161,6 +167,33 @@ class TeamsReplyServiceTest extends TestCase
         $this->assertIsCallable($capturedExecutor);
         $this->assertSame(self::REFUSAL, $capturedExecutor('create_ticket', ['subject' => 'x', 'description' => 'y']));
         $this->assertSame(self::REFUSAL, $capturedExecutor('add_ticket_note', ['ticket_id' => 1, 'body' => 'z']));
+    }
+
+    public function test_executor_refuses_propose_close_without_creating_a_held_run(): void
+    {
+        $sender = $this->sender($this->makeUser('Charlie Coutts'));
+        $ticket = Ticket::factory()->create(['status' => TicketStatus::PendingClient]);
+
+        $capturedExecutor = null;
+        $ai = $this->aiMock();
+        $ai->shouldReceive('runChatWithTools')->once()
+            ->andReturnUsing(function ($system, $messages, $tools, $executor, ...$rest) use (&$capturedExecutor): AiResponse {
+                $capturedExecutor = $executor;
+
+                return $this->aiResponse('ok');
+            });
+
+        $this->service($ai, $this->clientMock())->reply($sender, 'hi', 'BlueTier IT');
+
+        $this->assertIsCallable($capturedExecutor);
+        $this->assertSame(self::REFUSAL, $capturedExecutor('propose_close', [
+            'ticket_id' => $ticket->id,
+            'reason' => 'Client has not replied for weeks.',
+            'confidence' => 0.96,
+        ]));
+        $this->assertSame(0, TechnicianRun::where('ticket_id', $ticket->id)
+            ->where('action_type', 'propose_close')
+            ->count());
     }
 
     // ── 4. A typing indicator is shown ───────────────────────────────────────

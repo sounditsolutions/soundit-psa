@@ -22,6 +22,7 @@ use App\Http\Controllers\Web\InvoiceController;
 use App\Http\Controllers\Web\LevelGroupController;
 use App\Http\Controllers\Web\LicenseController;
 use App\Http\Controllers\Web\LicenseTypeController;
+use App\Http\Controllers\Web\McpTokensController;
 use App\Http\Controllers\Web\MeshCustomerController;
 use App\Http\Controllers\Web\NinjaOrgController;
 use App\Http\Controllers\Web\PersonController;
@@ -290,6 +291,9 @@ Route::middleware('auth')->group(function () {
 
     // Settings — Integrations
     Route::get('/settings/integrations', [IntegrationsController::class, 'index'])->name('settings.integrations');
+    Route::get('/settings/mcp-tokens', [McpTokensController::class, 'index'])->name('settings.mcp-tokens.index');
+    Route::post('/settings/mcp-tokens', [McpTokensController::class, 'store'])->name('settings.mcp-tokens.store');
+    Route::delete('/settings/mcp-tokens/{token}', [McpTokensController::class, 'revoke'])->name('settings.mcp-tokens.revoke');
     Route::post('/settings/integrations/toggle', [IntegrationsController::class, 'toggleIntegration'])->name('settings.integrations.toggle');
     Route::post('/settings/integrations/ninja', [IntegrationsController::class, 'updateNinja'])->name('settings.integrations.ninja.update');
     Route::post('/settings/integrations/ninja/test', [IntegrationsController::class, 'testNinja'])->name('settings.integrations.ninja.test');
