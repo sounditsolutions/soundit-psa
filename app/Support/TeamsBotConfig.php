@@ -149,4 +149,14 @@ class TeamsBotConfig
 
         return is_string($v) && trim($v) !== '' ? trim($v) : null;
     }
+
+    // ── GC Chet Teams bridge ────────────────────────────────────────────────
+
+    /** The Teams conversation id GC Chet owns. Null when unset. */
+    public static function chetConversationId(): ?string
+    {
+        $v = Setting::getValue('teams_chet_conversation_id');
+
+        return is_string($v) && trim($v) !== '' ? trim($v) : null;
+    }
 }

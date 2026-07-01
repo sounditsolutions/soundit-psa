@@ -2,6 +2,7 @@
 
 namespace App\Support;
 
+use App\Enums\OperatorMessageCategory;
 use App\Models\Setting;
 use App\Models\User;
 use Illuminate\Support\Carbon;
@@ -463,6 +464,17 @@ class TechnicianConfig
         };
 
         return $primary ?? $secondary; // null only when neither role is configured
+    }
+
+    /** Server-side recipient routing for GC Chet operator messages. */
+    public static function operatorRecipientFor(OperatorMessageCategory $category): ?int
+    {
+        return match ($category) {
+            OperatorMessageCategory::Escalation,
+            OperatorMessageCategory::SteerRequest => self::escalationJudgmentUserId() ?? self::escalationHandsOnUserId(),
+            OperatorMessageCategory::DailyReport,
+            OperatorMessageCategory::Reply => null,
+        };
     }
 
     // ── private helpers ──────────────────────────────────────────────────────

@@ -2,16 +2,27 @@
 
 namespace App\Services\Chet;
 
+use App\Enums\OperatorMessageCategory;
+use App\Models\Ticket;
 use App\Models\User;
+use App\Services\Agent\Escalation\OperatorDelivery;
+use App\Services\Technician\Notify\TeamsText;
+use App\Support\TeamsBotConfig;
+use App\Support\TechnicianConfig;
 
 class OperatorBridgeToolExecutor
 {
+    public function __construct(
+        private readonly OperatorDelivery $delivery,
+    ) {}
+
     /** @return array<string, mixed> */
     public function execute(string $name, array $input): array
     {
         return match ($name) {
             'find_staff' => $this->findStaff($input),
             'get_staff' => $this->getStaff($input),
+            'post_to_operator' => $this->postToOperator($input),
             default => ['error' => "Unknown tool: {$name}"],
         };
     }
@@ -54,6 +65,59 @@ class OperatorBridgeToolExecutor
         }
 
         return $this->serializeStaff($user);
+    }
+
+    /** @return array<string, mixed> */
+    private function postToOperator(array $input): array
+    {
+        $category = OperatorMessageCategory::tryFrom(trim((string) ($input['category'] ?? '')));
+        if ($category === null) {
+            $valid = implode(', ', array_map(fn (OperatorMessageCategory $c) => $c->value, OperatorMessageCategory::cases()));
+
+            return ['error' => "category must be one of: {$valid}"];
+        }
+
+        $message = trim((string) ($input['message'] ?? ''));
+        if ($message === '') {
+            return ['error' => 'message is required'];
+        }
+
+        $ticket = null;
+        if (isset($input['ticket_id']) && is_numeric($input['ticket_id']) && (int) $input['ticket_id'] > 0) {
+            $ticket = Ticket::with('client')->find((int) $input['ticket_id']);
+        }
+
+        $recipientId = TechnicianConfig::operatorRecipientFor($category);
+        $recipient = $recipientId ? User::find($recipientId) : null;
+
+        $safeMessage = $this->delivery->sanitize($message);
+
+        $persona = TeamsText::escape(TechnicianConfig::aiActorName());
+        $label = $category->label();
+        $prefix = "{$persona} - {$label}";
+        if ($ticket !== null) {
+            $client = TeamsText::escape($ticket->client?->name ?? '');
+            $subject = TeamsText::escape($ticket->subject ?? '');
+            $prefix .= " on #{$ticket->id} ({$client} - {$subject})";
+        }
+
+        $body = "{$prefix}: {$safeMessage}";
+        $subject = $ticket !== null
+            ? "{$persona} - {$label} - ticket #{$ticket->id}"
+            : "{$persona} - {$label}";
+
+        $result = $this->delivery->send(
+            $recipient,
+            TeamsBotConfig::chetConversationId(),
+            TeamsBotConfig::escalationServiceUrl(),
+            $subject,
+            $body,
+        );
+
+        return [
+            'posted' => $result->posted,
+            'remote_message_id' => $result->remoteMessageId,
+        ];
     }
 
     /** @return array{id:int, name:string|null, email:string|null, microsoft_id:string|null, is_active:bool} */

@@ -47,6 +47,23 @@ class OperatorBridgeTools
                     'required' => ['id'],
                 ],
             ],
+            [
+                'name' => 'post_to_operator',
+                'description' => 'Post a message to the operator Teams chat. The recipient is resolved server-side from category; callers cannot direct delivery. Text is output-scanned and Teams-escaped before posting. Returns {posted, remote_message_id}.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'category' => [
+                            'type' => 'string',
+                            'enum' => ['escalation', 'steer_request', 'daily_report', 'reply'],
+                            'description' => 'escalation | steer_request | daily_report | reply',
+                        ],
+                        'message' => ['type' => 'string', 'description' => 'The message body.'],
+                        'ticket_id' => ['type' => 'integer', 'description' => 'Optional PSA ticket id for server-derived context.'],
+                    ],
+                    'required' => ['category', 'message'],
+                ],
+            ],
         ];
     }
 }
