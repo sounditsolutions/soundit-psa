@@ -2,9 +2,11 @@
 
 namespace App\Http\Controllers\Web;
 
+use App\Enums\ClientStage;
 use App\Http\Controllers\Controller;
 use App\Models\AssistantConversation;
 use App\Models\AssistantMessage;
+use App\Models\Client;
 use App\Models\Ticket;
 use App\Services\Assistant\AssistantService;
 use Illuminate\Http\JsonResponse;
@@ -44,12 +46,20 @@ class AssistantController extends Controller
         // Validate context_id exists if context_type is set
         if (! empty($validated['context_type']) && ! empty($validated['context_id'])) {
             if ($validated['context_type'] === 'ticket') {
-                if (! Ticket::where('id', $validated['context_id'])->exists()) {
+                $ticket = Ticket::with('client:id,stage')->find($validated['context_id']);
+                if (! $ticket) {
                     return response()->json(['error' => 'Ticket not found'], 404);
                 }
+                if ($ticket->client?->stage === ClientStage::Prospect) {
+                    return response()->json(['error' => 'AI assistance is unavailable for prospect tickets.'], 422);
+                }
             } elseif ($validated['context_type'] === 'client') {
-                if (! \App\Models\Client::where('id', $validated['context_id'])->exists()) {
+                $client = Client::find($validated['context_id']);
+                if (! $client) {
                     return response()->json(['error' => 'Client not found'], 404);
+                }
+                if ($client->stage === ClientStage::Prospect) {
+                    return response()->json(['error' => 'AI assistance is unavailable for prospect clients.'], 422);
                 }
             }
         }
@@ -72,6 +82,13 @@ class AssistantController extends Controller
         // Ownership check
         if ($conversation->user_id !== auth()->id()) {
             return response()->json(['error' => 'Unauthorized'], 403);
+        }
+
+        if ($this->isProspectTicketConversation($conversation)) {
+            return response()->json(['error' => 'AI assistance is unavailable for prospect tickets.'], 422);
+        }
+        if ($this->isProspectClientConversation($conversation)) {
+            return response()->json(['error' => 'AI assistance is unavailable for prospect clients.'], 422);
         }
 
         $validated = $request->validate([
@@ -130,6 +147,9 @@ class AssistantController extends Controller
         if (! $ticket) {
             return response()->json(['error' => 'Save as note is only available in ticket context'], 422);
         }
+        if ($ticket->client?->stage === ClientStage::Prospect) {
+            return response()->json(['error' => 'AI assistance is unavailable for prospect tickets.'], 422);
+        }
 
         $service = new AssistantService;
         $note = $service->saveAsNote($message, $ticket, auth()->id());
@@ -146,6 +166,9 @@ class AssistantController extends Controller
      */
     public function forTicket(Ticket $ticket)
     {
+        $ticket->loadMissing('client:id,stage');
+        $ticketAiAllowed = $ticket->client?->stage !== ClientStage::Prospect;
+
         $conversations = AssistantConversation::where('context_type', 'ticket')
             ->where('context_id', $ticket->id)
             ->with(['user:id,name', 'messages'])
@@ -158,7 +181,8 @@ class AssistantController extends Controller
                 'message_count' => $conv->messages->count(),
                 'created_at' => $conv->created_at->toIso8601String(),
                 'updated_at' => $conv->updated_at->toIso8601String(),
-                'is_active' => $conv->user_id === auth()->id()
+                'is_active' => $ticketAiAllowed
+                    && $conv->user_id === auth()->id()
                     && $conv->messages->last()?->created_at?->gt(now()->subMinutes(30)),
                 'messages' => $conv->messages->map(fn ($m) => [
                     'id' => $m->id,
@@ -193,5 +217,23 @@ class AssistantController extends Controller
             'id' => $conversation->id,
             'messages' => $messages,
         ]);
+    }
+
+    private function isProspectTicketConversation(AssistantConversation $conversation): bool
+    {
+        if ($conversation->context_type !== 'ticket') {
+            return false;
+        }
+
+        return $conversation->resolveTicket()?->client?->stage === ClientStage::Prospect;
+    }
+
+    private function isProspectClientConversation(AssistantConversation $conversation): bool
+    {
+        if ($conversation->context_type !== 'client') {
+            return false;
+        }
+
+        return $conversation->resolveClient()?->stage === ClientStage::Prospect;
     }
 }
