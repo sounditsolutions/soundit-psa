@@ -217,8 +217,51 @@ class CippMcpToolRelay
             'cipp_list_mail_quarantine' => $this->shapeMailQuarantine($rows, $input, $totalReturned),
             'cipp_list_user_mfa_methods' => $this->shapeUserMfaMethods($rows, $input, $clientId),
             'cipp_list_oauth_apps' => $this->shapeOauthApps($rows, $input, $totalReturned, $clientId),
+            'cipp_list_defender_state' => $this->shapeDefenderState($rows),
             default => $this->projectRows($toolName, $rows),
         };
+    }
+
+    /**
+     * Real ListDefenderState shape (captured live, psa-tpzr follow-up): Intune
+     * managedDevice stubs — id/deviceName/deviceType/operatingSystem — with the AV
+     * state in a NESTED, NULLABLE windowsProtectionState object (null for macOS and
+     * other unsupported devices). Flatten the useful inner keys under `protection`;
+     * a null stays null so "no Defender telemetry" is explicit, not absent.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private function shapeDefenderState(array $rows): array
+    {
+        $innerFields = [
+            'deviceState', 'productStatus',
+            'malwareProtectionEnabled', 'realTimeProtectionEnabled', 'tamperProtectionEnabled',
+            'quickScanOverdue', 'fullScanOverdue', 'signatureUpdateOverdue', 'rebootRequired',
+            'signatureVersion', 'antiMalwareVersion',
+            'lastQuickScanDateTime', 'lastFullScanDateTime', 'lastReportedDateTime',
+        ];
+
+        return array_map(function (array $row) use ($innerFields): array {
+            $state = $row['windowsProtectionState'] ?? null;
+
+            $protection = null;
+            if (is_array($state)) {
+                $protection = [];
+                foreach ($innerFields as $field) {
+                    if (array_key_exists($field, $state)) {
+                        $protection[$field] = $this->sanitizeProjectedValue('cipp_list_defender_state', $field, $state[$field]);
+                    }
+                }
+            }
+
+            return [
+                'id' => $row['id'] ?? null,
+                'deviceName' => $this->sanitizeProjectedValue('cipp_list_defender_state', 'deviceName', $row['deviceName'] ?? null),
+                'deviceType' => $row['deviceType'] ?? null,
+                'operatingSystem' => $row['operatingSystem'] ?? null,
+                'protection' => $protection,
+            ];
+        }, array_slice($rows, 0, 50));
     }
 
     /**
