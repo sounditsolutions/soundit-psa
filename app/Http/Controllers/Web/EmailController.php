@@ -52,7 +52,8 @@ class EmailController extends Controller
             'filters' => $filters,
             'needsAttentionCount' => $needsAttentionCount,
             'noClientCount' => $noClientCount,
-            'clients' => Client::operational()->orderBy('name')->get(['id', 'name']),
+            // active(), not operational(): email intake filters must surface prospect conversations.
+            'clients' => Client::active()->orderBy('name')->get(['id', 'name']),
         ]);
     }
 
@@ -122,14 +123,15 @@ class EmailController extends Controller
         $clients = collect();
         $suggestedClientId = null;
         if (! $email->client_id) {
-            $clients = Client::operational()->orderBy('name')->get(['id', 'name']);
+            // active(), not operational(): unresolved sender routing can assign email to a prospect.
+            $clients = Client::active()->orderBy('name')->get(['id', 'name']);
             $domain = Str::after($email->from_address, '@');
             if ($domain && ! in_array(strtolower($domain), self::FREE_EMAIL_DOMAINS)) {
                 $suggestedClientId = Person::whereEmailDomain($domain)
                     ->whereNotNull('client_id')
                     ->value('client_id');
                 if (! $suggestedClientId) {
-                    $suggestedClientId = Client::operational()
+                    $suggestedClientId = Client::active()
                         ->where('website', 'like', '%'.$domain.'%')
                         ->value('id');
                 }
@@ -221,7 +223,8 @@ class EmailController extends Controller
 
         return view('emails.create-ticket', [
             'email' => $email,
-            'clients' => Client::operational()->orderBy('name')->get(['id', 'name']),
+            // active(), not operational(): email-created tickets can be prospect intake.
+            'clients' => Client::active()->orderBy('name')->get(['id', 'name']),
             'users' => User::active()->orderBy('name')->get(['id', 'name']),
             'types' => TicketType::cases(),
             'priorities' => TicketPriority::cases(),
@@ -343,10 +346,19 @@ class EmailController extends Controller
 
         // Optionally cascade to linked ticket
         if ($request->boolean('update_ticket') && $email->ticket_id) {
-            $email->ticket->update([
-                'client_id' => $newClientId,
-                'contact_id' => $newContactId,
-            ]);
+            if ($newClientId) {
+                $this->ticketService->moveToClient(
+                    $email->ticket,
+                    (int) $newClientId,
+                    $newContactId ? (int) $newContactId : null,
+                    (int) auth()->id(),
+                );
+            } else {
+                $email->ticket->update([
+                    'client_id' => null,
+                    'contact_id' => null,
+                ]);
+            }
         }
 
         if (! $newClientId) {

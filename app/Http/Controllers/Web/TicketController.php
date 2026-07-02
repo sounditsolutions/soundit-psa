@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Web;
 
+use App\Enums\ClientStage;
 use App\Enums\TicketPriority;
 use App\Enums\TicketSource;
 use App\Enums\TicketStatus;
@@ -53,7 +54,8 @@ class TicketController extends Controller
         return view('tickets.index', [
             'tickets' => $tickets,
             'filters' => $filters,
-            'clients' => Client::operational()->orderBy('name')->get(['id', 'name']),
+            // active(), not operational(): ticket filters should include prospect intake tickets.
+            'clients' => Client::active()->orderBy('name')->get(['id', 'name']),
             'users' => User::active()->orderBy('name')->get(['id', 'name']),
             'statuses' => TicketStatus::cases(),
             'priorities' => TicketPriority::cases(),
@@ -66,7 +68,8 @@ class TicketController extends Controller
     public function create()
     {
         return view('tickets.create', [
-            'clients' => Client::operational()->orderBy('name')->get(['id', 'name']),
+            // active(), not operational(): staff can create ticket-as-opportunity records for prospects.
+            'clients' => Client::active()->orderBy('name')->get(['id', 'name']),
             'users' => User::active()->orderBy('name')->get(['id', 'name']),
             'types' => TicketType::cases(),
             'priorities' => TicketPriority::cases(),
@@ -374,11 +377,29 @@ class TicketController extends Controller
                     return redirect()->route('tickets.index')
                         ->with('error', 'AI Triage is not enabled.');
                 }
-                foreach ($ticketIds as $id) {
+
+                $prospectIds = Ticket::whereIn('id', $ticketIds)
+                    ->whereHas('client', fn ($client) => $client->where('stage', ClientStage::Prospect))
+                    ->pluck('id')
+                    ->all();
+                $eligibleIds = array_values(array_diff($ticketIds, $prospectIds));
+                $label = $action === 'triage' ? 'Triage' : 'Review';
+
+                if (empty($eligibleIds)) {
+                    return redirect()->route('tickets.index')
+                        ->with('error', "AI {$label} is unavailable for prospect tickets.");
+                }
+
+                foreach ($eligibleIds as $id) {
                     RunTriagePipeline::dispatch($id, $action, auth()->id());
                 }
-                $label = $action === 'triage' ? 'Triage' : 'Review';
-                $message = "AI {$label} queued for {$count} ticket(s).";
+
+                $message = "AI {$label} queued for ".count($eligibleIds).' ticket(s)';
+                if ($prospectIds !== []) {
+                    $message .= '; '.count($prospectIds).' prospect ticket(s) skipped.';
+                } else {
+                    $message .= '.';
+                }
                 break;
         }
 
@@ -392,6 +413,10 @@ class TicketController extends Controller
             return redirect()->route('tickets.show', $ticket)
                 ->with('error', 'AI Triage is not enabled.');
         }
+        if ($ticket->client?->stage === ClientStage::Prospect) {
+            return redirect()->route('tickets.show', $ticket)
+                ->with('error', 'AI Triage is unavailable for prospect tickets.');
+        }
 
         RunTriagePipeline::dispatch($ticket->id, 'triage', auth()->id());
 
@@ -404,6 +429,10 @@ class TicketController extends Controller
         if (! TriageConfig::isEnabled()) {
             return redirect()->route('tickets.show', $ticket)
                 ->with('error', 'AI Triage is not enabled.');
+        }
+        if ($ticket->client?->stage === ClientStage::Prospect) {
+            return redirect()->route('tickets.show', $ticket)
+                ->with('error', 'AI Review is unavailable for prospect tickets.');
         }
 
         RunTriagePipeline::dispatch($ticket->id, 'review', auth()->id());
@@ -447,6 +476,10 @@ class TicketController extends Controller
             'instructions' => ['nullable', 'string', 'max:500'],
         ]);
 
+        if ($ticket->client?->stage === ClientStage::Prospect) {
+            return response()->json(['error' => 'AI assistance is unavailable for prospect tickets.'], 422);
+        }
+
         if (! AiConfig::isConfigured()) {
             return response()->json(['error' => 'AI is not configured. Set it up in Settings > Integrations.'], 422);
         }
@@ -488,6 +521,10 @@ class TicketController extends Controller
 
     public function draftResolution(Ticket $ticket)
     {
+        if ($ticket->client?->stage === ClientStage::Prospect) {
+            return response()->json(['error' => 'AI assistance is unavailable for prospect tickets.'], 422);
+        }
+
         if (! AiConfig::isConfigured()) {
             return response()->json(['error' => 'AI is not configured. Set it up in Settings > Integrations.'], 422);
         }

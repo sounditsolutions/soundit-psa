@@ -7,11 +7,17 @@ use App\Jobs\GenerateTicketResolution;
 use App\Jobs\MineTicketKnowledge;
 use App\Jobs\RunTriagePipeline;
 use App\Jobs\SendTicketNotification;
+use App\Models\AssistantConversation;
 use App\Models\Client;
 use App\Models\Setting;
 use App\Models\Ticket;
+use App\Models\TicketNote;
 use App\Models\User;
 use App\Models\WikiRun;
+use App\Services\Assistant\AssistantService;
+use App\Services\Assistant\AssistantToolDefinitions;
+use App\Services\Assistant\AssistantToolExecutor;
+use App\Services\ReplyDraftService;
 use App\Services\TicketResolutionDrafter;
 use App\Services\Triage\TriagePipeline;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -193,6 +199,63 @@ class ProspectAiGateTest extends TestCase
         $job->handle($pipeline);
     }
 
+    public function test_manual_triage_endpoint_rejects_prospect_ticket_without_dispatch(): void
+    {
+        $this->enableAutoTriage();
+
+        $user = User::factory()->create();
+        $prospect = Client::factory()->prospect()->create();
+        $ticket = Ticket::factory()->create(['client_id' => $prospect->id]);
+        Bus::fake();
+
+        $response = $this->actingAs($user)->post(route('tickets.triage', $ticket));
+
+        $response->assertRedirect(route('tickets.show', $ticket));
+        $response->assertSessionHas('error', 'AI Triage is unavailable for prospect tickets.');
+        Bus::assertNotDispatched(RunTriagePipeline::class);
+    }
+
+    public function test_manual_review_endpoint_rejects_prospect_ticket_without_dispatch(): void
+    {
+        $this->enableAutoTriage();
+
+        $user = User::factory()->create();
+        $prospect = Client::factory()->prospect()->create();
+        $ticket = Ticket::factory()->create(['client_id' => $prospect->id]);
+        Bus::fake();
+
+        $response = $this->actingAs($user)->post(route('tickets.review', $ticket));
+
+        $response->assertRedirect(route('tickets.show', $ticket));
+        $response->assertSessionHas('error', 'AI Review is unavailable for prospect tickets.');
+        Bus::assertNotDispatched(RunTriagePipeline::class);
+    }
+
+    public function test_bulk_triage_skips_prospect_tickets_and_dispatches_active_tickets_only(): void
+    {
+        $this->enableAutoTriage();
+
+        $user = User::factory()->create();
+        $active = Client::factory()->create();
+        $prospect = Client::factory()->prospect()->create();
+        $activeTicket = Ticket::factory()->create(['client_id' => $active->id]);
+        $prospectTicket = Ticket::factory()->create(['client_id' => $prospect->id]);
+        Bus::fake();
+
+        $response = $this->actingAs($user)->post(route('tickets.bulk-action'), [
+            'action' => 'triage',
+            'ticket_ids' => [$activeTicket->id, $prospectTicket->id],
+        ]);
+
+        $response->assertRedirect(route('tickets.index'));
+        $response->assertSessionHas('success', 'AI Triage queued for 1 ticket(s); 1 prospect ticket(s) skipped.');
+        Bus::assertDispatchedTimes(RunTriagePipeline::class, 1);
+        Bus::assertDispatched(
+            RunTriagePipeline::class,
+            fn ($job) => (fn () => $this->ticketId)->call($job) === $activeTicket->id,
+        );
+    }
+
     /**
      * C2 — MineTicketKnowledge::handle must early-out for prospect clients.
      *
@@ -301,5 +364,394 @@ class ProspectAiGateTest extends TestCase
 
         $ticket->refresh();
         $this->assertSame('Replaced the failed drive.', $ticket->resolution);
+    }
+
+    // ── Manual AI surfaces: endpoints + ticket page controls ────────────────
+
+    public function test_manual_draft_reply_endpoint_rejects_prospect_ticket(): void
+    {
+        config(['services.ai.api_key' => 'sk-test-key']);
+
+        $user = User::factory()->create();
+        $prospect = Client::factory()->prospect()->create();
+        $ticket = Ticket::factory()->create([
+            'client_id' => $prospect->id,
+            'status' => TicketStatus::InProgress,
+        ]);
+
+        $this->mock(ReplyDraftService::class)
+            ->shouldNotReceive('generateDraft');
+
+        $response = $this->actingAs($user)
+            ->postJson(route('tickets.draft-reply', $ticket), [
+                'instructions' => 'Be concise.',
+            ]);
+
+        $response->assertStatus(422);
+        $response->assertJson([
+            'error' => 'AI assistance is unavailable for prospect tickets.',
+        ]);
+    }
+
+    public function test_manual_draft_resolution_endpoint_rejects_prospect_ticket(): void
+    {
+        config(['services.ai.api_key' => 'sk-test-key']);
+
+        $user = User::factory()->create();
+        $prospect = Client::factory()->prospect()->create();
+        $ticket = Ticket::factory()->create([
+            'client_id' => $prospect->id,
+            'status' => TicketStatus::InProgress,
+        ]);
+
+        $this->mock(TicketResolutionDrafter::class)
+            ->shouldNotReceive('draft');
+
+        $response = $this->actingAs($user)
+            ->postJson(route('tickets.draft-resolution', $ticket));
+
+        $response->assertStatus(422);
+        $response->assertJson([
+            'error' => 'AI assistance is unavailable for prospect tickets.',
+        ]);
+    }
+
+    public function test_assistant_conversation_creation_rejects_prospect_ticket_context(): void
+    {
+        $user = User::factory()->create();
+        $prospect = Client::factory()->prospect()->create();
+        $ticket = Ticket::factory()->create(['client_id' => $prospect->id]);
+
+        $response = $this->actingAs($user)
+            ->postJson(route('assistant.create'), [
+                'context_type' => 'ticket',
+                'context_id' => $ticket->id,
+            ]);
+
+        $response->assertStatus(422);
+        $response->assertJson([
+            'error' => 'AI assistance is unavailable for prospect tickets.',
+        ]);
+        $this->assertDatabaseMissing('assistant_conversations', [
+            'context_type' => 'ticket',
+            'context_id' => $ticket->id,
+        ]);
+    }
+
+    public function test_assistant_message_send_rejects_existing_prospect_ticket_conversation_before_persisting_message(): void
+    {
+        $user = User::factory()->create();
+        $prospect = Client::factory()->prospect()->create();
+        $ticket = Ticket::factory()->create(['client_id' => $prospect->id]);
+        $conversation = AssistantConversation::create([
+            'user_id' => $user->id,
+            'context_type' => 'ticket',
+            'context_id' => $ticket->id,
+        ]);
+
+        $response = $this->actingAs($user)
+            ->postJson(route('assistant.message', $conversation), [
+                'message' => 'Please investigate this ticket.',
+            ]);
+
+        $response->assertStatus(422);
+        $response->assertJson([
+            'error' => 'AI assistance is unavailable for prospect tickets.',
+        ]);
+        $this->assertDatabaseMissing('assistant_messages', [
+            'conversation_id' => $conversation->id,
+            'role' => 'user',
+            'content' => 'Please investigate this ticket.',
+        ]);
+    }
+
+    public function test_assistant_conversation_creation_rejects_prospect_client_context(): void
+    {
+        $user = User::factory()->create();
+        $prospect = Client::factory()->prospect()->create();
+
+        $response = $this->actingAs($user)
+            ->postJson(route('assistant.create'), [
+                'context_type' => 'client',
+                'context_id' => $prospect->id,
+            ]);
+
+        $response->assertStatus(422);
+        $response->assertJson([
+            'error' => 'AI assistance is unavailable for prospect clients.',
+        ]);
+        $this->assertDatabaseMissing('assistant_conversations', [
+            'context_type' => 'client',
+            'context_id' => $prospect->id,
+        ]);
+    }
+
+    public function test_assistant_message_send_rejects_existing_prospect_client_conversation_before_persisting_message(): void
+    {
+        $user = User::factory()->create();
+        $prospect = Client::factory()->prospect()->create();
+        $conversation = AssistantConversation::create([
+            'user_id' => $user->id,
+            'context_type' => 'client',
+            'context_id' => $prospect->id,
+        ]);
+
+        $response = $this->actingAs($user)
+            ->postJson(route('assistant.message', $conversation), [
+                'message' => 'Summarize this prospect.',
+            ]);
+
+        $response->assertStatus(422);
+        $response->assertJson([
+            'error' => 'AI assistance is unavailable for prospect clients.',
+        ]);
+        $this->assertDatabaseMissing('assistant_messages', [
+            'conversation_id' => $conversation->id,
+            'role' => 'user',
+            'content' => 'Summarize this prospect.',
+        ]);
+    }
+
+    public function test_assistant_save_note_rejects_prospect_ticket_and_creates_no_note(): void
+    {
+        $user = User::factory()->create();
+        $prospect = Client::factory()->prospect()->create();
+        $ticket = Ticket::factory()->create(['client_id' => $prospect->id]);
+        $conversation = AssistantConversation::create([
+            'user_id' => $user->id,
+            'context_type' => 'ticket',
+            'context_id' => $ticket->id,
+        ]);
+        $message = $conversation->messages()->create([
+            'role' => 'assistant',
+            'content' => 'AI output that must not become a note.',
+        ]);
+
+        $response = $this->actingAs($user)
+            ->postJson(route('assistant.save-note', $conversation), [
+                'message_id' => $message->id,
+            ]);
+
+        $response->assertStatus(422);
+        $response->assertJson([
+            'error' => 'AI assistance is unavailable for prospect tickets.',
+        ]);
+        $this->assertSame(0, TicketNote::where('ticket_id', $ticket->id)->count());
+    }
+
+    public function test_assistant_service_save_as_note_rejects_prospect_ticket_directly(): void
+    {
+        $user = User::factory()->create();
+        $prospect = Client::factory()->prospect()->create();
+        $ticket = Ticket::factory()->create(['client_id' => $prospect->id]);
+        $conversation = AssistantConversation::create([
+            'user_id' => $user->id,
+            'context_type' => 'ticket',
+            'context_id' => $ticket->id,
+        ]);
+        $message = $conversation->messages()->create([
+            'role' => 'assistant',
+            'content' => 'AI output that must not become a note.',
+        ]);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('AI assistance is unavailable for prospect tickets.');
+
+        try {
+            app(AssistantService::class)->saveAsNote($message, $ticket, $user->id);
+        } finally {
+            $this->assertSame(0, TicketNote::where('ticket_id', $ticket->id)->count());
+        }
+    }
+
+    public function test_assistant_tool_executor_rejects_prospect_ticket_reads_and_writes(): void
+    {
+        $user = User::factory()->create();
+        $prospect = Client::factory()->prospect()->create();
+        $ticket = Ticket::factory()->create([
+            'client_id' => $prospect->id,
+            'status' => TicketStatus::InProgress,
+            'subject' => 'Prospect-only tool surface ticket',
+        ]);
+        TicketNote::create([
+            'ticket_id' => $ticket->id,
+            'author_name' => 'Tester',
+            'body' => 'Prospect note body',
+            'noted_at' => now(),
+        ]);
+
+        $general = new AssistantToolExecutor(userId: $user->id);
+        $clientScoped = new AssistantToolExecutor(clientId: $prospect->id, userId: $user->id);
+
+        $this->assertSame(
+            ['error' => 'AI assistance is unavailable for prospect tickets.'],
+            $general->execute('get_ticket_detail', ['ticket_id' => $ticket->id]),
+        );
+        $this->assertSame(
+            ['error' => 'AI assistance is unavailable for prospect tickets.'],
+            $general->execute('get_ticket_calls', ['ticket_id' => $ticket->id]),
+        );
+        $this->assertSame(
+            ['error' => 'AI assistance is unavailable for prospect clients.'],
+            $clientScoped->execute('search_tickets', ['query' => 'tool surface']),
+        );
+        $this->assertSame(
+            ['error' => 'AI assistance is unavailable for prospect clients.'],
+            $clientScoped->execute('get_ticket_notes', ['ticket_id' => $ticket->id]),
+        );
+        $this->assertSame(
+            ['error' => 'AI assistance is unavailable for prospect clients.'],
+            $clientScoped->execute('create_ticket', [
+                'subject' => 'AI-created prospect ticket',
+                'description' => 'Must be rejected.',
+            ]),
+        );
+        $this->assertSame(
+            ['error' => 'AI assistance is unavailable for prospect clients.'],
+            $clientScoped->execute('add_ticket_note', [
+                'ticket_id' => $ticket->id,
+                'body' => 'Must be rejected.',
+            ]),
+        );
+        $this->assertSame(1, TicketNote::where('ticket_id', $ticket->id)->count());
+    }
+
+    public function test_assistant_cross_ticket_tools_exclude_prospect_tickets_and_clients(): void
+    {
+        $user = User::factory()->create();
+        $client = Client::factory()->create(['name' => 'Operational Tool Client']);
+        $prospect = Client::factory()->prospect()->create(['name' => 'Prospect Tool Client']);
+        $activeTicket = Ticket::factory()->create([
+            'client_id' => $client->id,
+            'assignee_id' => $user->id,
+            'status' => TicketStatus::InProgress,
+            'subject' => 'Shared tool keyword active',
+            'opened_at' => now()->subHour(),
+        ]);
+        $prospectTicket = Ticket::factory()->create([
+            'client_id' => $prospect->id,
+            'assignee_id' => $user->id,
+            'status' => TicketStatus::InProgress,
+            'subject' => 'Shared tool keyword prospect',
+            'opened_at' => now()->subHours(2),
+        ]);
+
+        $executor = new AssistantToolExecutor(userId: $user->id);
+
+        $searchIds = collect($executor->execute('search_all_tickets', ['query' => 'Shared tool keyword']))
+            ->pluck('id');
+        $myIds = collect($executor->execute('list_my_tickets', []))->pluck('id');
+        $openIds = collect($executor->execute('list_open_tickets', []))->pluck('id');
+        $clientIds = collect($executor->execute('find_clients', ['query' => 'Tool Client'])['clients'])
+            ->pluck('id');
+        $queueStats = $executor->execute('get_queue_stats', []);
+
+        $this->assertTrue($searchIds->contains($activeTicket->id));
+        $this->assertFalse($searchIds->contains($prospectTicket->id));
+        $this->assertTrue($myIds->contains($activeTicket->id));
+        $this->assertFalse($myIds->contains($prospectTicket->id));
+        $this->assertTrue($openIds->contains($activeTicket->id));
+        $this->assertFalse($openIds->contains($prospectTicket->id));
+        $this->assertTrue($clientIds->contains($client->id));
+        $this->assertFalse($clientIds->contains($prospect->id));
+        $this->assertSame(1, $queueStats['total_open']);
+        $this->assertSame($activeTicket->id, $queueStats['oldest_ticket']['id']);
+    }
+
+    public function test_ticket_show_hides_manual_ai_controls_for_prospect_ticket(): void
+    {
+        config(['services.ai.api_key' => 'sk-test-key']);
+
+        $user = User::factory()->create();
+        $prospect = Client::factory()->prospect()->create();
+        $ticket = Ticket::factory()->create([
+            'client_id' => $prospect->id,
+            'status' => TicketStatus::InProgress,
+        ]);
+        $conversation = AssistantConversation::create([
+            'user_id' => $user->id,
+            'context_type' => 'ticket',
+            'context_id' => $ticket->id,
+        ]);
+        $conversation->messages()->create([
+            'role' => 'user',
+            'content' => 'Previous AI question.',
+        ]);
+
+        $response = $this->actingAs($user)->get(route('tickets.show', $ticket));
+
+        $response->assertOk();
+        $response->assertDontSee('id="askAiBtn"', false);
+        $response->assertDontSee('id="draftReplyBtn"', false);
+        $response->assertDontSee('id="draftResolutionBtn"', false);
+        $response->assertDontSee('id="ai-chat-input-'.$conversation->id.'"', false);
+    }
+
+    public function test_ticket_show_hides_triage_controls_for_prospect_ticket(): void
+    {
+        $this->enableAutoTriage();
+
+        $prospect = Client::factory()->prospect()->create();
+        $ticket = Ticket::factory()->create(['client_id' => $prospect->id]);
+
+        $response = $this->actingAs(User::factory()->create())->get(route('tickets.show', $ticket));
+
+        $response->assertOk();
+        $response->assertDontSee(route('tickets.triage', $ticket), false);
+        $response->assertDontSee(route('tickets.review', $ticket), false);
+    }
+
+    public function test_assistant_ticket_conversation_listing_marks_prospect_ticket_conversations_inactive(): void
+    {
+        $user = User::factory()->create();
+        $prospect = Client::factory()->prospect()->create();
+        $ticket = Ticket::factory()->create(['client_id' => $prospect->id]);
+        $conversation = AssistantConversation::create([
+            'user_id' => $user->id,
+            'context_type' => 'ticket',
+            'context_id' => $ticket->id,
+        ]);
+        $conversation->messages()->create([
+            'role' => 'user',
+            'content' => 'Previous AI question.',
+        ]);
+
+        $response = $this->actingAs($user)->getJson(route('assistant.for-ticket', $ticket));
+
+        $response->assertOk();
+        $this->assertFalse($response->json('0.is_active'));
+    }
+
+    public function test_ticket_show_still_shows_manual_ai_controls_for_active_client_ticket(): void
+    {
+        config(['services.ai.api_key' => 'sk-test-key']);
+
+        $user = User::factory()->create();
+        $client = Client::factory()->create();
+        $ticket = Ticket::factory()->create([
+            'client_id' => $client->id,
+            'status' => TicketStatus::InProgress,
+        ]);
+
+        $response = $this->actingAs($user)->get(route('tickets.show', $ticket));
+
+        $response->assertOk();
+        $response->assertSee('id="askAiBtn"', false);
+        $response->assertSee('id="draftReplyBtn"', false);
+        $response->assertSee('id="draftResolutionBtn"', false);
+    }
+
+    public function test_assistant_tool_status_schema_uses_pending_third_party_status(): void
+    {
+        $tools = collect(AssistantToolDefinitions::getTools(false));
+
+        foreach (['search_all_tickets', 'list_my_tickets'] as $toolName) {
+            $status = $tools->firstWhere('name', $toolName)['input_schema']['properties']['status'];
+
+            $this->assertContains('pending_third_party', $status['enum']);
+            $this->assertStringContainsString('pending_third_party', $status['description']);
+            $this->assertNotContains('pending_vendor', $status['enum']);
+            $this->assertStringNotContainsString('pending_vendor', $status['description']);
+        }
     }
 }
