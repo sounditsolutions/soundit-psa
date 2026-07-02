@@ -14,6 +14,8 @@ class CippConfig
             'client_id' => Setting::getValue('cipp_client_id'),
             'client_secret' => Setting::getEncrypted('cipp_client_secret'),
             'application_id' => Setting::getValue('cipp_application_id'),
+            'mcp_client_id' => Setting::getValue('cipp_mcp_client_id'),
+            'mcp_client_secret' => Setting::getEncrypted('cipp_mcp_client_secret'),
             default => null,
         };
     }
@@ -43,5 +45,19 @@ class CippConfig
         return self::isEnabled()
             && self::isConfigured()
             && Setting::getValue('cipp_device_sync_enabled', '0') === '1';
+    }
+
+    public static function isMcpRelayEnabled(): bool
+    {
+        return Setting::getValue('cipp_mcp_enabled', '0') === '1'
+            && self::isMcpConfigured();
+    }
+
+    public static function isMcpConfigured(): bool
+    {
+        return ! empty(self::get('api_url'))
+            && ! empty(self::get('tenant_id'))
+            && ! empty(self::get('mcp_client_id'))
+            && ! empty(self::get('mcp_client_secret'));
     }
 }

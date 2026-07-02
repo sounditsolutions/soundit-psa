@@ -134,6 +134,9 @@ class IntegrationsController extends Controller
         $cippClientId = CippConfig::get('client_id');
         $cippApplicationId = CippConfig::get('application_id');
         $cippHasSecret = (bool) Setting::getValue('cipp_client_secret');
+        $cippMcpClientId = CippConfig::get('mcp_client_id');
+        $cippMcpHasSecret = (bool) Setting::getValue('cipp_mcp_client_secret');
+        $cippMcpConfigured = CippConfig::isMcpConfigured();
         $cippConnected = (bool) $fmtTs(Setting::getValue('cipp_connected_at'));
 
         // Plivo
@@ -203,6 +206,7 @@ class IntegrationsController extends Controller
         $levelEnabled = LevelConfig::isEnabled();
         $meshEnabled = MeshConfig::isEnabled();
         $cippEnabled = CippConfig::isEnabled();
+        $cippMcpEnabled = CippConfig::isMcpRelayEnabled();
         $cippContactSyncEnabled = CippConfig::isContactSyncEnabled();
         $cippDeviceSyncEnabled = CippConfig::isDeviceSyncEnabled();
         $huntressEnabled = HuntressConfig::isEnabled();
@@ -334,7 +338,7 @@ class IntegrationsController extends Controller
             'zorusConfigured', 'zorusConnected', 'zorusEnabled',
             'appriverConfigured', 'appriverConnected', 'appriverConnectedAt', 'appriverEnabled',
             'printixConfigured', 'printixPartnerId', 'printixHasSecret', 'printixConnected', 'printixEnabled',
-            'cippConfigured', 'cippApiUrl', 'cippTenantId', 'cippClientId', 'cippApplicationId', 'cippHasSecret', 'cippConnected', 'cippEnabled', 'cippContactSyncEnabled', 'cippDeviceSyncEnabled',
+            'cippConfigured', 'cippApiUrl', 'cippTenantId', 'cippClientId', 'cippApplicationId', 'cippHasSecret', 'cippMcpClientId', 'cippMcpHasSecret', 'cippMcpConfigured', 'cippConnected', 'cippEnabled', 'cippMcpEnabled', 'cippContactSyncEnabled', 'cippDeviceSyncEnabled',
             'plivoAuthId', 'plivoDidNumber', 'plivoAppId', 'plivoHasToken', 'plivoHasWebhookSecret', 'plivoConnectedAt', 'plivoEnabled',
             'graphMailbox', 'graphConnectedAt', 'graphEmailSignature', 'emailAutoTicket', 'graphEnabled', 'autoCloseResolvedDays', 'gravatarDefault',
             'aiProvider', 'aiHasKey', 'aiModel', 'aiConnectedAt', 'aiEnabled', 'aiReplyGuidelines',
@@ -361,7 +365,7 @@ class IntegrationsController extends Controller
     public function toggleIntegration(Request $request)
     {
         $allowed = [
-            'ninja', 'level', 'mesh', 'cipp', 'cipp_contact_sync', 'cipp_device_sync', 'huntress', 'servosity', 'controld', 'zorus', 'appriver', 'printix',
+            'ninja', 'level', 'mesh', 'cipp', 'cipp_mcp', 'cipp_contact_sync', 'cipp_device_sync', 'huntress', 'servosity', 'controld', 'zorus', 'appriver', 'printix',
             'plivo', 'graph', 'stripe', 't2t', 'ai', 'screenconnect', 'tactical',
         ];
 
@@ -371,6 +375,13 @@ class IntegrationsController extends Controller
 
         $key = $request->input('integration').'_enabled';
         $enabled = $request->has('enabled') ? '1' : '0';
+
+        if ($request->input('integration') === 'cipp_mcp' && $enabled === '1' && ! CippConfig::isMcpConfigured()) {
+            Setting::setValue('cipp_mcp_enabled', '0');
+
+            return redirect()->route('settings.integrations')
+                ->with('error', 'CIPP MCP relay requires MCP Client ID and secret before it can be enabled.');
+        }
 
         Setting::setValue($key, $enabled);
 
@@ -864,6 +875,8 @@ class IntegrationsController extends Controller
             'client_id' => 'nullable|string|max:255',
             'client_secret' => 'nullable|string|min:1|max:500',
             'application_id' => 'nullable|string|max:255',
+            'mcp_client_id' => 'nullable|string|max:255',
+            'mcp_client_secret' => 'nullable|string|min:1|max:500',
         ]);
 
         if (! empty($validated['api_url'])) {
@@ -880,6 +893,12 @@ class IntegrationsController extends Controller
         }
         if (! empty($validated['application_id'])) {
             Setting::setValue('cipp_application_id', $validated['application_id']);
+        }
+        if (! empty($validated['mcp_client_id'])) {
+            Setting::setValue('cipp_mcp_client_id', $validated['mcp_client_id']);
+        }
+        if (! empty($validated['mcp_client_secret'])) {
+            Setting::setEncrypted('cipp_mcp_client_secret', $validated['mcp_client_secret']);
         }
 
         return redirect()->route('settings.integrations')

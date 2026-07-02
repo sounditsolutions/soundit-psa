@@ -13,11 +13,13 @@ use App\Models\Ticket;
 use App\Models\TicketNote;
 use App\Services\Agent\ProposeCloseTool;
 use App\Services\Cipp\CippClient;
+use App\Services\Cipp\CippMcpToolRelay;
 use App\Services\Level\LevelClient;
 use App\Services\Mesh\MeshClient;
 use App\Services\Ninja\NinjaClient;
 use App\Services\TicketService;
 use App\Services\Wiki\HandlesWikiTools;
+use App\Support\CippConfig;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -101,18 +103,18 @@ class AssistantToolExecutor
             'mesh_get_email_events' => $this->meshGetEvents($input),
 
             // CIPP tools
-            'cipp_list_users' => $this->cippQuery('api/ListUsers'),
-            'cipp_list_mailboxes' => $this->cippQuery('api/ListMailboxes'),
-            'cipp_list_licenses' => $this->cippQuery('api/ListLicenses'),
-            'cipp_list_devices' => $this->cippQuery('api/ListDevices'),
+            'cipp_list_users' => $this->cippQuery('cipp_list_users', $input, 'api/ListUsers'),
+            'cipp_list_mailboxes' => $this->cippQuery('cipp_list_mailboxes', $input, 'api/ListMailboxes'),
+            'cipp_list_licenses' => $this->cippQuery('cipp_list_licenses', $input, 'api/ListLicenses'),
+            'cipp_list_devices' => $this->cippQuery('cipp_list_devices', $input, 'api/ListDevices'),
             'cipp_list_sign_ins' => $this->cippListSignIns($input),
-            'cipp_list_groups' => $this->cippQuery('api/ListGroups'),
-            'cipp_list_user_groups' => $this->cippQueryWithUser($input, 'api/ListUserGroups'),
-            'cipp_list_mailbox_permissions' => $this->cippQueryWithUser($input, 'api/ListmailboxPermissions'),
-            'cipp_list_mailbox_rules' => $this->cippQueryWithUser($input, 'api/ListMailboxRules'),
-            'cipp_list_defender_state' => $this->cippQuery('api/ListDefenderState'),
-            'cipp_list_conditional_access_policies' => $this->cippQuery('api/ListConditionalAccessPolicies'),
-            'cipp_list_user_conditional_access' => $this->cippQueryWithUser($input, 'api/ListUserConditionalAccessPolicies'),
+            'cipp_list_groups' => $this->cippQuery('cipp_list_groups', $input, 'api/ListGroups'),
+            'cipp_list_user_groups' => $this->cippQueryWithUser($input, 'cipp_list_user_groups', 'api/ListUserGroups'),
+            'cipp_list_mailbox_permissions' => $this->cippQueryWithUser($input, 'cipp_list_mailbox_permissions', 'api/ListmailboxPermissions'),
+            'cipp_list_mailbox_rules' => $this->cippQueryWithUser($input, 'cipp_list_mailbox_rules', 'api/ListMailboxRules'),
+            'cipp_list_defender_state' => $this->cippQuery('cipp_list_defender_state', $input, 'api/ListDefenderState'),
+            'cipp_list_conditional_access_policies' => $this->cippQuery('cipp_list_conditional_access_policies', $input, 'api/ListConditionalAccessPolicies'),
+            'cipp_list_user_conditional_access' => $this->cippQueryWithUser($input, 'cipp_list_user_conditional_access', 'api/ListUserConditionalAccessPolicies'),
             'cipp_list_audit_logs' => $this->cippListAuditLogs($input),
             'cipp_list_message_trace' => $this->cippListMessageTrace($input),
             'cipp_list_mail_quarantine' => $this->cippListMailQuarantine($input),
@@ -1017,8 +1019,13 @@ class AssistantToolExecutor
 
     // ── CIPP Tools ──
 
-    private function cippQuery(string $endpoint): array
+    private function cippQuery(string $toolName, array $input, string $endpoint): array
     {
+        $relay = $this->cippMcpRelay($toolName, $input);
+        if ($relay !== null) {
+            return $relay;
+        }
+
         $tenantDomain = $this->client?->cipp_tenant_domain;
         if (! $tenantDomain) {
             return ['error' => 'Client has no CIPP tenant mapping'];
@@ -1033,8 +1040,13 @@ class AssistantToolExecutor
         }
     }
 
-    private function cippQueryWithUser(array $input, string $endpoint): array
+    private function cippQueryWithUser(array $input, string $toolName, string $endpoint): array
     {
+        $relay = $this->cippMcpRelay($toolName, $input);
+        if ($relay !== null) {
+            return $relay;
+        }
+
         $userId = $input['user_id'] ?? null;
         if (! $userId) {
             return ['error' => 'user_id is required'];
@@ -1082,6 +1094,11 @@ class AssistantToolExecutor
 
     private function cippListSignIns(array $input): array
     {
+        $relay = $this->cippMcpRelay('cipp_list_sign_ins', $input);
+        if ($relay !== null) {
+            return $relay;
+        }
+
         $tenantDomain = $this->client?->cipp_tenant_domain;
         if (! $tenantDomain) {
             return ['error' => 'Client has no CIPP tenant mapping'];
@@ -1129,6 +1146,11 @@ class AssistantToolExecutor
 
     private function cippListAuditLogs(array $input): array
     {
+        $relay = $this->cippMcpRelay('cipp_list_audit_logs', $input);
+        if ($relay !== null) {
+            return $relay;
+        }
+
         $tenantDomain = $this->client?->cipp_tenant_domain;
         if (! $tenantDomain) {
             return ['error' => 'Client has no CIPP tenant mapping'];
@@ -1194,6 +1216,11 @@ class AssistantToolExecutor
 
     private function cippListMessageTrace(array $input): array
     {
+        $relay = $this->cippMcpRelay('cipp_list_message_trace', $input);
+        if ($relay !== null) {
+            return $relay;
+        }
+
         $tenantDomain = $this->client?->cipp_tenant_domain;
         if (! $tenantDomain) {
             return ['error' => 'Client has no CIPP tenant mapping'];
@@ -1248,6 +1275,11 @@ class AssistantToolExecutor
 
     private function cippListMailQuarantine(array $input): array
     {
+        $relay = $this->cippMcpRelay('cipp_list_mail_quarantine', $input);
+        if ($relay !== null) {
+            return $relay;
+        }
+
         $tenantDomain = $this->client?->cipp_tenant_domain;
         if (! $tenantDomain) {
             return ['error' => 'Client has no CIPP tenant mapping'];
@@ -1300,6 +1332,11 @@ class AssistantToolExecutor
 
     private function cippListUserMfaMethods(array $input): array
     {
+        $relay = $this->cippMcpRelay('cipp_list_user_mfa_methods', $input);
+        if ($relay !== null) {
+            return $relay;
+        }
+
         $tenantDomain = $this->client?->cipp_tenant_domain;
         if (! $tenantDomain) {
             return ['error' => 'Client has no CIPP tenant mapping'];
@@ -1343,6 +1380,11 @@ class AssistantToolExecutor
 
     private function cippListOauthApps(array $input): array
     {
+        $relay = $this->cippMcpRelay('cipp_list_oauth_apps', $input);
+        if ($relay !== null) {
+            return $relay;
+        }
+
         $tenantDomain = $this->client?->cipp_tenant_domain;
         if (! $tenantDomain) {
             return ['error' => 'Client has no CIPP tenant mapping'];
@@ -1405,5 +1447,14 @@ class AssistantToolExecutor
         }
 
         return false;
+    }
+
+    private function cippMcpRelay(string $toolName, array $input): ?array
+    {
+        if (! CippConfig::isMcpRelayEnabled()) {
+            return null;
+        }
+
+        return app(CippMcpToolRelay::class)->execute($toolName, $input, $this->client, $this->clientId);
     }
 }
