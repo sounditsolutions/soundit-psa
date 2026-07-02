@@ -2,6 +2,8 @@
 
 namespace App\Support;
 
+use App\Models\McpToken;
+
 final class McpStaffToken
 {
     /**
@@ -10,6 +12,8 @@ final class McpStaffToken
     public function __construct(
         public readonly ?array $allowedTools = null,
         public readonly ?string $label = null,
+        public readonly ?int $id = null,
+        public readonly ?string $directive = null,
     ) {}
 
     public function allows(string $toolName): bool
@@ -24,5 +28,12 @@ final class McpStaffToken
         }
 
         return 'mcp-staff:'.$this->label;
+    }
+
+    public function directiveOrDefault(): string
+    {
+        $directive = trim((string) $this->directive);
+
+        return $directive !== '' ? $directive : McpToken::defaultDirective();
     }
 }

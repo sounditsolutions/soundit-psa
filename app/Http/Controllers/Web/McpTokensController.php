@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\McpAuditLog;
 use App\Models\McpToken;
 use App\Models\SignalDelivery;
+use App\Models\SignalDestination;
 use App\Models\SignalInboxEntry;
 use App\Support\McpConfig;
 use App\Support\McpToolRegistry;
@@ -19,6 +20,24 @@ class McpTokensController extends Controller
     public function index()
     {
         return $this->indexView();
+    }
+
+    public function show(McpToken $token)
+    {
+        return view('settings.mcp-tokens.show', [
+            'token' => $token,
+            'groups' => McpToolRegistry::groups(),
+            'auditLogs' => $this->auditLogsFor($token),
+            'linkedSignalDestinations' => $token->signalDestinations()
+                ->where('type', 'mcp')
+                ->orderBy('label')
+                ->get(),
+            'availableSignalDestinations' => SignalDestination::query()
+                ->where('type', 'mcp')
+                ->whereNull('mcp_token_label')
+                ->orderBy('label')
+                ->get(),
+        ]);
     }
 
     public function store(Request $request)
@@ -47,6 +66,39 @@ class McpTokensController extends Controller
         return $this->indexView($token, $validated['label']);
     }
 
+    public function updateTools(Request $request, McpToken $token)
+    {
+        $validated = $request->validate([
+            'tools' => ['required', 'array', 'min:1'],
+            'tools.*' => ['string', Rule::in(McpToolRegistry::allToolNames())],
+        ]);
+
+        $tools = array_values($validated['tools']);
+        $token->forceFill(['tools' => $tools])->save();
+
+        $this->audit($request, 'token/tools', $token->label, ['tools' => $tools]);
+
+        return redirect()->route('settings.mcp-tokens.show', $token)
+            ->with('success', 'Token tools updated.');
+    }
+
+    public function updateDirective(Request $request, McpToken $token)
+    {
+        $validated = $request->validate([
+            'directive' => ['nullable', 'string', 'max:5000'],
+        ]);
+
+        $directive = trim((string) ($validated['directive'] ?? ''));
+        $token->forceFill(['directive' => $directive !== '' ? $directive : null])->save();
+
+        $this->audit($request, 'token/directive', $token->label, [
+            'directive_length' => mb_strlen($directive),
+        ]);
+
+        return redirect()->route('settings.mcp-tokens.show', $token)
+            ->with('success', 'Token directive updated.');
+    }
+
     public function revoke(Request $request, McpToken $token)
     {
         $label = $token->label;
@@ -64,6 +116,63 @@ class McpTokensController extends Controller
 
         return redirect()->route('settings.mcp-tokens.index')
             ->with('success', 'Token "'.$label.'" revoked.');
+    }
+
+    public function linkSignalDestination(Request $request, McpToken $token)
+    {
+        $validated = $request->validate([
+            'signal_destination_id' => [
+                'required',
+                'integer',
+                Rule::exists('signal_destinations', 'id')->where(function ($query) {
+                    $query->where('type', 'mcp')
+                        ->whereNull('mcp_token_label');
+                }),
+            ],
+        ]);
+
+        $destination = SignalDestination::query()
+            ->where('type', 'mcp')
+            ->whereNull('mcp_token_label')
+            ->findOrFail($validated['signal_destination_id']);
+        $destination->forceFill(['mcp_token_label' => $token->label])->save();
+
+        $this->audit($request, 'token/destination_link', $token->label, [
+            'signal_destination_id' => $destination->id,
+        ]);
+
+        return redirect()->route('settings.mcp-tokens.show', $token)
+            ->with('success', 'Destination linked.');
+    }
+
+    public function unlinkSignalDestination(Request $request, McpToken $token, SignalDestination $destination)
+    {
+        abort_unless($destination->type === 'mcp' && $destination->mcp_token_label === $token->label, 404);
+
+        $destination->forceFill(['mcp_token_label' => null])->save();
+
+        $this->audit($request, 'token/destination_unlink', $token->label, [
+            'signal_destination_id' => $destination->id,
+        ]);
+
+        return redirect()->route('settings.mcp-tokens.show', $token)
+            ->with('success', 'Destination unlinked.');
+    }
+
+    private function auditLogsFor(McpToken $token)
+    {
+        return McpAuditLog::query()
+            ->where('server_name', 'staff')
+            ->where(function ($query) use ($token) {
+                $query->where('actor_label', 'mcp-staff:'.$token->label)
+                    ->orWhere(function ($lifecycle) use ($token) {
+                        $lifecycle->where('tool_name', $token->label)
+                            ->where('method', 'like', 'token/%');
+                    });
+            })
+            ->latest()
+            ->limit(50)
+            ->get();
     }
 
     /** @param  array<string, mixed>  $arguments */

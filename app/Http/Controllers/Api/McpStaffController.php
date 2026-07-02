@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\McpAuditLog;
+use App\Models\McpToken;
 use App\Services\Assistant\AssistantToolDefinitions;
 use App\Services\Assistant\AssistantToolExecutor;
 use App\Services\Chet\ChetDataSurfaceToolExecutor;
@@ -12,6 +13,7 @@ use App\Services\Chet\OperatorBridgeTextSanitizer;
 use App\Services\Chet\OperatorBridgeToolExecutor;
 use App\Services\Chet\OperatorBridgeTools;
 use App\Services\Tactical\Actions\ActionRedactor;
+use App\Support\AgentConfig;
 use App\Support\McpStaffToken;
 use App\Support\McpToolRegistry;
 use App\Support\TechnicianConfig;
@@ -39,6 +41,8 @@ class McpStaffController extends Controller
     private const SERVER_NAME = 'PSA Staff';
 
     private const SERVER_VERSION = '1.0.0';
+
+    private const WHOAMI_TOOL = 'whoami';
 
     /**
      * Write tools a chet-labeled token may NEVER call, regardless of its
@@ -173,6 +177,7 @@ class McpStaffController extends Controller
         // strips client_id off before dispatch, so the executor doesn't need
         // to know about MCP.
         $generalTools = array_merge(
+            [$this->whoamiToolDefinition()],
             AssistantToolDefinitions::getTools(hasClient: false),
             [
                 McpToolRegistry::proposeCloseTool(),
@@ -373,7 +378,9 @@ class McpStaffController extends Controller
         }
 
         try {
-            if (OperatorBridgeTools::handles((string) $name)) {
+            if ($name === self::WHOAMI_TOOL) {
+                $result = $this->whoami($request);
+            } elseif (OperatorBridgeTools::handles((string) $name)) {
                 $token = $request->attributes->get('mcp_staff_token');
                 $result = app(OperatorBridgeToolExecutor::class)->execute(
                     (string) $name,
@@ -562,6 +569,10 @@ class McpStaffController extends Controller
             return false;
         }
 
+        if ($toolName === self::WHOAMI_TOOL) {
+            return true;
+        }
+
         if ($this->isChetToken($request) && in_array($toolName, self::CHET_DENIED_WRITE_TOOLS, true)) {
             return false;
         }
@@ -624,6 +635,42 @@ class McpStaffController extends Controller
     private function isWikiPageAuthoringWrite(string $toolName): bool
     {
         return in_array($toolName, self::WIKI_PAGE_AUTHORING_TOOLS, true);
+    }
+
+    /** @return array<string, mixed> */
+    private function whoamiToolDefinition(): array
+    {
+        return [
+            'name' => self::WHOAMI_TOOL,
+            'description' => 'Return this MCP token label, directive, effective allowed tools, and safety posture.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => (object) [],
+                'required' => [],
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private function whoami(Request $request): array
+    {
+        $token = $request->attributes->get('mcp_staff_token');
+        $threshold = AgentConfig::proposeCloseAutoThreshold();
+
+        return [
+            'label' => $token instanceof McpStaffToken && $token->label !== null ? $token->label : 'teams-bot',
+            'directive' => $token instanceof McpStaffToken ? $token->directiveOrDefault() : McpToken::defaultDirective(),
+            'allowed_tools' => $token instanceof McpStaffToken && $token->allowedTools !== null
+                ? array_values(array_unique(array_merge([self::WHOAMI_TOOL], $token->allowedTools)))
+                : null,
+            'posture' => [
+                'agent_enabled' => AgentConfig::enabled(),
+                'held_only' => true,
+                'kill_switch' => TechnicianConfig::killSwitchEngaged(),
+                'auto_close_enabled' => $threshold !== null,
+                'auto_close_threshold' => $threshold,
+            ],
+        ];
     }
 
     private function actorLabel(Request $request): string

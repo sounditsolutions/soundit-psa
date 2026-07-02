@@ -27,8 +27,20 @@ class McpConfigTokenStoreTest extends TestCase
         $resolved = McpConfig::resolveStaffToken($plain);
         $this->assertNotNull($resolved);
         $this->assertSame('chet', $resolved->label);
+        $this->assertSame($row->id, $resolved->id);
+        $this->assertSame(McpToken::defaultDirective(), $resolved->directiveOrDefault());
         $this->assertTrue($resolved->allows('find_staff'));
         $this->assertFalse($resolved->allows('create_ticket'));
+    }
+
+    public function test_resolve_carries_token_directive(): void
+    {
+        $plain = McpConfig::rotateStaffToken(allowedTools: ['find_staff'], label: 'chet');
+        McpToken::where('label', 'chet')->update(['directive' => 'Use the Chet handoff rules.']);
+
+        $resolved = McpConfig::resolveStaffToken($plain);
+
+        $this->assertSame('Use the Chet handoff rules.', $resolved?->directiveOrDefault());
     }
 
     public function test_resolve_stamps_last_used_at(): void

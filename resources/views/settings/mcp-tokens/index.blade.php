@@ -131,7 +131,11 @@
                         <tbody>
                             @foreach($tokens as $token)
                                 <tr class="{{ $token->isRevoked() ? 'text-muted' : '' }}">
-                                    <td class="fw-semibold">{{ $token->label }}</td>
+                                    <td class="fw-semibold">
+                                        <a href="{{ route('settings.mcp-tokens.show', $token) }}" class="text-decoration-none">
+                                            {{ $token->label }}
+                                        </a>
+                                    </td>
                                     <td class="font-monospace small">{{ $token->token_prefix ?? '-' }}</td>
                                     <td class="small">
                                         @if($token->tools === null)
