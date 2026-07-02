@@ -556,8 +556,11 @@ class AssistantToolExecutor
         }
 
         try {
+            // aiAuthored: every note through this executor is AI-authored
+            // (Chet via MCP, the Teams teammate) — the flag keeps the
+            // Technician's human-touch signals from misreading it as a human.
             $note = app(TicketService::class)->addNote(
-                $ticket, $body, NoteType::Note, true, $this->userId
+                $ticket, $body, NoteType::Note, true, $this->userId, aiAuthored: true
             );
 
             Log::info('[Assistant] AI added note to ticket', [

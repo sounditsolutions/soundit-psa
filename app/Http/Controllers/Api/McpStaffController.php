@@ -41,12 +41,24 @@ class McpStaffController extends Controller
 
     private const SERVER_VERSION = '1.0.0';
 
+    /**
+     * Write tools a chet-labeled token may NEVER call, regardless of its
+     * scoped tools list. propose_close is deliberately absent (Spike-2): the
+     * per-token scope is the operator-controlled gate, and the MCP path lands
+     * in ProposeCloseTool::executeHeld — held-by-construction, a human cockpit
+     * tap is still required before anything closes.
+     */
     private const CHET_DENIED_WRITE_TOOLS = [
         'create_ticket',
-        'propose_close',
         'send_reply',
         'close_ticket',
         'tactical_run_diagnostic',
+    ];
+
+    /** Chet write tools that must carry an explicit client_id scope. */
+    private const CHET_CLIENT_SCOPED_WRITE_TOOLS = [
+        'add_ticket_note',
+        'propose_close',
     ];
 
     private const NOTE_BODY_AUDIT_PLACEHOLDER = '[note body withheld]';
@@ -246,8 +258,8 @@ class McpStaffController extends Controller
         $clientId = $this->positiveIntegerArgument($arguments['client_id'] ?? null);
         unset($arguments['client_id']);
 
-        if ($this->isChetTicketNoteWrite($request, (string) $name) && $clientId === null) {
-            $message = 'client_id is required for Chet ticket-note writes.';
+        if ($this->isChetClientScopedWrite($request, (string) $name) && $clientId === null) {
+            $message = "client_id is required for Chet {$name} writes.";
             $this->audit('tools/call', (string) $name, $arguments, 'error', $message, $start, $request);
 
             return response()->json([
@@ -258,6 +270,28 @@ class McpStaffController extends Controller
                     'isError' => true,
                 ],
             ]);
+        }
+
+        // Chet's propose_close is client-scoped end-to-end: the ticket must belong
+        // to the client context Chet supplied. Enforced HERE at the Chet boundary —
+        // the staff-trust surface deliberately keeps the opposite contract (derive
+        // the client from the ticket, ignore caller client_id; see
+        // McpStaffProposeCloseTest::test_mcp_propose_close_derives_client_from_ticket…).
+        if ($this->isChetToken($request) && (string) $name === 'propose_close') {
+            $ticketClientId = \App\Models\Ticket::whereKey((int) ($arguments['ticket_id'] ?? 0))->value('client_id');
+            if ($ticketClientId === null || (int) $ticketClientId !== $clientId) {
+                $message = 'Ticket not found or belongs to a different client';
+                $this->audit('tools/call', (string) $name, $arguments, 'error', $message, $start, $request);
+
+                return response()->json([
+                    'jsonrpc' => '2.0',
+                    'id' => $id,
+                    'result' => [
+                        'content' => [['type' => 'text', 'text' => $message]],
+                        'isError' => true,
+                    ],
+                ]);
+            }
         }
 
         if (ChetDataSurfaceTools::requiresClient((string) $name) && $clientId === null) {
@@ -440,6 +474,12 @@ class McpStaffController extends Controller
     private function isChetTicketNoteWrite(Request $request, string $toolName): bool
     {
         return $toolName === 'add_ticket_note' && $this->isChetToken($request);
+    }
+
+    private function isChetClientScopedWrite(Request $request, string $toolName): bool
+    {
+        return in_array($toolName, self::CHET_CLIENT_SCOPED_WRITE_TOOLS, true)
+            && $this->isChetToken($request);
     }
 
     private function requiredChetAiActorUserId(): int
