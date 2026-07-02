@@ -1,0 +1,86 @@
+<?php
+
+namespace Tests\Unit\Cipp;
+
+use App\Services\Cipp\CippClientException;
+use App\Services\Cipp\CippMcpClient;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Http;
+use Tests\TestCase;
+
+class CippMcpClientTest extends TestCase
+{
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        Cache::flush();
+    }
+
+    public function test_mints_mcp_client_token_posts_scoped_json_rpc_and_parses_sse_result(): void
+    {
+        Http::fake([
+            'login.microsoftonline.com/*' => Http::response([
+                'access_token' => 'MCP-TOKEN',
+                'expires_in' => 3600,
+            ]),
+            'cipp.example.test/api/ExecMCP*' => Http::response(
+                "event: message\n".
+                'data: {"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\"Results\":[{\"displayName\":\"Alex Acme\",\"userPrincipalName\":\"alex@acme.example\"}]}"}]}}'."\n\n",
+                200,
+                ['Content-Type' => 'text/event-stream'],
+            ),
+        ]);
+
+        $client = new CippMcpClient([
+            'api_url' => 'https://cipp.example.test',
+            'tenant_id' => 'tenant-1',
+            'client_id' => 'mcp-client-1',
+            'client_secret' => 'mcp-secret',
+        ], Cache::store(), fn (string $host): array => ['93.184.216.34']);
+
+        $result = $client->callTool('ListUsers', ['tenantFilter' => 'acme.example']);
+
+        $this->assertSame([
+            ['displayName' => 'Alex Acme', 'userPrincipalName' => 'alex@acme.example'],
+        ], $result);
+
+        Http::assertSent(fn ($request) => str_contains($request->url(), 'login.microsoftonline.com/tenant-1/oauth2/v2.0/token')
+            && $request['grant_type'] === 'client_credentials'
+            && $request['client_id'] === 'mcp-client-1'
+            && $request['client_secret'] === 'mcp-secret'
+            && $request['scope'] === 'api://mcp-client-1/.default');
+
+        Http::assertSent(function ($request) {
+            parse_str(parse_url($request->url(), PHP_URL_QUERY) ?? '', $query);
+
+            return str_contains($request->url(), 'cipp.example.test/api/ExecMCP')
+                && ($query['tools'] ?? null) === 'ListUsers'
+                && $request->hasHeader('Authorization', 'Bearer MCP-TOKEN')
+                && $request['method'] === 'tools/call'
+                && $request['params']['name'] === 'ListUsers'
+                && $request['params']['arguments']['tenantFilter'] === 'acme.example';
+        });
+    }
+
+    public function test_rejects_unsafe_exec_mcp_url_before_token_request(): void
+    {
+        Http::fake();
+
+        $client = new CippMcpClient([
+            'api_url' => 'https://127.0.0.1',
+            'tenant_id' => 'tenant-1',
+            'client_id' => 'mcp-client-1',
+            'client_secret' => 'mcp-secret',
+        ], Cache::store());
+
+        $this->expectException(CippClientException::class);
+        $this->expectExceptionMessage('CIPP API URL resolves to a private or reserved address');
+
+        try {
+            $client->callTool('ListUsers', ['tenantFilter' => 'acme.example']);
+        } finally {
+            Http::assertNothingSent();
+        }
+    }
+}

@@ -1343,6 +1343,21 @@
                         </div>
                     </div>
 
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label for="cipp_mcp_client_id" class="form-label">MCP Client ID</label>
+                            <input type="text" class="form-control" id="cipp_mcp_client_id" name="mcp_client_id"
+                                   value="{{ $cippMcpClientId ?? '' }}"
+                                   placeholder="Readonly MCP Access client ID">
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label for="cipp_mcp_client_secret" class="form-label">MCP Client Secret</label>
+                            <input type="password" class="form-control" id="cipp_mcp_client_secret" name="mcp_client_secret"
+                                   value=""
+                                   placeholder="{{ ($cippMcpHasSecret ?? false) ? '••••••••' : 'Enter MCP client secret' }}">
+                        </div>
+                    </div>
+
                     <div class="d-flex gap-2">
                         <button type="submit" class="btn btn-primary btn-sm">Save CIPP Settings</button>
                         <button type="button" class="btn btn-outline-secondary" id="test-cipp-btn"
@@ -1439,6 +1454,20 @@
                             <input class="form-check-input" type="checkbox" name="enabled" value="1"
                                    id="cipp_enabled" {{ $cippEnabled ? 'checked' : '' }} onchange="this.form.submit()">
                             <label class="form-check-label" for="cipp_enabled">Integration enabled</label>
+                        </div>
+                    </form>
+                    <form method="POST" action="{{ route('settings.integrations.toggle') }}">
+                        @csrf
+                        <input type="hidden" name="integration" value="cipp_mcp">
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" name="enabled" value="1"
+                                   id="cipp_mcp_enabled" {{ ($cippMcpEnabled ?? false) ? 'checked' : '' }} onchange="this.form.submit()">
+                            <label class="form-check-label" for="cipp_mcp_enabled">
+                                MCP relay enabled
+                                @unless($cippMcpConfigured ?? false)
+                                    <small class="text-muted d-block">Requires MCP Client ID and secret.</small>
+                                @endunless
+                            </label>
                         </div>
                     </form>
                 </div>
