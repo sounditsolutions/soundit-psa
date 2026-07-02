@@ -2,7 +2,6 @@
 
 namespace App\Services\Assistant;
 
-use App\Enums\ClientStage;
 use App\Enums\NoteType;
 use App\Helpers\MarkdownRenderer;
 use App\Models\AssistantConversation;
@@ -36,13 +35,6 @@ class AssistantService
      */
     public function sendMessage(AssistantConversation $conversation, string $userMessage): array
     {
-        if ($this->isProspectTicketConversation($conversation)) {
-            throw new \RuntimeException('AI assistance is unavailable for prospect tickets.');
-        }
-        if ($this->isProspectClientConversation($conversation)) {
-            throw new \RuntimeException('AI assistance is unavailable for prospect clients.');
-        }
-
         // Validate AI is configured with Anthropic
         if (! AiConfig::isConfigured() || AiConfig::provider() !== 'anthropic') {
             throw new \RuntimeException('AI assistant requires Anthropic provider to be configured.');
@@ -164,10 +156,6 @@ class AssistantService
      */
     public function saveAsNote(AssistantMessage $message, Ticket $ticket, int $userId): TicketNote
     {
-        if ($ticket->client?->stage === ClientStage::Prospect) {
-            throw new \RuntimeException('AI assistance is unavailable for prospect tickets.');
-        }
-
         $body = "**AI Assistant:**\n\n".$message->content;
 
         return TicketNote::create([
@@ -240,24 +228,6 @@ PROMPT;
         }
 
         return $prompt;
-    }
-
-    private function isProspectTicketConversation(AssistantConversation $conversation): bool
-    {
-        if ($conversation->context_type !== 'ticket') {
-            return false;
-        }
-
-        return $conversation->resolveTicket()?->client?->stage === ClientStage::Prospect;
-    }
-
-    private function isProspectClientConversation(AssistantConversation $conversation): bool
-    {
-        if ($conversation->context_type !== 'client') {
-            return false;
-        }
-
-        return $conversation->resolveClient()?->stage === ClientStage::Prospect;
     }
 
     /**

@@ -2,8 +2,7 @@
 @php
     $isOwner = auth()->id() === $conversation->user_id;
     $lastMessage = $conversation->messages->last();
-    $ticketAiAllowed = $ticket->client?->stage !== \App\Enums\ClientStage::Prospect;
-    $isActive = $ticketAiAllowed && $isOwner && $lastMessage?->created_at?->gt(now()->subMinutes(30));
+    $isActive = $isOwner && $lastMessage?->created_at?->gt(now()->subMinutes(30));
     $messageCount = $conversation->messages->count();
 @endphp
 

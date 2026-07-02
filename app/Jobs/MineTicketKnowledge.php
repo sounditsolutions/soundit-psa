@@ -2,7 +2,6 @@
 
 namespace App\Jobs;
 
-use App\Enums\ClientStage;
 use App\Enums\WikiFactVolatility;
 use App\Enums\WikiRunStatus;
 use App\Enums\WikiRunType;
@@ -68,14 +67,6 @@ class MineTicketKnowledge implements ShouldQueue
         // ── Gate 2: ticket must exist, have a resolution, not be a merge closure ──
         if (! $ticket) {
             Log::warning('[MineTicketKnowledge] Ticket not found', ['ticket_id' => $this->ticketId]);
-
-            return;
-        }
-
-        // Choke-point gate: never mine prospect-client tickets regardless of which
-        // dispatch site (observer, backfill service) triggered this job.
-        if ($ticket->client?->stage === ClientStage::Prospect) {
-            Log::debug('[MineTicketKnowledge] Skipping — prospect client', ['ticket_id' => $this->ticketId]);
 
             return;
         }

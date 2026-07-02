@@ -6,7 +6,7 @@
     <button type="button" class="btn btn-sm btn-outline-secondary action-btn" data-action="reply">
         <i class="bi bi-envelope me-1"></i>Reply
     </button>
-    @if(\App\Support\AssistantConfig::isEnabled() && $ticket->client?->stage !== \App\Enums\ClientStage::Prospect)
+    @if(\App\Support\AssistantConfig::isEnabled())
         <button type="button" class="btn btn-sm btn-outline-secondary action-btn" data-action="ask-ai" id="askAiBtn">
             <i class="bi bi-robot me-1"></i>Ask AI
         </button>

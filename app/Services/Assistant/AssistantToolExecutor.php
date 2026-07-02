@@ -2,7 +2,6 @@
 
 namespace App\Services\Assistant;
 
-use App\Enums\ClientStage;
 use App\Enums\NoteType;
 use App\Enums\TicketSource;
 use App\Enums\TicketType;
@@ -33,10 +32,6 @@ class AssistantToolExecutor
 {
     use HandlesWikiTools;
 
-    private const PROSPECT_TICKET_ERROR = 'AI assistance is unavailable for prospect tickets.';
-
-    private const PROSPECT_CLIENT_ERROR = 'AI assistance is unavailable for prospect clients.';
-
     private ?Ticket $ticket;
 
     // Read by HandlesWikiTools; nullable here means global-only wiki scope (spec §6).
@@ -61,10 +56,6 @@ class AssistantToolExecutor
 
     public function execute(string $toolName, array $input): mixed
     {
-        if ($this->client?->stage === ClientStage::Prospect) {
-            return ['error' => self::PROSPECT_CLIENT_ERROR];
-        }
-
         $logInput = $input;
         if ($toolName === 'wiki_add_fact' && array_key_exists('statement', $logInput)) {
             $logInput['statement'] = '[wiki fact statement withheld]';
@@ -158,10 +149,10 @@ class AssistantToolExecutor
 
     // ── General Tools (no client scope) ──
 
-    private function operationalTickets()
+    private function activeClientTickets()
     {
         return Ticket::query()
-            ->whereHas('client', fn ($client) => $client->operational());
+            ->whereHas('client', fn ($client) => $client->active());
     }
 
     private function priorityOrderSql(): string
@@ -169,19 +160,12 @@ class AssistantToolExecutor
         return "CASE priority WHEN 'p1' THEN 1 WHEN 'p2' THEN 2 WHEN 'p3' THEN 3 WHEN 'p4' THEN 4 ELSE 5 END";
     }
 
-    private function isProspectTicket(Ticket $ticket): bool
-    {
-        $ticket->loadMissing('client:id,stage');
-
-        return $ticket->client?->stage === ClientStage::Prospect;
-    }
-
     private function searchAllTickets(array $input): array
     {
         $query = $input['query'] ?? '';
         $limit = min($input['limit'] ?? 15, 30);
 
-        $tickets = $this->operationalTickets()
+        $tickets = $this->activeClientTickets()
             ->search($query)
             ->when($input['status'] ?? null, fn ($q, $s) => $q->where('status', $s))
             ->orderByDesc('created_at')
@@ -210,7 +194,7 @@ class AssistantToolExecutor
         $limit = min($input['limit'] ?? 20, 50);
         $openStatuses = ['new', 'in_progress', 'pending_client', 'pending_third_party'];
 
-        $tickets = $this->operationalTickets()
+        $tickets = $this->activeClientTickets()
             ->where('assignee_id', $this->userId)
             ->when(
                 $input['status'] ?? null,
@@ -240,7 +224,7 @@ class AssistantToolExecutor
         $limit = min($input['limit'] ?? 20, 50);
         $openStatuses = ['new', 'in_progress', 'pending_client', 'pending_third_party'];
 
-        $query = $this->operationalTickets()->whereIn('status', $openStatuses);
+        $query = $this->activeClientTickets()->whereIn('status', $openStatuses);
 
         if ($input['assignee'] ?? null) {
             $query->whereHas('assignee', fn ($q) => $q->where('name', 'like', '%'.$input['assignee'].'%'));
@@ -288,9 +272,6 @@ class AssistantToolExecutor
         $ticket = Ticket::with(['client:id,name,stage', 'assignee:id,name', 'contact'])->find($ticketId);
         if (! $ticket) {
             return ['error' => 'Ticket not found'];
-        }
-        if ($this->isProspectTicket($ticket)) {
-            return ['error' => self::PROSPECT_TICKET_ERROR];
         }
 
         $notes = TicketNote::where('ticket_id', $ticketId)
@@ -385,9 +366,6 @@ class AssistantToolExecutor
         if (! $ticket->client_id || ! $ticket->client) {
             return ['error' => 'Ticket has no valid client'];
         }
-        if ($this->isProspectTicket($ticket)) {
-            return ['error' => self::PROSPECT_TICKET_ERROR];
-        }
 
         $message = app(ProposeCloseTool::class)->executeHeld($ticket, [
             'reason' => $reason,
@@ -412,9 +390,6 @@ class AssistantToolExecutor
         $ticket = Ticket::with('client:id,stage')->find($ticketId);
         if (! $ticket) {
             return ['error' => 'Ticket not found'];
-        }
-        if ($this->isProspectTicket($ticket)) {
-            return ['error' => self::PROSPECT_TICKET_ERROR];
         }
 
         $calls = PhoneCall::where('ticket_id', $ticketId)
@@ -453,7 +428,7 @@ class AssistantToolExecutor
     {
         $openStatuses = ['new', 'in_progress', 'pending_client', 'pending_third_party'];
 
-        $openTickets = $this->operationalTickets()->whereIn('status', $openStatuses);
+        $openTickets = $this->activeClientTickets()->whereIn('status', $openStatuses);
 
         $byStatus = (clone $openTickets)->selectRaw('status, count(*) as count')
             ->groupBy('status')
@@ -774,7 +749,7 @@ class AssistantToolExecutor
 
         $limit = min((int) ($input['limit'] ?? 10), 25);
 
-        $clients = Client::operational()
+        $clients = Client::active()
             ->where('name', 'like', "%{$query}%")
             ->orderByDesc('is_active')
             ->orderBy('name')
@@ -804,7 +779,7 @@ class AssistantToolExecutor
 
         $q = Person::query()
             ->with('client:id,name')
-            ->whereHas('client', fn ($client) => $client->operational())
+            ->whereHas('client', fn ($client) => $client->active())
             ->where(fn ($w) => $w
                 ->where('first_name', 'like', "%{$query}%")
                 ->orWhere('last_name', 'like', "%{$query}%")
@@ -846,7 +821,7 @@ class AssistantToolExecutor
 
         $q = Asset::query()
             ->with('client:id,name')
-            ->whereHas('client', fn ($client) => $client->operational())
+            ->whereHas('client', fn ($client) => $client->active())
             ->where(fn ($w) => $w
                 ->where('name', 'like', "%{$query}%")
                 ->orWhere('hostname', 'like', "%{$query}%")

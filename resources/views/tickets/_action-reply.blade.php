@@ -28,7 +28,7 @@
                 :upload-url="route('tickets.attachments.store', $ticket)" />
         </div>
         <div class="d-flex flex-wrap align-items-center gap-3">
-            @if(\App\Support\AiConfig::isConfigured() && $ticket->client?->stage !== \App\Enums\ClientStage::Prospect)
+            @if(\App\Support\AiConfig::isConfigured())
             <div class="btn-group btn-group-sm">
                 <button type="button" class="btn btn-outline-secondary" id="draftReplyBtn" title="AI Draft Reply">
                     <i class="bi bi-robot me-1"></i>Draft

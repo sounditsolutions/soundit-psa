@@ -1190,7 +1190,7 @@
                 <div class="modal-body">
                     <div class="d-flex align-items-center justify-content-between mb-1">
                         <label for="resolveResolution" class="form-label mb-0">Resolution summary <span class="text-muted">(recommended)</span></label>
-                        @if(\App\Support\AiConfig::isConfigured() && $ticket->client?->stage !== \App\Enums\ClientStage::Prospect)
+                        @if(\App\Support\AiConfig::isConfigured())
                         <button type="button" class="btn btn-outline-secondary btn-sm" id="draftResolutionBtn"
                                 data-url="{{ route('tickets.draft-resolution', $ticket) }}"
                                 title="Draft with AI">
@@ -1200,7 +1200,7 @@
                     </div>
                     <textarea name="resolution" id="resolveResolution" class="form-control" rows="3"
                               placeholder="How was this resolved?"></textarea>
-                    <div class="form-text">A short summary is recorded on the ticket and feeds the client wiki — it helps future tickets.@if(\App\Support\AiConfig::isConfigured() && $ticket->client?->stage !== \App\Enums\ClientStage::Prospect) Leave it blank and we'll draft one from the ticket's notes.@endif</div>
+                    <div class="form-text">A short summary is recorded on the ticket and feeds the client wiki — it helps future tickets.@if(\App\Support\AiConfig::isConfigured()) Leave it blank and we'll draft one from the ticket's notes.@endif</div>
                     <div class="mt-1 small text-danger d-none" id="draftResolutionError"></div>
                 </div>
                 <div class="modal-footer">

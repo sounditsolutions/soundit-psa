@@ -124,7 +124,7 @@
         @endif
 
         {{-- Action buttons --}}
-        @if($triageEnabled && $ticket->client?->stage !== \App\Enums\ClientStage::Prospect)
+        @if($triageEnabled)
             <div class="d-flex gap-2 mt-2">
                 <form method="POST" action="{{ route('tickets.triage', $ticket) }}" class="d-inline">
                     @csrf

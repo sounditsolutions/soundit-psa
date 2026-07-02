@@ -2,7 +2,6 @@
 
 namespace App\Jobs;
 
-use App\Enums\ClientStage;
 use App\Enums\TechnicianRunState;
 use App\Models\TechnicianRun;
 use App\Models\Ticket;
@@ -16,7 +15,7 @@ use Illuminate\Support\Facades\Log;
 
 /**
  * The Loop dispatch seam (spec §4.1). Mirrors RunTriagePipeline: dispatched from
- * TicketObserver::created, prospect-gated, on a dedicated 'technician' queue so
+ * TicketObserver::created, on a dedicated 'technician' queue so
  * Technician load can't starve billing/email jobs. Phase 0: create/load the
  * run, then run the auto-ack (wired in the AutoAcknowledge task).
  */
@@ -41,14 +40,6 @@ class RunTechnicianLoop implements ShouldQueue
 
         if (! $ticket) {
             Log::warning('[Technician] Ticket not found', ['ticket_id' => $this->ticketId]);
-
-            return;
-        }
-
-        // Choke-point prospect gate (mirrors RunTriagePipeline) — no Technician
-        // work for prospect-stage clients regardless of dispatch site.
-        if ($ticket->client?->stage === ClientStage::Prospect) {
-            Log::debug('[Technician] Skipping — prospect client', ['ticket_id' => $this->ticketId]);
 
             return;
         }
