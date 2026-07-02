@@ -272,6 +272,28 @@ class McpStaffController extends Controller
             ]);
         }
 
+        // Chet's propose_close is client-scoped end-to-end: the ticket must belong
+        // to the client context Chet supplied. Enforced HERE at the Chet boundary —
+        // the staff-trust surface deliberately keeps the opposite contract (derive
+        // the client from the ticket, ignore caller client_id; see
+        // McpStaffProposeCloseTest::test_mcp_propose_close_derives_client_from_ticket…).
+        if ($this->isChetToken($request) && (string) $name === 'propose_close') {
+            $ticketClientId = \App\Models\Ticket::whereKey((int) ($arguments['ticket_id'] ?? 0))->value('client_id');
+            if ($ticketClientId === null || (int) $ticketClientId !== $clientId) {
+                $message = 'Ticket not found or belongs to a different client';
+                $this->audit('tools/call', (string) $name, $arguments, 'error', $message, $start, $request);
+
+                return response()->json([
+                    'jsonrpc' => '2.0',
+                    'id' => $id,
+                    'result' => [
+                        'content' => [['type' => 'text', 'text' => $message]],
+                        'isError' => true,
+                    ],
+                ]);
+            }
+        }
+
         if (ChetDataSurfaceTools::requiresClient((string) $name) && $clientId === null) {
             $message = "client_id is required for {$name}.";
             $this->audit('tools/call', (string) $name, $arguments, 'error', $message, $start, $request);
