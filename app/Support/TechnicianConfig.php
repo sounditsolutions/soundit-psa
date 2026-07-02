@@ -53,6 +53,26 @@ class TechnicianConfig
         return User::orderBy('id')->value('id');
     }
 
+    /**
+     * Strict Chet write actor. Unlike aiActorUserId(), this never falls back to
+     * the first user because MCP-authored Chet writes need explicit attribution.
+     */
+    public static function requiredAiActorUserId(): int
+    {
+        $configured = Setting::getValue('triage_system_user_id');
+
+        if (! is_numeric($configured) || (int) $configured <= 0) {
+            throw new \RuntimeException('AI actor user is not configured for Chet writes.');
+        }
+
+        $actorId = (int) $configured;
+        if (! User::whereKey($actorId)->exists()) {
+            throw new \RuntimeException('Configured AI actor user does not exist for Chet writes.');
+        }
+
+        return $actorId;
+    }
+
     /** The configured AI actor's display name (spec §3), for the disclosure persona. */
     public static function aiActorName(): string
     {

@@ -39,6 +39,36 @@ class TechnicianConfigTest extends TestCase
         $this->assertSame($chet->id, TechnicianConfig::aiActorUserId());
     }
 
+    public function test_required_ai_actor_user_id_requires_configured_existing_user_without_fallback(): void
+    {
+        User::factory()->create(['name' => 'Human First']);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('AI actor user is not configured');
+
+        TechnicianConfig::requiredAiActorUserId();
+    }
+
+    public function test_required_ai_actor_user_id_rejects_stale_configuration(): void
+    {
+        $actor = User::factory()->create();
+        Setting::setValue('triage_system_user_id', (string) $actor->id);
+        $actor->delete();
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('Configured AI actor user does not exist');
+
+        TechnicianConfig::requiredAiActorUserId();
+    }
+
+    public function test_required_ai_actor_user_id_returns_configured_actor(): void
+    {
+        $actor = User::factory()->create();
+        Setting::setValue('triage_system_user_id', (string) $actor->id);
+
+        $this->assertSame($actor->id, TechnicianConfig::requiredAiActorUserId());
+    }
+
     public function test_tier_map_is_empty_when_unset_or_invalid(): void
     {
         $this->assertSame([], TechnicianConfig::tierMap());

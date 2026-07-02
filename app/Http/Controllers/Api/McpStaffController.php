@@ -4,8 +4,6 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\McpAuditLog;
-use App\Models\Setting;
-use App\Models\User;
 use App\Services\Assistant\AssistantToolDefinitions;
 use App\Services\Assistant\AssistantToolExecutor;
 use App\Services\Chet\ChetDataSurfaceToolExecutor;
@@ -16,6 +14,7 @@ use App\Services\Chet\OperatorBridgeTools;
 use App\Services\Tactical\Actions\ActionRedactor;
 use App\Support\McpStaffToken;
 use App\Support\McpToolRegistry;
+use App\Support\TechnicianConfig;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -577,7 +576,7 @@ class McpStaffController extends Controller
     private function userIdForToolCall(Request $request, string $toolName): ?int
     {
         if ($this->isChetAiActorWrite($request, $toolName)) {
-            return $this->requiredChetAiActorUserId();
+            return TechnicianConfig::requiredAiActorUserId();
         }
 
         // Existing service-account identity for non-Chet MCP calls.
@@ -620,22 +619,6 @@ class McpStaffController extends Controller
     private function isWikiPageAuthoringWrite(string $toolName): bool
     {
         return in_array($toolName, self::WIKI_PAGE_AUTHORING_TOOLS, true);
-    }
-
-    private function requiredChetAiActorUserId(): int
-    {
-        $configured = Setting::getValue('triage_system_user_id');
-
-        if (! is_numeric($configured) || (int) $configured <= 0) {
-            throw new \RuntimeException('AI actor user is not configured for Chet writes.');
-        }
-
-        $actorId = (int) $configured;
-        if (! User::whereKey($actorId)->exists()) {
-            throw new \RuntimeException('Configured AI actor user does not exist for Chet writes.');
-        }
-
-        return $actorId;
     }
 
     private function actorLabel(Request $request): string

@@ -94,4 +94,27 @@ class TacticalFieldMapTest extends TestCase
         $this->assertSame(0, $summary['failing']);
         $this->assertSame(0, $summary['total']);
     }
+
+    public function test_disk_volume_mapping_can_include_filesystem_type_for_read_tools(): void
+    {
+        $volumes = TacticalFieldMap::mapDiskVolumes([
+            [
+                'device' => 'C:',
+                'total' => '100.0 GB',
+                'free' => '25.0 GB',
+                'percent' => 75,
+                'fstype' => 'NTFS',
+            ],
+        ], includeFilesystemType: true);
+
+        $this->assertSame([
+            [
+                'drive' => 'C:',
+                'total_gb' => 100.0,
+                'free_gb' => 25.0,
+                'percent_used' => 75,
+                'fstype' => 'NTFS',
+            ],
+        ], $volumes);
+    }
 }

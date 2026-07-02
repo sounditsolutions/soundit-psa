@@ -10,6 +10,8 @@ use Illuminate\Support\Facades\Log;
 
 class TeamsChatReadToolset
 {
+    private const PLAIN_TEXT_INPUT_LIMIT = 12_000;
+
     private const TOOL_NAMES = [
         'list_teams_chats',
         'get_teams_chat_members',
@@ -238,7 +240,7 @@ class TeamsChatReadToolset
     {
         return [
             'id' => (string) ($chat['id'] ?? ''),
-            'topic' => $chat['topic'] ?? null,
+            'topic' => $this->textSanitizer->sanitizeNullable('Teams chat topic', $chat['topic'] ?? null, 300),
             'chat_type' => $chat['chatType'] ?? null,
             'tenant_id' => $chat['tenantId'] ?? null,
             'created_at' => $chat['createdDateTime'] ?? null,
@@ -263,14 +265,46 @@ class TeamsChatReadToolset
             );
         }
 
+        foreach ([
+            'subject' => ['Teams chat last message preview subject', 300],
+            'summary' => ['Teams chat last message preview summary', 500],
+        ] as $field => [$label, $maxChars]) {
+            if (array_key_exists($field, $preview)) {
+                $preview[$field] = $this->textSanitizer->sanitizeNullable($label, $preview[$field], $maxChars);
+            }
+        }
+
+        if (array_key_exists('from', $preview)) {
+            $preview['from'] = $this->sanitizeLastMessagePreviewFrom($preview['from']);
+        }
+
         return $preview;
+    }
+
+    private function sanitizeLastMessagePreviewFrom(mixed $from): mixed
+    {
+        if (! is_array($from)) {
+            return $from;
+        }
+
+        foreach (['user', 'application', 'device'] as $type) {
+            if (isset($from[$type]) && is_array($from[$type]) && array_key_exists('displayName', $from[$type])) {
+                $from[$type]['displayName'] = $this->textSanitizer->sanitizeNullable(
+                    'Teams chat last message preview sender display name',
+                    $from[$type]['displayName'],
+                    200,
+                );
+            }
+        }
+
+        return $from;
     }
 
     private function sanitizeMember(array $member): array
     {
         return [
             'id' => $member['id'] ?? null,
-            'display_name' => $member['displayName'] ?? null,
+            'display_name' => $this->textSanitizer->sanitizeNullable('Teams chat member display name', $member['displayName'] ?? null, 200),
             'user_id' => $member['userId'] ?? $member['identity']['user']['id'] ?? null,
             'application_id' => $member['applicationId'] ?? $member['identity']['application']['id'] ?? null,
             'email' => $member['email'] ?? null,
@@ -287,7 +321,7 @@ class TeamsChatReadToolset
             'last_modified_at' => $message['lastModifiedDateTime'] ?? null,
             'message_type' => $message['messageType'] ?? null,
             'importance' => $message['importance'] ?? null,
-            'subject' => $message['subject'] ?? null,
+            'subject' => $this->textSanitizer->sanitizeNullable('Teams chat message subject', $message['subject'] ?? null, 300),
             'from' => $this->sanitizeMessageFrom($message['from'] ?? null),
             'body_content_type' => $message['body']['contentType'] ?? null,
             'body' => $this->textSanitizer->sanitize(
@@ -309,7 +343,11 @@ class TeamsChatReadToolset
                 return [
                     'type' => $type,
                     'id' => $from[$type]['id'] ?? null,
-                    'display_name' => $from[$type]['displayName'] ?? null,
+                    'display_name' => $this->textSanitizer->sanitizeNullable(
+                        'Teams chat message sender display name',
+                        $from[$type]['displayName'] ?? null,
+                        200,
+                    ),
                 ];
             }
         }
@@ -319,7 +357,8 @@ class TeamsChatReadToolset
 
     private function plainText(mixed $value): string
     {
-        $text = html_entity_decode(strip_tags((string) $value), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $input = mb_substr((string) $value, 0, self::PLAIN_TEXT_INPUT_LIMIT);
+        $text = html_entity_decode(strip_tags($input), ENT_QUOTES | ENT_HTML5, 'UTF-8');
         $text = preg_replace('/\s+/u', ' ', trim($text)) ?? '';
 
         return $text;

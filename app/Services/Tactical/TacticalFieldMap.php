@@ -160,16 +160,24 @@ class TacticalFieldMap
      * flag) and TacticalPanelData (the storage panel).
      *
      * @param  array<int, array<string, mixed>>  $disks
-     * @return array<int, array{drive: ?string, total_gb: ?float, free_gb: ?float, percent_used: int|float|null}>
+     * @return array<int, array<string, mixed>>
      */
-    public static function mapDiskVolumes(array $disks): array
+    public static function mapDiskVolumes(array $disks, bool $includeFilesystemType = false): array
     {
-        return collect($disks)->take(self::DISK_VOLUME_LIMIT)->map(fn ($d) => [
-            'drive' => is_array($d) ? ($d['device'] ?? null) : null,
-            'total_gb' => is_array($d) ? self::diskSizeToGb($d['total'] ?? null) : null,
-            'free_gb' => is_array($d) ? self::diskSizeToGb($d['free'] ?? null) : null,
-            'percent_used' => is_array($d) ? ($d['percent'] ?? null) : null,
-        ])->values()->all();
+        return collect($disks)->take(self::DISK_VOLUME_LIMIT)->map(function ($d) use ($includeFilesystemType) {
+            $volume = [
+                'drive' => is_array($d) ? ($d['device'] ?? null) : null,
+                'total_gb' => is_array($d) ? self::diskSizeToGb($d['total'] ?? null) : null,
+                'free_gb' => is_array($d) ? self::diskSizeToGb($d['free'] ?? null) : null,
+                'percent_used' => is_array($d) ? ($d['percent'] ?? null) : null,
+            ];
+
+            if ($includeFilesystemType) {
+                $volume['fstype'] = is_array($d) ? ($d['fstype'] ?? null) : null;
+            }
+
+            return $volume;
+        })->values()->all();
     }
 
     /**
