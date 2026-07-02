@@ -2,6 +2,7 @@
 
 namespace App\Services\Signals;
 
+use App\Jobs\CheckSignalStepAcks;
 use App\Jobs\DeliverSignal;
 use App\Models\SignalDelivery;
 use App\Models\SignalEvent;
@@ -57,7 +58,7 @@ class SignalRouter
 
     protected function afterStepDispatched(SignalRoute $route, SignalEvent $event, int $stepOrder): void
     {
-        //
+        CheckSignalStepAcks::scheduleIfNeeded($route, $event, $stepOrder);
     }
 
     private function matches(SignalRoute $route, SignalEvent $event): bool
