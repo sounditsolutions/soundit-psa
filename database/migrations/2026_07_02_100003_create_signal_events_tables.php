@@ -25,7 +25,7 @@ return new class extends Migration
         Schema::create('signal_deliveries', function (Blueprint $table) {
             $table->id();
             $table->foreignId('event_id')->constrained('signal_events')->cascadeOnDelete();
-            $table->foreignId('route_id')->constrained('signal_routes')->cascadeOnDelete();
+            $table->foreignId('route_id')->nullable()->constrained('signal_routes')->cascadeOnDelete();
             $table->unsignedInteger('step_order');
             $table->foreignId('destination_id')->constrained('signal_destinations');
             $table->string('status', 20)->index();

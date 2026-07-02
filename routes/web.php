@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\Web\AboutController;
 use App\Http\Controllers\Web\AlertController;
+use App\Http\Controllers\Web\AlertsHubController;
 use App\Http\Controllers\Web\AssetController;
 use App\Http\Controllers\Web\AssistantController;
 use App\Http\Controllers\Web\AttachmentController;
@@ -291,6 +292,11 @@ Route::middleware('auth')->group(function () {
 
     // Settings — Integrations
     Route::get('/settings/integrations', [IntegrationsController::class, 'index'])->name('settings.integrations');
+    Route::get('/settings/alerts', [AlertsHubController::class, 'index'])->name('settings.alerts.index');
+    Route::post('/settings/alerts/destinations', [AlertsHubController::class, 'store'])->name('settings.alerts.destinations.store');
+    Route::put('/settings/alerts/destinations/{destination}', [AlertsHubController::class, 'update'])->name('settings.alerts.destinations.update');
+    Route::post('/settings/alerts/destinations/{destination}/test', [AlertsHubController::class, 'test'])->middleware('throttle:6,1')->name('settings.alerts.destinations.test');
+    Route::post('/settings/alerts/destinations/{destination}/toggle', [AlertsHubController::class, 'toggle'])->name('settings.alerts.destinations.toggle');
     Route::get('/settings/mcp-tokens', [McpTokensController::class, 'index'])->name('settings.mcp-tokens.index');
     Route::post('/settings/mcp-tokens', [McpTokensController::class, 'store'])->name('settings.mcp-tokens.store');
     Route::delete('/settings/mcp-tokens/{token}', [McpTokensController::class, 'revoke'])->name('settings.mcp-tokens.revoke');

@@ -223,6 +223,13 @@
                 <i class="bi bi-plug sidebar-icon"></i>
                 <span class="sidebar-label">Integrations</span>
             </a>
+            <a href="{{ route('settings.alerts.index') }}"
+               class="sidebar-link {{ request()->routeIs('settings.alerts*') ? 'active' : '' }}"
+               @if(request()->routeIs('settings.alerts*')) aria-current="page" @endif
+               data-bs-toggle="tooltip" data-bs-placement="right" data-bs-title="Alerts Hub">
+                <i class="bi bi-bell sidebar-icon"></i>
+                <span class="sidebar-label">Alerts Hub</span>
+            </a>
             <a href="{{ route('settings.mcp-tokens.index') }}"
                class="sidebar-link {{ request()->routeIs('settings.mcp-tokens*') ? 'active' : '' }}"
                @if(request()->routeIs('settings.mcp-tokens*')) aria-current="page" @endif

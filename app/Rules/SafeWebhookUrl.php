@@ -19,6 +19,10 @@ use Illuminate\Contracts\Validation\ValidationRule;
  */
 class SafeWebhookUrl implements ValidationRule
 {
+    public function __construct(
+        private readonly string $fieldLabel = 'Tactical API URL',
+    ) {}
+
     public function validate(string $attribute, mixed $value, Closure $fail): void
     {
         if (! is_string($value) || $value === '') {
@@ -27,7 +31,7 @@ class SafeWebhookUrl implements ValidationRule
             return;
         }
 
-        if ($error = SafeUrlInspector::reject($value)) {
+        if ($error = SafeUrlInspector::reject($value, null, $this->fieldLabel)) {
             $fail($error);
         }
     }
