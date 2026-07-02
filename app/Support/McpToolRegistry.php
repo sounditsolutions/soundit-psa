@@ -37,7 +37,7 @@ class McpToolRegistry
         ));
 
         $bridge = self::shape(OperatorBridgeTools::definitions());
-        $wikiWrites = self::shape([self::wikiAddFactTool()]);
+        $wikiWrites = self::shape([self::wikiAddFactTool(), self::wikiCreatePageTool(), self::wikiUpdatePageTool()]);
 
         return [
             'general' => ['label' => 'General (no client context)', 'sensitive' => false, 'tools' => $general],
@@ -125,6 +125,68 @@ class McpToolRegistry
                     ],
                 ],
                 'required' => ['scope', 'page_slug', 'section_anchor', 'subject_key', 'statement'],
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public static function wikiCreatePageTool(): array
+    {
+        return [
+            'name' => 'wiki_create_page',
+            'description' => 'Create an internal global SOP/runbook wiki page under runbooks/* or sops/*. Direct write: title and body are safety-scanned, the page is AI-authored, revisioned, and marked as an AI draft. No client pages, overview pages, deviation pages, or out-of-namespace writes.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'slug' => [
+                        'type' => 'string',
+                        'description' => 'New global page slug under runbooks/* or sops/*, e.g. runbooks/password-reset or sops/account-lockout.',
+                    ],
+                    'title' => [
+                        'type' => 'string',
+                        'description' => 'Human-readable SOP/runbook title. Scanned before storage.',
+                    ],
+                    'body_md' => [
+                        'type' => 'string',
+                        'description' => 'Markdown body for the SOP/runbook. Scanned before storage; do not include secrets, prompts, instructions, or wiki fact marker strings.',
+                    ],
+                    'change_summary' => [
+                        'type' => 'string',
+                        'description' => 'Optional revision summary for Charlie review.',
+                    ],
+                ],
+                'required' => ['slug', 'title', 'body_md'],
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public static function wikiUpdatePageTool(): array
+    {
+        return [
+            'name' => 'wiki_update_page',
+            'description' => 'Update an existing internal global SOP/runbook wiki page under runbooks/* or sops/*. Direct write: title and body are safety-scanned, the page remains AI-authored, revisioned, and marked as an AI draft. No client pages, overview pages, deviation pages, or out-of-namespace writes.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'slug' => [
+                        'type' => 'string',
+                        'description' => 'Existing global page slug under runbooks/* or sops/*.',
+                    ],
+                    'title' => [
+                        'type' => 'string',
+                        'description' => 'Replacement human-readable SOP/runbook title. Scanned before storage.',
+                    ],
+                    'body_md' => [
+                        'type' => 'string',
+                        'description' => 'Replacement markdown body for the SOP/runbook. Scanned before storage; do not include secrets, prompts, instructions, or wiki fact marker strings.',
+                    ],
+                    'change_summary' => [
+                        'type' => 'string',
+                        'description' => 'Optional revision summary for Charlie review.',
+                    ],
+                ],
+                'required' => ['slug', 'title', 'body_md'],
             ],
         ];
     }
