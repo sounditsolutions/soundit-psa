@@ -133,6 +133,25 @@ class EscalationSweepTest extends TestCase
         $this->assertSame(0, $count);
     }
 
+    public function test_suppressed_run_without_notified_at_is_skipped(): void
+    {
+        $this->makeRun(escalationOverrides: [
+            'status' => 'suppressed',
+            'noise_to_owner' => 'duplicate_client_escalation',
+            'suppression_kind' => 'open_client_flag',
+            'suppressed_at' => now()->subHours(3)->toIso8601String(),
+            'notified_at' => null,
+        ]);
+
+        $this->mock(EscalationNotifier::class, function (MockInterface $m) {
+            $m->shouldReceive('deliverTo')->never();
+        });
+
+        $count = app(EscalationSweep::class)->sweep();
+
+        $this->assertSame(0, $count, 'Suppressed flags are cockpit records, not re-ping candidates.');
+    }
+
     // ── Test 3: acked (no longer Flagged) → skipped ──────────────────────────
 
     /**

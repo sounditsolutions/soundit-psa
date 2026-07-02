@@ -3,16 +3,22 @@
 namespace Tests\Feature\Agent\Escalation;
 
 use App\Enums\FlagAttentionCategory;
+use App\Enums\NoteType;
 use App\Enums\TechnicianRunState;
 use App\Enums\TicketStatus;
+use App\Enums\WhoType;
 use App\Models\Client;
 use App\Models\Setting;
 use App\Models\TechnicianRun;
 use App\Models\Ticket;
+use App\Models\TicketNote;
 use App\Models\User;
 use App\Services\Agent\Escalation\EscalationNotifier;
 use App\Services\Agent\FlagAttentionTool;
+use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Cache;
+use Mockery;
 use Tests\TestCase;
 
 /**
@@ -33,11 +39,53 @@ class FlagAttentionEscalationTest extends TestCase
 {
     use RefreshDatabase;
 
-    private function openTicketWithClient(): Ticket
+    private function openTicketWithClient(?Client $client = null, array $attrs = []): Ticket
     {
-        $client = Client::factory()->create();
+        $client ??= Client::factory()->create();
 
-        return Ticket::factory()->for($client)->create(['status' => TicketStatus::InProgress]);
+        return Ticket::factory()->for($client)->create(array_merge(['status' => TicketStatus::InProgress], $attrs));
+    }
+
+    private function existingFlagFor(Ticket $ticket, array $meta = []): TechnicianRun
+    {
+        $baseMeta = ['category' => 'needs_decision', 'reason' => 'already in front of a human'];
+
+        return TechnicianRun::create([
+            'ticket_id' => $ticket->id,
+            'client_id' => $ticket->client_id,
+            'action_type' => 'flag_attention',
+            'content_hash' => hash('sha256', 'existing-flag-'.$ticket->id),
+            'state' => TechnicianRunState::Flagged,
+            'proposed_content' => 'already in front of a human',
+            'proposed_meta' => array_merge($baseMeta, $meta),
+            'tokens_used' => 0,
+        ]);
+    }
+
+    private function humanNote(Ticket $ticket, array $attrs = []): TicketNote
+    {
+        return TicketNote::create(array_merge([
+            'ticket_id' => $ticket->id,
+            'author_id' => User::factory()->create()->id,
+            'author_name' => 'Staff Member',
+            'body' => 'I am working this ticket.',
+            'note_type' => NoteType::Note->value,
+            'who_type' => WhoType::Agent->value,
+            'ai_authored' => false,
+            'noted_at' => now()->subHour(),
+        ], $attrs));
+    }
+
+    private function assertSuppressed(TechnicianRun $run, string $kind): void
+    {
+        $escalation = $run->fresh()->proposed_meta['escalation'] ?? null;
+
+        $this->assertIsArray($escalation, 'suppressed runs must carry escalation metadata');
+        $this->assertSame('suppressed', $escalation['status'] ?? null);
+        $this->assertSame($kind, $escalation['suppression_kind'] ?? null);
+        $this->assertSame('duplicate_client_escalation', $escalation['noise_to_owner'] ?? null);
+        $this->assertArrayHasKey('suppressed_at', $escalation);
+        $this->assertArrayNotHasKey('notified_at', $escalation, 'suppressed runs must never be picked up by the re-ping sweep');
     }
 
     /** Test 1: enabled + new flag → notify called once with the correct args. */
@@ -165,5 +213,277 @@ class FlagAttentionEscalationTest extends TestCase
 
         // Same flag again (same hash) → revived to Flagged → notify #2.
         $tool->execute($ticket, $input);
+    }
+
+    public function test_same_client_open_flag_suppresses_new_escalation_but_records_the_flag(): void
+    {
+        User::factory()->create(); // AI actor fallback for the gate audit row
+        $client = Client::factory()->create();
+        $alreadyFlaggedTicket = $this->openTicketWithClient($client, ['subject' => 'Existing flagged issue']);
+        $current = $this->openTicketWithClient($client, ['subject' => 'Sibling issue']);
+        $existing = $this->existingFlagFor($alreadyFlaggedTicket, [
+            'escalation' => [
+                'category' => 'needs_decision',
+                'recipient_user_id' => User::factory()->create()->id,
+                'notified_at' => now()->subMinutes(5)->toIso8601String(),
+                'step' => 0,
+            ],
+        ]);
+
+        Setting::setValue('agent_escalation_enabled', '1');
+
+        $notifier = $this->mock(EscalationNotifier::class);
+        $notifier->shouldNotReceive('notify');
+
+        app(FlagAttentionTool::class)->execute($current, [
+            'reason' => 'Another issue for the same client needs attention.',
+            'category' => 'needs_decision',
+        ]);
+
+        $run = TechnicianRun::where('ticket_id', $current->id)
+            ->where('action_type', 'flag_attention')
+            ->first();
+
+        $this->assertNotNull($run, 'the new flag must still be visible in the cockpit');
+        $this->assertSame(TechnicianRunState::Flagged, $run->state);
+        $this->assertSuppressed($run, 'open_client_flag');
+        $this->assertSame($existing->id, $run->fresh()->proposed_meta['escalation']['linked_run_id'] ?? null);
+        $this->assertSame($alreadyFlaggedTicket->id, $run->fresh()->proposed_meta['escalation']['linked_ticket_id'] ?? null);
+    }
+
+    public function test_same_client_open_flag_without_delivery_metadata_does_not_suppress_new_escalation(): void
+    {
+        User::factory()->create(); // AI actor fallback for the gate audit row
+        $client = Client::factory()->create();
+        $alreadyFlaggedTicket = $this->openTicketWithClient($client, ['subject' => 'Held before escalation delivery existed']);
+        $current = $this->openTicketWithClient($client, ['subject' => 'Fresh escalation']);
+        $this->existingFlagFor($alreadyFlaggedTicket);
+
+        Setting::setValue('agent_escalation_enabled', '1');
+
+        $notifier = $this->mock(EscalationNotifier::class);
+        $notifier->shouldReceive('notify')->once();
+
+        app(FlagAttentionTool::class)->execute($current, [
+            'reason' => 'No durable record says the owner was already paged.',
+            'category' => 'needs_decision',
+        ]);
+
+        $run = TechnicianRun::where('ticket_id', $current->id)
+            ->where('action_type', 'flag_attention')
+            ->first();
+
+        $this->assertNotSame('suppressed', $run->fresh()->proposed_meta['escalation']['status'] ?? null);
+    }
+
+    public function test_client_lock_timeout_notifies_instead_of_terminally_suppressing(): void
+    {
+        User::factory()->create(); // AI actor fallback for the gate audit row
+        $ticket = $this->openTicketWithClient();
+
+        Setting::setValue('agent_escalation_enabled', '1');
+
+        $lock = Mockery::mock();
+        $lock->shouldReceive('betweenBlockedAttemptsSleepFor')
+            ->once()
+            ->with(100)
+            ->andReturnSelf();
+        $lock->shouldReceive('block')
+            ->once()
+            ->withArgs(fn (int $seconds, callable $callback): bool => $seconds === 180)
+            ->andThrow(new LockTimeoutException);
+
+        Cache::shouldReceive('lock')
+            ->once()
+            ->with("agent:client-escalation-noise:{$ticket->client_id}", 180)
+            ->andReturn($lock);
+
+        $notifier = $this->mock(EscalationNotifier::class);
+        $notifier->shouldReceive('notify')->once();
+
+        app(FlagAttentionTool::class)->execute($ticket, [
+            'reason' => 'The client lock is stale but this escalation still needs an owner page.',
+            'category' => 'needs_decision',
+        ]);
+
+        $run = TechnicianRun::where('ticket_id', $ticket->id)
+            ->where('action_type', 'flag_attention')
+            ->first();
+
+        $this->assertNotSame('suppressed', $run->fresh()->proposed_meta['escalation']['status'] ?? null);
+    }
+
+    public function test_assigned_same_client_sibling_suppresses_new_escalation(): void
+    {
+        User::factory()->create(); // AI actor fallback for the gate audit row
+        $client = Client::factory()->create();
+        $assignee = User::factory()->create(['name' => 'Justin']);
+        $this->openTicketWithClient($client, [
+            'subject' => 'Human already owns this',
+            'assignee_id' => $assignee->id,
+        ]);
+        $current = $this->openTicketWithClient($client, ['subject' => 'Sibling issue']);
+
+        Setting::setValue('agent_escalation_enabled', '1');
+
+        $notifier = $this->mock(EscalationNotifier::class);
+        $notifier->shouldNotReceive('notify');
+
+        app(FlagAttentionTool::class)->execute($current, [
+            'reason' => 'Same client has another possible escalation.',
+            'category' => 'needs_overflow',
+        ]);
+
+        $run = TechnicianRun::where('ticket_id', $current->id)
+            ->where('action_type', 'flag_attention')
+            ->first();
+
+        $this->assertNotNull($run);
+        $this->assertSuppressed($run, 'human_engaged_sibling_assigned');
+    }
+
+    public function test_recent_human_staff_note_on_same_client_sibling_suppresses_new_escalation(): void
+    {
+        User::factory()->create(); // AI actor fallback for the gate audit row
+        $client = Client::factory()->create();
+        $sibling = $this->openTicketWithClient($client, ['subject' => 'Staff replied here']);
+        $this->humanNote($sibling);
+        $current = $this->openTicketWithClient($client, ['subject' => 'Sibling issue']);
+
+        Setting::setValue('agent_escalation_enabled', '1');
+
+        $notifier = $this->mock(EscalationNotifier::class);
+        $notifier->shouldNotReceive('notify');
+
+        app(FlagAttentionTool::class)->execute($current, [
+            'reason' => 'Same client has a related issue.',
+            'category' => 'uncertain',
+        ]);
+
+        $run = TechnicianRun::where('ticket_id', $current->id)
+            ->where('action_type', 'flag_attention')
+            ->first();
+
+        $this->assertNotNull($run);
+        $this->assertSuppressed($run, 'human_engaged_sibling_note');
+    }
+
+    public function test_ai_system_stale_and_cross_client_activity_do_not_suppress_new_escalation(): void
+    {
+        User::factory()->create(); // AI actor fallback for the gate audit row
+        $client = Client::factory()->create();
+        $otherClient = Client::factory()->create();
+
+        $sameClientSibling = $this->openTicketWithClient($client, ['subject' => 'Only non-qualifying notes']);
+        $this->humanNote($sameClientSibling, ['ai_authored' => true]);
+        $this->humanNote($sameClientSibling, ['note_type' => NoteType::System->value]);
+        $this->humanNote($sameClientSibling, ['noted_at' => now()->subDays(8)]);
+
+        $foreignTicket = $this->openTicketWithClient($otherClient, ['assignee_id' => User::factory()->create()->id]);
+        $this->existingFlagFor($foreignTicket);
+        $this->humanNote($foreignTicket);
+
+        $current = $this->openTicketWithClient($client, ['subject' => 'Should still notify']);
+
+        Setting::setValue('agent_escalation_enabled', '1');
+
+        $notifier = $this->mock(EscalationNotifier::class);
+        $notifier->shouldReceive('notify')->once();
+
+        app(FlagAttentionTool::class)->execute($current, [
+            'reason' => 'No same-client human is actually engaged.',
+            'category' => 'other',
+        ]);
+
+        $run = TechnicianRun::where('ticket_id', $current->id)
+            ->where('action_type', 'flag_attention')
+            ->first();
+
+        $this->assertNotSame('suppressed', $run->fresh()->proposed_meta['escalation']['status'] ?? null);
+    }
+
+    public function test_same_ticket_prior_flag_with_different_reason_does_not_suppress_new_escalation(): void
+    {
+        User::factory()->create(); // AI actor fallback for the gate audit row
+        $ticket = $this->openTicketWithClient();
+        $this->existingFlagFor($ticket);
+
+        Setting::setValue('agent_escalation_enabled', '1');
+
+        $notifier = $this->mock(EscalationNotifier::class);
+        $notifier->shouldReceive('notify')->once();
+
+        app(FlagAttentionTool::class)->execute($ticket, [
+            'reason' => 'A second distinct blocker on the same ticket.',
+            'category' => 'needs_decision',
+        ]);
+    }
+
+    public function test_closed_sibling_flag_does_not_suppress_new_escalation(): void
+    {
+        User::factory()->create(); // AI actor fallback for the gate audit row
+        $client = Client::factory()->create();
+        $closedSibling = $this->openTicketWithClient($client, [
+            'status' => TicketStatus::Resolved,
+            'resolved_at' => now()->subHour(),
+        ]);
+        $this->existingFlagFor($closedSibling);
+        $current = $this->openTicketWithClient($client);
+
+        Setting::setValue('agent_escalation_enabled', '1');
+
+        $notifier = $this->mock(EscalationNotifier::class);
+        $notifier->shouldReceive('notify')->once();
+
+        app(FlagAttentionTool::class)->execute($current, [
+            'reason' => 'The only prior flag is on a closed sibling.',
+            'category' => 'needs_decision',
+        ]);
+    }
+
+    public function test_gate_held_flag_does_not_notify_when_kill_switch_is_engaged(): void
+    {
+        User::factory()->create(); // AI actor fallback for the gate audit row
+        $ticket = $this->openTicketWithClient();
+
+        Setting::setValue('agent_escalation_enabled', '1');
+        Setting::setValue('technician_kill_switch', '1');
+
+        $notifier = $this->mock(EscalationNotifier::class);
+        $notifier->shouldNotReceive('notify');
+
+        app(FlagAttentionTool::class)->execute($ticket, [
+            'reason' => 'This would normally notify.',
+            'category' => 'needs_decision',
+        ]);
+
+        $this->assertDatabaseHas('technician_action_logs', [
+            'ticket_id' => $ticket->id,
+            'action_type' => 'flag_attention',
+            'result_status' => 'held',
+        ]);
+    }
+
+    public function test_gate_held_flag_does_not_notify_when_client_is_excluded(): void
+    {
+        User::factory()->create(); // AI actor fallback for the gate audit row
+        $ticket = $this->openTicketWithClient();
+
+        Setting::setValue('agent_escalation_enabled', '1');
+        Setting::setValue('technician_excluded_client_ids', json_encode([$ticket->client_id]));
+
+        $notifier = $this->mock(EscalationNotifier::class);
+        $notifier->shouldNotReceive('notify');
+
+        app(FlagAttentionTool::class)->execute($ticket, [
+            'reason' => 'This would normally notify.',
+            'category' => 'needs_decision',
+        ]);
+
+        $this->assertDatabaseHas('technician_action_logs', [
+            'ticket_id' => $ticket->id,
+            'action_type' => 'flag_attention',
+            'result_status' => 'held',
+        ]);
     }
 }

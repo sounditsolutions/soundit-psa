@@ -113,13 +113,23 @@
                     @if($run->ticket?->client)
                         <span class="badge bg-light text-dark border">{{ $run->ticket->client->name }}</span>
                     @endif
-                    @php($flagCategory = \App\Enums\FlagAttentionCategory::fromInput(($run->proposed_meta ?? [])['category'] ?? null))
+                    @php($flagMeta = $run->proposed_meta ?? [])
+                    @php($flagCategory = \App\Enums\FlagAttentionCategory::fromInput($flagMeta['category'] ?? null))
+                    @php($suppressedEscalation = ($flagMeta['escalation']['status'] ?? null) === 'suppressed')
                     <span class="badge bg-warning text-dark">{{ $flagCategory->label() }}</span>
+                    @if($suppressedEscalation)
+                        <span class="badge bg-info text-dark">Not re-pinged</span>
+                    @endif
                     <span class="ms-auto text-muted">{{ optional($run->created_at)->diffForHumans() }}</span>
                 </div>
 
                 <p class="text-muted small mb-1">Why the assistant flagged this (it took no action on the ticket):</p>
                 <p class="form-control-plaintext border rounded p-2 mb-2 bg-light small">{{ $run->proposed_content }}</p>
+                @if($suppressedEscalation)
+                    <p class="text-muted small mb-2">
+                        Not re-pinged: {{ $flagMeta['escalation']['suppression_reason'] ?? 'same client already has human attention' }}
+                    </p>
+                @endif
 
                 <div class="d-flex gap-2">
                     <form method="POST" action="{{ route('cockpit.acknowledge', $run) }}">
