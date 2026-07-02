@@ -14,7 +14,7 @@ class McpToolRegistryTest extends TestCase
     {
         $groups = McpToolRegistry::groups();
 
-        $this->assertSame(['general', 'client', 'integration', 'bridge'], array_keys($groups));
+        $this->assertSame(['general', 'client', 'integration', 'wiki_write', 'bridge'], array_keys($groups));
 
         $names = fn (string $group): array => array_column($groups[$group]['tools'], 'name');
 
@@ -25,7 +25,9 @@ class McpToolRegistryTest extends TestCase
         $this->assertContains('tactical_get_device', $names('integration'));
         $this->assertContains('list_teams_chats', $names('general'));
         $this->assertNotContains('tactical_run_diagnostic', $names('integration'));
+        $this->assertContains('wiki_add_fact', $names('wiki_write'));
         $this->assertContains('post_to_operator', $names('bridge'));
+        $this->assertTrue($groups['wiki_write']['sensitive']);
         $this->assertTrue($groups['bridge']['sensitive']);
         $this->assertFalse($groups['general']['sensitive']);
     }
@@ -36,6 +38,8 @@ class McpToolRegistryTest extends TestCase
 
         $bridge = collect($groups['bridge']['tools'])->firstWhere('name', 'post_to_operator');
         $this->assertNotEmpty($bridge['description']);
+        $wikiWrite = collect($groups['wiki_write']['tools'])->firstWhere('name', 'wiki_add_fact');
+        $this->assertNotEmpty($wikiWrite['description']);
 
         $seen = [];
         foreach ($groups as $group) {
@@ -55,6 +59,7 @@ class McpToolRegistryTest extends TestCase
         $this->assertContains('create_ticket', $all);
         $this->assertContains('tactical_get_device', $all);
         $this->assertContains('list_teams_chats', $all);
+        $this->assertContains('wiki_add_fact', $all);
         $this->assertContains('post_to_operator', $all);
         $this->assertSame(array_values(array_unique($all)), $all, 'no duplicates');
     }

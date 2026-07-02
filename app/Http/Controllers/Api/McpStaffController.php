@@ -63,6 +63,8 @@ class McpStaffController extends Controller
 
     private const NOTE_BODY_AUDIT_PLACEHOLDER = '[note body withheld]';
 
+    private const WIKI_FACT_STATEMENT_AUDIT_PLACEHOLDER = '[wiki fact statement withheld]';
+
     public function handle(Request $request): JsonResponse
     {
         $body = $request->json()->all() ?? [];
@@ -158,7 +160,7 @@ class McpStaffController extends Controller
         // to know about MCP.
         $generalTools = array_merge(
             AssistantToolDefinitions::getTools(hasClient: false),
-            [McpToolRegistry::proposeCloseTool()],
+            [McpToolRegistry::proposeCloseTool(), McpToolRegistry::wikiAddFactTool()],
             ChetDataSurfaceTools::generalTools(),
             OperatorBridgeTools::definitions(),
         );
@@ -255,8 +257,37 @@ class McpStaffController extends Controller
         // Isolation control (spec §6): only a positive, numeric client_id is
         // honored. Anything malformed — 0, negative, non-numeric "garbage" —
         // collapses to null (GLOBAL-only scope), never a `client_id = 0` query.
+        $hasClientIdArgument = array_key_exists('client_id', $arguments);
         $clientId = $this->positiveIntegerArgument($arguments['client_id'] ?? null);
         unset($arguments['client_id']);
+
+        if ($this->isWikiGlobalScopeWrite((string) $name, $arguments) && $hasClientIdArgument) {
+            $message = 'client_id must be omitted for wiki_add_fact global-scope writes.';
+            $this->audit('tools/call', (string) $name, $arguments, 'error', $message, $start, $request);
+
+            return response()->json([
+                'jsonrpc' => '2.0',
+                'id' => $id,
+                'result' => [
+                    'content' => [['type' => 'text', 'text' => $message]],
+                    'isError' => true,
+                ],
+            ]);
+        }
+
+        if ($this->isChetWikiClientScopeWrite($request, (string) $name, $arguments) && $clientId === null) {
+            $message = 'client_id is required for Chet wiki_add_fact client-scope writes.';
+            $this->audit('tools/call', (string) $name, $arguments, 'error', $message, $start, $request);
+
+            return response()->json([
+                'jsonrpc' => '2.0',
+                'id' => $id,
+                'result' => [
+                    'content' => [['type' => 'text', 'text' => $message]],
+                    'isError' => true,
+                ],
+            ]);
+        }
 
         if ($this->isChetClientScopedWrite($request, (string) $name) && $clientId === null) {
             $message = "client_id is required for Chet {$name} writes.";
@@ -398,6 +429,10 @@ class McpStaffController extends Controller
             return $this->auditTicketNoteArguments($redacted);
         }
 
+        if ($tool === 'wiki_add_fact') {
+            return $this->auditWikiAddFactArguments($redacted);
+        }
+
         return $redacted;
     }
 
@@ -415,6 +450,26 @@ class McpStaffController extends Controller
 
             if ($normalized === 'body') {
                 $safe['body'] = self::NOTE_BODY_AUDIT_PLACEHOLDER;
+            }
+        }
+
+        return $safe;
+    }
+
+    /** @return array<string, mixed> */
+    private function auditWikiAddFactArguments(array $arguments): array
+    {
+        $safe = [];
+
+        foreach ($arguments as $key => $value) {
+            $normalized = mb_strtolower((string) $key);
+
+            if (in_array($normalized, ['client_id', 'scope', 'page_slug', 'section_anchor', 'subject_key'], true)) {
+                $safe[$normalized] = $value;
+            }
+
+            if ($normalized === 'statement') {
+                $safe['statement'] = self::WIKI_FACT_STATEMENT_AUDIT_PLACEHOLDER;
             }
         }
 
@@ -445,6 +500,10 @@ class McpStaffController extends Controller
             return false;
         }
 
+        if ($toolName === 'wiki_add_fact') {
+            return $token->allowedTools !== null && $token->allows($toolName);
+        }
+
         if (OperatorBridgeTools::handles($toolName) || ChetDataSurfaceTools::handles($toolName)) {
             return $token->allowedTools !== null
                 && $token->allows($toolName);
@@ -455,7 +514,7 @@ class McpStaffController extends Controller
 
     private function userIdForToolCall(Request $request, string $toolName): ?int
     {
-        if ($this->isChetTicketNoteWrite($request, $toolName)) {
+        if ($this->isChetAiActorWrite($request, $toolName)) {
             return $this->requiredChetAiActorUserId();
         }
 
@@ -471,9 +530,10 @@ class McpStaffController extends Controller
             && mb_strtolower((string) $token->label) === 'chet';
     }
 
-    private function isChetTicketNoteWrite(Request $request, string $toolName): bool
+    private function isChetAiActorWrite(Request $request, string $toolName): bool
     {
-        return $toolName === 'add_ticket_note' && $this->isChetToken($request);
+        return in_array($toolName, ['add_ticket_note', 'wiki_add_fact'], true)
+            && $this->isChetToken($request);
     }
 
     private function isChetClientScopedWrite(Request $request, string $toolName): bool
@@ -482,17 +542,30 @@ class McpStaffController extends Controller
             && $this->isChetToken($request);
     }
 
+    private function isChetWikiClientScopeWrite(Request $request, string $toolName, array $arguments): bool
+    {
+        return $toolName === 'wiki_add_fact'
+            && $this->isChetToken($request)
+            && mb_strtolower(trim((string) ($arguments['scope'] ?? ''))) === 'client';
+    }
+
+    private function isWikiGlobalScopeWrite(string $toolName, array $arguments): bool
+    {
+        return $toolName === 'wiki_add_fact'
+            && mb_strtolower(trim((string) ($arguments['scope'] ?? ''))) === 'global';
+    }
+
     private function requiredChetAiActorUserId(): int
     {
         $configured = Setting::getValue('triage_system_user_id');
 
         if (! is_numeric($configured) || (int) $configured <= 0) {
-            throw new \RuntimeException('AI actor user is not configured for Chet ticket-note writes.');
+            throw new \RuntimeException('AI actor user is not configured for Chet writes.');
         }
 
         $actorId = (int) $configured;
         if (! User::whereKey($actorId)->exists()) {
-            throw new \RuntimeException('Configured AI actor user does not exist for Chet ticket-note writes.');
+            throw new \RuntimeException('Configured AI actor user does not exist for Chet writes.');
         }
 
         return $actorId;

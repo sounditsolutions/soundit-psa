@@ -15,8 +15,14 @@ class WikiComposerService
      *
      * @param  WikiPage  $page  Must be freshly loaded; body_md is read directly for the change guard.
      */
-    public function composeSection(WikiPage $page, string $anchor): bool
-    {
+    public function composeSection(
+        WikiPage $page,
+        string $anchor,
+        WikiAuthorType $author = WikiAuthorType::System,
+        ?int $authorId = null,
+        ?array $sourceRefs = null,
+        ?string $changeSummary = null,
+    ): bool {
         $facts = $page->facts()
             ->where('section_anchor', $anchor)
             ->whereNot('status', WikiFactStatus::Retired->value)
@@ -40,8 +46,9 @@ class WikiComposerService
         }
 
         $this->pages->updateBody(
-            $page, $newBody, WikiAuthorType::System, null,
-            "Recomposed '{$anchor}' from facts",
+            $page, $newBody, $author, $authorId,
+            $changeSummary ?? "Recomposed '{$anchor}' from facts",
+            $sourceRefs,
         );
 
         return true;

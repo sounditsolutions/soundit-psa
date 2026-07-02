@@ -37,11 +37,13 @@ class McpToolRegistry
         ));
 
         $bridge = self::shape(OperatorBridgeTools::definitions());
+        $wikiWrites = self::shape([self::wikiAddFactTool()]);
 
         return [
             'general' => ['label' => 'General (no client context)', 'sensitive' => false, 'tools' => $general],
             'client' => ['label' => 'Client-scoped', 'sensitive' => false, 'tools' => $client],
             'integration' => ['label' => 'Integration (RMM / M365)', 'sensitive' => false, 'tools' => $integration],
+            'wiki_write' => ['label' => 'Wiki write (sensitive)', 'sensitive' => true, 'tools' => $wikiWrites],
             'bridge' => ['label' => 'Operator bridge (sensitive)', 'sensitive' => true, 'tools' => $bridge],
         ];
     }
@@ -83,6 +85,46 @@ class McpToolRegistry
                     ],
                 ],
                 'required' => ['ticket_id', 'reason', 'confidence'],
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public static function wikiAddFactTool(): array
+    {
+        return [
+            'name' => 'wiki_add_fact',
+            'description' => 'Add one subject-keyed wiki fact through the governed fact store. Direct write: content is safety-scanned, stored as a pinned correction fact, and the target section is recomposed from fact markers. Use scope=client with client_id for client facts, or scope=global without client_id for internal SOP/norm facts. No raw page edits.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'scope' => [
+                        'type' => 'string',
+                        'enum' => ['client', 'global'],
+                        'description' => 'client writes to one client wiki; global writes to internal SOP/runbook pages.',
+                    ],
+                    'client_id' => [
+                        'type' => 'integer',
+                        'description' => 'Required when scope=client. Omit when scope=global.',
+                    ],
+                    'page_slug' => [
+                        'type' => 'string',
+                        'description' => 'Existing wiki page slug, e.g. infrastructure or runbooks/close-eligibility.',
+                    ],
+                    'section_anchor' => [
+                        'type' => 'string',
+                        'description' => 'Markdown section anchor to compose into, e.g. assets, equipment, eligibility.',
+                    ],
+                    'subject_key' => [
+                        'type' => 'string',
+                        'description' => 'Stable lowercase identity for dedupe, e.g. asset:dc01:role or sop:close-eligibility:evidence.',
+                    ],
+                    'statement' => [
+                        'type' => 'string',
+                        'description' => 'One atomic factual sentence, max 300 chars. No passwords, tokens, instructions, prompts, or marker strings.',
+                    ],
+                ],
+                'required' => ['scope', 'page_slug', 'section_anchor', 'subject_key', 'statement'],
             ],
         ];
     }

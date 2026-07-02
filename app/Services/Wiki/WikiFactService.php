@@ -95,10 +95,11 @@ class WikiFactService
         string $subjectKey,
         string $statement,
         array $sourceRefs,
+        ?int $confirmedBy = null,
     ): WikiFact {
         $subjectKey = self::normalizeSubjectKey($subjectKey);
 
-        return DB::transaction(function () use ($page, $anchor, $subjectKey, $statement, $sourceRefs) {
+        return DB::transaction(function () use ($page, $anchor, $subjectKey, $statement, $sourceRefs, $confirmedBy) {
             $existing = WikiFact::query()
                 ->where('client_id', $page->client_id)
                 ->where('subject_key', $subjectKey)
@@ -109,7 +110,11 @@ class WikiFactService
 
             // Reaffirm: same statement — just bump the timestamp, no new row.
             if ($existing && trim($existing->statement) === trim($statement)) {
-                $existing->update(['last_affirmed_at' => now()]);
+                $updates = ['last_affirmed_at' => now()];
+                if ($confirmedBy !== null && $existing->confirmed_by === null) {
+                    $updates['confirmed_by'] = $confirmedBy;
+                }
+                $existing->update($updates);
 
                 return $existing;
             }
@@ -131,6 +136,7 @@ class WikiFactService
                 'source_refs' => $sourceRefs,
                 'confidence' => null,
                 'last_affirmed_at' => now(),
+                'confirmed_by' => $confirmedBy,
             ]);
 
             if ($existing) {
