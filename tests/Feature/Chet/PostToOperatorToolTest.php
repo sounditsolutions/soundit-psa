@@ -2,9 +2,11 @@
 
 namespace Tests\Feature\Chet;
 
+use App\Models\Client;
 use App\Models\McpAuditLog;
 use App\Models\Setting;
 use App\Models\TechnicianRun;
+use App\Models\Ticket;
 use App\Models\User;
 use App\Services\EmailService;
 use App\Services\Teams\TeamsBotClient;
@@ -49,6 +51,119 @@ class PostToOperatorToolTest extends TestCase
     private function decodedResult(TestResponse $r): array
     {
         return json_decode((string) $r->json('result.content.0.text'), true) ?? [];
+    }
+
+    private function captureTeamsPost(?string &$body, ?string &$subject): void
+    {
+        $body = null;
+        $subject = null;
+        $this->mock(TeamsNotifier::class, function (MockInterface $m) use (&$body, &$subject) {
+            $m->shouldReceive('post')->once()->andReturnUsing(function (string $postedSubject, string $postedBody) use (&$body, &$subject) {
+                $subject = $postedSubject;
+                $body = $postedBody;
+
+                return true;
+            });
+        });
+        $this->mock(EmailService::class, fn (MockInterface $m) => $m->shouldReceive('sendNew')->andReturnNull());
+    }
+
+    #[DataProvider('operatorBodyShapeCases')]
+    public function test_post_to_operator_body_omits_redundant_persona_prefix(
+        string $category,
+        bool $withTicket,
+        string $expectedBodyTemplate,
+        string $expectedSubjectTemplate,
+    ): void {
+        $ticket = null;
+        if ($withTicket) {
+            $client = Client::factory()->create(['name' => 'Acme']);
+            $ticket = Ticket::factory()->create([
+                'client_id' => $client->id,
+                'subject' => 'Printer down',
+            ]);
+        }
+
+        $body = null;
+        $subject = null;
+        $this->captureTeamsPost($body, $subject);
+
+        $args = ['category' => $category, 'message' => 'Bridge response'];
+        if ($ticket !== null) {
+            $args['ticket_id'] = $ticket->id;
+        }
+
+        $this->callTool($args)->assertOk();
+
+        $ticketContext = $ticket !== null ? "#{$ticket->id} (Acme - Printer down)" : '';
+        $this->assertSame(str_replace('{ticket}', $ticketContext, $expectedBodyTemplate), $body);
+        $this->assertSame(str_replace('{ticket_id}', (string) $ticket?->id, $expectedSubjectTemplate), $subject);
+    }
+
+    public static function operatorBodyShapeCases(): array
+    {
+        return [
+            'reply with ticket' => ['reply', true, '{ticket}: Bridge response', 'Charlie - Reply - ticket #{ticket_id}'],
+            'reply without ticket' => ['reply', false, 'Bridge response', 'Charlie - Reply'],
+            'steer request with ticket' => ['steer_request', true, 'Steer request on {ticket}: Bridge response', 'Charlie - Steer request - ticket #{ticket_id}'],
+            'steer request without ticket' => ['steer_request', false, 'Steer request: Bridge response', 'Charlie - Steer request'],
+        ];
+    }
+
+    #[DataProvider('trailingSignatureCases')]
+    public function test_post_to_operator_strips_trailing_persona_signature_lines(string $message): void
+    {
+        $this->charlie->update(['name' => 'Chet']);
+        Setting::setValue('triage_system_user_id', (string) $this->charlie->id);
+
+        $body = null;
+        $subject = null;
+        $this->captureTeamsPost($body, $subject);
+
+        $this->callTool(['category' => 'reply', 'message' => $message])->assertOk();
+
+        $this->assertSame('Thanks, I will keep going.', $body);
+    }
+
+    public static function trailingSignatureCases(): array
+    {
+        return [
+            'hyphen signature' => ["Thanks, I will keep going.\n\n-- Chet"],
+            'em dash signature' => ["Thanks, I will keep going.\n\n— Chet"],
+            'case variant with period' => ["Thanks, I will keep going.\n\n-- cHeT."],
+            'repeated signatures' => ["Thanks, I will keep going.\n\n-- Chet\n\n— CHET!"],
+        ];
+    }
+
+    public function test_post_to_operator_does_not_strip_middle_persona_signature_marker(): void
+    {
+        $this->charlie->update(['name' => 'Chet']);
+        Setting::setValue('triage_system_user_id', (string) $this->charlie->id);
+
+        $body = null;
+        $subject = null;
+        $this->captureTeamsPost($body, $subject);
+
+        $this->callTool([
+            'category' => 'reply',
+            'message' => "First line\n-- Chet\nPlease keep this marker in the middle.",
+        ])->assertOk();
+
+        $this->assertSame("First line\n-- Chet\nPlease keep this marker in the middle.", $body);
+    }
+
+    public function test_post_to_operator_does_not_strip_inline_trailing_persona_marker(): void
+    {
+        $this->charlie->update(['name' => 'Chet']);
+        Setting::setValue('triage_system_user_id', (string) $this->charlie->id);
+
+        $body = null;
+        $subject = null;
+        $this->captureTeamsPost($body, $subject);
+
+        $this->callTool(['category' => 'reply', 'message' => 'Please ask -- Chet'])->assertOk();
+
+        $this->assertSame('Please ask -- Chet', $body);
     }
 
     public function test_recipient_is_resolved_server_side_from_category_not_the_message(): void
@@ -148,20 +263,17 @@ class PostToOperatorToolTest extends TestCase
         Setting::setValue('triage_system_user_id', (string) $this->charlie->id);
 
         $body = null;
-        $this->mock(TeamsNotifier::class, function (MockInterface $m) use (&$body) {
-            $m->shouldReceive('post')->once()->andReturnUsing(function (string $subject, string $b) use (&$body) {
-                $body = $b;
-
-                return true;
-            });
-        });
-        $this->mock(EmailService::class, fn (MockInterface $m) => $m->shouldReceive('sendNew')->andReturnNull());
+        $subject = null;
+        $this->captureTeamsPost($body, $subject);
 
         $this->callTool(['category' => 'reply', 'message' => 'plain reply'])->assertOk();
 
         $this->assertNotNull($body);
         $this->assertStringNotContainsString('](http', $body);
         $this->assertStringNotContainsString('<at>', $body);
+        $this->assertNotNull($subject);
+        $this->assertStringNotContainsString('](http', $subject);
+        $this->assertStringNotContainsString('<at>', $subject);
     }
 
     public function test_works_without_a_technician_run(): void
