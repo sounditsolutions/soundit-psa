@@ -2,21 +2,19 @@
 
 namespace App\Jobs;
 
-use App\Models\SignalEvent;
-use App\Services\Signals\SignalRouter;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 
-class RouteSignalEvent implements ShouldQueue
+class DeliverSignal implements ShouldQueue
 {
     use Queueable;
 
     public function __construct(
-        public int $eventId,
+        public int $deliveryId,
     ) {}
 
     public function handle(): void
     {
-        app(SignalRouter::class)->route(SignalEvent::findOrFail($this->eventId));
+        //
     }
 }
