@@ -11,7 +11,9 @@ use App\Services\Chet\OperatorBridgeTextSanitizer;
 use App\Services\Chet\OperatorBridgeToolExecutor;
 use App\Services\Chet\OperatorBridgeTools;
 use App\Services\Tactical\Actions\ActionRedactor;
+use App\Support\AgentConfig;
 use App\Support\McpStaffToken;
+use App\Support\TechnicianConfig;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -36,6 +38,8 @@ class McpStaffController extends Controller
     private const SERVER_NAME = 'PSA Staff';
 
     private const SERVER_VERSION = '1.0.0';
+
+    private const WHOAMI_TOOL = 'whoami';
 
     public function handle(Request $request): JsonResponse
     {
@@ -131,6 +135,7 @@ class McpStaffController extends Controller
         // strips client_id off before dispatch, so the executor doesn't need
         // to know about MCP.
         $generalTools = array_merge(
+            [$this->whoamiToolDefinition()],
             AssistantToolDefinitions::getTools(hasClient: false),
             OperatorBridgeTools::definitions(),
         );
@@ -236,6 +241,8 @@ class McpStaffController extends Controller
         try {
             if (OperatorBridgeTools::handles((string) $name)) {
                 $result = app(OperatorBridgeToolExecutor::class)->execute((string) $name, $arguments);
+            } elseif ($name === self::WHOAMI_TOOL) {
+                $result = $this->whoami($request);
             } else {
                 $executor = new AssistantToolExecutor(ticket: null, clientId: $clientId, userId: $userId);
                 $result = $executor->execute($name, is_array($arguments) ? $arguments : []);
@@ -323,6 +330,10 @@ class McpStaffController extends Controller
     {
         $token = $request->attributes->get('mcp_staff_token');
 
+        if ($toolName === self::WHOAMI_TOOL) {
+            return $token instanceof McpStaffToken;
+        }
+
         if (OperatorBridgeTools::handles($toolName)) {
             return $token instanceof McpStaffToken
                 && $token->allowedTools !== null
@@ -337,5 +348,41 @@ class McpStaffController extends Controller
         $token = $request->attributes->get('mcp_staff_token');
 
         return $token instanceof McpStaffToken ? $token->actorLabel() : 'teams-bot';
+    }
+
+    /** @return array<string, mixed> */
+    private function whoamiToolDefinition(): array
+    {
+        return [
+            'name' => self::WHOAMI_TOOL,
+            'description' => 'Return this MCP token label, directive, effective allowed tools, and safety posture.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => (object) [],
+                'required' => [],
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private function whoami(Request $request): array
+    {
+        $token = $request->attributes->get('mcp_staff_token');
+        $threshold = AgentConfig::proposeCloseAutoThreshold();
+
+        return [
+            'label' => $token instanceof McpStaffToken && $token->label !== null ? $token->label : 'teams-bot',
+            'directive' => $token instanceof McpStaffToken ? $token->directiveOrDefault() : \App\Models\McpToken::defaultDirective(),
+            'allowed_tools' => $token instanceof McpStaffToken && $token->allowedTools !== null
+                ? array_values(array_unique(array_merge([self::WHOAMI_TOOL], $token->allowedTools)))
+                : null,
+            'posture' => [
+                'agent_enabled' => AgentConfig::enabled(),
+                'held_only' => true,
+                'kill_switch' => TechnicianConfig::killSwitchEngaged(),
+                'auto_close_enabled' => $threshold !== null,
+                'auto_close_threshold' => $threshold,
+            ],
+        ];
     }
 }
