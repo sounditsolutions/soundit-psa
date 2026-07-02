@@ -16,7 +16,7 @@ use Tests\TestCase;
  * Spike-2 of the Chet re-homing: a chet-labeled scoped token may hold
  * propose_close. Held-by-construction: the MCP path lands in
  * ProposeCloseTool::executeHeld (forceHeld), so a proposal only ever waits
- * in the cockpit — nothing closes without a human tap. Every other Chet
+ * in the cockpit — nothing closes without a human tap. Non-held Chet
  * write denial stays hard-coded server-side regardless of token scope.
  */
 class ChetProposeCloseTest extends TestCase
@@ -144,7 +144,7 @@ class ChetProposeCloseTest extends TestCase
         $client = Client::factory()->create();
         Ticket::factory()->create(['client_id' => $client->id]);
 
-        $denied = ['create_ticket', 'send_reply', 'close_ticket', 'tactical_run_diagnostic'];
+        $denied = ['create_ticket', 'close_ticket', 'tactical_run_diagnostic'];
         $token = $this->chetToken($denied);
 
         foreach ($denied as $tool) {

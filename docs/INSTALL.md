@@ -1032,7 +1032,9 @@ When enabled, portal-enabled contacts automatically receive email notifications 
 
 ### MCP server — staff tool surface
 
-A read-mostly MCP (Model Context Protocol) server is exposed at `POST /api/mcp/staff`, intended for use as a remote MCP endpoint by the [Claude Teams Teammate](https://github.com/Wldc4rd/claude-teams-teammate) via Anthropic's MCP connector beta. Same tool surface as the inline ticket-page AI assistant (read-only, general-purpose set in V1).
+An MCP (Model Context Protocol) server is exposed at `POST /api/mcp/staff`, intended for use as a remote MCP endpoint by the [Claude Teams Teammate](https://github.com/Wldc4rd/claude-teams-teammate) via Anthropic's MCP connector beta. The surface is token-scoped: read/data tools remain the default shape, while sensitive write tools are only exposed when explicitly granted.
+
+Held AI Technician actions such as `propose_close` and `send_reply` never execute directly from MCP. They create held cockpit proposals for a human operator to approve. Chet-labeled tokens must pass `client_id` for these client-scoped actions, and `send_reply` accepts an optional `body` that is held verbatim for cockpit review.
 
 **Enable:**
 1. Generate a bearer token: `php artisan mcp:rotate-staff-token` (token only displayed once)

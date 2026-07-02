@@ -87,6 +87,7 @@ class SendReplyToolTest extends TestCase
         $this->assertSame('Thanks — here are the next steps.', $run->proposed_content, 'the UNDISCLOSED drafter body is held');
         $this->assertSame('c@example.com', $run->proposed_meta['to']);
         $this->assertSame(['The client asked for an update.'], $run->proposed_meta['reasons']);
+        $this->assertSame('technician-drafter', $run->proposed_meta['drafted_by']);
 
         // content_hash is exactly what approveAndSend recomputes: sha256('send_reply:'.id.':'.body).
         $this->assertSame(

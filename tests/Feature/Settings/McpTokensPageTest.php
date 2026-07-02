@@ -45,6 +45,7 @@ class McpTokensPageTest extends TestCase
             ->assertSee('chet')
             ->assertSee(route('settings.mcp-tokens.show', $token), false)
             ->assertSee('post_to_operator')
+            ->assertSee('send_reply')
             ->assertSee('list_open_tickets');
     }
 

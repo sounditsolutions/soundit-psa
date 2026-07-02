@@ -5,6 +5,8 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\McpAuditLog;
 use App\Models\McpToken;
+use App\Models\Ticket;
+use App\Services\Agent\SendReplyTool;
 use App\Services\Assistant\AssistantToolDefinitions;
 use App\Services\Assistant\AssistantToolExecutor;
 use App\Services\Chet\ChetDataSurfaceToolExecutor;
@@ -53,7 +55,6 @@ class McpStaffController extends Controller
      */
     private const CHET_DENIED_WRITE_TOOLS = [
         'create_ticket',
-        'send_reply',
         'close_ticket',
         'tactical_run_diagnostic',
     ];
@@ -62,6 +63,7 @@ class McpStaffController extends Controller
     private const CHET_CLIENT_SCOPED_WRITE_TOOLS = [
         'add_ticket_note',
         'propose_close',
+        'send_reply',
     ];
 
     private const NOTE_BODY_AUDIT_PLACEHOLDER = '[note body withheld]';
@@ -181,6 +183,7 @@ class McpStaffController extends Controller
             AssistantToolDefinitions::getTools(hasClient: false),
             [
                 McpToolRegistry::proposeCloseTool(),
+                McpToolRegistry::sendReplyTool(),
                 McpToolRegistry::wikiAddFactTool(),
                 McpToolRegistry::wikiCreatePageTool(),
                 McpToolRegistry::wikiUpdatePageTool(),
@@ -212,13 +215,14 @@ class McpStaffController extends Controller
         // All other client-scoped tools require it.
         $clientIdOptionalFor = ['find_persons', 'find_assets', 'wiki_list_pages', 'wiki_search', 'wiki_get_page'];
 
-        $translated = array_map(function ($t) use ($generalNames, $clientIdOptionalFor) {
+        $translated = array_map(function ($t) use ($request, $generalNames, $clientIdOptionalFor) {
             $schema = $t['input_schema'] ?? ['type' => 'object', 'properties' => new \stdClass];
-            $isClientScoped = ! isset($generalNames[$t['name']]);
+            $isChetClientScopedWrite = $this->isChetClientScopedWrite($request, (string) $t['name']);
+            $isClientScoped = ! isset($generalNames[$t['name']]) || $isChetClientScopedWrite;
 
             if ($isClientScoped) {
                 $props = (array) ($schema['properties'] ?? []);
-                $clientIdRequired = ! in_array($t['name'], $clientIdOptionalFor, true);
+                $clientIdRequired = $isChetClientScopedWrite || ! in_array($t['name'], $clientIdOptionalFor, true);
                 $props['client_id'] = [
                     'type' => 'integer',
                     'description' => $clientIdRequired
@@ -341,14 +345,13 @@ class McpStaffController extends Controller
             ]);
         }
 
-        // Chet's propose_close is client-scoped end-to-end: the ticket must belong
+        // Chet's held ticket actions are client-scoped end-to-end: the ticket must belong
         // to the client context Chet supplied. Enforced HERE at the Chet boundary —
         // the staff-trust surface deliberately keeps the opposite contract (derive
         // the client from the ticket, ignore caller client_id; see
         // McpStaffProposeCloseTest::test_mcp_propose_close_derives_client_from_ticket…).
-        if ($this->isChetToken($request) && (string) $name === 'propose_close') {
-            $ticketClientId = \App\Models\Ticket::whereKey((int) ($arguments['ticket_id'] ?? 0))->value('client_id');
-            if ($ticketClientId === null || (int) $ticketClientId !== $clientId) {
+        if ($this->isChetHeldTicketAction($request, (string) $name)) {
+            if (! $this->ticketBelongsToClient($arguments, $clientId)) {
                 $message = 'Ticket not found or belongs to a different client';
                 $this->audit('tools/call', (string) $name, $arguments, 'error', $message, $start, $request);
 
@@ -389,6 +392,8 @@ class McpStaffController extends Controller
                 );
             } elseif (ChetDataSurfaceTools::handles((string) $name)) {
                 $result = app(ChetDataSurfaceToolExecutor::class)->execute((string) $name, $arguments, $clientId);
+            } elseif ((string) $name === 'send_reply') {
+                $result = $this->sendReply($arguments, $request);
             } else {
                 $userId = $this->userIdForToolCall($request, (string) $name);
                 $executor = new AssistantToolExecutor(ticket: null, clientId: $clientId, userId: $userId);
@@ -441,6 +446,42 @@ class McpStaffController extends Controller
         ]);
     }
 
+    /** @return array<string, mixed> */
+    private function sendReply(array $arguments, Request $request): array
+    {
+        $ticketId = $this->positiveIntegerArgument($arguments['ticket_id'] ?? null);
+        if ($ticketId === null) {
+            return ['error' => 'ticket_id is required'];
+        }
+
+        $reason = trim((string) ($arguments['reason'] ?? ''));
+        if ($reason === '') {
+            return ['error' => 'reason is required'];
+        }
+
+        $ticket = Ticket::find($ticketId);
+        if (! $ticket) {
+            return ['error' => 'Ticket not found'];
+        }
+
+        $input = [
+            'reason' => $reason,
+        ];
+
+        if (array_key_exists('body', $arguments) && is_string($arguments['body']) && trim($arguments['body']) !== '') {
+            $input['body'] = $arguments['body'];
+        }
+
+        $message = app(SendReplyTool::class)->executeHeld($ticket, $input, $this->actorLabel($request));
+
+        return [
+            'success' => true,
+            'ticket_id' => $ticket->id,
+            'ticket_display_id' => $ticket->display_id,
+            'message' => $message,
+        ];
+    }
+
     private function audit(string $method, ?string $tool, mixed $args, string $status, ?string $error, float $start, Request $request): void
     {
         try {
@@ -463,6 +504,10 @@ class McpStaffController extends Controller
     /** @return array<string, mixed> */
     private function auditArguments(?string $tool, array $args): array
     {
+        if ($tool === 'send_reply') {
+            return $this->auditSendReplyArguments($args);
+        }
+
         $redacted = app(ActionRedactor::class)->redactParams($args);
 
         if ($tool === 'post_to_operator' && isset($redacted['message']) && is_string($redacted['message'])) {
@@ -499,6 +544,26 @@ class McpStaffController extends Controller
 
             if ($normalized === 'body') {
                 $safe['body'] = self::NOTE_BODY_AUDIT_PLACEHOLDER;
+            }
+        }
+
+        return $safe;
+    }
+
+    /** @return array<string, mixed> */
+    private function auditSendReplyArguments(array $arguments): array
+    {
+        $safe = [];
+
+        foreach ($arguments as $key => $value) {
+            $normalized = mb_strtolower((string) $key);
+
+            if (in_array($normalized, ['client_id', 'ticket_id', 'reason'], true)) {
+                $safe[$normalized] = $value;
+            }
+
+            if ($normalized === 'body') {
+                $safe['body_length'] = is_string($value) ? mb_strlen($value) : 0;
             }
         }
 
@@ -617,6 +682,23 @@ class McpStaffController extends Controller
     {
         return in_array($toolName, self::CHET_CLIENT_SCOPED_WRITE_TOOLS, true)
             && $this->isChetToken($request);
+    }
+
+    private function isChetHeldTicketAction(Request $request, string $toolName): bool
+    {
+        return in_array($toolName, ['propose_close', 'send_reply'], true)
+            && $this->isChetToken($request);
+    }
+
+    private function ticketBelongsToClient(array $arguments, ?int $clientId): bool
+    {
+        if ($clientId === null) {
+            return false;
+        }
+
+        $ticketClientId = Ticket::whereKey((int) ($arguments['ticket_id'] ?? 0))->value('client_id');
+
+        return $ticketClientId !== null && (int) $ticketClientId === $clientId;
     }
 
     private function isChetWikiClientScopeWrite(Request $request, string $toolName, array $arguments): bool
