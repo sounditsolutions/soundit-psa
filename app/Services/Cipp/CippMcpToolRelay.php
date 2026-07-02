@@ -11,6 +11,8 @@ use Illuminate\Support\Facades\Log;
 
 class CippMcpToolRelay
 {
+    private const MAX_NESTED_ARRAY_DEPTH = 8;
+
     private const TOOL_MAP = [
         'cipp_list_users' => 'ListUsers',
         'cipp_list_mailboxes' => 'ListMailboxes',
@@ -39,7 +41,7 @@ class CippMcpToolRelay
         'cipp_list_user_groups' => ['id', 'displayName', 'mail', 'mailEnabled', 'securityEnabled', 'groupTypes', 'description'],
         'cipp_list_mailbox_permissions' => ['identity', 'user', 'accessRights', 'isInherited', 'deny', 'recipientPrincipal'],
         'cipp_list_mailbox_rules' => ['name', 'enabled', 'priority', 'description', 'from', 'sentTo', 'forwardTo', 'redirectTo', 'deleteMessage', 'moveToFolder'],
-        'cipp_list_defender_state' => ['deviceName', 'managedDeviceName', 'userPrincipalName', 'realTimeProtectionEnabled', 'antivirusEnabled', 'antiMalwareVersion', 'signatureVersion', 'lastFullScanDateTime', 'lastQuickScanDateTime'],
+        'cipp_list_defender_state' => ['managedDeviceId', 'azureADDeviceId', 'deviceName', 'managedDeviceName', 'userPrincipalName', 'antiVirusStatus', 'realTimeProtectionEnabled', 'antivirusEnabled', 'antiVirusSignatureVersion', 'antiMalwareVersion', 'signatureVersion', 'lastFullScanDateTime', 'lastQuickScanDateTime'],
         'cipp_list_conditional_access_policies' => ['id', 'displayName', 'state', 'createdDateTime', 'modifiedDateTime', 'conditions', 'grantControls', 'sessionControls'],
         'cipp_list_user_conditional_access' => ['id', 'displayName', 'state', 'result', 'conditions', 'grantControls', 'sessionControls'],
         'cipp_list_sign_ins' => ['id', 'createdDateTime', 'userPrincipalName', 'appDisplayName', 'ipAddress', 'clientAppUsed', 'conditionalAccessStatus', 'status', 'location', 'riskDetail', 'riskLevelAggregated', 'deviceDetail'],
@@ -53,6 +55,9 @@ class CippMcpToolRelay
         'id' => ['id', 'Id', 'ID'],
         'displayName' => ['displayName', 'DisplayName', 'name', 'Name'],
         'deviceName' => ['deviceName', 'DeviceName', 'managedDeviceName', 'ManagedDeviceName'],
+        'managedDeviceName' => ['managedDeviceName', 'ManagedDeviceName'],
+        'managedDeviceId' => ['managedDeviceId', 'ManagedDeviceId'],
+        'azureADDeviceId' => ['azureADDeviceId', 'AzureADDeviceId', 'azureAdDeviceId', 'AzureAdDeviceId'],
         'userPrincipalName' => ['userPrincipalName', 'UserPrincipalName', 'UPN', 'upn'],
         'primarySmtpAddress' => ['primarySmtpAddress', 'PrimarySmtpAddress', 'mail', 'Mail'],
         'mailboxSizeBytes' => ['mailboxSizeBytes', 'MailboxSizeBytes', 'totalItemSizeBytes', 'TotalItemSizeBytes'],
@@ -66,6 +71,16 @@ class CippMcpToolRelay
         'complianceState' => ['complianceState', 'ComplianceState'],
         'isCompliant' => ['isCompliant', 'IsCompliant'],
         'lastSyncDateTime' => ['lastSyncDateTime', 'LastSyncDateTime', 'lastSync'],
+        'antiVirusStatus' => ['antiVirusStatus', 'AntiVirusStatus', 'antivirusStatus'],
+        'antiVirusSignatureVersion' => ['antiVirusSignatureVersion', 'AntiVirusSignatureVersion', 'avSignatureVersion'],
+        'lastFullScanDateTime' => ['lastFullScanDateTime', 'LastFullScanDateTime'],
+        'lastQuickScanDateTime' => ['lastQuickScanDateTime', 'LastQuickScanDateTime'],
+    ];
+
+    private const SIGN_IN_NESTED_FIELDS = [
+        'status' => ['errorCode', 'failureReason', 'additionalDetails'],
+        'location' => ['city', 'state', 'countryOrRegion'],
+        'deviceDetail' => ['displayName', 'operatingSystem', 'browser'],
     ];
 
     private const ALLOWED_ARGUMENTS = [
@@ -120,7 +135,13 @@ class CippMcpToolRelay
                 'error' => $e->getMessage(),
             ]);
 
-            return ['error' => 'CIPP query failed: '.mb_substr($e->getMessage(), 0, 200)];
+            return [
+                'error' => 'CIPP query failed: '.$this->textSanitizer->sanitize(
+                    'CIPP query error',
+                    mb_substr($e->getMessage(), 0, 200),
+                    200,
+                ),
+            ];
         }
 
         return $this->shapeResult($toolName, $rows, $input, $prepared, $clientId);
@@ -437,6 +458,10 @@ class CippMcpToolRelay
         }
 
         if (is_array($value)) {
+            if ($toolName === 'cipp_list_sign_ins' && isset(self::SIGN_IN_NESTED_FIELDS[$field])) {
+                $value = $this->compactArray($value, self::SIGN_IN_NESTED_FIELDS[$field]);
+            }
+
             return $this->boundArray($toolName, $field, $value);
         }
 
@@ -496,12 +521,31 @@ class CippMcpToolRelay
         foreach ($bounded as $key => $item) {
             if (is_string($item)) {
                 $bounded[$key] = $this->textSanitizer->sanitize($this->fieldLabel($toolName, "{$field} {$key}"), $item, 1000);
-            } elseif (is_array($item) && $depth < 3) {
+            } elseif (is_array($item) && $depth < self::MAX_NESTED_ARRAY_DEPTH) {
                 $bounded[$key] = $this->boundArray($toolName, "{$field} {$key}", $item, $depth + 1);
+            } elseif (is_array($item)) {
+                $bounded[$key] = ['_truncated' => 'Nested array omitted'];
             }
         }
 
         return $bounded;
+    }
+
+    /**
+     * @param  array<int, string>  $allowedKeys
+     * @return array<string, mixed>
+     */
+    private function compactArray(array $value, array $allowedKeys): array
+    {
+        $compacted = [];
+
+        foreach ($allowedKeys as $key) {
+            if (array_key_exists($key, $value)) {
+                $compacted[$key] = $value[$key];
+            }
+        }
+
+        return $compacted;
     }
 
     private function isFreeTextField(string $field): bool
@@ -511,6 +555,10 @@ class CippMcpToolRelay
             'DisplayName',
             'name',
             'Name',
+            'deviceName',
+            'DeviceName',
+            'managedDeviceName',
+            'ManagedDeviceName',
             'description',
             'Description',
             'jobTitle',
