@@ -4,6 +4,8 @@ namespace App\Services\Chet;
 
 use App\Enums\OperatorMessageCategory;
 use App\Models\OperatorInbox;
+use App\Models\SignalDelivery;
+use App\Models\SignalInboxEntry;
 use App\Models\Ticket;
 use App\Models\User;
 use App\Services\Agent\Escalation\OperatorDelivery;
@@ -11,6 +13,7 @@ use App\Services\Technician\Notify\TeamsText;
 use App\Services\Technician\PromptFence;
 use App\Support\TeamsBotConfig;
 use App\Support\TechnicianConfig;
+use Illuminate\Support\Facades\DB;
 
 class OperatorBridgeToolExecutor
 {
@@ -21,13 +24,14 @@ class OperatorBridgeToolExecutor
     ) {}
 
     /** @return array<string, mixed> */
-    public function execute(string $name, array $input): array
+    public function execute(string $name, array $input, ?string $tokenLabel = null): array
     {
         return match ($name) {
             'find_staff' => $this->findStaff($input),
             'get_staff' => $this->getStaff($input),
             'post_to_operator' => $this->postToOperator($input),
             'poll_operator_messages' => $this->pollOperatorMessages($input),
+            'poll_signals' => $this->pollSignals($input, $tokenLabel),
             default => ['error' => "Unknown tool: {$name}"],
         };
     }
@@ -187,6 +191,73 @@ class OperatorBridgeToolExecutor
         return [
             'messages' => $messages,
             'next_cursor' => $rows->isNotEmpty() ? (string) $rows->last()->id : (string) $cursor,
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private function pollSignals(array $input, ?string $tokenLabel): array
+    {
+        $tokenLabel = trim((string) $tokenLabel);
+        if ($tokenLabel === '') {
+            return ['error' => 'poll_signals requires a scoped token'];
+        }
+
+        $cursor = isset($input['cursor']) && is_numeric($input['cursor'])
+            ? max(0, (int) $input['cursor'])
+            : 0;
+        $limit = isset($input['limit']) && is_numeric($input['limit'])
+            ? (int) $input['limit']
+            : 20;
+        $limit = max(1, min($limit, 50));
+
+        if ($cursor > 0) {
+            DB::transaction(function () use ($cursor, $tokenLabel): void {
+                $rows = SignalInboxEntry::query()
+                    ->whereNull('acked_at')
+                    ->where('id', '<=', $cursor)
+                    ->whereHas('destination', fn ($query) => $query->where('mcp_token_label', $tokenLabel))
+                    ->get(['id', 'delivery_id']);
+
+                if ($rows->isEmpty()) {
+                    return;
+                }
+
+                $ackedAt = now();
+                SignalInboxEntry::query()
+                    ->whereIn('id', $rows->pluck('id')->all())
+                    ->update(['acked_at' => $ackedAt]);
+
+                $deliveryIds = $rows->pluck('delivery_id')->filter()->unique()->values()->all();
+                if ($deliveryIds !== []) {
+                    SignalDelivery::query()
+                        ->whereIn('id', $deliveryIds)
+                        ->update(['status' => 'acked', 'acked_at' => $ackedAt]);
+                }
+            });
+        }
+
+        $rows = SignalInboxEntry::query()
+            ->whereNull('acked_at')
+            ->whereHas('destination', fn ($query) => $query->where('mcp_token_label', $tokenLabel))
+            ->orderBy('id')
+            ->limit($limit)
+            ->get();
+
+        $signals = $rows->map(function (SignalInboxEntry $row): array {
+            $payload = is_array($row->payload) ? $row->payload : [];
+
+            return [
+                'inbox_id' => $row->id,
+                'event' => $payload['event'] ?? null,
+                'entity' => $payload['entity'] ?? null,
+                'category' => $payload['category'] ?? null,
+                'occurred_at' => $payload['occurred_at'] ?? null,
+            ];
+        })->all();
+
+        return [
+            'signals' => $signals,
+            'cursor' => $rows->isNotEmpty() ? (int) $rows->max('id') : $cursor,
         ];
     }
 
