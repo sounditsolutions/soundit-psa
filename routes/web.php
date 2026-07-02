@@ -297,6 +297,9 @@ Route::middleware('auth')->group(function () {
     Route::put('/settings/alerts/destinations/{destination}', [AlertsHubController::class, 'update'])->name('settings.alerts.destinations.update');
     Route::post('/settings/alerts/destinations/{destination}/test', [AlertsHubController::class, 'test'])->middleware('throttle:6,1')->name('settings.alerts.destinations.test');
     Route::post('/settings/alerts/destinations/{destination}/toggle', [AlertsHubController::class, 'toggle'])->name('settings.alerts.destinations.toggle');
+    Route::post('/settings/alerts/routes', [AlertsHubController::class, 'storeRoute'])->name('settings.alerts.routes.store');
+    Route::put('/settings/alerts/routes/{route}', [AlertsHubController::class, 'updateRoute'])->name('settings.alerts.routes.update');
+    Route::post('/settings/alerts/routes/{route}/toggle', [AlertsHubController::class, 'toggleRoute'])->name('settings.alerts.routes.toggle');
     Route::get('/settings/mcp-tokens', [McpTokensController::class, 'index'])->name('settings.mcp-tokens.index');
     Route::post('/settings/mcp-tokens', [McpTokensController::class, 'store'])->name('settings.mcp-tokens.store');
     Route::delete('/settings/mcp-tokens/{token}', [McpTokensController::class, 'revoke'])->name('settings.mcp-tokens.revoke');

@@ -30,7 +30,7 @@
         </button>
     </li>
     <li class="nav-item" role="presentation">
-        <button class="nav-link disabled" type="button" aria-disabled="true">
+        <button class="nav-link" id="routes-tab" data-bs-toggle="tab" data-bs-target="#routes" type="button" role="tab" aria-controls="routes" aria-selected="false">
             <i class="bi bi-diagram-3 me-1"></i>Routes
         </button>
     </li>
@@ -44,6 +44,9 @@
 <div class="tab-content">
     <div class="tab-pane fade show active" id="destinations" role="tabpanel" aria-labelledby="destinations-tab">
         @include('settings.alerts.destinations')
+    </div>
+    <div class="tab-pane fade" id="routes" role="tabpanel" aria-labelledby="routes-tab">
+        @include('settings.alerts.routes')
     </div>
 </div>
 @endsection
