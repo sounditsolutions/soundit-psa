@@ -19,6 +19,7 @@ use App\Services\Mesh\MeshClient;
 use App\Services\Ninja\NinjaClient;
 use App\Services\TicketService;
 use App\Services\Wiki\HandlesWikiTools;
+use App\Services\Wiki\WikiAddFactTool;
 use App\Support\CippConfig;
 use Illuminate\Support\Facades\Log;
 
@@ -54,10 +55,15 @@ class AssistantToolExecutor
 
     public function execute(string $toolName, array $input): mixed
     {
+        $logInput = $input;
+        if ($toolName === 'wiki_add_fact' && array_key_exists('statement', $logInput)) {
+            $logInput['statement'] = '[wiki fact statement withheld]';
+        }
+
         Log::debug('[Assistant] Tool call', [
             'tool' => $toolName,
             'client_id' => $this->clientId,
-            'input' => $input,
+            'input' => $logInput,
         ]);
 
         return match ($toolName) {
@@ -129,6 +135,7 @@ class AssistantToolExecutor
             'wiki_list_pages' => $this->wikiListPages(),
             'wiki_search' => $this->wikiSearch($input),
             'wiki_get_page' => $this->wikiGetPage($input),
+            'wiki_add_fact' => app(WikiAddFactTool::class)->execute($input, $this->clientId, $this->userId),
 
             default => ['error' => "Unknown tool: {$toolName}"],
         };
