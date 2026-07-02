@@ -22,6 +22,7 @@ use App\Services\Tactical\TacticalFieldMap;
 use App\Services\Wiki\HandlesWikiTools;
 use App\Support\ControlDConfig;
 use Carbon\Carbon;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -1287,15 +1288,12 @@ class TriageToolExecutor
      */
     private function resolveTacticalAgent(string $hostname): ?array
     {
-        $tacticalAsset = TacticalAsset::whereRaw('LOWER(hostname) = ?', [strtolower($hostname)])
+        $tacticalAsset = TacticalAsset::with('asset')
+            ->whereHas('asset', fn (Builder $query) => $query->where('client_id', $this->clientId))
+            ->whereRaw('LOWER(hostname) = ?', [mb_strtolower($hostname)])
             ->first();
 
-        if (! $tacticalAsset) {
-            return null;
-        }
-
-        // Client scoping: the linked asset must belong to this client
-        if ($tacticalAsset->asset && $tacticalAsset->asset->client_id !== $this->clientId) {
+        if (! $tacticalAsset || ! $tacticalAsset->asset) {
             return null;
         }
 
@@ -1508,13 +1506,8 @@ class TriageToolExecutor
         // Logical volumes — getAgent `disks` total/used/free are FORMATTED STRINGS
         // ("X.Y GB"/TB/MB) and percent is an INT (source v1.5.0 + live VM 105), so
         // parse the strings to GB; do NOT byte-divide.
-        $volumes = collect($agent['disks'] ?? [])->take(10)->map(fn ($d) => [
-            'drive' => $d['device'] ?? null,
-            'total_gb' => TacticalFieldMap::diskSizeToGb($d['total'] ?? null),
-            'free_gb' => TacticalFieldMap::diskSizeToGb($d['free'] ?? null),
-            'percent_used' => $d['percent'] ?? null,
-            'fstype' => $d['fstype'] ?? null,
-        ])->toArray();
+        $disks = $agent['disks'] ?? [];
+        $volumes = TacticalFieldMap::mapDiskVolumes(is_array($disks) ? $disks : [], includeFilesystemType: true);
 
         // Physical disks
         $physicalDisks = collect($agent['physical_disks'] ?? [])->take(10)->map(fn ($d) => [

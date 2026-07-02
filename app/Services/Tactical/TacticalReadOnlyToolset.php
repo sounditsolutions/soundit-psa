@@ -267,13 +267,10 @@ class TacticalReadOnlyToolset
         }
 
         return [
-            'volumes' => collect($agent['disks'] ?? [])->take(10)->map(fn ($disk) => [
-                'drive' => $disk['device'] ?? null,
-                'total_gb' => TacticalFieldMap::diskSizeToGb($disk['total'] ?? null),
-                'free_gb' => TacticalFieldMap::diskSizeToGb($disk['free'] ?? null),
-                'percent_used' => $disk['percent'] ?? null,
-                'fstype' => $disk['fstype'] ?? null,
-            ])->toArray(),
+            'volumes' => TacticalFieldMap::mapDiskVolumes(
+                is_array($agent['disks'] ?? null) ? $agent['disks'] : [],
+                includeFilesystemType: true,
+            ),
             'physical_disks' => collect($agent['physical_disks'] ?? [])->take(10)->map(fn ($disk) => [
                 'model' => $disk['caption'] ?? $disk['model'] ?? null,
                 'size_gb' => isset($disk['size']) ? round($disk['size'] / 1073741824, 1) : null,
