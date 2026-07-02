@@ -97,8 +97,43 @@ class WebhookSinkTest extends TestCase
         $this->assertSame('failed', $delivery->fresh()->status);
         $this->assertSame('HTTP 503 Service Unavailable', $delivery->fresh()->error);
         $this->assertSame('failed', $destination->fresh()->last_delivery_status);
+        $this->assertNotNull($destination->fresh()->last_delivery_at);
         $this->assertSame('HTTP 503 Service Unavailable', $destination->fresh()->last_error);
         $this->assertStringNotContainsString('do not leak', $destination->fresh()->last_error);
+    }
+
+    public function test_deliver_signal_suppresses_disabled_destination_without_calling_sink(): void
+    {
+        Bus::fake();
+        [$destination, $event, $delivery] = $this->deliveryFixture();
+        $destination->forceFill(['enabled' => false])->save();
+        $this->mock(WebhookSink::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('deliver')->never();
+        });
+
+        (new DeliverSignal($delivery->id))->handle();
+
+        $this->assertSame('suppressed', $delivery->fresh()->status);
+        $this->assertSame('destination-disabled', $delivery->fresh()->error);
+        $this->assertSame(0, SignalEvent::where('type_key', 'signal.delivery_failed')->count());
+        Bus::assertNotDispatched(RouteSignalEvent::class);
+    }
+
+    public function test_deliver_signal_suppresses_disabled_route_without_calling_sink(): void
+    {
+        Bus::fake();
+        [$destination, $event, $delivery] = $this->deliveryFixture();
+        $delivery->route->forceFill(['enabled' => false])->save();
+        $this->mock(WebhookSink::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('deliver')->never();
+        });
+
+        (new DeliverSignal($delivery->id))->handle();
+
+        $this->assertSame('suppressed', $delivery->fresh()->status);
+        $this->assertSame('route-disabled', $delivery->fresh()->error);
+        $this->assertSame(0, SignalEvent::where('type_key', 'signal.delivery_failed')->count());
+        Bus::assertNotDispatched(RouteSignalEvent::class);
     }
 
     public function test_default_handler_stack_names_the_ssrf_pin_middleware(): void
@@ -123,12 +158,16 @@ class WebhookSinkTest extends TestCase
         Bus::fake();
         [$destination, $event, $delivery] = $this->deliveryFixture();
         $this->mock(WebhookSink::class, function (MockInterface $mock): void {
-            $mock->shouldReceive('deliver')->once()->andThrow(new \RuntimeException('transport down'));
+            $mock->shouldReceive('deliver')->once()->andThrow(new \RuntimeException('transport down for https://hooks.example.com/secret-path'));
         });
 
         (new DeliverSignal($delivery->id))->handle();
 
         $this->assertSame('failed', $delivery->fresh()->status);
+        $this->assertSame('delivery failed', $delivery->fresh()->error);
+        $this->assertNotNull($destination->fresh()->last_delivery_at);
+        $this->assertStringNotContainsString('hooks.example.com', $destination->fresh()->last_error);
+        $this->assertStringNotContainsString('secret-path', $destination->fresh()->last_error);
         $failedEvent = SignalEvent::where('type_key', 'signal.delivery_failed')->firstOrFail();
         $this->assertSame($event->id, $failedEvent->origin_event_id);
         $this->assertSame(['destination_id' => $destination->id], $failedEvent->context);
@@ -154,6 +193,7 @@ class WebhookSinkTest extends TestCase
         $route = SignalRoute::create([
             'label' => 'Ops',
             'event_filter' => ['types' => ['ticket.created']],
+            'enabled' => true,
         ]);
         $event = SignalEvent::create([
             'type_key' => 'ticket.created',

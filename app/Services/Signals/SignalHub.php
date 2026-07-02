@@ -10,6 +10,13 @@ use Illuminate\Support\Facades\Log;
 
 class SignalHub
 {
+    private const ALLOWED_CONTEXT_KEYS = [
+        'category',
+        'priority',
+        'client_id',
+        'destination_id',
+    ];
+
     public function __construct(
         private readonly WikiRedactor $redactor,
     ) {}
@@ -65,9 +72,17 @@ class SignalHub
         $sanitized = [];
 
         foreach ($context as $key => $value) {
-            if (is_scalar($value)) {
-                $sanitized[$key] = $value;
+            if (! in_array($key, self::ALLOWED_CONTEXT_KEYS, true) || ! is_scalar($value)) {
+                continue;
             }
+
+            if (is_string($value) && $this->redactor->scan($value) !== []) {
+                $sanitized[$key] = '[detail withheld]';
+
+                continue;
+            }
+
+            $sanitized[$key] = $value;
         }
 
         while ($sanitized !== [] && strlen(json_encode($sanitized)) > 2048) {

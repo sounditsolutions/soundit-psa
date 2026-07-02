@@ -38,6 +38,23 @@ class SignalRouterTest extends TestCase
         Bus::assertDispatchedTimes(DeliverSignal::class, 2);
     }
 
+    public function test_disabled_destination_creates_suppressed_audit_row_without_dispatching(): void
+    {
+        $route = $this->route(['types' => ['ticket.created']], destinationEnabled: false);
+        $event = $this->event('ticket.created');
+
+        app(SignalRouter::class)->route($event);
+
+        $delivery = SignalDelivery::query()
+            ->where('route_id', $route->id)
+            ->where('event_id', $event->id)
+            ->sole();
+
+        $this->assertSame('suppressed', $delivery->status);
+        $this->assertSame('destination-disabled', $delivery->error);
+        Bus::assertNotDispatched(DeliverSignal::class);
+    }
+
     public function test_route_signal_event_job_invokes_router(): void
     {
         $this->route(['types' => ['ticket.created']]);
@@ -160,6 +177,7 @@ class SignalRouterTest extends TestCase
         bool $enabled = true,
         int $cooldownSeconds = 300,
         string $label = 'Route',
+        bool $destinationEnabled = true,
     ): SignalRoute {
         $route = SignalRoute::create([
             'label' => $label.' '.SignalRoute::count(),
@@ -173,6 +191,7 @@ class SignalRouterTest extends TestCase
                 'label' => "Destination {$route->id}-{$index}",
                 'type' => 'webhook',
                 'address' => "https://x{$route->id}{$index}.example/hook",
+                'enabled' => $destinationEnabled,
             ]);
             SignalRouteStep::create([
                 'route_id' => $route->id,

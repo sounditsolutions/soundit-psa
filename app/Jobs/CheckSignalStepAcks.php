@@ -6,6 +6,7 @@ use App\Models\SignalDelivery;
 use App\Models\SignalEvent;
 use App\Models\SignalRoute;
 use App\Models\SignalRouteStep;
+use App\Services\Signals\SignalDeliveryState;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Foundation\Queue\Queueable;
@@ -14,7 +15,7 @@ class CheckSignalStepAcks implements ShouldQueue
 {
     use Queueable;
 
-    private const TERMINAL_STATUSES = ['acked', 'suppressed', 'timed_out', 'failed'];
+    private const TERMINAL_STATUSES = SignalDeliveryState::TERMINAL_STATUSES;
 
     public function __construct(
         public int $eventId,
@@ -40,6 +41,14 @@ class CheckSignalStepAcks implements ShouldQueue
 
     public static function advanceAfterTimeout(SignalRoute $route, SignalEvent $event, int $stepOrder): void
     {
+        $route->loadMissing('steps.destination');
+
+        if (! $route->enabled) {
+            self::suppressCurrentDeliveries($route, $event, $stepOrder, 'route-disabled');
+
+            return;
+        }
+
         SignalDelivery::query()
             ->where('event_id', $event->id)
             ->where('route_id', $route->id)
@@ -60,9 +69,15 @@ class CheckSignalStepAcks implements ShouldQueue
 
     public function handle(): void
     {
-        $route = SignalRoute::with('steps')->find($this->routeId);
+        $route = SignalRoute::with('steps.destination')->find($this->routeId);
         $event = SignalEvent::find($this->eventId);
         if ($route === null || $event === null) {
+            return;
+        }
+
+        if (! $route->enabled) {
+            self::suppressCurrentDeliveries($route, $event, $this->stepOrder, 'route-disabled');
+
             return;
         }
 
@@ -113,11 +128,16 @@ class CheckSignalStepAcks implements ShouldQueue
 
     private static function dispatchSteps(SignalRoute $route, SignalEvent $event, Collection $steps): void
     {
+        $pendingCount = 0;
         foreach ($steps as $step) {
-            self::createPendingDelivery($route, $event, $step);
+            if (self::createPendingDelivery($route, $event, $step)->status === 'pending') {
+                $pendingCount++;
+            }
         }
 
-        self::scheduleIfNeeded($route, $event, (int) $steps->first()->step_order);
+        if ($pendingCount > 0) {
+            self::scheduleIfNeeded($route, $event, (int) $steps->first()->step_order);
+        }
     }
 
     private static function createPendingDelivery(SignalRoute $route, SignalEvent $event, SignalRouteStep $step): SignalDelivery
@@ -125,6 +145,17 @@ class CheckSignalStepAcks implements ShouldQueue
         $delivery = self::existingDelivery($route, $event, $step);
         if ($delivery !== null) {
             return $delivery;
+        }
+
+        if (! $step->destination?->enabled) {
+            return SignalDelivery::create([
+                'event_id' => $event->id,
+                'route_id' => $route->id,
+                'step_order' => $step->step_order,
+                'destination_id' => $step->destination_id,
+                'status' => 'suppressed',
+                'error' => 'destination-disabled',
+            ]);
         }
 
         $delivery = SignalDelivery::create([
@@ -165,5 +196,18 @@ class CheckSignalStepAcks implements ShouldQueue
             ->where('step_order', $step->step_order)
             ->where('destination_id', $step->destination_id)
             ->first();
+    }
+
+    private static function suppressCurrentDeliveries(SignalRoute $route, SignalEvent $event, int $stepOrder, string $reason): void
+    {
+        SignalDelivery::query()
+            ->where('event_id', $event->id)
+            ->where('route_id', $route->id)
+            ->where('step_order', $stepOrder)
+            ->whereNotIn('status', self::TERMINAL_STATUSES)
+            ->update([
+                'status' => 'suppressed',
+                'error' => $reason,
+            ]);
     }
 }

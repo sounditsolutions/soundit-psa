@@ -5,11 +5,11 @@ namespace App\Services\Signals\Sinks;
 use App\Models\SignalDelivery;
 use App\Models\SignalDestination;
 use App\Models\SignalEvent;
+use App\Services\Signals\SignalDeliveryState;
 use App\Services\Technician\Notify\TeamsNotifier;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\HandlerStack;
-use Illuminate\Support\Str;
 
 class WebhookSink
 {
@@ -99,33 +99,15 @@ class WebhookSink
 
     private function markDelivered(SignalDestination $destination, SignalDelivery $delivery): void
     {
-        $now = now();
-
-        $delivery->forceFill([
-            'status' => 'delivered',
-            'delivered_at' => $now,
-            'error' => null,
-        ])->save();
-
-        $destination->forceFill([
-            'last_delivery_at' => $now,
-            'last_delivery_status' => 'delivered',
-            'last_error' => null,
-        ])->save();
+        SignalDeliveryState::markDelivered($destination, $delivery);
     }
 
     private function markFailed(SignalDestination $destination, SignalDelivery $delivery, string $error): void
     {
-        $error = Str::limit($error, 500, '');
-
-        $delivery->forceFill([
-            'status' => 'failed',
-            'error' => $error,
-        ])->save();
-
-        $destination->forceFill([
-            'last_delivery_status' => 'failed',
-            'last_error' => $error,
-        ])->save();
+        SignalDeliveryState::markFailed(
+            $destination,
+            $delivery,
+            SignalDeliveryState::safeFailureMessage($error, 'webhook failed'),
+        );
     }
 }

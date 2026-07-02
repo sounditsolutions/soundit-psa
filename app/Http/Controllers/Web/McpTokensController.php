@@ -5,9 +5,12 @@ namespace App\Http\Controllers\Web;
 use App\Http\Controllers\Controller;
 use App\Models\McpAuditLog;
 use App\Models\McpToken;
+use App\Models\SignalDelivery;
+use App\Models\SignalInboxEntry;
 use App\Support\McpConfig;
 use App\Support\McpToolRegistry;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\Rule;
 
@@ -55,6 +58,7 @@ class McpTokensController extends Controller
         }
 
         $token->forceFill(['revoked_at' => now()])->save();
+        $this->clearPendingSignalInboxForLabel($label);
 
         $this->audit($request, 'token/revoke', $label, ['tools' => $tools]);
 
@@ -80,6 +84,37 @@ class McpTokensController extends Controller
         } catch (\Throwable $e) {
             Log::warning('[Settings/McpTokens] Audit write failed: '.$e->getMessage());
         }
+    }
+
+    private function clearPendingSignalInboxForLabel(string $label): void
+    {
+        DB::transaction(function () use ($label): void {
+            $rows = SignalInboxEntry::query()
+                ->whereNull('acked_at')
+                ->whereHas('destination', fn ($query) => $query->where('mcp_token_label', $label))
+                ->get(['id', 'delivery_id']);
+
+            if ($rows->isEmpty()) {
+                return;
+            }
+
+            SignalInboxEntry::query()
+                ->whereIn('id', $rows->pluck('id')->all())
+                ->delete();
+
+            $deliveryIds = $rows->pluck('delivery_id')->filter()->unique()->values()->all();
+            if ($deliveryIds === []) {
+                return;
+            }
+
+            SignalDelivery::query()
+                ->whereIn('id', $deliveryIds)
+                ->whereNotIn('status', ['acked', 'suppressed', 'timed_out', 'failed'])
+                ->update([
+                    'status' => 'suppressed',
+                    'error' => 'token-revoked',
+                ]);
+        });
     }
 
     private function indexView(?string $newToken = null, ?string $newTokenLabel = null)

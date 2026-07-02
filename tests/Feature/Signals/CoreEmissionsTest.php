@@ -13,12 +13,19 @@ use App\Models\Client;
 use App\Models\Email;
 use App\Models\Person;
 use App\Models\PhoneCall;
+use App\Models\SignalDelivery;
 use App\Models\SignalDestination;
 use App\Models\SignalEvent;
+use App\Models\SignalRoute;
 use App\Models\Ticket;
 use App\Services\Prospect\ProspectIntakeService;
+use App\Services\Signals\Sinks\WebhookSink;
 use App\Services\Technician\Notify\DigestBuilder;
 use App\Services\TicketService;
+use GuzzleHttp\Client as HttpClient;
+use GuzzleHttp\Handler\MockHandler;
+use GuzzleHttp\HandlerStack;
+use GuzzleHttp\Psr7\Response;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Bus;
 use Tests\TestCase;
@@ -175,6 +182,51 @@ class CoreEmissionsTest extends TestCase
         $this->assertFalse($digest->isEmpty);
         $this->assertStringContainsString('Recent failed webhook', $digest->body);
         $this->assertStringNotContainsString('Old failed webhook', $digest->body);
+    }
+
+    public function test_technician_digest_lists_destination_failed_by_real_webhook_delivery(): void
+    {
+        $destination = SignalDestination::create([
+            'label' => 'Dead webhook',
+            'type' => 'webhook',
+            'address' => 'https://hooks.example.test/dead',
+        ]);
+        $route = SignalRoute::create([
+            'label' => 'Dead webhook route',
+            'event_filter' => ['types' => ['ticket.created']],
+            'enabled' => true,
+        ]);
+        $event = SignalEvent::create([
+            'type_key' => 'ticket.created',
+            'entity_type' => 'ticket',
+            'entity_id' => 123,
+            'summary' => 'New ticket',
+            'context' => [],
+            'occurred_at' => now(),
+        ]);
+        $delivery = SignalDelivery::create([
+            'event_id' => $event->id,
+            'route_id' => $route->id,
+            'step_order' => 1,
+            'destination_id' => $destination->id,
+            'status' => 'pending',
+        ]);
+        $stack = HandlerStack::create(new MockHandler([
+            new Response(500),
+            new Response(503),
+        ]));
+
+        try {
+            (new WebhookSink(new HttpClient(['handler' => $stack])))->deliver($destination, $event, $delivery);
+            $this->fail('Expected webhook delivery to fail.');
+        } catch (\RuntimeException) {
+            //
+        }
+
+        $digest = app(DigestBuilder::class)->build();
+
+        $this->assertFalse($digest->isEmpty);
+        $this->assertStringContainsString('Dead webhook', $digest->body);
     }
 
     private function assertSingleSignalEvent(string $typeKey): SignalEvent

@@ -6,6 +6,7 @@ use App\Models\SignalDelivery;
 use App\Models\SignalDestination;
 use App\Models\SignalEvent;
 use App\Models\SignalInboxEntry;
+use App\Services\Signals\SignalDeliveryState;
 use GuzzleHttp\Client;
 use Illuminate\Support\Str;
 
@@ -91,25 +92,16 @@ class McpSink
                 );
             }
         } catch (\Throwable $e) {
-            $this->recordDoorbellError($destination, $e->getMessage());
+            $this->recordDoorbellError(
+                $destination,
+                SignalDeliveryState::safeFailureMessage($e, 'doorbell failed'),
+            );
         }
     }
 
     private function markDelivered(SignalDestination $destination, SignalDelivery $delivery): void
     {
-        $now = now();
-
-        $delivery->forceFill([
-            'status' => 'delivered',
-            'delivered_at' => $now,
-            'error' => null,
-        ])->save();
-
-        $destination->forceFill([
-            'last_delivery_at' => $now,
-            'last_delivery_status' => 'delivered',
-            'last_error' => null,
-        ])->save();
+        SignalDeliveryState::markDelivered($destination, $delivery);
     }
 
     private function recordDoorbellError(SignalDestination $destination, string $error): void

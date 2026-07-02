@@ -99,6 +99,58 @@ class LadderAckTimeoutTest extends TestCase
         $this->assertAckCheckDispatched($route, $event, 2, 45);
     }
 
+    public function test_disabled_route_stops_scheduled_ack_check_without_advancing_ladder(): void
+    {
+        $route = $this->route([
+            ['step_order' => 1, 'wait_for_ack_seconds' => 30],
+            ['step_order' => 2, 'wait_for_ack_seconds' => 45],
+        ]);
+        $event = $this->event('ticket.created');
+        $current = $this->delivery($event, $route, $route->steps->first(), 'pending');
+        $route->forceFill(['enabled' => false])->save();
+
+        (new CheckSignalStepAcks($event->id, $route->id, 1))->handle();
+
+        $this->assertSame('suppressed', $current->fresh()->status);
+        $this->assertSame('route-disabled', $current->fresh()->error);
+        $this->assertSame(
+            0,
+            SignalDelivery::query()
+                ->where('route_id', $route->id)
+                ->where('event_id', $event->id)
+                ->where('step_order', 2)
+                ->count(),
+        );
+        Bus::assertNotDispatched(DeliverSignal::class);
+        Bus::assertNotDispatched(CheckSignalStepAcks::class);
+    }
+
+    public function test_disabled_later_destination_is_suppressed_without_dispatching_or_scheduling_ack(): void
+    {
+        $route = $this->route([
+            ['step_order' => 1, 'wait_for_ack_seconds' => 30],
+            ['step_order' => 2, 'wait_for_ack_seconds' => 45, 'destination_enabled' => false],
+        ]);
+        $event = $this->event('ticket.created');
+        $steps = $route->steps->groupBy('step_order');
+        $current = $this->delivery($event, $route, $steps->get(1)->first(), 'pending');
+
+        (new CheckSignalStepAcks($event->id, $route->id, 1))->handle();
+
+        $this->assertSame('timed_out', $current->fresh()->status);
+
+        $next = SignalDelivery::query()
+            ->where('route_id', $route->id)
+            ->where('event_id', $event->id)
+            ->where('step_order', 2)
+            ->sole();
+
+        $this->assertSame('suppressed', $next->status);
+        $this->assertSame('destination-disabled', $next->error);
+        Bus::assertNotDispatched(DeliverSignal::class);
+        Bus::assertNotDispatched(CheckSignalStepAcks::class);
+    }
+
     public function test_upstream_ack_suppresses_later_suppressible_steps_without_dispatching_next_step(): void
     {
         $route = $this->route([
@@ -194,7 +246,7 @@ class LadderAckTimeoutTest extends TestCase
     }
 
     /**
-     * @param  array<int, array{step_order:int, wait_for_ack_seconds?:int|null, non_suppressible?:bool}>  $steps
+     * @param  array<int, array{step_order:int, wait_for_ack_seconds?:int|null, non_suppressible?:bool, destination_enabled?:bool}>  $steps
      */
     private function route(array $steps, array $filter = ['types' => ['ticket.created']]): SignalRoute
     {
@@ -210,6 +262,7 @@ class LadderAckTimeoutTest extends TestCase
                 'label' => "Destination {$route->id}-{$index}",
                 'type' => 'webhook',
                 'address' => "https://x{$route->id}{$index}.example/hook",
+                'enabled' => $step['destination_enabled'] ?? true,
             ]);
 
             SignalRouteStep::create([

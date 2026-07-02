@@ -7,6 +7,7 @@ use App\Jobs\DeliverSignal;
 use App\Models\SignalDelivery;
 use App\Models\SignalEvent;
 use App\Models\SignalRoute;
+use App\Models\SignalRouteStep;
 use Illuminate\Database\Eloquent\Collection;
 
 class SignalRouter
@@ -21,7 +22,7 @@ class SignalRouter
 
         SignalRoute::query()
             ->where('enabled', true)
-            ->with('steps')
+            ->with('steps.destination')
             ->get()
             ->each(function (SignalRoute $route) use ($event): void {
                 if (! $this->matches($route, $event)) {
@@ -40,19 +41,16 @@ class SignalRouter
                     return;
                 }
 
+                $pendingCount = 0;
                 foreach ($steps as $step) {
-                    $delivery = SignalDelivery::create([
-                        'event_id' => $event->id,
-                        'route_id' => $route->id,
-                        'step_order' => $step->step_order,
-                        'destination_id' => $step->destination_id,
-                        'status' => 'pending',
-                    ]);
-
-                    DeliverSignal::dispatch($delivery->id);
+                    if ($this->createDelivery($route, $event, $step)->status === 'pending') {
+                        $pendingCount++;
+                    }
                 }
 
-                $this->afterStepDispatched($route, $event, $steps->first()->step_order);
+                if ($pendingCount > 0) {
+                    $this->afterStepDispatched($route, $event, $steps->first()->step_order);
+                }
             });
     }
 
@@ -134,6 +132,32 @@ class SignalRouter
                 'error' => $reason,
             ]);
         }
+    }
+
+    private function createDelivery(SignalRoute $route, SignalEvent $event, SignalRouteStep $step): SignalDelivery
+    {
+        if (! $step->destination?->enabled) {
+            return SignalDelivery::create([
+                'event_id' => $event->id,
+                'route_id' => $route->id,
+                'step_order' => $step->step_order,
+                'destination_id' => $step->destination_id,
+                'status' => 'suppressed',
+                'error' => 'destination-disabled',
+            ]);
+        }
+
+        $delivery = SignalDelivery::create([
+            'event_id' => $event->id,
+            'route_id' => $route->id,
+            'step_order' => $step->step_order,
+            'destination_id' => $step->destination_id,
+            'status' => 'pending',
+        ]);
+
+        DeliverSignal::dispatch($delivery->id);
+
+        return $delivery;
     }
 
     private function causalDepth(SignalEvent $event): int

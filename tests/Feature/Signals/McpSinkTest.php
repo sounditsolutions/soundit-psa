@@ -10,9 +10,11 @@ use App\Models\SignalInboxEntry;
 use App\Models\SignalRoute;
 use App\Services\Signals\Sinks\McpSink;
 use GuzzleHttp\Client;
+use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\HandlerStack;
 use GuzzleHttp\Middleware;
+use GuzzleHttp\Psr7\Request;
 use GuzzleHttp\Psr7\Response;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
@@ -77,6 +79,25 @@ class McpSinkTest extends TestCase
         $this->assertStringNotContainsString('body is not stored', $destination->fresh()->last_error);
     }
 
+    public function test_doorbell_exception_records_safe_error_without_wake_url_details(): void
+    {
+        [$destination, $event, $delivery] = $this->deliveryFixture(wake: true);
+        $history = [];
+        $sink = $this->sink([
+            new ConnectException(
+                'cURL error 6 for https://wake.example.com/doorbell/private-token',
+                new Request('POST', 'https://wake.example.com/doorbell/private-token'),
+            ),
+        ], $history);
+
+        $sink->deliver($destination, $event, $delivery);
+
+        $this->assertSame('delivered', $delivery->fresh()->status);
+        $this->assertSame('doorbell: connect failed', $destination->fresh()->last_error);
+        $this->assertStringNotContainsString('wake.example.com', $destination->fresh()->last_error);
+        $this->assertStringNotContainsString('private-token', $destination->fresh()->last_error);
+    }
+
     public function test_acknowledged_inbox_retention_prunes_only_this_destination(): void
     {
         [$destination, $event, $delivery] = $this->deliveryFixture();
@@ -137,6 +158,7 @@ class McpSinkTest extends TestCase
         $route = SignalRoute::create([
             'label' => $label.' route',
             'event_filter' => ['types' => ['agent.flag_attention']],
+            'enabled' => true,
         ]);
         $event = SignalEvent::create([
             'type_key' => 'agent.flag_attention',

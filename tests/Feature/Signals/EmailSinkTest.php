@@ -73,6 +73,30 @@ class EmailSinkTest extends TestCase
         $this->assertSame('email-rate-limit', $destination->fresh()->last_error);
     }
 
+    public function test_delivery_failure_records_safe_error_and_failure_timestamp(): void
+    {
+        [$destination, $event, $delivery] = $this->deliveryFixture();
+        $this->mock(EmailService::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('sendNew')->once()
+                ->andThrow(new \RuntimeException('SMTP failed for ops@example.com with provider body'));
+        });
+
+        try {
+            app(EmailSink::class)->deliver($destination, $event, $delivery);
+            $this->fail('Expected email delivery failure to throw after marking failed.');
+        } catch (\RuntimeException) {
+            //
+        }
+
+        $this->assertSame('failed', $delivery->fresh()->status);
+        $this->assertSame('email failed', $delivery->fresh()->error);
+        $this->assertSame('failed', $destination->fresh()->last_delivery_status);
+        $this->assertNotNull($destination->fresh()->last_delivery_at);
+        $this->assertSame('email failed', $destination->fresh()->last_error);
+        $this->assertStringNotContainsString('ops@example.com', $destination->fresh()->last_error);
+        $this->assertStringNotContainsString('provider body', $destination->fresh()->last_error);
+    }
+
     public function test_deliver_signal_dispatches_email_destination_to_email_sink(): void
     {
         [$destination, $event, $delivery] = $this->deliveryFixture();
@@ -96,6 +120,7 @@ class EmailSinkTest extends TestCase
         $route = SignalRoute::create([
             'label' => 'Ops',
             'event_filter' => ['types' => ['ticket.created']],
+            'enabled' => true,
         ]);
         $event = SignalEvent::create([
             'type_key' => 'ticket.created',
