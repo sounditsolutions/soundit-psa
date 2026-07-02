@@ -6,8 +6,8 @@ After=network.target mysql.service
 User=www-data
 Restart=always
 RestartSec=3
-WorkingDirectory=/var/www/psa
-ExecStart=/usr/bin/php /var/www/psa/artisan queue:work --queue=technician --sleep=3 --tries=2 --max-time=3600
+WorkingDirectory=/var/www/soundit-psa
+ExecStart=/usr/bin/php /var/www/soundit-psa/artisan queue:work --queue=technician --sleep=3 --tries=2 --max-time=3600
 StartLimitIntervalSec=0
 
 [Install]

@@ -353,13 +353,11 @@ class TechnicianConfig
 
     // ── coverage-start anchor (psa-wmqp) ─────────────────────────────────────
     //
-    // The flood root cause: the deterministic age signal fired for ANY open,
-    // never-responded ticket older than the per-priority floor, so on enable the
-    // whole stale backlog tripped it (~70 emergencies). Anchoring the age signal
-    // to a coverage window — "a new thing that went wrong while I'm away" == a
-    // ticket OPENED after coverage started — means enabling never retroactively
-    // alarms the pre-existing backlog. Keyword + SLA stay always-on. Mirrors the
-    // lastDigestAt()/recordDigestSent() reader/stamper pair above.
+    // The flood root cause: deterministic signals fired for pre-existing backlog
+    // on enable. The sweep uses this coverage window as the boundary for ALL rule
+    // signals — "a new thing that went wrong while I'm away" == a ticket OPENED
+    // after coverage started. Mirrors the lastDigestAt()/recordDigestSent() reader
+    // / stamper pair above.
 
     /** When coverage started (the age-detection anchor); null when not anchored. */
     public static function coverageStartAt(): ?Carbon
