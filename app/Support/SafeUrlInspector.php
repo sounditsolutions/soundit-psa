@@ -27,7 +27,7 @@ class SafeUrlInspector
      * @param  callable|null  $resolver  host => string[]|false (defaults to gethostbynamel)
      * @return string|null an error message if the URL is unsafe, else null
      */
-    public static function reject(string $url, ?callable $resolver = null): ?string
+    public static function reject(string $url, ?callable $resolver = null, string $fieldLabel = 'Tactical API URL'): ?string
     {
         $resolver ??= 'gethostbynamel';
 
@@ -37,7 +37,7 @@ class SafeUrlInspector
         }
 
         if (($parts['scheme'] ?? null) !== 'https') {
-            return 'The Tactical API URL must use https://.';
+            return "The {$fieldLabel} must use https://.";
         }
 
         $host = $parts['host'];
@@ -47,18 +47,18 @@ class SafeUrlInspector
 
         // 1. IP literal? Check it directly — never route a literal through DNS.
         if ($literal = self::normalizeIpLiteral($host)) {
-            return self::ipIsSafe($literal) ? null : self::unsafeMsg($literal);
+            return self::ipIsSafe($literal) ? null : self::unsafeMsg($literal, $fieldLabel);
         }
 
         // 2. Hostname → resolve and check EVERY A-record. Fail closed on NXDOMAIN.
         $ips = $resolver($host);
         if ($ips === false || ! is_array($ips) || $ips === []) {
-            return "The Tactical API host '{$host}' could not be resolved (rejected for safety).";
+            return "The {$fieldLabel} host '{$host}' could not be resolved (rejected for safety).";
         }
 
         foreach ($ips as $ip) {
             if (! self::ipIsSafe($ip)) {
-                return self::unsafeMsg($ip)." (resolved from {$host})";
+                return self::unsafeMsg($ip, $fieldLabel)." (resolved from {$host})";
             }
         }
 
@@ -210,8 +210,8 @@ class SafeUrlInspector
         return true;
     }
 
-    private static function unsafeMsg(string $ip): string
+    private static function unsafeMsg(string $ip, string $fieldLabel = 'Tactical API URL'): string
     {
-        return "The Tactical API URL resolves to a private or reserved address ({$ip}), which is not allowed.";
+        return "The {$fieldLabel} resolves to a private or reserved address ({$ip}), which is not allowed.";
     }
 }

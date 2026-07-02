@@ -2,8 +2,11 @@
 
 namespace App\Observers;
 
+use App\Enums\NoteType;
+use App\Enums\WhoType;
 use App\Models\TicketNote;
 use App\Services\PrepayService;
+use App\Services\Signals\SignalHub;
 use Illuminate\Support\Facades\Log;
 
 class TicketNoteObserver
@@ -14,6 +17,7 @@ class TicketNoteObserver
 
     public function created(TicketNote $note): void
     {
+        $this->emitClientReplySignal($note);
         $this->syncPrepayDebit($note);
     }
 
@@ -48,5 +52,21 @@ class TicketNoteObserver
                 'error' => $e->getMessage(),
             ]);
         }
+    }
+
+    private function emitClientReplySignal(TicketNote $note): void
+    {
+        if ($note->note_type !== NoteType::Reply || $note->is_private || $note->who_type !== WhoType::EndUser) {
+            return;
+        }
+
+        $ticket = $note->ticket;
+        if ($ticket === null) {
+            return;
+        }
+
+        app(SignalHub::class)->emit('ticket.client_replied', $ticket, 'client replied', [
+            'client_id' => $ticket->client_id,
+        ]);
     }
 }

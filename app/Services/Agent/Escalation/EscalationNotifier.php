@@ -7,6 +7,7 @@ use App\Models\AssistantConversation;
 use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Models\User;
+use App\Services\Signals\SignalHub;
 use App\Services\Technician\Notify\TeamsText;
 use App\Support\TeamsBotConfig;
 use App\Support\TechnicianConfig;
@@ -87,7 +88,13 @@ class EscalationNotifier
             $flagRun->proposed_meta = $meta;
 
             // ── 3. Deliver (chat + email + meta write) ───────────────────────────
-            $this->deliverTo($ticket, $flagRun, $user, $blocker, 0);
+            $summaryFragment = $this->deliverToAndReturnSummary($ticket, $flagRun, $user, $blocker, 0);
+
+            app(SignalHub::class)->emit('agent.flag_attention', $ticket, $summaryFragment, [
+                'category' => $category->value,
+                'priority' => $ticket->priority_order,
+                'client_id' => $ticket->client_id,
+            ]);
         } catch (\Throwable $e) {
             Log::warning('[EscalationNotifier] Unhandled error in notify', [
                 'ticket_id' => $ticket->id,
@@ -113,6 +120,16 @@ class EscalationNotifier
         string $blocker,
         int $step = 0,
     ): void {
+        $this->deliverToAndReturnSummary($ticket, $flagRun, $recipient, $blocker, $step);
+    }
+
+    private function deliverToAndReturnSummary(
+        Ticket $ticket,
+        TechnicianRun $flagRun,
+        ?User $recipient,
+        string $blocker,
+        int $step,
+    ): string {
         // ── 1. Cap → scan → Teams-escape the blocker ────────────────────────────
         $blocker = $this->delivery->sanitize($blocker, '[escalation detail withheld - open the ticket]');
 
@@ -152,6 +169,8 @@ class EscalationNotifier
         ]);
         $flagRun->proposed_meta = $meta;
         $flagRun->save();
+
+        return $blocker;
     }
 
     /**

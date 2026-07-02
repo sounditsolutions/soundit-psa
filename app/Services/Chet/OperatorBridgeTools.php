@@ -75,6 +75,18 @@ class OperatorBridgeTools
                     'required' => [],
                 ],
             ],
+            [
+                'name' => 'poll_signals',
+                'description' => 'Poll reference-only Alerts Hub signal inbox rows for this scoped token. Pass cursor equal to the highest inbox_id confirmed processed to ack rows up to that cursor; limit defaults to 20 and caps at 50.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'cursor' => ['type' => 'integer', 'description' => 'Highest previously processed signal inbox_id to ack before returning the next batch.'],
+                        'limit' => ['type' => 'integer', 'description' => 'Max rows to return (default 20, max 50).'],
+                    ],
+                    'required' => [],
+                ],
+            ],
         ];
     }
 }

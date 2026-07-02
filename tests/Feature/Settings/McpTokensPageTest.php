@@ -4,6 +4,10 @@ namespace Tests\Feature\Settings;
 
 use App\Models\McpAuditLog;
 use App\Models\McpToken;
+use App\Models\SignalDelivery;
+use App\Models\SignalDestination;
+use App\Models\SignalEvent;
+use App\Models\SignalInboxEntry;
 use App\Models\User;
 use App\Services\Chet\TeamsChatReadToolset;
 use App\Services\Tactical\TacticalReadOnlyToolset;
@@ -118,6 +122,25 @@ class McpTokensPageTest extends TestCase
         $this->assertNull(McpConfig::resolveStaffToken($plain));
     }
 
+    public function test_revoke_clears_pending_signal_inbox_rows_for_that_token_label(): void
+    {
+        McpConfig::rotateStaffToken(allowedTools: ['poll_signals'], label: 'chet');
+        McpConfig::rotateStaffToken(allowedTools: ['poll_signals'], label: 'other');
+        $token = McpToken::where('label', 'chet')->firstOrFail();
+        [$entry, $delivery] = $this->signalInboxRowForToken('chet');
+        [$otherEntry, $otherDelivery] = $this->signalInboxRowForToken('other');
+
+        $this->actingAs($this->user)
+            ->delete(route('settings.mcp-tokens.revoke', $token))
+            ->assertRedirect(route('settings.mcp-tokens.index'));
+
+        $this->assertDatabaseMissing('signal_inbox', ['id' => $entry->id]);
+        $this->assertSame('suppressed', $delivery->fresh()->status);
+        $this->assertSame('token-revoked', $delivery->fresh()->error);
+        $this->assertDatabaseHas('signal_inbox', ['id' => $otherEntry->id]);
+        $this->assertSame('delivered', $otherDelivery->fresh()->status);
+    }
+
     public function test_index_does_not_render_plaintext_from_session_flash(): void
     {
         $this->actingAs($this->user)
@@ -225,5 +248,37 @@ class McpTokensPageTest extends TestCase
         $this->assertSame(1, McpAuditLog::where('method', 'token/revoke')
             ->where('tool_name', 'chet')
             ->count());
+    }
+
+    private function signalInboxRowForToken(string $tokenLabel): array
+    {
+        $destination = SignalDestination::create([
+            'label' => 'Destination '.$tokenLabel,
+            'type' => 'mcp',
+            'mcp_token_label' => $tokenLabel,
+        ]);
+        $event = SignalEvent::create([
+            'type_key' => 'agent.flag_attention',
+            'entity_type' => 'ticket',
+            'entity_id' => 123,
+            'summary' => 'Signal event',
+            'context' => [],
+            'occurred_at' => now(),
+        ]);
+        $delivery = SignalDelivery::create([
+            'event_id' => $event->id,
+            'route_id' => null,
+            'step_order' => 1,
+            'destination_id' => $destination->id,
+            'status' => 'delivered',
+        ]);
+        $entry = SignalInboxEntry::create([
+            'destination_id' => $destination->id,
+            'event_id' => $event->id,
+            'delivery_id' => $delivery->id,
+            'payload' => ['event' => 'agent.flag_attention'],
+        ]);
+
+        return [$entry, $delivery];
     }
 }

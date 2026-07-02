@@ -7,6 +7,7 @@ use App\Enums\TechnicianRunState;
 use App\Enums\ToolingGapStatus;
 use App\Enums\WikiFactSource;
 use App\Enums\WikiFactStatus;
+use App\Models\SignalDestination;
 use App\Models\TechnicianActionLog;
 use App\Models\TechnicianRun;
 use App\Models\ToolingGap;
@@ -46,6 +47,13 @@ class DigestBuilder
             ->get();
         $toolingGapCount = $toolingGaps->count();
 
+        $failedSignalDestinations = SignalDestination::query()
+            ->where('last_delivery_status', 'failed')
+            ->where('last_delivery_at', '>=', now()->subDay())
+            ->orderBy('label')
+            ->get(['label', 'last_error']);
+        $failedSignalDestinationCount = $failedSignalDestinations->count();
+
         $escalationEnabled = AgentConfig::escalationEnabled();
         $escalations = collect();
         $escalationCount = 0;
@@ -82,7 +90,7 @@ class DigestBuilder
                 ->count();
         }
 
-        $isEmpty = $pending->isEmpty() && $needsYou === 0 && $done === 0 && $learnedCount === 0 && $toolingGapCount === 0 && $escalationCount === 0 && $intakeCount === 0 && $spamSuggestedCount === 0;
+        $isEmpty = $pending->isEmpty() && $needsYou === 0 && $done === 0 && $learnedCount === 0 && $toolingGapCount === 0 && $failedSignalDestinationCount === 0 && $escalationCount === 0 && $intakeCount === 0 && $spamSuggestedCount === 0;
 
         $lines = [
             'AI Technician — daily summary',
@@ -134,6 +142,14 @@ class DigestBuilder
                 // Privacy contract: only the ABSTRACT capability_gap is shown here.
                 // The instance-private evidence is NEVER surfaced in the digest.
                 $lines[] = '• '.TeamsText::escape($gap->capability_gap);
+            }
+        }
+
+        if ($failedSignalDestinationCount > 0) {
+            $lines[] = '';
+            $lines[] = 'Signal destination health:';
+            foreach ($failedSignalDestinations->take(5) as $destination) {
+                $lines[] = '• '.TeamsText::escape($destination->label);
             }
         }
 

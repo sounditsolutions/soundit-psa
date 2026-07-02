@@ -374,7 +374,12 @@ class McpStaffController extends Controller
 
         try {
             if (OperatorBridgeTools::handles((string) $name)) {
-                $result = app(OperatorBridgeToolExecutor::class)->execute((string) $name, $arguments);
+                $token = $request->attributes->get('mcp_staff_token');
+                $result = app(OperatorBridgeToolExecutor::class)->execute(
+                    (string) $name,
+                    $arguments,
+                    $token instanceof McpStaffToken ? $token->label : null,
+                );
             } elseif (ChetDataSurfaceTools::handles((string) $name)) {
                 $result = app(ChetDataSurfaceToolExecutor::class)->execute((string) $name, $arguments, $clientId);
             } else {
