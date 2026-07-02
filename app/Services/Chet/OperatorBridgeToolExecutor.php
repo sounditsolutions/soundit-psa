@@ -95,18 +95,26 @@ class OperatorBridgeToolExecutor
         $recipientId = TechnicianConfig::operatorRecipientFor($category);
         $recipient = $recipientId ? User::find($recipientId) : null;
 
-        $safeMessage = $this->delivery->sanitizeMessage($message);
-
-        $persona = TeamsText::escape(TechnicianConfig::aiActorName());
+        $actorName = TechnicianConfig::aiActorName();
+        $persona = TeamsText::escape($actorName);
+        $safeMessage = $this->delivery->sanitizeMessage(
+            $this->stripTrailingPersonaSignatures($message, $actorName),
+        );
         $label = $category->label();
-        $prefix = "{$persona} - {$label}";
+        $ticketContext = null;
         if ($ticket !== null) {
             $client = TeamsText::escape($ticket->client?->name ?? '');
             $subject = TeamsText::escape($ticket->subject ?? '');
-            $prefix .= " on #{$ticket->id} ({$client} - {$subject})";
+            $ticketContext = "#{$ticket->id} ({$client} - {$subject})";
         }
 
-        $body = "{$prefix}: {$safeMessage}";
+        $body = match (true) {
+            $category === OperatorMessageCategory::Reply && $ticketContext !== null => "{$ticketContext}: {$safeMessage}",
+            $category === OperatorMessageCategory::Reply => $safeMessage,
+            $ticketContext !== null => "{$label} on {$ticketContext}: {$safeMessage}",
+            default => "{$label}: {$safeMessage}",
+        };
+
         $subject = $ticket !== null
             ? "{$persona} - {$label} - ticket #{$ticket->id}"
             : "{$persona} - {$label}";
@@ -123,6 +131,18 @@ class OperatorBridgeToolExecutor
             'posted' => $result->posted,
             'remote_message_id' => $result->remoteMessageId,
         ];
+    }
+
+    private function stripTrailingPersonaSignatures(string $message, string $persona): string
+    {
+        if ($persona === '') {
+            return $message;
+        }
+
+        $quotedPersona = preg_quote($persona, '/');
+        $stripped = preg_replace('/(?:\R\s*)+(?:(?:--|—)\s*'.$quotedPersona.'\s*[.!]?\s*(?:\R\s*)*)+$/iu', '', $message);
+
+        return rtrim($stripped ?? $message);
     }
 
     /** @return array<string, mixed> */
