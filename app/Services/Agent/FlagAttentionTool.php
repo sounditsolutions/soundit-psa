@@ -6,9 +6,13 @@ use App\Enums\FlagAttentionCategory;
 use App\Enums\TechnicianRunState;
 use App\Models\TechnicianRun;
 use App\Models\Ticket;
+use App\Services\Agent\Escalation\ClientEscalationNoiseGate;
 use App\Services\Agent\Escalation\EscalationNotifier;
 use App\Services\Technician\TechnicianActionGate;
 use App\Support\AgentConfig;
+use Illuminate\Contracts\Cache\LockTimeoutException;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Log;
 
 /**
  * The agent's SECOND action — "this is over my head, a human needs to look."
@@ -31,9 +35,12 @@ use App\Support\AgentConfig;
  */
 class FlagAttentionTool
 {
+    private const CLIENT_ESCALATION_LOCK_SECONDS = 180;
+
     public function __construct(
         private readonly TechnicianActionGate $gate,
         private readonly EscalationNotifier $escalation,
+        private readonly ClientEscalationNoiseGate $noiseGate,
     ) {}
 
     /** The Anthropic tool definition for `flag_attention`. */
@@ -130,7 +137,7 @@ class FlagAttentionTool
         // kill-switch / client-exclusion checks. The executor is intentionally EMPTY:
         // a flag has no execution side-effect. The classifier hard-codes flag_attention
         // to Approve, so the gate records awaiting_approval and never runs this anyway.
-        $this->gate->dispatch(
+        $gateResult = $this->gate->dispatch(
             actionType: 'flag_attention',
             ticketId: $ticket->id,
             clientId: $ticket->client_id,
@@ -146,10 +153,67 @@ class FlagAttentionTool
         // Increment H: when escalation notifications are enabled, notify the role-routed human. Dormant when off
         // (flag records exactly as before). Reached only for a NEW/revived flag — the "already flagged" duplicate
         // returned earlier, so re-flagging the same blocker does NOT re-notify (no spam). Fail-soft inside notify().
-        if (AgentConfig::escalationEnabled()) {
-            $this->escalation->notify($ticket, $run, $category, $reason);
+        if (AgentConfig::escalationEnabled() && $gateResult->status === 'awaiting_approval') {
+            $this->notifyOrSuppress($ticket, $run, $category, $reason);
         }
 
         return "Flagged ticket #{$ticket->id} for human attention ({$category->label()}).";
+    }
+
+    private function notifyOrSuppress(
+        Ticket $ticket,
+        TechnicianRun $run,
+        FlagAttentionCategory $category,
+        string $reason,
+    ): void {
+        $lockKey = $this->noiseGate->lockKey($ticket);
+
+        if ($lockKey === null) {
+            $this->escalation->notify($ticket, $run, $category, $reason);
+
+            return;
+        }
+
+        try {
+            Cache::lock($lockKey, self::CLIENT_ESCALATION_LOCK_SECONDS)
+                ->betweenBlockedAttemptsSleepFor(100)
+                ->block(self::CLIENT_ESCALATION_LOCK_SECONDS, function () use ($ticket, $run, $category, $reason): void {
+                    $suppression = $this->noiseGate->suppressionFor($ticket, $run);
+
+                    if ($suppression !== null) {
+                        $this->recordSuppression($run, $category, $suppression);
+
+                        return;
+                    }
+
+                    $this->escalation->notify($ticket, $run, $category, $reason);
+                });
+        } catch (LockTimeoutException) {
+            Log::warning('[FlagAttentionTool] Client escalation lock timed out; notifying fail-open to avoid a zero-ping escalation', [
+                'ticket_id' => $ticket->id,
+                'client_id' => $ticket->client_id,
+                'run_id' => $run->id,
+            ]);
+
+            $this->escalation->notify($ticket, $run, $category, $reason);
+        }
+    }
+
+    /** @param array<string, mixed> $suppression */
+    private function recordSuppression(TechnicianRun $run, FlagAttentionCategory $category, array $suppression): void
+    {
+        unset($suppression['notified_at']);
+
+        $meta = $run->fresh()->proposed_meta ?? [];
+        $existing = $meta['escalation'] ?? [];
+        unset($existing['notified_at']);
+
+        $meta['escalation'] = array_merge($existing, $suppression, [
+            'category' => $category->value,
+            'suppressed_at' => now()->toIso8601String(),
+        ]);
+
+        $run->proposed_meta = $meta;
+        $run->save();
     }
 }
