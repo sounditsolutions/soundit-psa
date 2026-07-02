@@ -26,7 +26,7 @@ use Tests\TestCase;
  * Tests (7):
  *   1. Dormant — agent disabled: handle() no-ops; TriageReviewOpen does NOT push RunTechnicianAgent.
  *   2. Enabled + eligible — handle() calls gate (mock true) → TechnicianAgent::run() once.
- *   3. Operational re-check — non-operational client (prospect): gate/agent never called.
+ *   3. Prospect client — visible to the held agent like any other active record.
  *   4. Dedup — ticket with existing AwaitingApproval propose_close → no-op.
  *   5. Depth-cap — global AwaitingApproval count >= maxPendingProposals → no-op.
  *   6. Gate says no — SignificanceGate returns false → TechnicianAgent::run NOT called.
@@ -107,24 +107,25 @@ class RunTechnicianAgentTest extends TestCase
         (new RunTechnicianAgent($ticket->id))->handle();
     }
 
-    // ── 3. Operational re-check ───────────────────────────────────────────────
+    // ── 3. Prospect clients are AI-visible ────────────────────────────────────
 
     /**
-     * CO-8: The client must be Active AND is_active at execute-time.
-     * A prospect client (stage=Prospect) is not operational → gate/agent never called.
+     * Prospects are non-billing/non-portal records, not AI-invisible records.
+     * The agent still honors dormancy, open-ticket, dedup, depth-cap, and held
+     * approval rails; it just no longer excludes stage=Prospect.
      */
-    public function test_non_operational_client_skips_gate_and_agent(): void
+    public function test_prospect_client_calls_gate_then_agent(): void
     {
         $this->enableAgent();
 
-        $prospect = Client::factory()->prospect()->create(); // stage=Prospect → not operational
+        $prospect = Client::factory()->prospect()->create();
         $ticket = Ticket::factory()->for($prospect)->create(['status' => TicketStatus::InProgress]);
 
         $gate = $this->mock(SignificanceGate::class);
-        $gate->shouldReceive('assess')->never();
+        $gate->shouldReceive('assess')->once()->andReturn(true);
 
         $agent = $this->mock(TechnicianAgent::class);
-        $agent->shouldReceive('run')->never();
+        $agent->shouldReceive('run')->once();
 
         (new RunTechnicianAgent($ticket->id))->handle();
     }

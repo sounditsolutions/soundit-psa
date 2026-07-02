@@ -1402,7 +1402,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 return;
             }
             moveSearchTimeout = setTimeout(function() {
-                fetch('{{ route("api.clients.search") }}?q=' + encodeURIComponent(q))
+                fetch('{{ route("clients.search") }}?q=' + encodeURIComponent(q))
                     .then(r => r.json())
                     .then(function(clients) {
                         moveClientResults.innerHTML = '';

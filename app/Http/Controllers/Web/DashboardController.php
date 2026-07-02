@@ -45,7 +45,8 @@ class DashboardController extends Controller
             'stats', 'stream', 'profitability', 'tickets',
         ) + [
             'ticketFilters' => $ticketFilters,
-            'ticketClients' => Client::operational()->orderBy('name')->get(['id', 'name']),
+            // active(), not operational(): dashboard ticket filters should include prospect intake tickets.
+            'ticketClients' => Client::active()->orderBy('name')->get(['id', 'name']),
             'ticketUsers' => User::active()->orderBy('name')->get(['id', 'name']),
             'ticketStatuses' => TicketStatus::cases(),
             'ticketPriorities' => TicketPriority::cases(),

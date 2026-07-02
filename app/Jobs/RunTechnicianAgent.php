@@ -25,7 +25,7 @@ use Illuminate\Support\Facades\Cache;
  * Guard chain (each an early return):
  *   1. Dormancy: AgentConfig::enabled() — returns when the flag is off.
  *   2. Ticket exists.
- *   3. Operational re-check (CO-8): client must be Active AND is_active.
+ *   3. Active re-check (CO-8): client record must still be active.
  *   4. Ticket is open.
  *   5. Dedup (CO-5): ticket already has an AwaitingApproval propose_close run.
  *   6. Depth-cap (CO-11): global AwaitingApproval propose_close count >= maxPendingProposals.
@@ -64,9 +64,9 @@ class RunTechnicianAgent implements ShouldQueue
             return;
         }
 
-        // 3. Operational re-check (CO-8): the client must be Active AND is_active.
-        //    Not merely non-prospect — a deactivated active-stage client is also out.
-        if (! Client::operational()->whereKey($ticket->client_id)->exists()) {
+        // 3. Active re-check (CO-8): prospects are AI-visible, but deactivated
+        //    client records are still out.
+        if (! Client::active()->whereKey($ticket->client_id)->exists()) {
             return;
         }
 

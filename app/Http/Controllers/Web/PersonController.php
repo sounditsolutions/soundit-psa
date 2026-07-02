@@ -149,7 +149,8 @@ class PersonController extends Controller
             'tickets' => $tickets,
             'ticketFilters' => $filters,
             'ticketUsers' => User::active()->orderBy('name')->get(['id', 'name']),
-            'ticketClients' => Client::operational()->orderBy('name')->get(['id', 'name']),
+            // active(), not operational(): prospect contacts can have intake tickets.
+            'ticketClients' => Client::active()->orderBy('name')->get(['id', 'name']),
             'ticketStatuses' => TicketStatus::cases(),
             'ticketPriorities' => TicketPriority::cases(),
             'ticketTypes' => TicketType::cases(),

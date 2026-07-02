@@ -54,14 +54,14 @@ class TechnicianLoopDispatchTest extends TestCase
         Bus::assertNotDispatched(RunTechnicianLoop::class);
     }
 
-    public function test_prospect_ticket_never_dispatches_the_loop(): void
+    public function test_prospect_ticket_dispatches_the_loop_when_enabled(): void
     {
         Setting::setValue('technician_enabled', '1');
         $prospect = Client::factory()->prospect()->create();
 
         Ticket::factory()->create(['client_id' => $prospect->id]);
 
-        Bus::assertNotDispatched(RunTechnicianLoop::class);
+        Bus::assertDispatched(RunTechnicianLoop::class);
     }
 
     public function test_ticket_created_by_the_ai_actor_does_not_dispatch_the_loop(): void

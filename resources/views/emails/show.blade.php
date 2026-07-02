@@ -472,7 +472,7 @@ document.addEventListener('DOMContentLoaded', function() {
         const q = this.value.trim();
         if (q.length < 2) { reassignResults.innerHTML = ''; return; }
         debounce = setTimeout(() => {
-            fetch('{{ route("api.clients.search") }}?q=' + encodeURIComponent(q))
+            fetch('{{ route("clients.search") }}?q=' + encodeURIComponent(q))
                 .then(r => r.json())
                 .then(clients => {
                     reassignResults.innerHTML = '';

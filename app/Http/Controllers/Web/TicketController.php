@@ -53,7 +53,8 @@ class TicketController extends Controller
         return view('tickets.index', [
             'tickets' => $tickets,
             'filters' => $filters,
-            'clients' => Client::operational()->orderBy('name')->get(['id', 'name']),
+            // active(), not operational(): ticket filters should include prospect intake tickets.
+            'clients' => Client::active()->orderBy('name')->get(['id', 'name']),
             'users' => User::active()->orderBy('name')->get(['id', 'name']),
             'statuses' => TicketStatus::cases(),
             'priorities' => TicketPriority::cases(),
@@ -66,7 +67,8 @@ class TicketController extends Controller
     public function create()
     {
         return view('tickets.create', [
-            'clients' => Client::operational()->orderBy('name')->get(['id', 'name']),
+            // active(), not operational(): staff can create ticket-as-opportunity records for prospects.
+            'clients' => Client::active()->orderBy('name')->get(['id', 'name']),
             'users' => User::active()->orderBy('name')->get(['id', 'name']),
             'types' => TicketType::cases(),
             'priorities' => TicketPriority::cases(),
@@ -374,6 +376,7 @@ class TicketController extends Controller
                     return redirect()->route('tickets.index')
                         ->with('error', 'AI Triage is not enabled.');
                 }
+
                 foreach ($ticketIds as $id) {
                     RunTriagePipeline::dispatch($id, $action, auth()->id());
                 }

@@ -64,8 +64,8 @@ class AssistantToolDefinitions
                         ],
                         'status' => [
                             'type' => 'string',
-                            'description' => 'Filter by status: new, in_progress, pending_client, pending_vendor, resolved, closed. Omit for all.',
-                            'enum' => ['new', 'in_progress', 'pending_client', 'pending_vendor', 'resolved', 'closed'],
+                            'description' => 'Filter by status: new, in_progress, pending_client, pending_third_party, resolved, closed. Omit for all.',
+                            'enum' => ['new', 'in_progress', 'pending_client', 'pending_third_party', 'resolved', 'closed'],
                         ],
                         'limit' => [
                             'type' => 'integer',
@@ -83,8 +83,8 @@ class AssistantToolDefinitions
                     'properties' => [
                         'status' => [
                             'type' => 'string',
-                            'description' => 'Filter by status. Omit for all open statuses (new, in_progress, pending_client, pending_vendor).',
-                            'enum' => ['new', 'in_progress', 'pending_client', 'pending_vendor', 'resolved', 'closed'],
+                            'description' => 'Filter by status. Omit for all open statuses (new, in_progress, pending_client, pending_third_party).',
+                            'enum' => ['new', 'in_progress', 'pending_client', 'pending_third_party', 'resolved', 'closed'],
                         ],
                         'limit' => [
                             'type' => 'integer',

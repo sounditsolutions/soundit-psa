@@ -2,7 +2,6 @@
 
 namespace App\Jobs;
 
-use App\Enums\ClientStage;
 use App\Enums\TicketStatus;
 use App\Models\Ticket;
 use App\Services\TicketResolutionDrafter;
@@ -29,12 +28,6 @@ class GenerateTicketResolution implements ShouldQueue
         $ticket = Ticket::find($this->ticketId);
 
         if (! $ticket) {
-            return;
-        }
-
-        // Choke-point gate: never generate AI resolution for prospect clients regardless
-        // of which dispatch site triggered this job.
-        if ($ticket->client?->stage === ClientStage::Prospect) {
             return;
         }
 

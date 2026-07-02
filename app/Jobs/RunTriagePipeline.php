@@ -2,7 +2,6 @@
 
 namespace App\Jobs;
 
-use App\Enums\ClientStage;
 use App\Models\Ticket;
 use App\Models\TriageRun;
 use App\Services\Triage\TriagePipeline;
@@ -63,14 +62,6 @@ class RunTriagePipeline implements ShouldQueue
         });
 
         if (! $ticket) {
-            return;
-        }
-
-        // Choke-point gate: skip LLM work for prospect clients regardless of
-        // which dispatch site (observer, controller, scheduled command) triggered this job.
-        if ($ticket->client?->stage === ClientStage::Prospect) {
-            Log::debug('[Triage] Skipping — prospect client', ['ticket_id' => $this->ticketId]);
-
             return;
         }
 

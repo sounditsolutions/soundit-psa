@@ -96,6 +96,30 @@ class ClientReplyReopensDraftTest extends TestCase
         Bus::assertNotDispatched(RunTechnicianLoop::class);
     }
 
+    public function test_email_reply_dispatches_the_loop_for_prospect_ticket_when_enabled(): void
+    {
+        Setting::setValue('technician_enabled', '1');
+
+        $prospect = Client::factory()->prospect()->create();
+        $ticket = Ticket::factory()->create(['client_id' => $prospect->id]);
+        $email = Email::create([
+            'direction' => EmailDirection::Inbound,
+            'from_address' => 'prospect@example.com',
+            'from_name' => 'Prospect User',
+            'subject' => 'Re: Prospect ticket',
+            'body_preview' => 'Any update?',
+            'body_text' => 'Any update?',
+            'received_at' => now(),
+            'is_read' => false,
+        ]);
+
+        Bus::fake();
+
+        app(EmailService::class)->linkEmailToTicket($email, $ticket);
+
+        Bus::assertDispatched(RunTechnicianLoop::class);
+    }
+
     public function test_a_new_client_reply_redrafts_and_supersedes_the_stale_draft(): void
     {
         // A2b: the redraft+supersede behavior moved from DraftPipeline to the agent's

@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Web;
 use App\Http\Controllers\Controller;
 use App\Models\AssistantConversation;
 use App\Models\AssistantMessage;
+use App\Models\Client;
 use App\Models\Ticket;
 use App\Services\Assistant\AssistantService;
 use Illuminate\Http\JsonResponse;
@@ -44,11 +45,13 @@ class AssistantController extends Controller
         // Validate context_id exists if context_type is set
         if (! empty($validated['context_type']) && ! empty($validated['context_id'])) {
             if ($validated['context_type'] === 'ticket') {
-                if (! Ticket::where('id', $validated['context_id'])->exists()) {
+                $ticket = Ticket::find($validated['context_id']);
+                if (! $ticket) {
                     return response()->json(['error' => 'Ticket not found'], 404);
                 }
             } elseif ($validated['context_type'] === 'client') {
-                if (! \App\Models\Client::where('id', $validated['context_id'])->exists()) {
+                $client = Client::find($validated['context_id']);
+                if (! $client) {
                     return response()->json(['error' => 'Client not found'], 404);
                 }
             }

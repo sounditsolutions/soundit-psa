@@ -2,7 +2,6 @@
 
 namespace App\Observers;
 
-use App\Enums\ClientStage;
 use App\Enums\TicketSource;
 use App\Enums\TicketStatus;
 use App\Jobs\GenerateTicketResolution;
@@ -30,12 +29,6 @@ class TicketObserver
             'priority' => $ticket->priority_order,
         ]);
 
-        // Prospect gate: never notify or triage for prospect-stage clients.
-        // Data must not reach the LLM or notification pipeline during the sales phase.
-        if ($ticket->client?->stage === ClientStage::Prospect) {
-            return;
-        }
-
         app(NotificationService::class)->notifyTicketCreated($ticket);
 
         // Recursion guard: skip AI dispatches for tickets created by the system/AI-actor user.
@@ -46,8 +39,8 @@ class TicketObserver
                 RunTriagePipeline::dispatch($ticket->id, 'triage');
             }
 
-            // AI Technician Loop (spec §4.1) — same prospect gate (above) + the same
-            // system-user recursion guard as triage. Gated by TechnicianConfig::enabled().
+            // AI Technician Loop (spec §4.1) — same system-user recursion guard as triage.
+            // Gated by TechnicianConfig::enabled().
             if (TechnicianConfig::enabled()) {
                 RunTechnicianLoop::dispatch($ticket->id);
             }
@@ -73,12 +66,8 @@ class TicketObserver
         $isTerminal = in_array($ticket->status, [TicketStatus::Resolved, TicketStatus::Closed], true);
         $becameTerminalOrResolutionChanged = $ticket->wasChanged('status') || $ticket->wasChanged('resolution');
 
-        // Prospect gate: don't mine or auto-draft resolutions for prospect-stage clients.
-        $isProspect = $ticket->client?->stage === ClientStage::Prospect;
-
         if (
-            ! $isProspect
-            && $isTerminal
+            $isTerminal
             && $becameTerminalOrResolutionChanged
             && filled($ticket->resolution)
             && WikiConfig::autoMineEnabled()
@@ -92,8 +81,7 @@ class TicketObserver
         // writes `resolution` (status unchanged), this branch does NOT re-fire → no loop.
         // The mining branch above uses wasChanged('resolution'), so it DOES fire on that save.
         if (
-            ! $isProspect
-            && $isTerminal
+            $isTerminal
             && $ticket->wasChanged('status')
             && empty($ticket->resolution)
             && WikiConfig::autoMineEnabled()
