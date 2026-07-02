@@ -161,7 +161,7 @@ class TicketService
         });
     }
 
-    public function addNote(Ticket $ticket, string $body, NoteType $type, bool $isPrivate, int $authorUserId, ?int $timeMinutes = null, ?int $emailId = null, ?bool $isBillable = null, ?int $contractId = null): TicketNote
+    public function addNote(Ticket $ticket, string $body, NoteType $type, bool $isPrivate, int $authorUserId, ?int $timeMinutes = null, ?int $emailId = null, ?bool $isBillable = null, ?int $contractId = null, bool $aiAuthored = false): TicketNote
     {
         // Auto-determine billability if time is logged and no explicit override
         if ($timeMinutes && $isBillable === null) {
@@ -180,6 +180,7 @@ class TicketService
             'is_billable' => $isBillable,
             'time_minutes' => $timeMinutes,
             'noted_at' => now(),
+            'ai_authored' => $aiAuthored,
         ]);
 
         // Auto-set responded_at on first public reply

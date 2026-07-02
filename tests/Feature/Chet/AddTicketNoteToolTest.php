@@ -92,7 +92,10 @@ class AddTicketNoteToolTest extends TestCase
         $this->assertSame($body, $note->body);
         $this->assertSame(NoteType::Note, $note->note_type);
         $this->assertTrue((bool) $note->is_private);
-        $this->assertFalse((bool) $note->ai_authored);
+        // fc0y item 2: Chet's notes are AI-authored — the flag keeps the
+        // Technician's human-touch signals (e.g. EmergencySweep::hasHumanTouch)
+        // from misreading a Chet note as "a human already engaged".
+        $this->assertTrue((bool) $note->ai_authored);
 
         $audit = McpAuditLog::where('method', 'tools/call')
             ->where('tool_name', 'add_ticket_note')
@@ -193,7 +196,9 @@ class AddTicketNoteToolTest extends TestCase
         $names = $this->listToolNames($token);
         $this->assertContains('add_ticket_note', $names);
         $this->assertNotContains('create_ticket', $names);
-        $this->assertNotContains('propose_close', $names);
+        // Spike-2: propose_close is allowed-when-scoped (held-by-construction);
+        // full behavior is covered in ChetProposeCloseTest.
+        $this->assertContains('propose_close', $names);
 
         $client = Client::factory()->create();
         $before = Ticket::count();
@@ -218,7 +223,10 @@ class AddTicketNoteToolTest extends TestCase
 
         $propose->assertOk();
         $this->assertTrue((bool) $propose->json('result.isError'));
-        $this->assertStringContainsString('not allowed for this token', (string) $propose->json('result.content.0.text'));
+        // Spike-2: propose_close is scope-allowed for chet tokens but stays
+        // client-scoped — without client_id the write guard rejects it.
+        $this->assertStringContainsString('client_id is required', (string) $propose->json('result.content.0.text'));
+        $this->assertSame(0, \App\Models\TechnicianRun::count());
     }
 
     public function test_chet_private_note_is_not_visible_in_client_portal(): void

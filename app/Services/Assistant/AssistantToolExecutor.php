@@ -322,6 +322,12 @@ class AssistantToolExecutor
             return ['error' => 'Ticket not found'];
         }
 
+        // When a client context is provided (e.g. Chet's client-scoped calls),
+        // the ticket must belong to that client — mirrors addTicketNote's guard.
+        if ($this->clientId !== null && $ticket->client_id !== $this->clientId) {
+            return ['error' => 'Ticket not found or belongs to a different client'];
+        }
+
         if (! $ticket->client_id || ! $ticket->client) {
             return ['error' => 'Ticket has no valid client'];
         }
@@ -556,8 +562,11 @@ class AssistantToolExecutor
         }
 
         try {
+            // aiAuthored: every note through this executor is AI-authored
+            // (Chet via MCP, the Teams teammate) — the flag keeps the
+            // Technician's human-touch signals from misreading it as a human.
             $note = app(TicketService::class)->addNote(
-                $ticket, $body, NoteType::Note, true, $this->userId
+                $ticket, $body, NoteType::Note, true, $this->userId, aiAuthored: true
             );
 
             Log::info('[Assistant] AI added note to ticket', [
