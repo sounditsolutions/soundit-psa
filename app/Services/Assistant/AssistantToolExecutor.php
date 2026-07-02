@@ -257,6 +257,18 @@ class AssistantToolExecutor
             ->limit(20)
             ->get();
 
+        // Last-activity: the most recent MEANINGFUL touch — last reply to the
+        // client, last note, or last call. Deliberately NOT updated_at, which
+        // an AI/system write bumps to "now" and would mask staleness (psa-m7re).
+        // The close decision hinges on "when did anyone last actually touch this".
+        // Calls use a direct max — the display collection is ASC-limited to 20,
+        // so on a >20-call ticket its max would miss the latest call.
+        $lastActivityAt = collect([
+            $ticket->responded_at,
+            $notes->max('noted_at'),
+            PhoneCall::where('ticket_id', $ticketId)->max('started_at'),
+        ])->filter()->map(fn ($t) => $t instanceof \Carbon\CarbonInterface ? $t : \Illuminate\Support\Carbon::parse($t))->max() ?? $ticket->created_at;
+
         return [
             'id' => $ticket->id,
             'display_id' => $ticket->display_id,
@@ -270,12 +282,14 @@ class AssistantToolExecutor
             'source' => $ticket->source?->value,
             'type' => $ticket->type?->value,
             'created_at' => $ticket->created_at?->toDateTimeString(),
+            'responded_at' => $ticket->responded_at?->toDateTimeString(),
+            'last_activity_at' => $lastActivityAt?->toDateTimeString(),
             'resolved_at' => $ticket->resolved_at?->toDateTimeString(),
             'resolution' => $ticket->resolution,
             'recent_notes' => $notes->map(fn (TicketNote $n) => [
                 'type' => $n->note_type?->value,
                 'author' => $n->author?->name ?? $n->author_name ?? 'System',
-                'body' => mb_substr(strip_tags($n->body ?? ''), 0, 500),
+                'body' => mb_substr(strip_tags($n->body ?? ''), 0, 2000),
                 'date' => $n->noted_at?->toDateTimeString(),
             ])->toArray(),
             // Compact call summary; full transcripts via get_ticket_calls.
@@ -471,15 +485,22 @@ class AssistantToolExecutor
             return ['error' => 'Ticket not found or belongs to a different client'];
         }
 
+        // Latest notes, not oldest: fetch the newest 20 then present them
+        // chronologically. The old ASC+limit dropped the tail on busy tickets,
+        // so "what did the client say last" could be absent entirely (psa-m7re).
         $notes = TicketNote::where('ticket_id', $ticketId)
-            ->orderBy('noted_at')
+            ->orderByDesc('noted_at')
             ->limit(20)
-            ->get();
+            ->get()
+            ->sortBy('noted_at')
+            ->values();
 
         return $notes->map(fn (TicketNote $n) => [
             'type' => $n->note_type?->value,
             'author' => $n->author?->name ?? $n->author_name ?? 'System',
-            'body' => mb_substr(strip_tags($n->body ?? ''), 0, 1000),
+            // Generous cap: a full final client message must not be clipped
+            // mid-sentence when a close decision hinges on it.
+            'body' => mb_substr(strip_tags($n->body ?? ''), 0, 4000),
             'date' => $n->noted_at?->toDateTimeString(),
             'is_private' => $n->is_private,
         ])->toArray();
