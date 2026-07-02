@@ -4,6 +4,7 @@ namespace Tests\Feature\Mcp;
 
 use App\Models\McpToken;
 use App\Models\Setting;
+use App\Models\SignalDestination;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
 use Tests\TestCase;
@@ -36,6 +37,18 @@ class McpTokenModelTest extends TestCase
         McpToken::create(['label' => 'dead', 'token_hash' => 'h2', 'tools' => ['a'], 'revoked_at' => now()]);
 
         $this->assertSame(['live'], McpToken::query()->active()->pluck('label')->all());
+    }
+
+    public function test_directive_defaults_and_signal_destinations_are_label_scoped(): void
+    {
+        $token = McpToken::create(['label' => 'chet', 'token_hash' => 'h1', 'tools' => ['a']]);
+        SignalDestination::create(['label' => 'Chet inbox', 'type' => 'mcp', 'mcp_token_label' => 'chet']);
+        SignalDestination::create(['label' => 'Other inbox', 'type' => 'mcp', 'mcp_token_label' => 'other']);
+
+        $this->assertSame(McpToken::defaultDirective(), $token->directiveOrDefault());
+        $token->forceFill(['directive' => 'Use Chet rules.'])->save();
+        $this->assertSame('Use Chet rules.', $token->fresh()->directiveOrDefault());
+        $this->assertSame(['Chet inbox'], $token->fresh()->signalDestinations()->pluck('label')->all());
     }
 
     public function test_import_legacy_blob_folds_encrypted_setting_records(): void

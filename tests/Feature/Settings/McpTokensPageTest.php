@@ -37,13 +37,64 @@ class McpTokensPageTest extends TestCase
     public function test_index_lists_tokens_and_renders_registry_checkboxes(): void
     {
         McpConfig::rotateStaffToken(allowedTools: ['find_staff', 'get_staff'], label: 'chet');
+        $token = McpToken::where('label', 'chet')->firstOrFail();
 
         $this->actingAs($this->user)
             ->get(route('settings.mcp-tokens.index'))
             ->assertOk()
             ->assertSee('chet')
+            ->assertSee(route('settings.mcp-tokens.show', $token), false)
             ->assertSee('post_to_operator')
             ->assertSee('list_open_tickets');
+    }
+
+    public function test_detail_page_shows_tools_directive_and_audit_log(): void
+    {
+        McpConfig::rotateStaffToken(allowedTools: ['find_staff'], label: 'chet');
+        $token = McpToken::where('label', 'chet')->firstOrFail();
+        McpAuditLog::create([
+            'server_name' => 'staff',
+            'method' => 'tools/call',
+            'tool_name' => 'find_staff',
+            'arguments' => [],
+            'status' => 'success',
+            'duration_ms' => 1,
+            'actor_label' => 'mcp-staff:chet',
+        ]);
+
+        $this->actingAs($this->user)
+            ->get(route('settings.mcp-tokens.show', $token))
+            ->assertOk()
+            ->assertSee('Directive')
+            ->assertSee('Alerts Hub Destinations')
+            ->assertSee(McpToken::defaultDirective())
+            ->assertSee('find_staff')
+            ->assertSee('tools/call');
+    }
+
+    public function test_detail_page_updates_tools_and_directive(): void
+    {
+        McpConfig::rotateStaffToken(allowedTools: ['find_staff'], label: 'chet');
+        $token = McpToken::where('label', 'chet')->firstOrFail();
+
+        $this->actingAs($this->user)
+            ->patch(route('settings.mcp-tokens.tools', $token), ['tools' => ['get_staff']])
+            ->assertRedirect(route('settings.mcp-tokens.show', $token));
+        $this->assertSame(['get_staff'], $token->fresh()->tools);
+
+        $this->actingAs($this->user)
+            ->patch(route('settings.mcp-tokens.directive', $token), ['directive' => 'Use Chet rules.'])
+            ->assertRedirect(route('settings.mcp-tokens.show', $token));
+        $this->assertSame('Use Chet rules.', $token->fresh()->directive);
+
+        $this->assertDatabaseHas('mcp_audit_logs', [
+            'method' => 'token/tools',
+            'tool_name' => 'chet',
+        ]);
+        $this->assertDatabaseHas('mcp_audit_logs', [
+            'method' => 'token/directive',
+            'tool_name' => 'chet',
+        ]);
     }
 
     public function test_data_surface_read_tools_are_grantable_from_registry_ui(): void

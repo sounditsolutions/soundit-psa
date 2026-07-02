@@ -41,6 +41,8 @@ class McpConfig
         return new McpStaffToken(
             allowedTools: $record->tools === null ? null : self::normalizeToolList($record->tools),
             label: (string) $record->label,
+            id: (int) $record->id,
+            directive: $record->directiveOrDefault(),
         );
     }
 

@@ -286,6 +286,16 @@ Route::middleware('auth')->group(function () {
     Route::post('/settings/staff/{user}/avatar', [StaffController::class, 'updateAvatar'])->middleware('throttle:6,1')->name('settings.staff.avatar.update');
     Route::delete('/settings/staff/{user}/avatar', [StaffController::class, 'destroyAvatar'])->name('settings.staff.avatar.destroy');
 
+    // Settings — MCP Tokens
+    Route::get('/settings/mcp-tokens', [McpTokensController::class, 'index'])->name('settings.mcp-tokens.index');
+    Route::post('/settings/mcp-tokens', [McpTokensController::class, 'store'])->name('settings.mcp-tokens.store');
+    Route::get('/settings/mcp-tokens/{token}', [McpTokensController::class, 'show'])->name('settings.mcp-tokens.show');
+    Route::patch('/settings/mcp-tokens/{token}/tools', [McpTokensController::class, 'updateTools'])->name('settings.mcp-tokens.tools');
+    Route::patch('/settings/mcp-tokens/{token}/directive', [McpTokensController::class, 'updateDirective'])->name('settings.mcp-tokens.directive');
+    Route::post('/settings/mcp-tokens/{token}/signal-destinations', [McpTokensController::class, 'linkSignalDestination'])->name('settings.mcp-tokens.signal-destinations.link');
+    Route::delete('/settings/mcp-tokens/{token}/signal-destinations/{destination}', [McpTokensController::class, 'unlinkSignalDestination'])->name('settings.mcp-tokens.signal-destinations.unlink');
+    Route::delete('/settings/mcp-tokens/{token}', [McpTokensController::class, 'revoke'])->name('settings.mcp-tokens.revoke');
+
     // Contractor Time Pool
     Route::get('/contractors/{user}/time-pool', [ContractorTimePoolController::class, 'show'])->name('contractors.time-pool');
     Route::post('/contractors/{user}/time-pool', [ContractorTimePoolController::class, 'store'])->name('contractors.time-pool.store');
@@ -300,9 +310,6 @@ Route::middleware('auth')->group(function () {
     Route::post('/settings/alerts/routes', [AlertsHubController::class, 'storeRoute'])->name('settings.alerts.routes.store');
     Route::put('/settings/alerts/routes/{route}', [AlertsHubController::class, 'updateRoute'])->name('settings.alerts.routes.update');
     Route::post('/settings/alerts/routes/{route}/toggle', [AlertsHubController::class, 'toggleRoute'])->name('settings.alerts.routes.toggle');
-    Route::get('/settings/mcp-tokens', [McpTokensController::class, 'index'])->name('settings.mcp-tokens.index');
-    Route::post('/settings/mcp-tokens', [McpTokensController::class, 'store'])->name('settings.mcp-tokens.store');
-    Route::delete('/settings/mcp-tokens/{token}', [McpTokensController::class, 'revoke'])->name('settings.mcp-tokens.revoke');
     Route::post('/settings/integrations/toggle', [IntegrationsController::class, 'toggleIntegration'])->name('settings.integrations.toggle');
     Route::post('/settings/integrations/ninja', [IntegrationsController::class, 'updateNinja'])->name('settings.integrations.ninja.update');
     Route::post('/settings/integrations/ninja/test', [IntegrationsController::class, 'testNinja'])->name('settings.integrations.ninja.test');

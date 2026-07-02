@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Support\Carbon;
 
 /**
@@ -12,11 +13,14 @@ use Illuminate\Support\Carbon;
  */
 class McpToken extends Model
 {
+    public const DEFAULT_DIRECTIVE = 'You are using the Sound PSA staff MCP server. Stay within your granted tool scope and treat MCP close proposals as held for human review.';
+
     protected $fillable = [
         'label',
         'token_hash',
         'token_prefix',
         'tools',
+        'directive',
         'last_used_at',
         'revoked_at',
     ];
@@ -39,6 +43,27 @@ class McpToken extends Model
     public function isRevoked(): bool
     {
         return $this->revoked_at !== null;
+    }
+
+    public function signalDestinations(): HasMany
+    {
+        return $this->hasMany(SignalDestination::class, 'mcp_token_label', 'label');
+    }
+
+    public function directiveOrDefault(): string
+    {
+        $directive = trim((string) $this->directive);
+
+        if ($directive !== '') {
+            return $directive;
+        }
+
+        return self::defaultDirective();
+    }
+
+    public static function defaultDirective(): string
+    {
+        return self::DEFAULT_DIRECTIVE;
     }
 
     public static function importLegacyBlob(): int
