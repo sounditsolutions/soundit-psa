@@ -2,6 +2,8 @@
 
 namespace App\Services\Chet;
 
+use App\Models\OperatorInbox;
+use App\Models\Setting;
 use App\Services\Graph\GraphClient;
 use App\Support\TeamsBotConfig;
 use Illuminate\Support\Facades\Log;
@@ -24,7 +26,7 @@ class TeamsChatReadToolset
         return [
             [
                 'name' => 'list_teams_chats',
-                'description' => 'List Teams chats that the configured teammate-chet bot is a member of.',
+                'description' => 'List Teams chats that the configured teammate-chet bot is known to be in from durable PSA state.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -35,7 +37,7 @@ class TeamsChatReadToolset
             ],
             [
                 'name' => 'get_teams_chat_members',
-                'description' => 'List members for a Teams chat only after verifying the configured teammate-chet bot is a member.',
+                'description' => 'List members for a Teams chat only after verifying the chat is known from durable PSA state.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -46,7 +48,7 @@ class TeamsChatReadToolset
             ],
             [
                 'name' => 'get_teams_chat_history',
-                'description' => 'Read recent Teams chat messages only after verifying the configured teammate-chet bot is a member.',
+                'description' => 'Read recent Teams chat messages only after verifying the chat is known from durable PSA state.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -82,37 +84,21 @@ class TeamsChatReadToolset
         }
 
         $limit = $this->boundedLimit($input['limit'] ?? null, 20);
-
-        try {
-            $chats = app(GraphClient::class)->getAllPages(
-                'users/'.$botId.'/chats',
-                ['$top' => min($limit, 50), '$orderby' => 'lastMessagePreview/createdDateTime desc'],
-                1,
-            );
-        } catch (\Throwable $e) {
-            Log::warning('[ChetDataSurface] Teams chat discovery failed', ['error' => $e->getMessage()]);
-
-            return ['error' => 'Teams chat query failed: '.mb_substr($e->getMessage(), 0, 200)];
-        }
+        $knownChatIds = $this->knownConversationIds();
 
         $visible = [];
-        $membershipErrors = 0;
+        $chatFetchErrors = 0;
 
-        foreach ($chats as $chat) {
+        foreach ($knownChatIds as $chatId) {
             if (count($visible) >= $limit) {
                 break;
             }
 
-            $chatId = $this->chatIdFromArray($chat);
-            if ($chatId === null) {
-                continue;
-            }
-
             try {
-                $members = $this->membersForChat($chatId);
+                $chat = app(GraphClient::class)->get("chats/{$chatId}");
             } catch (\Throwable $e) {
-                $membershipErrors++;
-                Log::warning('[ChetDataSurface] Teams chat membership check failed during discovery', [
+                $chatFetchErrors++;
+                Log::warning('[ChetDataSurface] Teams known chat lookup failed during discovery', [
                     'chat_id' => $chatId,
                     'error' => $e->getMessage(),
                 ]);
@@ -120,15 +106,18 @@ class TeamsChatReadToolset
                 continue;
             }
 
-            if ($this->botIsMember($members)) {
+            if (is_array($chat)) {
+                $chat['id'] ??= $chatId;
                 $visible[] = $this->sanitizeChat($chat);
             }
         }
 
         return [
             'count' => count($visible),
-            'filtered_by_bot_membership' => true,
-            'membership_check_errors' => $membershipErrors,
+            'filtered_by_known_conversations' => true,
+            'filtered_by_bot_membership' => false,
+            'chat_fetch_errors' => $chatFetchErrors,
+            'membership_check_errors' => 0,
             'chats' => $visible,
         ];
     }
@@ -140,16 +129,16 @@ class TeamsChatReadToolset
             return ['error' => 'chat_id is required'];
         }
 
+        if (! $this->isKnownConversation($chatId)) {
+            return ['error' => "Teams chat '{$chatId}' denied: not a known Teams conversation"];
+        }
+
         try {
             $members = $this->membersForChat($chatId);
         } catch (\Throwable $e) {
             Log::warning('[ChetDataSurface] Teams chat members query failed', ['chat_id' => $chatId, 'error' => $e->getMessage()]);
 
             return ['error' => 'Teams chat query failed: '.mb_substr($e->getMessage(), 0, 200)];
-        }
-
-        if (! $this->botIsMember($members)) {
-            return ['error' => "Teams chat '{$chatId}' denied: bot is not a member"];
         }
 
         return [
@@ -166,16 +155,8 @@ class TeamsChatReadToolset
             return ['error' => 'chat_id is required'];
         }
 
-        try {
-            $members = $this->membersForChat($chatId);
-        } catch (\Throwable $e) {
-            Log::warning('[ChetDataSurface] Teams chat history membership check failed', ['chat_id' => $chatId, 'error' => $e->getMessage()]);
-
-            return ['error' => 'Teams chat query failed: '.mb_substr($e->getMessage(), 0, 200)];
-        }
-
-        if (! $this->botIsMember($members)) {
-            return ['error' => "Teams chat '{$chatId}' denied: bot is not a member"];
+        if (! $this->isKnownConversation($chatId)) {
+            return ['error' => "Teams chat '{$chatId}' denied: not a known Teams conversation"];
         }
 
         $limit = $this->boundedLimit($input['limit'] ?? null, 20);
@@ -207,59 +188,50 @@ class TeamsChatReadToolset
         return app(GraphClient::class)->getAllPages("chats/{$chatId}/members", [], 2);
     }
 
-    private function botIsMember(array $members): bool
+    /** @return array<int, string> */
+    private function knownConversationIds(): array
     {
-        $botId = $this->botAppId();
-        if ($botId === null) {
-            return false;
-        }
+        $ids = [];
 
-        $botId = mb_strtolower($botId);
-
-        foreach ($members as $member) {
-            foreach ($this->memberIdentityCandidates($member) as $candidate) {
-                if (mb_strtolower($candidate) === $botId) {
-                    return true;
-                }
+        foreach ([TeamsBotConfig::chetConversationId(), TeamsBotConfig::escalationConversationId()] as $id) {
+            if (($id = $this->normalizeChatId($id)) !== null) {
+                $ids[] = $id;
             }
         }
 
-        return false;
+        $inboxIds = OperatorInbox::query()
+            ->select('conversation_id')
+            ->where('conversation_id', '!=', '')
+            ->when($this->conversationContextChangedAt(), fn ($query, string $changedAt) => $query->where('created_at', '>', $changedAt))
+            ->groupBy('conversation_id')
+            ->orderByRaw('MAX(id) DESC')
+            ->pluck('conversation_id')
+            ->all();
+
+        foreach ($inboxIds as $id) {
+            if (($id = $this->normalizeChatId($id)) !== null) {
+                $ids[] = $id;
+            }
+        }
+
+        return array_values(array_unique($ids));
     }
 
-    /** @return array<int, string> */
-    private function memberIdentityCandidates(array $member): array
+    private function conversationContextChangedAt(): ?string
     {
-        $candidates = [];
+        return Setting::query()
+            ->whereIn('key', [
+                'teams_bot_app_id',
+                'teams_bot_tenant_id',
+                'teams_chet_conversation_id',
+                'teams_escalation_conversation_id',
+            ])
+            ->max('updated_at');
+    }
 
-        foreach (['userId', 'applicationId', 'appId', 'teamsAppId'] as $key) {
-            if (isset($member[$key]) && is_scalar($member[$key])) {
-                $candidates[] = trim((string) $member[$key]);
-            }
-        }
-
-        foreach ([
-            ['identity', 'application', 'id'],
-            ['identity', 'user', 'id'],
-            ['application', 'id'],
-            ['teamsApp', 'id'],
-            ['app', 'id'],
-        ] as $path) {
-            $value = $member;
-            foreach ($path as $segment) {
-                if (! is_array($value) || ! array_key_exists($segment, $value)) {
-                    $value = null;
-                    break;
-                }
-                $value = $value[$segment];
-            }
-
-            if (is_scalar($value)) {
-                $candidates[] = trim((string) $value);
-            }
-        }
-
-        return array_values(array_filter($candidates, fn (string $candidate): bool => $candidate !== ''));
+    private function isKnownConversation(string $chatId): bool
+    {
+        return in_array($chatId, $this->knownConversationIds(), true);
     }
 
     private function sanitizeChat(array $chat): array
@@ -362,14 +334,16 @@ class TeamsChatReadToolset
 
     private function chatIdFromInput(array $input): ?string
     {
-        $chatId = trim((string) ($input['chat_id'] ?? ''));
-
-        return $chatId !== '' && ! str_contains($chatId, '/') ? $chatId : null;
+        return $this->normalizeChatId($input['chat_id'] ?? null);
     }
 
-    private function chatIdFromArray(array $chat): ?string
+    private function normalizeChatId(mixed $value): ?string
     {
-        $chatId = trim((string) ($chat['id'] ?? ''));
+        if (! is_scalar($value)) {
+            return null;
+        }
+
+        $chatId = trim((string) $value);
 
         return $chatId !== '' && ! str_contains($chatId, '/') ? $chatId : null;
     }
