@@ -3,7 +3,11 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use LogicException;
 
+/**
+ * Append-only activity/audit row for Alerts Hub destination and route changes.
+ */
 class SignalConfigLog extends Model
 {
     protected $table = 'signal_config_log';
@@ -23,6 +27,17 @@ class SignalConfigLog extends Model
         return [
             'changes' => 'array',
         ];
+    }
+
+    protected static function booted(): void
+    {
+        static::updating(function (self $log): void {
+            throw new LogicException('signal_config_log is append-only');
+        });
+
+        static::deleting(function (self $log): void {
+            throw new LogicException('signal_config_log is append-only');
+        });
     }
 
     public static function record(?int $userId, string $action, Model $subject, array $changes): void

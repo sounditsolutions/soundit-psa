@@ -6,6 +6,7 @@ use App\Models\SignalConfigLog;
 use App\Models\SignalDestination;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use LogicException;
 use Tests\TestCase;
 
 class SignalDestinationModelTest extends TestCase
@@ -51,5 +52,73 @@ class SignalDestinationModelTest extends TestCase
             ['label' => 'Ops webhook'],
             SignalConfigLog::query()->firstOrFail()->changes,
         );
+    }
+
+    public function test_config_log_is_append_only_at_the_model_layer(): void
+    {
+        $destination = SignalDestination::create([
+            'label' => 'Ops webhook',
+            'type' => 'webhook',
+            'address' => 'https://x.example/hook',
+        ]);
+
+        SignalConfigLog::record(null, 'created', $destination, ['label' => 'Ops webhook']);
+        $row = SignalConfigLog::query()->firstOrFail();
+
+        $this->expectException(LogicException::class);
+
+        $row->update(['action' => 'tampered']);
+    }
+
+    public function test_config_log_delete_is_blocked_at_the_model_layer(): void
+    {
+        $destination = SignalDestination::create([
+            'label' => 'Ops webhook',
+            'type' => 'webhook',
+            'address' => 'https://x.example/hook',
+        ]);
+
+        SignalConfigLog::record(null, 'created', $destination, ['label' => 'Ops webhook']);
+        $row = SignalConfigLog::query()->firstOrFail();
+
+        $this->expectException(LogicException::class);
+
+        $row->delete();
+    }
+
+    public function test_config_log_db_triggers_block_raw_update_and_delete(): void
+    {
+        $driver = DB::connection()->getDriverName();
+        if (! in_array($driver, ['mysql', 'mariadb'], true)) {
+            $this->markTestSkipped("DB triggers are MariaDB/MySQL-only; driver is [{$driver}]. Model guard covers SQLite.");
+        }
+
+        $destination = SignalDestination::create([
+            'label' => 'Ops webhook',
+            'type' => 'webhook',
+            'address' => 'https://x.example/hook',
+        ]);
+
+        SignalConfigLog::record(null, 'created', $destination, ['label' => 'Ops webhook']);
+        $row = SignalConfigLog::query()->firstOrFail();
+
+        try {
+            DB::table('signal_config_log')->where('id', $row->id)->update(['action' => 'tampered']);
+            $this->fail('Expected the BEFORE UPDATE trigger to block a raw update');
+        } catch (\Illuminate\Database\QueryException $e) {
+            $this->assertStringContainsStringIgnoringCase('append-only', $e->getMessage());
+        }
+
+        try {
+            DB::table('signal_config_log')->where('id', $row->id)->delete();
+            $this->fail('Expected the BEFORE DELETE trigger to block a raw delete');
+        } catch (\Illuminate\Database\QueryException $e) {
+            $this->assertStringContainsStringIgnoringCase('append-only', $e->getMessage());
+        }
+
+        $this->assertDatabaseHas('signal_config_log', [
+            'id' => $row->id,
+            'action' => 'created',
+        ]);
     }
 }
