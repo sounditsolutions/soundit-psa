@@ -498,10 +498,12 @@ The AI Technician pipeline runs up to 3 LLM round-trips per ticket and must not 
 Copy the bundled unit file and enable it:
 
 ```bash
-sudo cp /var/www/psa/deploy/soundit-psa-technician-queue.service /etc/systemd/system/
+sudo cp /var/www/soundit-psa/deploy/soundit-psa-technician-queue.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now soundit-psa-technician-queue
 ```
+
+The bundled unit assumes the app is installed at `/var/www/soundit-psa`. If your deployment uses a different path, edit `WorkingDirectory` and `ExecStart` before `systemctl daemon-reload`.
 
 > **IMPORTANT — enablement order:** the `technician` worker **MUST** be running before you flip `technician_enabled` or `technician_emergency_enabled` to `1` in Settings. Enabling the full Technician before the worker is up will leave Loop jobs silently queued with no processor; enabling the emergency backstop before the worker is up will trip the worker heartbeat alert.
 

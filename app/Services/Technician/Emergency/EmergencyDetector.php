@@ -23,13 +23,10 @@ class EmergencyDetector
         $reasons = [];
         $severity = $aiSeverity;
 
-        // Age: open + not yet responded to, older than the per-priority floor — but
-        // ONLY for tickets OPENED during the coverage window (psa-wmqp, the flood root
-        // cause). When coverage_start is unset (null) the age signal is unanchored,
-        // preserving the isolated-unit contract; prod stamps it on enable, so a
-        // pre-existing backlog (all opened before coverage) never trips the age rule.
-        // Keyword + SLA below stay always-on. coverageStartAt() is a pure read — the
-        // detector remains side-effect free.
+        // Age: open + not yet responded to, older than the per-priority floor. The
+        // isolated detector still anchors age only; EmergencySweep gates pre-coverage
+        // tickets before assessment so keyword/SLA cannot enable-time flood backlog.
+        // coverageStartAt() is a pure read — the detector remains side-effect free.
         $opened = $ticket->opened_at ?? $ticket->created_at;
         $ageMin = TechnicianConfig::emergencyAgeMinutes($this->priorityOf($ticket));
         $coverageStart = TechnicianConfig::coverageStartAt();

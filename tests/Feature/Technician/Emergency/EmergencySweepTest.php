@@ -56,6 +56,11 @@ class EmergencySweepTest extends TestCase
         ]);
     }
 
+    private function startCoverageBeforeAgedTickets(): void
+    {
+        Setting::setValue('technician_coverage_start_at', now()->subHours(2)->toIso8601String());
+    }
+
     public function test_disabled_does_nothing(): void
     {
         $this->mock(OperatorNotifier::class, fn (MockInterface $m) => $m->shouldReceive('notifyUser')->never());
@@ -68,6 +73,7 @@ class EmergencySweepTest extends TestCase
     public function test_detects_and_escalates_an_aged_p1(): void
     {
         Setting::setValue('technician_enabled', '1');
+        $this->startCoverageBeforeAgedTickets();
         $justin = User::factory()->create();
         Setting::setValue('technician_escalation_chain', json_encode([$justin->id]));
         $this->agedP1($this->operationalClient());
@@ -84,6 +90,7 @@ class EmergencySweepTest extends TestCase
     {
         Setting::setValue('technician_enabled', '0');
         Setting::setValue('technician_emergency_enabled', '1');
+        $this->startCoverageBeforeAgedTickets();
         $justin = User::factory()->create();
         Setting::setValue('technician_escalation_chain', json_encode([$justin->id]));
         $this->agedP1($this->operationalClient());
@@ -105,6 +112,7 @@ class EmergencySweepTest extends TestCase
     public function test_co1_aged_ticket_is_not_redetected_into_a_second_emergency(): void
     {
         Setting::setValue('technician_enabled', '1');
+        $this->startCoverageBeforeAgedTickets();
         $justin = User::factory()->create();
         Setting::setValue('technician_escalation_chain', json_encode([$justin->id]));
         $this->agedP1($this->operationalClient());
@@ -256,6 +264,7 @@ class EmergencySweepTest extends TestCase
     public function test_sends_max_hold_when_whole_chain_unreachable(): void
     {
         Setting::setValue('technician_enabled', '1');
+        $this->startCoverageBeforeAgedTickets();
         Setting::setValue('technician_action_tiers', json_encode(['send_max_hold' => 'auto']));
         $actor = User::factory()->create(['name' => 'Chet']);
         Setting::setValue('triage_system_user_id', (string) $actor->id);
@@ -305,6 +314,7 @@ class EmergencySweepTest extends TestCase
     public function test_sends_max_hold_when_whole_chain_is_deleted_users(): void
     {
         Setting::setValue('technician_enabled', '1');
+        $this->startCoverageBeforeAgedTickets();
         Setting::setValue('technician_action_tiers', json_encode(['send_max_hold' => 'auto']));
         $actor = User::factory()->create(['name' => 'Chet']);
         Setting::setValue('triage_system_user_id', (string) $actor->id);
@@ -374,6 +384,73 @@ class EmergencySweepTest extends TestCase
         $this->artisan('technician:emergency-sweep')->assertSuccessful();
 
         $this->assertSame(0, TechnicianEmergency::count(), 'a pre-existing aged backlog ticket must not flood on enable');
+    }
+
+    /**
+     * THE ENABLE-TIME FLOOD REGRESSION (psa-3d7h). Coverage_start is the boundary
+     * between "pre-existing backlog the operator already knows about" and "new while
+     * away." That boundary has to gate ALL rule signals at sweep time, not just age:
+     * old keyword and SLA-breached tickets must stay quiet on the first enabled tick.
+     */
+    public function test_enable_time_backlog_keyword_and_sla_tickets_do_not_page(): void
+    {
+        Setting::setValue('technician_enabled', '1');
+        Setting::setValue('technician_coverage_start_at', now()->toIso8601String());
+        $justin = User::factory()->create();
+        Setting::setValue('technician_escalation_chain', json_encode([$justin->id]));
+
+        $client = $this->operationalClient();
+
+        Ticket::factory()->create([
+            'client_id' => $client->id,
+            'status' => TicketStatus::New->value,
+            'priority' => TicketPriority::P1->value,
+            'opened_at' => now()->subHours(2),
+            'responded_at' => null,
+            'subject' => 'Site OUTAGE from before coverage',
+            'description' => 'This backlog ticket has an emergency keyword.',
+        ]);
+
+        Ticket::factory()->create([
+            'client_id' => $client->id,
+            'status' => TicketStatus::New->value,
+            'priority' => TicketPriority::P1->value,
+            'opened_at' => now()->subHours(2),
+            'responded_at' => null,
+            'response_due_at' => now()->subHour(),
+            'subject' => 'Pre-existing SLA breach',
+            'description' => 'This backlog ticket predates emergency coverage.',
+        ]);
+
+        $this->mock(OperatorNotifier::class, fn (MockInterface $m) => $m->shouldReceive('notifyUser')->never());
+
+        $this->artisan('technician:emergency-sweep')->assertSuccessful();
+
+        $this->assertSame(0, TechnicianEmergency::count(), 'pre-coverage keyword/SLA backlog must not page on enable');
+    }
+
+    public function test_live_keyword_ticket_opened_during_coverage_still_pages(): void
+    {
+        Setting::setValue('technician_enabled', '1');
+        Setting::setValue('technician_coverage_start_at', now()->subMinute()->toIso8601String());
+        $justin = User::factory()->create();
+        Setting::setValue('technician_escalation_chain', json_encode([$justin->id]));
+
+        Ticket::factory()->create([
+            'client_id' => $this->operationalClient()->id,
+            'status' => TicketStatus::New->value,
+            'priority' => TicketPriority::P4->value,
+            'opened_at' => now(),
+            'responded_at' => null,
+            'subject' => 'New OUTAGE during coverage',
+            'description' => 'This arrived while the backstop is covering.',
+        ]);
+
+        $this->mock(OperatorNotifier::class, fn (MockInterface $m) => $m->shouldReceive('notifyUser')->atLeast()->once());
+
+        $this->artisan('technician:emergency-sweep')->assertSuccessful();
+
+        $this->assertSame(1, TechnicianEmergency::count(), 'live keyword tickets during coverage must still page');
     }
 
     /**

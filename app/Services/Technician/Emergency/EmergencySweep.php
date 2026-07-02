@@ -10,6 +10,7 @@ use App\Models\TechnicianEmergency;
 use App\Models\Ticket;
 use App\Models\TicketNote;
 use App\Support\TechnicianConfig;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -20,8 +21,9 @@ use Illuminate\Support\Facades\Log;
  *   (1) SCAN candidate tickets (operational clients only — CO-10; never a prospect),
  *       skipping any ticket already in an open emergency (CO-1 — the open-emergency
  *       skip is the re-detection dedup; the grouper's storm window is only the
- *       clustering key). Each surviving candidate is assessed by the deterministic
- *       EmergencyDetector and, when it IS an emergency, grouped/created.
+ *       clustering key) and any ticket opened before coverage_start. Each surviving
+ *       candidate is assessed by the deterministic EmergencyDetector and, when it IS
+ *       an emergency, grouped/created.
  *
  *   (2) DRIVE each open emergency, fail-soft per emergency (one bad emergency never
  *       aborts the sweep):
@@ -52,7 +54,7 @@ class EmergencySweep
 
     public function run(): void
     {
-        // psa-wmqp: anchor the age signal to a coverage window. ensureCoverageStart()
+        // psa-wmqp/psa-3d7h: anchor the scan to a coverage window. ensureCoverageStart()
         // is a defensive backfill for the upgrade case — a subsystem already enabled
         // before this fix shipped never got a coverage_start stamped by the toggle, so
         // stamp it on the first tick. It is idempotent (no-op once set) and only runs
@@ -69,15 +71,17 @@ class EmergencySweep
 
     /**
      * (1) Detect: every open ticket on an OPERATIONAL client that is NOT already in
-     * an open emergency and NOT on an excluded client. Each survivor is assessed;
-     * an emergency is grouped/created.
+     * an open emergency, NOT on an excluded client, and NOT older than the coverage
+     * anchor. Each survivor is assessed; an emergency is grouped/created.
      */
     private function scan(): void
     {
+        $coverageStart = TechnicianConfig::coverageStartAt();
+
         Ticket::query()
             ->open()
             ->whereHas('client', fn ($q) => $q->operational())
-            ->each(function (Ticket $ticket): void {
+            ->each(function (Ticket $ticket) use ($coverageStart): void {
                 // CO-1 (HARD): a ticket already in an open emergency is skipped BEFORE
                 // the grouper — otherwise a still-aged still-untouched ticket at minute
                 // 16 (past the 15m storm window) would spawn a SECOND emergency, i.e. a
@@ -92,11 +96,29 @@ class EmergencySweep
                     return;
                 }
 
+                // psa-3d7h: coverage_start is the enable-time boundary for ALL rule
+                // signals. Pre-existing backlog was already visible to the operator; do
+                // not let keyword or SLA signals retroactively page it on the first tick.
+                if ($this->openedBeforeCoverage($ticket, $coverageStart)) {
+                    return;
+                }
+
                 $assessment = $this->detector->assess($ticket);
                 if ($assessment->isEmergency) {
                     $this->grouper->groupOrCreate($ticket, $assessment);
                 }
             });
+    }
+
+    private function openedBeforeCoverage(Ticket $ticket, ?Carbon $coverageStart): bool
+    {
+        if ($coverageStart === null) {
+            return false;
+        }
+
+        $opened = $ticket->opened_at ?? $ticket->created_at;
+
+        return $opened === null || $opened->lt($coverageStart);
     }
 
     /** (2) Drive every open emergency, isolating failures per emergency. */
