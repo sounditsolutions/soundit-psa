@@ -71,6 +71,23 @@ class WikiPageService
         });
     }
 
+    /** Returns the same instance refresh()ed, so attributes and loaded relations reflect the committed state. */
+    public function updateContent(WikiPage $page, string $title, string $bodyMd, array $meta, WikiAuthorType $author, ?int $authorId, string $changeSummary, ?array $sourceRefs = null): WikiPage
+    {
+        return DB::transaction(function () use ($page, $title, $bodyMd, $meta, $author, $authorId, $changeSummary, $sourceRefs) {
+            $page->update([
+                'title' => $title,
+                'body_md' => $bodyMd,
+                'meta' => $meta,
+            ]);
+
+            $this->writeRevision($page, $author, $authorId, $changeSummary, $sourceRefs);
+            $this->rebuildLinks($page);
+
+            return $page->refresh();
+        });
+    }
+
     public function archive(WikiPage $page, WikiAuthorType $author, ?int $authorId): void
     {
         DB::transaction(function () use ($page, $author, $authorId) {

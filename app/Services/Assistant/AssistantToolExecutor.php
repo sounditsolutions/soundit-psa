@@ -20,6 +20,7 @@ use App\Services\Ninja\NinjaClient;
 use App\Services\TicketService;
 use App\Services\Wiki\HandlesWikiTools;
 use App\Services\Wiki\WikiAddFactTool;
+use App\Services\Wiki\WikiPageAuthoringTool;
 use App\Support\CippConfig;
 use Illuminate\Support\Facades\Log;
 
@@ -58,6 +59,9 @@ class AssistantToolExecutor
         $logInput = $input;
         if ($toolName === 'wiki_add_fact' && array_key_exists('statement', $logInput)) {
             $logInput['statement'] = '[wiki fact statement withheld]';
+        }
+        if (in_array($toolName, ['wiki_create_page', 'wiki_update_page'], true) && array_key_exists('body_md', $logInput)) {
+            $logInput['body_md'] = '[wiki page body withheld]';
         }
 
         Log::debug('[Assistant] Tool call', [
@@ -136,6 +140,8 @@ class AssistantToolExecutor
             'wiki_search' => $this->wikiSearch($input),
             'wiki_get_page' => $this->wikiGetPage($input),
             'wiki_add_fact' => app(WikiAddFactTool::class)->execute($input, $this->clientId, $this->userId),
+            'wiki_create_page' => app(WikiPageAuthoringTool::class)->create($input, $this->clientId, $this->userId),
+            'wiki_update_page' => app(WikiPageAuthoringTool::class)->update($input, $this->clientId, $this->userId),
 
             default => ['error' => "Unknown tool: {$toolName}"],
         };

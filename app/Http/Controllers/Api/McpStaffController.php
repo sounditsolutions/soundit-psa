@@ -65,6 +65,21 @@ class McpStaffController extends Controller
 
     private const WIKI_FACT_STATEMENT_AUDIT_PLACEHOLDER = '[wiki fact statement withheld]';
 
+    private const WIKI_PAGE_TITLE_AUDIT_PLACEHOLDER = '[wiki page title withheld]';
+
+    private const WIKI_PAGE_BODY_AUDIT_PLACEHOLDER = '[wiki page body withheld]';
+
+    private const WIKI_WRITE_TOOLS = [
+        'wiki_add_fact',
+        'wiki_create_page',
+        'wiki_update_page',
+    ];
+
+    private const WIKI_PAGE_AUTHORING_TOOLS = [
+        'wiki_create_page',
+        'wiki_update_page',
+    ];
+
     public function handle(Request $request): JsonResponse
     {
         $body = $request->json()->all() ?? [];
@@ -160,7 +175,12 @@ class McpStaffController extends Controller
         // to know about MCP.
         $generalTools = array_merge(
             AssistantToolDefinitions::getTools(hasClient: false),
-            [McpToolRegistry::proposeCloseTool(), McpToolRegistry::wikiAddFactTool()],
+            [
+                McpToolRegistry::proposeCloseTool(),
+                McpToolRegistry::wikiAddFactTool(),
+                McpToolRegistry::wikiCreatePageTool(),
+                McpToolRegistry::wikiUpdatePageTool(),
+            ],
             ChetDataSurfaceTools::generalTools(),
             OperatorBridgeTools::definitions(),
         );
@@ -263,6 +283,20 @@ class McpStaffController extends Controller
 
         if ($this->isWikiGlobalScopeWrite((string) $name, $arguments) && $hasClientIdArgument) {
             $message = 'client_id must be omitted for wiki_add_fact global-scope writes.';
+            $this->audit('tools/call', (string) $name, $arguments, 'error', $message, $start, $request);
+
+            return response()->json([
+                'jsonrpc' => '2.0',
+                'id' => $id,
+                'result' => [
+                    'content' => [['type' => 'text', 'text' => $message]],
+                    'isError' => true,
+                ],
+            ]);
+        }
+
+        if ($this->isWikiPageAuthoringWrite((string) $name) && $hasClientIdArgument) {
+            $message = 'client_id must be omitted for wiki page authoring writes.';
             $this->audit('tools/call', (string) $name, $arguments, 'error', $message, $start, $request);
 
             return response()->json([
@@ -433,6 +467,10 @@ class McpStaffController extends Controller
             return $this->auditWikiAddFactArguments($redacted);
         }
 
+        if ($this->isWikiPageAuthoringWrite((string) $tool)) {
+            return $this->auditWikiPageAuthoringArguments($redacted);
+        }
+
         return $redacted;
     }
 
@@ -476,6 +514,30 @@ class McpStaffController extends Controller
         return $safe;
     }
 
+    /** @return array<string, mixed> */
+    private function auditWikiPageAuthoringArguments(array $arguments): array
+    {
+        $safe = [];
+
+        foreach ($arguments as $key => $value) {
+            $normalized = mb_strtolower((string) $key);
+
+            if (in_array($normalized, ['slug', 'change_summary'], true)) {
+                $safe[$normalized] = $value;
+            }
+
+            if ($normalized === 'title') {
+                $safe['title'] = self::WIKI_PAGE_TITLE_AUDIT_PLACEHOLDER;
+            }
+
+            if ($normalized === 'body_md') {
+                $safe['body_md'] = self::WIKI_PAGE_BODY_AUDIT_PLACEHOLDER;
+            }
+        }
+
+        return $safe;
+    }
+
     private function positiveIntegerArgument(mixed $value): ?int
     {
         if (is_int($value)) {
@@ -500,7 +562,7 @@ class McpStaffController extends Controller
             return false;
         }
 
-        if ($toolName === 'wiki_add_fact') {
+        if (in_array($toolName, self::WIKI_WRITE_TOOLS, true)) {
             return $token->allowedTools !== null && $token->allows($toolName);
         }
 
@@ -532,7 +594,7 @@ class McpStaffController extends Controller
 
     private function isChetAiActorWrite(Request $request, string $toolName): bool
     {
-        return in_array($toolName, ['add_ticket_note', 'wiki_add_fact'], true)
+        return (in_array($toolName, ['add_ticket_note'], true) || in_array($toolName, self::WIKI_WRITE_TOOLS, true))
             && $this->isChetToken($request);
     }
 
@@ -553,6 +615,11 @@ class McpStaffController extends Controller
     {
         return $toolName === 'wiki_add_fact'
             && mb_strtolower(trim((string) ($arguments['scope'] ?? ''))) === 'global';
+    }
+
+    private function isWikiPageAuthoringWrite(string $toolName): bool
+    {
+        return in_array($toolName, self::WIKI_PAGE_AUTHORING_TOOLS, true);
     }
 
     private function requiredChetAiActorUserId(): int
