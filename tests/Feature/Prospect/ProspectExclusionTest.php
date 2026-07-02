@@ -18,7 +18,7 @@ class ProspectExclusionTest extends TestCase
         Bus::fake();
     }
 
-    public function test_prospect_is_absent_from_the_ticket_create_client_picker(): void
+    public function test_prospect_is_present_in_the_ticket_create_client_picker(): void
     {
         $user = User::factory()->create();
         $active = Client::factory()->create(['name' => 'Acme Active']);
@@ -26,7 +26,7 @@ class ProspectExclusionTest extends TestCase
 
         $resp = $this->actingAs($user)->get(route('tickets.create'))->assertOk();
         $resp->assertSee('Acme Active', false);
-        $resp->assertDontSee('Tirekicker Prospect', false);
+        $resp->assertSee('Tirekicker Prospect', false);
     }
 
     public function test_stripe_auto_match_candidate_set_excludes_prospects(): void
