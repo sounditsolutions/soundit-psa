@@ -33,6 +33,9 @@ use LogicException;
  * agent loop (it is intentionally absent from TechnicianAgent's $tools). A2b wires it
  * in atomically with the DraftPipeline reply-branch subsumption, so the two never
  * double-produce a held reply.
+ *
+ * MCP/staff uses executeHeld(): if Chet supplies a body, that body is held verbatim
+ * for cockpit review with attribution and no native drafter token spend.
  */
 class SendReplyTool
 {
@@ -71,6 +74,37 @@ class SendReplyTool
      */
     public function execute(Ticket $ticket, array $input, ?array $correctionContext = null): string
     {
+        return $this->executeInternal(
+            ticket: $ticket,
+            input: $input,
+            correctionContext: $correctionContext,
+            allowSuppliedBody: false,
+            draftedBy: 'technician-drafter',
+        );
+    }
+
+    /**
+     * Create a held reply draft from MCP/staff. A supplied body is held verbatim
+     * for cockpit approval; bodyless calls preserve the native drafter fallback.
+     */
+    public function executeHeld(Ticket $ticket, array $input, string $draftedBy): string
+    {
+        return $this->executeInternal(
+            ticket: $ticket,
+            input: $input,
+            correctionContext: null,
+            allowSuppliedBody: true,
+            draftedBy: $draftedBy,
+        );
+    }
+
+    private function executeInternal(
+        Ticket $ticket,
+        array $input,
+        ?array $correctionContext,
+        bool $allowSuppliedBody,
+        string $draftedBy,
+    ): string {
         $reason = trim((string) ($input['reason'] ?? ''));
 
         // "Should I reply at all?" — carried from DraftPipeline. Only draft when there is
@@ -80,19 +114,27 @@ class SendReplyTool
             return "Left ticket #{$ticket->id} (nothing unaddressed to reply to).";
         }
 
-        // The BODY comes from the fenced + output-scanned drafter — never the model. A
-        // null draft means the drafter declined or the output scan quarantined it.
-        $draft = $this->replyDrafter->draft($ticket, TechnicianConfig::aiActorName());
-        if ($draft === null) {
-            return "Left ticket #{$ticket->id} (no reply drafted).";
+        $body = null;
+        $to = null;
+        $tokensUsed = 0;
+        if ($allowSuppliedBody && array_key_exists('body', $input) && is_string($input['body']) && trim($input['body']) !== '') {
+            $body = $input['body'];
+        } else {
+            // The BODY comes from the fenced + output-scanned drafter. A null draft means
+            // the drafter declined or the output scan quarantined it.
+            $draft = $this->replyDrafter->draft($ticket, TechnicianConfig::aiActorName());
+            if ($draft === null) {
+                return "Left ticket #{$ticket->id} (no reply drafted).";
+            }
+
+            $body = $draft->body;
+            $to = $draft->to;
+            $tokensUsed = $draft->tokensUsed;
+            $draftedBy = 'technician-drafter';
         }
 
-        $body = $draft->body;
         $hash = hash('sha256', 'send_reply:'.$ticket->id.':'.$body);
-        $meta = ['to' => $draft->to, 'reasons' => $reason !== '' ? [$reason] : []];
-        if ($correctionContext !== null) {
-            $meta['informed_by_correction'] = $correctionContext;
-        }
+        $meta = $this->draftMeta($to, $reason, $draftedBy, $correctionContext);
 
         $run = TechnicianRun::firstOrCreate(
             [
@@ -106,7 +148,7 @@ class SendReplyTool
                 'proposed_content' => $body,
                 'proposed_meta' => $meta,
                 'confidence' => null,
-                'tokens_used' => $draft->tokensUsed,
+                'tokens_used' => $tokensUsed,
             ],
         );
 
@@ -118,16 +160,12 @@ class SendReplyTool
                 return "Already drafted a reply for ticket #{$ticket->id}; awaiting approval.";
             }
 
-            $reviveMeta = ['to' => $draft->to, 'reasons' => $reason !== '' ? [$reason] : []];
-            if ($correctionContext !== null) {
-                $reviveMeta['informed_by_correction'] = $correctionContext;
-            }
             $run->update([
                 'state' => TechnicianRunState::AwaitingApproval->value,
                 'proposed_content' => $body,
-                'proposed_meta' => $reviveMeta,
+                'proposed_meta' => $meta,
                 'confidence' => null,
-                'tokens_used' => $draft->tokensUsed,
+                'tokens_used' => $tokensUsed,
             ]);
         }
 
@@ -160,6 +198,26 @@ class SendReplyTool
         );
 
         return "Drafted a client reply for #{$ticket->id}; held for approval.";
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function draftMeta(?string $to, string $reason, string $draftedBy, ?array $correctionContext): array
+    {
+        $meta = [];
+        if ($to !== null && trim($to) !== '') {
+            $meta['to'] = $to;
+        }
+
+        $meta['reasons'] = $reason !== '' ? [$reason] : [];
+        $meta['drafted_by'] = $draftedBy;
+
+        if ($correctionContext !== null) {
+            $meta['informed_by_correction'] = $correctionContext;
+        }
+
+        return $meta;
     }
 
     /**

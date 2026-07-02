@@ -34,6 +34,7 @@ class CockpitControllerTest extends TestCase
             'ticket_id' => $ticket->id, 'client_id' => $client->id, 'action_type' => 'send_reply',
             'content_hash' => str_repeat('a', 64), 'state' => TechnicianRunState::AwaitingApproval,
             'proposed_content' => 'We will get the printer back online.',
+            'proposed_meta' => ['drafted_by' => 'mcp-staff:chet', 'reasons' => ['Chet drafted a client update.']],
         ]);
     }
 
@@ -48,7 +49,8 @@ class CockpitControllerTest extends TestCase
             ->get(route('cockpit.index'))
             ->assertOk()
             ->assertSee('Printer down')
-            ->assertSee('We will get the printer back online.');
+            ->assertSee('We will get the printer back online.')
+            ->assertSee('Drafted by: mcp-staff:chet');
     }
 
     public function test_approve_sends_and_clears_the_draft(): void

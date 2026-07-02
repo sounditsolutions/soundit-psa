@@ -63,6 +63,9 @@
                 @if(!empty($run->proposed_meta['reasons']))
                     <p class="text-muted small mb-2">Why: {{ implode(' · ', (array) $run->proposed_meta['reasons']) }}@if($run->confidence) (confidence {{ number_format($run->confidence, 2) }})@endif</p>
                 @endif
+                @if(!empty($run->proposed_meta['drafted_by']))
+                    <p class="text-muted small mb-2">Drafted by: {{ $run->proposed_meta['drafted_by'] }}</p>
+                @endif
 
                 {{-- Two sibling forms side by side; textarea is bound to the approve form via the `form` attribute --}}
                 <div class="d-flex gap-2">

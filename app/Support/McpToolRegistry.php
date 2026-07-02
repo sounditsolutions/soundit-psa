@@ -16,7 +16,7 @@ class McpToolRegistry
     {
         $general = self::shape(array_merge(
             AssistantToolDefinitions::getTools(hasClient: false),
-            [self::proposeCloseTool()],
+            [self::proposeCloseTool(), self::sendReplyTool()],
             ChetDataSurfaceTools::registryGeneralTools(),
         ));
         $generalNames = array_flip(array_column($general, 'name'));
@@ -85,6 +85,33 @@ class McpToolRegistry
                     ],
                 ],
                 'required' => ['ticket_id', 'reason', 'confidence'],
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public static function sendReplyTool(): array
+    {
+        return [
+            'name' => 'send_reply',
+            'description' => 'Submit a held client-facing reply draft for a ticket. This never sends the reply directly; it records a draft in the Technician cockpit for human approval. Provide body when Chet has already written the proposed reply, or omit body to ask the PSA drafter to compose it.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'ticket_id' => [
+                        'type' => 'integer',
+                        'description' => 'The ticket ID to draft a reply for. Chet calls must also include the matching client_id.',
+                    ],
+                    'reason' => [
+                        'type' => 'string',
+                        'description' => 'Specific evidence for why a human should approve sending this reply now.',
+                    ],
+                    'body' => [
+                        'type' => 'string',
+                        'description' => 'Optional proposed client-facing reply text. When present, it is held verbatim for cockpit review; omit to have the PSA drafter compose the body.',
+                    ],
+                ],
+                'required' => ['ticket_id', 'reason'],
             ],
         ];
     }
