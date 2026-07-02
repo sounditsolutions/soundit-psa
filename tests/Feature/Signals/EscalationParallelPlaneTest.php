@@ -39,7 +39,7 @@ class EscalationParallelPlaneTest extends TestCase
         parent::setUp();
 
         $this->client = Client::factory()->create(['name' => 'Acme Corp']);
-        $this->ticket = Ticket::factory()->for($this->client)->create(['subject' => 'Server down']);
+        $this->ticket = Ticket::withoutEvents(fn () => Ticket::factory()->for($this->client)->create(['subject' => 'Server down']));
         $this->charlie = User::factory()->create([
             'name' => 'Charlie',
             'email' => 'charlie@example.com',

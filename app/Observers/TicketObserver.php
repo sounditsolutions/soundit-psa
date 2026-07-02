@@ -12,6 +12,7 @@ use App\Jobs\RunTriagePipeline;
 use App\Jobs\SendT2TCallback;
 use App\Models\Ticket;
 use App\Services\NotificationService;
+use App\Services\Signals\SignalHub;
 use App\Support\T2TConfig;
 use App\Support\TechnicianConfig;
 use App\Support\TriageConfig;
@@ -24,6 +25,11 @@ class TicketObserver
      */
     public function created(Ticket $ticket): void
     {
+        app(SignalHub::class)->emit('ticket.created', $ticket, "Ticket #{$ticket->id} created", [
+            'client_id' => $ticket->client_id,
+            'priority' => $ticket->priority_order,
+        ]);
+
         // Prospect gate: never notify or triage for prospect-stage clients.
         // Data must not reach the LLM or notification pipeline during the sales phase.
         if ($ticket->client?->stage === ClientStage::Prospect) {
