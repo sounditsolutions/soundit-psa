@@ -44,6 +44,19 @@ class AlertsHubController extends Controller
                 ->get()
                 ->map(fn (SignalRoute $route) => $this->decorateRoute($route)),
             'eventTypeGroups' => $this->eventTypeGroups(),
+            'recentDeliveries' => SignalDelivery::query()
+                ->with(['destination', 'event'])
+                ->latest()
+                ->limit(100)
+                ->get(),
+            'recentConfigLogs' => SignalConfigLog::query()
+                ->latest()
+                ->limit(20)
+                ->get(),
+            'hasStalePendingDelivery' => SignalDelivery::query()
+                ->where('status', 'pending')
+                ->where('created_at', '<', now()->subMinutes(10))
+                ->exists(),
             'mcpTokens' => McpToken::query()
                 ->active()
                 ->orderBy('label')
