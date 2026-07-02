@@ -20,6 +20,18 @@ class TechnicianConfig
         return (bool) Setting::getValue('technician_enabled');
     }
 
+    /** Deterministic emergency backstop on/off, independent from the draft Technician. */
+    public static function emergencyEnabled(): bool
+    {
+        return (bool) Setting::getValue('technician_emergency_enabled');
+    }
+
+    /** The no-LLM emergency plane: sweep + worker heartbeat, without draft hooks. */
+    public static function emergencyBackstopEnabled(): bool
+    {
+        return self::enabled() || self::emergencyEnabled();
+    }
+
     /** Global pause — re-checked inside the gate immediately before execution. */
     public static function killSwitchEngaged(): bool
     {

@@ -264,6 +264,7 @@ class IntegrationsController extends Controller
 
         // AI Technician settings
         $technicianEnabled = \App\Support\TechnicianConfig::enabled();
+        $technicianEmergencyEnabled = \App\Support\TechnicianConfig::emergencyEnabled();
         $technicianAutoAck = ((\App\Support\TechnicianConfig::tierMap()['send_ack'] ?? null) === 'auto');
         // psa-uvuy: the Teams webhook is a masked secret — expose only whether one is
         // stored (drives the "••••••••" placeholder), never the raw URL to the view.
@@ -348,7 +349,7 @@ class IntegrationsController extends Controller
             'triageEnabled', 'triageAutoNew', 'triageAutoReview', 'triageReviewFrequency', 'triageReviewAutoClose', 'triageReviewThreshold',
             'triageDefaultAssignee', 'triageSystemUser', 'triageModel', 'triageMaxTokens', 'triageDailyTokens', 'triageBatchSize', 'triageStages',
             'assistantEnabled', 'assistantMaxMessages', 'assistantDailyTokens',
-            'technicianEnabled', 'technicianAutoAck',
+            'technicianEnabled', 'technicianEmergencyEnabled', 'technicianAutoAck',
             'technicianTeamsWebhookSet', 'technicianNotifyEmail', 'technicianDigestEnabled', 'technicianDigestTime', 'technicianHeartbeatInterval',
             'technicianEscalationChain', 'technicianEscalationTimeout', 'technicianEmergencyReping', 'technicianStormWindow',
             'technicianMaxHoldMessage', 'technicianMaxHoldAuto', 'technicianEmergencyKeywords', 'technicianEmergencyAge',
@@ -1761,18 +1762,20 @@ class IntegrationsController extends Controller
             ]);
         }
 
-        // psa-wmqp: anchor age-detection to the coverage window. Stamp coverage_start
-        // on the OFF→ON transition (the window opens now, so the pre-existing backlog
-        // is never retroactively alarmed) and clear it on disable (a later re-enable
-        // re-anchors fresh). An in-place save while already enabled must NOT move the
-        // anchor — only the transition does — so capture the prior state first.
-        $wasEnabled = TechnicianConfig::enabled();
+        // psa-wmqp / psa-hb0l: anchor age-detection to the coverage window. Stamp
+        // coverage_start on the OFF→ON transition for either the full Technician or the
+        // deterministic emergency backstop, and clear it only when both are disabled.
+        // An in-place save while either plane is already enabled must NOT move the anchor.
+        $wasCoverageEnabled = TechnicianConfig::emergencyBackstopEnabled();
         $nowEnabled = $request->has('technician_enabled');
+        $nowEmergencyEnabled = $request->has('technician_emergency_enabled');
         Setting::setValue('technician_enabled', $nowEnabled ? '1' : '0');
+        Setting::setValue('technician_emergency_enabled', $nowEmergencyEnabled ? '1' : '0');
 
-        if ($nowEnabled && ! $wasEnabled) {
+        $nowCoverageEnabled = $nowEnabled || $nowEmergencyEnabled;
+        if ($nowCoverageEnabled && ! $wasCoverageEnabled) {
             TechnicianConfig::recordCoverageStart();
-        } elseif (! $nowEnabled) {
+        } elseif (! $nowCoverageEnabled) {
             TechnicianConfig::clearCoverageStart();
         }
 

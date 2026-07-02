@@ -58,6 +58,18 @@ class TechnicianHeartbeatCommandTest extends TestCase
         $this->artisan('technician:heartbeat')->assertSuccessful();
     }
 
+    public function test_heartbeat_alerts_when_only_the_emergency_backstop_is_enabled(): void
+    {
+        \App\Models\Setting::setValue('technician_enabled', '0');
+        \App\Models\Setting::setValue('technician_emergency_enabled', '1');
+        \App\Models\Setting::setValue('technician_worker_last_seen', now()->subHour()->toIso8601String());
+
+        $this->mock(\App\Services\Technician\Notify\OperatorNotifier::class,
+            fn (\Mockery\MockInterface $m) => $m->shouldReceive('notify')->once());
+
+        $this->artisan('technician:heartbeat')->assertSuccessful();
+    }
+
     // ── Dead-man alarm for the agent review pass (psa-lqlu) ──────────────────────
 
     private function enableAutoReview(int $freq = 60): void

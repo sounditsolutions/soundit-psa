@@ -26,7 +26,7 @@ class TechnicianHeartbeat extends Command
     /** Alert if the inbound queue worker hasn't checked in (the original dead-man's-switch). */
     private function checkWorkerLiveness(OperatorNotifier $notifier): void
     {
-        if (! TechnicianConfig::enabled()) {
+        if (! TechnicianConfig::emergencyBackstopEnabled()) {
             return;
         }
 
@@ -47,7 +47,7 @@ class TechnicianHeartbeat extends Command
         $notifier->notify(
             'AI Technician — worker not responding',
             "The AI Technician queue worker hasn't checked in for over {$interval} minutes. "
-            .'Inbound tickets may not be getting acknowledged or drafted. Check the soundit-psa-technician-queue worker.',
+            .'AI Technician jobs or emergency backstop pings may not be running. Check the soundit-psa-technician-queue worker.',
         );
         TechnicianConfig::recordHeartbeatAlert();
     }

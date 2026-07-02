@@ -298,7 +298,7 @@ Schedule::command('wiki:maintain')
 // the technician queue is draining even when no tickets are flowing, and records the heartbeat.
 Schedule::job(new \App\Jobs\TechnicianPing)
     ->everyFiveMinutes()
-    ->when(fn () => \App\Support\TechnicianConfig::enabled());
+    ->when(fn () => \App\Support\TechnicianConfig::emergencyBackstopEnabled());
 
 // AI Technician — dead-man's-switch: check the worker heartbeat AND the agent review-pass
 // recency every minute, alerting the operator (self-throttled) if either is stale. Runs on
@@ -309,7 +309,7 @@ Schedule::command('technician:heartbeat')
     ->everyMinute()
     ->withoutOverlapping()
     ->runInBackground()
-    ->when(fn () => TechnicianConfig::enabled() || \App\Support\TriageConfig::autoReviewEnabled());
+    ->when(fn () => TechnicianConfig::emergencyBackstopEnabled() || \App\Support\TriageConfig::autoReviewEnabled());
 
 // AI Technician — daily operator digest at the operator-local configured time (default 08:00).
 // Fires once per local day at the configured HH:MM minute; send is skipped inside the command
@@ -342,7 +342,7 @@ Schedule::command('technician:emergency-sweep')
     ->everyMinute()
     ->withoutOverlapping()
     ->runInBackground()
-    ->when(fn () => TechnicianConfig::enabled());
+    ->when(fn () => TechnicianConfig::emergencyBackstopEnabled());
 
 // AI Technician — escalation degradation sweep: re-deliver unacked flag_attention
 // escalations and advance them up the operator chain so nothing is ever silently

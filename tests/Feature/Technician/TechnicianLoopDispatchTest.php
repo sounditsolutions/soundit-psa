@@ -43,6 +43,17 @@ class TechnicianLoopDispatchTest extends TestCase
         Bus::assertNotDispatched(RunTechnicianLoop::class);
     }
 
+    public function test_emergency_only_backstop_does_not_dispatch_the_draft_loop(): void
+    {
+        Setting::setValue('technician_enabled', '0');
+        Setting::setValue('technician_emergency_enabled', '1');
+        $client = Client::factory()->create();
+
+        Ticket::factory()->create(['client_id' => $client->id]);
+
+        Bus::assertNotDispatched(RunTechnicianLoop::class);
+    }
+
     public function test_prospect_ticket_never_dispatches_the_loop(): void
     {
         Setting::setValue('technician_enabled', '1');
