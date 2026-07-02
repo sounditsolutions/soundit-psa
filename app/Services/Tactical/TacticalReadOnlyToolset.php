@@ -199,9 +199,9 @@ class TacticalReadOnlyToolset
         usort($software, fn ($a, $b) => strcasecmp($a['name'] ?? '', $b['name'] ?? ''));
 
         return array_map(fn ($softwareRow) => [
-            'name' => $softwareRow['name'] ?? 'Unknown',
+            'name' => $this->textSanitizer->sanitizeNullable('Tactical software name', $softwareRow['name'] ?? null, 200) ?? 'Unknown',
             'version' => $softwareRow['version'] ?? null,
-            'publisher' => $softwareRow['publisher'] ?? null,
+            'publisher' => $this->textSanitizer->sanitizeNullable('Tactical software publisher', $softwareRow['publisher'] ?? null, 200),
         ], array_slice($software, 0, 50));
     }
 
@@ -242,8 +242,8 @@ class TacticalReadOnlyToolset
         }
 
         return $services->take(50)->map(fn ($service) => [
-            'name' => $service['name'] ?? null,
-            'display_name' => $service['display_name'] ?? null,
+            'name' => $this->textSanitizer->sanitizeNullable('Tactical service name', $service['name'] ?? null, 200),
+            'display_name' => $this->textSanitizer->sanitizeNullable('Tactical service display name', $service['display_name'] ?? null, 200),
             'status' => $service['status'] ?? null,
             'start_type' => $service['start_type'] ?? null,
         ])->values()->toArray();
