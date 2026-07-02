@@ -4,6 +4,8 @@ namespace App\Jobs;
 
 use App\Models\SignalDelivery;
 use App\Services\Signals\SignalHub;
+use App\Services\Signals\Sinks\EmailSink;
+use App\Services\Signals\Sinks\McpSink;
 use App\Services\Signals\Sinks\WebhookSink;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
@@ -26,6 +28,8 @@ class DeliverSignal implements ShouldQueue
         try {
             match ($destination->type) {
                 'webhook' => app(WebhookSink::class)->deliver($destination, $event, $delivery),
+                'email' => app(EmailSink::class)->deliver($destination, $event, $delivery),
+                'mcp' => app(McpSink::class)->deliver($destination, $event, $delivery),
                 default => throw new \RuntimeException("Unsupported signal destination type {$destination->type}"),
             };
         } catch (\Throwable $e) {
