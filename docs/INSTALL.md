@@ -503,7 +503,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now soundit-psa-technician-queue
 ```
 
-> **IMPORTANT — enablement order:** the `technician` worker **MUST** be running before you flip `technician_enabled` to `1` in Settings. Enabling the feature before the worker is up will leave Loop jobs silently queued with no processor.
+> **IMPORTANT — enablement order:** the `technician` worker **MUST** be running before you flip `technician_enabled` or `technician_emergency_enabled` to `1` in Settings. Enabling the full Technician before the worker is up will leave Loop jobs silently queued with no processor; enabling the emergency backstop before the worker is up will trip the worker heartbeat alert.
 
 > **IMPORTANT — after every deploy:** run `php artisan queue:restart` so the `technician` worker picks up new Loop code. Without a restart the old worker binary stays in memory and will not run any code changes deployed since it started.
 
@@ -515,6 +515,9 @@ sudo systemctl status soundit-psa-technician-queue
 
 **AI Technician scheduled commands** (run by the Laravel scheduler via cron — no extra setup required):
 
+- `TechnicianPing` — every 5 min, queues a liveness ping on the dedicated `technician` queue. **Gated**: fires when `technician_enabled = 1` or `technician_emergency_enabled = 1`.
+- `technician:heartbeat` — every 1 min, alerts if the `technician` worker heartbeat is stale while `technician_enabled = 1` or `technician_emergency_enabled = 1`; the review-pass staleness alarm also runs when auto-review is enabled.
+- `technician:emergency-sweep` — every 1 min, runs the deterministic emergency backstop. **Gated**: fires when `technician_enabled = 1` or `technician_emergency_enabled = 1`. Configure `technician_notify_email` before enabling; Teams webhook is optional.
 - `agent:escalation-sweep` — every 30 min, re-delivers unacked flag escalations up the operator chain. **Gated**: only fires when `agent_escalation_enabled = 1`. Default-dormant: enabling the AI Technician does NOT enable escalation notifications; they must be enabled separately by setting `agent_escalation_enabled` to `1` directly in the settings store (see below) — there is no in-app UI for escalation settings yet (a UI is a follow-up).
 
 **Escalation notification settings** (all optional, all default-dormant — no in-app UI yet; set these directly via `php artisan tinker` with `Setting::setValue('key', 'value')`, or write to the `settings` table directly):

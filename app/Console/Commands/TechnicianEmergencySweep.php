@@ -15,8 +15,8 @@ class TechnicianEmergencySweep extends Command
     public function handle(): int
     {
         // Disabled ⇒ a hard no-op. The schedule guard already gates this; the command
-        // re-checks so a manual/queued invocation can never act while the subsystem is off.
-        if (! TechnicianConfig::enabled()) {
+        // re-checks so a manual/queued invocation can never act while the backstop is off.
+        if (! TechnicianConfig::emergencyBackstopEnabled()) {
             return self::SUCCESS;
         }
 

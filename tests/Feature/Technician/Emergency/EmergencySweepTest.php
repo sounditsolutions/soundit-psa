@@ -80,6 +80,23 @@ class EmergencySweepTest extends TestCase
         $this->assertDatabaseHas('technician_action_logs', ['action_type' => 'emergency_escalate']);
     }
 
+    public function test_detects_and_escalates_when_only_the_emergency_backstop_is_enabled(): void
+    {
+        Setting::setValue('technician_enabled', '0');
+        Setting::setValue('technician_emergency_enabled', '1');
+        $justin = User::factory()->create();
+        Setting::setValue('technician_escalation_chain', json_encode([$justin->id]));
+        $this->agedP1($this->operationalClient());
+
+        $this->mock(OperatorNotifier::class, fn (MockInterface $m) => $m->shouldReceive('notifyUser')->atLeast()->once());
+
+        $this->artisan('technician:emergency-sweep')->assertSuccessful();
+
+        $this->assertSame(1, TechnicianEmergency::count());
+        $this->assertNotNull(TechnicianConfig::coverageStartAt(), 'the sweep defensively anchors emergency-only coverage');
+        $this->assertDatabaseHas('technician_action_logs', ['action_type' => 'emergency_escalate']);
+    }
+
     /**
      * CO-1 (HARD): a still-aged, still-untouched ticket re-detected 20 minutes later
      * (past the 15m storm window) must NOT create a second emergency — the open-emergency

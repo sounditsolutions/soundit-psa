@@ -3246,6 +3246,8 @@
                     <i class="bi bi-robot me-2"></i>AI Technician
                     @if($technicianEnabled)
                         <span class="badge bg-success ms-2">Active</span>
+                    @elseif($technicianEmergencyEnabled)
+                        <span class="badge bg-warning text-dark ms-2">Emergency</span>
                     @else
                         <span class="badge bg-secondary ms-2">Disabled</span>
                     @endif
@@ -3264,6 +3266,11 @@
                     <div class="form-check form-switch mb-3">
                         <input class="form-check-input" type="checkbox" id="technician_enabled" name="technician_enabled" {{ $technicianEnabled ? 'checked' : '' }}>
                         <label class="form-check-label" for="technician_enabled"><strong>Enable AI Technician</strong></label>
+                    </div>
+
+                    <div class="form-check form-switch mb-3">
+                        <input class="form-check-input" type="checkbox" id="technician_emergency_enabled" name="technician_emergency_enabled" {{ $technicianEmergencyEnabled ? 'checked' : '' }}>
+                        <label class="form-check-label" for="technician_emergency_enabled"><strong>Enable emergency backstop</strong></label>
                     </div>
 
                     <div class="form-check form-switch mb-3">

@@ -2,11 +2,14 @@
 
 namespace Tests\Feature\Technician\Cockpit;
 
+use App\Enums\EmailDirection;
 use App\Jobs\RunTechnicianLoop;
 use App\Models\Client;
+use App\Models\Email;
 use App\Models\Person;
 use App\Models\Setting;
 use App\Models\Ticket;
+use App\Services\EmailService;
 use App\Services\TicketService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Bus;
@@ -46,6 +49,49 @@ class ClientReplyReopensDraftTest extends TestCase
         $ticket = Ticket::factory()->create(['client_id' => $client->id, 'contact_id' => $person->id]);
 
         app(TicketService::class)->addPortalReply($ticket, $person, 'Any update?');
+
+        Bus::assertNotDispatched(RunTechnicianLoop::class);
+    }
+
+    public function test_portal_reply_does_not_dispatch_when_only_emergency_backstop_is_enabled(): void
+    {
+        Setting::setValue('technician_enabled', '0');
+        Setting::setValue('technician_emergency_enabled', '1');
+        Bus::fake();
+
+        $client = Client::factory()->create();
+        $person = Person::create([
+            'client_id' => $client->id, 'person_type' => \App\Enums\PersonType::User,
+            'first_name' => 'Client', 'last_name' => 'User', 'email' => 'c@example.com', 'is_active' => true,
+        ]);
+        $ticket = Ticket::factory()->create(['client_id' => $client->id, 'contact_id' => $person->id]);
+
+        app(TicketService::class)->addPortalReply($ticket, $person, 'Any update?');
+
+        Bus::assertNotDispatched(RunTechnicianLoop::class);
+    }
+
+    public function test_email_reply_does_not_dispatch_when_only_emergency_backstop_is_enabled(): void
+    {
+        Setting::setValue('technician_enabled', '0');
+        Setting::setValue('technician_emergency_enabled', '1');
+
+        $client = Client::factory()->create();
+        $ticket = Ticket::factory()->create(['client_id' => $client->id]);
+        $email = Email::create([
+            'direction' => EmailDirection::Inbound,
+            'from_address' => 'c@example.com',
+            'from_name' => 'Client User',
+            'subject' => 'Re: Existing ticket',
+            'body_preview' => 'Any update?',
+            'body_text' => 'Any update?',
+            'received_at' => now(),
+            'is_read' => false,
+        ]);
+
+        Bus::fake();
+
+        app(EmailService::class)->linkEmailToTicket($email, $ticket);
 
         Bus::assertNotDispatched(RunTechnicianLoop::class);
     }
