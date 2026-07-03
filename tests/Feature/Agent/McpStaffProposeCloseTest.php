@@ -92,7 +92,7 @@ class McpStaffProposeCloseTest extends TestCase
 
         $this->assertNotNull($audit);
         $this->assertSame('success', $audit->status);
-        $this->assertSame('teams-bot', $audit->actor_label);
+        $this->assertSame('mcp-legacy', $audit->actor_label);
         $this->assertSame($ticket->id, $audit->arguments['ticket_id']);
         $this->assertSame($reason, $audit->arguments['reason']);
         $this->assertSame(0.99, $audit->arguments['confidence']);

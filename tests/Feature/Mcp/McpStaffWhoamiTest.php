@@ -97,4 +97,31 @@ class McpStaffWhoamiTest extends TestCase
         $this->assertFalse($payload['posture']['auto_close_enabled']);
         $this->assertNull($payload['posture']['auto_close_threshold']);
     }
+
+    public function test_whoami_uses_non_colliding_legacy_label_for_labelless_token(): void
+    {
+        $legacyPlain = McpConfig::rotateStaffToken();
+        $scopedPlain = McpConfig::rotateStaffToken(allowedTools: ['find_staff'], label: 'legacy');
+
+        $legacyPayload = json_decode((string) $this->callTool($legacyPlain, 'whoami')->json('result.content.0.text'), true);
+        $scopedPayload = json_decode((string) $this->callTool($scopedPlain, 'whoami')->json('result.content.0.text'), true);
+
+        $this->assertSame('mcp-legacy', $legacyPayload['label']);
+        $this->assertNull($legacyPayload['allowed_tools']);
+        $this->assertSame('legacy', $scopedPayload['label']);
+        $this->assertSame(['whoami', 'find_staff'], $scopedPayload['allowed_tools']);
+
+        $this->assertDatabaseHas('mcp_audit_logs', [
+            'method' => 'tools/call',
+            'tool_name' => 'whoami',
+            'status' => 'success',
+            'actor_label' => 'mcp-legacy',
+        ]);
+        $this->assertDatabaseHas('mcp_audit_logs', [
+            'method' => 'tools/call',
+            'tool_name' => 'whoami',
+            'status' => 'success',
+            'actor_label' => 'mcp-staff:legacy',
+        ]);
+    }
 }

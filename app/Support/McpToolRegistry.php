@@ -68,7 +68,7 @@ class McpToolRegistry
     {
         return [
             'name' => 'propose_close',
-            'description' => 'Submit a held AI Technician close proposal for a ticket. This never closes the ticket directly; it records a proposal in the Technician cockpit for human approval. Provide concrete ticket-specific evidence in the reason.',
+            'description' => 'Submit a held close proposal for a ticket. The call does not close the ticket directly; it records a proposal for cockpit approval. Provide concrete ticket-specific evidence in the reason.',
             'input_schema' => [
                 'type' => 'object',
                 'properties' => [
@@ -95,13 +95,13 @@ class McpToolRegistry
     {
         return [
             'name' => 'send_reply',
-            'description' => 'Submit a held client-facing reply draft for a ticket. This never sends the reply directly; it records a draft in the Technician cockpit for human approval. Provide body when Chet has already written the proposed reply, or omit body to ask the PSA drafter to compose it.',
+            'description' => 'Submit a held client-facing reply draft for a ticket. The call does not send the reply directly; it records a draft for cockpit approval. Provide body to hold supplied reply text verbatim, or omit body to have the PSA drafter compose it.',
             'input_schema' => [
                 'type' => 'object',
                 'properties' => [
                     'ticket_id' => [
                         'type' => 'integer',
-                        'description' => 'The ticket ID to draft a reply for. Chet calls must also include the matching client_id.',
+                        'description' => 'The ticket ID to draft a reply for. Client-scoped callers must also include the matching client_id.',
                     ],
                     'reason' => [
                         'type' => 'string',
@@ -197,7 +197,7 @@ class McpToolRegistry
                     ],
                     'change_summary' => [
                         'type' => 'string',
-                        'description' => 'Optional revision summary for Charlie review.',
+                        'description' => 'Optional revision summary.',
                     ],
                 ],
                 'required' => ['slug', 'title', 'body_md'],
@@ -228,7 +228,7 @@ class McpToolRegistry
                     ],
                     'change_summary' => [
                         'type' => 'string',
-                        'description' => 'Optional revision summary for Charlie review.',
+                        'description' => 'Optional revision summary.',
                     ],
                 ],
                 'required' => ['slug', 'title', 'body_md'],

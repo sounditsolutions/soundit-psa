@@ -28,7 +28,7 @@ class TeamsChatReadToolset
         return [
             [
                 'name' => 'list_teams_chats',
-                'description' => 'List Teams chats that the configured teammate-chet bot is known to be in from durable PSA state.',
+                'description' => 'List Teams chats that the configured Teams bot is known to be in from durable PSA state.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [

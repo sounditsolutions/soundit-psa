@@ -18,6 +18,7 @@ use App\Services\Chet\OperatorBridgeTools;
 use App\Services\Tactical\Actions\ActionRedactor;
 use App\Support\AgentConfig;
 use App\Support\McpStaffToken;
+use App\Support\McpToolInstructions;
 use App\Support\McpToolRegistry;
 use App\Support\TechnicianConfig;
 use Illuminate\Http\JsonResponse;
@@ -217,7 +218,8 @@ class McpStaffController extends Controller
         // All other client-scoped tools require it.
         $clientIdOptionalFor = ['find_persons', 'find_assets', 'wiki_list_pages', 'wiki_search', 'wiki_get_page'];
 
-        $translated = array_map(function ($t) use ($request, $generalNames, $clientIdOptionalFor) {
+        $toolInstructions = McpToolInstructions::all();
+        $translated = array_map(function ($t) use ($request, $generalNames, $clientIdOptionalFor, $toolInstructions) {
             $schema = $t['input_schema'] ?? ['type' => 'object', 'properties' => new \stdClass];
             $isChetClientScopedWrite = $this->isChetClientScopedWrite($request, (string) $t['name']);
             $isClientScoped = ! isset($generalNames[$t['name']]) || $isChetClientScopedWrite;
@@ -243,7 +245,7 @@ class McpStaffController extends Controller
 
             return [
                 'name' => $t['name'],
-                'description' => $t['description'] ?? '',
+                'description' => McpToolInstructions::appendToDescription((string) $t['name'], (string) ($t['description'] ?? ''), $toolInstructions),
                 'inputSchema' => $schema,
             ];
         }, $allTools);
@@ -767,7 +769,7 @@ class McpStaffController extends Controller
         $threshold = AgentConfig::proposeCloseAutoThreshold();
 
         return [
-            'label' => $token instanceof McpStaffToken && $token->label !== null ? $token->label : 'teams-bot',
+            'label' => $token instanceof McpStaffToken && $token->label !== null ? $token->label : McpStaffToken::LEGACY_ACTOR_LABEL,
             'directive' => $token instanceof McpStaffToken ? $token->directiveOrDefault() : McpToken::defaultDirective(),
             'allowed_tools' => $token instanceof McpStaffToken && $token->allowedTools !== null
                 ? array_values(array_unique(array_merge([self::WHOAMI_TOOL], $token->allowedTools)))
@@ -786,6 +788,6 @@ class McpStaffController extends Controller
     {
         $token = $request->attributes->get('mcp_staff_token');
 
-        return $token instanceof McpStaffToken ? $token->actorLabel() : 'teams-bot';
+        return $token instanceof McpStaffToken ? $token->actorLabel() : McpStaffToken::LEGACY_ACTOR_LABEL;
     }
 }

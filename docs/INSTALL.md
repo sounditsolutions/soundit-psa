@@ -1032,16 +1032,18 @@ When enabled, portal-enabled contacts automatically receive email notifications 
 
 ### MCP server — staff tool surface
 
-An MCP (Model Context Protocol) server is exposed at `POST /api/mcp/staff`, intended for use as a remote MCP endpoint by the [Claude Teams Teammate](https://github.com/Wldc4rd/claude-teams-teammate) via Anthropic's MCP connector beta. The surface is token-scoped: read/data tools remain the default shape, while sensitive write tools are only exposed when explicitly granted.
+An MCP (Model Context Protocol) server is exposed at `POST /api/mcp/staff`, intended for use as a remote MCP endpoint by staff automation clients via Anthropic's MCP connector beta. The surface is token-scoped: read/data tools remain the default shape, while sensitive write tools are only exposed when explicitly granted.
 
-Held AI Technician actions such as `propose_close` and `send_reply` never execute directly from MCP. They create held cockpit proposals for a human operator to approve. Chet-labeled tokens must pass `client_id` for these client-scoped actions, and `send_reply` accepts an optional `body` that is held verbatim for cockpit review.
+Held actions such as `propose_close` and `send_reply` never execute directly from MCP. They create held cockpit proposals for a human operator to approve. Client-scoped staff tokens must pass `client_id` for these actions, and `send_reply` accepts an optional `body` that is held verbatim for cockpit review.
 
 The `request_tool` grant lets a staff MCP client record an internal tooling gap against a ticket. It only writes a `ToolingGap` row for later operator triage; it does not mutate the ticket, create a Technician run, send email, or trigger follow-up work directly.
 
+Per-tool MSP custom instructions are configured on the Settings -> MCP Tokens page. These instructions are appended to the matching tool description only in `tools/list`; the base tool descriptions remain platform defaults. Token directives remain per-token and are returned by `whoami`.
+
 **Enable:**
 1. Generate a bearer token: `php artisan mcp:rotate-staff-token` (token only displayed once)
-2. In the Teams bot's `MCP_SERVERS_FILE`, add an entry with `url: "https://your-psa-domain/api/mcp/staff"` and the generated token as `authorization_token`
-3. The bot identity is treated as a single service account — the existing Entra Object ID allowlist on the bot side gates who can use it
+2. In the client configuration, add an entry with `url: "https://your-psa-domain/api/mcp/staff"` and the generated token as `authorization_token`
+3. The remote identity is treated as a single service account; gate end-user access in the calling client
 
 **Audit log:** every MCP call (initialize / tools/list / tools/call) is logged to the `mcp_audit_logs` table with method, tool, arguments, status, duration, and source IP. Useful for forensics and cost tracking.
 

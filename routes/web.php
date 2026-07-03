@@ -289,6 +289,7 @@ Route::middleware('auth')->group(function () {
     // Settings — MCP Tokens
     Route::get('/settings/mcp-tokens', [McpTokensController::class, 'index'])->name('settings.mcp-tokens.index');
     Route::post('/settings/mcp-tokens', [McpTokensController::class, 'store'])->name('settings.mcp-tokens.store');
+    Route::patch('/settings/mcp-tokens/tool-instructions', [McpTokensController::class, 'updateToolInstructions'])->name('settings.mcp-tokens.tool-instructions');
     Route::get('/settings/mcp-tokens/{token}', [McpTokensController::class, 'show'])->name('settings.mcp-tokens.show');
     Route::patch('/settings/mcp-tokens/{token}/tools', [McpTokensController::class, 'updateTools'])->name('settings.mcp-tokens.tools');
     Route::patch('/settings/mcp-tokens/{token}/directive', [McpTokensController::class, 'updateDirective'])->name('settings.mcp-tokens.directive');

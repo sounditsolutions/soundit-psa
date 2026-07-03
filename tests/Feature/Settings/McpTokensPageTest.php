@@ -4,6 +4,7 @@ namespace Tests\Feature\Settings;
 
 use App\Models\McpAuditLog;
 use App\Models\McpToken;
+use App\Models\Setting;
 use App\Models\SignalDelivery;
 use App\Models\SignalDestination;
 use App\Models\SignalEvent;
@@ -228,6 +229,46 @@ class McpTokensPageTest extends TestCase
             ->assertOk()
             ->assertSee('Operator bridge (sensitive)')
             ->assertSee('Post a message to the operator Teams chat', false);
+    }
+
+    public function test_index_renders_msp_tool_instruction_textareas(): void
+    {
+        Setting::setValue('mcp_tool_custom_instructions', json_encode([
+            'find_staff' => 'Prefer escalation owners.',
+        ]));
+
+        $this->actingAs($this->user)
+            ->get(route('settings.mcp-tokens.index'))
+            ->assertOk()
+            ->assertSee('MSP Tool Instructions')
+            ->assertSee('name="tool_instructions[find_staff]"', false)
+            ->assertSee('name="tool_instructions[send_reply]"', false)
+            ->assertSee('Prefer escalation owners.');
+    }
+
+    public function test_updates_msp_tool_instructions_without_auditing_body_text(): void
+    {
+        $body = 'Use the MSP closeout checklist before proposing customer-facing text.';
+
+        $this->actingAs($this->user)
+            ->patch(route('settings.mcp-tokens.tool-instructions'), [
+                'tool_instructions' => [
+                    'send_reply' => "  {$body}  ",
+                    'find_staff' => '',
+                    'not_a_tool' => 'ignore me',
+                ],
+            ])
+            ->assertRedirect(route('settings.mcp-tokens.index'));
+
+        $stored = json_decode((string) Setting::getValue('mcp_tool_custom_instructions'), true);
+        $this->assertSame(['send_reply' => $body], $stored);
+
+        $audit = McpAuditLog::where('method', 'token/tool_instructions')->firstOrFail();
+        $this->assertSame('mcp_tool_custom_instructions', $audit->tool_name);
+        $this->assertSame(['send_reply'], $audit->arguments['tools']);
+        $this->assertSame(mb_strlen($body), $audit->arguments['total_length']);
+        $this->assertStringNotContainsString($body, (string) json_encode($audit->arguments));
+        $this->assertStringNotContainsString('ignore me', (string) json_encode($audit->arguments));
     }
 
     public function test_revoked_tokens_show_as_revoked_without_a_revoke_button(): void

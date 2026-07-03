@@ -9,6 +9,7 @@ use App\Models\SignalDelivery;
 use App\Models\SignalDestination;
 use App\Models\SignalInboxEntry;
 use App\Support\McpConfig;
+use App\Support\McpToolInstructions;
 use App\Support\McpToolRegistry;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -97,6 +98,25 @@ class McpTokensController extends Controller
 
         return redirect()->route('settings.mcp-tokens.show', $token)
             ->with('success', 'Token directive updated.');
+    }
+
+    public function updateToolInstructions(Request $request)
+    {
+        $validated = $request->validate([
+            'tool_instructions' => ['nullable', 'array'],
+            'tool_instructions.*' => ['nullable', 'string', 'max:'.McpToolInstructions::MAX_LENGTH],
+        ]);
+
+        McpToolInstructions::replaceAll($validated['tool_instructions'] ?? []);
+        $instructions = McpToolInstructions::all();
+
+        $this->audit($request, 'token/tool_instructions', 'mcp_tool_custom_instructions', [
+            'tools' => array_keys($instructions),
+            'total_length' => array_sum(array_map(fn (string $value): int => mb_strlen($value), $instructions)),
+        ]);
+
+        return redirect()->route('settings.mcp-tokens.index')
+            ->with('success', 'Tool instructions updated.');
     }
 
     public function revoke(Request $request, McpToken $token)
@@ -234,6 +254,7 @@ class McpTokensController extends Controller
                 ->orderByDesc('created_at')
                 ->get(),
             'groups' => McpToolRegistry::groups(),
+            'toolInstructions' => McpToolInstructions::all(),
             'newToken' => $newToken,
             'newTokenLabel' => $newTokenLabel,
         ]);

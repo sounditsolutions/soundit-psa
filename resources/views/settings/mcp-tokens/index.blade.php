@@ -27,6 +27,13 @@
     </div>
 @endif
 
+@if(session('success'))
+    <div class="alert alert-success alert-dismissible fade show">
+        {{ session('success') }}
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    </div>
+@endif
+
 <div class="row g-4">
     <div class="col-xl-5">
         <div class="card card-static shadow-sm">
@@ -179,6 +186,69 @@
                     </table>
                 </div>
             @endif
+        </div>
+    </div>
+</div>
+
+<div class="row g-4 mt-1">
+    <div class="col-12">
+        <div class="card card-static shadow-sm">
+            <div class="card-header">
+                <i class="bi bi-sliders me-2"></i>MSP Tool Instructions
+            </div>
+            <div class="card-body">
+                <form method="POST" action="{{ route('settings.mcp-tokens.tool-instructions') }}">
+                    @csrf
+                    @method('PATCH')
+
+                    @error('tool_instructions')
+                        <div class="text-danger small mb-2">{{ $message }}</div>
+                    @enderror
+
+                    <div class="row g-3">
+                        @foreach($groups as $key => $group)
+                            <div class="col-xl-6">
+                                <fieldset class="border rounded p-3 h-100 {{ $group['sensitive'] ? 'border-warning' : 'border-light-subtle' }}">
+                                    <legend class="float-none w-auto px-1 mb-2 fs-6">
+                                        {{ $group['label'] }}
+                                        @if($group['sensitive'])
+                                            <span class="badge bg-warning text-dark ms-1">sensitive</span>
+                                        @endif
+                                    </legend>
+
+                                    @foreach($group['tools'] as $tool)
+                                        @php
+                                            $instructionId = 'tool_instruction_'.$key.'_'.$loop->index;
+                                            $instructionErrorKey = 'tool_instructions.'.$tool['name'];
+                                            $instructionValue = old('tool_instructions.'.$tool['name'], $toolInstructions[$tool['name']] ?? '');
+                                        @endphp
+                                        <div class="mb-3">
+                                            <label for="{{ $instructionId }}" class="form-label mb-1">
+                                                <code>{{ $tool['name'] }}</code>
+                                            </label>
+                                            @if($tool['description'] !== '')
+                                                <div class="text-muted small mb-1">{{ $tool['description'] }}</div>
+                                            @endif
+                                            <textarea id="{{ $instructionId }}"
+                                                      name="tool_instructions[{{ $tool['name'] }}]"
+                                                      class="form-control @error($instructionErrorKey) is-invalid @enderror"
+                                                      rows="3"
+                                                      maxlength="5000">{{ $instructionValue }}</textarea>
+                                            @error($instructionErrorKey)
+                                                <div class="invalid-feedback">{{ $message }}</div>
+                                            @enderror
+                                        </div>
+                                    @endforeach
+                                </fieldset>
+                            </div>
+                        @endforeach
+                    </div>
+
+                    <button type="submit" class="btn btn-primary mt-3">
+                        <i class="bi bi-check-lg me-1"></i>Save Instructions
+                    </button>
+                </form>
+            </div>
         </div>
     </div>
 </div>

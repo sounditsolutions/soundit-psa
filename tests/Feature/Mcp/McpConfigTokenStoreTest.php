@@ -81,7 +81,16 @@ class McpConfigTokenStoreTest extends TestCase
         $resolved = McpConfig::resolveStaffToken($plain);
         $this->assertNotNull($resolved);
         $this->assertNull($resolved->allowedTools, 'legacy token = full surface');
-        $this->assertSame('teams-bot', $resolved->actorLabel(), 'legacy actor label unchanged');
+        $this->assertSame('mcp-legacy', $resolved->actorLabel(), 'legacy actor label is platform-neutral');
+    }
+
+    public function test_legacy_actor_label_does_not_collide_with_scoped_legacy_label(): void
+    {
+        $legacy = McpConfig::rotateStaffToken();
+        $scoped = McpConfig::rotateStaffToken(allowedTools: ['find_staff'], label: 'legacy');
+
+        $this->assertSame('mcp-legacy', McpConfig::resolveStaffToken($legacy)?->actorLabel());
+        $this->assertSame('mcp-staff:legacy', McpConfig::resolveStaffToken($scoped)?->actorLabel());
     }
 
     public function test_is_staff_enabled_and_has_label_reflect_the_table(): void
