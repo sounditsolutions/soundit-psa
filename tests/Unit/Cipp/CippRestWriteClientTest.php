@@ -31,6 +31,12 @@ class CippRestWriteClientTest extends TestCase
         $this->assertContains('setLegacyPerUserMfa', $methods);
         $this->assertContains('assignUserLicense', $methods);
         $this->assertContains('removeUserLicense', $methods);
+        $this->assertContains('convertMailbox', $methods);
+        $this->assertContains('setMailboxForwardingInternal', $methods);
+        $this->assertContains('setMailboxForwardingExternal', $methods);
+        $this->assertContains('disableMailboxForwarding', $methods);
+        $this->assertContains('setMailboxGalVisibility', $methods);
+        $this->assertContains('setMailboxOutOfOffice', $methods);
         $this->assertNotContains('post', $methods);
         $this->assertNotContains('request', $methods);
     }
@@ -140,6 +146,109 @@ class CippRestWriteClientTest extends TestCase
                 'RemoveAllLicenses' => false,
                 'ReplaceAllLicenses' => false,
             ]]);
+    }
+
+    public function test_posts_curated_mailbox_shapes_with_source_pinned_fields(): void
+    {
+        Http::fake([
+            'login.microsoftonline.com/*' => Http::response([
+                'access_token' => 'WRITE-TOKEN',
+                'expires_in' => 3600,
+            ]),
+            'cipp.example.test/api/*' => Http::response(['Results' => [['ok' => true, 'raw' => 'not returned']]]),
+        ]);
+
+        $client = new CippRestWriteClient([
+            'api_url' => 'https://cipp.example.test',
+            'tenant_id' => 'tenant-1',
+            'client_id' => 'write-client',
+            'client_secret' => 'write-secret',
+        ], Cache::store(), fn (string $host): array => ['93.184.216.34']);
+
+        $result = $client->convertMailbox('acme.onmicrosoft.com', 'alex@acme.example', 'Shared');
+        $client->setMailboxForwardingInternal('acme.onmicrosoft.com', 'alex@acme.example', 'target@acme.example', true);
+        $client->setMailboxForwardingExternal('acme.onmicrosoft.com', 'alex@acme.example', 'forward@example.net', false);
+        $client->disableMailboxForwarding('acme.onmicrosoft.com', 'alex@acme.example');
+        $client->setMailboxGalVisibility('acme.onmicrosoft.com', 'alex@acme.example', true);
+        $client->setMailboxOutOfOffice(
+            'acme.onmicrosoft.com',
+            'alex@acme.example',
+            'Scheduled',
+            'Internal response',
+            'External response',
+            '2026-07-04T09:00:00Z',
+            '2026-07-05T17:00:00Z',
+            'UTC',
+        );
+
+        $this->assertSame(['success' => true, 'status' => 200], $result);
+        $this->assertStringNotContainsString('not returned', json_encode($result));
+
+        Http::assertSent(fn ($request) => $request->url() === 'https://cipp.example.test/api/ExecConvertMailbox'
+            && $request->method() === 'POST'
+            && $request->data() === [
+                'tenantFilter' => 'acme.onmicrosoft.com',
+                'ID' => 'alex@acme.example',
+                'MailboxType' => 'Shared',
+            ]);
+
+        Http::assertSent(fn ($request) => $request->url() === 'https://cipp.example.test/api/ExecEmailForward'
+            && $request->data() === [
+                'tenantFilter' => 'acme.onmicrosoft.com',
+                'userID' => 'alex@acme.example',
+                'ForwardInternal' => 'target@acme.example',
+                'ForwardExternal' => null,
+                'forwardOption' => 'internalAddress',
+                'KeepCopy' => 'true',
+            ]);
+
+        Http::assertSent(fn ($request) => $request->url() === 'https://cipp.example.test/api/ExecEmailForward'
+            && $request->data() === [
+                'tenantFilter' => 'acme.onmicrosoft.com',
+                'userID' => 'alex@acme.example',
+                'ForwardInternal' => null,
+                'ForwardExternal' => 'forward@example.net',
+                'forwardOption' => 'ExternalAddress',
+                'KeepCopy' => 'false',
+            ]);
+
+        Http::assertSent(fn ($request) => $request->url() === 'https://cipp.example.test/api/ExecEmailForward'
+            && $request->data() === [
+                'tenantFilter' => 'acme.onmicrosoft.com',
+                'userID' => 'alex@acme.example',
+                'ForwardInternal' => null,
+                'ForwardExternal' => null,
+                'forwardOption' => 'disabled',
+                'KeepCopy' => 'false',
+            ]);
+
+        Http::assertSent(fn ($request) => $request->url() === 'https://cipp.example.test/api/ExecHideFromGAL'
+            && $request->data() === [
+                'tenantFilter' => 'acme.onmicrosoft.com',
+                'ID' => 'alex@acme.example',
+                'HideFromGAL' => true,
+            ]);
+
+        Http::assertSent(fn ($request) => $request->url() === 'https://cipp.example.test/api/ExecSetOoO'
+            && $request->data() === [
+                'tenantFilter' => 'acme.onmicrosoft.com',
+                'userId' => 'alex@acme.example',
+                'AutoReplyState' => 'Scheduled',
+                'InternalMessage' => 'Internal response',
+                'ExternalMessage' => 'External response',
+                'StartTime' => '2026-07-04T09:00:00Z',
+                'EndTime' => '2026-07-05T17:00:00Z',
+                'timezone' => 'UTC',
+            ]);
+
+        $oooRequest = collect(Http::recorded())
+            ->map(fn (array $record) => $record[0])
+            ->first(fn ($request) => $request->url() === 'https://cipp.example.test/api/ExecSetOoO');
+
+        $this->assertArrayNotHasKey('CreateOOFEvent', $oooRequest->data());
+        $this->assertArrayNotHasKey('AutoDeclineFutureRequestsWhenOOF', $oooRequest->data());
+        $this->assertArrayNotHasKey('DeclineEventsForScheduledOOF', $oooRequest->data());
+        $this->assertArrayNotHasKey('DeclineMeetingMessage', $oooRequest->data());
     }
 
     public function test_rejects_unsafe_write_url_before_token_request(): void

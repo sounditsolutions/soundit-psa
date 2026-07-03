@@ -918,16 +918,71 @@ class McpStaffController extends Controller
         foreach ($arguments as $key => $value) {
             $normalized = mb_strtolower((string) $key);
 
-            if (in_array($normalized, ['client_id', 'person_id', 'license_type_id', 'ticket_id', 'reason', 'state'], true)) {
+            if (in_array($normalized, [
+                'client_id',
+                'person_id',
+                'license_type_id',
+                'ticket_id',
+                'state',
+                'mailbox_type',
+                'mode',
+                'target_person_id',
+                'keep_copy',
+                'hidden',
+                'start_time',
+                'end_time',
+                'timezone',
+            ], true)) {
                 $safe[$normalized] = $value;
             }
 
             if ($normalized === 'confirm_upn') {
                 $safe['confirm_upn'] = '[withheld]';
             }
+
+            if ($normalized === 'reason' && is_scalar($value)) {
+                $safe['reason'] = $this->safeCippWriteReasonForAudit((string) $value, $arguments);
+            }
+
+            if ($normalized === 'external_smtp' && is_scalar($value)) {
+                $domain = mb_strtolower((string) substr(strrchr((string) $value, '@') ?: '', 1));
+                $safe['external_target_type'] = 'smtp';
+                $safe['external_target_domain'] = $domain !== '' ? $domain : '[invalid]';
+            }
+
+            if ($normalized === 'internal_message') {
+                $safe['internal_message_length'] = is_string($value) ? mb_strlen($value) : 0;
+            }
+
+            if ($normalized === 'external_message') {
+                $safe['external_message_length'] = is_string($value) ? mb_strlen($value) : 0;
+            }
         }
 
         return $safe;
+    }
+
+    private function safeCippWriteReasonForAudit(string $reason, array $arguments): string
+    {
+        $safe = $reason;
+        if (isset($arguments['external_smtp']) && is_scalar($arguments['external_smtp'])) {
+            $safe = str_replace((string) $arguments['external_smtp'], '[external address withheld]', $safe);
+        }
+
+        if (mb_strtolower((string) ($arguments['mode'] ?? '')) === 'external') {
+            $safe = preg_replace('/\b[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}\b/i', '[external address withheld]', $safe) ?? $safe;
+        }
+
+        foreach (['internal_message', 'external_message'] as $key) {
+            if (isset($arguments[$key]) && is_scalar($arguments[$key])) {
+                $value = trim((string) $arguments[$key]);
+                if ($value !== '') {
+                    $safe = str_replace($value, "[{$key} withheld]", $safe);
+                }
+            }
+        }
+
+        return mb_substr($safe, 0, 1000);
     }
 
     private function positiveIntegerArgument(mixed $value): ?int

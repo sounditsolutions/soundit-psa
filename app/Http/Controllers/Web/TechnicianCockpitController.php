@@ -53,7 +53,15 @@ class TechnicianCockpitController extends Controller
             'cipp_stage_remove_user_mfa_methods',
             'cipp_stage_set_legacy_per_user_mfa',
             'cipp_stage_assign_user_license',
-            'cipp_stage_remove_user_license' => $service->approveStagedCippWriteAction($run, (int) auth()->id()),
+            'cipp_stage_remove_user_license',
+            'cipp_stage_convert_mailbox',
+            'cipp_stage_set_mailbox_forwarding',
+            'cipp_stage_set_mailbox_gal_visibility',
+            'cipp_stage_set_mailbox_out_of_office' => $service->approveStagedCippWriteAction(
+                $run,
+                (int) auth()->id(),
+                $this->cippApprovalInputs($request, $run),
+            ),
             // Body is required only on the reply/resolution path, validated inside this arm.
             'send_reply', 'propose_resolution' => $service->approveAndSend(
                 $run,
@@ -168,5 +176,26 @@ class TechnicianCockpitController extends Controller
 
         return redirect()->route('cockpit.index')
             ->with('success', "Re-assessing #{$ticket->id} with your correction.");
+    }
+
+    /** @return array<string, mixed> */
+    private function cippApprovalInputs(Request $request, TechnicianRun $run): array
+    {
+        $inputs = (array) ($run->proposed_meta['sensitive_inputs'] ?? []);
+        $rules = [];
+
+        if (in_array('external_smtp', $inputs, true)) {
+            $rules['external_smtp'] = ['required', 'email:rfc', 'max:254'];
+        }
+
+        if (in_array('internal_message', $inputs, true)) {
+            $rules['internal_message'] = ['required', 'string', 'max:2000'];
+        }
+
+        if (in_array('external_message', $inputs, true)) {
+            $rules['external_message'] = ['required', 'string', 'max:2000'];
+        }
+
+        return $rules === [] ? [] : $request->validate($rules);
     }
 }

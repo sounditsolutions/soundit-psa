@@ -35,6 +35,10 @@ class StaffCippWriteToolExecutor
         'cipp_stage_set_legacy_per_user_mfa' => 'cipp_set_legacy_per_user_mfa',
         'cipp_stage_assign_user_license' => 'cipp_assign_user_license',
         'cipp_stage_remove_user_license' => 'cipp_remove_user_license',
+        'cipp_stage_convert_mailbox' => 'cipp_convert_mailbox',
+        'cipp_stage_set_mailbox_forwarding' => 'cipp_set_mailbox_forwarding',
+        'cipp_stage_set_mailbox_gal_visibility' => 'cipp_set_mailbox_gal_visibility',
+        'cipp_stage_set_mailbox_out_of_office' => 'cipp_set_mailbox_out_of_office',
     ];
 
     /** @var array<string, int> */
@@ -53,7 +57,29 @@ class StaffCippWriteToolExecutor
         'cipp_stage_assign_user_license' => 300,
         'cipp_remove_user_license' => 300,
         'cipp_stage_remove_user_license' => 300,
+        'cipp_convert_mailbox' => 300,
+        'cipp_stage_convert_mailbox' => 300,
+        'cipp_set_mailbox_forwarding' => 300,
+        'cipp_stage_set_mailbox_forwarding' => 300,
+        'cipp_set_mailbox_gal_visibility' => 300,
+        'cipp_stage_set_mailbox_gal_visibility' => 300,
+        'cipp_set_mailbox_out_of_office' => 300,
+        'cipp_stage_set_mailbox_out_of_office' => 300,
     ];
+
+    private const OOO_MESSAGE_MAX = 2000;
+
+    /** @var array<int, string> */
+    private const MAILBOX_TYPES = ['Shared', 'Regular', 'Room', 'Equipment'];
+
+    /** @var array<int, string> */
+    private const DIRECT_FORWARDING_MODES = ['disabled', 'internal'];
+
+    /** @var array<int, string> */
+    private const STAGED_FORWARDING_MODES = ['disabled', 'internal', 'external'];
+
+    /** @var array<int, string> */
+    private const OOO_STATES = ['Disabled', 'Enabled', 'Scheduled'];
 
     /** @var array<int, string> */
     private const UPSTREAM_IDENTIFIER_KEYS = [
@@ -86,6 +112,20 @@ class StaffCippWriteToolExecutor
         'ReplaceAllLicenses',
         'removeAllLicenses',
         'replaceAllLicenses',
+        'mailbox',
+        'mailbox_id',
+        'mailbox_identity',
+        'MailboxType',
+        'ForwardInternal',
+        'ForwardExternal',
+        'forwardOption',
+        'KeepCopy',
+        'HideFromGAL',
+        'AutoReplyState',
+        'StartTime',
+        'EndTime',
+        'target_upn',
+        'target_user_id',
         'endpoint',
         'Endpoint',
         'cipp_endpoint',
@@ -117,6 +157,14 @@ class StaffCippWriteToolExecutor
             self::stageAssignLicenseTool(),
             self::removeLicenseTool(),
             self::stageRemoveLicenseTool(),
+            self::convertMailboxTool(),
+            self::stageConvertMailboxTool(),
+            self::setMailboxForwardingTool(),
+            self::stageSetMailboxForwardingTool(),
+            self::setMailboxGalVisibilityTool(),
+            self::stageSetMailboxGalVisibilityTool(),
+            self::setMailboxOutOfOfficeTool(),
+            self::stageSetMailboxOutOfOfficeTool(),
         ];
     }
 
@@ -155,7 +203,7 @@ class StaffCippWriteToolExecutor
         return $this->executeDirect($name, $arguments, $clientId, $actorLabel);
     }
 
-    public function approveStagedRun(TechnicianRun $run, int $approverId): TechnicianApprovalResult
+    public function approveStagedRun(TechnicianRun $run, int $approverId, array $approvalInputs = []): TechnicianApprovalResult
     {
         if (! self::isStagedActionType($run->action_type) || ! $run->claimForExecution()) {
             return new TechnicianApprovalResult('already_handled');
@@ -189,6 +237,7 @@ class StaffCippWriteToolExecutor
             $params = is_array($payload['params'] ?? null) ? $payload['params'] : [];
             $license = $this->licenseForTool($directTool, $client->id, $params['license_type_id'] ?? null);
             $state = $this->stateForTool($directTool, $params['state'] ?? null);
+            $mailbox = $this->mailboxParamsForTool($directTool, $client->id, $params, $approvalInputs, heldApproval: true);
 
             if (TechnicianConfig::killSwitchEngaged()) {
                 $this->auditAttempt($run->action_type, 'blocked', $client->id, $ticket, $person, $license, $run->content_hash, 'Technician kill-switch engaged; staged CIPP write refused.', $this->approverLabel($approverId), $run->id, $approverId);
@@ -205,7 +254,7 @@ class StaffCippWriteToolExecutor
             }
 
             try {
-                $this->executeUpstream($directTool, $tenant, $person, $license, $state);
+                $this->executeUpstream($directTool, $tenant, $person, $license, $state, $mailbox);
             } catch (CippClientException $e) {
                 $this->auditAttempt($run->action_type, 'error', $client->id, $ticket, $person, $license, $run->content_hash, $this->safeFailureSummary($run->action_type, $e), $this->approverLabel($approverId), $run->id, $approverId);
                 $run->releaseClaim();
@@ -247,9 +296,10 @@ class StaffCippWriteToolExecutor
         /** @var ResolvedCippLicense|null $license */
         $license = $context['license'];
         $state = is_string($context['state'] ?? null) ? $context['state'] : null;
+        $mailbox = is_array($context['mailbox'] ?? null) ? $context['mailbox'] : null;
         $reason = (string) $context['reason'];
 
-        $contentHash = $this->contentHash($tool, $client->id, $person->person->id, $ticket?->id, $this->hashParams($tool, $license, $state));
+        $contentHash = $this->contentHash($tool, $client->id, $person->person->id, $ticket?->id, $this->hashParams($tool, $license, $state, $mailbox));
 
         if ($this->alreadyExecuted($tool, $client->id, $contentHash)) {
             $this->auditAttempt($tool, 'blocked', $client->id, $ticket, $person, $license, $contentHash, "Duplicate {$tool} suppressed before upstream call.", $actorLabel);
@@ -268,7 +318,7 @@ class StaffCippWriteToolExecutor
         }
 
         try {
-            $this->executeUpstream($tool, $tenant, $person, $license, $state);
+            $this->executeUpstream($tool, $tenant, $person, $license, $state, $mailbox);
         } catch (CippClientException $e) {
             $this->auditAttempt($tool, 'error', $client->id, $ticket, $person, $license, $contentHash, $this->safeFailureSummary($tool, $e), $actorLabel);
 
@@ -303,9 +353,10 @@ class StaffCippWriteToolExecutor
         /** @var ResolvedCippLicense|null $license */
         $license = $context['license'];
         $state = is_string($context['state'] ?? null) ? $context['state'] : null;
+        $mailbox = is_array($context['mailbox'] ?? null) ? $context['mailbox'] : null;
         $reason = (string) $context['reason'];
         $directTool = self::STAGED_TO_DIRECT[$tool];
-        $params = $this->hashParams($directTool, $license, $state);
+        $params = $this->hashParams($directTool, $license, $state, $mailbox);
         $contentHash = $this->contentHash($tool, $client->id, $person->person->id, $ticket->id, $params);
 
         if ($this->alreadyAwaitingOrExecuted($tool, $client->id, $contentHash)) {
@@ -339,6 +390,7 @@ class StaffCippWriteToolExecutor
             'person_id' => $person->person->id,
             'license_type_id' => $license?->licenseType->id,
             'redacted_params' => $params,
+            'sensitive_inputs' => $this->sensitiveInputsForStagedAction($directTool, $params),
             'encrypted_payload' => Crypt::encryptString(json_encode([
                 'direct_tool' => $directTool,
                 'client_id' => $client->id,
@@ -354,7 +406,7 @@ class StaffCippWriteToolExecutor
             'action_type' => $tool,
             'content_hash' => $contentHash,
             'state' => TechnicianRunState::AwaitingApproval,
-            'proposed_content' => $this->stagedDisplay($directTool, $person, $license, $state)."\nReason: ".$reason,
+            'proposed_content' => $this->stagedDisplay($directTool, $person, $license, $state, $mailbox)."\nReason: ".$reason,
             'proposed_meta' => $meta,
             'confidence' => null,
             'tokens_used' => 0,
@@ -380,7 +432,7 @@ class StaffCippWriteToolExecutor
     }
 
     /**
-     * @return array{client?: Client, tenant?: string, person?: ResolvedCippPerson, ticket?: Ticket|null, license?: ResolvedCippLicense|null, state?: string|null, reason?: string, error?: string}
+     * @return array{client?: Client, tenant?: string, person?: ResolvedCippPerson, ticket?: Ticket|null, license?: ResolvedCippLicense|null, state?: string|null, mailbox?: array<string, mixed>|null, reason?: string, error?: string}
      */
     private function context(string $tool, array $arguments, int $clientId, string $actorLabel, bool $requireTicket): array
     {
@@ -398,6 +450,7 @@ class StaffCippWriteToolExecutor
 
             return ['error' => 'reason is required'];
         }
+        $reason = $this->safeReason($tool, $reason, $arguments);
 
         if (TechnicianConfig::killSwitchEngaged()) {
             $this->auditAttempt($tool, 'blocked', $clientId, null, null, null, $contentHash, 'Technician kill-switch engaged; CIPP MCP write refused.', $actorLabel);
@@ -420,6 +473,7 @@ class StaffCippWriteToolExecutor
                 : $this->resolver->resolveOptionalTicket($client->id, $arguments['ticket_id'] ?? null);
             $license = $this->licenseForTool($tool, $client->id, $arguments['license_type_id'] ?? null);
             $state = $this->stateForTool($tool, $arguments['state'] ?? null);
+            $mailbox = $this->mailboxParamsForTool($tool, $client->id, $arguments);
         } catch (CippWriteScopeException $e) {
             $this->auditAttempt($tool, 'rejected', $client->id, null, null, null, $contentHash, $e->getMessage(), $actorLabel);
 
@@ -427,7 +481,7 @@ class StaffCippWriteToolExecutor
         }
 
         if ($error = $this->confirmUpnError($arguments, $person)) {
-            $this->auditAttempt($tool, 'rejected', $client->id, $ticket, $person, $license, $this->contentHash($tool, $client->id, $person->person->id, $ticket?->id, $this->hashParams($tool, $license, $state)), $error, $actorLabel);
+            $this->auditAttempt($tool, 'rejected', $client->id, $ticket, $person, $license, $this->contentHash($tool, $client->id, $person->person->id, $ticket?->id, $this->hashParams($tool, $license, $state, $mailbox)), $error, $actorLabel);
 
             return ['error' => $error];
         }
@@ -439,11 +493,12 @@ class StaffCippWriteToolExecutor
             'ticket' => $ticket,
             'license' => $license,
             'state' => $state,
+            'mailbox' => $mailbox,
             'reason' => $reason,
         ];
     }
 
-    private function executeUpstream(string $tool, string $tenant, ResolvedCippPerson $person, ?ResolvedCippLicense $license, ?string $state): void
+    private function executeUpstream(string $tool, string $tenant, ResolvedCippPerson $person, ?ResolvedCippLicense $license, ?string $state, ?array $mailbox): void
     {
         match ($tool) {
             'cipp_disable_user_sign_in' => $this->client->setUserSignInState($tenant, $person->userId, false),
@@ -453,8 +508,152 @@ class StaffCippWriteToolExecutor
             'cipp_set_legacy_per_user_mfa' => $this->client->setLegacyPerUserMfa($tenant, $person->userPrincipalName, $person->userId, (string) $state),
             'cipp_assign_user_license' => $this->client->assignUserLicense($tenant, $person->userId, (string) $license?->skuId),
             'cipp_remove_user_license' => $this->client->removeUserLicense($tenant, $person->userId, (string) $license?->skuId),
+            'cipp_convert_mailbox' => $this->client->convertMailbox($tenant, $person->userPrincipalName, (string) ($mailbox['mailbox_type'] ?? '')),
+            'cipp_set_mailbox_forwarding' => $this->executeMailboxForwarding($tenant, $person, $mailbox ?? []),
+            'cipp_set_mailbox_gal_visibility' => $this->client->setMailboxGalVisibility($tenant, $person->userPrincipalName, (bool) ($mailbox['hidden'] ?? false)),
+            'cipp_set_mailbox_out_of_office' => $this->client->setMailboxOutOfOffice(
+                $tenant,
+                $person->userPrincipalName,
+                (string) ($mailbox['state'] ?? ''),
+                $mailbox['internal_message'] ?? null,
+                $mailbox['external_message'] ?? null,
+                $mailbox['start_time'] ?? null,
+                $mailbox['end_time'] ?? null,
+                $mailbox['timezone'] ?? null,
+            ),
             default => throw new \InvalidArgumentException("Unsupported CIPP write tool {$tool}"),
         };
+    }
+
+    private function executeMailboxForwarding(string $tenant, ResolvedCippPerson $person, array $mailbox): void
+    {
+        match ((string) ($mailbox['mode'] ?? '')) {
+            'internal' => $this->client->setMailboxForwardingInternal(
+                $tenant,
+                $person->userPrincipalName,
+                $mailbox['target_person'] instanceof ResolvedCippPerson ? $mailbox['target_person']->userPrincipalName : '',
+                (bool) ($mailbox['keep_copy'] ?? false),
+            ),
+            'external' => $this->client->setMailboxForwardingExternal(
+                $tenant,
+                $person->userPrincipalName,
+                (string) ($mailbox['external_smtp'] ?? ''),
+                (bool) ($mailbox['keep_copy'] ?? false),
+            ),
+            'disabled' => $this->client->disableMailboxForwarding($tenant, $person->userPrincipalName),
+            default => throw new \InvalidArgumentException('Unsupported mailbox forwarding mode'),
+        };
+    }
+
+    /** @return array<string, mixed>|null */
+    private function mailboxParamsForTool(string $tool, int $clientId, array $arguments, array $approvalInputs = [], bool $heldApproval = false): ?array
+    {
+        $directTool = self::STAGED_TO_DIRECT[$tool] ?? $tool;
+        $isHeld = $heldApproval || array_key_exists($tool, self::STAGED_TO_DIRECT);
+
+        return match ($directTool) {
+            'cipp_convert_mailbox' => $this->convertMailboxParams($arguments),
+            'cipp_set_mailbox_forwarding' => $this->mailboxForwardingParams($clientId, $arguments, $approvalInputs, $isHeld, $heldApproval),
+            'cipp_set_mailbox_gal_visibility' => $this->mailboxGalParams($arguments),
+            'cipp_set_mailbox_out_of_office' => $this->mailboxOutOfOfficeParams($arguments, $approvalInputs, $isHeld, $heldApproval),
+            default => null,
+        };
+    }
+
+    /** @return array<string, mixed> */
+    private function convertMailboxParams(array $arguments): array
+    {
+        return [
+            'mailbox_type' => $this->canonicalChoice($this->requiredString($arguments, 'mailbox_type'), self::MAILBOX_TYPES, 'mailbox_type'),
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private function mailboxForwardingParams(int $clientId, array $arguments, array $approvalInputs, bool $isHeld, bool $heldApproval): array
+    {
+        $mode = mb_strtolower((string) $this->requiredString($arguments, 'mode'));
+        if ($mode === '') {
+            throw new CippWriteScopeException('mode is required');
+        }
+
+        $allowed = $isHeld ? self::STAGED_FORWARDING_MODES : self::DIRECT_FORWARDING_MODES;
+        if (! in_array($mode, $allowed, true)) {
+            if ($mode === 'external') {
+                throw new CippWriteScopeException('External SMTP forwarding is held-only; use cipp_stage_set_mailbox_forwarding with ticket_id for cockpit approval.');
+            }
+
+            throw new CippWriteScopeException('mode must be one of: '.implode(', ', $allowed));
+        }
+
+        $params = [
+            'mode' => $mode,
+            'keep_copy' => $this->booleanValue($arguments['keep_copy'] ?? false, 'keep_copy'),
+        ];
+
+        if ($mode === 'internal') {
+            $target = $this->resolver->resolveCippPerson($clientId, $arguments['target_person_id'] ?? null);
+            $params['target_person_id'] = $target->person->id;
+            $params['target_person'] = $target;
+        }
+
+        if ($mode === 'external') {
+            $source = $heldApproval ? $approvalInputs : $arguments;
+            $externalSmtp = $this->externalSmtpAddress($source['external_smtp'] ?? null);
+            $domain = $this->domainFromEmail($externalSmtp);
+            if ($heldApproval && isset($arguments['external_domain']) && strcasecmp((string) $arguments['external_domain'], $domain) !== 0) {
+                throw new CippWriteScopeException('Approved external forwarding domain does not match the staged domain');
+            }
+
+            $params['external_domain'] = $domain;
+            if ($heldApproval) {
+                $params['external_smtp'] = $externalSmtp;
+            }
+        }
+
+        return $params;
+    }
+
+    /** @return array<string, mixed> */
+    private function mailboxGalParams(array $arguments): array
+    {
+        return [
+            'hidden' => $this->booleanValue($arguments['hidden'] ?? null, 'hidden'),
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private function mailboxOutOfOfficeParams(array $arguments, array $approvalInputs, bool $isHeld, bool $heldApproval): array
+    {
+        $state = $this->canonicalChoice($this->requiredString($arguments, 'state'), self::OOO_STATES, 'state');
+        $params = ['state' => $state];
+
+        if ($state === 'Scheduled') {
+            $params['start_time'] = $this->boundedString($arguments, 'start_time', 100, required: true);
+            $params['end_time'] = $this->boundedString($arguments, 'end_time', 100, required: true);
+        }
+
+        $timezone = $this->boundedString($arguments, 'timezone', 100, required: false);
+        if ($timezone !== null) {
+            $params['timezone'] = $timezone;
+        }
+
+        if ($state === 'Disabled') {
+            return $params;
+        }
+
+        $source = $heldApproval ? $approvalInputs : $arguments;
+        $internalMessage = $this->boundedString($source, 'internal_message', self::OOO_MESSAGE_MAX, required: true);
+        $externalMessage = $this->boundedString($source, 'external_message', self::OOO_MESSAGE_MAX, required: true);
+
+        $params['internal_message_length'] = mb_strlen($internalMessage);
+        $params['external_message_length'] = mb_strlen($externalMessage);
+
+        if (! $isHeld || $heldApproval) {
+            $params['internal_message'] = $internalMessage;
+            $params['external_message'] = $externalMessage;
+        }
+
+        return $params;
     }
 
     private function licenseForTool(string $tool, int $clientId, mixed $licenseTypeId): ?ResolvedCippLicense
@@ -494,6 +693,113 @@ class StaffCippWriteToolExecutor
         }
 
         return null;
+    }
+
+    private function safeReason(string $tool, string $reason, array $arguments): string
+    {
+        $directTool = self::STAGED_TO_DIRECT[$tool] ?? $tool;
+        $safe = $this->redactor->redactString($reason);
+
+        if ($directTool === 'cipp_set_mailbox_forwarding') {
+            if (isset($arguments['external_smtp']) && is_scalar($arguments['external_smtp'])) {
+                $safe = str_replace((string) $arguments['external_smtp'], '[external address withheld]', $safe);
+            }
+
+            if (mb_strtolower((string) ($arguments['mode'] ?? '')) === 'external') {
+                $safe = preg_replace('/\b[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}\b/i', '[external address withheld]', $safe) ?? $safe;
+            }
+        }
+
+        if ($directTool === 'cipp_set_mailbox_out_of_office') {
+            foreach (['internal_message', 'external_message'] as $key) {
+                if (isset($arguments[$key]) && is_scalar($arguments[$key])) {
+                    $value = trim((string) $arguments[$key]);
+                    if ($value !== '') {
+                        $safe = str_replace($value, "[{$key} withheld]", $safe);
+                    }
+                }
+            }
+        }
+
+        return $safe;
+    }
+
+    private function canonicalChoice(?string $value, array $allowed, string $field): string
+    {
+        if ($value === null) {
+            throw new CippWriteScopeException("{$field} is required");
+        }
+
+        foreach ($allowed as $choice) {
+            if (strcasecmp($value, $choice) === 0) {
+                return $choice;
+            }
+        }
+
+        throw new CippWriteScopeException("{$field} must be one of: ".implode(', ', $allowed));
+    }
+
+    private function booleanValue(mixed $value, string $field): bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+        if (is_int($value) && in_array($value, [0, 1], true)) {
+            return $value === 1;
+        }
+        if (is_string($value)) {
+            $normalized = mb_strtolower(trim($value));
+            if (in_array($normalized, ['true', '1'], true)) {
+                return true;
+            }
+            if (in_array($normalized, ['false', '0'], true)) {
+                return false;
+            }
+        }
+
+        throw new CippWriteScopeException("{$field} must be true or false");
+    }
+
+    private function boundedString(array $arguments, string $field, int $maxLength, bool $required): ?string
+    {
+        $value = $this->requiredString($arguments, $field);
+        if ($value === null) {
+            if ($required) {
+                throw new CippWriteScopeException("{$field} is required");
+            }
+
+            return null;
+        }
+
+        if (mb_strlen($value) > $maxLength) {
+            throw new CippWriteScopeException("{$field} must be {$maxLength} characters or fewer");
+        }
+
+        return $value;
+    }
+
+    private function externalSmtpAddress(mixed $value): string
+    {
+        if (! is_scalar($value)) {
+            throw new CippWriteScopeException('external_smtp is required for external forwarding');
+        }
+
+        $email = trim((string) $value);
+        if ($email === '' || mb_strlen($email) > 254 || filter_var($email, FILTER_VALIDATE_EMAIL) === false) {
+            throw new CippWriteScopeException('external_smtp must be a valid SMTP address');
+        }
+
+        return $email;
+    }
+
+    private function domainFromEmail(string $email): string
+    {
+        $domain = mb_strtolower((string) substr(strrchr($email, '@') ?: '', 1));
+        if ($domain === '') {
+            throw new CippWriteScopeException('external_smtp must include a domain');
+        }
+
+        return $domain;
     }
 
     /** @return array<int, string> */
@@ -604,7 +910,7 @@ class StaffCippWriteToolExecutor
     }
 
     /** @return array<string, mixed> */
-    private function hashParams(string $tool, ?ResolvedCippLicense $license, ?string $state): array
+    private function hashParams(string $tool, ?ResolvedCippLicense $license, ?string $state, ?array $mailbox): array
     {
         $params = [];
         if ($license !== null) {
@@ -613,8 +919,53 @@ class StaffCippWriteToolExecutor
         if ($state !== null) {
             $params['state'] = $state;
         }
+        if ($mailbox !== null) {
+            $params = array_merge($params, $this->safeMailboxParams($mailbox));
+        }
 
         return $params;
+    }
+
+    /** @return array<string, mixed> */
+    private function safeMailboxParams(array $mailbox): array
+    {
+        $safe = [];
+        foreach ([
+            'mailbox_type',
+            'mode',
+            'target_person_id',
+            'keep_copy',
+            'external_domain',
+            'hidden',
+            'state',
+            'internal_message_length',
+            'external_message_length',
+            'start_time',
+            'end_time',
+            'timezone',
+        ] as $key) {
+            if (array_key_exists($key, $mailbox)) {
+                $safe[$key] = $mailbox[$key];
+            }
+        }
+
+        return $safe;
+    }
+
+    /** @return array<int, string> */
+    private function sensitiveInputsForStagedAction(string $directTool, array $safeParams): array
+    {
+        $inputs = [];
+        if ($directTool === 'cipp_set_mailbox_forwarding' && ($safeParams['mode'] ?? null) === 'external') {
+            $inputs[] = 'external_smtp';
+        }
+
+        if ($directTool === 'cipp_set_mailbox_out_of_office' && in_array($safeParams['state'] ?? null, ['Enabled', 'Scheduled'], true)) {
+            $inputs[] = 'internal_message';
+            $inputs[] = 'external_message';
+        }
+
+        return $inputs;
     }
 
     private function contentHash(string $tool, int $clientId, ?int $personId, ?int $ticketId, array $params): string
@@ -689,7 +1040,7 @@ class StaffCippWriteToolExecutor
         return $this->targetKey($person, $license).': '.$summary;
     }
 
-    private function stagedDisplay(string $directTool, ResolvedCippPerson $person, ?ResolvedCippLicense $license, ?string $state): string
+    private function stagedDisplay(string $directTool, ResolvedCippPerson $person, ?ResolvedCippLicense $license, ?string $state, ?array $mailbox): string
     {
         return match ($directTool) {
             'cipp_disable_user_sign_in' => 'Disable sign-in for PSA person #'.$person->person->id.'.',
@@ -699,8 +1050,35 @@ class StaffCippWriteToolExecutor
             'cipp_set_legacy_per_user_mfa' => 'Set legacy per-user MFA to '.$state.' for PSA person #'.$person->person->id.'.',
             'cipp_assign_user_license' => 'Assign license_type #'.$license?->licenseType->id.' to PSA person #'.$person->person->id.'.',
             'cipp_remove_user_license' => 'Remove license_type #'.$license?->licenseType->id.' from PSA person #'.$person->person->id.'.',
+            'cipp_convert_mailbox' => 'Convert mailbox for PSA person #'.$person->person->id.' to '.($mailbox['mailbox_type'] ?? 'unknown').'. Shared mailbox conversion can change licensing obligations.',
+            'cipp_set_mailbox_forwarding' => $this->mailboxForwardingDisplay($person, $mailbox ?? []),
+            'cipp_set_mailbox_gal_visibility' => 'Set GAL visibility for PSA person #'.$person->person->id.' to '.((bool) ($mailbox['hidden'] ?? false) ? 'hidden' : 'visible').'.',
+            'cipp_set_mailbox_out_of_office' => $this->mailboxOutOfOfficeDisplay($person, $mailbox ?? []),
             default => $directTool.' for PSA person #'.$person->person->id.'.',
         };
+    }
+
+    private function mailboxForwardingDisplay(ResolvedCippPerson $person, array $mailbox): string
+    {
+        return match ((string) ($mailbox['mode'] ?? '')) {
+            'disabled' => 'Disable mailbox forwarding for PSA person #'.$person->person->id.'.',
+            'internal' => 'Set mailbox forwarding for PSA person #'.$person->person->id.' to PSA target person #'.($mailbox['target_person_id'] ?? 'unknown').' (keep copy '.((bool) ($mailbox['keep_copy'] ?? false) ? 'true' : 'false').').',
+            'external' => 'Set external SMTP mailbox forwarding for PSA person #'.$person->person->id.' to domain '.($mailbox['external_domain'] ?? 'unknown').' (full address re-entered at approval; keep copy '.((bool) ($mailbox['keep_copy'] ?? false) ? 'true' : 'false').').',
+            default => 'Set mailbox forwarding for PSA person #'.$person->person->id.'.',
+        };
+    }
+
+    private function mailboxOutOfOfficeDisplay(ResolvedCippPerson $person, array $mailbox): string
+    {
+        $display = 'Set mailbox out-of-office for PSA person #'.$person->person->id.' to '.($mailbox['state'] ?? 'unknown').'.';
+        if (isset($mailbox['internal_message_length'], $mailbox['external_message_length'])) {
+            $display .= ' internal_message_length='.$mailbox['internal_message_length'].'; external_message_length='.$mailbox['external_message_length'].'.';
+        }
+        if (($mailbox['state'] ?? null) === 'Scheduled') {
+            $display .= ' start='.$mailbox['start_time'].'; end='.$mailbox['end_time'].'.';
+        }
+
+        return $display;
     }
 
     private function safeFailureSummary(string $tool, CippClientException $e): string
@@ -762,6 +1140,92 @@ class StaffCippWriteToolExecutor
                 'type' => 'string',
                 'enum' => ['disabled', 'enabled', 'enforced'],
                 'description' => 'Legacy per-user MFA state to set.',
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private static function mailboxTypeProperties(): array
+    {
+        return [
+            'mailbox_type' => [
+                'type' => 'string',
+                'enum' => self::MAILBOX_TYPES,
+                'description' => 'Mailbox recipient type to set through the curated CIPP ExecConvertMailbox wrapper.',
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private static function forwardingProperties(bool $stage): array
+    {
+        $properties = [
+            'mode' => [
+                'type' => 'string',
+                'enum' => $stage ? self::STAGED_FORWARDING_MODES : self::DIRECT_FORWARDING_MODES,
+                'description' => $stage
+                    ? 'Forwarding mode. External SMTP forwarding is staged only and requires approval.'
+                    : 'Forwarding mode. Direct execution supports only disabled or internal.',
+            ],
+            'target_person_id' => [
+                'type' => 'integer',
+                'description' => 'Required when mode=internal. Local PSA person ID in the same client; the server derives the internal forwarding target UPN.',
+            ],
+            'keep_copy' => [
+                'type' => 'boolean',
+                'description' => 'Whether Exchange should also keep delivered mail in the source mailbox when forwarding is enabled.',
+            ],
+        ];
+
+        if ($stage) {
+            $properties['external_smtp'] = [
+                'type' => 'string',
+                'description' => 'Required when mode=external. Validated for the proposal, reduced to domain for storage/audit, then re-entered by the approver before execution.',
+            ];
+        }
+
+        return $properties;
+    }
+
+    /** @return array<string, mixed> */
+    private static function galVisibilityProperties(): array
+    {
+        return [
+            'hidden' => [
+                'type' => 'boolean',
+                'description' => 'true hides the mailbox from the Global Address List; false makes it visible.',
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private static function outOfOfficeProperties(): array
+    {
+        return [
+            'state' => [
+                'type' => 'string',
+                'enum' => self::OOO_STATES,
+                'description' => 'Out-of-office auto-reply state.',
+            ],
+            'internal_message' => [
+                'type' => 'string',
+                'description' => 'Required for Enabled or Scheduled. Max 2000 characters; body is sent to CIPP but only length is audited.',
+            ],
+            'external_message' => [
+                'type' => 'string',
+                'description' => 'Required for Enabled or Scheduled. Max 2000 characters; body is sent to CIPP but only length is audited.',
+            ],
+            'start_time' => [
+                'type' => 'string',
+                'description' => 'Required for Scheduled. ISO-like datetime or source-compatible timestamp string.',
+            ],
+            'end_time' => [
+                'type' => 'string',
+                'description' => 'Required for Scheduled. ISO-like datetime or source-compatible timestamp string.',
+            ],
+            'timezone' => [
+                'type' => 'string',
+                'description' => 'Optional Exchange timezone identifier.',
             ],
         ];
     }
@@ -931,6 +1395,94 @@ class StaffCippWriteToolExecutor
             'Stage removal of one local CIPP M365 license SKU for cockpit approval. This can remove user access and alter billing; the held payload is encrypted at rest and approval revalidates mappings before execution.',
             array_merge(self::personProperties(ticket: true), self::licenseProperties()),
             ['person_id', 'license_type_id', 'ticket_id', 'confirm_upn', 'reason'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function convertMailboxTool(): array
+    {
+        return self::tool(
+            'cipp_convert_mailbox',
+            'Convert a server-derived Microsoft 365 mailbox immediately through CIPP. Shared mailbox conversion can change licensing obligations and mailbox behavior. Requires explicit grant, reason, confirm_upn, kill-switch, dedup/cooldown, and audit.',
+            array_merge(self::personProperties(), self::mailboxTypeProperties()),
+            ['person_id', 'mailbox_type', 'confirm_upn', 'reason'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function stageConvertMailboxTool(): array
+    {
+        return self::tool(
+            'cipp_stage_convert_mailbox',
+            'Stage a Microsoft 365 mailbox conversion for cockpit approval. Shared mailbox conversion can change licensing obligations; the held payload stores only local identifiers and safe parameters, then approval revalidates CIPP scope.',
+            array_merge(self::personProperties(ticket: true), self::mailboxTypeProperties()),
+            ['person_id', 'mailbox_type', 'ticket_id', 'confirm_upn', 'reason'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function setMailboxForwardingTool(): array
+    {
+        return self::tool(
+            'cipp_set_mailbox_forwarding',
+            'Set mailbox forwarding immediately through CIPP for one server-derived user. Direct execution supports internal forwarding or disabling only. External SMTP forwarding is held-only because it can create BEC and data-exfiltration risk. Requires explicit grant, reason, confirm_upn, kill-switch, cooldown, and audit.',
+            array_merge(self::personProperties(), self::forwardingProperties(stage: false)),
+            ['person_id', 'mode', 'confirm_upn', 'reason'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function stageSetMailboxForwardingTool(): array
+    {
+        return self::tool(
+            'cipp_stage_set_mailbox_forwarding',
+            'Stage mailbox forwarding for cockpit approval. External SMTP forwarding carries BEC and data-exfiltration risk; the external address is re-entered at approval and is not stored, while audit keeps only target type/domain. Approval revalidates local client/person scope before CIPP execution.',
+            array_merge(self::personProperties(ticket: true), self::forwardingProperties(stage: true)),
+            ['person_id', 'mode', 'ticket_id', 'confirm_upn', 'reason'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function setMailboxGalVisibilityTool(): array
+    {
+        return self::tool(
+            'cipp_set_mailbox_gal_visibility',
+            'Set Global Address List visibility immediately for one server-derived mailbox. Hiding a mailbox can affect discoverability for staff. Requires explicit grant, reason, confirm_upn, kill-switch, cooldown, and audit.',
+            array_merge(self::personProperties(), self::galVisibilityProperties()),
+            ['person_id', 'hidden', 'confirm_upn', 'reason'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function stageSetMailboxGalVisibilityTool(): array
+    {
+        return self::tool(
+            'cipp_stage_set_mailbox_gal_visibility',
+            'Stage a Global Address List visibility change for cockpit approval. The MCP call makes no CIPP upstream call; approval revalidates local client/person scope before execution.',
+            array_merge(self::personProperties(ticket: true), self::galVisibilityProperties()),
+            ['person_id', 'hidden', 'ticket_id', 'confirm_upn', 'reason'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function setMailboxOutOfOfficeTool(): array
+    {
+        return self::tool(
+            'cipp_set_mailbox_out_of_office',
+            'Set mailbox out-of-office state/messages/schedule immediately through CIPP. Calendar-decline options are not supported in v1. Message bodies are sent upstream but never stored or returned; audit records message lengths only. Requires explicit grant, reason, confirm_upn, kill-switch, cooldown, and audit.',
+            array_merge(self::personProperties(), self::outOfOfficeProperties()),
+            ['person_id', 'state', 'confirm_upn', 'reason'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function stageSetMailboxOutOfOfficeTool(): array
+    {
+        return self::tool(
+            'cipp_stage_set_mailbox_out_of_office',
+            'Stage mailbox out-of-office state/messages/schedule for cockpit approval. Message bodies are re-entered at approval and are not stored; the proposal stores message lengths only plus safe schedule metadata.',
+            array_merge(self::personProperties(ticket: true), self::outOfOfficeProperties()),
+            ['person_id', 'state', 'ticket_id', 'confirm_upn', 'reason'],
         );
     }
 }

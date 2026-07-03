@@ -91,6 +91,99 @@ class CippRestWriteClient
         ]]);
     }
 
+    /** @return array<int|string, mixed> */
+    public function convertMailbox(string $tenantFilter, string $userPrincipalName, string $mailboxType): array
+    {
+        return $this->send('api/ExecConvertMailbox', [
+            'tenantFilter' => $tenantFilter,
+            'ID' => $userPrincipalName,
+            'MailboxType' => $mailboxType,
+        ]);
+    }
+
+    /** @return array<int|string, mixed> */
+    public function setMailboxForwardingInternal(string $tenantFilter, string $userPrincipalName, string $targetUserPrincipalName, bool $keepCopy): array
+    {
+        return $this->send('api/ExecEmailForward', [
+            'tenantFilter' => $tenantFilter,
+            'userID' => $userPrincipalName,
+            'ForwardInternal' => $targetUserPrincipalName,
+            'ForwardExternal' => null,
+            'forwardOption' => 'internalAddress',
+            'KeepCopy' => $keepCopy ? 'true' : 'false',
+        ]);
+    }
+
+    /** @return array<int|string, mixed> */
+    public function setMailboxForwardingExternal(string $tenantFilter, string $userPrincipalName, string $externalSmtpAddress, bool $keepCopy): array
+    {
+        return $this->send('api/ExecEmailForward', [
+            'tenantFilter' => $tenantFilter,
+            'userID' => $userPrincipalName,
+            'ForwardInternal' => null,
+            'ForwardExternal' => $externalSmtpAddress,
+            'forwardOption' => 'ExternalAddress',
+            'KeepCopy' => $keepCopy ? 'true' : 'false',
+        ]);
+    }
+
+    /** @return array<int|string, mixed> */
+    public function disableMailboxForwarding(string $tenantFilter, string $userPrincipalName): array
+    {
+        return $this->send('api/ExecEmailForward', [
+            'tenantFilter' => $tenantFilter,
+            'userID' => $userPrincipalName,
+            'ForwardInternal' => null,
+            'ForwardExternal' => null,
+            'forwardOption' => 'disabled',
+            'KeepCopy' => 'false',
+        ]);
+    }
+
+    /** @return array<int|string, mixed> */
+    public function setMailboxGalVisibility(string $tenantFilter, string $userPrincipalName, bool $hidden): array
+    {
+        return $this->send('api/ExecHideFromGAL', [
+            'tenantFilter' => $tenantFilter,
+            'ID' => $userPrincipalName,
+            'HideFromGAL' => $hidden,
+        ]);
+    }
+
+    /** @return array<int|string, mixed> */
+    public function setMailboxOutOfOffice(
+        string $tenantFilter,
+        string $userPrincipalName,
+        string $state,
+        ?string $internalMessage,
+        ?string $externalMessage,
+        ?string $startTime,
+        ?string $endTime,
+        ?string $timezone,
+    ): array {
+        $body = [
+            'tenantFilter' => $tenantFilter,
+            'userId' => $userPrincipalName,
+            'AutoReplyState' => $state,
+        ];
+
+        if ($internalMessage !== null && trim($internalMessage) !== '') {
+            $body['InternalMessage'] = $internalMessage;
+        }
+        if ($externalMessage !== null && trim($externalMessage) !== '') {
+            $body['ExternalMessage'] = $externalMessage;
+        }
+        if ($state === 'Scheduled') {
+            $body['StartTime'] = $startTime;
+            $body['EndTime'] = $endTime;
+        }
+        if ($timezone !== null && trim($timezone) !== '') {
+            $body['timezone'] = $timezone;
+        }
+
+        return $this->send('api/ExecSetOoO', $body);
+    }
+
     /**
      * @param  array<int|string, mixed>  $body
      * @return array<int|string, mixed>
