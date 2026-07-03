@@ -11,16 +11,22 @@ class ChetDataSurfaceTools
     /** @return array<int, array<string, mixed>> */
     public static function generalTools(): array
     {
-        return TeamsBotConfig::appId() !== null
+        $tools = TeamsBotConfig::appId() !== null
             ? TeamsChatReadToolset::definitions()
             : [];
+
+        if (TacticalConfig::isConfigured()) {
+            $tools = array_merge($tools, TacticalReadOnlyToolset::generalDefinitions());
+        }
+
+        return $tools;
     }
 
     /** @return array<int, array<string, mixed>> */
     public static function clientTools(): array
     {
         return TacticalConfig::isConfigured()
-            ? TacticalReadOnlyToolset::definitions()
+            ? TacticalReadOnlyToolset::clientDefinitions()
             : [];
     }
 
@@ -44,6 +50,6 @@ class ChetDataSurfaceTools
 
     public static function requiresClient(string $toolName): bool
     {
-        return TacticalReadOnlyToolset::handles($toolName);
+        return TacticalReadOnlyToolset::requiresClient($toolName);
     }
 }

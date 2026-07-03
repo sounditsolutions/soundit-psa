@@ -9,7 +9,7 @@ class ChetDataSurfaceToolExecutor
     public function execute(string $toolName, array $input, ?int $clientId): mixed
     {
         if (TacticalReadOnlyToolset::handles($toolName)) {
-            if ($clientId === null) {
+            if (TacticalReadOnlyToolset::requiresClient($toolName) && $clientId === null) {
                 return ['error' => 'client_id is required for '.$toolName.'.'];
             }
 
