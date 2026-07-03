@@ -324,7 +324,7 @@
                     <div class="card-body py-2">
                         <div class="d-flex flex-wrap align-items-center gap-3">
                             <div class="flex-grow-1 min-w-0">
-                                <div class="fw-semibold small">{{ $isCall ? '📞 Call → ticket' : 'New ticket' }} <span>#{{ $run->ticket?->id }}</span> looks like open ticket <span>#{{ $meta['suggested_ticket_id'] ?? '?' }}</span></div>
+                                <div class="fw-semibold small">{{ $isCall ? '📞 Call → ticket' : 'New ticket' }} @if($run->ticket_id)<a href="{{ route('tickets.show', $run->ticket_id) }}" class="text-decoration-none">#{{ $run->ticket_id }}</a>@else<span>#?</span>@endif looks like open ticket @if(! empty($meta['suggested_ticket_id']))<a href="{{ route('tickets.show', $meta['suggested_ticket_id']) }}" class="text-decoration-none">#{{ $meta['suggested_ticket_id'] }}</a>@else<span>#?</span>@endif</div>
                                 <div class="text-muted small text-truncate">{{ $run->proposed_content }} @if(isset($meta['confidence']))({{ (int) round(((float) $meta['confidence']) * 100) }}% confidence)@endif</div>
                             </div>
                             <form method="POST" action="{{ route('cockpit.intake-dismiss', $run) }}" data-cockpit-form data-mode="optimistic" data-keybind="hold" data-undo-action="dismiss-intake" data-target-type="run" data-target-id="{{ $run->id }}">
@@ -341,7 +341,7 @@
                     <div class="card-body py-2">
                         <div class="d-flex flex-wrap align-items-center gap-3">
                             <div class="flex-grow-1 min-w-0">
-                                <div class="fw-semibold small">Call from {{ $call->from_number }} looks like spam <span class="badge rounded-pill text-bg-danger">{{ (int) round(($call->intake_spam_score ?? 0) * 100) }}%</span></div>
+                                <div class="fw-semibold small"><a href="{{ route('calls.show', $call) }}" class="text-decoration-none">Call from {{ $call->from_number }}</a> looks like spam <span class="badge rounded-pill text-bg-danger">{{ (int) round(($call->intake_spam_score ?? 0) * 100) }}%</span></div>
                                 <div class="text-muted small text-truncate">{{ \Illuminate\Support\Str::limit($call->call_summary, 200) }}</div>
                             </div>
                             <div class="d-flex flex-wrap gap-2">
