@@ -60,6 +60,32 @@
                         @enderror
                     </div>
 
+                    <div class="border rounded p-3 mb-3">
+                        <div class="fw-semibold small mb-2">Trust Controls</div>
+                        <input type="hidden" name="ai_actor" value="0">
+                        <div class="form-check form-switch mb-2">
+                            <input class="form-check-input"
+                                   type="checkbox"
+                                   role="switch"
+                                   name="ai_actor"
+                                   value="1"
+                                   id="ai_actor"
+                                   @checked(old('ai_actor'))>
+                            <label class="form-check-label" for="ai_actor">AI actor attribution</label>
+                        </div>
+                        <input type="hidden" name="require_explicit_client_scope" value="0">
+                        <div class="form-check form-switch">
+                            <input class="form-check-input"
+                                   type="checkbox"
+                                   role="switch"
+                                   name="require_explicit_client_scope"
+                                   value="1"
+                                   id="require_explicit_client_scope"
+                                   @checked(old('require_explicit_client_scope', '1'))>
+                            <label class="form-check-label" for="require_explicit_client_scope">Require explicit client scope</label>
+                        </div>
+                    </div>
+
                     <div class="mb-2">
                         <label class="form-label">Allowed Tools</label>
                         @error('tools')
@@ -129,6 +155,7 @@
                                 <th>Label</th>
                                 <th>Prefix</th>
                                 <th>Tools</th>
+                                <th>Trust</th>
                                 <th>Created</th>
                                 <th>Last Used</th>
                                 <th class="text-center">Status</th>
@@ -156,6 +183,17 @@
                                                 <span class="text-muted">+{{ count($token->tools) - 5 }}</span>
                                             @endif
                                         @endif
+                                    </td>
+                                    <td class="small">
+                                        @if($token->ai_actor)
+                                            <span class="badge bg-info text-dark">AI actor</span>
+                                        @endif
+                                        @if($token->require_explicit_client_scope)
+                                            <span class="badge bg-primary">explicit client scope</span>
+                                        @endif
+                                        @unless($token->ai_actor || $token->require_explicit_client_scope)
+                                            <span class="text-muted">standard</span>
+                                        @endunless
                                     </td>
                                     <td class="small">{{ $token->created_at?->toAppTz()->format('Y-m-d H:i') }}</td>
                                     <td class="small">{{ $token->last_used_at ? $token->last_used_at->diffForHumans() : 'never' }}</td>

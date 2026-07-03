@@ -52,8 +52,8 @@ class McpStaffController extends Controller
 
     private const WHOAMI_TOOL = 'whoami';
 
-    /** Chet write tools that must carry an explicit client_id scope. */
-    private const CHET_CLIENT_SCOPED_WRITE_TOOLS = [
+    /** Write tools that can be forced to carry an explicit client_id scope. */
+    private const EXPLICIT_CLIENT_SCOPE_WRITE_TOOLS = [
         'add_ticket_note',
         'propose_close',
         'send_reply',
@@ -233,13 +233,13 @@ class McpStaffController extends Controller
         $toolInstructions = McpToolInstructions::all();
         $translated = array_values(array_filter(array_map(function ($t) use ($request, $generalNames, $clientIdOptionalFor, $toolInstructions): ?array {
             $schema = $t['input_schema'] ?? ['type' => 'object', 'properties' => new \stdClass];
-            $isChetClientScopedWrite = $this->isChetClientScopedWrite($request, (string) $t['name']);
+            $requiresExplicitClientScope = $this->requiresExplicitClientScope($request, (string) $t['name']);
             $isPsaActionTool = $this->isPsaActionTool((string) $t['name']);
-            $isClientScoped = ! isset($generalNames[$t['name']]) || $isChetClientScopedWrite || $isPsaActionTool;
+            $isClientScoped = ! isset($generalNames[$t['name']]) || $requiresExplicitClientScope || $isPsaActionTool;
 
             if ($isClientScoped) {
                 $props = (array) ($schema['properties'] ?? []);
-                $clientIdRequired = $isChetClientScopedWrite || $isPsaActionTool || ! in_array($t['name'], $clientIdOptionalFor, true);
+                $clientIdRequired = $requiresExplicitClientScope || $isPsaActionTool || ! in_array($t['name'], $clientIdOptionalFor, true);
                 $props['client_id'] = [
                     'type' => 'integer',
                     'description' => $clientIdRequired
@@ -358,8 +358,8 @@ class McpStaffController extends Controller
             ]);
         }
 
-        if ($this->isChetWikiClientScopeWrite($request, (string) $name, $arguments) && $clientId === null) {
-            $message = 'client_id is required for Chet wiki_add_fact client-scope writes.';
+        if ($this->isWikiClientScopeWrite((string) $name, $arguments) && $clientId === null) {
+            $message = 'client_id is required for wiki_add_fact client-scope writes.';
             $this->audit('tools/call', (string) $name, $auditArguments, 'error', $message, $start, $request);
 
             return response()->json([
@@ -372,8 +372,8 @@ class McpStaffController extends Controller
             ]);
         }
 
-        if ($this->isChetClientScopedWrite($request, (string) $name) && $clientId === null) {
-            $message = "client_id is required for Chet {$name} writes.";
+        if ($this->requiresExplicitClientScope($request, (string) $name) && $clientId === null) {
+            $message = "client_id is required for {$name} when explicit client scope is required.";
             $this->audit('tools/call', (string) $name, $auditArguments, 'error', $message, $start, $request);
 
             return response()->json([
@@ -414,12 +414,13 @@ class McpStaffController extends Controller
             ]);
         }
 
-        // Chet's held ticket actions are client-scoped end-to-end: the ticket must belong
-        // to the client context Chet supplied. Enforced HERE at the Chet boundary —
-        // the staff-trust surface deliberately keeps the opposite contract (derive
-        // the client from the ticket, ignore caller client_id; see
-        // McpStaffProposeCloseTest::test_mcp_propose_close_derives_client_from_ticket…).
-        if ($this->isChetHeldTicketAction($request, (string) $name)) {
+        // Held ticket actions validate a supplied client scope before execution.
+        // Tokens without explicit-scope enforcement may still use the legacy
+        // staff-trust path that derives client context from the ticket.
+        if ($this->requiresExplicitClientScope($request, (string) $name)
+            && $this->isHeldTicketAction((string) $name)
+            && $clientId !== null
+        ) {
             if (! $this->ticketBelongsToClient($arguments, $clientId)) {
                 $message = 'Ticket not found or belongs to a different client';
                 $this->audit('tools/call', (string) $name, $auditArguments, 'error', $message, $start, $request);
@@ -845,38 +846,35 @@ class McpStaffController extends Controller
 
     private function userIdForToolCall(Request $request, string $toolName): ?int
     {
-        if ($this->isChetAiActorWrite($request, $toolName)) {
+        if ($this->usesAiActorForWrite($request, $toolName)) {
             return TechnicianConfig::requiredAiActorUserId();
         }
 
-        // Existing service-account identity for non-Chet MCP calls.
+        // Existing service-account identity for MCP calls without ai_actor.
         return \App\Support\TriageConfig::systemUserId();
     }
 
-    private function isChetToken(Request $request): bool
+    private function usesAiActorForWrite(Request $request, string $toolName): bool
     {
         $token = $request->attributes->get('mcp_staff_token');
 
         return $token instanceof McpStaffToken
-            && mb_strtolower((string) $token->label) === 'chet';
+            && $token->aiActor
+            && (in_array($toolName, ['add_ticket_note'], true) || in_array($toolName, self::WIKI_WRITE_TOOLS, true));
     }
 
-    private function isChetAiActorWrite(Request $request, string $toolName): bool
+    private function requiresExplicitClientScope(Request $request, string $toolName): bool
     {
-        return (in_array($toolName, ['add_ticket_note'], true) || in_array($toolName, self::WIKI_WRITE_TOOLS, true))
-            && $this->isChetToken($request);
+        $token = $request->attributes->get('mcp_staff_token');
+
+        return $token instanceof McpStaffToken
+            && $token->requireExplicitClientScope
+            && in_array($toolName, self::EXPLICIT_CLIENT_SCOPE_WRITE_TOOLS, true);
     }
 
-    private function isChetClientScopedWrite(Request $request, string $toolName): bool
+    private function isHeldTicketAction(string $toolName): bool
     {
-        return in_array($toolName, self::CHET_CLIENT_SCOPED_WRITE_TOOLS, true)
-            && $this->isChetToken($request);
-    }
-
-    private function isChetHeldTicketAction(Request $request, string $toolName): bool
-    {
-        return in_array($toolName, ['propose_close', 'send_reply'], true)
-            && $this->isChetToken($request);
+        return in_array($toolName, ['propose_close', 'send_reply'], true);
     }
 
     private function ticketBelongsToClient(array $arguments, ?int $clientId): bool
@@ -890,10 +888,9 @@ class McpStaffController extends Controller
         return $ticketClientId !== null && (int) $ticketClientId === $clientId;
     }
 
-    private function isChetWikiClientScopeWrite(Request $request, string $toolName, array $arguments): bool
+    private function isWikiClientScopeWrite(string $toolName, array $arguments): bool
     {
         return $toolName === 'wiki_add_fact'
-            && $this->isChetToken($request)
             && mb_strtolower(trim((string) ($arguments['scope'] ?? ''))) === 'client';
     }
 

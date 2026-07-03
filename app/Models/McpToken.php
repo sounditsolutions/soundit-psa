@@ -21,6 +21,8 @@ class McpToken extends Model
         'token_prefix',
         'tools',
         'directive',
+        'ai_actor',
+        'require_explicit_client_scope',
         'last_used_at',
         'revoked_at',
     ];
@@ -29,6 +31,8 @@ class McpToken extends Model
     {
         return [
             'tools' => 'array',
+            'ai_actor' => 'boolean',
+            'require_explicit_client_scope' => 'boolean',
             'last_used_at' => 'datetime',
             'revoked_at' => 'datetime',
         ];

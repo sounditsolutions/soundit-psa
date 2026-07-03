@@ -43,6 +43,8 @@ class McpConfig
             label: (string) $record->label,
             id: (int) $record->id,
             directive: $record->directiveOrDefault(),
+            aiActor: (bool) $record->ai_actor,
+            requireExplicitClientScope: (bool) $record->require_explicit_client_scope,
         );
     }
 
@@ -52,8 +54,12 @@ class McpConfig
      *
      * @param  array<int, string>|null  $allowedTools  Null rotates the legacy full-surface token.
      */
-    public static function rotateStaffToken(?array $allowedTools = null, ?string $label = null): string
-    {
+    public static function rotateStaffToken(
+        ?array $allowedTools = null,
+        ?string $label = null,
+        ?bool $aiActor = null,
+        ?bool $requireExplicitClientScope = null,
+    ): string {
         $token = 'psa-mcp-'.Str::random(48);
 
         if ($allowedTools === null) {
@@ -69,11 +75,19 @@ class McpConfig
 
         $label = self::normalizeLabel($label);
         $record = McpToken::firstOrNew(['label' => $label]);
+        $isNew = ! $record->exists;
+        $useNewTokenTrustDefaults = $isNew || $record->isRevoked();
         $record->token_hash = hash('sha256', $token);
         $record->token_prefix = self::tokenPrefix($token);
         $record->tools = $tools;
         $record->last_used_at = null;
         $record->revoked_at = null;
+        if ($aiActor !== null || $useNewTokenTrustDefaults) {
+            $record->ai_actor = $aiActor ?? false;
+        }
+        if ($requireExplicitClientScope !== null || $useNewTokenTrustDefaults) {
+            $record->require_explicit_client_scope = $requireExplicitClientScope ?? true;
+        }
         $record->save();
 
         return $token;
@@ -107,7 +121,7 @@ class McpConfig
         return array_keys($normalized);
     }
 
-    private static function normalizeLabel(?string $label): string
+    public static function normalizeLabel(?string $label): string
     {
         $label = trim((string) $label);
         if ($label === '') {

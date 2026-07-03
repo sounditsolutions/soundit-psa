@@ -69,6 +69,32 @@
         </div>
 
         <div class="card card-static shadow-sm mt-4">
+            <div class="card-header"><i class="bi bi-shield-check me-2"></i>Trust Controls</div>
+            <div class="card-body">
+                <form method="POST" action="{{ route('settings.mcp-tokens.trust-flags', $token) }}">
+                    @csrf
+                    @method('PATCH')
+
+                    <input type="hidden" name="ai_actor" value="0">
+                    <div class="form-check form-switch mb-2">
+                        <input class="form-check-input" type="checkbox" role="switch" name="ai_actor" value="1" id="ai_actor" @checked(old('ai_actor', $token->ai_actor))>
+                        <label class="form-check-label" for="ai_actor">AI actor attribution</label>
+                    </div>
+
+                    <input type="hidden" name="require_explicit_client_scope" value="0">
+                    <div class="form-check form-switch">
+                        <input class="form-check-input" type="checkbox" role="switch" name="require_explicit_client_scope" value="1" id="require_explicit_client_scope" @checked(old('require_explicit_client_scope', $token->require_explicit_client_scope))>
+                        <label class="form-check-label" for="require_explicit_client_scope">Require explicit client scope</label>
+                    </div>
+
+                    <button class="btn btn-primary btn-sm mt-3">
+                        <i class="bi bi-check-lg me-1"></i>Save
+                    </button>
+                </form>
+            </div>
+        </div>
+
+        <div class="card card-static shadow-sm mt-4">
             <div class="card-header"><i class="bi bi-bell me-2"></i>Alerts Hub Destinations</div>
             <div class="card-body">
                 @forelse($linkedSignalDestinations as $destination)

@@ -27,7 +27,12 @@ class WikiPageAuthoringToolTest extends TestCase
 
     private function chetToken(array $tools = ['wiki_create_page', 'wiki_update_page'], string $label = 'chet'): string
     {
-        return McpConfig::rotateStaffToken(allowedTools: $tools, label: $label);
+        return McpConfig::rotateStaffToken(
+            allowedTools: $tools,
+            label: $label,
+            aiActor: true,
+            requireExplicitClientScope: true,
+        );
     }
 
     private function callTool(string $token, string $name, array $arguments): TestResponse

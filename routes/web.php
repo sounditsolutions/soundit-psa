@@ -293,6 +293,7 @@ Route::middleware('auth')->group(function () {
     Route::get('/settings/mcp-tokens/{token}', [McpTokensController::class, 'show'])->name('settings.mcp-tokens.show');
     Route::patch('/settings/mcp-tokens/{token}/tools', [McpTokensController::class, 'updateTools'])->name('settings.mcp-tokens.tools');
     Route::patch('/settings/mcp-tokens/{token}/directive', [McpTokensController::class, 'updateDirective'])->name('settings.mcp-tokens.directive');
+    Route::patch('/settings/mcp-tokens/{token}/trust-flags', [McpTokensController::class, 'updateTrustFlags'])->name('settings.mcp-tokens.trust-flags');
     Route::post('/settings/mcp-tokens/{token}/signal-destinations', [McpTokensController::class, 'linkSignalDestination'])->name('settings.mcp-tokens.signal-destinations.link');
     Route::delete('/settings/mcp-tokens/{token}/signal-destinations/{destination}', [McpTokensController::class, 'unlinkSignalDestination'])->name('settings.mcp-tokens.signal-destinations.unlink');
     Route::delete('/settings/mcp-tokens/{token}', [McpTokensController::class, 'revoke'])->name('settings.mcp-tokens.revoke');
