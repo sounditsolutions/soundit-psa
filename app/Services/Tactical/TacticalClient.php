@@ -218,6 +218,22 @@ class TacticalClient
         return json_decode((string) $response->getBody(), true) ?? [];
     }
 
+    public function delete(string $endpoint): mixed
+    {
+        try {
+            $response = $this->http->request('DELETE', $endpoint);
+        } catch (GuzzleException $e) {
+            Log::error("[TacticalClient] DELETE {$endpoint} failed", [
+                'status' => ($e instanceof \GuzzleHttp\Exception\RequestException && $e->hasResponse())
+                    ? $e->getResponse()->getStatusCode()
+                    : null,
+            ]);
+            throw TacticalClientException::fromGuzzle("Tactical API error (HTTP DELETE {$endpoint})", $e);
+        }
+
+        return json_decode((string) $response->getBody(), true) ?? [];
+    }
+
     /**
      * Set a custom field value on an agent.
      */
@@ -469,6 +485,43 @@ class TacticalClient
     public function getPatches(string $agentId, ?int $timeout = null): array
     {
         return $this->get("winupdate/{$agentId}/", $timeout);
+    }
+
+    public function scanPatches(string $agentId): mixed
+    {
+        return $this->post("winupdate/{$agentId}/scan/", []);
+    }
+
+    public function setPatchAction(int $patchId, string $action): mixed
+    {
+        return $this->put("winupdate/{$patchId}/", [
+            'action' => $action,
+        ]);
+    }
+
+    public function installApprovedPatches(string $agentId): mixed
+    {
+        return $this->post("winupdate/{$agentId}/install/", []);
+    }
+
+    public function createPatchPolicy(array $body): mixed
+    {
+        return $this->post('automation/patchpolicy/', $body);
+    }
+
+    public function updatePatchPolicy(int $patchPolicyId, array $body): mixed
+    {
+        return $this->put("automation/patchpolicy/{$patchPolicyId}/", $body);
+    }
+
+    public function deletePatchPolicy(int $patchPolicyId): mixed
+    {
+        return $this->delete("automation/patchpolicy/{$patchPolicyId}/");
+    }
+
+    public function resetPatchPolicies(array $body): mixed
+    {
+        return $this->post('automation/patchpolicy/reset/', $body);
     }
 
     public function getServices(string $agentId, ?int $timeout = null): array
