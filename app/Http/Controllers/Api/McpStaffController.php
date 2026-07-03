@@ -76,6 +76,8 @@ class McpStaffController extends Controller
 
     private const TACTICAL_CUSTOM_FIELD_AUDIT_PLACEHOLDER = '[custom field value withheld]';
 
+    private const TACTICAL_SCRIPT_BODY_AUDIT_PLACEHOLDER = '[script body withheld]';
+
     private const WIKI_WRITE_TOOLS = [
         'wiki_add_fact',
         'wiki_create_page',
@@ -898,12 +900,50 @@ class McpStaffController extends Controller
         foreach ($arguments as $key => $value) {
             $normalized = mb_strtolower((string) $key);
 
-            if (in_array($normalized, ['asset_id', 'hostname', 'field_key', 'platform', 'reason', 'workstation_policy_id', 'server_policy_id'], true)) {
+            if (in_array($normalized, [
+                'asset_id',
+                'hostname',
+                'field_key',
+                'platform',
+                'reason',
+                'workstation_policy_id',
+                'server_policy_id',
+                'script_id',
+                'script_name',
+                'confirm_script_name',
+                'show_community',
+                'show_hidden',
+                'with_snippets',
+                'name',
+                'description',
+                'shell',
+                'category',
+                'favorite',
+                'default_timeout',
+                'syntax',
+                'filename',
+                'hidden',
+                'supported_platforms',
+                'run_as_user',
+            ], true)) {
                 $safe[$normalized] = $value;
             }
 
             if ($normalized === 'value') {
                 $safe['value'] = self::TACTICAL_CUSTOM_FIELD_AUDIT_PLACEHOLDER;
+            }
+
+            if ($normalized === 'script_body') {
+                $safe['script_body'] = self::TACTICAL_SCRIPT_BODY_AUDIT_PLACEHOLDER;
+                $safe['script_body_length'] = is_string($value) ? mb_strlen($value) : 0;
+            }
+
+            if ($normalized === 'args') {
+                $safe['args'] = app(ActionRedactor::class)->redactParams(is_array($value) ? $value : []);
+            }
+
+            if ($normalized === 'env_vars') {
+                $safe['env_vars_count'] = is_array($value) ? count($value) : 0;
             }
         }
 

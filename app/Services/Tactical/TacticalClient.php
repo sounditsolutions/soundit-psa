@@ -346,9 +346,44 @@ class TacticalClient
         ];
     }
 
-    public function getScripts(): array
+    public function getScripts(?bool $showCommunityScripts = null, ?bool $showHiddenScripts = null): array
     {
-        return $this->get('scripts/');
+        $query = [];
+        if ($showCommunityScripts !== null) {
+            $query['showCommunityScripts'] = $showCommunityScripts ? 'true' : 'false';
+        }
+        if ($showHiddenScripts !== null) {
+            $query['showHiddenScripts'] = $showHiddenScripts ? 'true' : 'false';
+        }
+
+        return $this->get('scripts/'.($query !== [] ? '?'.http_build_query($query) : ''));
+    }
+
+    public function createScript(array $body): mixed
+    {
+        return $this->post('scripts/', $body);
+    }
+
+    public function getScriptDetail(int $scriptId): array
+    {
+        return $this->get("scripts/{$scriptId}/");
+    }
+
+    public function updateScript(int $scriptId, array $body): mixed
+    {
+        return $this->put("scripts/{$scriptId}/", $body);
+    }
+
+    public function deleteScript(int $scriptId): mixed
+    {
+        return $this->delete("scripts/{$scriptId}/");
+    }
+
+    public function downloadScript(int $scriptId, bool $withSnippets = true): array
+    {
+        $query = $withSnippets ? '' : '?with_snippets=false';
+
+        return $this->get("scripts/{$scriptId}/download/{$query}");
     }
 
     /**

@@ -7,6 +7,7 @@ use App\Enums\TechnicianTier;
 use App\Models\Asset;
 use App\Models\Client;
 use App\Models\Setting;
+use App\Models\TacticalScript;
 use App\Models\TechnicianActionLog;
 use App\Models\TechnicianRun;
 use App\Models\Ticket;
@@ -74,6 +75,11 @@ class StaffTacticalAdminToolExecutor
         'winupdatepolicy',
         'upstream_patch_policy_id',
         'tactical_patch_policy_id',
+        'script',
+        'script_pk',
+        'script_guid',
+        'upstream_script_id',
+        'tactical_script_id',
         'client',
         'site',
     ];
@@ -96,6 +102,9 @@ class StaffTacticalAdminToolExecutor
         'tactical_delete_patch_policy' => 600,
         'tactical_reset_patch_policies' => 900,
         'tactical_stage_reset_patch_policies' => 900,
+        'tactical_create_script' => 300,
+        'tactical_update_script' => 300,
+        'tactical_delete_script' => 600,
     ];
 
     /** @var array<string, int> */
@@ -121,6 +130,11 @@ class StaffTacticalAdminToolExecutor
     /** @var array<int, string> */
     private const PATCH_REBOOT_VALUES = ['never', 'required', 'always', 'inherit'];
 
+    /** @var array<int, string> */
+    private const SCRIPT_SHELLS = ['powershell', 'cmd', 'python', 'shell', 'nushell', 'deno'];
+
+    private const SCRIPT_BODY_AUDIT_PLACEHOLDER = '[script body withheld]';
+
     public function __construct(
         private readonly TacticalClient $client,
         private readonly TacticalDeviceSyncService $deviceSync,
@@ -144,6 +158,12 @@ class StaffTacticalAdminToolExecutor
             self::syncDevicesTool(),
             self::syncScriptsTool(),
             self::provisionAlertTicketingTool(),
+            self::listScriptsTool(),
+            self::createScriptTool(),
+            self::getScriptDetailTool(),
+            self::updateScriptTool(),
+            self::deleteScriptTool(),
+            self::downloadScriptTool(),
             self::createPatchPolicyTool(),
             self::updatePatchPolicyTool(),
             self::deletePatchPolicyTool(),
@@ -194,6 +214,12 @@ class StaffTacticalAdminToolExecutor
             'tactical_sync_devices_now' => $this->syncDevices($arguments, (int) $clientId, $actorLabel),
             'tactical_sync_scripts_now' => $this->syncScripts($arguments, $actorLabel),
             'tactical_provision_alert_ticketing' => $this->provisionAlertTicketing($arguments, $actorLabel),
+            'tactical_list_global_scripts' => $this->listScripts($arguments, $actorLabel),
+            'tactical_create_script' => $this->createScript($arguments, $actorLabel),
+            'tactical_get_script_detail' => $this->getScriptDetail($arguments, $actorLabel),
+            'tactical_update_script' => $this->updateScript($arguments, $actorLabel),
+            'tactical_delete_script' => $this->deleteScript($arguments, $actorLabel),
+            'tactical_download_script' => $this->downloadScript($arguments, $actorLabel),
             'tactical_create_patch_policy' => $this->createPatchPolicy($arguments, (int) $clientId, $actorLabel),
             'tactical_update_patch_policy' => $this->updatePatchPolicy($arguments, (int) $clientId, $actorLabel),
             'tactical_delete_patch_policy' => $this->deletePatchPolicy($arguments, (int) $clientId, $actorLabel),
@@ -742,6 +768,295 @@ class StaffTacticalAdminToolExecutor
     }
 
     /** @return array<string, mixed> */
+    private function listScripts(array $arguments, string $actorLabel): array
+    {
+        $tool = 'tactical_list_global_scripts';
+        $guard = $this->baseGuard($tool, $arguments, null, $actorLabel);
+        if (isset($guard['error'])) {
+            return ['error' => $guard['error']];
+        }
+
+        $showCommunity = $this->optionalBoolean($arguments['show_community'] ?? null, default: true);
+        $showHidden = $this->optionalBoolean($arguments['show_hidden'] ?? null, default: false);
+        if ($showCommunity === null || $showHidden === null) {
+            $contentHash = $this->contentHash($tool, null, 'scripts', $arguments);
+            $this->auditAttempt($tool, 'rejected', null, $contentHash, 'show_community and show_hidden must be booleans when supplied.', $actorLabel);
+
+            return ['error' => 'show_community and show_hidden must be booleans when supplied'];
+        }
+
+        $contentHash = $this->contentHash($tool, null, 'scripts', [
+            'show_community' => $showCommunity,
+            'show_hidden' => $showHidden,
+        ]);
+
+        try {
+            $scripts = $this->client->getScripts($showCommunity, $showHidden);
+        } catch (TacticalClientException $e) {
+            $message = $this->tacticalFailureMessage($e, 'Tactical script list');
+            $this->auditAttempt($tool, 'error', null, $contentHash, $message, $actorLabel);
+
+            return ['error' => $message];
+        }
+
+        $mapped = array_values(array_map(fn (array $script): array => $this->mapScriptForResponse($script), array_filter($scripts, 'is_array')));
+        $this->auditAttempt($tool, 'executed', null, $contentHash, 'Listed Tactical script metadata from the global script catalog.', $actorLabel);
+
+        return [
+            'success' => true,
+            'count' => count($mapped),
+            'scripts' => $mapped,
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private function createScript(array $arguments, string $actorLabel): array
+    {
+        $tool = 'tactical_create_script';
+        $guard = $this->baseGuard($tool, $arguments, null, $actorLabel);
+        if (isset($guard['error'])) {
+            return ['error' => $guard['error']];
+        }
+
+        $body = $this->scriptBody($arguments, requireCreate: true);
+        $contentHash = $this->contentHash($tool, null, 'script-create', $body['body'] ?? $arguments);
+        if (isset($body['error'])) {
+            $this->auditAttempt($tool, 'rejected', null, $contentHash, $body['error'], $actorLabel);
+
+            return ['error' => $body['error']];
+        }
+
+        if ($this->alreadyExecuted($tool, null, $contentHash)) {
+            $this->auditAttempt($tool, 'blocked', null, $contentHash, 'Duplicate Tactical script create suppressed before upstream call.', $actorLabel);
+
+            return ['success' => true, 'idempotent' => true, 'message' => 'Already created an identical Tactical script recently; no upstream call was made.'];
+        }
+        if ($this->cooldownActive($tool, null, self::COOLDOWNS[$tool])) {
+            $this->auditAttempt($tool, 'blocked', null, $contentHash, 'Tactical script create cooldown active; upstream call refused.', $actorLabel);
+
+            return ['error' => 'tactical_create_script cooldown active; no upstream call was made.'];
+        }
+
+        try {
+            $result = $this->client->createScript($body['body']);
+        } catch (TacticalClientException $e) {
+            $message = $this->tacticalFailureMessage($e, 'Tactical script create');
+            $this->auditAttempt($tool, 'error', null, $contentHash, $message, $actorLabel);
+
+            return ['error' => $message];
+        }
+
+        $scriptName = (string) ($body['body']['name'] ?? 'script');
+        $this->auditAttempt($tool, 'executed', null, $contentHash, "Created Tactical global script '{$scriptName}' without retaining script body.", $actorLabel);
+
+        return [
+            'success' => true,
+            'message' => is_scalar($result) ? (string) $result : 'Tactical script created.',
+            'script_name' => $scriptName,
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private function getScriptDetail(array $arguments, string $actorLabel): array
+    {
+        $tool = 'tactical_get_script_detail';
+        $guard = $this->baseGuard($tool, $arguments, null, $actorLabel);
+        if (isset($guard['error'])) {
+            return ['error' => $guard['error']];
+        }
+
+        $resolved = $this->resolvedScript($arguments, $tool, $actorLabel);
+        if (isset($resolved['error'])) {
+            return ['error' => $resolved['error']];
+        }
+
+        $contentHash = $this->contentHash($tool, null, 'script-'.$resolved['script_id'], ['detail' => true]);
+        try {
+            $script = $this->client->getScriptDetail((int) $resolved['script_id']);
+        } catch (TacticalClientException $e) {
+            $message = $this->tacticalFailureMessage($e, 'Tactical script detail');
+            $this->auditAttempt($tool, 'error', null, $contentHash, $message, $actorLabel);
+
+            return ['error' => $message];
+        }
+
+        $this->auditAttempt($tool, 'executed', null, $contentHash, "Read Tactical script detail for '{$resolved['script_name']}' with script body withheld.", $actorLabel);
+
+        return ['success' => true] + $this->mapScriptForResponse($script, includeBodyPlaceholder: true);
+    }
+
+    /** @return array<string, mixed> */
+    private function updateScript(array $arguments, string $actorLabel): array
+    {
+        $tool = 'tactical_update_script';
+        $guard = $this->baseGuard($tool, $arguments, null, $actorLabel);
+        if (isset($guard['error'])) {
+            return ['error' => $guard['error']];
+        }
+
+        $resolved = $this->resolvedScript($arguments, $tool, $actorLabel);
+        if (isset($resolved['error'])) {
+            return ['error' => $resolved['error']];
+        }
+
+        $body = $this->scriptBody($arguments, requireCreate: false, script: $resolved['script']);
+        $contentHash = $this->contentHash($tool, null, 'script-'.$resolved['script_id'], $body['body'] ?? $arguments);
+        if (isset($body['error'])) {
+            $this->auditAttempt($tool, 'rejected', null, $contentHash, $body['error'], $actorLabel);
+
+            return ['error' => $body['error']];
+        }
+        if (($body['body'] ?? []) === []) {
+            $this->auditAttempt($tool, 'rejected', null, $contentHash, 'At least one script field is required.', $actorLabel);
+
+            return ['error' => 'At least one script field is required'];
+        }
+        if ($this->alreadyExecuted($tool, null, $contentHash)) {
+            $this->auditAttempt($tool, 'blocked', null, $contentHash, 'Duplicate Tactical script update suppressed before upstream call.', $actorLabel);
+
+            return ['success' => true, 'idempotent' => true, 'message' => 'Already updated this Tactical script recently; no upstream call was made.'];
+        }
+        if ($this->cooldownActive($tool, null, self::COOLDOWNS[$tool])) {
+            $this->auditAttempt($tool, 'blocked', null, $contentHash, 'Tactical script update cooldown active; upstream call refused.', $actorLabel);
+
+            return ['error' => 'tactical_update_script cooldown active; no upstream call was made.'];
+        }
+
+        try {
+            $result = $this->client->updateScript((int) $resolved['script_id'], $body['body']);
+        } catch (TacticalClientException $e) {
+            $message = $this->tacticalFailureMessage($e, 'Tactical script update');
+            $this->auditAttempt($tool, 'error', null, $contentHash, $message, $actorLabel);
+
+            return ['error' => $message];
+        }
+
+        $this->auditAttempt($tool, 'executed', null, $contentHash, "Updated Tactical global script '{$resolved['script_name']}' without retaining script body.", $actorLabel);
+
+        return [
+            'success' => true,
+            'script_name' => $resolved['script_name'],
+            'message' => is_scalar($result) ? (string) $result : 'Tactical script updated.',
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private function deleteScript(array $arguments, string $actorLabel): array
+    {
+        $tool = 'tactical_delete_script';
+        $guard = $this->baseGuard($tool, $arguments, null, $actorLabel);
+        if (isset($guard['error'])) {
+            return ['error' => $guard['error']];
+        }
+
+        $resolved = $this->resolvedScript($arguments, $tool, $actorLabel);
+        if (isset($resolved['error'])) {
+            return ['error' => $resolved['error']];
+        }
+
+        $contentHash = $this->contentHash($tool, null, 'script-'.$resolved['script_id'], ['delete' => true]);
+        if ($this->scriptIsProtected($resolved['script'])) {
+            $message = 'builtin/community scripts cannot be deleted.';
+            $this->auditAttempt($tool, 'rejected', null, $contentHash, $message, $actorLabel);
+
+            return ['error' => $message];
+        }
+
+        $typed = trim((string) ($arguments['confirm_script_name'] ?? ''));
+        if (strcasecmp($typed, (string) $resolved['script_name']) !== 0) {
+            $message = 'The typed script name does not match this Tactical script.';
+            $this->auditAttempt($tool, 'rejected', null, $contentHash, $message, $actorLabel);
+
+            return ['error' => $message];
+        }
+
+        if ($this->alreadyExecuted($tool, null, $contentHash)) {
+            $this->auditAttempt($tool, 'blocked', null, $contentHash, 'Duplicate Tactical script delete suppressed before upstream call.', $actorLabel);
+
+            return ['success' => true, 'idempotent' => true, 'message' => 'Already deleted this Tactical script recently; no upstream call was made.'];
+        }
+        if ($this->cooldownActive($tool, null, self::COOLDOWNS[$tool])) {
+            $this->auditAttempt($tool, 'blocked', null, $contentHash, 'Tactical script delete cooldown active; upstream call refused.', $actorLabel);
+
+            return ['error' => 'tactical_delete_script cooldown active; no upstream call was made.'];
+        }
+
+        try {
+            $result = $this->client->deleteScript((int) $resolved['script_id']);
+        } catch (TacticalClientException $e) {
+            $message = $this->tacticalFailureMessage($e, 'Tactical script delete');
+            $this->auditAttempt($tool, 'error', null, $contentHash, $message, $actorLabel);
+
+            return ['error' => $message];
+        }
+
+        $this->auditAttempt($tool, 'executed', null, $contentHash, "Deleted Tactical global script '{$resolved['script_name']}'.", $actorLabel);
+
+        return [
+            'success' => true,
+            'script_name' => $resolved['script_name'],
+            'message' => is_scalar($result) ? (string) $result : 'Tactical script deleted.',
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private function downloadScript(array $arguments, string $actorLabel): array
+    {
+        $tool = 'tactical_download_script';
+        $guard = $this->baseGuard($tool, $arguments, null, $actorLabel);
+        if (isset($guard['error'])) {
+            return ['error' => $guard['error']];
+        }
+
+        $resolved = $this->resolvedScript($arguments, $tool, $actorLabel);
+        if (isset($resolved['error'])) {
+            return ['error' => $resolved['error']];
+        }
+
+        $contentHash = $this->contentHash($tool, null, 'script-'.$resolved['script_id'], [
+            'with_snippets' => $arguments['with_snippets'] ?? true,
+        ]);
+
+        $typed = trim((string) ($arguments['confirm_script_name'] ?? ''));
+        if (strcasecmp($typed, (string) $resolved['script_name']) !== 0) {
+            $message = 'The typed script name does not match this Tactical script; typed script name confirmation is required before reading script body.';
+            $this->auditAttempt($tool, 'rejected', null, $contentHash, $message, $actorLabel);
+
+            return ['error' => $message];
+        }
+
+        $withSnippets = $this->optionalBoolean($arguments['with_snippets'] ?? null, default: true);
+        if ($withSnippets === null) {
+            $message = 'with_snippets must be a boolean when supplied.';
+            $this->auditAttempt($tool, 'rejected', null, $contentHash, $message, $actorLabel);
+
+            return ['error' => $message];
+        }
+
+        try {
+            $download = $this->client->downloadScript((int) $resolved['script_id'], $withSnippets);
+        } catch (TacticalClientException $e) {
+            $message = $this->tacticalFailureMessage($e, 'Tactical script download');
+            $this->auditAttempt($tool, 'error', null, $contentHash, $message, $actorLabel);
+
+            return ['error' => $message];
+        }
+
+        $code = is_string($download['code'] ?? null) ? $download['code'] : '';
+        $filename = is_string($download['filename'] ?? null) ? $download['filename'] : $resolved['script_name'];
+        $this->auditAttempt($tool, 'executed', null, $contentHash, "Downloaded Tactical script body for '{$resolved['script_name']}' ({$filename}, ".mb_strlen($code).' bytes) without audit retention.', $actorLabel);
+
+        return [
+            'success' => true,
+            'script_name' => $resolved['script_name'],
+            'filename' => $filename,
+            'with_snippets' => $withSnippets,
+            'code' => $code,
+            'code_length' => mb_strlen($code),
+        ];
+    }
+
+    /** @return array<string, mixed> */
     private function provisionAlertTicketing(array $arguments, string $actorLabel): array
     {
         $tool = 'tactical_provision_alert_ticketing';
@@ -1214,6 +1529,319 @@ class StaffTacticalAdminToolExecutor
         return ['error' => "Tactical client {$clientName} was not found; no reset was sent."];
     }
 
+    private function optionalBoolean(mixed $value, bool $default): ?bool
+    {
+        if ($value === null) {
+            return $default;
+        }
+
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        if (is_string($value)) {
+            return match (mb_strtolower(trim($value))) {
+                'true', '1', 'yes' => true,
+                'false', '0', 'no' => false,
+                default => null,
+            };
+        }
+
+        if (is_int($value)) {
+            return match ($value) {
+                1 => true,
+                0 => false,
+                default => null,
+            };
+        }
+
+        return null;
+    }
+
+    /**
+     * @return array{script?: array<string, mixed>, script_id?: int, script_name?: string, error?: string}
+     */
+    private function resolvedScript(array $arguments, string $tool, string $actorLabel): array
+    {
+        $localScriptId = $this->positiveInteger($arguments['script_id'] ?? null);
+        $scriptName = $this->requiredString($arguments, 'script_name');
+        $contentHash = $this->contentHash($tool, null, 'script', [
+            'script_id' => $localScriptId,
+            'script_name' => $scriptName,
+        ]);
+
+        if ($localScriptId === null && $scriptName === null) {
+            $this->auditAttempt($tool, 'rejected', null, $contentHash, 'script_id or script_name is required.', $actorLabel);
+
+            return ['error' => 'script_id or script_name is required'];
+        }
+
+        try {
+            $scripts = array_values(array_filter($this->client->getScripts(true, true), 'is_array'));
+        } catch (TacticalClientException $e) {
+            $message = $this->tacticalFailureMessage($e, 'Tactical script lookup');
+            $this->auditAttempt($tool, 'error', null, $contentHash, $message, $actorLabel);
+
+            return ['error' => $message];
+        }
+
+        if ($localScriptId !== null) {
+            $local = TacticalScript::find($localScriptId);
+            if (! $local || (int) $local->tactical_script_id <= 0) {
+                $this->auditAttempt($tool, 'rejected', null, $contentHash, 'Local PSA script_id was not found in the synced Tactical script catalog.', $actorLabel);
+
+                return ['error' => 'Local PSA script_id was not found in the synced Tactical script catalog'];
+            }
+
+            $script = $this->findScriptByUpstreamId($scripts, (int) $local->tactical_script_id);
+            if ($script === null) {
+                $this->auditAttempt($tool, 'rejected', null, $contentHash, 'Local script is no longer visible in Tactical getScripts; no script operation was sent.', $actorLabel);
+
+                return ['error' => 'Local script is no longer visible in Tactical getScripts; no script operation was sent.'];
+            }
+
+            if ($scriptName !== null && strcasecmp($scriptName, (string) ($script['name'] ?? '')) !== 0) {
+                $this->auditAttempt($tool, 'rejected', null, $contentHash, 'script_id and script_name resolve to different Tactical scripts.', $actorLabel);
+
+                return ['error' => 'script_id and script_name resolve to different Tactical scripts'];
+            }
+
+            return [
+                'script' => $script,
+                'script_id' => (int) $local->tactical_script_id,
+                'script_name' => (string) ($script['name'] ?? $local->name),
+            ];
+        }
+
+        $matches = array_values(array_filter(
+            $scripts,
+            fn (array $script): bool => strcasecmp((string) ($script['name'] ?? ''), (string) $scriptName) === 0,
+        ));
+
+        if (count($matches) !== 1) {
+            $message = count($matches) === 0
+                ? "Tactical script '{$scriptName}' was not found in getScripts."
+                : "Tactical script name '{$scriptName}' is ambiguous in getScripts; use the local PSA script_id after syncing scripts.";
+            $this->auditAttempt($tool, 'rejected', null, $contentHash, $message, $actorLabel);
+
+            return ['error' => $message];
+        }
+
+        $upstreamId = $this->positiveInteger($matches[0]['id'] ?? null);
+        if ($upstreamId === null) {
+            $this->auditAttempt($tool, 'rejected', null, $contentHash, "Matched Tactical script '{$scriptName}' has no numeric id.", $actorLabel);
+
+            return ['error' => "Matched Tactical script '{$scriptName}' has no numeric id"];
+        }
+
+        return [
+            'script' => $matches[0],
+            'script_id' => $upstreamId,
+            'script_name' => (string) ($matches[0]['name'] ?? $scriptName),
+        ];
+    }
+
+    /** @param array<int, array<string, mixed>> $scripts */
+    private function findScriptByUpstreamId(array $scripts, int $upstreamId): ?array
+    {
+        foreach ($scripts as $script) {
+            if ((int) ($script['id'] ?? 0) === $upstreamId) {
+                return $script;
+            }
+        }
+
+        return null;
+    }
+
+    /** @return array<string, mixed> */
+    private function mapScriptForResponse(array $script, bool $includeBodyPlaceholder = false): array
+    {
+        $upstreamId = $this->positiveInteger($script['id'] ?? null);
+        $localId = $upstreamId !== null
+            ? TacticalScript::where('tactical_script_id', $upstreamId)->value('id')
+            : null;
+
+        $mapped = [
+            'script_id' => $localId !== null ? (int) $localId : null,
+            'name' => (string) ($script['name'] ?? ''),
+            'description' => isset($script['description']) && is_scalar($script['description'])
+                ? mb_substr($this->redactor->redactString((string) $script['description']), 0, 1000)
+                : null,
+            'script_type' => (string) ($script['script_type'] ?? ''),
+            'protected' => $this->scriptIsProtected($script),
+            'shell' => (string) ($script['shell'] ?? ''),
+            'args' => $this->redactor->redactParams($this->listOfStringsValue($script['args'] ?? [])),
+            'category' => $script['category'] ?? null,
+            'favorite' => (bool) ($script['favorite'] ?? false),
+            'default_timeout' => $script['default_timeout'] ?? null,
+            'syntax' => isset($script['syntax']) && is_scalar($script['syntax'])
+                ? mb_substr((string) $script['syntax'], 0, 1000)
+                : null,
+            'filename' => $script['filename'] ?? null,
+            'hidden' => (bool) ($script['hidden'] ?? false),
+            'supported_platforms' => $this->listOfStringsValue($script['supported_platforms'] ?? []),
+            'run_as_user' => (bool) ($script['run_as_user'] ?? false),
+            'env_vars' => $this->redactor->redactParams($this->listOfStringsValue($script['env_vars'] ?? [])),
+        ];
+
+        if ($includeBodyPlaceholder) {
+            $body = is_string($script['script_body'] ?? null) ? $script['script_body'] : '';
+            $mapped['script_body'] = self::SCRIPT_BODY_AUDIT_PLACEHOLDER;
+            $mapped['script_body_length'] = mb_strlen($body);
+            $mapped['script_body_withheld'] = true;
+        }
+
+        return $mapped;
+    }
+
+    private function scriptIsProtected(array $script): bool
+    {
+        return mb_strtolower((string) ($script['script_type'] ?? '')) !== 'userdefined';
+    }
+
+    /**
+     * @return array{body?: array<string, mixed>, error?: string}
+     */
+    private function scriptBody(array $arguments, bool $requireCreate, ?array $script = null): array
+    {
+        $allowed = [
+            'name',
+            'description',
+            'shell',
+            'args',
+            'category',
+            'favorite',
+            'script_body',
+            'default_timeout',
+            'syntax',
+            'filename',
+            'hidden',
+            'supported_platforms',
+            'run_as_user',
+            'env_vars',
+        ];
+        $nonBody = $requireCreate
+            ? ['reason']
+            : ['reason', 'script_id', 'script_name'];
+        $unsupported = array_values(array_diff(array_keys($arguments), array_merge($allowed, $nonBody)));
+        if ($unsupported !== []) {
+            return ['error' => 'Unsupported script fields: '.implode(', ', $unsupported).'.'];
+        }
+
+        if ($script !== null && $this->scriptIsProtected($script)) {
+            return $this->protectedScriptBody($arguments);
+        }
+
+        $body = [];
+        foreach (['name', 'description', 'category', 'syntax', 'filename'] as $key) {
+            if (array_key_exists($key, $arguments)) {
+                if ($arguments[$key] !== null && ! is_scalar($arguments[$key])) {
+                    return ['error' => "{$key} must be a string or null."];
+                }
+
+                $body[$key] = $arguments[$key] === null ? null : trim((string) $arguments[$key]);
+            }
+        }
+
+        if (array_key_exists('shell', $arguments)) {
+            $shell = $this->enumValue($arguments['shell'], self::SCRIPT_SHELLS);
+            if ($shell === null) {
+                return ['error' => 'shell must be one of: '.implode(', ', self::SCRIPT_SHELLS).'.'];
+            }
+            $body['shell'] = $shell;
+        }
+
+        if (array_key_exists('script_body', $arguments)) {
+            if (! is_string($arguments['script_body'])) {
+                return ['error' => 'script_body must be a string.'];
+            }
+            $body['script_body'] = $arguments['script_body'];
+        }
+
+        foreach (['args', 'supported_platforms', 'env_vars'] as $key) {
+            if (array_key_exists($key, $arguments)) {
+                $list = $this->listOfStrings($arguments[$key]);
+                if ($list === null) {
+                    return ['error' => "{$key} must be a list of strings."];
+                }
+                $body[$key] = $list;
+            }
+        }
+
+        foreach (['favorite', 'hidden', 'run_as_user'] as $key) {
+            if (array_key_exists($key, $arguments)) {
+                if (! is_bool($arguments[$key])) {
+                    return ['error' => "{$key} must be a boolean."];
+                }
+                $body[$key] = $arguments[$key];
+            }
+        }
+
+        if (array_key_exists('default_timeout', $arguments)) {
+            $timeout = $this->positiveInteger($arguments['default_timeout']);
+            if ($timeout === null) {
+                return ['error' => 'default_timeout must be a positive integer.'];
+            }
+            $body['default_timeout'] = $timeout;
+        }
+
+        if ($requireCreate) {
+            foreach (['name', 'shell', 'script_body'] as $required) {
+                if (! array_key_exists($required, $body) || ($required !== 'script_body' && trim((string) $body[$required]) === '') || ($required === 'script_body' && $body[$required] === '')) {
+                    return ['error' => "{$required} is required"];
+                }
+            }
+        }
+
+        return ['body' => $body];
+    }
+
+    /** @return array{body?: array<string, mixed>, error?: string} */
+    private function protectedScriptBody(array $arguments): array
+    {
+        if (array_key_exists('favorite', $arguments)) {
+            if (! is_bool($arguments['favorite'])) {
+                return ['error' => 'favorite must be a boolean.'];
+            }
+
+            return ['body' => ['favorite' => $arguments['favorite']]];
+        }
+
+        if (array_key_exists('hidden', $arguments)) {
+            if (! is_bool($arguments['hidden'])) {
+                return ['error' => 'hidden must be a boolean.'];
+            }
+
+            return ['body' => ['hidden' => $arguments['hidden']]];
+        }
+
+        return ['error' => 'builtin/community scripts can only change favorite or hidden.'];
+    }
+
+    /** @return array<int, string>|null */
+    private function listOfStrings(mixed $value): ?array
+    {
+        if (! is_array($value) || ! array_is_list($value)) {
+            return null;
+        }
+
+        $items = [];
+        foreach ($value as $item) {
+            if (! is_scalar($item)) {
+                return null;
+            }
+            $items[] = (string) $item;
+        }
+
+        return $items;
+    }
+
+    /** @return array<int, string> */
+    private function listOfStringsValue(mixed $value): array
+    {
+        return $this->listOfStrings($value) ?? [];
+    }
+
     /** @return array{body?: array<string, mixed>, error?: string} */
     private function patchPolicyBody(array $arguments, bool $includePolicy): array
     {
@@ -1633,7 +2261,17 @@ class StaffTacticalAdminToolExecutor
     private function safeHashParams(array $params): array
     {
         $safe = $params;
-        unset($safe['value'], $safe['rest_headers'], $safe['rest_body'], $safe['download_url']);
+        unset($safe['value'], $safe['rest_headers'], $safe['rest_body'], $safe['download_url'], $safe['script_body'], $safe['code']);
+        if (isset($params['script_body']) && is_string($params['script_body'])) {
+            $safe['script_body_length'] = mb_strlen($params['script_body']);
+        }
+        if (isset($params['code']) && is_string($params['code'])) {
+            $safe['code_length'] = mb_strlen($params['code']);
+        }
+        if (isset($safe['env_vars']) && is_array($safe['env_vars'])) {
+            $safe['env_vars_count'] = count($safe['env_vars']);
+            unset($safe['env_vars']);
+        }
 
         return $safe;
     }
@@ -1933,6 +2571,110 @@ class StaffTacticalAdminToolExecutor
             'Run the existing TacticalProvisioningService to provision PSA alert ticketing. It upserts PSA-owned URL action and alert template, then applies the existing no-clobber default-template behavior.',
             self::reasonProperties(),
             ['reason'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function scriptSelectorProperties(): array
+    {
+        return [
+            'script_id' => ['type' => 'integer', 'description' => 'Optional local PSA tactical_scripts.id. The server resolves it to the current Tactical script id via getScripts before any upstream call.'],
+            'script_name' => ['type' => 'string', 'description' => 'Optional exact Tactical script name. The server resolves it against getScripts and rejects ambiguous names.'],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private static function scriptBodyProperties(): array
+    {
+        return [
+            'name' => ['type' => 'string', 'description' => 'Script name. Required on create.'],
+            'description' => ['type' => 'string', 'description' => 'Script description.'],
+            'shell' => ['type' => 'string', 'enum' => self::SCRIPT_SHELLS, 'description' => 'Allowed Tactical script shell. Required on create.'],
+            'args' => ['type' => 'array', 'items' => ['type' => 'string'], 'description' => 'Default script arguments.'],
+            'category' => ['type' => 'string', 'description' => 'Script category.'],
+            'favorite' => ['type' => 'boolean', 'description' => 'Favorite flag. For builtin/community scripts this is one of the only allowed edits.'],
+            'script_body' => ['type' => 'string', 'description' => 'Script body sent to Tactical. It is never written to MCP or Technician audits. Required on create.'],
+            'default_timeout' => ['type' => 'integer', 'description' => 'Default timeout seconds.'],
+            'syntax' => ['type' => 'string', 'description' => 'Editor syntax hint.'],
+            'filename' => ['type' => 'string', 'description' => 'Optional filename metadata.'],
+            'hidden' => ['type' => 'boolean', 'description' => 'Hidden flag. For builtin/community scripts this is one of the only allowed edits.'],
+            'supported_platforms' => ['type' => 'array', 'items' => ['type' => 'string'], 'description' => 'Supported platforms.'],
+            'run_as_user' => ['type' => 'boolean', 'description' => 'Whether script runs as logged-in user when Tactical supports it.'],
+            'env_vars' => ['type' => 'array', 'items' => ['type' => 'string'], 'description' => 'Default environment variables. Values are sent upstream but withheld from audits.'],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private static function listScriptsTool(): array
+    {
+        return self::tool(
+            'tactical_list_global_scripts',
+            'List metadata from the global Tactical script catalog using GET scripts/. Script bodies are not returned. Requires explicit grant, reason, kill-switch, upstream-ID rejection, and redacted audit.',
+            array_merge(self::reasonProperties(), [
+                'show_community' => ['type' => 'boolean', 'description' => 'Include builtin/community scripts. Maps to Tactical showCommunityScripts. Default true.'],
+                'show_hidden' => ['type' => 'boolean', 'description' => 'Include hidden scripts. Maps to Tactical showHiddenScripts. Default false.'],
+            ]),
+            ['reason'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function createScriptTool(): array
+    {
+        return self::tool(
+            'tactical_create_script',
+            'Create a global Tactical script using POST scripts/. This changes the global RMM script catalog; script_body is sent upstream but never retained in audit. Requires explicit grant, reason, shell allowlist, narrowed ScriptSerializer fields, kill-switch, dedup, and cooldown.',
+            array_merge(self::reasonProperties(), self::scriptBodyProperties()),
+            ['reason', 'name', 'shell', 'script_body'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function getScriptDetailTool(): array
+    {
+        return self::tool(
+            'tactical_get_script_detail',
+            'Read one global Tactical script detail via GET scripts/{pk}/ after resolving the script through getScripts. Existing script bodies may contain credentials, so script_body is withheld from the response and from audits.',
+            array_merge(self::reasonProperties(), self::scriptSelectorProperties()),
+            ['reason'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function updateScriptTool(): array
+    {
+        return self::tool(
+            'tactical_update_script',
+            'Update one global Tactical script using PUT scripts/{pk}/ after resolving the script through getScripts. User-defined scripts may update only the narrowed ScriptSerializer field set; builtin/community scripts can only change favorite or hidden. Script bodies are never audit-retained.',
+            array_merge(self::reasonProperties(), self::scriptSelectorProperties(), self::scriptBodyProperties()),
+            ['reason'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function deleteScriptTool(): array
+    {
+        return self::tool(
+            'tactical_delete_script',
+            'Delete one user-defined global Tactical script using DELETE scripts/{pk}/ after resolving the script through getScripts. This cannot be undone and can break checks, tasks, or operator workflows. Builtin/community scripts are refused PSA-side. Requires typed script-name confirmation, explicit grant, reason, kill-switch, dedup, and cooldown.',
+            array_merge(self::reasonProperties(), self::scriptSelectorProperties(), [
+                'confirm_script_name' => ['type' => 'string', 'description' => 'Typed Tactical script name. Must match the resolved current script name.'],
+            ]),
+            ['reason', 'confirm_script_name'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function downloadScriptTool(): array
+    {
+        return self::tool(
+            'tactical_download_script',
+            'Download one global Tactical script body using GET scripts/{pk}/download/ after resolving the script through getScripts. Existing scripts can contain embedded credentials, so this distinct sensitive read requires typed script-name confirmation and the body is never audit-retained.',
+            array_merge(self::reasonProperties(), self::scriptSelectorProperties(), [
+                'confirm_script_name' => ['type' => 'string', 'description' => 'Typed Tactical script name. Required before returning script code.'],
+                'with_snippets' => ['type' => 'boolean', 'description' => 'Whether Tactical should expand snippets in returned code. Default true.'],
+            ]),
+            ['reason', 'confirm_script_name'],
         );
     }
 
