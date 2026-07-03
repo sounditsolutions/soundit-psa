@@ -8,6 +8,7 @@ use App\Services\Assistant\AssistantToolDefinitions;
 use App\Services\Chet\ChetDataSurfaceTools;
 use App\Services\Chet\OperatorBridgeTools;
 use App\Services\Mcp\StaffTacticalActionToolExecutor;
+use App\Services\Mcp\StaffTacticalAdminToolExecutor;
 use App\Services\Triage\TriageToolDefinitions;
 
 class McpToolRegistry
@@ -55,6 +56,7 @@ class McpToolRegistry
             $wikiWrites = self::shape([self::wikiAddFactTool(), self::wikiCreatePageTool(), self::wikiUpdatePageTool()]);
             $cippWrites = self::shape(self::dynamicCippWriteTools());
             $tacticalActions = self::shape(self::tacticalActionTools());
+            $tacticalAdmin = self::shape(self::tacticalAdminTools());
 
             return [
                 'general' => ['label' => 'General (no client context)', 'sensitive' => false, 'tools' => $general],
@@ -62,6 +64,7 @@ class McpToolRegistry
                 'integration' => ['label' => 'Integration (RMM / M365)', 'sensitive' => false, 'tools' => $integration],
                 'cipp_write' => ['label' => 'CIPP write-class (sensitive)', 'sensitive' => true, 'tools' => $cippWrites],
                 'tactical_action' => ['label' => 'Tactical endpoint actions (sensitive)', 'sensitive' => true, 'tools' => $tacticalActions],
+                'tactical_admin' => ['label' => 'Tactical admin/provisioning (sensitive)', 'sensitive' => true, 'tools' => $tacticalAdmin],
                 'wiki_write' => ['label' => 'Wiki write (sensitive)', 'sensitive' => true, 'tools' => $wikiWrites],
                 'psa_action' => ['label' => 'PSA actions (sensitive)', 'sensitive' => true, 'tools' => $psaActions],
                 'bridge' => ['label' => 'Operator bridge (sensitive)', 'sensitive' => true, 'tools' => $bridge],
@@ -159,6 +162,12 @@ class McpToolRegistry
     public static function tacticalActionTools(): array
     {
         return StaffTacticalActionToolExecutor::definitions();
+    }
+
+    /** @return array<int, array<string, mixed>> */
+    public static function tacticalAdminTools(): array
+    {
+        return StaffTacticalAdminToolExecutor::definitions();
     }
 
     public static function flushMemoized(): void

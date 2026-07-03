@@ -20,6 +20,7 @@ use App\Services\Chet\OperatorBridgeTools;
 use App\Services\Cipp\CippMcpDynamicToolExecutor;
 use App\Services\Mcp\StaffPsaActionToolExecutor;
 use App\Services\Mcp\StaffTacticalActionToolExecutor;
+use App\Services\Mcp\StaffTacticalAdminToolExecutor;
 use App\Services\Tactical\Actions\ActionRedactor;
 use App\Support\McpInputSchema;
 use App\Support\McpStaffToken;
@@ -70,6 +71,8 @@ class McpStaffController extends Controller
     private const WIKI_PAGE_TITLE_AUDIT_PLACEHOLDER = '[wiki page title withheld]';
 
     private const WIKI_PAGE_BODY_AUDIT_PLACEHOLDER = '[wiki page body withheld]';
+
+    private const TACTICAL_CUSTOM_FIELD_AUDIT_PLACEHOLDER = '[custom field value withheld]';
 
     private const WIKI_WRITE_TOOLS = [
         'wiki_add_fact',
@@ -203,6 +206,7 @@ class McpStaffController extends Controller
                 McpToolRegistry::wikiUpdatePageTool(),
             ],
             McpToolRegistry::psaActionTools(),
+            TacticalConfig::isConfigured() ? McpToolRegistry::tacticalAdminTools() : [],
             ChetDataSurfaceTools::generalTools(),
             OperatorBridgeTools::definitions(),
         );
@@ -239,11 +243,13 @@ class McpStaffController extends Controller
             $requiresExplicitClientScope = $this->requiresExplicitClientScope($request, (string) $t['name']);
             $isPsaActionTool = $this->isPsaActionTool((string) $t['name']);
             $isTacticalActionTool = $this->isTacticalActionTool((string) $t['name']);
-            $isClientScoped = ! isset($generalNames[$t['name']]) || $requiresExplicitClientScope || $isPsaActionTool || $isTacticalActionTool;
+            $isTacticalAdminTool = $this->isTacticalAdminTool((string) $t['name']);
+            $requiresTacticalAdminClientScope = $isTacticalAdminTool && StaffTacticalAdminToolExecutor::requiresClient((string) $t['name']);
+            $isClientScoped = ! isset($generalNames[$t['name']]) || $requiresExplicitClientScope || $isPsaActionTool || $isTacticalActionTool || $requiresTacticalAdminClientScope;
 
             if ($isClientScoped) {
                 $props = (array) ($schema['properties'] ?? []);
-                $clientIdRequired = $requiresExplicitClientScope || $isPsaActionTool || $isTacticalActionTool || ! in_array($t['name'], $clientIdOptionalFor, true);
+                $clientIdRequired = $requiresExplicitClientScope || $isPsaActionTool || $isTacticalActionTool || $requiresTacticalAdminClientScope || ! in_array($t['name'], $clientIdOptionalFor, true);
                 $props['client_id'] = [
                     'type' => 'integer',
                     'description' => $clientIdRequired
@@ -418,6 +424,20 @@ class McpStaffController extends Controller
             ]);
         }
 
+        if ($this->isTacticalAdminTool((string) $name) && StaffTacticalAdminToolExecutor::requiresClient((string) $name) && $clientId === null) {
+            $message = "client_id is required for {$name}.";
+            $this->audit('tools/call', (string) $name, $auditArguments, 'error', $message, $start, $request);
+
+            return response()->json([
+                'jsonrpc' => '2.0',
+                'id' => $id,
+                'result' => [
+                    'content' => [['type' => 'text', 'text' => $message]],
+                    'isError' => true,
+                ],
+            ]);
+        }
+
         if (CippMcpTool::handles((string) $name) && $clientId === null) {
             $message = "client_id is required for {$name}.";
             $this->audit('tools/call', (string) $name, $auditArguments, 'error', $message, $start, $request);
@@ -494,6 +514,13 @@ class McpStaffController extends Controller
                     (int) $clientId,
                     $this->actorLabel($request),
                 );
+            } elseif ($this->isTacticalAdminTool((string) $name)) {
+                $result = app(StaffTacticalAdminToolExecutor::class)->execute(
+                    (string) $name,
+                    $arguments,
+                    $clientId,
+                    $this->actorLabel($request),
+                );
             } elseif ($this->isPsaActionTool((string) $name)) {
                 $result = app(StaffPsaActionToolExecutor::class)->execute(
                     (string) $name,
@@ -530,7 +557,7 @@ class McpStaffController extends Controller
                 ],
             ]);
 
-            if ((string) $name === 'tactical_open_remote_control' && ! $isError) {
+            if (in_array((string) $name, ['tactical_open_remote_control', 'tactical_get_or_create_installer', 'tactical_generate_installer'], true) && ! $isError) {
                 $response->headers->set('Cache-Control', 'no-store');
             }
 
@@ -677,6 +704,10 @@ class McpStaffController extends Controller
 
         if ($this->isWikiPageAuthoringWrite((string) $tool)) {
             return $this->auditWikiPageAuthoringArguments($redacted);
+        }
+
+        if ($this->isTacticalAdminTool((string) $tool)) {
+            return $this->auditTacticalAdminArguments($redacted);
         }
 
         return $redacted;
@@ -827,6 +858,26 @@ class McpStaffController extends Controller
         return $safe;
     }
 
+    /** @return array<string, mixed> */
+    private function auditTacticalAdminArguments(array $arguments): array
+    {
+        $safe = [];
+
+        foreach ($arguments as $key => $value) {
+            $normalized = mb_strtolower((string) $key);
+
+            if (in_array($normalized, ['asset_id', 'hostname', 'field_key', 'platform', 'reason', 'workstation_policy_id', 'server_policy_id'], true)) {
+                $safe[$normalized] = $value;
+            }
+
+            if ($normalized === 'value') {
+                $safe['value'] = self::TACTICAL_CUSTOM_FIELD_AUDIT_PLACEHOLDER;
+            }
+        }
+
+        return $safe;
+    }
+
     private function positiveIntegerArgument(mixed $value): ?int
     {
         if (is_int($value)) {
@@ -864,6 +915,10 @@ class McpStaffController extends Controller
         }
 
         if ($this->isTacticalActionTool($toolName)) {
+            return $token->allowedTools !== null && $token->allows($toolName);
+        }
+
+        if ($this->isTacticalAdminTool($toolName)) {
             return $token->allowedTools !== null && $token->allows($toolName);
         }
 
@@ -952,6 +1007,11 @@ class McpStaffController extends Controller
     private function isTacticalActionTool(string $toolName): bool
     {
         return StaffTacticalActionToolExecutor::handles($toolName);
+    }
+
+    private function isTacticalAdminTool(string $toolName): bool
+    {
+        return StaffTacticalAdminToolExecutor::handles($toolName);
     }
 
     /** @return array<string, mixed> */
