@@ -28,6 +28,12 @@
                         'propose_resolution' => ['bg-info',              'Proposed resolution'],
                         'stage_email'        => ['bg-success',           'Staged email'],
                         'stage_public_note'  => ['bg-info',              'Staged public note'],
+                        'tactical_stage_script' => ['bg-danger',         'Tactical script'],
+                        'tactical_stage_command' => ['bg-danger',        'Tactical command'],
+                        'tactical_stage_reboot' => ['bg-warning text-dark', 'Tactical reboot'],
+                        'tactical_stage_shutdown' => ['bg-danger',       'Tactical shutdown'],
+                        'tactical_stage_recover_mesh' => ['bg-info',     'Tactical recovery'],
+                        'tactical_stage_maintenance' => ['bg-info',      'Tactical maintenance'],
                         default              => ['bg-primary',           'Reply'],
                     };
                 @endphp
@@ -70,6 +76,24 @@
                     <form id="approve-{{ $run->id }}" method="POST" action="{{ route('cockpit.approve', $run) }}">
                         @csrf
                         <button type="submit" class="btn btn-warning"><i class="bi bi-intersect me-1"></i>Approve merge</button>
+                    </form>
+                    <form method="POST" action="{{ route('cockpit.deny', $run) }}">
+                        @csrf
+                        <button type="submit" class="btn btn-outline-secondary"><i class="bi bi-x-lg me-1"></i>Hold it</button>
+                    </form>
+                </div>
+            @elseif (\App\Services\Mcp\StaffTacticalActionToolExecutor::isStagedActionType($run->action_type))
+                {{-- TACTICAL ACTION ARM: read-only redacted summary; approval executes through TacticalActionService --}}
+                <p class="text-muted small mb-1">Endpoint action (not run until approved):</p>
+                <p class="form-control-plaintext border rounded p-2 mb-2 bg-light small">{{ $run->proposed_content }}</p>
+                @if(!empty($run->proposed_meta['drafted_by']))
+                    <p class="text-muted small mb-2">Drafted by: {{ $run->proposed_meta['drafted_by'] }}</p>
+                @endif
+
+                <div class="d-flex gap-2">
+                    <form id="approve-{{ $run->id }}" method="POST" action="{{ route('cockpit.approve', $run) }}">
+                        @csrf
+                        <button type="submit" class="btn btn-danger"><i class="bi bi-check2-circle me-1"></i>Approve action</button>
                     </form>
                     <form method="POST" action="{{ route('cockpit.deny', $run) }}">
                         @csrf

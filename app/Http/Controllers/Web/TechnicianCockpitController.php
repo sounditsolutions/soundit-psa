@@ -41,6 +41,12 @@ class TechnicianCockpitController extends Controller
                 $request->validate(['body' => ['required', 'string']])['body'],
                 (int) auth()->id(),
             ),
+            'tactical_stage_script',
+            'tactical_stage_command',
+            'tactical_stage_reboot',
+            'tactical_stage_shutdown',
+            'tactical_stage_recover_mesh',
+            'tactical_stage_maintenance' => $service->approveStagedTacticalAction($run, (int) auth()->id()),
             // Body is required only on the reply/resolution path, validated inside this arm.
             'send_reply', 'propose_resolution' => $service->approveAndSend(
                 $run,
@@ -51,12 +57,13 @@ class TechnicianCockpitController extends Controller
         };
 
         return redirect()->route('cockpit.index')->with(
-            in_array($result->status, ['sent', 'closed', 'published', 'merged'], true) ? 'success' : 'error',
+            in_array($result->status, ['sent', 'closed', 'published', 'merged', 'executed'], true) ? 'success' : 'error',
             match ($result->status) {
                 'sent' => 'Reply approved and sent.',
                 'closed' => 'Ticket closed.',
                 'published' => 'Public note published.',
                 'merged' => 'Tickets merged.',
+                'executed' => 'Tactical action approved and executed.',
                 'already_handled' => 'That draft was already handled.',
                 default => 'Could not send — the Technician declined (it may be paused). Try again.',
             },

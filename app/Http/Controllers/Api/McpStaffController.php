@@ -19,11 +19,13 @@ use App\Services\Chet\OperatorBridgeToolExecutor;
 use App\Services\Chet\OperatorBridgeTools;
 use App\Services\Cipp\CippMcpDynamicToolExecutor;
 use App\Services\Mcp\StaffPsaActionToolExecutor;
+use App\Services\Mcp\StaffTacticalActionToolExecutor;
 use App\Services\Tactical\Actions\ActionRedactor;
 use App\Support\McpInputSchema;
 use App\Support\McpStaffToken;
 use App\Support\McpToolInstructions;
 use App\Support\McpToolRegistry;
+use App\Support\TacticalConfig;
 use App\Support\TechnicianConfig;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -211,6 +213,7 @@ class McpStaffController extends Controller
             ChetDataSurfaceTools::clientTools(),
             McpToolRegistry::dynamicCippReadTools(),
             McpToolRegistry::dynamicCippWriteTools(),
+            TacticalConfig::isConfigured() ? McpToolRegistry::tacticalActionTools() : [],
         );
 
         // Merge by tool name (general tools win on duplicate names).
@@ -235,11 +238,12 @@ class McpStaffController extends Controller
             $schema = $t['input_schema'] ?? ['type' => 'object', 'properties' => new \stdClass];
             $requiresExplicitClientScope = $this->requiresExplicitClientScope($request, (string) $t['name']);
             $isPsaActionTool = $this->isPsaActionTool((string) $t['name']);
-            $isClientScoped = ! isset($generalNames[$t['name']]) || $requiresExplicitClientScope || $isPsaActionTool;
+            $isTacticalActionTool = $this->isTacticalActionTool((string) $t['name']);
+            $isClientScoped = ! isset($generalNames[$t['name']]) || $requiresExplicitClientScope || $isPsaActionTool || $isTacticalActionTool;
 
             if ($isClientScoped) {
                 $props = (array) ($schema['properties'] ?? []);
-                $clientIdRequired = $requiresExplicitClientScope || $isPsaActionTool || ! in_array($t['name'], $clientIdOptionalFor, true);
+                $clientIdRequired = $requiresExplicitClientScope || $isPsaActionTool || $isTacticalActionTool || ! in_array($t['name'], $clientIdOptionalFor, true);
                 $props['client_id'] = [
                     'type' => 'integer',
                     'description' => $clientIdRequired
@@ -400,6 +404,20 @@ class McpStaffController extends Controller
             ]);
         }
 
+        if ($this->isTacticalActionTool((string) $name) && $clientId === null) {
+            $message = "client_id is required for {$name}.";
+            $this->audit('tools/call', (string) $name, $auditArguments, 'error', $message, $start, $request);
+
+            return response()->json([
+                'jsonrpc' => '2.0',
+                'id' => $id,
+                'result' => [
+                    'content' => [['type' => 'text', 'text' => $message]],
+                    'isError' => true,
+                ],
+            ]);
+        }
+
         if (CippMcpTool::handles((string) $name) && $clientId === null) {
             $message = "client_id is required for {$name}.";
             $this->audit('tools/call', (string) $name, $auditArguments, 'error', $message, $start, $request);
@@ -469,6 +487,13 @@ class McpStaffController extends Controller
                     $clientId !== null ? Client::find($clientId) : null,
                     $clientId,
                 );
+            } elseif ($this->isTacticalActionTool((string) $name)) {
+                $result = app(StaffTacticalActionToolExecutor::class)->execute(
+                    (string) $name,
+                    $arguments,
+                    (int) $clientId,
+                    $this->actorLabel($request),
+                );
             } elseif ($this->isPsaActionTool((string) $name)) {
                 $result = app(StaffPsaActionToolExecutor::class)->execute(
                     (string) $name,
@@ -494,7 +519,7 @@ class McpStaffController extends Controller
                 $start, $request,
             );
 
-            return response()->json([
+            $response = response()->json([
                 'jsonrpc' => '2.0',
                 'id' => $id,
                 'result' => [
@@ -504,6 +529,12 @@ class McpStaffController extends Controller
                     'isError' => $isError,
                 ],
             ]);
+
+            if ((string) $name === 'tactical_open_remote_control' && ! $isError) {
+                $response->headers->set('Cache-Control', 'no-store');
+            }
+
+            return $response;
         } catch (\Throwable $e) {
             Log::warning('[MCP/staff] Tool execution failed', [
                 'tool' => $name,
@@ -832,6 +863,10 @@ class McpStaffController extends Controller
             return $token->allowedTools !== null && $token->allows($toolName);
         }
 
+        if ($this->isTacticalActionTool($toolName)) {
+            return $token->allowedTools !== null && $token->allows($toolName);
+        }
+
         if (CippMcpTool::handles($toolName)) {
             return $token->allowedTools !== null && $token->allows($toolName);
         }
@@ -839,6 +874,10 @@ class McpStaffController extends Controller
         if (OperatorBridgeTools::handles($toolName) || ChetDataSurfaceTools::handles($toolName)) {
             return $token->allowedTools !== null
                 && $token->allows($toolName);
+        }
+
+        if (str_starts_with($toolName, 'tactical_')) {
+            return false;
         }
 
         return $token->allows($toolName);
@@ -908,6 +947,11 @@ class McpStaffController extends Controller
     private function isPsaActionTool(string $toolName): bool
     {
         return in_array($toolName, self::PSA_ACTION_TOOLS, true);
+    }
+
+    private function isTacticalActionTool(string $toolName): bool
+    {
+        return StaffTacticalActionToolExecutor::handles($toolName);
     }
 
     /** @return array<string, mixed> */
