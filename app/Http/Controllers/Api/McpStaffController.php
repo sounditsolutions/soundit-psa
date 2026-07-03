@@ -906,11 +906,39 @@ class McpStaffController extends Controller
                 'field_key',
                 'platform',
                 'reason',
+                'ticket_id',
                 'workstation_policy_id',
                 'server_policy_id',
                 'policy_id',
                 'copy_id',
                 'confirm_policy_name',
+                'task_id',
+                'confirm_task_name',
+                'confirm_hostname',
+                'confirm_run_all',
+                'task_type',
+                'run_time_date',
+                'expire_date',
+                'daily_interval',
+                'weekly_interval',
+                'run_time_bit_weekdays',
+                'monthly_months_of_year',
+                'monthly_days_of_month',
+                'monthly_weeks_of_month',
+                'task_repetition_duration',
+                'task_repetition_interval',
+                'stop_task_at_duration_end',
+                'random_task_delay',
+                'remove_if_not_scheduled',
+                'run_asap_after_missed',
+                'task_instance_policy',
+                'task_supported_platforms',
+                'continue_on_error',
+                'alert_severity',
+                'email_alert',
+                'text_alert',
+                'dashboard_alert',
+                'collector_all_output',
                 'target_type',
                 'policy_kind',
                 'block_policy_inheritance',
@@ -957,6 +985,16 @@ class McpStaffController extends Controller
 
             if ($normalized === 'env_vars') {
                 $safe['env_vars_count'] = is_array($value) ? count($value) : 0;
+            }
+
+            if ($normalized === 'actions') {
+                $safe['actions_count'] = is_array($value) ? count($value) : 0;
+                $safe['action_types'] = is_array($value)
+                    ? array_values(array_filter(array_map(
+                        fn (mixed $action): ?string => is_array($action) && is_scalar($action['type'] ?? null) ? (string) $action['type'] : null,
+                        $value,
+                    )))
+                    : [];
             }
         }
 

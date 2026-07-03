@@ -310,6 +310,48 @@ class TacticalClient
         return $this->put("agents/{$agentId}/", $body);
     }
 
+    public function getTasks(): array
+    {
+        return $this->get('tasks/');
+    }
+
+    public function getPolicyTasks(int $policyId): array
+    {
+        return $this->get("automation/policies/{$policyId}/tasks/");
+    }
+
+    public function createTask(array $body): mixed
+    {
+        return $this->post('tasks/', $body);
+    }
+
+    public function getTask(int $taskId): array
+    {
+        return $this->get("tasks/{$taskId}/");
+    }
+
+    public function updateTask(int $taskId, array $body): mixed
+    {
+        return $this->put("tasks/{$taskId}/", $body);
+    }
+
+    public function deleteTask(int $taskId): mixed
+    {
+        return $this->delete("tasks/{$taskId}/");
+    }
+
+    public function runTask(int $taskId, ?string $agentId = null): mixed
+    {
+        $body = $agentId !== null ? ['agent_id' => $agentId] : [];
+
+        return $this->post("tasks/{$taskId}/run/", $body);
+    }
+
+    public function runPolicyTask(int $taskId): mixed
+    {
+        return $this->post("automation/tasks/{$taskId}/run/");
+    }
+
     /**
      * Cached policy list for UI dropdowns. Returns an empty array if Tactical
      * is unreachable so the calling view can degrade gracefully.
