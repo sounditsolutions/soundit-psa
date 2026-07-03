@@ -151,6 +151,47 @@ class CockpitQueryTest extends TestCase
             'propose_close must sort last.');
     }
 
+    public function test_staged_client_facing_actions_sort_before_close_and_merge_proposals(): void
+    {
+        $query = app(\App\Services\Technician\Cockpit\CockpitQuery::class);
+        $client = Client::factory()->create();
+        $ticket = Ticket::factory()->create(['client_id' => $client->id]);
+
+        $mergeRun = TechnicianRun::create([
+            'ticket_id' => $ticket->id,
+            'client_id' => $client->id,
+            'action_type' => 'propose_merge',
+            'content_hash' => hash('sha256', 'merge'),
+            'state' => TechnicianRunState::AwaitingApproval,
+            'proposed_content' => 'merge',
+            'created_at' => now()->subHours(3),
+        ]);
+        $closeRun = TechnicianRun::create([
+            'ticket_id' => $ticket->id,
+            'client_id' => $client->id,
+            'action_type' => 'propose_close',
+            'content_hash' => hash('sha256', 'close'),
+            'state' => TechnicianRunState::AwaitingApproval,
+            'proposed_content' => 'close',
+            'created_at' => now()->subHours(2),
+        ]);
+        $stageEmailRun = TechnicianRun::create([
+            'ticket_id' => $ticket->id,
+            'client_id' => $client->id,
+            'action_type' => 'stage_email',
+            'content_hash' => hash('sha256', 'stage-email'),
+            'state' => TechnicianRunState::AwaitingApproval,
+            'proposed_content' => 'stage email',
+            'created_at' => now(),
+        ]);
+
+        $ids = $query->pendingDrafts()->pluck('id')->all();
+
+        $this->assertSame($stageEmailRun->id, $ids[0]);
+        $this->assertContains($closeRun->id, array_slice($ids, 1));
+        $this->assertContains($mergeRun->id, array_slice($ids, 1));
+    }
+
     /**
      * A reply-only set must remain ordered by overdue-first, then oldest-first
      * (within-lane ordering preserved — no regression).

@@ -88,4 +88,21 @@ class TechnicianTierClassifierTest extends TestCase
             (new TechnicianTierClassifier)->classify('send_reply', 0.99),
         );
     }
+
+    public function test_staged_psa_action_tools_can_never_be_auto_even_when_tier_map_says_auto(): void
+    {
+        $this->setTiers([
+            'stage_email' => 'auto',
+            'stage_public_note' => 'auto',
+            'propose_merge' => 'auto',
+        ]);
+
+        foreach (['stage_email', 'stage_public_note', 'propose_merge'] as $actionType) {
+            $this->assertSame(
+                TechnicianTier::Approve,
+                (new TechnicianTierClassifier)->classify($actionType),
+                "{$actionType} must remain held for cockpit approval.",
+            );
+        }
+    }
 }

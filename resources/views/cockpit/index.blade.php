@@ -24,7 +24,10 @@
                 @php
                     [$badgeClass, $badgeLabel] = match ($run->action_type) {
                         'propose_close'      => ['bg-warning text-dark', 'Proposed close'],
+                        'propose_merge'      => ['bg-warning text-dark', 'Proposed merge'],
                         'propose_resolution' => ['bg-info',              'Proposed resolution'],
+                        'stage_email'        => ['bg-success',           'Staged email'],
+                        'stage_public_note'  => ['bg-info',              'Staged public note'],
                         default              => ['bg-primary',           'Reply'],
                     };
                 @endphp
@@ -50,10 +53,36 @@
                         <button type="submit" class="btn btn-outline-secondary"><i class="bi bi-x-lg me-1"></i>Hold it</button>
                     </form>
                 </div>
+            @elseif ($run->action_type === 'propose_merge')
+                {{-- PROPOSE-MERGE ARM: read-only reason; approval runs the server-side merge executor --}}
+                @php($mergeMeta = $run->proposed_meta ?? [])
+                <p class="text-muted small mb-1">Reason (not sent to the client — this merges the duplicate ticket):</p>
+                <p class="form-control-plaintext border rounded p-2 mb-2 bg-light small">{{ $run->proposed_content }}</p>
+                <p class="text-muted small mb-2">
+                    Primary: {{ $mergeMeta['primary_display_id'] ?? $mergeMeta['primary_ticket_display_id'] ?? '#'.$run->ticket_id }}
+                    · Secondary: {{ $mergeMeta['secondary_display_id'] ?? $mergeMeta['secondary_ticket_display_id'] ?? '#'.($mergeMeta['secondary_ticket_id'] ?? '?') }}
+                </p>
+                @if(!empty($run->proposed_meta['drafted_by']))
+                    <p class="text-muted small mb-2">Drafted by: {{ $run->proposed_meta['drafted_by'] }}</p>
+                @endif
+
+                <div class="d-flex gap-2">
+                    <form id="approve-{{ $run->id }}" method="POST" action="{{ route('cockpit.approve', $run) }}">
+                        @csrf
+                        <button type="submit" class="btn btn-warning"><i class="bi bi-intersect me-1"></i>Approve merge</button>
+                    </form>
+                    <form method="POST" action="{{ route('cockpit.deny', $run) }}">
+                        @csrf
+                        <button type="submit" class="btn btn-outline-secondary"><i class="bi bi-x-lg me-1"></i>Hold it</button>
+                    </form>
+                </div>
             @else
                 {{-- REPLY/RESOLUTION ARM: editable send text, disclosure notice --}}
+                @php($bodyLabel = $run->action_type === 'stage_public_note' ? 'Public note (edit before publishing):' : 'Message to the client (edit before sending):')
+                @php($sendLabel = $run->action_type === 'stage_public_note' ? 'Publish public note' : ($run->action_type === 'stage_email' ? 'Send email' : 'Send this'))
+                @php($sendIcon = $run->action_type === 'stage_public_note' ? 'bi-journal-text' : 'bi-send')
                 {{-- SEND-TEXT-FIRST: the exact outgoing text, editable, ABOVE the Send button --}}
-                <label class="form-label small text-muted mb-1" for="body-{{ $run->id }}">Message to the client (edit before sending):</label>
+                <label class="form-label small text-muted mb-1" for="body-{{ $run->id }}">{{ $bodyLabel }}</label>
                 <textarea class="form-control mb-1" id="body-{{ $run->id }}" name="body" rows="5" form="approve-{{ $run->id }}">{{ $run->proposed_content }}</textarea>
                 <p class="text-muted small mb-2">
                     <i class="bi bi-info-circle me-1"></i>A disclosure line ("— Sent by {{ \App\Support\TechnicianConfig::aiActorName() }}, an AI assistant for our team.") is added automatically.
@@ -71,7 +100,7 @@
                 <div class="d-flex gap-2">
                     <form id="approve-{{ $run->id }}" method="POST" action="{{ route('cockpit.approve', $run) }}">
                         @csrf
-                        <button type="submit" class="btn btn-success"><i class="bi bi-send me-1"></i>Send this</button>
+                        <button type="submit" class="btn btn-success"><i class="bi {{ $sendIcon }} me-1"></i>{{ $sendLabel }}</button>
                     </form>
                     <form method="POST" action="{{ route('cockpit.deny', $run) }}">
                         @csrf

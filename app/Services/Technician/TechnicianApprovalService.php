@@ -7,13 +7,14 @@ use App\Enums\TechnicianRunState;
 use App\Enums\TicketStatus;
 use App\Enums\WhoType;
 use App\Models\TechnicianRun;
+use App\Models\Ticket;
 use App\Models\TicketNote;
 use App\Services\EmailService;
 use App\Services\TicketService;
 use App\Support\TechnicianConfig;
 use Illuminate\Support\Facades\Log;
 
-/** The outcome of an approve action. status ∈ {sent, closed, already_handled, gate_declined}. */
+/** The outcome of an approve action. status ∈ {sent, closed, published, merged, already_handled, gate_declined}. */
 final class TechnicianApprovalResult
 {
     public function __construct(
@@ -176,9 +177,202 @@ class TechnicianApprovalService
         return new TechnicianApprovalResult('closed'); // no client notification (CO-18)
     }
 
+    public function approveStagedEmail(TechnicianRun $run, string $body, int $approverId): TechnicianApprovalResult
+    {
+        return $this->approveStagedBodyAction(
+            run: $run,
+            body: $body,
+            approverId: $approverId,
+            actionType: 'stage_email',
+            noteType: NoteType::Reply,
+            summary: 'Operator-approved staged client email.',
+            sendsEmail: true,
+            successStatus: 'sent',
+        );
+    }
+
+    public function approveStagedPublicNote(TechnicianRun $run, string $body, int $approverId): TechnicianApprovalResult
+    {
+        return $this->approveStagedBodyAction(
+            run: $run,
+            body: $body,
+            approverId: $approverId,
+            actionType: 'stage_public_note',
+            noteType: NoteType::Note,
+            summary: 'Operator-approved staged public note.',
+            sendsEmail: false,
+            successStatus: 'published',
+        );
+    }
+
+    public function approveMerge(TechnicianRun $run, int $approverId): TechnicianApprovalResult
+    {
+        if ($run->action_type !== 'propose_merge' || ! $run->claimForExecution()) {
+            return new TechnicianApprovalResult('already_handled');
+        }
+
+        $pair = $this->validMergePair($run);
+        if ($pair === null) {
+            $run->releaseClaim();
+
+            return new TechnicianApprovalResult('gate_declined');
+        }
+
+        [$primary, $secondary] = $pair;
+
+        try {
+            $hash = hash('sha256', 'propose_merge:'.$primary->id.':'.$secondary->id.':'.$run->proposed_content);
+            $token = TechnicianApprovalGrant::issue('propose_merge', $run->ticket_id, $hash, $approverId);
+
+            $result = $this->gate->dispatch(
+                actionType: 'propose_merge',
+                ticketId: $run->ticket_id,
+                clientId: $run->client_id,
+                contentHash: $hash,
+                summary: 'Operator-approved ticket merge.',
+                runId: $run->id,
+                executor: function () use ($run, $primary, $secondary, $approverId): void {
+                    app(TicketService::class)->mergeTickets($primary, $secondary, $approverId);
+
+                    TechnicianRun::query()
+                        ->where('ticket_id', $secondary->id)
+                        ->whereKeyNot($run->id)
+                        ->where('state', TechnicianRunState::AwaitingApproval->value)
+                        ->get()
+                        ->each(fn (TechnicianRun $pending) => $pending->markSuperseded());
+
+                    $run->advanceTo(TechnicianRunState::Done);
+                },
+                approvalToken: $token,
+                approverUserId: $approverId,
+                confidence: null,
+            );
+        } catch (\Throwable $e) {
+            $run->releaseClaim();
+            throw $e;
+        }
+
+        if ($result->status !== 'executed') {
+            $run->releaseClaim();
+
+            return new TechnicianApprovalResult('gate_declined');
+        }
+
+        return new TechnicianApprovalResult('merged');
+    }
+
     public function deny(TechnicianRun $run): void
     {
         $run->deny();
+    }
+
+    private function approveStagedBodyAction(
+        TechnicianRun $run,
+        string $body,
+        int $approverId,
+        string $actionType,
+        NoteType $noteType,
+        string $summary,
+        bool $sendsEmail,
+        string $successStatus,
+    ): TechnicianApprovalResult {
+        $body = trim($body);
+
+        if ($body === '' || $run->action_type !== $actionType || ! $run->claimForExecution()) {
+            return new TechnicianApprovalResult('already_handled');
+        }
+
+        $ticket = $run->ticket;
+        if (! $ticket) {
+            $run->releaseClaim();
+
+            return new TechnicianApprovalResult('gate_declined');
+        }
+
+        $actorId = TechnicianConfig::aiActorUserId();
+        $actorName = TechnicianConfig::aiActorName();
+
+        try {
+            $hash = hash('sha256', $actionType.':'.$run->ticket_id.':'.$body);
+            $token = TechnicianApprovalGrant::issue($actionType, $run->ticket_id, $hash, $approverId);
+
+            $disclosed = $this->disclosure->withDisclosure($body, $actorName);
+            $this->disclosure->assertPresent($disclosed);
+
+            $createdNote = null;
+
+            $result = $this->gate->dispatch(
+                actionType: $actionType,
+                ticketId: $run->ticket_id,
+                clientId: $run->client_id,
+                contentHash: $hash,
+                summary: $summary,
+                runId: $run->id,
+                executor: function () use ($ticket, $actorId, $actorName, $disclosed, $noteType, $run, &$createdNote): void {
+                    $createdNote = TicketNote::create([
+                        'ticket_id' => $ticket->id,
+                        'author_id' => $actorId,
+                        'author_name' => $actorName,
+                        'who_type' => WhoType::Agent,
+                        'ai_authored' => true,
+                        'body' => $disclosed,
+                        'note_type' => $noteType,
+                        'is_private' => false,
+                        'noted_at' => now(),
+                    ]);
+                    $run->advanceTo(TechnicianRunState::Done);
+                },
+                approvalToken: $token,
+                approverUserId: $approverId,
+                confidence: null,
+            );
+        } catch (\Throwable $e) {
+            $run->releaseClaim();
+            throw $e;
+        }
+
+        if ($result->status !== 'executed' || $createdNote === null) {
+            $run->releaseClaim();
+
+            return new TechnicianApprovalResult('gate_declined');
+        }
+
+        if ($sendsEmail) {
+            $this->sendEmail($ticket, $createdNote);
+        }
+
+        return new TechnicianApprovalResult($successStatus, $createdNote->id);
+    }
+
+    /**
+     * @return array{0: Ticket, 1: Ticket}|null
+     */
+    private function validMergePair(TechnicianRun $run): ?array
+    {
+        $meta = $run->proposed_meta ?? [];
+        $primaryId = (int) ($meta['primary_ticket_id'] ?? $run->ticket_id);
+        $secondaryId = (int) ($meta['secondary_ticket_id'] ?? 0);
+
+        if ($primaryId <= 0 || $secondaryId <= 0 || $primaryId !== (int) $run->ticket_id || $primaryId === $secondaryId) {
+            return null;
+        }
+
+        $primary = Ticket::query()->find($primaryId);
+        $secondary = Ticket::query()->find($secondaryId);
+
+        if (! $primary || ! $secondary) {
+            return null;
+        }
+
+        if ($primary->client_id !== $run->client_id || $secondary->client_id !== $run->client_id) {
+            return null;
+        }
+
+        if ($primary->parent_ticket_id || $secondary->parent_ticket_id || $secondary->childTickets()->exists()) {
+            return null;
+        }
+
+        return [$primary, $secondary];
     }
 
     private function sendEmail(\App\Models\Ticket $ticket, TicketNote $note): void

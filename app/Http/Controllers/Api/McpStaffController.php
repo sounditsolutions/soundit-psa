@@ -15,6 +15,7 @@ use App\Services\Chet\ChetDataSurfaceTools;
 use App\Services\Chet\OperatorBridgeTextSanitizer;
 use App\Services\Chet\OperatorBridgeToolExecutor;
 use App\Services\Chet\OperatorBridgeTools;
+use App\Services\Mcp\StaffPsaActionToolExecutor;
 use App\Services\Tactical\Actions\ActionRedactor;
 use App\Support\AgentConfig;
 use App\Support\McpStaffToken;
@@ -85,6 +86,21 @@ class McpStaffController extends Controller
     private const WIKI_PAGE_AUTHORING_TOOLS = [
         'wiki_create_page',
         'wiki_update_page',
+    ];
+
+    private const PSA_ACTION_TOOLS = [
+        'send_email',
+        'stage_email',
+        'write_public_note',
+        'stage_public_note',
+        'propose_merge',
+    ];
+
+    private const BODY_LENGTH_AUDIT_TOOLS = [
+        'send_email',
+        'stage_email',
+        'write_public_note',
+        'stage_public_note',
     ];
 
     public function handle(Request $request): JsonResponse
@@ -191,6 +207,7 @@ class McpStaffController extends Controller
                 McpToolRegistry::wikiCreatePageTool(),
                 McpToolRegistry::wikiUpdatePageTool(),
             ],
+            McpToolRegistry::psaActionTools(),
             ChetDataSurfaceTools::generalTools(),
             OperatorBridgeTools::definitions(),
         );
@@ -222,11 +239,12 @@ class McpStaffController extends Controller
         $translated = array_map(function ($t) use ($request, $generalNames, $clientIdOptionalFor, $toolInstructions) {
             $schema = $t['input_schema'] ?? ['type' => 'object', 'properties' => new \stdClass];
             $isChetClientScopedWrite = $this->isChetClientScopedWrite($request, (string) $t['name']);
-            $isClientScoped = ! isset($generalNames[$t['name']]) || $isChetClientScopedWrite;
+            $isPsaActionTool = $this->isPsaActionTool((string) $t['name']);
+            $isClientScoped = ! isset($generalNames[$t['name']]) || $isChetClientScopedWrite || $isPsaActionTool;
 
             if ($isClientScoped) {
                 $props = (array) ($schema['properties'] ?? []);
-                $clientIdRequired = $isChetClientScopedWrite || ! in_array($t['name'], $clientIdOptionalFor, true);
+                $clientIdRequired = $isChetClientScopedWrite || $isPsaActionTool || ! in_array($t['name'], $clientIdOptionalFor, true);
                 $props['client_id'] = [
                     'type' => 'integer',
                     'description' => $clientIdRequired
@@ -349,6 +367,20 @@ class McpStaffController extends Controller
             ]);
         }
 
+        if ($this->isPsaActionTool((string) $name) && $clientId === null) {
+            $message = "client_id is required for {$name}.";
+            $this->audit('tools/call', (string) $name, $arguments, 'error', $message, $start, $request);
+
+            return response()->json([
+                'jsonrpc' => '2.0',
+                'id' => $id,
+                'result' => [
+                    'content' => [['type' => 'text', 'text' => $message]],
+                    'isError' => true,
+                ],
+            ]);
+        }
+
         // Chet's held ticket actions are client-scoped end-to-end: the ticket must belong
         // to the client context Chet supplied. Enforced HERE at the Chet boundary —
         // the staff-trust surface deliberately keeps the opposite contract (derive
@@ -396,6 +428,13 @@ class McpStaffController extends Controller
                 );
             } elseif (ChetDataSurfaceTools::handles((string) $name)) {
                 $result = app(ChetDataSurfaceToolExecutor::class)->execute((string) $name, $arguments, $clientId);
+            } elseif ($this->isPsaActionTool((string) $name)) {
+                $result = app(StaffPsaActionToolExecutor::class)->execute(
+                    (string) $name,
+                    $arguments,
+                    (int) $clientId,
+                    $this->actorLabel($request),
+                );
             } elseif ((string) $name === 'send_reply') {
                 $result = $this->sendReply($arguments, $request);
             } elseif ((string) $name === 'request_tool') {
@@ -537,6 +576,14 @@ class McpStaffController extends Controller
             return $this->auditSendReplyArguments($args);
         }
 
+        if (in_array((string) $tool, self::BODY_LENGTH_AUDIT_TOOLS, true)) {
+            return $this->auditBodyLengthArguments($args);
+        }
+
+        if ($tool === 'propose_merge') {
+            return $this->auditProposeMergeArguments($args);
+        }
+
         $redacted = app(ActionRedactor::class)->redactParams($args);
 
         if ($tool === 'post_to_operator' && isset($redacted['message']) && is_string($redacted['message'])) {
@@ -593,6 +640,46 @@ class McpStaffController extends Controller
 
             if ($normalized === 'body') {
                 $safe['body_length'] = is_string($value) ? mb_strlen($value) : 0;
+            }
+        }
+
+        return $safe;
+    }
+
+    /** @return array<string, mixed> */
+    private function auditBodyLengthArguments(array $arguments): array
+    {
+        $safe = [];
+
+        foreach ($arguments as $key => $value) {
+            $normalized = mb_strtolower((string) $key);
+
+            if (in_array($normalized, ['client_id', 'ticket_id', 'reason'], true)) {
+                $safe[$normalized] = $value;
+            }
+
+            if ($normalized === 'body') {
+                $safe['body_length'] = is_string($value) ? mb_strlen($value) : 0;
+            }
+        }
+
+        return $safe;
+    }
+
+    /** @return array<string, mixed> */
+    private function auditProposeMergeArguments(array $arguments): array
+    {
+        $safe = [];
+
+        foreach ($arguments as $key => $value) {
+            $normalized = mb_strtolower((string) $key);
+
+            if (in_array($normalized, ['client_id', 'primary_ticket_id', 'secondary_ticket_id'], true)) {
+                $safe[$normalized] = $value;
+            }
+
+            if ($normalized === 'reason') {
+                $safe['reason_length'] = is_string($value) ? mb_strlen($value) : 0;
             }
         }
 
@@ -675,6 +762,10 @@ class McpStaffController extends Controller
             return $token->allowedTools !== null && $token->allows($toolName);
         }
 
+        if ($this->isPsaActionTool($toolName)) {
+            return $token->allowedTools !== null && $token->allows($toolName);
+        }
+
         if (OperatorBridgeTools::handles($toolName) || ChetDataSurfaceTools::handles($toolName)) {
             return $token->allowedTools !== null
                 && $token->allows($toolName);
@@ -746,6 +837,11 @@ class McpStaffController extends Controller
     private function isWikiPageAuthoringWrite(string $toolName): bool
     {
         return in_array($toolName, self::WIKI_PAGE_AUTHORING_TOOLS, true);
+    }
+
+    private function isPsaActionTool(string $toolName): bool
+    {
+        return in_array($toolName, self::PSA_ACTION_TOOLS, true);
     }
 
     /** @return array<string, mixed> */

@@ -4,10 +4,12 @@ namespace Tests\Feature\Technician\Cockpit;
 
 use App\Enums\NoteType;
 use App\Enums\TechnicianRunState;
+use App\Enums\TicketStatus;
 use App\Enums\WhoType;
 use App\Models\Client;
 use App\Models\Person;
 use App\Models\Setting;
+use App\Models\TechnicianActionLog;
 use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Models\TicketNote;
@@ -39,6 +41,35 @@ class TechnicianApprovalServiceTest extends TestCase
             'ticket_id' => $ticket->id, 'client_id' => $client->id, 'action_type' => 'send_reply',
             'content_hash' => str_repeat('a', 64), 'state' => TechnicianRunState::AwaitingApproval,
             'proposed_content' => 'Original draft.',
+        ]);
+    }
+
+    private function heldStageRun(User $actor, string $actionType): TechnicianRun
+    {
+        Setting::setValue('triage_system_user_id', (string) $actor->id);
+        Setting::setValue('technician_action_tiers', json_encode([]));
+        $client = Client::factory()->create();
+        $person = Person::create([
+            'client_id' => $client->id, 'person_type' => \App\Enums\PersonType::User,
+            'first_name' => 'Test', 'last_name' => 'Contact', 'email' => 'c@example.com', 'is_active' => true,
+        ]);
+        $ticket = Ticket::factory()->create([
+            'client_id' => $client->id,
+            'contact_id' => $person->id,
+            'status' => TicketStatus::InProgress,
+            'closed_at' => null,
+            'subject' => 'Printer down',
+        ]);
+        $body = 'Original staged body.';
+
+        return TechnicianRun::create([
+            'ticket_id' => $ticket->id,
+            'client_id' => $client->id,
+            'action_type' => $actionType,
+            'content_hash' => hash('sha256', $actionType.':'.$ticket->id.':'.$body),
+            'state' => TechnicianRunState::AwaitingApproval,
+            'proposed_content' => $body,
+            'proposed_meta' => ['drafted_by' => 'mcp-staff:opsbot', 'reasons' => ['Needs a public update.']],
         ]);
     }
 
@@ -116,5 +147,119 @@ class TechnicianApprovalServiceTest extends TestCase
         $this->assertSame('gate_declined', $result->status);
         $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state); // NOT stuck at Executing
         $this->assertSame(0, TicketNote::where('ticket_id', $run->ticket_id)->where('ai_authored', true)->count());
+    }
+
+    public function test_approve_staged_email_sends_edited_body_and_records_approver(): void
+    {
+        $actor = User::factory()->create(['name' => 'Chet']);
+        $run = $this->heldStageRun($actor, 'stage_email');
+        $this->mock(EmailService::class, fn (MockInterface $m) => $m->shouldReceive('sendTicketReplyNote')
+            ->once()
+            ->with(\Mockery::any(), \Mockery::any(), 'c@example.com', \Mockery::any())
+            ->andReturnNull());
+
+        $result = app(TechnicianApprovalService::class)->approveStagedEmail($run, 'Edited staged email.', $actor->id);
+
+        $this->assertSame('sent', $result->status);
+        $note = TicketNote::find($result->noteId);
+        $this->assertSame(NoteType::Reply, $note->note_type);
+        $this->assertFalse((bool) $note->is_private);
+        $this->assertTrue((bool) $note->ai_authored);
+        $this->assertStringContainsString('Edited staged email.', $note->body);
+        $this->assertStringContainsString(TechnicianDisclosure::DISCLOSURE_SENTINEL, $note->body);
+        $this->assertSame(TechnicianRunState::Done, $run->fresh()->state);
+        $this->assertDatabaseHas('technician_action_logs', [
+            'action_type' => 'stage_email',
+            'result_status' => 'executed',
+            'ticket_id' => $run->ticket_id,
+            'approver_user_id' => $actor->id,
+        ]);
+    }
+
+    public function test_approve_staged_public_note_publishes_without_email_and_releases_on_gate_decline(): void
+    {
+        $actor = User::factory()->create(['name' => 'Chet']);
+        $run = $this->heldStageRun($actor, 'stage_public_note');
+        $this->mock(EmailService::class, fn (MockInterface $m) => $m->shouldReceive('sendTicketReplyNote')->never());
+
+        $result = app(TechnicianApprovalService::class)->approveStagedPublicNote($run, 'Edited public note.', $actor->id);
+
+        $this->assertSame('published', $result->status);
+        $note = TicketNote::find($result->noteId);
+        $this->assertSame(NoteType::Note, $note->note_type);
+        $this->assertFalse((bool) $note->is_private);
+        $this->assertTrue((bool) $note->ai_authored);
+        $this->assertStringContainsString('Edited public note.', $note->body);
+        $this->assertSame(TechnicianRunState::Done, $run->fresh()->state);
+
+        $declined = $this->heldStageRun($actor, 'stage_public_note');
+        Setting::setValue('technician_kill_switch', '1');
+        $retryable = app(TechnicianApprovalService::class)->approveStagedPublicNote($declined, 'Held by switch.', $actor->id);
+        $this->assertSame('gate_declined', $retryable->status);
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $declined->fresh()->state);
+        $this->assertSame(0, TicketNote::where('ticket_id', $declined->ticket_id)->count());
+    }
+
+    public function test_approve_merge_executes_merge_and_supersedes_secondary_pending_runs(): void
+    {
+        $actor = User::factory()->create(['name' => 'Chet']);
+        Setting::setValue('triage_system_user_id', (string) $actor->id);
+        Setting::setValue('technician_action_tiers', json_encode([]));
+        $client = Client::factory()->create();
+        $primary = Ticket::factory()->create([
+            'client_id' => $client->id,
+            'status' => TicketStatus::InProgress,
+            'closed_at' => null,
+            'subject' => 'Printer offline',
+        ]);
+        $secondary = Ticket::factory()->create([
+            'client_id' => $client->id,
+            'status' => TicketStatus::InProgress,
+            'closed_at' => null,
+            'subject' => 'Duplicate printer issue',
+        ]);
+        TicketNote::create([
+            'ticket_id' => $secondary->id,
+            'author_id' => $actor->id,
+            'body' => 'Secondary diagnostic note.',
+            'note_type' => NoteType::Note,
+            'is_private' => true,
+            'noted_at' => now(),
+        ]);
+        $secondaryPending = TechnicianRun::create([
+            'ticket_id' => $secondary->id,
+            'client_id' => $client->id,
+            'action_type' => 'stage_email',
+            'content_hash' => hash('sha256', 'secondary-pending'),
+            'state' => TechnicianRunState::AwaitingApproval,
+            'proposed_content' => 'Dangling draft.',
+        ]);
+        $run = TechnicianRun::create([
+            'ticket_id' => $primary->id,
+            'client_id' => $client->id,
+            'action_type' => 'propose_merge',
+            'content_hash' => hash('sha256', 'propose_merge:'.$primary->id.':'.$secondary->id.':duplicate'),
+            'state' => TechnicianRunState::AwaitingApproval,
+            'proposed_content' => 'Duplicate ticket.',
+            'proposed_meta' => [
+                'primary_ticket_id' => $primary->id,
+                'secondary_ticket_id' => $secondary->id,
+                'drafted_by' => 'mcp-staff:opsbot',
+            ],
+        ]);
+
+        $result = app(TechnicianApprovalService::class)->approveMerge($run, $actor->id);
+
+        $this->assertSame('merged', $result->status);
+        $this->assertSame(TechnicianRunState::Done, $run->fresh()->state);
+        $this->assertSame(TechnicianRunState::Superseded, $secondaryPending->fresh()->state);
+        $this->assertSame($primary->id, $secondary->fresh()->parent_ticket_id);
+        $this->assertSame(TicketStatus::Closed, $secondary->fresh()->status);
+        $this->assertSame(1, TicketNote::where('ticket_id', $primary->id)->where('body', 'Secondary diagnostic note.')->count());
+        $this->assertSame(1, TechnicianActionLog::where('action_type', 'propose_merge')
+            ->where('result_status', 'executed')
+            ->where('run_id', $run->id)
+            ->where('approver_user_id', $actor->id)
+            ->count());
     }
 }
