@@ -2,17 +2,27 @@
 
 namespace App\Http\Controllers\Web;
 
+use App\Enums\NoteType;
+use App\Enums\PhoneDirectoryListType;
+use App\Enums\TechnicianRunState;
+use App\Enums\TicketStatus;
 use App\Http\Controllers\Controller;
+use App\Models\PhoneCall;
 use App\Models\PhoneDirectoryEntry;
 use App\Models\TechnicianRun;
-use App\Services\PhoneCallService;
+use App\Models\TicketNote;
 use App\Services\Technician\Cockpit\CockpitQuery;
+use App\Services\Technician\Cockpit\CockpitUndoToken;
 use App\Services\Technician\TechnicianApprovalService;
+use App\Services\TicketService;
+use App\Support\PhoneNumber;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
 class TechnicianCockpitController extends Controller
 {
+    private const UNDO_WINDOW_MINUTES = 5;
+
     public function index(CockpitQuery $query)
     {
         return view('cockpit.index', [
@@ -21,6 +31,7 @@ class TechnicianCockpitController extends Controller
             'needs' => $query->needsAttention(),
             'intake' => $query->intakeReview(),
             'intakeSpam' => $query->intakeSpamReview(),
+            'counts' => $query->counts(),
         ]);
     }
 
@@ -76,25 +87,39 @@ class TechnicianCockpitController extends Controller
             default => abort(422, 'Unsupported action type for approval.'),
         };
 
-        return redirect()->route('cockpit.index')->with(
-            in_array($result->status, ['sent', 'closed', 'published', 'merged', 'executed'], true) ? 'success' : 'error',
-            match ($result->status) {
-                'sent' => 'Reply approved and sent.',
-                'closed' => 'Ticket closed.',
-                'published' => 'Public note published.',
-                'merged' => 'Tickets merged.',
-                'executed' => 'Held action approved and executed.',
-                'already_handled' => 'That draft was already handled.',
-                default => 'Could not send — the Technician declined (it may be paused). Try again.',
-            },
+        $ok = in_array($result->status, ['sent', 'closed', 'published', 'merged', 'executed'], true);
+        $message = match ($result->status) {
+            'sent' => 'Reply approved and sent.',
+            'closed' => 'Ticket closed.',
+            'published' => 'Public note published.',
+            'merged' => 'Tickets merged.',
+            'executed' => 'Held action approved and executed.',
+            'already_handled' => 'That draft was already handled.',
+            default => 'Could not send — the Technician declined (it may be paused). Try again.',
+        };
+
+        return $this->actionResponse(
+            $request,
+            $ok,
+            $result->status,
+            $message,
+            undo: $ok && $run->action_type === 'propose_close'
+                ? $this->runUndoPayload($run, 'approve-close', ['status_note_id' => $result->noteId])
+                : null,
         );
     }
 
-    public function deny(TechnicianRun $run, TechnicianApprovalService $service)
+    public function deny(Request $request, TechnicianRun $run, TechnicianApprovalService $service)
     {
-        $service->deny($run);
+        $ok = $service->deny($run);
 
-        return redirect()->route('cockpit.index')->with('success', 'Draft dismissed; the ticket is back with your team.');
+        return $this->actionResponse(
+            $request,
+            $ok,
+            $ok ? 'denied' : 'already_handled',
+            $ok ? 'Draft dismissed; the ticket is back with your team.' : 'That draft was already handled.',
+            undo: $ok ? $this->runUndoPayload($run, 'hold') : null,
+        );
     }
 
     /**
@@ -102,19 +127,31 @@ class TechnicianCockpitController extends Controller
      * no execution, no client-facing consequence. The CAS guard on the model makes
      * this a safe no-op on anything that is not a held flag.
      */
-    public function acknowledge(TechnicianRun $run)
+    public function acknowledge(Request $request, TechnicianRun $run)
     {
-        $run->acknowledgeFlag();
+        $ok = $run->acknowledgeFlag();
 
-        return redirect()->route('cockpit.index')->with('success', 'Flag acknowledged — it’s with you now.');
+        return $this->actionResponse(
+            $request,
+            $ok,
+            $ok ? 'done' : 'already_handled',
+            $ok ? 'Flag acknowledged — it’s with you now.' : 'That flag was already handled.',
+            undo: $ok ? $this->runUndoPayload($run, 'ack-flag') : null,
+        );
     }
 
     /** Dismiss a held flag: not something a person needs after all. Flagged → Denied. */
-    public function dismiss(TechnicianRun $run)
+    public function dismiss(Request $request, TechnicianRun $run)
     {
-        $run->dismissFlag();
+        $ok = $run->dismissFlag();
 
-        return redirect()->route('cockpit.index')->with('success', 'Flag dismissed.');
+        return $this->actionResponse(
+            $request,
+            $ok,
+            $ok ? 'denied' : 'already_handled',
+            $ok ? 'Flag dismissed.' : 'That flag was already handled.',
+            undo: $ok ? $this->runUndoPayload($run, 'dismiss-flag') : null,
+        );
     }
 
     /**
@@ -122,40 +159,75 @@ class TechnicianCockpitController extends Controller
      * Transitions intake_route AwaitingApproval → Done via CAS guard (no-op if already
      * resolved or if the run is not an intake_route). Visibility only — no merge action.
      */
-    public function intakeDismiss(TechnicianRun $run)
+    public function intakeDismiss(Request $request, TechnicianRun $run)
     {
-        $run->dismissIntake();
+        $ok = $run->dismissIntake();
 
-        return redirect()->route('cockpit.index')->with('success', 'Intake suggestion dismissed.');
+        return $this->actionResponse(
+            $request,
+            $ok,
+            $ok ? 'done' : 'already_handled',
+            $ok ? 'Intake suggestion dismissed.' : 'That intake suggestion was already handled.',
+            undo: $ok ? $this->runUndoPayload($run, 'dismiss-intake') : null,
+        );
     }
 
     /**
      * One-tap "mark followed-up + block number" for a suspected-spam call (psa-xcyo Task 6b).
      *
      * Stamps followed_up_at (removing the call from the spam lane) AND adds the caller to the
-     * Blocked phone directory. Both writes are wrapped in a transaction. The action is idempotent:
-     * a repeat tap re-stamps followed_up_at (harmless) and updateOrCreate is a no-op-or-update
-     * (no duplicate / no crash). A null from_number (non-normalizable) blocks nothing but still
-     * marks the call followed-up.
+     * Blocked phone directory when the number is not already listed. Both writes are wrapped in a
+     * transaction. A repeat tap becomes a no-op and returns already_handled; a null from_number
+     * (non-normalizable) blocks nothing but still marks the call followed-up.
      */
-    public function intakeSpamBlock(\App\Models\PhoneCall $call, PhoneCallService $phoneCallService)
+    public function intakeSpamBlock(Request $request, PhoneCall $call)
     {
-        DB::transaction(function () use ($call, $phoneCallService) {
-            $phoneCallService->markFollowedUp($call, (int) auth()->id());
-            $normalized = \App\Support\PhoneNumber::normalize($call->from_number);
+        $directoryEntryId = null;
+        $handled = DB::transaction(function () use ($call, &$directoryEntryId): bool {
+            $updated = PhoneCall::query()
+                ->whereKey($call->id)
+                ->whereNull('followed_up_at')
+                ->whereNull('ticket_id')
+                ->whereNull('client_id')
+                ->update([
+                    'followed_up_at' => now(),
+                    'followed_up_by' => (int) auth()->id(),
+                ]) === 1;
+
+            if (! $updated) {
+                return false;
+            }
+
+            $call->refresh();
+            $normalized = PhoneNumber::normalize($call->from_number);
             if ($normalized !== null) {
-                PhoneDirectoryEntry::updateOrCreate(
-                    ['phone_number' => $normalized],
-                    [
+                $entry = PhoneDirectoryEntry::where('phone_number', $normalized)->first();
+
+                if (! $entry) {
+                    $entry = PhoneDirectoryEntry::create([
+                        'phone_number' => $normalized,
                         'list_type' => \App\Enums\PhoneDirectoryListType::Blocked,
                         'reason' => 'AI intake: marked spam by operator',
                         'added_by_user_id' => (int) auth()->id(),
-                    ],
-                );
+                    ]);
+                    $directoryEntryId = $entry->id;
+                }
             }
+
+            return true;
         });
 
-        return redirect()->route('cockpit.index')->with('success', 'Caller marked followed-up and the number was blocked.');
+        return $this->actionResponse(
+            $request,
+            $handled,
+            $handled ? 'done' : 'already_handled',
+            $handled ? 'Caller marked followed-up and the number was blocked.' : 'That call was already handled.',
+            undo: $handled ? $this->callUndoPayload(
+                $call,
+                'block-number',
+                $directoryEntryId !== null ? ['directory_entry_id' => $directoryEntryId] : [],
+            ) : null,
+        );
     }
 
     /**
@@ -179,8 +251,50 @@ class TechnicianCockpitController extends Controller
         // Supersede the current run and dispatch a correctionDriven RunTechnicianAgent.
         app(\App\Services\Agent\Steering\ReassessTrigger::class)->reassess($ticket, $run);
 
-        return redirect()->route('cockpit.index')
-            ->with('success', "Re-assessing #{$ticket->id} with your correction.");
+        return $this->actionResponse($request, true, 'reassessing', "Re-assessing #{$ticket->id} with your correction.");
+    }
+
+    public function undo(Request $request)
+    {
+        $tokens = app(CockpitUndoToken::class);
+
+        if (! $tokens->isValidRequest($request, (int) auth()->id())) {
+            return $this->actionResponse($request, false, 'invalid', 'Undo link is invalid or expired.', 'error', 403);
+        }
+
+        $undo = $tokens->consume((string) $request->query('token'));
+        if ($undo === null || (int) ($undo['user_id'] ?? 0) !== (int) auth()->id()) {
+            return $this->actionResponse($request, false, 'expired', 'Undo window expired or the item already changed.', 'error', 409);
+        }
+
+        $action = (string) ($undo['action'] ?? '');
+        $targetType = (string) ($undo['target_type'] ?? '');
+        $targetId = (int) ($undo['target_id'] ?? 0);
+
+        if ($targetId <= 0 || ! in_array($targetType, ['run', 'call'], true)) {
+            return $this->actionResponse($request, false, 'invalid', 'Undo target was not valid.', 'error', 422);
+        }
+
+        $undone = match ($action) {
+            'approve-close' => $targetType === 'run' && $this->undoApprovedClose($targetId, (int) ($undo['status_note_id'] ?? 0), (string) ($undo['run_updated_at'] ?? '')),
+            'hold' => $targetType === 'run' && $this->undoRunState($targetId, null, TechnicianRunState::Denied, TechnicianRunState::AwaitingApproval, (string) ($undo['run_updated_at'] ?? '')),
+            'ack-flag' => $targetType === 'run' && $this->undoRunState($targetId, 'flag_attention', TechnicianRunState::Done, TechnicianRunState::Flagged, (string) ($undo['run_updated_at'] ?? '')),
+            'dismiss-flag' => $targetType === 'run' && $this->undoRunState($targetId, 'flag_attention', TechnicianRunState::Denied, TechnicianRunState::Flagged, (string) ($undo['run_updated_at'] ?? '')),
+            'dismiss-intake' => $targetType === 'run' && $this->undoRunState($targetId, 'intake_route', TechnicianRunState::Done, TechnicianRunState::AwaitingApproval, (string) ($undo['run_updated_at'] ?? '')),
+            'block-number' => $targetType === 'call' && $this->undoSpamCall($targetId, removeBlock: true, callFollowedUpAt: (string) ($undo['call_followed_up_at'] ?? ''), directoryEntryId: (int) ($undo['directory_entry_id'] ?? 0)),
+            'not-spam' => $targetType === 'call' && $this->undoSpamCall($targetId, removeBlock: false, callFollowedUpAt: (string) ($undo['call_followed_up_at'] ?? ''), directoryEntryId: 0),
+            default => null,
+        };
+
+        if ($undone === null) {
+            return $this->actionResponse($request, false, 'unsupported', 'Undo is only available for reversible cockpit actions.', 'error', 422);
+        }
+
+        if (! $undone) {
+            return $this->actionResponse($request, false, 'expired', 'Undo window expired or the item already changed.', 'error', 409);
+        }
+
+        return $this->actionResponse($request, true, 'undone', 'Action undone.');
     }
 
     /** @return array<string, mixed> */
@@ -202,5 +316,183 @@ class TechnicianCockpitController extends Controller
         }
 
         return $rules === [] ? [] : $request->validate($rules);
+    }
+
+    private function actionResponse(
+        Request $request,
+        bool $ok,
+        string $status,
+        string $message,
+        ?string $flashKey = null,
+        int $httpStatus = 200,
+        ?array $undo = null,
+    ) {
+        if ($request->expectsJson()) {
+            $payload = [
+                'ok' => $ok,
+                'status' => $status,
+                'message' => $message,
+                'counts' => app(CockpitQuery::class)->counts(),
+            ];
+
+            if ($ok && $undo !== null) {
+                $payload['undo'] = $undo;
+            }
+
+            return response()->json($payload, $httpStatus);
+        }
+
+        return redirect()
+            ->route('cockpit.index')
+            ->with($flashKey ?? ($ok ? 'success' : 'error'), $message);
+    }
+
+    private function undoApprovedClose(int $runId, int $statusNoteId, string $runUpdatedAt): bool
+    {
+        return DB::transaction(function () use ($runId, $statusNoteId, $runUpdatedAt): bool {
+            $run = TechnicianRun::query()->lockForUpdate()->find($runId);
+
+            if (! $run
+                || $statusNoteId <= 0
+                || $run->getRawOriginal('updated_at') !== $runUpdatedAt
+                || $run->action_type !== 'propose_close'
+                || $run->state !== TechnicianRunState::Done
+                || ! $this->withinUndoWindow($run)) {
+                return false;
+            }
+
+            $ticket = $run->ticket;
+            $statusNote = TicketNote::query()
+                ->whereKey($statusNoteId)
+                ->where('ticket_id', $run->ticket_id)
+                ->where('note_type', NoteType::StatusChange->value)
+                ->where('status_to', TicketStatus::Closed->value)
+                ->where('body', TechnicianApprovalService::OPERATOR_APPROVED_CLOSE_NOTE)
+                ->first();
+
+            if (! $ticket || $ticket->status !== TicketStatus::Closed || ! $statusNote) {
+                return false;
+            }
+
+            $laterStatusChangeExists = TicketNote::query()
+                ->where('ticket_id', $run->ticket_id)
+                ->where('note_type', NoteType::StatusChange->value)
+                ->where(function ($query) use ($statusNote) {
+                    $query->where('noted_at', '>', $statusNote->noted_at)
+                        ->orWhere(function ($sameInstant) use ($statusNote) {
+                            $sameInstant
+                                ->where('noted_at', $statusNote->noted_at)
+                                ->where('id', '>', $statusNote->id);
+                        });
+                })
+                ->exists();
+
+            if ($laterStatusChangeExists) {
+                return false;
+            }
+
+            app(TicketService::class)->changeStatus(
+                $ticket,
+                TicketStatus::InProgress,
+                (int) auth()->id(),
+                'Reopened by cockpit undo.',
+            );
+
+            $run->advanceTo(TechnicianRunState::AwaitingApproval);
+
+            return true;
+        });
+    }
+
+    private function undoRunState(
+        int $runId,
+        ?string $actionType,
+        TechnicianRunState $from,
+        TechnicianRunState $to,
+        string $runUpdatedAt,
+    ): bool {
+        $query = TechnicianRun::query()
+            ->whereKey($runId)
+            ->where('state', $from->value)
+            ->where('updated_at', $runUpdatedAt)
+            ->where('updated_at', '>=', now()->subMinutes(self::UNDO_WINDOW_MINUTES));
+
+        if ($actionType !== null) {
+            $query->where('action_type', $actionType);
+        } else {
+            $query->whereNotIn('action_type', ['flag_attention', 'intake_route']);
+        }
+
+        return $query->update(['state' => $to->value]) === 1;
+    }
+
+    private function undoSpamCall(int $callId, bool $removeBlock, string $callFollowedUpAt, int $directoryEntryId): bool
+    {
+        return DB::transaction(function () use ($callId, $removeBlock, $callFollowedUpAt, $directoryEntryId): bool {
+            $call = PhoneCall::query()->lockForUpdate()->find($callId);
+
+            if (! $call
+                || $call->followed_up_at === null
+                || $call->getRawOriginal('followed_up_at') !== $callFollowedUpAt
+                || ! $call->followed_up_at->greaterThanOrEqualTo(now()->subMinutes(self::UNDO_WINDOW_MINUTES))) {
+                return false;
+            }
+
+            if ((int) $call->followed_up_by !== (int) auth()->id()) {
+                return false;
+            }
+
+            $normalized = PhoneNumber::normalize($call->from_number);
+            if ($removeBlock && $normalized !== null && $directoryEntryId > 0) {
+                PhoneDirectoryEntry::query()
+                    ->whereKey($directoryEntryId)
+                    ->where('phone_number', $normalized)
+                    ->where('list_type', PhoneDirectoryListType::Blocked->value)
+                    ->where('reason', 'AI intake: marked spam by operator')
+                    ->where('added_by_user_id', (int) auth()->id())
+                    ->delete();
+            }
+
+            $call->forceFill([
+                'followed_up_at' => null,
+                'followed_up_by' => null,
+            ])->save();
+
+            return true;
+        });
+    }
+
+    private function withinUndoWindow($model): bool
+    {
+        return $model->updated_at !== null
+            && $model->updated_at->greaterThanOrEqualTo(now()->subMinutes(self::UNDO_WINDOW_MINUTES));
+    }
+
+    /** @return array{action: string, url: string} */
+    private function runUndoPayload(TechnicianRun $run, string $action, array $extra = []): array
+    {
+        $run->refresh();
+
+        return app(CockpitUndoToken::class)->issue(
+            'run',
+            $run->id,
+            $action,
+            (int) auth()->id(),
+            array_merge(['run_updated_at' => $run->getRawOriginal('updated_at')], $extra),
+        );
+    }
+
+    /** @return array{action: string, url: string} */
+    private function callUndoPayload(PhoneCall $call, string $action, array $extra = []): array
+    {
+        $call->refresh();
+
+        return app(CockpitUndoToken::class)->issue(
+            'call',
+            $call->id,
+            $action,
+            (int) auth()->id(),
+            array_merge(['call_followed_up_at' => $call->getRawOriginal('followed_up_at')], $extra),
+        );
     }
 }

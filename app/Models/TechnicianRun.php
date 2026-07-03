@@ -76,9 +76,19 @@ class TechnicianRun extends Model
         $this->state = TechnicianRunState::AwaitingApproval;
     }
 
-    public function deny(): void
+    public function deny(): bool
     {
-        $this->advanceTo(TechnicianRunState::Denied);
+        $denied = static::query()
+            ->whereKey($this->getKey())
+            ->whereNotIn('action_type', ['flag_attention', 'intake_route'])
+            ->where('state', TechnicianRunState::AwaitingApproval->value)
+            ->update(['state' => TechnicianRunState::Denied->value]) === 1;
+
+        if ($denied) {
+            $this->state = TechnicianRunState::Denied;
+        }
+
+        return $denied;
     }
 
     /**

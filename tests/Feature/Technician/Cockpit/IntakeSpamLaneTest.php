@@ -109,7 +109,7 @@ class IntakeSpamLaneTest extends TestCase
         $this->assertSame($this->user->id, $entry->added_by_user_id);
     }
 
-    // ── 3. Idempotency: two taps → still exactly ONE directory entry, no error ──
+    // ── 3. Idempotency: two taps → second tap is a no-op and creates no duplicate ──
 
     public function test_spam_block_is_idempotent(): void
     {
@@ -117,14 +117,36 @@ class IntakeSpamLaneTest extends TestCase
 
         // First tap: stamps followed_up_at and creates the blocked entry.
         $this->actingAs($this->user)->post(route('cockpit.intake-spam-block', $call));
-        // Second tap: re-stamps followed_up_at (harmless) and updateOrCreate is a no-op-or-update.
-        $this->actingAs($this->user)->post(route('cockpit.intake-spam-block', $call));
+        // Second tap: already handled, no re-stamp and no extra directory entry.
+        $this->actingAs($this->user)
+            ->post(route('cockpit.intake-spam-block', $call))
+            ->assertSessionHas('error', 'That call was already handled.');
 
         $this->assertSame(
             1,
             PhoneDirectoryEntry::where('phone_number', '+12223334444')->count(),
-            'updateOrCreate must not duplicate the block entry on a repeat tap',
+            'repeat taps must not duplicate the block entry',
         );
+    }
+
+    public function test_spam_block_does_not_overwrite_existing_directory_entry(): void
+    {
+        $call = $this->spamCall(['from_number' => '+12223334444']);
+        PhoneDirectoryEntry::create([
+            'phone_number' => '+12223334444',
+            'list_type' => PhoneDirectoryListType::Allowed,
+            'reason' => 'Known vendor',
+            'added_by_user_id' => $this->user->id,
+        ]);
+
+        $this->actingAs($this->user)
+            ->post(route('cockpit.intake-spam-block', $call))
+            ->assertRedirect(route('cockpit.index'));
+
+        $entry = PhoneDirectoryEntry::where('phone_number', '+12223334444')->sole();
+        $this->assertSame(PhoneDirectoryListType::Allowed, $entry->list_type);
+        $this->assertSame('Known vendor', $entry->reason);
+        $this->assertNotNull($call->fresh()->followed_up_at);
     }
 
     // ── 4. Actioned calls (followed_up_at / ticket_id / client_id) excluded from intakeSpamReview() ──
@@ -165,6 +187,7 @@ class IntakeSpamLaneTest extends TestCase
 
         $call->refresh();
         $this->assertNotNull($call->followed_up_at, 'dismiss must stamp followed_up_at');
+        $this->assertSame($this->user->id, $call->followed_up_by, 'dismiss must record the acting user');
 
         $lane = app(CockpitQuery::class)->intakeSpamReview();
         $this->assertCount(0, $lane, 'dismissed call must leave the spam lane');

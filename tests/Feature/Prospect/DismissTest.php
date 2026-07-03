@@ -24,6 +24,7 @@ class DismissTest extends TestCase
         ]);
 
         $call->client_id = $attrs['client_id'] ?? null;
+        $call->ticket_id = $attrs['ticket_id'] ?? null;
         $call->followed_up_at = $attrs['followed_up_at'] ?? null;
         $call->save();
 
@@ -101,6 +102,27 @@ class DismissTest extends TestCase
             ->assertRedirect();
 
         // After: call is absent from the facet
+        $this->assertFalse(PhoneCall::unknownCaller()->pluck('id')->contains($call->id));
+    }
+
+    public function test_dismiss_handles_ticket_linked_unknown_caller(): void
+    {
+        $user = User::factory()->create();
+        $ticket = Ticket::factory()->create();
+        $call = $this->makeCall([
+            'client_id' => null,
+            'ticket_id' => $ticket->id,
+            'followed_up_at' => null,
+        ]);
+
+        $this->assertTrue(PhoneCall::unknownCaller()->pluck('id')->contains($call->id));
+
+        $this->actingAs($user)
+            ->post(route('prospects.dismiss', $call))
+            ->assertRedirect()
+            ->assertSessionHas('success', 'Call dismissed — removed from Unknown callers.');
+
+        $this->assertNotNull($call->fresh()->followed_up_at);
         $this->assertFalse(PhoneCall::unknownCaller()->pluck('id')->contains($call->id));
     }
 

@@ -6,6 +6,7 @@ use App\Enums\NoteType;
 use App\Enums\TechnicianRunState;
 use App\Enums\TicketStatus;
 use App\Enums\WhoType;
+use App\Models\PhoneCall;
 use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use Illuminate\Support\Collection;
@@ -17,6 +18,18 @@ use Illuminate\Support\Collection;
  */
 class CockpitQuery
 {
+    private const REPLY_ACTIONS = [
+        'send_reply',
+        'propose_resolution',
+        'stage_email',
+        'stage_public_note',
+    ];
+
+    private const CLOSURE_ACTIONS = [
+        'propose_close',
+        'propose_merge',
+    ];
+
     public function pendingCount(): int
     {
         // Everything the away operator must act on in the cockpit: executable
@@ -25,6 +38,42 @@ class CockpitQuery
             TechnicianRunState::AwaitingApproval->value,
             TechnicianRunState::Flagged->value,
         ])->count();
+    }
+
+    /** @return array{replies:int,closures:int,actions:int,intake:int,flagged:int,needs:int,pending:int,total:int} */
+    public function counts(): array
+    {
+        $draftActionTypes = TechnicianRun::query()
+            ->where('state', TechnicianRunState::AwaitingApproval->value)
+            ->whereNotIn('action_type', ['intake_route', 'flag_attention'])
+            ->pluck('action_type');
+
+        $replies = $draftActionTypes
+            ->filter(fn (string $type): bool => in_array($type, self::REPLY_ACTIONS, true))
+            ->count();
+        $closures = $draftActionTypes
+            ->filter(fn (string $type): bool => in_array($type, self::CLOSURE_ACTIONS, true))
+            ->count();
+        $actions = $draftActionTypes
+            ->filter(fn (string $type): bool => $this->isEndpointOrAccountAction($type))
+            ->count();
+        $intake = $this->intakeReviewCount() + $this->intakeSpamReviewCount();
+        $flagged = $this->flaggedForAttention()->count();
+        $needs = $this->needsAttention()->count();
+
+        $pending = $replies + $closures + $actions + $intake + $flagged;
+        $total = $pending + $needs;
+
+        return [
+            'replies' => $replies,
+            'closures' => $closures,
+            'actions' => $actions,
+            'intake' => $intake,
+            'flagged' => $flagged,
+            'needs' => $needs,
+            'pending' => $pending,
+            'total' => $total,
+        ];
     }
 
     /**
@@ -50,9 +99,7 @@ class CockpitQuery
      */
     public function intakeReview(): Collection
     {
-        return TechnicianRun::query()
-            ->where('action_type', 'intake_route')
-            ->where('state', TechnicianRunState::AwaitingApproval->value)
+        return $this->intakeReviewQuery()
             ->with('ticket')
             ->latest()
             ->limit(20)
@@ -67,14 +114,36 @@ class CockpitQuery
      */
     public function intakeSpamReview(): Collection
     {
-        return \App\Models\PhoneCall::query()
-            ->whereNotNull('intake_spam_score')
-            ->whereNull('followed_up_at')
-            ->whereNull('ticket_id')
-            ->whereNull('client_id')
+        return $this->intakeSpamReviewQuery()
             ->latest('id')
             ->limit(20)
             ->get();
+    }
+
+    private function intakeReviewCount(): int
+    {
+        return $this->intakeReviewQuery()->count();
+    }
+
+    private function intakeSpamReviewCount(): int
+    {
+        return $this->intakeSpamReviewQuery()->count();
+    }
+
+    private function intakeReviewQuery()
+    {
+        return TechnicianRun::query()
+            ->where('action_type', 'intake_route')
+            ->where('state', TechnicianRunState::AwaitingApproval->value);
+    }
+
+    private function intakeSpamReviewQuery()
+    {
+        return PhoneCall::query()
+            ->whereNotNull('intake_spam_score')
+            ->whereNull('followed_up_at')
+            ->whereNull('ticket_id')
+            ->whereNull('client_id');
     }
 
     public function pendingDrafts(): Collection
@@ -131,6 +200,12 @@ class CockpitQuery
     private function isOverdue(?Ticket $ticket): bool
     {
         return $ticket?->due_at !== null && $ticket->due_at->isPast();
+    }
+
+    private function isEndpointOrAccountAction(string $actionType): bool
+    {
+        return str_starts_with($actionType, 'tactical_stage_')
+            || str_starts_with($actionType, 'cipp_stage_');
     }
 
     /** @return array<int,int> the non-terminal ticket status values */

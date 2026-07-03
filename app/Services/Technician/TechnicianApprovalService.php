@@ -36,6 +36,8 @@ final class TechnicianApprovalResult
  */
 class TechnicianApprovalService
 {
+    public const OPERATOR_APPROVED_CLOSE_NOTE = 'Closed by AI Technician (operator-approved).';
+
     public function __construct(
         private readonly TechnicianActionGate $gate,
         private readonly TechnicianDisclosure $disclosure,
@@ -121,6 +123,8 @@ class TechnicianApprovalService
             return new TechnicianApprovalResult('already_handled');
         }
 
+        $statusNoteId = null;
+
         try {
             $hash = hash('sha256', 'propose_close:'.$run->ticket_id.':'.$run->proposed_content);
             $token = TechnicianApprovalGrant::issue('propose_close', $run->ticket_id, $hash, $approverId);
@@ -132,7 +136,7 @@ class TechnicianApprovalService
                 contentHash: $hash,
                 summary: 'Operator-approved close.',
                 runId: $run->id,
-                executor: function () use ($run): void {
+                executor: function () use ($run, &$statusNoteId): void {
                     $ticket = $run->ticket; // belongsTo — null if the ticket was (soft-)deleted
                     // CO-23 + CO-Fix6: capture the fresh model once so both the guard and
                     // changeStatus operate on the same (current) row. If the ticket is gone —
@@ -156,8 +160,15 @@ class TechnicianApprovalService
                         $fresh,
                         TicketStatus::Closed,
                         TechnicianConfig::aiActorUserId(),
-                        'Closed by AI Technician (operator-approved).',
+                        self::OPERATOR_APPROVED_CLOSE_NOTE,
                     );
+                    $statusNoteId = TicketNote::query()
+                        ->where('ticket_id', $fresh->id)
+                        ->where('note_type', NoteType::StatusChange->value)
+                        ->where('status_to', TicketStatus::Closed->value)
+                        ->where('body', self::OPERATOR_APPROVED_CLOSE_NOTE)
+                        ->latest('id')
+                        ->value('id');
                     $run->advanceTo(TechnicianRunState::Done);
                 },
                 approvalToken: $token,
@@ -177,7 +188,11 @@ class TechnicianApprovalService
             return new TechnicianApprovalResult('gate_declined');
         }
 
-        return new TechnicianApprovalResult('closed'); // no client notification (CO-18)
+        if ($statusNoteId === null) {
+            return new TechnicianApprovalResult('already_handled');
+        }
+
+        return new TechnicianApprovalResult('closed', noteId: (int) $statusNoteId); // no client notification (CO-18)
     }
 
     public function approveStagedEmail(TechnicianRun $run, string $body, int $approverId): TechnicianApprovalResult
@@ -279,9 +294,9 @@ class TechnicianApprovalService
         return app(StaffCippWriteToolExecutor::class)->approveStagedRun($run, $approverId, $approvalInputs);
     }
 
-    public function deny(TechnicianRun $run): void
+    public function deny(TechnicianRun $run): bool
     {
-        $run->deny();
+        return $run->deny();
     }
 
     private function approveStagedBodyAction(
