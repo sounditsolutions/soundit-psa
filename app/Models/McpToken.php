@@ -23,6 +23,8 @@ class McpToken extends Model
         'directive',
         'ai_actor',
         'require_explicit_client_scope',
+        'activated_at',
+        'paused_at',
         'last_used_at',
         'revoked_at',
     ];
@@ -33,20 +35,81 @@ class McpToken extends Model
             'tools' => 'array',
             'ai_actor' => 'boolean',
             'require_explicit_client_scope' => 'boolean',
+            'activated_at' => 'datetime',
+            'paused_at' => 'datetime',
             'last_used_at' => 'datetime',
             'revoked_at' => 'datetime',
         ];
     }
 
-    /** @param  Builder<McpToken>  $query */
+    /**
+     * Not revoked. Kept for feature-availability and listing callers; this is
+     * NOT the authentication gate (a draft is "not revoked" but cannot authenticate).
+     *
+     * @param  Builder<McpToken>  $query
+     */
     public function scopeActive(Builder $query): void
     {
         $query->whereNull('revoked_at');
     }
 
+    /**
+     * The authentication gate. Only a token that has been activated and is not
+     * paused or revoked may resolve a request. This is where the born-safe
+     * guarantee lives: a draft/paused/revoked token is never authenticated.
+     *
+     * @param  Builder<McpToken>  $query
+     */
+    public function scopeAuthenticatable(Builder $query): void
+    {
+        $query->whereNull('revoked_at')
+            ->whereNotNull('activated_at')
+            ->whereNull('paused_at');
+    }
+
     public function isRevoked(): bool
     {
         return $this->revoked_at !== null;
+    }
+
+    public function isDraft(): bool
+    {
+        return $this->revoked_at === null
+            && $this->paused_at === null
+            && $this->activated_at === null;
+    }
+
+    public function isActive(): bool
+    {
+        return $this->revoked_at === null
+            && $this->paused_at === null
+            && $this->activated_at !== null;
+    }
+
+    public function isPaused(): bool
+    {
+        return $this->revoked_at === null
+            && $this->paused_at !== null;
+    }
+
+    /**
+     * Derived lifecycle state. Precedence: revoked > paused > active > draft.
+     */
+    public function state(): string
+    {
+        if ($this->revoked_at !== null) {
+            return 'revoked';
+        }
+
+        if ($this->paused_at !== null) {
+            return 'paused';
+        }
+
+        if ($this->activated_at !== null) {
+            return 'active';
+        }
+
+        return 'draft';
     }
 
     public function signalDestinations(): HasMany

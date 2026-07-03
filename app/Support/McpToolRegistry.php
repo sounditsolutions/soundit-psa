@@ -97,6 +97,142 @@ class McpToolRegistry
         return $toolNames;
     }
 
+    /**
+     * The same tools as groups(), re-cut for the operator: bucketed by
+     * INTEGRATION, then by sensitivity TIER within each integration. This is
+     * the shape the token detail page renders. Sensitivity is not re-derived
+     * here; each tier inherits the curated `sensitive` flag of the source
+     * group it came from, so the classification stays single-sourced.
+     *
+     * @return array<string, array{label: string, blurb: string, icon: string, accent: string, total: int, sensitive_count: int, tiers: array<int, array{key: string, label: string, sensitive: bool, tools: array<int, array{name: string, description: string, sensitive: bool}>}>}>
+     */
+    public static function integrationGroups(): array
+    {
+        /** @var array<string, mixed> $result */
+        $result = self::memoized('integration_groups', function (): array {
+            // Sensitive source groups map to one labelled tier under an integration.
+            // [integration, tierKey, tierLabel, order]
+            $sensitiveMap = [
+                'psa_action' => ['psa', 'write', 'Write & act', 2],
+                'cipp_write' => ['cipp', 'write', 'Write & remediate', 2],
+                'tactical_action' => ['tactical', 'actions', 'Endpoint actions', 2],
+                'tactical_admin' => ['tactical', 'admin', 'Admin & provisioning', 3],
+                'wiki_write' => ['wiki', 'write', 'Write', 2],
+                'bridge' => ['teams', 'bridge', 'Operator bridge', 2],
+            ];
+
+            /** @var array<string, array<string, array{label: string, sensitive: bool, order: int, tools: array<int, array<string, mixed>>}>> $buckets */
+            $buckets = [];
+            $push = static function (string $integration, string $tierKey, string $tierLabel, bool $sensitive, int $order, array $tool) use (&$buckets): void {
+                if (! isset($buckets[$integration][$tierKey])) {
+                    $buckets[$integration][$tierKey] = ['key' => $tierKey, 'label' => $tierLabel, 'sensitive' => $sensitive, 'order' => $order, 'tools' => []];
+                }
+                $buckets[$integration][$tierKey]['tools'][] = [
+                    'name' => $tool['name'],
+                    'description' => $tool['description'] ?? '',
+                    'sensitive' => $sensitive,
+                ];
+            };
+
+            foreach (self::groups() as $key => $group) {
+                if (isset($sensitiveMap[$key])) {
+                    [$integration, $tierKey, $tierLabel, $order] = $sensitiveMap[$key];
+                    foreach ($group['tools'] as $tool) {
+                        $push($integration, $tierKey, $tierLabel, true, $order, $tool);
+                    }
+
+                    continue;
+                }
+
+                // Standard source group: split by tool prefix into each integration's Read tier.
+                foreach ($group['tools'] as $tool) {
+                    $push(self::integrationForToolName((string) $tool['name']), 'read', 'Read', false, 1, $tool);
+                }
+            }
+
+            $out = [];
+            foreach (self::integrationMeta() as $integration => $meta) {
+                if (! isset($buckets[$integration])) {
+                    continue;
+                }
+
+                $tiers = array_values($buckets[$integration]);
+                usort($tiers, static fn (array $a, array $b): int => $a['order'] <=> $b['order']);
+
+                $total = 0;
+                $sensitiveCount = 0;
+                $shapedTiers = [];
+                foreach ($tiers as $tier) {
+                    $total += count($tier['tools']);
+                    if ($tier['sensitive']) {
+                        $sensitiveCount += count($tier['tools']);
+                    }
+                    $shapedTiers[] = [
+                        'key' => $tier['key'],
+                        'label' => $tier['label'],
+                        'sensitive' => $tier['sensitive'],
+                        'tools' => $tier['tools'],
+                    ];
+                }
+
+                $out[$integration] = [
+                    'label' => $meta['label'],
+                    'blurb' => $meta['blurb'],
+                    'icon' => $meta['icon'],
+                    'accent' => $meta['accent'],
+                    'total' => $total,
+                    'sensitive_count' => $sensitiveCount,
+                    'tiers' => $shapedTiers,
+                ];
+            }
+
+            return $out;
+        });
+
+        return $result;
+    }
+
+    /**
+     * Ordered integration metadata: label, one-line blurb, bootstrap-icon, accent.
+     *
+     * @return array<string, array{label: string, blurb: string, icon: string, accent: string}>
+     */
+    public static function integrationMeta(): array
+    {
+        return [
+            'psa' => ['label' => 'PSA Core', 'blurb' => 'Native tickets, clients, people & assets', 'icon' => 'bi-box-seam', 'accent' => '#1a365d'],
+            'tactical' => ['label' => 'Tactical RMM', 'blurb' => 'Endpoint telemetry, actions & provisioning', 'icon' => 'bi-hdd-network', 'accent' => '#0e7490'],
+            'cipp' => ['label' => 'CIPP · Microsoft 365', 'blurb' => 'Multi-tenant M365 management relay', 'icon' => 'bi-microsoft', 'accent' => '#2563eb'],
+            'ninja' => ['label' => 'NinjaOne RMM', 'blurb' => 'Endpoint inventory & health', 'icon' => 'bi-hdd-stack', 'accent' => '#059669'],
+            'teams' => ['label' => 'Teams & Operator', 'blurb' => 'Teams chat reads & the operator bridge', 'icon' => 'bi-chat-dots', 'accent' => '#4b53bc'],
+            'other' => ['label' => 'Other integrations', 'blurb' => 'Level · Mailprotector · Comet · Control D · Zorus · DNS', 'icon' => 'bi-plugin', 'accent' => '#7c3aed'],
+            'wiki' => ['label' => 'Wiki & runbooks', 'blurb' => 'Client wiki & internal SOP / runbook store', 'icon' => 'bi-journal-text', 'accent' => '#b45309'],
+        ];
+    }
+
+    /**
+     * Route a tool to its integration by name prefix. PSA-native tools carry no
+     * vendor prefix and fall through to 'psa'; every vendor prefix is mapped so
+     * nothing lands uncategorised (enforced by McpToolRegistryTest).
+     */
+    public static function integrationForToolName(string $name): string
+    {
+        return match (true) {
+            str_starts_with($name, 'cipp_') => 'cipp',
+            str_starts_with($name, 'tactical_') => 'tactical',
+            str_starts_with($name, 'ninja_') => 'ninja',
+            str_starts_with($name, 'wiki_') => 'wiki',
+            str_starts_with($name, 'mesh_'),
+            str_starts_with($name, 'comet_'),
+            str_starts_with($name, 'controld_'),
+            str_starts_with($name, 'zorus_'),
+            str_starts_with($name, 'dns_'),
+            str_starts_with($name, 'level_') => 'other',
+            str_contains($name, 'teams') => 'teams',
+            default => 'psa',
+        };
+    }
+
     /** @return array<int, array<string, mixed>> */
     public static function dynamicCippReadTools(): array
     {

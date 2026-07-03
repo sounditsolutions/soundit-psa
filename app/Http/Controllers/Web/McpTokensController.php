@@ -14,6 +14,7 @@ use App\Support\McpToolRegistry;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 
 class McpTokensController extends Controller
@@ -25,9 +26,13 @@ class McpTokensController extends Controller
 
     public function show(McpToken $token)
     {
+        $newToken = session('mcp_new_token');
+
         return view('settings.mcp-tokens.show', [
             'token' => $token,
-            'groups' => McpToolRegistry::groups(),
+            'integrationGroups' => McpToolRegistry::integrationGroups(),
+            'toolInstructions' => McpToolInstructions::all(),
+            'newToken' => is_string($newToken) ? $newToken : null,
             'auditLogs' => $this->auditLogsFor($token),
             'linkedSignalDestinations' => $token->signalDestinations()
                 ->where('type', 'mcp')
@@ -41,53 +46,120 @@ class McpTokensController extends Controller
         ]);
     }
 
+    /**
+     * Create a token with safe defaults: an inactive draft with zero tools and
+     * an auto-generated "untitled" name. It cannot authenticate until it is
+     * deliberately activated, so it is never briefly live with wrong perms.
+     * Redirect into its detail page, where the one-time secret is revealed and
+     * the operator names + configures it.
+     */
     public function store(Request $request)
     {
-        $validated = $request->validate([
-            'label' => ['required', 'string', 'max:100', 'regex:/^[A-Za-z0-9_.:-]+$/'],
-            'tools' => ['required', 'array', 'min:1'],
-            'tools.*' => ['string', Rule::in(McpToolRegistry::allToolNames())],
-            'ai_actor' => ['sometimes', 'boolean'],
-            'require_explicit_client_scope' => ['sometimes', 'boolean'],
+        $label = $this->uniqueDraftLabel();
+        $plain = McpConfig::mintDraftToken($label);
+        $token = McpToken::query()->where('label', $label)->firstOrFail();
+
+        $this->audit($request, 'token/mint', $label, [
+            'tools' => [],
+            'ai_actor' => false,
+            'require_explicit_client_scope' => true,
+            'draft' => true,
         ]);
 
-        $tools = array_values($validated['tools']);
-        $label = McpConfig::normalizeLabel($validated['label']);
-        $existingToken = McpToken::query()->where('label', $label)->first();
-        $isRotate = $existingToken !== null && ! $existingToken->isRevoked();
-        $flags = $this->trustFlagsForMintOrRotate($request, $isRotate ? $existingToken : null);
+        return redirect()
+            ->route('settings.mcp-tokens.show', $token)
+            ->with('mcp_new_token', $plain);
+    }
 
-        $token = McpConfig::rotateStaffToken(
-            allowedTools: $tools,
-            label: $label,
-            aiActor: $flags['ai_actor'],
-            requireExplicitClientScope: $flags['require_explicit_client_scope'],
-        );
+    public function rename(Request $request, McpToken $token)
+    {
+        $request->validate([
+            'label' => ['required', 'string', 'max:100', 'regex:/^[A-Za-z0-9_.:-]+$/'],
+        ]);
 
-        $this->audit(
-            $request,
-            $isRotate ? 'token/rotate' : 'token/mint',
-            $label,
-            ['tools' => $tools] + $flags,
-        );
+        $old = $token->label;
+        $new = McpConfig::normalizeLabel($request->input('label'));
 
-        return $this->indexView($token, $label);
+        if ($new !== $old && McpToken::query()->where('label', $new)->where('id', '!=', $token->id)->exists()) {
+            if ($request->wantsJson()) {
+                return response()->json(['ok' => false, 'message' => 'That name is already taken.'], 422);
+            }
+
+            return back()->withErrors(['label' => 'That name is already taken.']);
+        }
+
+        if ($new !== $old) {
+            DB::transaction(function () use ($token, $old, $new): void {
+                $token->forceFill(['label' => $new])->save();
+                // Keep linked Alerts Hub destinations attached across the rename.
+                SignalDestination::query()
+                    ->where('mcp_token_label', $old)
+                    ->update(['mcp_token_label' => $new]);
+            });
+
+            $this->audit($request, 'token/rename', $new, ['from' => $old]);
+        }
+
+        return $this->respond($request, $token->fresh(), 'Token renamed.');
+    }
+
+    public function activate(Request $request, McpToken $token)
+    {
+        if ($token->isRevoked()) {
+            return $this->respond($request, $token, 'A revoked token cannot be activated.', ok: false);
+        }
+
+        $token->forceFill([
+            'activated_at' => $token->activated_at ?? now(),
+            'paused_at' => null,
+        ])->save();
+
+        $this->audit($request, 'token/activate', $token->label, []);
+
+        return $this->respond($request, $token->fresh(), 'Token activated.');
+    }
+
+    public function pause(Request $request, McpToken $token)
+    {
+        if (! $token->isActive()) {
+            return $this->respond($request, $token, 'Only an active token can be paused.', ok: false);
+        }
+
+        $token->forceFill(['paused_at' => now()])->save();
+
+        $this->audit($request, 'token/pause', $token->label, []);
+
+        return $this->respond($request, $token->fresh(), 'Token paused.');
+    }
+
+    public function resume(Request $request, McpToken $token)
+    {
+        if (! $token->isPaused()) {
+            return $this->respond($request, $token, 'Only a paused token can be resumed.', ok: false);
+        }
+
+        $token->forceFill(['paused_at' => null])->save();
+
+        $this->audit($request, 'token/resume', $token->label, []);
+
+        return $this->respond($request, $token->fresh(), 'Token resumed.');
     }
 
     public function updateTools(Request $request, McpToken $token)
     {
         $validated = $request->validate([
-            'tools' => ['required', 'array', 'min:1'],
+            'tools' => ['sometimes', 'array'],
             'tools.*' => ['string', Rule::in(McpToolRegistry::allToolNames())],
         ]);
 
-        $tools = array_values($validated['tools']);
+        // Grants auto-save on every toggle, so an empty set is valid (a token
+        // may grant nothing). Activation is a separate, deliberate flip.
+        $tools = array_values(array_unique($validated['tools'] ?? []));
         $token->forceFill(['tools' => $tools])->save();
 
         $this->audit($request, 'token/tools', $token->label, ['tools' => $tools]);
 
-        return redirect()->route('settings.mcp-tokens.show', $token)
-            ->with('success', 'Token tools updated.');
+        return $this->respond($request, $token->fresh(), 'Tool grants saved.');
     }
 
     public function updateDirective(Request $request, McpToken $token)
@@ -103,8 +175,7 @@ class McpTokensController extends Controller
             'directive_length' => mb_strlen($directive),
         ]);
 
-        return redirect()->route('settings.mcp-tokens.show', $token)
-            ->with('success', 'Token directive updated.');
+        return $this->respond($request, $token->fresh(), 'Directive saved.');
     }
 
     public function updateTrustFlags(Request $request, McpToken $token)
@@ -119,8 +190,7 @@ class McpTokensController extends Controller
 
         $this->audit($request, 'token/trust_flags', $token->label, $flags);
 
-        return redirect()->route('settings.mcp-tokens.show', $token)
-            ->with('success', 'Token trust controls updated.');
+        return $this->respond($request, $token->fresh(), 'Trust controls saved.');
     }
 
     public function updateToolInstructions(Request $request)
@@ -138,6 +208,10 @@ class McpTokensController extends Controller
             'total_length' => array_sum(array_map(fn (string $value): int => mb_strlen($value), $instructions)),
         ]);
 
+        if ($request->wantsJson()) {
+            return response()->json(['ok' => true, 'message' => 'Shared instruction saved.']);
+        }
+
         return redirect()->route('settings.mcp-tokens.index')
             ->with('success', 'Tool instructions updated.');
     }
@@ -152,13 +226,16 @@ class McpTokensController extends Controller
                 ->with('success', 'Token "'.$label.'" is already revoked.');
         }
 
+        $wasDraft = $token->isDraft();
         $token->forceFill(['revoked_at' => now()])->save();
         $this->clearPendingSignalInboxForLabel($label);
 
-        $this->audit($request, 'token/revoke', $label, ['tools' => $tools]);
+        $this->audit($request, 'token/revoke', $label, ['tools' => $tools, 'was_draft' => $wasDraft]);
 
         return redirect()->route('settings.mcp-tokens.index')
-            ->with('success', 'Token "'.$label.'" revoked.');
+            ->with('success', $wasDraft
+                ? 'Draft "'.$label.'" discarded.'
+                : 'Token "'.$label.'" revoked.');
     }
 
     public function linkSignalDestination(Request $request, McpToken $token)
@@ -202,6 +279,42 @@ class McpTokensController extends Controller
             ->with('success', 'Destination unlinked.');
     }
 
+    /**
+     * A JSON response for AJAX auto-save, or a redirect back to the detail page
+     * for the no-JS fallback.
+     */
+    private function respond(Request $request, McpToken $token, string $message, bool $ok = true)
+    {
+        if ($request->wantsJson()) {
+            return response()->json([
+                'ok' => $ok,
+                'message' => $message,
+                'state' => $token->state(),
+                'granted_count' => is_array($token->tools) ? count($token->tools) : 0,
+            ], $ok ? 200 : 422);
+        }
+
+        return redirect()->route('settings.mcp-tokens.show', $token)
+            ->with($ok ? 'success' : 'error', $message);
+    }
+
+    private function uniqueDraftLabel(): string
+    {
+        $base = 'untitled';
+        if (! McpToken::query()->where('label', $base)->exists()) {
+            return $base;
+        }
+
+        for ($i = 2; $i < 10000; $i++) {
+            $candidate = $base.'-'.$i;
+            if (! McpToken::query()->where('label', $candidate)->exists()) {
+                return $candidate;
+            }
+        }
+
+        return $base.'-'.Str::lower(Str::random(6));
+    }
+
     private function auditLogsFor(McpToken $token)
     {
         return McpAuditLog::query()
@@ -216,19 +329,6 @@ class McpTokensController extends Controller
             ->latest()
             ->limit(50)
             ->get();
-    }
-
-    /** @return array{ai_actor: bool, require_explicit_client_scope: bool} */
-    private function trustFlagsForMintOrRotate(Request $request, ?McpToken $existingToken = null): array
-    {
-        if ($existingToken !== null) {
-            return [
-                'ai_actor' => (bool) $existingToken->ai_actor,
-                'require_explicit_client_scope' => (bool) $existingToken->require_explicit_client_scope,
-            ];
-        }
-
-        return $this->trustFlagsFromRequest($request);
     }
 
     /** @return array{ai_actor: bool, require_explicit_client_scope: bool} */
@@ -299,17 +399,13 @@ class McpTokensController extends Controller
         });
     }
 
-    private function indexView(?string $newToken = null, ?string $newTokenLabel = null)
+    private function indexView()
     {
         return view('settings.mcp-tokens.index', [
             'tokens' => McpToken::query()
                 ->orderByRaw('(revoked_at IS NULL) DESC')
                 ->orderByDesc('created_at')
                 ->get(),
-            'groups' => McpToolRegistry::groups(),
-            'toolInstructions' => McpToolInstructions::all(),
-            'newToken' => $newToken,
-            'newTokenLabel' => $newTokenLabel,
         ]);
     }
 }

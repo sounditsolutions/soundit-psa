@@ -31,7 +31,9 @@ class McpConfig
         }
 
         $hash = hash('sha256', $token);
-        $record = McpToken::query()->active()->where('token_hash', $hash)->first();
+        // Born-safe gate: only an activated, non-paused, non-revoked token
+        // authenticates. A draft or paused token resolves to null (Unauthorized).
+        $record = McpToken::query()->authenticatable()->where('token_hash', $hash)->first();
         if ($record === null) {
             return null;
         }
@@ -88,6 +90,39 @@ class McpConfig
         if ($requireExplicitClientScope !== null || $useNewTokenTrustDefaults) {
             $record->require_explicit_client_scope = $requireExplicitClientScope ?? true;
         }
+        // Programmatic / break-glass rotation yields a ready active token (the
+        // new draft flow uses mintDraftToken instead). Rotating a revoked token
+        // reactivates it, matching the pre-lifecycle behaviour.
+        if ($record->activated_at === null) {
+            $record->activated_at = now();
+        }
+        $record->paused_at = null;
+        $record->save();
+
+        return $token;
+    }
+
+    /**
+     * Mint a fresh draft token: inactive, zero tools, safe trust defaults.
+     * Returns the plaintext once. The caller redirects into the token's detail
+     * page to configure and then deliberately activate it. A draft cannot
+     * authenticate (see McpToken::scopeAuthenticatable), so it is never briefly
+     * live with the wrong permissions during setup.
+     */
+    public static function mintDraftToken(string $label): string
+    {
+        $token = 'psa-mcp-'.Str::random(48);
+
+        $record = new McpToken;
+        $record->label = self::normalizeLabel($label);
+        $record->token_hash = hash('sha256', $token);
+        $record->token_prefix = self::tokenPrefix($token);
+        $record->tools = [];
+        $record->ai_actor = false;
+        $record->require_explicit_client_scope = true;
+        $record->activated_at = null;
+        $record->paused_at = null;
+        $record->revoked_at = null;
         $record->save();
 
         return $token;
