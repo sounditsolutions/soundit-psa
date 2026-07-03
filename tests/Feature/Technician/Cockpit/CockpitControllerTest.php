@@ -157,4 +157,16 @@ class CockpitControllerTest extends TestCase
             ->assertSee('Cockpit')
             ->assertSee(route('cockpit.index'));
     }
+
+    public function test_cockpit_optimistic_fetches_have_abort_timeout(): void
+    {
+        $actor = User::factory()->create(['name' => 'Chet']);
+        $this->heldRun($actor);
+
+        $this->actingAs(User::factory()->create())
+            ->get(route('cockpit.index'))
+            ->assertOk()
+            ->assertSee('AbortController', false)
+            ->assertSee('cockpitRequestTimeout', false);
+    }
 }

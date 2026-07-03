@@ -6,6 +6,8 @@ use App\Http\Controllers\Controller;
 use App\Models\Client;
 use App\Models\PhoneCall;
 use App\Services\Prospect\ProspectIntakeService;
+use App\Services\Technician\Cockpit\CockpitQuery;
+use App\Services\Technician\Cockpit\CockpitUndoToken;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -68,14 +70,49 @@ class ProspectController extends Controller
      * Creates NO Client, Person, or Ticket. The call remains in the full
      * Call Log.
      */
-    public function dismiss(PhoneCall $call): RedirectResponse
+    public function dismiss(Request $request, PhoneCall $call): RedirectResponse|JsonResponse
     {
-        $call->followed_up_at = now();
-        $call->save();
+        $query = PhoneCall::query()
+            ->whereKey($call->id)
+            ->whereNull('followed_up_at');
+
+        if ($request->expectsJson()) {
+            $query
+                ->whereNull('ticket_id')
+                ->whereNull('client_id');
+        }
+
+        $handled = $query->update([
+            'followed_up_at' => now(),
+            'followed_up_by' => (int) auth()->id(),
+        ]) === 1;
+
+        $call->refresh();
+
+        if ($request->expectsJson()) {
+            $payload = [
+                'ok' => $handled,
+                'status' => $handled ? 'done' : 'already_handled',
+                'message' => $handled ? 'Call dismissed — removed from Unknown callers.' : 'That call was already handled.',
+                'counts' => app(CockpitQuery::class)->counts(),
+            ];
+
+            if ($handled) {
+                $payload['undo'] = app(CockpitUndoToken::class)->issue(
+                    'call',
+                    $call->id,
+                    'not-spam',
+                    (int) auth()->id(),
+                    ['call_followed_up_at' => $call->getRawOriginal('followed_up_at')],
+                );
+            }
+
+            return response()->json($payload);
+        }
 
         return redirect()
             ->route('calls.show', $call)
-            ->with('success', 'Call dismissed — removed from Unknown callers.');
+            ->with($handled ? 'success' : 'error', $handled ? 'Call dismissed — removed from Unknown callers.' : 'That call was already handled.');
     }
 
     /**

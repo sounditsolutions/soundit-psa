@@ -659,6 +659,7 @@ Route::middleware('auth')->group(function () {
 
     // AI Technician cockpit (Plan 1B)
     Route::get('/cockpit', [\App\Http\Controllers\Web\TechnicianCockpitController::class, 'index'])->name('cockpit.index');
+    Route::post('/cockpit/undo', [\App\Http\Controllers\Web\TechnicianCockpitController::class, 'undo'])->name('cockpit.undo')->middleware('throttle:60,1');
     Route::post('/cockpit/runs/{run}/approve', [\App\Http\Controllers\Web\TechnicianCockpitController::class, 'approve'])->name('cockpit.approve');
     Route::post('/cockpit/runs/{run}/deny', [\App\Http\Controllers\Web\TechnicianCockpitController::class, 'deny'])->name('cockpit.deny');
     // Increment H — resolve a held flag (no execution): acknowledge (→ Done) or dismiss (→ Denied).

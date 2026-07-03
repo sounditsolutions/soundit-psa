@@ -111,9 +111,22 @@ class TechnicianApprovalServiceTest extends TestCase
         $actor = User::factory()->create(['name' => 'Chet']);
         $run = $this->heldReplyRun($actor);
 
-        app(TechnicianApprovalService::class)->deny($run);
+        $denied = app(TechnicianApprovalService::class)->deny($run);
 
+        $this->assertTrue($denied);
         $this->assertSame(TechnicianRunState::Denied, $run->fresh()->state);
+    }
+
+    public function test_deny_is_cas_guarded_to_awaiting_approval(): void
+    {
+        $actor = User::factory()->create(['name' => 'Chet']);
+        $run = $this->heldReplyRun($actor);
+        $run->advanceTo(TechnicianRunState::Done);
+
+        $denied = app(TechnicianApprovalService::class)->deny($run);
+
+        $this->assertFalse($denied);
+        $this->assertSame(TechnicianRunState::Done, $run->fresh()->state);
     }
 
     public function test_gate_throw_reverts_run_to_awaiting_approval(): void

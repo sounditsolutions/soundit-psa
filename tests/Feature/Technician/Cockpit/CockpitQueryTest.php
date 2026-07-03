@@ -3,9 +3,12 @@
 namespace Tests\Feature\Technician\Cockpit;
 
 use App\Enums\TechnicianRunState;
+use App\Enums\TicketStatus;
 use App\Models\Client;
+use App\Models\PhoneCall;
 use App\Models\TechnicianRun;
 use App\Models\Ticket;
+use App\Models\TicketNote;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -71,6 +74,92 @@ class CockpitQueryTest extends TestCase
         $this->assertSame(2, $query->pendingCount());
         // Overdue ticket's draft sorts first.
         $this->assertSame($overdue->id, $drafts->first()->ticket_id);
+    }
+
+    public function test_counts_returns_authoritative_section_totals(): void
+    {
+        $query = app(\App\Services\Technician\Cockpit\CockpitQuery::class);
+        $client = Client::factory()->create();
+        $ticket = Ticket::factory()->create(['client_id' => $client->id, 'status' => TicketStatus::InProgress]);
+
+        foreach ([
+            'send_reply',
+            'stage_email',
+            'propose_close',
+            'propose_merge',
+            'tactical_stage_script',
+            'cipp_stage_disable_user_sign_in',
+            'intake_route',
+        ] as $actionType) {
+            TechnicianRun::create([
+                'ticket_id' => $ticket->id,
+                'client_id' => $client->id,
+                'action_type' => $actionType,
+                'content_hash' => hash('sha256', $actionType),
+                'state' => TechnicianRunState::AwaitingApproval,
+                'proposed_content' => $actionType,
+            ]);
+        }
+
+        TechnicianRun::create([
+            'ticket_id' => $ticket->id,
+            'client_id' => $client->id,
+            'action_type' => 'flag_attention',
+            'content_hash' => hash('sha256', 'flag'),
+            'state' => TechnicianRunState::Flagged,
+            'proposed_content' => 'Needs a human.',
+        ]);
+
+        PhoneCall::create([
+            'call_uuid' => 'spam-count',
+            'from_number' => '+12223334444',
+            'status' => \App\Enums\CallStatus::Completed,
+            'intake_spam_score' => 0.91,
+        ]);
+
+        $needsTicket = Ticket::factory()->create(['client_id' => $client->id, 'status' => TicketStatus::New]);
+        TicketNote::create([
+            'ticket_id' => $needsTicket->id,
+            'author_name' => 'Chet',
+            'who_type' => \App\Enums\WhoType::Agent,
+            'ai_authored' => true,
+            'body' => 'ack',
+            'note_type' => \App\Enums\NoteType::Reply,
+            'is_private' => false,
+            'noted_at' => now(),
+        ]);
+
+        $this->assertSame([
+            'replies' => 2,
+            'closures' => 2,
+            'actions' => 2,
+            'intake' => 2,
+            'flagged' => 1,
+            'needs' => 1,
+            'pending' => 9,
+            'total' => 10,
+        ], $query->counts());
+    }
+
+    public function test_counts_intake_total_is_not_capped_by_display_limit(): void
+    {
+        $query = app(\App\Services\Technician\Cockpit\CockpitQuery::class);
+        $client = Client::factory()->create();
+        $ticket = Ticket::factory()->create(['client_id' => $client->id]);
+
+        foreach (range(1, 21) as $index) {
+            TechnicianRun::create([
+                'ticket_id' => $ticket->id,
+                'client_id' => $client->id,
+                'action_type' => 'intake_route',
+                'content_hash' => hash('sha256', 'intake-total-'.$index),
+                'state' => TechnicianRunState::AwaitingApproval,
+                'proposed_content' => 'intake '.$index,
+            ]);
+        }
+
+        $this->assertCount(20, $query->intakeReview());
+        $this->assertSame(21, $query->counts()['intake']);
     }
 
     public function test_needs_attention_lists_acked_but_undrafted_active_client_tickets(): void
