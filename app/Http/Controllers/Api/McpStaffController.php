@@ -20,7 +20,6 @@ use App\Services\Chet\OperatorBridgeTools;
 use App\Services\Cipp\CippMcpDynamicToolExecutor;
 use App\Services\Mcp\StaffPsaActionToolExecutor;
 use App\Services\Tactical\Actions\ActionRedactor;
-use App\Support\AgentConfig;
 use App\Support\McpStaffToken;
 use App\Support\McpToolInstructions;
 use App\Support\McpToolRegistry;
@@ -879,7 +878,7 @@ class McpStaffController extends Controller
     {
         return [
             'name' => self::WHOAMI_TOOL,
-            'description' => 'Return this MCP token label, directive, effective allowed tools, and safety posture.',
+            'description' => 'Return this MCP token label, directive, and effective allowed tools.',
             'input_schema' => [
                 'type' => 'object',
                 'properties' => (object) [],
@@ -892,7 +891,6 @@ class McpStaffController extends Controller
     private function whoami(Request $request): array
     {
         $token = $request->attributes->get('mcp_staff_token');
-        $threshold = AgentConfig::proposeCloseAutoThreshold();
 
         return [
             'label' => $token instanceof McpStaffToken && $token->label !== null ? $token->label : McpStaffToken::LEGACY_ACTOR_LABEL,
@@ -900,13 +898,6 @@ class McpStaffController extends Controller
             'allowed_tools' => $token instanceof McpStaffToken && $token->allowedTools !== null
                 ? array_values(array_unique(array_merge([self::WHOAMI_TOOL], $token->allowedTools)))
                 : null,
-            'posture' => [
-                'agent_enabled' => AgentConfig::enabled(),
-                'held_only' => true,
-                'kill_switch' => TechnicianConfig::killSwitchEngaged(),
-                'auto_close_enabled' => $threshold !== null,
-                'auto_close_threshold' => $threshold,
-            ],
         ];
     }
 
