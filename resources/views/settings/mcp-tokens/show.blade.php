@@ -179,6 +179,13 @@
             <form method="POST" action="{{ route('settings.mcp-tokens.resume', $token) }}">@csrf<button class="btn btn-outline-success"><i class="bi bi-play-fill me-1"></i>Resume</button></form>
         @endif
         @unless($readOnly)
+            <form method="POST" action="{{ route('settings.mcp-tokens.regenerate', $token) }}"
+                  onsubmit="return confirm(@js('Regenerate secret for \''.$token->label.'\'? This immediately invalidates the current secret — any client using it stops working until you paste the new one. The new secret is shown once.'))">
+                @csrf
+                <button class="btn btn-outline-warning">
+                    <i class="bi bi-arrow-clockwise me-1"></i>Regenerate secret
+                </button>
+            </form>
             <form method="POST" action="{{ route('settings.mcp-tokens.revoke', $token) }}"
                   onsubmit="return confirm(@js($token->isDraft() ? 'Discard this draft token?' : 'Revoke token \''.$token->label.'\'? It will stop authenticating immediately.'))">
                 @csrf @method('DELETE')

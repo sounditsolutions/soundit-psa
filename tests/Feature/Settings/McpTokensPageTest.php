@@ -200,6 +200,74 @@ class McpTokensPageTest extends TestCase
         $this->assertTrue($token->fresh()->require_explicit_client_scope);
     }
 
+    public function test_regenerate_secret_replaces_active_token_secret_and_preserves_configuration(): void
+    {
+        $oldPlain = McpConfig::rotateStaffToken(
+            allowedTools: ['find_staff'],
+            label: 'chet',
+            aiActor: true,
+            requireExplicitClientScope: false,
+        );
+        $token = McpToken::where('label', 'chet')->firstOrFail();
+        $activatedAt = $token->activated_at?->copy();
+        $token->forceFill([
+            'directive' => 'Use Chet rules.',
+            'last_used_at' => now()->subDay(),
+        ])->save();
+        $oldHash = $token->token_hash;
+        $oldPrefix = $token->token_prefix;
+
+        $response = $this->actingAs($this->user)
+            ->post(route('settings.mcp-tokens.regenerate', $token));
+
+        $response->assertRedirect(route('settings.mcp-tokens.show', $token));
+        $response->assertSessionHas('mcp_new_token');
+        $newPlain = (string) session('mcp_new_token');
+        $this->assertMatchesRegularExpression('/^psa-mcp-[A-Za-z0-9]{48}$/', $newPlain);
+        $this->assertNotSame($oldPlain, $newPlain);
+
+        $fresh = $token->fresh();
+        $this->assertNotSame($oldHash, $fresh->token_hash);
+        $this->assertNotSame($oldPrefix, $fresh->token_prefix);
+        $this->assertSame(hash('sha256', $newPlain), $fresh->token_hash);
+        $this->assertSame(['find_staff'], $fresh->tools);
+        $this->assertSame('Use Chet rules.', $fresh->directive);
+        $this->assertTrue($fresh->ai_actor);
+        $this->assertFalse($fresh->require_explicit_client_scope);
+        $this->assertTrue($fresh->activated_at?->equalTo($activatedAt));
+        $this->assertNull($fresh->last_used_at);
+
+        $this->callWhoami($oldPlain)->assertStatus(401);
+
+        $whoami = $this->callWhoami($newPlain);
+        $whoami->assertOk();
+        $payload = json_decode((string) $whoami->json('result.content.0.text'), true);
+        $this->assertSame('chet', $payload['label']);
+        $this->assertSame('Use Chet rules.', $payload['directive']);
+        $this->assertSame(['whoami', 'find_staff'], $payload['allowed_tools']);
+    }
+
+    public function test_regenerate_secret_rejects_revoked_tokens_without_revealing_a_new_secret(): void
+    {
+        McpConfig::rotateStaffToken(allowedTools: ['find_staff'], label: 'dead');
+        $token = McpToken::where('label', 'dead')->firstOrFail();
+        $token->update(['revoked_at' => now()]);
+        $oldHash = $token->token_hash;
+        $oldPrefix = $token->token_prefix;
+
+        $response = $this->actingAs($this->user)
+            ->post(route('settings.mcp-tokens.regenerate', $token));
+
+        $response->assertRedirect(route('settings.mcp-tokens.show', $token));
+        $response->assertSessionHas('error', "Revoked tokens can't be regenerated — create a new one instead.");
+        $response->assertSessionMissing('mcp_new_token');
+
+        $fresh = $token->fresh();
+        $this->assertTrue($fresh->isRevoked());
+        $this->assertSame($oldHash, $fresh->token_hash);
+        $this->assertSame($oldPrefix, $fresh->token_prefix);
+    }
+
     public function test_long_directive_saves_and_round_trips_through_whoami(): void
     {
         $plain = McpConfig::rotateStaffToken(allowedTools: ['find_staff'], label: 'chet');
@@ -243,6 +311,7 @@ class McpTokensPageTest extends TestCase
             ->assertSee('tactical_get_device')
             ->assertSee('Directive')
             ->assertSee('Trust &amp; scope', false)
+            ->assertSee('Regenerate secret')
             ->assertSee('Alerts Hub Destinations')
             ->assertSee('tools/call');
     }
@@ -313,6 +382,18 @@ class McpTokensPageTest extends TestCase
         $this->actingAs($this->user)
             ->get(route('settings.mcp-tokens.show', $token))
             ->assertOk()
-            ->assertSee('Revoked');
+            ->assertSee('Revoked')
+            ->assertDontSee('Regenerate secret');
+    }
+
+    private function callWhoami(string $plain): \Illuminate\Testing\TestResponse
+    {
+        return $this->withHeaders(['Authorization' => 'Bearer '.$plain])
+            ->postJson('/api/mcp/staff', [
+                'jsonrpc' => '2.0',
+                'id' => 1,
+                'method' => 'tools/call',
+                'params' => ['name' => 'whoami', 'arguments' => []],
+            ]);
     }
 }
