@@ -308,4 +308,47 @@
         </a>
     @endforeach
 @endif
+
+{{-- Preserve the operator's scroll position across approve/deny/dismiss.
+     Each action POSTs and the controller 302-redirects back to /cockpit, which
+     reloads the page and resets scroll to the top — so he loses his place and
+     has to scroll back down to the closures section. Save scrollY on submit and
+     restore it on the next load. Frontend-only: no controller/route changes. --}}
+<script>
+(function () {
+    var KEY = 'cockpit:scrollY';
+
+    // Stop the browser's own restoration from fighting ours.
+    if ('scrollRestoration' in history) {
+        history.scrollRestoration = 'manual';
+    }
+
+    // Remember where we are the moment any cockpit action form is submitted.
+    // Scoped to <main> so navbar/sidebar/command-palette forms don't trigger it.
+    document.addEventListener('submit', function (e) {
+        var form = e.target;
+        if (form && form.tagName === 'FORM' && form.method === 'post' && form.closest('main')) {
+            try { sessionStorage.setItem(KEY, String(window.scrollY)); } catch (err) {}
+        }
+    }, true);
+
+    // On the reload after the redirect, jump back and clear the marker. The
+    // browser clamps automatically if the page is now shorter (a run was removed),
+    // so he lands near the closures section rather than at the top.
+    function restore() {
+        var saved;
+        try { saved = sessionStorage.getItem(KEY); } catch (err) { return; }
+        if (saved === null) { return; }
+        try { sessionStorage.removeItem(KEY); } catch (err) {}
+        var y = parseInt(saved, 10);
+        if (!isNaN(y)) { window.scrollTo(0, y); }
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', restore);
+    } else {
+        restore();
+    }
+})();
+</script>
 @endsection
