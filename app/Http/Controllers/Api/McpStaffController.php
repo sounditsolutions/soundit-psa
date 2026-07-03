@@ -908,6 +908,14 @@ class McpStaffController extends Controller
                 'reason',
                 'workstation_policy_id',
                 'server_policy_id',
+                'policy_id',
+                'copy_id',
+                'confirm_policy_name',
+                'target_type',
+                'policy_kind',
+                'block_policy_inheritance',
+                'active',
+                'enforced',
                 'script_id',
                 'script_name',
                 'confirm_script_name',
@@ -936,6 +944,11 @@ class McpStaffController extends Controller
             if ($normalized === 'script_body') {
                 $safe['script_body'] = self::TACTICAL_SCRIPT_BODY_AUDIT_PLACEHOLDER;
                 $safe['script_body_length'] = is_string($value) ? mb_strlen($value) : 0;
+            }
+
+            if ($normalized === 'desc') {
+                $safe['desc'] = '[policy description withheld]';
+                $safe['desc_length'] = is_string($value) ? mb_strlen($value) : 0;
             }
 
             if ($normalized === 'args') {

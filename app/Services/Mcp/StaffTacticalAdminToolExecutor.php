@@ -43,6 +43,7 @@ class StaffTacticalAdminToolExecutor
         'tactical_get_or_create_installer',
         'tactical_generate_installer',
         'tactical_sync_devices_now',
+        'tactical_assign_automation_policy',
         'tactical_create_patch_policy',
         'tactical_update_patch_policy',
         'tactical_delete_patch_policy',
@@ -70,6 +71,9 @@ class StaffTacticalAdminToolExecutor
         'upstream_url_action_id',
         'upstream_alert_template_id',
         'policy',
+        'policy_pk',
+        'upstream_policy_id',
+        'tactical_policy_id',
         'patch_policy_id',
         'patch_policy_pk',
         'winupdatepolicy',
@@ -105,6 +109,10 @@ class StaffTacticalAdminToolExecutor
         'tactical_create_script' => 300,
         'tactical_update_script' => 300,
         'tactical_delete_script' => 600,
+        'tactical_create_automation_policy' => 300,
+        'tactical_update_automation_policy' => 300,
+        'tactical_delete_automation_policy' => 600,
+        'tactical_assign_automation_policy' => 600,
     ];
 
     /** @var array<string, int> */
@@ -164,6 +172,13 @@ class StaffTacticalAdminToolExecutor
             self::updateScriptTool(),
             self::deleteScriptTool(),
             self::downloadScriptTool(),
+            self::listAutomationPoliciesTool(),
+            self::createAutomationPolicyTool(),
+            self::getAutomationPolicyTool(),
+            self::updateAutomationPolicyTool(),
+            self::deleteAutomationPolicyTool(),
+            self::getAutomationPolicyRelatedTool(),
+            self::assignAutomationPolicyTool(),
             self::createPatchPolicyTool(),
             self::updatePatchPolicyTool(),
             self::deletePatchPolicyTool(),
@@ -220,6 +235,13 @@ class StaffTacticalAdminToolExecutor
             'tactical_update_script' => $this->updateScript($arguments, $actorLabel),
             'tactical_delete_script' => $this->deleteScript($arguments, $actorLabel),
             'tactical_download_script' => $this->downloadScript($arguments, $actorLabel),
+            'tactical_list_automation_policies' => $this->listAutomationPolicies($arguments, $actorLabel),
+            'tactical_create_automation_policy' => $this->createAutomationPolicy($arguments, $actorLabel),
+            'tactical_get_automation_policy' => $this->getAutomationPolicy($arguments, $actorLabel),
+            'tactical_update_automation_policy' => $this->updateAutomationPolicy($arguments, $actorLabel),
+            'tactical_delete_automation_policy' => $this->deleteAutomationPolicy($arguments, $actorLabel),
+            'tactical_get_automation_policy_related' => $this->getAutomationPolicyRelated($arguments, $actorLabel),
+            'tactical_assign_automation_policy' => $this->assignAutomationPolicy($arguments, (int) $clientId, $actorLabel),
             'tactical_create_patch_policy' => $this->createPatchPolicy($arguments, (int) $clientId, $actorLabel),
             'tactical_update_patch_policy' => $this->updatePatchPolicy($arguments, (int) $clientId, $actorLabel),
             'tactical_delete_patch_policy' => $this->deletePatchPolicy($arguments, (int) $clientId, $actorLabel),
@@ -1057,6 +1079,340 @@ class StaffTacticalAdminToolExecutor
     }
 
     /** @return array<string, mixed> */
+    private function listAutomationPolicies(array $arguments, string $actorLabel): array
+    {
+        $tool = 'tactical_list_automation_policies';
+        $guard = $this->baseGuard($tool, $arguments, null, $actorLabel);
+        if (isset($guard['error'])) {
+            return ['error' => $guard['error']];
+        }
+
+        $contentHash = $this->contentHash($tool, null, 'automation-policies', ['list' => true]);
+        try {
+            $policies = $this->client->getPolicies();
+        } catch (TacticalClientException $e) {
+            $message = $this->tacticalFailureMessage($e, 'Tactical automation policy list');
+            $this->auditAttempt($tool, 'error', null, $contentHash, $message, $actorLabel);
+
+            return ['error' => $message];
+        }
+
+        $mapped = array_values(array_map(fn (array $policy): array => $this->mapAutomationPolicyForResponse($policy), array_filter($policies, 'is_array')));
+        $this->auditAttempt($tool, 'executed', null, $contentHash, 'Listed Tactical automation policy metadata.', $actorLabel);
+
+        return [
+            'success' => true,
+            'count' => count($mapped),
+            'policies' => $mapped,
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private function createAutomationPolicy(array $arguments, string $actorLabel): array
+    {
+        $tool = 'tactical_create_automation_policy';
+        $guard = $this->baseGuard($tool, $arguments, null, $actorLabel);
+        if (isset($guard['error'])) {
+            return ['error' => $guard['error']];
+        }
+
+        $body = $this->automationPolicyBody($arguments, requireCreate: true);
+        $contentHash = $this->contentHash($tool, null, 'automation-policy-create', $body['body'] ?? $arguments);
+        if (isset($body['error'])) {
+            $this->auditAttempt($tool, 'rejected', null, $contentHash, $body['error'], $actorLabel);
+
+            return ['error' => $body['error']];
+        }
+
+        if (isset($body['copy_policy_id'])) {
+            try {
+                $copyPolicy = $this->policyById((int) $body['copy_policy_id']);
+            } catch (TacticalClientException $e) {
+                $message = $this->tacticalFailureMessage($e, 'Tactical automation policy lookup');
+                $this->auditAttempt($tool, 'error', null, $contentHash, $message, $actorLabel);
+
+                return ['error' => $message];
+            }
+
+            if ($copyPolicy === null) {
+                $message = "copy_id policy {$body['copy_policy_id']} was not found in Tactical getPolicies; no automation policy was created.";
+                $this->auditAttempt($tool, 'rejected', null, $contentHash, $message, $actorLabel);
+
+                return ['error' => $message];
+            }
+        }
+
+        if ($this->alreadyExecuted($tool, null, $contentHash)) {
+            $this->auditAttempt($tool, 'blocked', null, $contentHash, 'Duplicate automation-policy create suppressed before upstream call.', $actorLabel);
+
+            return ['success' => true, 'idempotent' => true, 'message' => 'Already created an identical Tactical automation policy recently; no upstream call was made.'];
+        }
+        if ($this->cooldownActive($tool, null, self::COOLDOWNS[$tool])) {
+            $this->auditAttempt($tool, 'blocked', null, $contentHash, 'Automation-policy create cooldown active; upstream call refused.', $actorLabel);
+
+            return ['error' => 'tactical_create_automation_policy cooldown active; no upstream call was made.'];
+        }
+
+        try {
+            $result = $this->client->createAutomationPolicy($body['body']);
+        } catch (TacticalClientException $e) {
+            $message = $this->tacticalFailureMessage($e, 'Tactical automation policy create');
+            $this->auditAttempt($tool, 'error', null, $contentHash, $message, $actorLabel);
+
+            return ['error' => $message];
+        }
+
+        $policyName = (string) ($body['body']['name'] ?? 'policy');
+        $this->auditAttempt($tool, 'executed', null, $contentHash, "Created Tactical automation policy '{$policyName}'.", $actorLabel);
+
+        return [
+            'success' => true,
+            'policy_name' => $policyName,
+            'message' => is_scalar($result) ? (string) $result : 'Tactical automation policy created.',
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private function getAutomationPolicy(array $arguments, string $actorLabel): array
+    {
+        $tool = 'tactical_get_automation_policy';
+        $guard = $this->baseGuard($tool, $arguments, null, $actorLabel);
+        if (isset($guard['error'])) {
+            return ['error' => $guard['error']];
+        }
+
+        $resolved = $this->resolvedAutomationPolicy($arguments, $tool, $actorLabel);
+        if (isset($resolved['error'])) {
+            return ['error' => $resolved['error']];
+        }
+
+        $contentHash = $this->contentHash($tool, null, 'automation-policy-'.$resolved['policy_id'], ['detail' => true]);
+        try {
+            $policy = $this->client->getAutomationPolicy((int) $resolved['policy_id']);
+        } catch (TacticalClientException $e) {
+            $message = $this->tacticalFailureMessage($e, 'Tactical automation policy detail');
+            $this->auditAttempt($tool, 'error', null, $contentHash, $message, $actorLabel);
+
+            return ['error' => $message];
+        }
+
+        $this->auditAttempt($tool, 'executed', null, $contentHash, "Read Tactical automation policy '{$resolved['policy_name']}'.", $actorLabel);
+
+        return ['success' => true, 'policy' => $this->mapAutomationPolicyForResponse($policy)];
+    }
+
+    /** @return array<string, mixed> */
+    private function updateAutomationPolicy(array $arguments, string $actorLabel): array
+    {
+        $tool = 'tactical_update_automation_policy';
+        $guard = $this->baseGuard($tool, $arguments, null, $actorLabel);
+        if (isset($guard['error'])) {
+            return ['error' => $guard['error']];
+        }
+
+        $body = $this->automationPolicyBody($arguments, requireCreate: false);
+        $policyId = $this->positiveInteger($arguments['policy_id'] ?? null);
+        $contentHash = $this->contentHash($tool, null, 'automation-policy-'.($policyId ?? 'unknown'), $body['body'] ?? $arguments);
+        if (isset($body['error'])) {
+            $this->auditAttempt($tool, 'rejected', null, $contentHash, $body['error'], $actorLabel);
+
+            return ['error' => $body['error']];
+        }
+
+        $resolved = $this->resolvedAutomationPolicy($arguments, $tool, $actorLabel);
+        if (isset($resolved['error'])) {
+            return ['error' => $resolved['error']];
+        }
+        $contentHash = $this->contentHash($tool, null, 'automation-policy-'.$resolved['policy_id'], $body['body'] ?? $arguments);
+
+        if (($body['body'] ?? []) === []) {
+            $this->auditAttempt($tool, 'rejected', null, $contentHash, 'At least one automation policy field is required.', $actorLabel);
+
+            return ['error' => 'At least one automation policy field is required'];
+        }
+
+        if ($this->alreadyExecuted($tool, null, $contentHash)) {
+            $this->auditAttempt($tool, 'blocked', null, $contentHash, 'Duplicate automation-policy update suppressed before upstream call.', $actorLabel);
+
+            return ['success' => true, 'idempotent' => true, 'message' => 'Already updated this Tactical automation policy recently; no upstream call was made.'];
+        }
+        if ($this->cooldownActive($tool, null, self::COOLDOWNS[$tool])) {
+            $this->auditAttempt($tool, 'blocked', null, $contentHash, 'Automation-policy update cooldown active; upstream call refused.', $actorLabel);
+
+            return ['error' => 'tactical_update_automation_policy cooldown active; no upstream call was made.'];
+        }
+
+        try {
+            $result = $this->client->updateAutomationPolicy((int) $resolved['policy_id'], $body['body']);
+        } catch (TacticalClientException $e) {
+            $message = $this->tacticalFailureMessage($e, 'Tactical automation policy update');
+            $this->auditAttempt($tool, 'error', null, $contentHash, $message, $actorLabel);
+
+            return ['error' => $message];
+        }
+
+        $this->auditAttempt($tool, 'executed', null, $contentHash, "Updated Tactical automation policy '{$resolved['policy_name']}'.", $actorLabel);
+
+        return [
+            'success' => true,
+            'policy_id' => $resolved['policy_id'],
+            'policy_name' => $resolved['policy_name'],
+            'message' => is_scalar($result) ? (string) $result : 'Tactical automation policy updated.',
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private function deleteAutomationPolicy(array $arguments, string $actorLabel): array
+    {
+        $tool = 'tactical_delete_automation_policy';
+        $guard = $this->baseGuard($tool, $arguments, null, $actorLabel);
+        if (isset($guard['error'])) {
+            return ['error' => $guard['error']];
+        }
+
+        $resolved = $this->resolvedAutomationPolicy($arguments, $tool, $actorLabel);
+        if (isset($resolved['error'])) {
+            return ['error' => $resolved['error']];
+        }
+
+        $contentHash = $this->contentHash($tool, null, 'automation-policy-'.$resolved['policy_id'], ['delete' => true]);
+        $typed = trim((string) ($arguments['confirm_policy_name'] ?? ''));
+        if (strcasecmp($typed, (string) $resolved['policy_name']) !== 0) {
+            $this->auditAttempt($tool, 'rejected', null, $contentHash, 'The typed policy name does not match this Tactical automation policy.', $actorLabel);
+
+            return ['error' => 'The typed policy name does not match this Tactical automation policy.'];
+        }
+
+        if ($this->alreadyExecuted($tool, null, $contentHash)) {
+            $this->auditAttempt($tool, 'blocked', null, $contentHash, 'Duplicate automation-policy delete suppressed before upstream call.', $actorLabel);
+
+            return ['success' => true, 'idempotent' => true, 'message' => 'Already deleted this Tactical automation policy recently; no upstream call was made.'];
+        }
+        if ($this->cooldownActive($tool, null, self::COOLDOWNS[$tool])) {
+            $this->auditAttempt($tool, 'blocked', null, $contentHash, 'Automation-policy delete cooldown active; upstream call refused.', $actorLabel);
+
+            return ['error' => 'tactical_delete_automation_policy cooldown active; no upstream call was made.'];
+        }
+
+        try {
+            $result = $this->client->deleteAutomationPolicy((int) $resolved['policy_id']);
+        } catch (TacticalClientException $e) {
+            $message = $this->tacticalFailureMessage($e, 'Tactical automation policy delete');
+            $this->auditAttempt($tool, 'error', null, $contentHash, $message, $actorLabel);
+
+            return ['error' => $message];
+        }
+
+        $this->auditAttempt($tool, 'executed', null, $contentHash, "Deleted Tactical automation policy '{$resolved['policy_name']}'.", $actorLabel);
+
+        return [
+            'success' => true,
+            'policy_id' => $resolved['policy_id'],
+            'policy_name' => $resolved['policy_name'],
+            'message' => is_scalar($result) ? (string) $result : 'Tactical automation policy deleted.',
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private function getAutomationPolicyRelated(array $arguments, string $actorLabel): array
+    {
+        $tool = 'tactical_get_automation_policy_related';
+        $guard = $this->baseGuard($tool, $arguments, null, $actorLabel);
+        if (isset($guard['error'])) {
+            return ['error' => $guard['error']];
+        }
+
+        $resolved = $this->resolvedAutomationPolicy($arguments, $tool, $actorLabel);
+        if (isset($resolved['error'])) {
+            return ['error' => $resolved['error']];
+        }
+
+        $contentHash = $this->contentHash($tool, null, 'automation-policy-'.$resolved['policy_id'], ['related' => true]);
+        try {
+            $related = $this->client->getAutomationPolicyRelated((int) $resolved['policy_id']);
+        } catch (TacticalClientException $e) {
+            $message = $this->tacticalFailureMessage($e, 'Tactical automation policy related');
+            $this->auditAttempt($tool, 'error', null, $contentHash, $message, $actorLabel);
+
+            return ['error' => $message];
+        }
+
+        $this->auditAttempt($tool, 'executed', null, $contentHash, "Read related Tactical objects for automation policy '{$resolved['policy_name']}'.", $actorLabel);
+
+        return [
+            'success' => true,
+            'policy' => $this->mapAutomationPolicyForResponse($resolved['policy']),
+            'related' => $this->redactor->redactParams($related),
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private function assignAutomationPolicy(array $arguments, int $clientId, string $actorLabel): array
+    {
+        $tool = 'tactical_assign_automation_policy';
+        $guard = $this->baseGuard($tool, $arguments, $clientId, $actorLabel);
+        if (isset($guard['error'])) {
+            return ['error' => $guard['error']];
+        }
+
+        $unsupported = $this->unsupportedAutomationPolicyAssignmentFields($arguments);
+        if ($unsupported !== []) {
+            $message = 'Unsupported automation policy assignment fields: '.implode(', ', $unsupported).'.';
+            $this->auditAttempt($tool, 'rejected', $clientId, $this->contentHash($tool, $clientId, 'policy-assignment', $arguments), $message, $actorLabel);
+
+            return ['error' => $message];
+        }
+
+        $resolved = $this->resolvedAutomationPolicy($arguments, $tool, $actorLabel, $clientId);
+        if (isset($resolved['error'])) {
+            return ['error' => $resolved['error']];
+        }
+
+        $prepared = $this->automationPolicyAssignment($arguments, $clientId, (int) $resolved['policy_id']);
+        $contentHash = $this->contentHash($tool, $clientId, $prepared['target_key'] ?? 'policy-assignment', $prepared['body'] ?? $arguments);
+        if (isset($prepared['error'])) {
+            $this->auditAttempt($tool, 'rejected', $clientId, $contentHash, $prepared['error'], $actorLabel);
+
+            return ['error' => $prepared['error']];
+        }
+
+        if ($this->alreadyExecuted($tool, $clientId, $contentHash)) {
+            $this->auditAttempt($tool, 'blocked', $clientId, $contentHash, 'Duplicate automation-policy assignment suppressed before upstream call.', $actorLabel);
+
+            return ['success' => true, 'idempotent' => true, 'message' => 'Already assigned this Tactical automation policy recently; no upstream call was made.'];
+        }
+        if ($this->cooldownActiveForContent($tool, $clientId, $contentHash, self::COOLDOWNS[$tool])) {
+            $this->auditAttempt($tool, 'blocked', $clientId, $contentHash, 'Automation-policy assignment cooldown active; upstream call refused.', $actorLabel);
+
+            return ['error' => 'tactical_assign_automation_policy cooldown active for this client; no upstream call was made.'];
+        }
+
+        try {
+            $result = match ($prepared['target_type']) {
+                'client' => $this->client->updateClientPolicies((int) $prepared['target_id'], $prepared['body']),
+                'site' => $this->client->updateSitePolicies((int) $prepared['target_id'], $prepared['body']),
+                'agent' => $this->client->updateAgentPolicy((string) $prepared['target_id'], $prepared['body']),
+            };
+        } catch (TacticalClientException $e) {
+            $message = $this->tacticalFailureMessage($e, 'Tactical automation policy assignment');
+            $this->auditAttempt($tool, 'error', $clientId, $contentHash, $message, $actorLabel);
+
+            return ['error' => $message];
+        }
+
+        $this->auditAttempt($tool, 'executed', $clientId, $contentHash, "Assigned Tactical automation policy '{$resolved['policy_name']}' to {$prepared['label']}.", $actorLabel);
+
+        return [
+            'success' => true,
+            'policy_id' => $resolved['policy_id'],
+            'policy_name' => $resolved['policy_name'],
+            'target_type' => $prepared['target_type'],
+            'target_label' => $prepared['label'],
+            'message' => is_scalar($result) ? (string) $result : 'Tactical automation policy assigned.',
+        ];
+    }
+
+    /** @return array<string, mixed> */
     private function provisionAlertTicketing(array $arguments, string $actorLabel): array
     {
         $tool = 'tactical_provision_alert_ticketing';
@@ -1842,6 +2198,239 @@ class StaffTacticalAdminToolExecutor
         return $this->listOfStrings($value) ?? [];
     }
 
+    /** @return array<string, mixed> */
+    private function mapAutomationPolicyForResponse(array $policy): array
+    {
+        $desc = isset($policy['desc']) && is_scalar($policy['desc'])
+            ? (string) $policy['desc']
+            : '';
+
+        return [
+            'policy_id' => $this->positiveInteger($policy['id'] ?? $policy['pk'] ?? null),
+            'name' => (string) ($policy['name'] ?? ''),
+            'desc' => $desc !== '' ? '[policy description withheld]' : null,
+            'desc_length' => $desc !== '' ? mb_strlen($desc) : 0,
+            'active' => (bool) ($policy['active'] ?? false),
+            'enforced' => (bool) ($policy['enforced'] ?? false),
+            'alert_template' => $policy['alert_template'] ?? null,
+            'agents_count' => $this->positiveInteger($policy['agents_count'] ?? null),
+            'default_server_policy' => (bool) ($policy['default_server_policy'] ?? $policy['is_default_server_policy'] ?? false),
+            'default_workstation_policy' => (bool) ($policy['default_workstation_policy'] ?? $policy['is_default_workstation_policy'] ?? false),
+        ];
+    }
+
+    /**
+     * @return array{body?: array<string, mixed>, copy_policy_id?: int, error?: string}
+     */
+    private function automationPolicyBody(array $arguments, bool $requireCreate): array
+    {
+        $allowed = $requireCreate
+            ? ['name', 'desc', 'active', 'enforced', 'copy_id']
+            : ['name', 'desc', 'active', 'enforced'];
+        $nonBody = $requireCreate
+            ? ['reason']
+            : ['reason', 'policy_id'];
+        $unsupported = array_values(array_diff(array_keys($arguments), array_merge($allowed, $nonBody)));
+        if ($unsupported !== []) {
+            return ['error' => 'Unsupported automation policy fields: '.implode(', ', $unsupported).'.'];
+        }
+
+        $body = [];
+        foreach (['name', 'desc'] as $key) {
+            if (array_key_exists($key, $arguments)) {
+                if ($arguments[$key] !== null && ! is_scalar($arguments[$key])) {
+                    return ['error' => "{$key} must be a string or null."];
+                }
+
+                $body[$key] = $arguments[$key] === null ? null : trim((string) $arguments[$key]);
+            }
+        }
+
+        foreach (['active', 'enforced'] as $key) {
+            if (array_key_exists($key, $arguments)) {
+                if (! is_bool($arguments[$key])) {
+                    return ['error' => "{$key} must be a boolean."];
+                }
+                $body[$key] = $arguments[$key];
+            }
+        }
+
+        $copyPolicyId = null;
+        if (array_key_exists('copy_id', $arguments)) {
+            $copyPolicyId = $this->positiveInteger($arguments['copy_id']);
+            if ($copyPolicyId === null) {
+                return ['error' => 'copy_id must be a positive integer.'];
+            }
+            $body['copyId'] = $copyPolicyId;
+        }
+
+        if ($requireCreate && (! isset($body['name']) || trim((string) $body['name']) === '')) {
+            return ['error' => 'name is required'];
+        }
+
+        return ['body' => $body, 'copy_policy_id' => $copyPolicyId];
+    }
+
+    /**
+     * @return array{policy?: array<string, mixed>, policy_id?: int, policy_name?: string, error?: string}
+     */
+    private function resolvedAutomationPolicy(array $arguments, string $tool, string $actorLabel, ?int $clientId = null): array
+    {
+        $policyId = $this->positiveInteger($arguments['policy_id'] ?? null);
+        $contentHash = $this->contentHash($tool, $clientId, 'automation-policy', ['policy_id' => $policyId]);
+        if ($policyId === null) {
+            $this->auditAttempt($tool, 'rejected', $clientId, $contentHash, 'policy_id is required.', $actorLabel);
+
+            return ['error' => 'policy_id is required'];
+        }
+
+        try {
+            $policy = $this->policyById($policyId);
+        } catch (TacticalClientException $e) {
+            $message = $this->tacticalFailureMessage($e, 'Tactical automation policy lookup');
+            $this->auditAttempt($tool, 'error', $clientId, $contentHash, $message, $actorLabel);
+
+            return ['error' => $message];
+        }
+
+        if ($policy === null) {
+            $message = "Policy id {$policyId} was not found in Tactical getPolicies.";
+            $this->auditAttempt($tool, 'rejected', $clientId, $contentHash, $message, $actorLabel);
+
+            return ['error' => $message];
+        }
+
+        return [
+            'policy' => $policy,
+            'policy_id' => $policyId,
+            'policy_name' => (string) ($policy['name'] ?? $policyId),
+        ];
+    }
+
+    /**
+     * @return array{target_type?: string, target_id?: int|string, target_key?: string, label?: string, body?: array<string, mixed>, error?: string}
+     */
+    private function automationPolicyAssignment(array $arguments, int $clientId, int $policyId): array
+    {
+        $unsupported = $this->unsupportedAutomationPolicyAssignmentFields($arguments);
+        if ($unsupported !== []) {
+            return ['error' => 'Unsupported automation policy assignment fields: '.implode(', ', $unsupported).'.'];
+        }
+
+        $targetType = $this->enumValue($arguments['target_type'] ?? null, ['client', 'site', 'agent']);
+        if ($targetType === null) {
+            return ['error' => 'target_type must be one of: client, site, agent'];
+        }
+
+        $body = [];
+        if (array_key_exists('block_policy_inheritance', $arguments)) {
+            if (! is_bool($arguments['block_policy_inheritance'])) {
+                return ['error' => 'block_policy_inheritance must be a boolean when supplied.'];
+            }
+            $body['block_policy_inheritance'] = $arguments['block_policy_inheritance'];
+        }
+
+        if ($targetType === 'agent') {
+            $asset = $this->resolveAsset($arguments, $clientId);
+            if (is_array($asset)) {
+                return ['error' => $asset['error']];
+            }
+            if ($error = $this->linkedAgentError($asset)) {
+                return ['error' => $error];
+            }
+
+            $body = ['policy' => $policyId] + $body;
+
+            return [
+                'target_type' => 'agent',
+                'target_id' => (string) $asset->tacticalAsset->agent_id,
+                'target_key' => 'agent-'.$asset->id,
+                'label' => 'agent '.$this->targetHostname($asset),
+                'body' => $body,
+            ];
+        }
+
+        $policyKind = $this->enumValue($arguments['policy_kind'] ?? null, ['workstation', 'server']);
+        if ($policyKind === null) {
+            return ['error' => 'policy_kind must be one of: workstation, server for client/site assignment'];
+        }
+        $body = [$policyKind.'_policy' => $policyId] + $body;
+
+        $client = Client::find($clientId);
+        if (! $client) {
+            return ['error' => 'Client not found'];
+        }
+
+        $target = $this->tacticalClientSiteTarget($client, $targetType);
+        if (isset($target['error'])) {
+            return ['error' => $target['error']];
+        }
+
+        return [
+            'target_type' => $targetType,
+            'target_id' => $target['id'],
+            'target_key' => $targetType.'-'.$target['id'],
+            'label' => $target['label'],
+            'body' => $body,
+        ];
+    }
+
+    /** @return array{id?: int, label?: string, error?: string} */
+    private function tacticalClientSiteTarget(Client $client, string $targetType): array
+    {
+        $siteKey = is_string($client->tactical_site_id) ? trim($client->tactical_site_id) : '';
+        if ($siteKey === '' || ! str_contains($siteKey, '|')) {
+            return ['error' => 'Client has no Tactical site mapping'];
+        }
+
+        [$clientName, $siteName] = array_pad(explode('|', $siteKey, 2), 2, 'Main');
+        $clientName = trim($clientName);
+        $siteName = trim($siteName) ?: 'Main';
+
+        try {
+            $clients = $this->client->getClients();
+        } catch (TacticalClientException) {
+            return ['error' => 'Could not read Tactical clients/sites to resolve policy assignment target; no assignment was sent.'];
+        }
+
+        foreach ($clients as $candidate) {
+            if (! is_array($candidate) || strcasecmp((string) ($candidate['name'] ?? ''), $clientName) !== 0) {
+                continue;
+            }
+
+            $upstreamClientId = $this->positiveInteger($candidate['id'] ?? null);
+            if ($targetType === 'client') {
+                return $upstreamClientId !== null
+                    ? ['id' => $upstreamClientId, 'label' => "Tactical client {$clientName}"]
+                    : ['error' => 'Matched Tactical client has no numeric id; no assignment was sent.'];
+            }
+
+            foreach (($candidate['sites'] ?? []) as $site) {
+                if (! is_array($site) || strcasecmp((string) ($site['name'] ?? ''), $siteName) !== 0) {
+                    continue;
+                }
+
+                $siteId = $this->positiveInteger($site['id'] ?? null);
+
+                return $siteId !== null
+                    ? ['id' => $siteId, 'label' => "Tactical site {$clientName}|{$siteName}"]
+                    : ['error' => 'Matched Tactical site has no numeric id; no assignment was sent.'];
+            }
+
+            return ['error' => "Tactical site {$clientName}|{$siteName} was not found; no assignment was sent."];
+        }
+
+        return ['error' => "Tactical client {$clientName} was not found; no assignment was sent."];
+    }
+
+    /** @return array<int, string> */
+    private function unsupportedAutomationPolicyAssignmentFields(array $arguments): array
+    {
+        $allowed = ['client_id', 'reason', 'policy_id', 'target_type', 'policy_kind', 'block_policy_inheritance', 'asset_id', 'hostname'];
+
+        return array_values(array_diff(array_keys($arguments), $allowed));
+    }
+
     /** @return array{body?: array<string, mixed>, error?: string} */
     private function patchPolicyBody(array $arguments, bool $includePolicy): array
     {
@@ -2146,6 +2735,11 @@ class StaffTacticalAdminToolExecutor
             : null;
     }
 
+    private function targetHostname(Asset $asset): string
+    {
+        return trim((string) ($asset->tacticalAsset?->hostname ?? $asset->hostname ?? $asset->name ?? ''));
+    }
+
     /** @return array<int, string> */
     private function upstreamIdentifierKeys(array $arguments): array
     {
@@ -2190,6 +2784,19 @@ class StaffTacticalAdminToolExecutor
         return $this->actionLogQuery($tool, $clientId)
             ->where('created_at', '>=', now()->subSeconds($cooldownSeconds))
             ->whereIn('result_status', $statuses)
+            ->exists();
+    }
+
+    private function cooldownActiveForContent(string $tool, ?int $clientId, string $contentHash, int $cooldownSeconds): bool
+    {
+        if ($cooldownSeconds <= 0) {
+            return false;
+        }
+
+        return $this->actionLogQuery($tool, $clientId)
+            ->where('content_hash', $contentHash)
+            ->where('created_at', '>=', now()->subSeconds($cooldownSeconds))
+            ->whereIn('result_status', ['executed', 'awaiting_approval'])
             ->exists();
     }
 
@@ -2675,6 +3282,109 @@ class StaffTacticalAdminToolExecutor
                 'with_snippets' => ['type' => 'boolean', 'description' => 'Whether Tactical should expand snippets in returned code. Default true.'],
             ]),
             ['reason', 'confirm_script_name'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function automationPolicySelectorProperties(): array
+    {
+        return [
+            'policy_id' => ['type' => 'integer', 'description' => 'Tactical automation policy id from tactical_list_policies or tactical_list_automation_policies. The server verifies it with getPolicies before use.'],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private static function automationPolicyBodyProperties(): array
+    {
+        return [
+            'name' => ['type' => 'string', 'description' => 'Automation policy name. Required on create.'],
+            'desc' => ['type' => 'string', 'description' => 'Automation policy description.'],
+            'active' => ['type' => 'boolean', 'description' => 'Whether Tactical should apply this policy.'],
+            'enforced' => ['type' => 'boolean', 'description' => 'Whether Tactical should enforce this policy ahead of non-enforced policies.'],
+            'copy_id' => ['type' => 'integer', 'description' => 'Optional source automation policy id to copy checks/tasks from. The server verifies it with getPolicies and sends it as Tactical copyId.'],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private static function listAutomationPoliciesTool(): array
+    {
+        return self::tool(
+            'tactical_list_automation_policies',
+            'List metadata from Tactical GET automation/policies/ for automation policy CRUD. No policy changes are made. Requires explicit grant, reason, kill-switch, upstream-ID rejection, and redacted audit.',
+            self::reasonProperties(),
+            ['reason'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function createAutomationPolicyTool(): array
+    {
+        return self::tool(
+            'tactical_create_automation_policy',
+            'Create a global Tactical automation policy using POST automation/policies/. This can later affect checks, tasks, and policy inheritance when assigned; this tool narrows PolicySerializer to name/desc/active/enforced/copy_id and validates copy_id via getPolicies.',
+            array_merge(self::reasonProperties(), self::automationPolicyBodyProperties()),
+            ['reason', 'name'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function getAutomationPolicyTool(): array
+    {
+        return self::tool(
+            'tactical_get_automation_policy',
+            'Read one Tactical automation policy via GET automation/policies/{pk}/ after verifying policy_id with getPolicies. Response metadata is redacted.',
+            array_merge(self::reasonProperties(), self::automationPolicySelectorProperties()),
+            ['reason', 'policy_id'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function updateAutomationPolicyTool(): array
+    {
+        return self::tool(
+            'tactical_update_automation_policy',
+            'Update one Tactical automation policy using PUT automation/policies/{pk}/ after verifying policy_id with getPolicies. Sends only the narrowed PolicySerializer fields name/desc/active/enforced.',
+            array_merge(self::reasonProperties(), self::automationPolicySelectorProperties(), self::automationPolicyBodyProperties()),
+            ['reason', 'policy_id'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function deleteAutomationPolicyTool(): array
+    {
+        return self::tool(
+            'tactical_delete_automation_policy',
+            'Delete one Tactical automation policy using DELETE automation/policies/{pk}/ after verifying policy_id with getPolicies. This can remove inherited checks/tasks from affected devices; requires typed policy-name confirmation, explicit grant, reason, kill-switch, dedup, and cooldown.',
+            array_merge(self::reasonProperties(), self::automationPolicySelectorProperties(), [
+                'confirm_policy_name' => ['type' => 'string', 'description' => 'Typed Tactical automation policy name. Must match the current policy name.'],
+            ]),
+            ['reason', 'policy_id', 'confirm_policy_name'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function getAutomationPolicyRelatedTool(): array
+    {
+        return self::tool(
+            'tactical_get_automation_policy_related',
+            'Read clients, sites, and agents related to one Tactical automation policy via GET automation/policies/{pk}/related/ after verifying policy_id with getPolicies. No policy changes are made.',
+            array_merge(self::reasonProperties(), self::automationPolicySelectorProperties()),
+            ['reason', 'policy_id'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function assignAutomationPolicyTool(): array
+    {
+        return self::tool(
+            'tactical_assign_automation_policy',
+            'Assign a verified Tactical automation policy to a PSA-derived Tactical client, site, or agent. NO assign endpoint exists upstream: this uses PUT clients/{id}/, PUT clients/sites/{id}/, or PUT agents/{agent_id}/ with server-derived target ids. Assignment can change inherited checks/tasks for many devices; requires explicit grant, reason, kill-switch, dedup, cooldown, and getPolicies validation.',
+            array_merge(self::reasonProperties(), self::automationPolicySelectorProperties(), self::endpointSelectorProperties(), [
+                'target_type' => ['type' => 'string', 'enum' => ['client', 'site', 'agent'], 'description' => 'Where to assign the policy. client/site are resolved from the PSA client Tactical site mapping; agent is resolved from PSA asset_id or hostname.'],
+                'policy_kind' => ['type' => 'string', 'enum' => ['workstation', 'server'], 'description' => 'Required for client/site assignment; maps to workstation_policy or server_policy. Ignored for direct agent assignment.'],
+                'block_policy_inheritance' => ['type' => 'boolean', 'description' => 'Optional Tactical block_policy_inheritance value to set with the assignment.'],
+            ]),
+            ['client_id', 'reason', 'target_type', 'policy_id'],
         );
     }
 
