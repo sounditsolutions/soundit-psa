@@ -2,8 +2,11 @@
 
 namespace App\Models;
 
+use App\Support\McpInputSchema;
+use App\Support\McpToolRegistry;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\Log;
 
 class CippMcpTool extends Model
 {
@@ -32,6 +35,16 @@ class CippMcpTool extends Model
         ];
     }
 
+    protected static function booted(): void
+    {
+        static::saved(function (): void {
+            McpToolRegistry::flushMemoized();
+        });
+        static::deleted(function (): void {
+            McpToolRegistry::flushMemoized();
+        });
+    }
+
     /** @param  Builder<CippMcpTool>  $query */
     public function scopeActive(Builder $query): void
     {
@@ -49,10 +62,7 @@ class CippMcpTool extends Model
     public static function handles(string $toolName): bool
     {
         try {
-            return static::query()
-                ->active()
-                ->where('local_name', $toolName)
-                ->exists();
+            return in_array($toolName, McpToolRegistry::dynamicCippToolNames(), true);
         } catch (\Throwable) {
             return false;
         }
@@ -71,18 +81,30 @@ class CippMcpTool extends Model
     /** @return array<string, mixed> */
     public function publicInputSchema(): array
     {
-        $schema = is_array($this->input_schema) ? $this->input_schema : [];
-        $properties = is_array($schema['properties'] ?? null) ? $schema['properties'] : [];
+        $rawSchema = is_array($this->input_schema) ? $this->input_schema : [];
+        $rawErrors = McpInputSchema::validationErrors($rawSchema);
+        if ($rawErrors !== []) {
+            Log::warning('[MCP/staff] Sanitized invalid dynamic CIPP MCP schema', [
+                'tool' => $this->local_name,
+                'upstream_tool' => $this->upstream_name,
+                'errors' => array_slice($rawErrors, 0, 10),
+            ]);
+        }
+
+        $schema = McpInputSchema::sanitizeDynamicCipp($rawSchema);
+        $properties = (array) ($schema['properties'] ?? []);
 
         foreach (self::tenantSelectorKeys() as $key) {
             unset($properties[$key]);
         }
 
-        $schema['type'] = $schema['type'] ?? 'object';
-        $schema['properties'] = $properties;
+        $schema['type'] = 'object';
+        $schema['properties'] = $properties === [] ? new \stdClass : $properties;
         $schema['required'] = array_values(array_filter(
             (array) ($schema['required'] ?? []),
-            fn (mixed $field): bool => is_string($field) && ! in_array($field, self::tenantSelectorKeys(), true),
+            fn (mixed $field): bool => is_string($field)
+                && isset($properties[$field])
+                && ! in_array($field, self::tenantSelectorKeys(), true),
         ));
 
         return $schema;

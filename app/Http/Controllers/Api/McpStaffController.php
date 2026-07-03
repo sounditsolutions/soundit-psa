@@ -20,6 +20,7 @@ use App\Services\Chet\OperatorBridgeTools;
 use App\Services\Cipp\CippMcpDynamicToolExecutor;
 use App\Services\Mcp\StaffPsaActionToolExecutor;
 use App\Services\Tactical\Actions\ActionRedactor;
+use App\Support\McpInputSchema;
 use App\Support\McpStaffToken;
 use App\Support\McpToolInstructions;
 use App\Support\McpToolRegistry;
@@ -230,7 +231,7 @@ class McpStaffController extends Controller
         $clientIdOptionalFor = ['find_persons', 'find_assets', 'wiki_list_pages', 'wiki_search', 'wiki_get_page'];
 
         $toolInstructions = McpToolInstructions::all();
-        $translated = array_map(function ($t) use ($request, $generalNames, $clientIdOptionalFor, $toolInstructions) {
+        $translated = array_values(array_filter(array_map(function ($t) use ($request, $generalNames, $clientIdOptionalFor, $toolInstructions): ?array {
             $schema = $t['input_schema'] ?? ['type' => 'object', 'properties' => new \stdClass];
             $isChetClientScopedWrite = $this->isChetClientScopedWrite($request, (string) $t['name']);
             $isPsaActionTool = $this->isPsaActionTool((string) $t['name']);
@@ -255,12 +256,12 @@ class McpStaffController extends Controller
                 }
             }
 
-            return [
+            return $this->publishableTool([
                 'name' => $t['name'],
                 'description' => McpToolInstructions::appendToDescription((string) $t['name'], (string) ($t['description'] ?? ''), $toolInstructions),
                 'inputSchema' => $schema,
-            ];
-        }, $allTools);
+            ]);
+        }, $allTools), static fn (?array $tool): bool => $tool !== null));
 
         $this->audit('tools/list', null, null, 'success', null, $start, $request);
 
@@ -269,6 +270,26 @@ class McpStaffController extends Controller
             'id' => $id,
             'result' => ['tools' => $translated],
         ]);
+    }
+
+    /** @param  array{name?: mixed, inputSchema?: mixed}  $tool */
+    private function publishableTool(array $tool): ?array
+    {
+        $toolName = is_string($tool['name'] ?? null) && $tool['name'] !== ''
+            ? $tool['name']
+            : '(unknown)';
+        $errors = McpInputSchema::validationErrors($tool['inputSchema'] ?? null);
+
+        if ($errors !== []) {
+            Log::warning('[MCP/staff] Dropping invalid MCP tool schema', [
+                'tool' => $toolName,
+                'errors' => array_slice($errors, 0, 10),
+            ]);
+
+            return null;
+        }
+
+        return $tool;
     }
 
     private function callTool(mixed $id, array $params, Request $request, float $start): JsonResponse

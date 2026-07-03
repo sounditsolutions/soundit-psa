@@ -11,100 +11,180 @@ use App\Services\Triage\TriageToolDefinitions;
 
 class McpToolRegistry
 {
+    private static ?int $memoizedRequestId = null;
+
+    /** @var array<string, mixed> */
+    private static array $memoized = [];
+
     /**
      * @return array<string, array{label: string, sensitive: bool, tools: array<int, array{name: string, description: string}>}>
      */
     public static function groups(): array
     {
-        $general = self::shape(array_merge(
-            AssistantToolDefinitions::getTools(hasClient: false),
-            [self::proposeCloseTool(), self::sendReplyTool(), self::requestToolTool()],
-            ChetDataSurfaceTools::registryGeneralTools(),
-        ));
-        $generalNames = array_flip(array_column($general, 'name'));
+        /** @var array<string, array{label: string, sensitive: bool, tools: array<int, array{name: string, description: string}>}> $groups */
+        $groups = self::memoized('groups', function (): array {
+            $general = self::shape(array_merge(
+                AssistantToolDefinitions::getTools(hasClient: false),
+                [self::proposeCloseTool(), self::sendReplyTool(), self::requestToolTool()],
+                ChetDataSurfaceTools::registryGeneralTools(),
+            ));
+            $generalNames = array_flip(array_column($general, 'name'));
 
-        $integration = self::shape(array_merge(
-            TriageToolDefinitions::ninjaTools(),
-            TriageToolDefinitions::levelTools(),
-            TriageToolDefinitions::meshTools(),
-            TriageToolDefinitions::cippTools(),
-            self::dynamicCippReadTools(),
-            ChetDataSurfaceTools::registryIntegrationTools(),
-        ));
-        $integrationNames = array_flip(array_column($integration, 'name'));
+            $integration = self::shape(array_merge(
+                TriageToolDefinitions::ninjaTools(),
+                TriageToolDefinitions::levelTools(),
+                TriageToolDefinitions::meshTools(),
+                TriageToolDefinitions::cippTools(),
+                self::dynamicCippReadTools(),
+                ChetDataSurfaceTools::registryIntegrationTools(),
+            ));
+            $integrationNames = array_flip(array_column($integration, 'name'));
 
-        $psaActions = self::shape(self::psaActionTools());
-        $psaActionNames = array_flip(array_column($psaActions, 'name'));
+            $psaActions = self::shape(self::psaActionTools());
+            $psaActionNames = array_flip(array_column($psaActions, 'name'));
 
-        $client = array_values(array_filter(
-            self::shape(AssistantToolDefinitions::getTools(hasClient: true)),
-            fn (array $tool): bool => ! isset($generalNames[$tool['name']])
-                && ! isset($integrationNames[$tool['name']])
-                && ! isset($psaActionNames[$tool['name']]),
-        ));
+            $client = array_values(array_filter(
+                self::shape(AssistantToolDefinitions::getTools(hasClient: true)),
+                fn (array $tool): bool => ! isset($generalNames[$tool['name']])
+                    && ! isset($integrationNames[$tool['name']])
+                    && ! isset($psaActionNames[$tool['name']]),
+            ));
 
-        $bridge = self::shape(OperatorBridgeTools::definitions());
-        $wikiWrites = self::shape([self::wikiAddFactTool(), self::wikiCreatePageTool(), self::wikiUpdatePageTool()]);
-        $cippWrites = self::shape(self::dynamicCippWriteTools());
+            $bridge = self::shape(OperatorBridgeTools::definitions());
+            $wikiWrites = self::shape([self::wikiAddFactTool(), self::wikiCreatePageTool(), self::wikiUpdatePageTool()]);
+            $cippWrites = self::shape(self::dynamicCippWriteTools());
 
-        return [
-            'general' => ['label' => 'General (no client context)', 'sensitive' => false, 'tools' => $general],
-            'client' => ['label' => 'Client-scoped', 'sensitive' => false, 'tools' => $client],
-            'integration' => ['label' => 'Integration (RMM / M365)', 'sensitive' => false, 'tools' => $integration],
-            'cipp_write' => ['label' => 'CIPP write-class (sensitive)', 'sensitive' => true, 'tools' => $cippWrites],
-            'wiki_write' => ['label' => 'Wiki write (sensitive)', 'sensitive' => true, 'tools' => $wikiWrites],
-            'psa_action' => ['label' => 'PSA actions (sensitive)', 'sensitive' => true, 'tools' => $psaActions],
-            'bridge' => ['label' => 'Operator bridge (sensitive)', 'sensitive' => true, 'tools' => $bridge],
-        ];
+            return [
+                'general' => ['label' => 'General (no client context)', 'sensitive' => false, 'tools' => $general],
+                'client' => ['label' => 'Client-scoped', 'sensitive' => false, 'tools' => $client],
+                'integration' => ['label' => 'Integration (RMM / M365)', 'sensitive' => false, 'tools' => $integration],
+                'cipp_write' => ['label' => 'CIPP write-class (sensitive)', 'sensitive' => true, 'tools' => $cippWrites],
+                'wiki_write' => ['label' => 'Wiki write (sensitive)', 'sensitive' => true, 'tools' => $wikiWrites],
+                'psa_action' => ['label' => 'PSA actions (sensitive)', 'sensitive' => true, 'tools' => $psaActions],
+                'bridge' => ['label' => 'Operator bridge (sensitive)', 'sensitive' => true, 'tools' => $bridge],
+            ];
+        });
+
+        return $groups;
     }
 
     /** @return array<int, string> */
     public static function allToolNames(): array
     {
-        $names = [];
+        /** @var array<int, string> $toolNames */
+        $toolNames = self::memoized('all_tool_names', function (): array {
+            $names = [];
 
-        foreach (self::groups() as $group) {
-            foreach ($group['tools'] as $tool) {
-                $names[$tool['name']] = true;
+            foreach (self::groups() as $group) {
+                foreach ($group['tools'] as $tool) {
+                    $names[$tool['name']] = true;
+                }
             }
-        }
 
-        return array_keys($names);
+            return array_keys($names);
+        });
+
+        return $toolNames;
     }
 
     /** @return array<int, array<string, mixed>> */
     public static function dynamicCippReadTools(): array
     {
-        try {
-            return CippMcpTool::query()
-                ->active()
-                ->where('read_only', true)
-                ->where('sensitive', false)
-                ->orderBy('local_name')
-                ->get()
-                ->map(fn (CippMcpTool $tool): array => $tool->toolDefinition())
-                ->all();
-        } catch (\Throwable) {
-            return [];
-        }
+        /** @var array<int, array<string, mixed>> $tools */
+        $tools = self::memoized('dynamic_cipp_read_tools', function (): array {
+            try {
+                return CippMcpTool::query()
+                    ->active()
+                    ->where('read_only', true)
+                    ->where('sensitive', false)
+                    ->orderBy('local_name')
+                    ->get()
+                    ->map(fn (CippMcpTool $tool): array => $tool->toolDefinition())
+                    ->all();
+            } catch (\Throwable) {
+                return [];
+            }
+        });
+
+        return $tools;
     }
 
     /** @return array<int, array<string, mixed>> */
     public static function dynamicCippWriteTools(): array
     {
+        /** @var array<int, array<string, mixed>> $tools */
+        $tools = self::memoized('dynamic_cipp_write_tools', function (): array {
+            try {
+                return CippMcpTool::query()
+                    ->active()
+                    ->where(function ($query) {
+                        $query->where('read_only', false)
+                            ->orWhere('sensitive', true);
+                    })
+                    ->orderBy('local_name')
+                    ->get()
+                    ->map(fn (CippMcpTool $tool): array => $tool->toolDefinition())
+                    ->all();
+            } catch (\Throwable) {
+                return [];
+            }
+        });
+
+        return $tools;
+    }
+
+    /** @return array<int, string> */
+    public static function dynamicCippToolNames(): array
+    {
+        /** @var array<int, string> $toolNames */
+        $toolNames = self::memoized('dynamic_cipp_tool_names', function (): array {
+            $names = [];
+
+            foreach (array_merge(self::dynamicCippReadTools(), self::dynamicCippWriteTools()) as $tool) {
+                if (isset($tool['name']) && is_string($tool['name'])) {
+                    $names[$tool['name']] = true;
+                }
+            }
+
+            return array_keys($names);
+        });
+
+        return $toolNames;
+    }
+
+    public static function flushMemoized(): void
+    {
+        self::$memoized = [];
+        self::$memoizedRequestId = null;
+    }
+
+    private static function memoized(string $key, callable $resolver): mixed
+    {
+        self::resetMemoizationForRequest();
+
+        if (! array_key_exists($key, self::$memoized)) {
+            self::$memoized[$key] = $resolver();
+        }
+
+        return self::$memoized[$key];
+    }
+
+    private static function resetMemoizationForRequest(): void
+    {
+        $requestId = 0;
+
         try {
-            return CippMcpTool::query()
-                ->active()
-                ->where(function ($query) {
-                    $query->where('read_only', false)
-                        ->orWhere('sensitive', true);
-                })
-                ->orderBy('local_name')
-                ->get()
-                ->map(fn (CippMcpTool $tool): array => $tool->toolDefinition())
-                ->all();
+            if (app()->bound('request')) {
+                $request = app('request');
+                $requestId = is_object($request) ? spl_object_id($request) : 0;
+            }
         } catch (\Throwable) {
-            return [];
+            $requestId = 0;
+        }
+
+        if (self::$memoizedRequestId !== $requestId) {
+            self::$memoizedRequestId = $requestId;
+            self::$memoized = [];
         }
     }
 
