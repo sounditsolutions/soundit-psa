@@ -200,6 +200,32 @@ class McpTokensPageTest extends TestCase
         $this->assertTrue($token->fresh()->require_explicit_client_scope);
     }
 
+    public function test_long_directive_saves_and_round_trips_through_whoami(): void
+    {
+        $plain = McpConfig::rotateStaffToken(allowedTools: ['find_staff'], label: 'chet');
+        $token = McpToken::where('label', 'chet')->firstOrFail();
+        $directive = str_repeat('0123456789', 1500);
+
+        $this->actingAs($this->user)
+            ->patchJson(route('settings.mcp-tokens.directive', $token), ['directive' => $directive])
+            ->assertOk();
+
+        $this->assertSame($directive, $token->fresh()->directive);
+
+        $response = $this->withHeaders(['Authorization' => 'Bearer '.$plain])
+            ->postJson('/api/mcp/staff', [
+                'jsonrpc' => '2.0',
+                'id' => 1,
+                'method' => 'tools/call',
+                'params' => ['name' => 'whoami', 'arguments' => []],
+            ]);
+
+        $response->assertOk();
+        $payload = json_decode((string) $response->json('result.content.0.text'), true);
+
+        $this->assertSame($directive, $payload['directive']);
+    }
+
     public function test_detail_page_renders_integration_groups_directive_trust_and_audit(): void
     {
         McpConfig::rotateStaffToken(allowedTools: ['tactical_get_device'], label: 'chet');

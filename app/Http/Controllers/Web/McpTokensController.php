@@ -165,7 +165,7 @@ class McpTokensController extends Controller
     public function updateDirective(Request $request, McpToken $token)
     {
         $validated = $request->validate([
-            'directive' => ['nullable', 'string', 'max:5000'],
+            'directive' => ['nullable', 'string', 'max:20000'],
         ]);
 
         $directive = trim((string) ($validated['directive'] ?? ''));
