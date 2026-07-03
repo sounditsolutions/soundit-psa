@@ -2,8 +2,11 @@
 
 namespace App\Services\Cipp;
 
+use App\Enums\ToolingGapClassification;
+use App\Enums\ToolingGapSource;
 use App\Models\CippMcpTool;
 use App\Models\Client;
+use App\Models\ToolingGap;
 use App\Services\Chet\ChetDataSurfaceTextSanitizer;
 use App\Support\CippConfig;
 use Illuminate\Support\Facades\Log;
@@ -44,6 +47,19 @@ class CippMcpDynamicToolExecutor
         $tenantDomain = $client?->cipp_tenant_domain;
         if (! $tenantDomain) {
             return ['error' => 'Client has no CIPP tenant mapping'];
+        }
+
+        $graphAttempt = $this->genericGraphAttempt($tool, $input);
+        if ($graphAttempt !== null) {
+            $this->recordGenericGraphAttempt($tool, $input, $clientId, $graphAttempt);
+
+            if ($graphAttempt['invalid_requests'] || $graphAttempt['uninspectable_methods']) {
+                return ['error' => 'CIPP generic Graph passthrough read tools only permit inspectable GET request payloads.'];
+            }
+
+            if ($graphAttempt['non_get_methods'] !== []) {
+                return ['error' => 'CIPP generic Graph passthrough read tools only permit GET requests. Requested method(s): '.implode(', ', $graphAttempt['non_get_methods'])];
+            }
         }
 
         $unknownArguments = $this->unknownArguments($tool, $input);
@@ -240,6 +256,367 @@ class CippMcpDynamicToolExecutor
         }
 
         return preg_match('/id|display|name|mail|upn|type|status|state|date|time|count|sku|enabled/i', $key) === 1;
+    }
+
+    /**
+     * @return array{
+     *     invalid_requests: bool,
+     *     uninspectable_methods: bool,
+     *     non_get_methods: array<int, string>,
+     *     methods: array<int, string>,
+     *     request_endpoints: array<int, string>,
+     *     request_count: int
+     * }|null
+     */
+    private function genericGraphAttempt(CippMcpTool $tool, array $input): ?array
+    {
+        if (! $this->isGenericGraphTool($tool)) {
+            return null;
+        }
+
+        $methodInspection = $this->methodValues($input);
+        $methods = $methodInspection['methods'];
+        $uninspectableMethods = $methodInspection['uninspectable'];
+        $requestEndpoints = [];
+        $requestCount = 0;
+        $invalidRequests = false;
+
+        if ($this->isGraphBulkTool($tool) && array_key_exists('requests', $input)) {
+            $decoded = $this->decodeBulkRequests($input['requests']);
+            if ($decoded === null) {
+                $invalidRequests = true;
+            } else {
+                $requestCount = count($decoded);
+                foreach ($decoded as $request) {
+                    $requestMethodInspection = $this->methodValues($request);
+                    $methods = array_merge($methods, $requestMethodInspection['methods']);
+                    $uninspectableMethods = $uninspectableMethods || $requestMethodInspection['uninspectable'];
+                    $endpoint = $this->firstTelemetryValue($request, ['url', 'URL', 'endpoint', 'Endpoint', 'uri', 'URI', 'resource', 'Resource']);
+                    if ($endpoint !== null) {
+                        $requestEndpoints[] = $endpoint;
+                    }
+                }
+            }
+        }
+
+        $methods = array_values(array_unique(array_filter(array_map(
+            fn (string $method): string => mb_strtoupper(trim($method)),
+            $methods,
+        ), fn (string $method): bool => $method !== '')));
+
+        $nonGetMethods = array_values(array_filter($methods, fn (string $method): bool => $method !== 'GET'));
+
+        return [
+            'invalid_requests' => $invalidRequests,
+            'uninspectable_methods' => $uninspectableMethods,
+            'non_get_methods' => $nonGetMethods,
+            'methods' => $methods,
+            'request_endpoints' => array_values(array_unique($requestEndpoints)),
+            'request_count' => $requestCount,
+        ];
+    }
+
+    private function isGenericGraphTool(CippMcpTool $tool): bool
+    {
+        $local = mb_strtolower($tool->local_name);
+        $upstream = mb_strtolower($tool->upstream_name);
+
+        return in_array($upstream, ['listgraphrequest', 'listgraphbulkrequest'], true)
+            || in_array($local, ['cipp_list_graph_request', 'cipp_list_graph_bulk_request', 'cipp_graph_bulk'], true);
+    }
+
+    private function isGraphBulkTool(CippMcpTool $tool): bool
+    {
+        $local = mb_strtolower($tool->local_name);
+        $upstream = mb_strtolower($tool->upstream_name);
+
+        return $upstream === 'listgraphbulkrequest'
+            || in_array($local, ['cipp_list_graph_bulk_request', 'cipp_graph_bulk'], true);
+    }
+
+    /** @return array{methods: array<int, string>, uninspectable: bool} */
+    private function methodValues(array $input): array
+    {
+        $methods = [];
+        $uninspectable = false;
+
+        foreach (['method', 'Method', 'type', 'Type'] as $key) {
+            if (! array_key_exists($key, $input)) {
+                continue;
+            }
+
+            $value = $this->scalarOrLabelValue($input[$key]);
+            if ($value !== null && trim($value) !== '') {
+                $methods[] = $value;
+
+                continue;
+            }
+
+            $uninspectable = true;
+        }
+
+        return [
+            'methods' => $methods,
+            'uninspectable' => $uninspectable,
+        ];
+    }
+
+    /** @return array<int, array<string, mixed>>|null */
+    private function decodeBulkRequests(mixed $value): ?array
+    {
+        if (is_string($value)) {
+            $value = trim($value);
+            if ($value === '') {
+                return [];
+            }
+
+            $decoded = json_decode($value, true);
+            if (! is_array($decoded)) {
+                return null;
+            }
+
+            $value = $decoded;
+        }
+
+        if (! is_array($value)) {
+            return null;
+        }
+
+        if (isset($value['requests']) && is_array($value['requests'])) {
+            $value = $value['requests'];
+        }
+
+        if (! array_is_list($value)) {
+            return $this->arrayHasStringKeys($value) ? [$value] : [];
+        }
+
+        $requests = [];
+        foreach ($value as $request) {
+            if (! is_array($request)) {
+                return null;
+            }
+
+            $requests[] = $request;
+        }
+
+        return $requests;
+    }
+
+    private function arrayHasStringKeys(array $value): bool
+    {
+        foreach (array_keys($value) as $key) {
+            if (is_string($key)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function recordGenericGraphAttempt(CippMcpTool $tool, array $input, ?int $clientId, array $attempt): void
+    {
+        try {
+            ToolingGap::record(
+                ticketId: null,
+                clientId: $clientId,
+                capabilityGap: 'Build typed CIPP Graph MCP tools for common generic passthrough requests.',
+                evidence: json_encode($this->genericGraphEvidence($tool, $input, $attempt), JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+                classification: ToolingGapClassification::ToolMissing,
+                source: ToolingGapSource::Agent,
+                agentNote: 'Captured generic CIPP Graph passthrough attempt for typed-tool planning.',
+            );
+        } catch (\Throwable $e) {
+            Log::warning('[CippMcpDynamicToolExecutor] Failed to record generic Graph passthrough telemetry', [
+                'tool' => $tool->local_name,
+                'upstream_tool' => $tool->upstream_name,
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /** @return array<string, mixed> */
+    private function genericGraphEvidence(CippMcpTool $tool, array $input, array $attempt): array
+    {
+        return array_filter([
+            'tool' => $tool->local_name,
+            'upstream_tool' => $tool->upstream_name,
+            'outcome' => $this->genericGraphOutcome($attempt),
+            'methods' => $attempt['methods'],
+            'endpoint' => $this->telemetryString('CIPP Graph endpoint', $this->firstTelemetryValue($input, ['Endpoint', 'endpoint', 'url', 'URL', 'uri', 'URI', 'resource', 'Resource'])),
+            'request_endpoints' => $this->telemetryStringList('CIPP Graph request endpoint', $attempt['request_endpoints']),
+            'params' => $this->telemetryParams($input, $attempt),
+        ], fn (mixed $value): bool => $value !== null && $value !== []);
+    }
+
+    private function genericGraphOutcome(array $attempt): string
+    {
+        if ($attempt['invalid_requests'] || $attempt['uninspectable_methods']) {
+            return 'blocked_uninspectable';
+        }
+
+        return $attempt['non_get_methods'] !== [] ? 'blocked_non_get' : 'allowed';
+    }
+
+    /** @return array<string, mixed> */
+    private function telemetryParams(array $input, array $attempt): array
+    {
+        $params = [];
+
+        foreach ($input as $key => $value) {
+            $stringKey = is_string($key) ? $key : (string) $key;
+            if (in_array($stringKey, ['client_id', 'tenantFilter', 'TenantFilter', 'tenant', 'Tenant'], true)
+                || $this->deniedTelemetryKey($stringKey)) {
+                continue;
+            }
+
+            if ($stringKey === 'requests') {
+                $params[$stringKey] = [
+                    'count' => $attempt['request_count'],
+                    'methods' => $attempt['methods'],
+                    'endpoints' => $this->telemetryStringList('CIPP Graph request endpoint', $attempt['request_endpoints']),
+                ];
+
+                continue;
+            }
+
+            $safeValue = $this->telemetryValue($value);
+            if ($safeValue !== null) {
+                $params[$stringKey] = $safeValue;
+            }
+        }
+
+        return $params;
+    }
+
+    private function telemetryValue(mixed $value, int $depth = 0): mixed
+    {
+        if (is_string($value) || is_numeric($value)) {
+            return $this->telemetryString('CIPP Graph parameter', $value);
+        }
+
+        if (is_bool($value) || $value === null) {
+            return $value;
+        }
+
+        if (! is_array($value) || $depth >= 3) {
+            return null;
+        }
+
+        $safe = [];
+        foreach (array_slice($value, 0, 10, preserve_keys: true) as $key => $item) {
+            $stringKey = is_string($key) ? $key : (string) $key;
+            if ($this->deniedTelemetryKey($stringKey)) {
+                continue;
+            }
+
+            $safeValue = $this->telemetryValue($item, $depth + 1);
+            if ($safeValue !== null) {
+                $safe[$key] = $safeValue;
+            }
+        }
+
+        return $safe;
+    }
+
+    /** @param  array<int, string>  $values */
+    private function telemetryStringList(string $label, array $values): array
+    {
+        return array_values(array_filter(array_map(
+            fn (string $value): ?string => $this->telemetryString($label, $value),
+            $values,
+        ), fn (?string $value): bool => $value !== null));
+    }
+
+    private function telemetryString(string $label, mixed $value): ?string
+    {
+        if (! is_scalar($value)) {
+            return null;
+        }
+
+        $text = trim((string) $value);
+        if ($text === '') {
+            return null;
+        }
+
+        $text = $this->redactTelemetryCredentials($text);
+        $sanitized = $this->textSanitizer->sanitize($label, $text, 500);
+
+        return $this->unwrapSanitizedText($sanitized);
+    }
+
+    private function redactTelemetryCredentials(string $text): string
+    {
+        $text = preg_replace(
+            '/\b(Bearer|Basic)\s+[A-Za-z0-9._~+\/=-]+/i',
+            '$1 [REDACTED:credential]',
+            $text,
+        ) ?? $text;
+
+        $text = preg_replace(
+            '/([?&;]\s*(?:access[_-]?token|auth[_-]?token|refresh[_-]?token|id[_-]?token|api[_-]?key|client[_-]?secret|secret|password|passwd|pwd|token|key)=)[^&;\s]+/i',
+            '$1[REDACTED:credential]',
+            $text,
+        ) ?? $text;
+
+        return preg_replace(
+            '/\b(authorization|cookie|set-cookie)\s*[:=]\s*[^\s;&]+/i',
+            '$1=[REDACTED:credential]',
+            $text,
+        ) ?? $text;
+    }
+
+    private function unwrapSanitizedText(string $sanitized): string
+    {
+        $lines = explode("\n", $sanitized);
+        if (count($lines) >= 3
+            && str_starts_with($lines[0], '=== UNTRUSTED ')
+            && str_starts_with($lines[count($lines) - 1], '=== END UNTRUSTED ')) {
+            array_shift($lines);
+            array_pop($lines);
+
+            return implode("\n", $lines);
+        }
+
+        return $sanitized;
+    }
+
+    private function deniedTelemetryKey(string $key): bool
+    {
+        return $this->deniedValueKey($key)
+            || preg_match('/authorization|cookie|session|api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|id[_-]?token|client[_-]?secret/i', $key) === 1;
+    }
+
+    private function firstTelemetryValue(array $input, array $keys): ?string
+    {
+        foreach ($keys as $key) {
+            if (! array_key_exists($key, $input)) {
+                continue;
+            }
+
+            $value = $this->scalarOrLabelValue($input[$key]);
+            if ($value !== null && trim($value) !== '') {
+                return mb_substr(trim($value), 0, 500);
+            }
+        }
+
+        return null;
+    }
+
+    private function scalarOrLabelValue(mixed $value): ?string
+    {
+        if (is_scalar($value)) {
+            return trim((string) $value);
+        }
+
+        if (is_array($value)) {
+            foreach (['value', 'Value', 'label', 'Label'] as $key) {
+                if (array_key_exists($key, $value) && is_scalar($value[$key])) {
+                    return trim((string) $value[$key]);
+                }
+            }
+        }
+
+        return null;
     }
 
     /** @return array<int, string>|null */
