@@ -442,7 +442,7 @@
         </template>
     </div>
 
-    <div class="modal fade show d-block" tabindex="-1" x-cloak x-show="showHelp" @click.self="showHelp = false">
+    <div class="modal fade" tabindex="-1" x-cloak :class="{ 'show d-block': showHelp }" @click.self="showHelp = false">
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content">
                 <div class="modal-header">
