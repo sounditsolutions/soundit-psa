@@ -165,6 +165,13 @@ Schedule::command('cipp:sync-devices')
     ->when(fn () => \App\Support\CippConfig::isDeviceSyncEnabled()
         && \App\Models\Client::whereNotNull('cipp_tenant_domain')->exists());
 
+// CIPP MCP tool catalog — optional weekly refresh of upstream tool metadata
+Schedule::command('cipp:sync-mcp-catalog')
+    ->weeklyOn(0, '06:05')
+    ->withoutOverlapping()
+    ->runInBackground()
+    ->when(fn () => \App\Support\CippConfig::isMcpCatalogSyncEnabled());
+
 // CIPP tenant mail security posture — daily snapshot (transport, Safe Links, Safe Attachments)
 Schedule::command('cipp:sync-tenant-security')
     ->dailyAt('06:01')

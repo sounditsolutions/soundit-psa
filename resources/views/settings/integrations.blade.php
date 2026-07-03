@@ -1388,6 +1388,12 @@
                                 onclick="previewCippSync('devices')">
                             <i class="bi bi-laptop me-1"></i>Sync Devices...
                         </button>
+                        <form method="POST" action="{{ route('settings.integrations.cipp.sync-mcp-catalog') }}" class="d-inline">
+                            @csrf
+                            <button type="submit" class="btn btn-outline-secondary btn-sm">
+                                <i class="bi bi-tools me-1"></i>Sync MCP Catalog
+                            </button>
+                        </form>
                     </div>
 
                     <div class="d-flex flex-column gap-2 mb-2">
@@ -1464,6 +1470,20 @@
                                    id="cipp_mcp_enabled" {{ ($cippMcpEnabled ?? false) ? 'checked' : '' }} onchange="this.form.submit()">
                             <label class="form-check-label" for="cipp_mcp_enabled">
                                 MCP relay enabled
+                                @unless($cippMcpConfigured ?? false)
+                                    <small class="text-muted d-block">Requires MCP Client ID and secret.</small>
+                                @endunless
+                            </label>
+                        </div>
+                    </form>
+                    <form method="POST" action="{{ route('settings.integrations.toggle') }}">
+                        @csrf
+                        <input type="hidden" name="integration" value="cipp_mcp_catalog_sync">
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" name="enabled" value="1"
+                                   id="cipp_mcp_catalog_sync_enabled" {{ ($cippMcpCatalogSyncEnabled ?? false) ? 'checked' : '' }} onchange="this.form.submit()">
+                            <label class="form-check-label" for="cipp_mcp_catalog_sync_enabled">
+                                Auto-sync MCP catalog weekly
                                 @unless($cippMcpConfigured ?? false)
                                     <small class="text-muted d-block">Requires MCP Client ID and secret.</small>
                                 @endunless

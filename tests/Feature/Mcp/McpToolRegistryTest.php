@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Mcp;
 
+use App\Models\CippMcpTool;
 use App\Support\McpToolRegistry;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
@@ -14,7 +15,7 @@ class McpToolRegistryTest extends TestCase
     {
         $groups = McpToolRegistry::groups();
 
-        $this->assertSame(['general', 'client', 'integration', 'wiki_write', 'psa_action', 'bridge'], array_keys($groups));
+        $this->assertSame(['general', 'client', 'integration', 'cipp_write', 'wiki_write', 'psa_action', 'bridge'], array_keys($groups));
 
         $names = fn (string $group): array => array_column($groups[$group]['tools'], 'name');
 
@@ -37,7 +38,43 @@ class McpToolRegistryTest extends TestCase
         $this->assertTrue($groups['wiki_write']['sensitive']);
         $this->assertTrue($groups['psa_action']['sensitive']);
         $this->assertTrue($groups['bridge']['sensitive']);
+        $this->assertTrue($groups['cipp_write']['sensitive']);
         $this->assertFalse($groups['general']['sensitive']);
+    }
+
+    public function test_dynamic_cipp_catalog_tools_are_registry_backed_and_grouped_by_sensitivity(): void
+    {
+        CippMcpTool::create([
+            'local_name' => 'cipp_list_db_cache',
+            'upstream_name' => 'ListDBCache',
+            'category' => 'CIPP',
+            'description' => 'List CIPP cache.',
+            'input_schema' => ['type' => 'object', 'properties' => []],
+            'annotations' => ['readOnlyHint' => true],
+            'read_only' => true,
+            'sensitive' => false,
+            'active' => true,
+            'last_seen_at' => now(),
+        ]);
+        CippMcpTool::create([
+            'local_name' => 'cipp_set_user_license',
+            'upstream_name' => 'SetUserLicense',
+            'category' => 'Identity',
+            'description' => 'Set license.',
+            'input_schema' => ['type' => 'object', 'properties' => []],
+            'annotations' => ['readOnlyHint' => false],
+            'read_only' => false,
+            'sensitive' => true,
+            'active' => true,
+            'last_seen_at' => now(),
+        ]);
+
+        $groups = McpToolRegistry::groups();
+
+        $this->assertContains('cipp_list_db_cache', array_column($groups['integration']['tools'], 'name'));
+        $this->assertContains('cipp_set_user_license', array_column($groups['cipp_write']['tools'], 'name'));
+        $this->assertContains('cipp_list_db_cache', McpToolRegistry::allToolNames());
+        $this->assertContains('cipp_set_user_license', McpToolRegistry::allToolNames());
     }
 
     public function test_tools_carry_descriptions_and_no_group_overlap(): void

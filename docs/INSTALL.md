@@ -346,6 +346,7 @@ These commands execute automatically based on their schedule:
 | `appriver:sync-licenses` | Daily at 05:50 | Sync M365 subscription seat counts from AppRiver (only if configured + clients mapped) |
 | `cipp:sync-contacts` | Daily at 05:55 | Sync M365 users as contacts + mailbox/MFA enrichment from CIPP (only if contact sync enabled + tenants mapped) |
 | `cipp:sync-devices` | Daily at 05:59 | Sync Intune devices + Defender state to assets from CIPP (only if device sync enabled + tenants mapped) |
+| `cipp:sync-mcp-catalog` | Weekly Sunday at 06:05 | Sync the dynamic CIPP MCP tool catalog for staff MCP token grants (default off; only runs when CIPP MCP catalog auto-sync is enabled) |
 | `billing:generate` | Daily at 06:00 | Generate recurring invoices |
 | `tickets:close-resolved` | Daily at 06:00 | Auto-close resolved tickets after configured number of days |
 | `qbo:sync-invoices --pull-status` | Every 4 hours | Pull payment status from QuickBooks |
@@ -856,6 +857,7 @@ Syncs M365 license counts from CIPP (CyberDrain Improved Partner Portal) for aut
 6. Go to Settings > CIPP Tenant Mapping to map CIPP tenants to PSA clients (uses `defaultDomainName` as the tenant filter)
 7. Licenses sync daily at 04:45, or run `php artisan cipp:sync-licenses` manually
 8. **Contact sync** (optional): Enable "Sync M365 users to contacts" toggle in the CIPP card on the Integrations page. This syncs M365 users as client contacts (daily at 05:55). On the Tenant Mapping page, optionally select a security group per tenant to filter which users sync — if no group is selected, all tenant users are synced. Synced contacts are created with portal access disabled. Run `php artisan cipp:sync-contacts` manually, or use `--dry-run` to preview changes before writing. Use `--client=X` to sync a single client.
+9. **MCP catalog sync** (optional): Click **Sync MCP Catalog** to import CIPP's currently-advertised MCP tool list for staff MCP token grants. Dynamic read-only tools require explicit per-token grants; CIPP write-class tools are grouped as sensitive and fail closed at execution time. Enable **Auto-sync MCP catalog weekly** only after MCP credentials are saved, or run `php artisan cipp:sync-mcp-catalog` manually.
 
 ### Stripe (Invoicing)
 
@@ -1039,6 +1041,8 @@ Held actions such as `propose_close`, `send_reply`, `stage_email`, `stage_public
 PSA action tools are sensitive and must be explicitly granted per token. `send_email` sends a ticket email immediately, and `write_public_note` publishes a client-visible ticket note immediately; both derive recipient/visibility server-side, require a `reason`, append the configured AI disclosure, honor the Technician kill-switch, write `TechnicianActionLog` executed rows, dedupe identical ticket/body content, and rate-limit per ticket. The cooldown settings are `mcp_direct_send_email_cooldown_seconds` (default 300) and `mcp_direct_write_public_note_cooldown_seconds` (default 60). Prefer the staged variants for cockpit-reviewed client-facing output.
 
 The `request_tool` grant lets a staff MCP client record an internal tooling gap against a ticket. It only writes a `ToolingGap` row for later operator triage; it does not mutate the ticket, create a Technician run, send email, or trigger follow-up work directly.
+
+CIPP's dynamic MCP catalog can be imported from Settings > Integrations > CIPP with **Sync MCP Catalog** or via `php artisan cipp:sync-mcp-catalog`. Imported read-only tools appear in the Integration group and still require explicit scoped-token grants. CIPP write-class catalog entries appear under the sensitive CIPP write group but are not executable from staff MCP in this release.
 
 Per-tool MSP custom instructions are configured on the Settings -> MCP Tokens page. These instructions are appended to the matching tool description only in `tools/list`; the base tool descriptions remain platform defaults. Token directives remain per-token and are returned by `whoami`.
 
