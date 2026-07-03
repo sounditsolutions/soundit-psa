@@ -3,29 +3,21 @@
 @section('title', 'MCP Tokens')
 
 @section('content')
-<div class="row mb-3">
-    <div class="col">
+<div class="d-flex justify-content-between align-items-start mb-4 flex-wrap gap-3">
+    <div>
         <h4 class="section-title mb-1">MCP Tokens</h4>
         <div class="text-muted small">
-            <code>{{ url('/api/mcp/staff') }}</code>
+            Bearer tokens for the staff MCP server. Each token grants a curated subset of tools.
+            <code class="ms-1">{{ url('/api/mcp/staff') }}</code>
         </div>
     </div>
+    <form method="POST" action="{{ route('settings.mcp-tokens.store') }}" class="flex-shrink-0">
+        @csrf
+        <button type="submit" class="btn btn-primary">
+            <i class="bi bi-plus-lg me-1"></i>Create token
+        </button>
+    </form>
 </div>
-
-@if($newToken)
-    <div class="alert alert-success shadow-sm" role="alert">
-        <div class="fw-semibold mb-2">
-            <i class="bi bi-check-circle me-1"></i>Token "{{ $newTokenLabel }}" created
-        </div>
-        <div class="small text-danger fw-semibold mb-2">Copy this now - it will not be shown again.</div>
-        <div class="input-group">
-            <input type="text" class="form-control font-monospace" id="mcp_new_token" value="{{ $newToken }}" readonly>
-            <button type="button" class="btn btn-outline-secondary" onclick="copyMcpToken()">
-                <i class="bi bi-clipboard me-1"></i>Copy
-            </button>
-        </div>
-    </div>
-@endif
 
 @if(session('success'))
     <div class="alert alert-success alert-dismissible fade show">
@@ -34,284 +26,88 @@
     </div>
 @endif
 
-<div class="row g-4">
-    <div class="col-xl-5">
-        <div class="card card-static shadow-sm">
-            <div class="card-header">
-                <i class="bi bi-plus-circle me-2"></i>Create Token
-            </div>
-            <div class="card-body">
-                <form method="POST" action="{{ route('settings.mcp-tokens.store') }}">
-                    @csrf
-
-                    <div class="mb-3">
-                        <label for="label" class="form-label">Label</label>
-                        <input type="text"
-                               class="form-control @error('label') is-invalid @enderror"
-                               id="label"
-                               name="label"
-                               value="{{ old('label') }}"
-                               maxlength="100"
-                               placeholder="chet"
-                               required>
-                        <div class="form-text">Letters, numbers, underscore, dot, colon, and dash.</div>
-                        @error('label')
-                            <div class="invalid-feedback">{{ $message }}</div>
-                        @enderror
-                    </div>
-
-                    <div class="border rounded p-3 mb-3">
-                        <div class="fw-semibold small mb-2">Trust Controls</div>
-                        <input type="hidden" name="ai_actor" value="0">
-                        <div class="form-check form-switch mb-2">
-                            <input class="form-check-input"
-                                   type="checkbox"
-                                   role="switch"
-                                   name="ai_actor"
-                                   value="1"
-                                   id="ai_actor"
-                                   @checked(old('ai_actor'))>
-                            <label class="form-check-label" for="ai_actor">AI actor attribution</label>
-                        </div>
-                        <input type="hidden" name="require_explicit_client_scope" value="0">
-                        <div class="form-check form-switch">
-                            <input class="form-check-input"
-                                   type="checkbox"
-                                   role="switch"
-                                   name="require_explicit_client_scope"
-                                   value="1"
-                                   id="require_explicit_client_scope"
-                                   @checked(old('require_explicit_client_scope', '1'))>
-                            <label class="form-check-label" for="require_explicit_client_scope">Require explicit client scope</label>
-                        </div>
-                    </div>
-
-                    <div class="mb-2">
-                        <label class="form-label">Allowed Tools</label>
-                        @error('tools')
-                            <div class="text-danger small mb-2">{{ $message }}</div>
-                        @enderror
-                        @error('tools.0')
-                            <div class="text-danger small mb-2">{{ $message }}</div>
-                        @enderror
-                    </div>
-
-                    <div class="d-flex flex-column gap-3">
-                        @foreach($groups as $key => $group)
-                            <fieldset class="border rounded p-3 {{ $group['sensitive'] ? 'border-warning' : 'border-light-subtle' }}">
-                                <legend class="float-none w-auto px-1 mb-2 fs-6">
-                                    {{ $group['label'] }}
-                                    @if($group['sensitive'])
-                                        <span class="badge bg-warning text-dark ms-1">sensitive</span>
+<div class="card card-static shadow-sm">
+    @if($tokens->isEmpty())
+        <div class="card-body text-center py-5">
+            <div class="mb-3"><i class="bi bi-key fs-1 text-muted"></i></div>
+            <h5 class="mb-2">No tokens yet</h5>
+            <p class="text-muted mb-3 mx-auto" style="max-width: 42ch;">
+                Create a token to give an agent a scoped set of tools. It starts inactive so you can configure it safely before it goes live.
+            </p>
+            <form method="POST" action="{{ route('settings.mcp-tokens.store') }}" class="d-inline">
+                @csrf
+                <button type="submit" class="btn btn-primary"><i class="bi bi-plus-lg me-1"></i>Create token</button>
+            </form>
+        </div>
+    @else
+        <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0">
+                <thead class="thead-brand">
+                    <tr>
+                        <th>Token</th>
+                        <th>Status</th>
+                        <th>Tools granted</th>
+                        <th>Trust</th>
+                        <th>Created</th>
+                        <th>Last used</th>
+                        <th class="text-end">Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach($tokens as $token)
+                        <tr class="{{ $token->isRevoked() ? 'opacity-50' : '' }}">
+                            <td>
+                                <a href="{{ route('settings.mcp-tokens.show', $token) }}" class="text-decoration-none fw-semibold">
+                                    {{ $token->label }}
+                                </a>
+                                <div class="font-monospace text-muted small">{{ $token->token_prefix ?? '—' }}</div>
+                            </td>
+                            <td>@include('settings.mcp-tokens._state_badge', ['state' => $token->state()])</td>
+                            <td class="small">
+                                @if($token->tools === null)
+                                    <span class="badge rounded-pill bg-danger-subtle text-danger-emphasis border border-danger-subtle">
+                                        <i class="bi bi-exclamation-triangle me-1"></i>Full surface · legacy
+                                    </span>
+                                @elseif(count($token->tools) === 0)
+                                    <span class="text-muted">No tools granted</span>
+                                @else
+                                    <span class="badge rounded-pill bg-secondary-subtle text-secondary-emphasis border me-1">{{ count($token->tools) }}</span>
+                                    @foreach(array_slice($token->tools, 0, 3) as $tool)
+                                        <code class="small me-1">{{ $tool }}</code>
+                                    @endforeach
+                                    @if(count($token->tools) > 3)
+                                        <span class="text-muted">+{{ count($token->tools) - 3 }}</span>
                                     @endif
-                                </legend>
-
-                                @forelse($group['tools'] as $tool)
-                                    @php $id = 'tool_'.$key.'_'.$loop->index; @endphp
-                                    <div class="form-check mb-2">
-                                        <input class="form-check-input"
-                                               type="checkbox"
-                                               name="tools[]"
-                                               value="{{ $tool['name'] }}"
-                                               id="{{ $id }}"
-                                               {{ in_array($tool['name'], old('tools', []), true) ? 'checked' : '' }}>
-                                        <label class="form-check-label w-100" for="{{ $id }}">
-                                            <code>{{ $tool['name'] }}</code>
-                                            @if($tool['description'] !== '')
-                                                <span class="text-muted small d-block">{{ $tool['description'] }}</span>
-                                            @endif
-                                        </label>
-                                    </div>
-                                @empty
-                                    <div class="text-muted small">No tools in this group.</div>
-                                @endforelse
-                            </fieldset>
-                        @endforeach
-                    </div>
-
-                    <button type="submit" class="btn btn-primary mt-3">
-                        <i class="bi bi-key me-1"></i>Create Token
-                    </button>
-                </form>
-            </div>
+                                @endif
+                            </td>
+                            <td class="small">
+                                @if($token->ai_actor)
+                                    <span class="badge rounded-pill bg-info-subtle text-info-emphasis border">AI actor</span>
+                                @endif
+                                @if($token->require_explicit_client_scope)
+                                    <span class="badge rounded-pill bg-light text-dark border">Client-scoped</span>
+                                @endif
+                                @unless($token->ai_actor || $token->require_explicit_client_scope)
+                                    <span class="text-muted">Standard</span>
+                                @endunless
+                            </td>
+                            <td class="small text-muted">{{ $token->created_at?->toAppTz()->format('Y-m-d H:i') }}</td>
+                            <td class="small text-muted">{{ $token->last_used_at ? $token->last_used_at->diffForHumans() : 'never' }}</td>
+                            <td class="text-end">
+                                <a href="{{ route('settings.mcp-tokens.show', $token) }}" class="btn btn-sm btn-outline-secondary">
+                                    <i class="bi bi-gear me-1"></i>Open
+                                </a>
+                            </td>
+                        </tr>
+                    @endforeach
+                </tbody>
+            </table>
         </div>
-    </div>
-
-    <div class="col-xl-7">
-        <div class="card card-static shadow-sm">
-            <div class="card-header">
-                <i class="bi bi-list-ul me-2"></i>Existing Tokens
-            </div>
-
-            @if($tokens->isEmpty())
-                <div class="card-body">
-                    <div class="text-muted">No tokens yet.</div>
-                </div>
-            @else
-                <div class="table-responsive">
-                    <table class="table table-hover mb-0 align-middle">
-                        <thead class="thead-brand">
-                            <tr>
-                                <th>Label</th>
-                                <th>Prefix</th>
-                                <th>Tools</th>
-                                <th>Trust</th>
-                                <th>Created</th>
-                                <th>Last Used</th>
-                                <th class="text-center">Status</th>
-                                <th class="text-end">Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            @foreach($tokens as $token)
-                                <tr class="{{ $token->isRevoked() ? 'text-muted' : '' }}">
-                                    <td class="fw-semibold">
-                                        <a href="{{ route('settings.mcp-tokens.show', $token) }}" class="text-decoration-none">
-                                            {{ $token->label }}
-                                        </a>
-                                    </td>
-                                    <td class="font-monospace small">{{ $token->token_prefix ?? '-' }}</td>
-                                    <td class="small">
-                                        @if($token->tools === null)
-                                            <span class="badge bg-danger">full surface</span>
-                                        @else
-                                            <span class="text-muted">{{ count($token->tools) }}</span>
-                                            @foreach(array_slice($token->tools, 0, 5) as $tool)
-                                                <span class="badge bg-light text-dark border">{{ $tool }}</span>
-                                            @endforeach
-                                            @if(count($token->tools) > 5)
-                                                <span class="text-muted">+{{ count($token->tools) - 5 }}</span>
-                                            @endif
-                                        @endif
-                                    </td>
-                                    <td class="small">
-                                        @if($token->ai_actor)
-                                            <span class="badge bg-info text-dark">AI actor</span>
-                                        @endif
-                                        @if($token->require_explicit_client_scope)
-                                            <span class="badge bg-primary">explicit client scope</span>
-                                        @endif
-                                        @unless($token->ai_actor || $token->require_explicit_client_scope)
-                                            <span class="text-muted">standard</span>
-                                        @endunless
-                                    </td>
-                                    <td class="small">{{ $token->created_at?->toAppTz()->format('Y-m-d H:i') }}</td>
-                                    <td class="small">{{ $token->last_used_at ? $token->last_used_at->diffForHumans() : 'never' }}</td>
-                                    <td class="text-center">
-                                        @if($token->isRevoked())
-                                            <span class="badge bg-secondary">Revoked</span>
-                                        @else
-                                            <span class="badge bg-success">Active</span>
-                                        @endif
-                                    </td>
-                                    <td class="text-end">
-                                        @unless($token->isRevoked())
-                                            <form method="POST"
-                                                  action="{{ route('settings.mcp-tokens.revoke', $token) }}"
-                                                  class="d-inline"
-                                                  onsubmit="return confirm(@js('Revoke token "'.$token->label.'"? It will stop authenticating immediately.'))">
-                                                @csrf
-                                                @method('DELETE')
-                                                <button type="submit" class="btn btn-outline-danger btn-sm">
-                                                    <i class="bi bi-x-circle me-1"></i>Revoke
-                                                </button>
-                                            </form>
-                                        @endunless
-                                    </td>
-                                </tr>
-                            @endforeach
-                        </tbody>
-                    </table>
-                </div>
-            @endif
-        </div>
-    </div>
+    @endif
 </div>
 
-<div class="row g-4 mt-1">
-    <div class="col-12">
-        <div class="card card-static shadow-sm">
-            <div class="card-header">
-                <i class="bi bi-sliders me-2"></i>MSP Tool Instructions
-            </div>
-            <div class="card-body">
-                <form method="POST" action="{{ route('settings.mcp-tokens.tool-instructions') }}">
-                    @csrf
-                    @method('PATCH')
-
-                    @error('tool_instructions')
-                        <div class="text-danger small mb-2">{{ $message }}</div>
-                    @enderror
-
-                    <div class="row g-3">
-                        @foreach($groups as $key => $group)
-                            <div class="col-xl-6">
-                                <fieldset class="border rounded p-3 h-100 {{ $group['sensitive'] ? 'border-warning' : 'border-light-subtle' }}">
-                                    <legend class="float-none w-auto px-1 mb-2 fs-6">
-                                        {{ $group['label'] }}
-                                        @if($group['sensitive'])
-                                            <span class="badge bg-warning text-dark ms-1">sensitive</span>
-                                        @endif
-                                    </legend>
-
-                                    @foreach($group['tools'] as $tool)
-                                        @php
-                                            $instructionId = 'tool_instruction_'.$key.'_'.$loop->index;
-                                            $instructionErrorKey = 'tool_instructions.'.$tool['name'];
-                                            $instructionValue = old('tool_instructions.'.$tool['name'], $toolInstructions[$tool['name']] ?? '');
-                                        @endphp
-                                        <div class="mb-3">
-                                            <label for="{{ $instructionId }}" class="form-label mb-1">
-                                                <code>{{ $tool['name'] }}</code>
-                                            </label>
-                                            @if($tool['description'] !== '')
-                                                <div class="text-muted small mb-1">{{ $tool['description'] }}</div>
-                                            @endif
-                                            <textarea id="{{ $instructionId }}"
-                                                      name="tool_instructions[{{ $tool['name'] }}]"
-                                                      class="form-control @error($instructionErrorKey) is-invalid @enderror"
-                                                      rows="3"
-                                                      maxlength="5000">{{ $instructionValue }}</textarea>
-                                            @error($instructionErrorKey)
-                                                <div class="invalid-feedback">{{ $message }}</div>
-                                            @enderror
-                                        </div>
-                                    @endforeach
-                                </fieldset>
-                            </div>
-                        @endforeach
-                    </div>
-
-                    <button type="submit" class="btn btn-primary mt-3">
-                        <i class="bi bi-check-lg me-1"></i>Save Instructions
-                    </button>
-                </form>
-            </div>
-        </div>
-    </div>
+<div class="text-muted small mt-3">
+    <i class="bi bi-info-circle me-1"></i>
+    Creating a token opens its configuration page. New tokens start inactive with no tools granted, so a token is never briefly live with the wrong permissions while you set it up.
 </div>
 @endsection
-
-@push('scripts')
-<script>
-function copyMcpToken() {
-    const input = document.getElementById('mcp_new_token');
-    if (!input || !navigator.clipboard) {
-        return;
-    }
-
-    navigator.clipboard.writeText(input.value).then(() => {
-        const button = input.nextElementSibling;
-        if (!button) {
-            return;
-        }
-
-        const original = button.innerHTML;
-        button.innerHTML = '<i class="bi bi-check me-1"></i>Copied';
-        window.setTimeout(() => {
-            button.innerHTML = original;
-        }, 2000);
-    });
-}
-</script>
-@endpush
