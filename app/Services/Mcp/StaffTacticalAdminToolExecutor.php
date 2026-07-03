@@ -2,11 +2,14 @@
 
 namespace App\Services\Mcp;
 
+use App\Enums\TechnicianRunState;
 use App\Enums\TechnicianTier;
 use App\Models\Asset;
 use App\Models\Client;
 use App\Models\Setting;
 use App\Models\TechnicianActionLog;
+use App\Models\TechnicianRun;
+use App\Models\Ticket;
 use App\Rules\SafeTacticalWebUrl;
 use App\Services\Tactical\Actions\ActionRedactor;
 use App\Services\Tactical\TacticalClient;
@@ -14,10 +17,12 @@ use App\Services\Tactical\TacticalClientException;
 use App\Services\Tactical\TacticalDeviceSyncService;
 use App\Services\Tactical\TacticalProvisioningService;
 use App\Services\Tactical\TacticalScriptSyncService;
+use App\Services\Technician\TechnicianApprovalResult;
 use App\Support\CometConfig;
 use App\Support\ServosityConfig;
 use App\Support\TacticalConfig;
 use App\Support\TechnicianConfig;
+use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
 
@@ -37,6 +42,11 @@ class StaffTacticalAdminToolExecutor
         'tactical_get_or_create_installer',
         'tactical_generate_installer',
         'tactical_sync_devices_now',
+        'tactical_create_patch_policy',
+        'tactical_update_patch_policy',
+        'tactical_delete_patch_policy',
+        'tactical_reset_patch_policies',
+        'tactical_stage_reset_patch_policies',
     ];
 
     /** @var array<int, string> */
@@ -58,6 +68,14 @@ class StaffTacticalAdminToolExecutor
         'template_id',
         'upstream_url_action_id',
         'upstream_alert_template_id',
+        'policy',
+        'patch_policy_id',
+        'patch_policy_pk',
+        'winupdatepolicy',
+        'upstream_patch_policy_id',
+        'tactical_patch_policy_id',
+        'client',
+        'site',
     ];
 
     /** @var array<string, int> */
@@ -73,6 +91,11 @@ class StaffTacticalAdminToolExecutor
         'tactical_sync_devices_now' => 300,
         'tactical_sync_scripts_now' => 300,
         'tactical_provision_alert_ticketing' => 300,
+        'tactical_create_patch_policy' => 300,
+        'tactical_update_patch_policy' => 300,
+        'tactical_delete_patch_policy' => 600,
+        'tactical_reset_patch_policies' => 900,
+        'tactical_stage_reset_patch_policies' => 900,
     ];
 
     /** @var array<string, int> */
@@ -83,6 +106,20 @@ class StaffTacticalAdminToolExecutor
         'servosity_credential_user' => ServosityConfig::TACTICAL_SERVOSITY_CRED_USER_FIELD_ID,
         'servosity_credential_password' => ServosityConfig::TACTICAL_SERVOSITY_CRED_PASS_FIELD_ID,
     ];
+
+    /** @var array<string, string> */
+    private const STAGED_TO_DIRECT = [
+        'tactical_stage_reset_patch_policies' => 'tactical_reset_patch_policies',
+    ];
+
+    /** @var array<int, string> */
+    private const PATCH_APPROVAL_VALUES = ['manual', 'approve', 'ignore', 'inherit'];
+
+    /** @var array<int, string> */
+    private const PATCH_FREQUENCIES = ['daily', 'monthly', 'inherit'];
+
+    /** @var array<int, string> */
+    private const PATCH_REBOOT_VALUES = ['never', 'required', 'always', 'inherit'];
 
     public function __construct(
         private readonly TacticalClient $client,
@@ -107,6 +144,11 @@ class StaffTacticalAdminToolExecutor
             self::syncDevicesTool(),
             self::syncScriptsTool(),
             self::provisionAlertTicketingTool(),
+            self::createPatchPolicyTool(),
+            self::updatePatchPolicyTool(),
+            self::deletePatchPolicyTool(),
+            self::resetPatchPoliciesTool(),
+            self::stageResetPatchPoliciesTool(),
         ];
     }
 
@@ -126,11 +168,20 @@ class StaffTacticalAdminToolExecutor
         return in_array($toolName, self::CLIENT_SCOPED_TOOLS, true);
     }
 
+    public static function isStagedActionType(string $actionType): bool
+    {
+        return array_key_exists($actionType, self::STAGED_TO_DIRECT);
+    }
+
     /** @return array<string, mixed> */
     public function execute(string $name, array $arguments, ?int $clientId, string $actorLabel): array
     {
         if (! TacticalConfig::isConfigured()) {
             return ['error' => 'Tactical RMM is not configured'];
+        }
+
+        if (isset(self::STAGED_TO_DIRECT[$name])) {
+            return $this->stagePatchPolicyReset($arguments, (int) $clientId, $actorLabel);
         }
 
         return match ($name) {
@@ -143,6 +194,10 @@ class StaffTacticalAdminToolExecutor
             'tactical_sync_devices_now' => $this->syncDevices($arguments, (int) $clientId, $actorLabel),
             'tactical_sync_scripts_now' => $this->syncScripts($arguments, $actorLabel),
             'tactical_provision_alert_ticketing' => $this->provisionAlertTicketing($arguments, $actorLabel),
+            'tactical_create_patch_policy' => $this->createPatchPolicy($arguments, (int) $clientId, $actorLabel),
+            'tactical_update_patch_policy' => $this->updatePatchPolicy($arguments, (int) $clientId, $actorLabel),
+            'tactical_delete_patch_policy' => $this->deletePatchPolicy($arguments, (int) $clientId, $actorLabel),
+            'tactical_reset_patch_policies' => $this->resetPatchPolicies($arguments, (int) $clientId, $actorLabel),
             default => ['error' => "Unknown Tactical admin tool: {$name}"],
         };
     }
@@ -729,6 +784,628 @@ class StaffTacticalAdminToolExecutor
         return $success ? $result : ['error' => $summary, 'success' => false];
     }
 
+    /** @return array<string, mixed> */
+    private function createPatchPolicy(array $arguments, int $clientId, string $actorLabel): array
+    {
+        $tool = 'tactical_create_patch_policy';
+        $guard = $this->baseGuard($tool, $arguments, $clientId, $actorLabel);
+        if (isset($guard['error'])) {
+            return ['error' => $guard['error']];
+        }
+
+        $policyId = $this->positiveInteger($arguments['policy_id'] ?? null);
+        $body = $this->patchPolicyBody($arguments, includePolicy: true);
+        $contentHash = $this->contentHash($tool, $clientId, 'patch-policy', ['policy_id' => $policyId, 'body' => $body['body'] ?? []]);
+
+        if ($policyId === null) {
+            $this->auditAttempt($tool, 'rejected', $clientId, $contentHash, 'policy_id is required.', $actorLabel);
+
+            return ['error' => 'policy_id is required'];
+        }
+        if (isset($body['error'])) {
+            $this->auditAttempt($tool, 'rejected', $clientId, $contentHash, $body['error'], $actorLabel);
+
+            return ['error' => $body['error']];
+        }
+
+        try {
+            $policy = $this->policyById($policyId);
+            if ($policy === null) {
+                $this->auditAttempt($tool, 'rejected', $clientId, $contentHash, "Policy id {$policyId} was not found in Tactical getPolicies; no patch policy was created.", $actorLabel);
+
+                return ['error' => "Policy id {$policyId} was not found in Tactical getPolicies; no patch policy was created."];
+            }
+            if ($this->patchPolicyIdFromPolicy($policy) !== null) {
+                $this->auditAttempt($tool, 'rejected', $clientId, $contentHash, 'Policy already has a patch policy; use tactical_update_patch_policy.', $actorLabel);
+
+                return ['error' => 'Policy already has a patch policy; use tactical_update_patch_policy'];
+            }
+
+            $payload = ['policy' => $policyId] + ($body['body'] ?? []);
+            if ($this->alreadyExecuted($tool, $clientId, $contentHash)) {
+                $this->auditAttempt($tool, 'blocked', $clientId, $contentHash, 'Duplicate patch-policy create suppressed before upstream call.', $actorLabel);
+
+                return ['success' => true, 'idempotent' => true, 'message' => 'Already created an identical patch policy recently; no upstream call was made.'];
+            }
+            if ($this->cooldownActive($tool, $clientId, self::COOLDOWNS[$tool])) {
+                $this->auditAttempt($tool, 'blocked', $clientId, $contentHash, 'Patch-policy create cooldown active; upstream call refused.', $actorLabel);
+
+                return ['error' => 'tactical_create_patch_policy cooldown active for this client; no upstream call was made.'];
+            }
+
+            $this->client->createPatchPolicy($payload);
+        } catch (TacticalClientException $e) {
+            $message = $this->tacticalFailureMessage($e, 'Tactical patch-policy create');
+            $this->auditAttempt($tool, 'error', $clientId, $contentHash, $message, $actorLabel);
+
+            return ['error' => $message];
+        }
+
+        $this->auditAttempt($tool, 'executed', $clientId, $contentHash, "Created Tactical patch policy for policy id {$policyId}.", $actorLabel);
+
+        return ['success' => true, 'policy_id' => $policyId, 'message' => 'Tactical patch policy created.'];
+    }
+
+    /** @return array<string, mixed> */
+    private function updatePatchPolicy(array $arguments, int $clientId, string $actorLabel): array
+    {
+        $tool = 'tactical_update_patch_policy';
+        $guard = $this->baseGuard($tool, $arguments, $clientId, $actorLabel);
+        if (isset($guard['error'])) {
+            return ['error' => $guard['error']];
+        }
+
+        $resolved = $this->resolvedPatchPolicy($arguments, $clientId, $tool, $actorLabel);
+        if (isset($resolved['error'])) {
+            return ['error' => $resolved['error']];
+        }
+
+        $body = $this->patchPolicyBody($arguments, includePolicy: false);
+        $contentHash = $this->contentHash($tool, $clientId, 'patch-policy-'.$resolved['patch_policy_id'], $body['body'] ?? []);
+        if (isset($body['error'])) {
+            $this->auditAttempt($tool, 'rejected', $clientId, $contentHash, $body['error'], $actorLabel);
+
+            return ['error' => $body['error']];
+        }
+        if (($body['body'] ?? []) === []) {
+            $this->auditAttempt($tool, 'rejected', $clientId, $contentHash, 'At least one patch policy field is required.', $actorLabel);
+
+            return ['error' => 'At least one patch policy field is required'];
+        }
+        if ($this->alreadyExecuted($tool, $clientId, $contentHash)) {
+            $this->auditAttempt($tool, 'blocked', $clientId, $contentHash, 'Duplicate patch-policy update suppressed before upstream call.', $actorLabel);
+
+            return ['success' => true, 'idempotent' => true, 'message' => 'Already updated this patch policy recently; no upstream call was made.'];
+        }
+        if ($this->cooldownActive($tool, $clientId, self::COOLDOWNS[$tool])) {
+            $this->auditAttempt($tool, 'blocked', $clientId, $contentHash, 'Patch-policy update cooldown active; upstream call refused.', $actorLabel);
+
+            return ['error' => 'tactical_update_patch_policy cooldown active for this client; no upstream call was made.'];
+        }
+
+        try {
+            $this->client->updatePatchPolicy((int) $resolved['patch_policy_id'], $body['body']);
+        } catch (TacticalClientException $e) {
+            $message = $this->tacticalFailureMessage($e, 'Tactical patch-policy update');
+            $this->auditAttempt($tool, 'error', $clientId, $contentHash, $message, $actorLabel);
+
+            return ['error' => $message];
+        }
+
+        $this->auditAttempt($tool, 'executed', $clientId, $contentHash, "Updated Tactical patch policy id {$resolved['patch_policy_id']} for policy {$resolved['policy_name']}.", $actorLabel);
+
+        return ['success' => true, 'patch_policy_id' => $resolved['patch_policy_id'], 'message' => 'Tactical patch policy updated.'];
+    }
+
+    /** @return array<string, mixed> */
+    private function deletePatchPolicy(array $arguments, int $clientId, string $actorLabel): array
+    {
+        $tool = 'tactical_delete_patch_policy';
+        $guard = $this->baseGuard($tool, $arguments, $clientId, $actorLabel);
+        if (isset($guard['error'])) {
+            return ['error' => $guard['error']];
+        }
+
+        $resolved = $this->resolvedPatchPolicy($arguments, $clientId, $tool, $actorLabel);
+        if (isset($resolved['error'])) {
+            return ['error' => $resolved['error']];
+        }
+
+        $typed = trim((string) ($arguments['confirm_policy_name'] ?? ''));
+        if (strcasecmp($typed, (string) $resolved['policy_name']) !== 0) {
+            $contentHash = $this->contentHash($tool, $clientId, 'patch-policy-'.$resolved['patch_policy_id'], ['policy_id' => $resolved['policy_id']]);
+            $this->auditAttempt($tool, 'rejected', $clientId, $contentHash, 'The typed policy name does not match this Tactical automation policy.', $actorLabel);
+
+            return ['error' => 'The typed policy name does not match this Tactical automation policy.'];
+        }
+
+        $contentHash = $this->contentHash($tool, $clientId, 'patch-policy-'.$resolved['patch_policy_id'], ['policy_id' => $resolved['policy_id']]);
+        if ($this->alreadyExecuted($tool, $clientId, $contentHash)) {
+            $this->auditAttempt($tool, 'blocked', $clientId, $contentHash, 'Duplicate patch-policy delete suppressed before upstream call.', $actorLabel);
+
+            return ['success' => true, 'idempotent' => true, 'message' => 'Already deleted this patch policy recently; no upstream call was made.'];
+        }
+        if ($this->cooldownActive($tool, $clientId, self::COOLDOWNS[$tool])) {
+            $this->auditAttempt($tool, 'blocked', $clientId, $contentHash, 'Patch-policy delete cooldown active; upstream call refused.', $actorLabel);
+
+            return ['error' => 'tactical_delete_patch_policy cooldown active for this client; no upstream call was made.'];
+        }
+
+        try {
+            $this->client->deletePatchPolicy((int) $resolved['patch_policy_id']);
+        } catch (TacticalClientException $e) {
+            $message = $this->tacticalFailureMessage($e, 'Tactical patch-policy delete');
+            $this->auditAttempt($tool, 'error', $clientId, $contentHash, $message, $actorLabel);
+
+            return ['error' => $message];
+        }
+
+        $this->auditAttempt($tool, 'executed', $clientId, $contentHash, "Deleted Tactical patch policy id {$resolved['patch_policy_id']} for policy {$resolved['policy_name']}.", $actorLabel);
+
+        return ['success' => true, 'patch_policy_id' => $resolved['patch_policy_id'], 'message' => 'Tactical patch policy deleted.'];
+    }
+
+    /** @return array<string, mixed> */
+    private function resetPatchPolicies(array $arguments, int $clientId, string $actorLabel): array
+    {
+        $tool = 'tactical_reset_patch_policies';
+        $guard = $this->baseGuard($tool, $arguments, $clientId, $actorLabel);
+        if (isset($guard['error'])) {
+            return ['error' => $guard['error']];
+        }
+
+        $client = Client::find($clientId);
+        if (! $client) {
+            $this->auditAttempt($tool, 'rejected', $clientId, $this->contentHash($tool, $clientId, 'patch-reset', $arguments), 'Client not found.', $actorLabel);
+
+            return ['error' => 'Client not found'];
+        }
+
+        $typed = trim((string) ($arguments['confirm_client_name'] ?? ''));
+        if (strcasecmp($typed, (string) $client->name) !== 0) {
+            $this->auditAttempt($tool, 'rejected', $clientId, $this->contentHash($tool, $clientId, 'patch-reset', $arguments), 'The typed client name does not match this client.', $actorLabel);
+
+            return ['error' => 'The typed client name does not match this client. Type the client name to confirm this bulk reset.'];
+        }
+
+        return $this->executePatchPolicyReset($tool, $arguments, $client, $actorLabel);
+    }
+
+    /** @return array<string, mixed> */
+    private function stagePatchPolicyReset(array $arguments, int $clientId, string $actorLabel): array
+    {
+        $tool = 'tactical_stage_reset_patch_policies';
+        $guard = $this->baseGuard($tool, $arguments, $clientId, $actorLabel);
+        if (isset($guard['error'])) {
+            return ['error' => $guard['error']];
+        }
+
+        $client = Client::find($clientId);
+        if (! $client) {
+            $this->auditAttempt($tool, 'rejected', $clientId, $this->contentHash($tool, $clientId, 'patch-reset', $arguments), 'Client not found.', $actorLabel);
+
+            return ['error' => 'Client not found'];
+        }
+
+        $ticket = $this->ticketForClient($arguments['ticket_id'] ?? null, $clientId);
+        if (is_array($ticket)) {
+            $this->auditAttempt($tool, 'rejected', $clientId, $this->contentHash($tool, $clientId, 'patch-reset', $arguments), $ticket['error'], $actorLabel);
+
+            return ['error' => $ticket['error']];
+        }
+
+        $scope = $this->patchResetScope($arguments, $client);
+        $contentHash = $this->contentHash($tool, $clientId, 'patch-reset', ['scope' => $scope['body'] ?? null]);
+        if (isset($scope['error'])) {
+            $this->auditAttempt($tool, 'rejected', $clientId, $contentHash, $scope['error'], $actorLabel);
+
+            return ['error' => $scope['error']];
+        }
+        if ($this->alreadyAwaitingOrExecuted($tool, $clientId, $contentHash)) {
+            $run = TechnicianRun::query()
+                ->where('ticket_id', $ticket->id)
+                ->where('action_type', $tool)
+                ->where('content_hash', $contentHash)
+                ->where('state', TechnicianRunState::AwaitingApproval->value)
+                ->first();
+
+            return [
+                'success' => true,
+                'idempotent' => true,
+                'ticket_id' => $ticket->id,
+                'ticket_display_id' => $ticket->display_id,
+                'run_id' => $run?->id,
+                'message' => 'Already staged; awaiting approval.',
+            ];
+        }
+        if ($this->cooldownActive($tool, $clientId, self::COOLDOWNS[$tool])) {
+            $this->auditAttempt($tool, 'blocked', $clientId, $contentHash, 'Patch-policy reset proposal cooldown active.', $actorLabel);
+
+            return ['error' => 'tactical_stage_reset_patch_policies cooldown active for this client; no proposal was staged.'];
+        }
+
+        $run = TechnicianRun::create([
+            'ticket_id' => $ticket->id,
+            'client_id' => $clientId,
+            'action_type' => $tool,
+            'content_hash' => $contentHash,
+            'state' => TechnicianRunState::AwaitingApproval,
+            'proposed_content' => 'Stage bulk reset Tactical patch policies for '.$scope['label'].".\nReason: ".$guard['reason'],
+            'proposed_meta' => [
+                'drafted_by' => $actorLabel,
+                'reasons' => [$guard['reason']],
+                'direct_tool' => self::STAGED_TO_DIRECT[$tool],
+                'redacted_params' => ['scope' => $scope['label']],
+                'encrypted_payload' => Crypt::encryptString(json_encode([
+                    'direct_tool' => self::STAGED_TO_DIRECT[$tool],
+                    'client_id' => $clientId,
+                    'ticket_id' => $ticket->id,
+                    'arguments' => [
+                        'scope' => $scope['scope'],
+                        'reason' => $guard['reason'],
+                    ],
+                ], JSON_THROW_ON_ERROR)),
+            ],
+            'confidence' => null,
+            'tokens_used' => 0,
+        ]);
+
+        $this->auditAttempt($tool, 'awaiting_approval', $clientId, $contentHash, 'MCP staged Tactical patch-policy reset for '.$scope['label'].'.', $actorLabel, $run->id);
+
+        return [
+            'success' => true,
+            'ticket_id' => $ticket->id,
+            'ticket_display_id' => $ticket->display_id,
+            'run_id' => $run->id,
+            'message' => 'Staged for cockpit approval.',
+        ];
+    }
+
+    public function approveStagedRun(TechnicianRun $run, int $approverId): TechnicianApprovalResult
+    {
+        if (! self::isStagedActionType($run->action_type) || ! $run->claimForExecution()) {
+            return new TechnicianApprovalResult('already_handled');
+        }
+
+        try {
+            $payload = $this->decryptRunPayload($run);
+            $directTool = (string) ($payload['direct_tool'] ?? '');
+            if ($payload === null || ! isset(self::STAGED_TO_DIRECT[$run->action_type]) || self::STAGED_TO_DIRECT[$run->action_type] !== $directTool) {
+                $run->releaseClaim();
+
+                return new TechnicianApprovalResult('gate_declined');
+            }
+
+            $client = Client::find((int) ($payload['client_id'] ?? 0));
+            $ticket = Ticket::find((int) ($payload['ticket_id'] ?? 0));
+            if (! $client || ! $ticket || (int) $ticket->client_id !== (int) $run->client_id) {
+                $run->releaseClaim();
+
+                return new TechnicianApprovalResult('gate_declined');
+            }
+
+            if (TechnicianConfig::killSwitchEngaged()) {
+                $this->auditAttempt($run->action_type, 'blocked', (int) $run->client_id, $run->content_hash, 'Technician kill-switch engaged; staged Tactical admin action refused.', $this->approverLabel($approverId), $run->id, $approverId);
+                $run->releaseClaim();
+
+                return new TechnicianApprovalResult('gate_declined');
+            }
+
+            if ($this->cooldownActive($directTool, (int) $run->client_id, self::COOLDOWNS[$directTool] ?? 60)) {
+                $this->auditAttempt($run->action_type, 'blocked', (int) $run->client_id, $run->content_hash, 'Tactical staged admin action cooldown active; approval refused before upstream call.', $this->approverLabel($approverId), $run->id, $approverId);
+                $run->releaseClaim();
+
+                return new TechnicianApprovalResult('gate_declined');
+            }
+
+            $arguments = is_array($payload['arguments'] ?? null) ? $payload['arguments'] : [];
+            $result = $this->executePatchPolicyReset($run->action_type, $arguments, $client, $this->approverLabel($approverId), $run, $approverId);
+            if (isset($result['error'])) {
+                $run->releaseClaim();
+
+                return new TechnicianApprovalResult('gate_declined');
+            }
+
+            $run->advanceTo(TechnicianRunState::Done);
+
+            return new TechnicianApprovalResult('executed');
+        } catch (\Throwable $e) {
+            $run->releaseClaim();
+
+            throw $e;
+        }
+    }
+
+    /** @return array<string, mixed> */
+    private function executePatchPolicyReset(
+        string $tool,
+        array $arguments,
+        Client $client,
+        string $actorLabel,
+        ?TechnicianRun $run = null,
+        ?int $approverId = null,
+    ): array {
+        $clientId = (int) $client->id;
+        $scope = $this->patchResetScope($arguments, $client);
+        $contentHash = $run?->content_hash ?? $this->contentHash($tool, $clientId, 'patch-reset', ['scope' => $scope['body'] ?? null]);
+        if (isset($scope['error'])) {
+            $this->auditAttempt($tool, 'rejected', $clientId, $contentHash, $scope['error'], $actorLabel, $run?->id, $approverId);
+
+            return ['error' => $scope['error']];
+        }
+
+        if ($run === null) {
+            if ($this->alreadyExecuted($tool, $clientId, $contentHash)) {
+                $this->auditAttempt($tool, 'blocked', $clientId, $contentHash, 'Duplicate patch-policy reset suppressed before upstream call.', $actorLabel);
+
+                return ['success' => true, 'idempotent' => true, 'message' => 'Already reset this Tactical patch-policy scope recently; no upstream call was made.'];
+            }
+            if ($this->cooldownActive($tool, $clientId, self::COOLDOWNS[$tool])) {
+                $this->auditAttempt($tool, 'blocked', $clientId, $contentHash, 'Patch-policy reset cooldown active; upstream call refused.', $actorLabel);
+
+                return ['error' => 'tactical_reset_patch_policies cooldown active for this client; no upstream call was made.'];
+            }
+        }
+
+        try {
+            $this->client->resetPatchPolicies($scope['body']);
+        } catch (TacticalClientException $e) {
+            $message = $this->tacticalFailureMessage($e, 'Tactical patch-policy reset');
+            $this->auditAttempt($tool, 'error', $clientId, $contentHash, $message, $actorLabel, $run?->id, $approverId);
+
+            return ['error' => $message];
+        }
+
+        $this->auditAttempt($tool, 'executed', $clientId, $contentHash, 'Reset Tactical patch policies for '.$scope['label'].'.', $actorLabel, $run?->id, $approverId);
+
+        return ['success' => true, 'scope' => $scope['scope'], 'message' => 'Tactical patch policies reset to inherit for the selected scope.'];
+    }
+
+    /** @return array{body?: array<string, int>, label?: string, scope?: string, error?: string} */
+    private function patchResetScope(array $arguments, Client $client): array
+    {
+        $scope = mb_strtolower(trim((string) ($arguments['scope'] ?? 'site')));
+        if (! in_array($scope, ['client', 'site'], true)) {
+            return ['error' => 'scope must be one of: client, site'];
+        }
+
+        $siteKey = is_string($client->tactical_site_id) ? trim($client->tactical_site_id) : '';
+        if ($siteKey === '' || ! str_contains($siteKey, '|')) {
+            return ['error' => 'Client has no Tactical site mapping'];
+        }
+
+        [$clientName, $siteName] = array_pad(explode('|', $siteKey, 2), 2, 'Main');
+        $clientName = trim($clientName);
+        $siteName = trim($siteName) ?: 'Main';
+
+        try {
+            $clients = $this->client->getClients();
+        } catch (TacticalClientException) {
+            return ['error' => 'Could not read Tactical clients/sites to resolve patch-policy reset scope; no reset was sent.'];
+        }
+
+        foreach ($clients as $candidate) {
+            if (! is_array($candidate) || strcasecmp((string) ($candidate['name'] ?? ''), $clientName) !== 0) {
+                continue;
+            }
+
+            $upstreamClientId = $this->positiveInteger($candidate['id'] ?? null);
+            if ($scope === 'client') {
+                return $upstreamClientId !== null
+                    ? ['body' => ['client' => $upstreamClientId], 'label' => "Tactical client {$clientName}", 'scope' => 'client']
+                    : ['error' => 'Matched Tactical client has no numeric id; no reset was sent.'];
+            }
+
+            foreach (($candidate['sites'] ?? []) as $site) {
+                if (! is_array($site) || strcasecmp((string) ($site['name'] ?? ''), $siteName) !== 0) {
+                    continue;
+                }
+
+                $siteId = $this->positiveInteger($site['id'] ?? null);
+
+                return $siteId !== null
+                    ? ['body' => ['site' => $siteId], 'label' => "Tactical site {$clientName}|{$siteName}", 'scope' => 'site']
+                    : ['error' => 'Matched Tactical site has no numeric id; no reset was sent.'];
+            }
+
+            return ['error' => "Tactical site {$clientName}|{$siteName} was not found; no reset was sent."];
+        }
+
+        return ['error' => "Tactical client {$clientName} was not found; no reset was sent."];
+    }
+
+    /** @return array{body?: array<string, mixed>, error?: string} */
+    private function patchPolicyBody(array $arguments, bool $includePolicy): array
+    {
+        $allowed = [
+            'critical',
+            'important',
+            'moderate',
+            'low',
+            'other',
+            'run_time_hour',
+            'run_time_frequency',
+            'run_time_days',
+            'run_time_day',
+            'reboot_after_install',
+            'reprocess_failed_inherit',
+            'reprocess_failed',
+            'reprocess_failed_times',
+            'email_if_fail',
+        ];
+        $nonBody = ['client_id', 'reason', 'policy_id', 'confirm_policy_name', 'ticket_id'];
+        $unsupported = array_values(array_diff(array_keys($arguments), array_merge($allowed, $nonBody)));
+        if ($unsupported !== []) {
+            return ['error' => 'Unsupported patch policy fields: '.implode(', ', $unsupported).'.'];
+        }
+
+        $body = [];
+        foreach (['critical', 'important', 'moderate', 'low', 'other'] as $key) {
+            if (array_key_exists($key, $arguments)) {
+                $value = $this->enumValue($arguments[$key], self::PATCH_APPROVAL_VALUES);
+                if ($value === null) {
+                    return ['error' => "{$key} must be one of: ".implode(', ', self::PATCH_APPROVAL_VALUES).'.'];
+                }
+                $body[$key] = $value;
+            }
+        }
+
+        if (array_key_exists('run_time_frequency', $arguments)) {
+            $value = $this->enumValue($arguments['run_time_frequency'], self::PATCH_FREQUENCIES);
+            if ($value === null) {
+                return ['error' => 'run_time_frequency must be one of: '.implode(', ', self::PATCH_FREQUENCIES).'.'];
+            }
+            $body['run_time_frequency'] = $value;
+        }
+
+        if (array_key_exists('reboot_after_install', $arguments)) {
+            $value = $this->enumValue($arguments['reboot_after_install'], self::PATCH_REBOOT_VALUES);
+            if ($value === null) {
+                return ['error' => 'reboot_after_install must be one of: '.implode(', ', self::PATCH_REBOOT_VALUES).'.'];
+            }
+            $body['reboot_after_install'] = $value;
+        }
+
+        foreach (['run_time_hour', 'run_time_days', 'run_time_day', 'reprocess_failed_times'] as $key) {
+            if (array_key_exists($key, $arguments)) {
+                $value = $this->nonNegativeInteger($arguments[$key]);
+                if ($value === null) {
+                    return ['error' => "{$key} must be a non-negative integer."];
+                }
+                $body[$key] = $value;
+            }
+        }
+
+        foreach (['reprocess_failed_inherit', 'reprocess_failed', 'email_if_fail'] as $key) {
+            if (array_key_exists($key, $arguments)) {
+                if (! is_bool($arguments[$key])) {
+                    return ['error' => "{$key} must be a boolean."];
+                }
+                $body[$key] = $arguments[$key];
+            }
+        }
+
+        return ['body' => $body];
+    }
+
+    /** @return array<string, mixed>|null */
+    private function policyById(int $policyId): ?array
+    {
+        foreach ($this->client->getPolicies() as $policy) {
+            if (is_array($policy) && (int) ($policy['id'] ?? 0) === $policyId) {
+                return $policy;
+            }
+        }
+
+        return null;
+    }
+
+    /** @return array{policy_id?: int, policy_name?: string, patch_policy_id?: int, error?: string} */
+    private function resolvedPatchPolicy(array $arguments, int $clientId, string $tool, string $actorLabel): array
+    {
+        $policyId = $this->positiveInteger($arguments['policy_id'] ?? null);
+        $contentHash = $this->contentHash($tool, $clientId, 'patch-policy', ['policy_id' => $policyId]);
+        if ($policyId === null) {
+            $this->auditAttempt($tool, 'rejected', $clientId, $contentHash, 'policy_id is required.', $actorLabel);
+
+            return ['error' => 'policy_id is required'];
+        }
+
+        try {
+            $policy = $this->policyById($policyId);
+        } catch (TacticalClientException $e) {
+            $message = $this->tacticalFailureMessage($e, 'Tactical policy lookup');
+            $this->auditAttempt($tool, 'error', $clientId, $contentHash, $message, $actorLabel);
+
+            return ['error' => $message];
+        }
+
+        if ($policy === null) {
+            $this->auditAttempt($tool, 'rejected', $clientId, $contentHash, "Policy id {$policyId} was not found in Tactical getPolicies.", $actorLabel);
+
+            return ['error' => "Policy id {$policyId} was not found in Tactical getPolicies."];
+        }
+
+        $patchPolicyId = $this->patchPolicyIdFromPolicy($policy);
+        if ($patchPolicyId === null) {
+            $this->auditAttempt($tool, 'rejected', $clientId, $contentHash, "Policy id {$policyId} does not have a visible patch policy.", $actorLabel);
+
+            return ['error' => "Policy id {$policyId} does not have a visible patch policy."];
+        }
+
+        return [
+            'policy_id' => $policyId,
+            'policy_name' => (string) ($policy['name'] ?? $policyId),
+            'patch_policy_id' => $patchPolicyId,
+        ];
+    }
+
+    private function patchPolicyIdFromPolicy(array $policy): ?int
+    {
+        $raw = $policy['winupdatepolicy'] ?? null;
+        if (is_array($raw)) {
+            return $this->positiveInteger($raw['id'] ?? null);
+        }
+
+        return $this->positiveInteger($raw);
+    }
+
+    /** @return Ticket|array{error: string} */
+    private function ticketForClient(mixed $ticketIdValue, int $clientId): Ticket|array
+    {
+        $ticketId = $this->positiveInteger($ticketIdValue);
+        if ($ticketId === null) {
+            return ['error' => 'ticket_id is required for staged Tactical patch-policy reset'];
+        }
+
+        $ticket = Ticket::find($ticketId);
+        if (! $ticket || (int) $ticket->client_id !== $clientId) {
+            return ['error' => 'Ticket not found or belongs to a different client'];
+        }
+
+        return $ticket;
+    }
+
+    private function decryptRunPayload(TechnicianRun $run): ?array
+    {
+        $ciphertext = $run->proposed_meta['encrypted_payload'] ?? null;
+        if (! is_string($ciphertext) || $ciphertext === '') {
+            return null;
+        }
+
+        $json = Crypt::decryptString($ciphertext);
+        $payload = json_decode($json, true);
+
+        return is_array($payload) ? $payload : null;
+    }
+
+    private function enumValue(mixed $value, array $allowed): ?string
+    {
+        $normalized = is_scalar($value) ? mb_strtolower(trim((string) $value)) : '';
+
+        return in_array($normalized, $allowed, true) ? $normalized : null;
+    }
+
+    private function nonNegativeInteger(mixed $value): ?int
+    {
+        if (is_int($value)) {
+            return $value >= 0 ? $value : null;
+        }
+
+        if (is_string($value) && preg_match('/^[0-9]+$/', $value) === 1) {
+            return (int) $value;
+        }
+
+        return null;
+    }
+
+    private function approverLabel(int $approverId): string
+    {
+        $user = \App\Models\User::find($approverId);
+
+        return $user?->email ?? $user?->name ?? "approver:{$approverId}";
+    }
+
     /**
      * @return array{reason?: string, error?: string}
      */
@@ -863,21 +1540,38 @@ class StaffTacticalAdminToolExecutor
             ->exists();
     }
 
+    private function alreadyAwaitingOrExecuted(string $tool, ?int $clientId, string $contentHash): bool
+    {
+        return $this->actionLogQuery($tool, $clientId)
+            ->where('content_hash', $contentHash)
+            ->whereIn('result_status', ['awaiting_approval', 'executed'])
+            ->where('created_at', '>=', now()->subHours(self::DIRECT_DEDUP_HOURS))
+            ->exists();
+    }
+
     private function cooldownActive(string $tool, ?int $clientId, int $cooldownSeconds): bool
     {
         if ($cooldownSeconds <= 0) {
             return false;
         }
 
+        $statuses = $tool === 'tactical_reset_patch_policies'
+            ? ['executed']
+            : ['executed', 'awaiting_approval'];
+
         return $this->actionLogQuery($tool, $clientId)
             ->where('created_at', '>=', now()->subSeconds($cooldownSeconds))
-            ->whereIn('result_status', ['executed', 'awaiting_approval'])
+            ->whereIn('result_status', $statuses)
             ->exists();
     }
 
     private function actionLogQuery(string $tool, ?int $clientId)
     {
-        $query = TechnicianActionLog::query()->where('action_type', $tool);
+        $actionTypes = match ($tool) {
+            'tactical_reset_patch_policies' => ['tactical_reset_patch_policies', 'tactical_stage_reset_patch_policies'],
+            default => [$tool],
+        };
+        $query = TechnicianActionLog::query()->whereIn('action_type', $actionTypes);
 
         return $clientId === null
             ? $query->whereNull('client_id')
@@ -891,17 +1585,19 @@ class StaffTacticalAdminToolExecutor
         string $contentHash,
         string $summary,
         string $actorLabel,
+        ?int $runId = null,
+        ?int $approverId = null,
     ): void {
         TechnicianActionLog::create([
             'actor_id' => TechnicianConfig::aiActorUserId(),
-            'approver_user_id' => null,
+            'approver_user_id' => $approverId,
             'actor_label' => $actorLabel,
             'action_type' => $actionType,
             'tier' => TechnicianTier::Approve->value,
             'result_status' => $resultStatus,
             'ticket_id' => null,
             'client_id' => $clientId,
-            'run_id' => null,
+            'run_id' => $runId,
             'content_hash' => $contentHash,
             'summary' => mb_substr($this->redactor->redactString($summary), 0, 1000),
             'correlation_id' => (string) Str::uuid(),
@@ -1237,6 +1933,97 @@ class StaffTacticalAdminToolExecutor
             'Run the existing TacticalProvisioningService to provision PSA alert ticketing. It upserts PSA-owned URL action and alert template, then applies the existing no-clobber default-template behavior.',
             self::reasonProperties(),
             ['reason'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function patchPolicyProperties(bool $includePolicy = true): array
+    {
+        $properties = [
+            'critical' => ['type' => 'string', 'enum' => self::PATCH_APPROVAL_VALUES, 'description' => 'Approval behavior for critical updates.'],
+            'important' => ['type' => 'string', 'enum' => self::PATCH_APPROVAL_VALUES, 'description' => 'Approval behavior for important updates.'],
+            'moderate' => ['type' => 'string', 'enum' => self::PATCH_APPROVAL_VALUES, 'description' => 'Approval behavior for moderate updates.'],
+            'low' => ['type' => 'string', 'enum' => self::PATCH_APPROVAL_VALUES, 'description' => 'Approval behavior for low updates.'],
+            'other' => ['type' => 'string', 'enum' => self::PATCH_APPROVAL_VALUES, 'description' => 'Approval behavior for other updates.'],
+            'run_time_hour' => ['type' => 'integer', 'description' => 'Patch run hour. Sent only when supplied.'],
+            'run_time_frequency' => ['type' => 'string', 'enum' => self::PATCH_FREQUENCIES, 'description' => 'Patch run frequency.'],
+            'run_time_days' => ['type' => 'integer', 'description' => 'Patch run days bitmask/value accepted by Tactical.'],
+            'run_time_day' => ['type' => 'integer', 'description' => 'Patch run day accepted by Tactical.'],
+            'reboot_after_install' => ['type' => 'string', 'enum' => self::PATCH_REBOOT_VALUES, 'description' => 'Reboot behavior after patch install.'],
+            'reprocess_failed_inherit' => ['type' => 'boolean', 'description' => 'Whether failed-update reprocessing inherits.'],
+            'reprocess_failed' => ['type' => 'boolean', 'description' => 'Whether to reprocess failed updates.'],
+            'reprocess_failed_times' => ['type' => 'integer', 'description' => 'Failed-update reprocess attempts.'],
+            'email_if_fail' => ['type' => 'boolean', 'description' => 'Whether Tactical emails on patch failure.'],
+        ];
+
+        if ($includePolicy) {
+            $properties = ['policy_id' => ['type' => 'integer', 'description' => 'Tactical automation policy id from tactical_list_policies. The server verifies it with getPolicies before using it.']] + $properties;
+        }
+
+        return $properties;
+    }
+
+    /** @return array<string, mixed> */
+    private static function createPatchPolicyTool(): array
+    {
+        return self::tool(
+            'tactical_create_patch_policy',
+            'Create a Tactical patch policy attached to one verified automation policy using POST automation/patchpolicy/. The upstream serializer is broad; this tool narrows writes to the confirmed patch-policy field set and verifies policy_id against getPolicies before sending.',
+            array_merge(self::reasonProperties(), self::patchPolicyProperties(includePolicy: true)),
+            ['reason', 'policy_id'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function updatePatchPolicyTool(): array
+    {
+        return self::tool(
+            'tactical_update_patch_policy',
+            'Update the patch policy currently attached to one verified Tactical automation policy using PUT automation/patchpolicy/{pk}/. The server resolves the patch-policy id from getPolicies and sends only allowlisted patch-policy fields.',
+            array_merge(self::reasonProperties(), self::patchPolicyProperties(includePolicy: true)),
+            ['reason', 'policy_id'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function deletePatchPolicyTool(): array
+    {
+        return self::tool(
+            'tactical_delete_patch_policy',
+            'Delete the patch policy currently attached to one verified Tactical automation policy using DELETE automation/patchpolicy/{pk}/. This can remove Windows update automation behavior; requires explicit grant, reason, typed policy-name confirmation, kill-switch, dedup/cooldown, and server-side patch-policy id resolution.',
+            array_merge(self::reasonProperties(), [
+                'policy_id' => ['type' => 'integer', 'description' => 'Tactical automation policy id from tactical_list_policies. The server resolves its patch-policy id from getPolicies.'],
+                'confirm_policy_name' => ['type' => 'string', 'description' => 'Typed Tactical automation policy name.'],
+            ]),
+            ['reason', 'policy_id', 'confirm_policy_name'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function resetPatchPoliciesTool(): array
+    {
+        return self::tool(
+            'tactical_reset_patch_policies',
+            'Directly bulk reset Tactical patch policies to inherit for the PSA client-derived Tactical client or site using POST automation/patchpolicy/reset/. This can affect many endpoints; the global empty-body reset is intentionally not exposed. Requires explicit grant, reason, typed client-name confirmation, kill-switch, dedup/cooldown, and server-derived client/site ids.',
+            array_merge(self::reasonProperties(), [
+                'scope' => ['type' => 'string', 'enum' => ['site', 'client'], 'description' => 'Reset scope derived from the PSA client Tactical site mapping. Default site.'],
+                'confirm_client_name' => ['type' => 'string', 'description' => 'Typed PSA client name for direct bulk reset confirmation.'],
+            ]),
+            ['reason', 'confirm_client_name'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function stageResetPatchPoliciesTool(): array
+    {
+        return self::tool(
+            'tactical_stage_reset_patch_policies',
+            'Stage a bulk reset of Tactical patch policies to inherit for the PSA client-derived Tactical client or site. The MCP call makes no reset call; cockpit approval re-derives the Tactical client/site scope, re-checks kill-switch and cooldown, then POSTs automation/patchpolicy/reset/.',
+            array_merge(self::reasonProperties(), [
+                'ticket_id' => ['type' => 'integer', 'description' => 'Required ticket ID anchoring the cockpit approval. The ticket must belong to client_id.'],
+                'scope' => ['type' => 'string', 'enum' => ['site', 'client'], 'description' => 'Reset scope derived from the PSA client Tactical site mapping. Default site.'],
+            ]),
+            ['ticket_id', 'reason'],
         );
     }
 }

@@ -14,6 +14,9 @@ use App\Models\User;
 use App\Rules\SafeTacticalWebUrl;
 use App\Services\Tactical\Actions\ActionRedactor;
 use App\Services\Tactical\Actions\InvalidActionParams;
+use App\Services\Tactical\Actions\PatchAction;
+use App\Services\Tactical\Actions\PatchInstallAction;
+use App\Services\Tactical\Actions\PatchScanAction;
 use App\Services\Tactical\Actions\RebootAction;
 use App\Services\Tactical\Actions\RecoverAction;
 use App\Services\Tactical\Actions\RunCommandAction;
@@ -59,6 +62,12 @@ class StaffTacticalActionToolExecutor
         'svcname',
         'upstream_service_name',
         'tactical_service_name',
+        'winupdate_id',
+        'update_id',
+        'update_pk',
+        'patch_pk',
+        'upstream_winupdate_id',
+        'tactical_patch_id',
     ];
 
     /** @var array<string, int> */
@@ -83,6 +92,10 @@ class StaffTacticalActionToolExecutor
         'tactical_restart_service' => 300,
         'tactical_stage_restart_service' => 300,
         'tactical_set_service_start_type' => 300,
+        'tactical_scan_patches' => 300,
+        'tactical_set_patch_action' => 120,
+        'tactical_install_approved_patches' => 600,
+        'tactical_stage_install_approved_patches' => 600,
     ];
 
     /** @var array<string, string> */
@@ -95,6 +108,7 @@ class StaffTacticalActionToolExecutor
         'tactical_stage_maintenance' => 'tactical_set_maintenance',
         'tactical_stage_stop_service' => 'tactical_stop_service',
         'tactical_stage_restart_service' => 'tactical_restart_service',
+        'tactical_stage_install_approved_patches' => 'tactical_install_approved_patches',
     ];
 
     public function __construct(
@@ -128,6 +142,10 @@ class StaffTacticalActionToolExecutor
             self::restartServiceTool(),
             self::stageRestartServiceTool(),
             self::setServiceStartTypeTool(),
+            self::scanPatchesTool(),
+            self::setPatchActionTool(),
+            self::installApprovedPatchesTool(),
+            self::stageInstallApprovedPatchesTool(),
         ];
     }
 
@@ -173,7 +191,10 @@ class StaffTacticalActionToolExecutor
             'tactical_start_service',
             'tactical_stop_service',
             'tactical_restart_service',
-            'tactical_set_service_start_type' => $this->executeBusTool($name, $arguments, $clientId, $actorLabel),
+            'tactical_set_service_start_type',
+            'tactical_scan_patches',
+            'tactical_set_patch_action',
+            'tactical_install_approved_patches' => $this->executeBusTool($name, $arguments, $clientId, $actorLabel),
             'tactical_open_remote_control' => $this->openRemoteControl($arguments, $clientId, $actorLabel),
             'tactical_refresh_device_snapshot' => $this->refreshSnapshot($arguments, $clientId, $actorLabel),
             default => ['error' => "Unknown Tactical action tool: {$name}"],
@@ -328,6 +349,12 @@ class StaffTacticalActionToolExecutor
         }
 
         if ($error = $this->confirmServiceNameError($tool, $arguments, $params)) {
+            $this->auditAttempt($tool, 'rejected', $clientId, $ticket, $asset, $contentHash, $error, $actorLabel);
+
+            return ['error' => $error];
+        }
+
+        if ($error = $this->confirmPatchInstallError($tool, $arguments)) {
             $this->auditAttempt($tool, 'rejected', $clientId, $ticket, $asset, $contentHash, $error, $actorLabel);
 
             return ['error' => $error];
@@ -697,6 +724,9 @@ class StaffTacticalActionToolExecutor
                 'tactical_stop_service' => [new ServiceControlAction('stop'), ['service_name' => $arguments['service_name'] ?? null], null],
                 'tactical_restart_service' => [new ServiceControlAction('restart'), ['service_name' => $arguments['service_name'] ?? null], null],
                 'tactical_set_service_start_type' => [new ServiceStartTypeAction, ['service_name' => $arguments['service_name'] ?? null, 'start_type' => $arguments['start_type'] ?? null], null],
+                'tactical_scan_patches' => [new PatchScanAction, [], null],
+                'tactical_set_patch_action' => [new PatchAction, ['patch_id' => $arguments['patch_id'] ?? null, 'action' => $arguments['action'] ?? null], null],
+                'tactical_install_approved_patches' => [new PatchInstallAction, [], null],
                 default => throw new \InvalidArgumentException("Unsupported Tactical action tool {$tool}"),
             };
         } catch (\InvalidArgumentException|InvalidActionParams $e) {
@@ -743,6 +773,9 @@ class StaffTacticalActionToolExecutor
             'tactical_stop_service' => [new ServiceControlAction('stop'), $params],
             'tactical_restart_service' => [new ServiceControlAction('restart'), $params],
             'tactical_set_service_start_type' => [new ServiceStartTypeAction, $params],
+            'tactical_scan_patches' => [new PatchScanAction, $params],
+            'tactical_set_patch_action' => [new PatchAction, $params],
+            'tactical_install_approved_patches' => [new PatchInstallAction, $params],
             default => throw new \InvalidArgumentException("Unsupported staged Tactical direct tool {$directTool}"),
         };
     }
@@ -810,6 +843,9 @@ class StaffTacticalActionToolExecutor
             'tactical_stop_service' => new ServiceControlAction('stop'),
             'tactical_restart_service' => new ServiceControlAction('restart'),
             'tactical_set_service_start_type' => new ServiceStartTypeAction,
+            'tactical_scan_patches' => new PatchScanAction,
+            'tactical_set_patch_action' => new PatchAction,
+            'tactical_install_approved_patches' => new PatchInstallAction,
             default => new RecoverAction,
         };
     }
@@ -837,6 +873,10 @@ class StaffTacticalActionToolExecutor
                 'service_name' => $arguments['service_name'] ?? null,
                 'start_type' => $arguments['start_type'] ?? null,
             ],
+            'tactical_set_patch_action' => [
+                'patch_id' => $arguments['patch_id'] ?? null,
+                'action' => $arguments['action'] ?? null,
+            ],
             default => [],
         };
     }
@@ -862,7 +902,7 @@ class StaffTacticalActionToolExecutor
 
     private function confirmHostnameError(string $tool, array $arguments, Asset $asset): ?string
     {
-        if (! in_array($tool, ['tactical_run_command', 'tactical_reboot_device', 'tactical_shutdown_device', 'tactical_stop_service', 'tactical_restart_service'], true)) {
+        if (! in_array($tool, ['tactical_run_command', 'tactical_reboot_device', 'tactical_shutdown_device', 'tactical_stop_service', 'tactical_restart_service', 'tactical_install_approved_patches'], true)) {
             return null;
         }
 
@@ -870,6 +910,20 @@ class StaffTacticalActionToolExecutor
         $expected = $this->targetHostname($asset);
         if ($expected === '' || strcasecmp($expected, $typed) !== 0) {
             return 'The typed hostname does not match this device. Tactical action cancelled.';
+        }
+
+        return null;
+    }
+
+    private function confirmPatchInstallError(string $tool, array $arguments): ?string
+    {
+        if ($tool !== 'tactical_install_approved_patches') {
+            return null;
+        }
+
+        $typed = mb_strtolower(trim((string) ($arguments['confirm_install'] ?? '')));
+        if ($typed !== 'install approved patches') {
+            return 'Type "install approved patches" to confirm this Windows patch install. Tactical patch install cancelled.';
         }
 
         return null;
@@ -908,6 +962,19 @@ class StaffTacticalActionToolExecutor
             return ['error' => 'start_type must be one of: '.implode(', ', ServiceStartTypeAction::ALLOWED_START_TYPES).'.'];
         }
 
+        if ($tool === 'tactical_set_patch_action') {
+            if (PatchAction::normalizeAction($arguments['action'] ?? null) === null) {
+                return ['error' => 'action must be one of: '.implode(', ', PatchAction::ALLOWED_ACTIONS).'.'];
+            }
+
+            $resolved = $this->resolvePatchId($asset, $arguments);
+            if (isset($resolved['error'])) {
+                return ['error' => $resolved['error']];
+            }
+
+            $arguments['patch_id'] = $resolved['patch_id'];
+        }
+
         if (! $this->isServiceTool($tool)) {
             return ['arguments' => $arguments];
         }
@@ -920,6 +987,53 @@ class StaffTacticalActionToolExecutor
         $arguments['service_name'] = $resolved['service_name'];
 
         return ['arguments' => $arguments];
+    }
+
+    /**
+     * @return array{patch_id?: int, error?: string}
+     */
+    private function resolvePatchId(Asset $asset, array $arguments): array
+    {
+        $patchId = $this->positiveInteger($arguments['patch_id'] ?? null);
+        $guid = isset($arguments['guid']) && is_scalar($arguments['guid']) ? trim((string) $arguments['guid']) : '';
+        $kb = isset($arguments['kb']) && is_scalar($arguments['kb']) ? trim((string) $arguments['kb']) : '';
+        $title = isset($arguments['title']) && is_scalar($arguments['title']) ? trim((string) $arguments['title']) : '';
+
+        if ($patchId === null && $guid === '' && $kb === '' && $title === '') {
+            return ['error' => 'patch_id, guid, kb, or title is required'];
+        }
+
+        try {
+            $patches = $this->client->getPatches((string) $asset->tacticalAsset->agent_id);
+        } catch (TacticalClientException) {
+            return ['error' => 'Could not read Tactical Windows updates to resolve patch scope; no patch action was sent.'];
+        }
+
+        foreach ($patches as $patch) {
+            if (! is_array($patch)) {
+                continue;
+            }
+
+            $rowId = $this->positiveInteger($patch['id'] ?? null);
+            if ($rowId === null) {
+                continue;
+            }
+
+            $rowGuid = isset($patch['guid']) && is_scalar($patch['guid']) ? trim((string) $patch['guid']) : '';
+            $rowKb = isset($patch['kb']) && is_scalar($patch['kb']) ? trim((string) $patch['kb']) : '';
+            $rowTitle = isset($patch['title']) && is_scalar($patch['title']) ? trim((string) $patch['title']) : '';
+
+            if (
+                ($patchId !== null && $rowId === $patchId)
+                || ($guid !== '' && strcasecmp($rowGuid, $guid) === 0)
+                || ($kb !== '' && strcasecmp($rowKb, $kb) === 0)
+                || ($title !== '' && strcasecmp($rowTitle, $title) === 0)
+            ) {
+                return ['patch_id' => $rowId];
+            }
+        }
+
+        return ['error' => 'Windows update was not found on the server-derived Tactical agent; no patch action was sent.'];
     }
 
     /**
@@ -1081,6 +1195,9 @@ class StaffTacticalActionToolExecutor
             'tactical_stop_service', 'tactical_stage_stop_service' => 'tactical.service_stop',
             'tactical_restart_service', 'tactical_stage_restart_service' => 'tactical.service_restart',
             'tactical_set_service_start_type' => 'tactical.service_start_type',
+            'tactical_scan_patches' => 'tactical.patch_scan',
+            'tactical_set_patch_action' => 'tactical.patch_action',
+            'tactical_install_approved_patches', 'tactical_stage_install_approved_patches' => 'tactical.patch_install',
             default => null,
         };
     }
@@ -1241,6 +1358,7 @@ class StaffTacticalActionToolExecutor
             'tactical_recover_mesh' => 'Recover Mesh agent services on '.$this->targetHostname($asset).'.',
             'tactical_set_maintenance' => (new SetMaintenanceAction)->summary($params).' on '.$this->targetHostname($asset).'.',
             'tactical_stop_service', 'tactical_restart_service' => $action->summary($params).' on '.$this->targetHostname($asset).'.',
+            'tactical_install_approved_patches' => 'Install approved Windows patches on '.$this->targetHostname($asset).'.',
             default => "{$stageTool} for ".$this->targetHostname($asset).'.',
         };
 
@@ -1579,6 +1697,82 @@ class StaffTacticalActionToolExecutor
                 ],
             ]),
             ['reason', 'service_name', 'start_type'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function patchSelectorProperties(): array
+    {
+        return [
+            'patch_id' => [
+                'type' => 'integer',
+                'description' => 'Optional Windows update id from tactical_get_device_patches. The server re-reads current patches for the derived Tactical agent and sends the matching id upstream.',
+            ],
+            'guid' => [
+                'type' => 'string',
+                'description' => 'Optional Windows update GUID selector. The server resolves it against the current patch list for the derived Tactical agent.',
+            ],
+            'kb' => [
+                'type' => 'string',
+                'description' => 'Optional KB selector such as KB5000001. The server resolves it against the current patch list for the derived Tactical agent.',
+            ],
+            'title' => [
+                'type' => 'string',
+                'description' => 'Optional exact patch title selector. The server resolves it against the current patch list for the derived Tactical agent.',
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private static function scanPatchesTool(): array
+    {
+        return self::tool(
+            'tactical_scan_patches',
+            'Start a Windows update scan on one server-derived endpoint using Tactical POST winupdate/{agent_id}/scan/. Requires explicit grant, reason, kill-switch, dedup/cooldown, and audited TacticalActionService dispatch.',
+            self::targetProperties(),
+            ['reason'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function setPatchActionTool(): array
+    {
+        return self::tool(
+            'tactical_set_patch_action',
+            'Set one visible Windows update action on a server-derived endpoint using Tactical PUT winupdate/{pk}/ with action only. The upstream serializer accepts broad fields; this tool narrows it to action=approve|ignore|nothing|inherit after resolving the update from the current agent patch list.',
+            array_merge(self::targetProperties(), self::patchSelectorProperties(), [
+                'action' => [
+                    'type' => 'string',
+                    'enum' => PatchAction::ALLOWED_ACTIONS,
+                    'description' => 'Allowed Tactical WinUpdate action value.',
+                ],
+            ]),
+            ['reason', 'action'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function installApprovedPatchesTool(): array
+    {
+        return self::tool(
+            'tactical_install_approved_patches',
+            'Install all approved Windows updates on one server-derived endpoint immediately using Tactical POST winupdate/{agent_id}/install/. Approved Windows updates can reboot, interrupt users, and change system state. Requires explicit grant, reason, confirm_hostname, confirm_install, kill-switch, dedup/cooldown, and audited TacticalActionService dispatch.',
+            array_merge(self::targetProperties(), [
+                'confirm_hostname' => ['type' => 'string', 'description' => 'Typed target hostname. Defense-in-depth friction only.'],
+                'confirm_install' => ['type' => 'string', 'description' => 'Type exactly: install approved patches'],
+            ]),
+            ['reason', 'confirm_hostname', 'confirm_install'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function stageInstallApprovedPatchesTool(): array
+    {
+        return self::tool(
+            'tactical_stage_install_approved_patches',
+            'Stage installation of all approved Windows updates on one endpoint for cockpit approval. Approved Windows updates can reboot, interrupt users, and change system state; approval revalidates ticket, asset, kill-switch, cooldown, and server-derived agent scope before dispatch.',
+            self::targetProperties(ticket: true),
+            ['ticket_id', 'reason'],
         );
     }
 }
