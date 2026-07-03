@@ -2,6 +2,7 @@
 
 namespace App\Support;
 
+use App\Services\Agent\RequestToolTool;
 use App\Services\Assistant\AssistantToolDefinitions;
 use App\Services\Chet\ChetDataSurfaceTools;
 use App\Services\Chet\OperatorBridgeTools;
@@ -16,7 +17,7 @@ class McpToolRegistry
     {
         $general = self::shape(array_merge(
             AssistantToolDefinitions::getTools(hasClient: false),
-            [self::proposeCloseTool(), self::sendReplyTool()],
+            [self::proposeCloseTool(), self::sendReplyTool(), self::requestToolTool()],
             ChetDataSurfaceTools::registryGeneralTools(),
         ));
         $generalNames = array_flip(array_column($general, 'name'));
@@ -114,6 +115,23 @@ class McpToolRegistry
                 'required' => ['ticket_id', 'reason'],
             ],
         ];
+    }
+
+    /** @return array<string, mixed> */
+    public static function requestToolTool(): array
+    {
+        $tool = RequestToolTool::definition();
+        $schema = $tool['input_schema'];
+        $schema['properties'] = array_merge([
+            'ticket_id' => [
+                'type' => 'integer',
+                'description' => 'The ticket ID where the tooling gap was encountered. The server derives the client from this ticket.',
+            ],
+        ], $schema['properties']);
+        $schema['required'] = array_values(array_unique(array_merge(['ticket_id'], $schema['required'])));
+        $tool['input_schema'] = $schema;
+
+        return $tool;
     }
 
     /** @return array<string, mixed> */

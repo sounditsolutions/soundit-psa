@@ -1036,6 +1036,8 @@ An MCP (Model Context Protocol) server is exposed at `POST /api/mcp/staff`, inte
 
 Held AI Technician actions such as `propose_close` and `send_reply` never execute directly from MCP. They create held cockpit proposals for a human operator to approve. Chet-labeled tokens must pass `client_id` for these client-scoped actions, and `send_reply` accepts an optional `body` that is held verbatim for cockpit review.
 
+The `request_tool` grant lets a staff MCP client record an internal tooling gap against a ticket. It only writes a `ToolingGap` row for later operator triage; it does not mutate the ticket, create a Technician run, send email, or trigger follow-up work directly.
+
 **Enable:**
 1. Generate a bearer token: `php artisan mcp:rotate-staff-token` (token only displayed once)
 2. In the Teams bot's `MCP_SERVERS_FILE`, add an entry with `url: "https://your-psa-domain/api/mcp/staff"` and the generated token as `authorization_token`
