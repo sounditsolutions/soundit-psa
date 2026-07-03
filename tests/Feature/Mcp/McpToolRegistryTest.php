@@ -15,7 +15,7 @@ class McpToolRegistryTest extends TestCase
     {
         $groups = McpToolRegistry::groups();
 
-        $this->assertSame(['general', 'client', 'integration', 'cipp_write', 'tactical_action', 'wiki_write', 'psa_action', 'bridge'], array_keys($groups));
+        $this->assertSame(['general', 'client', 'integration', 'cipp_write', 'tactical_action', 'tactical_admin', 'wiki_write', 'psa_action', 'bridge'], array_keys($groups));
 
         $names = fn (string $group): array => array_column($groups[$group]['tools'], 'name');
 
@@ -32,6 +32,9 @@ class McpToolRegistryTest extends TestCase
         $this->assertContains('tactical_run_command', $names('tactical_action'));
         $this->assertContains('tactical_stage_command', $names('tactical_action'));
         $this->assertContains('tactical_shutdown_device', $names('tactical_action'));
+        $this->assertContains('tactical_create_client_site', $names('tactical_admin'));
+        $this->assertContains('tactical_set_default_alert_template', $names('tactical_admin'));
+        $this->assertContains('tactical_get_or_create_installer', $names('tactical_admin'));
         $this->assertContains('create_ticket', $names('psa_action'));
         $this->assertContains('send_email', $names('psa_action'));
         $this->assertContains('stage_email', $names('psa_action'));
@@ -41,6 +44,7 @@ class McpToolRegistryTest extends TestCase
         $this->assertContains('post_to_operator', $names('bridge'));
         $this->assertTrue($groups['wiki_write']['sensitive']);
         $this->assertTrue($groups['tactical_action']['sensitive']);
+        $this->assertTrue($groups['tactical_admin']['sensitive']);
         $this->assertTrue($groups['psa_action']['sensitive']);
         $this->assertTrue($groups['bridge']['sensitive']);
         $this->assertTrue($groups['cipp_write']['sensitive']);
@@ -117,6 +121,9 @@ class McpToolRegistryTest extends TestCase
         $this->assertContains('tactical_run_command', $all);
         $this->assertContains('tactical_stage_command', $all);
         $this->assertContains('tactical_shutdown_device', $all);
+        $this->assertContains('tactical_create_client_site', $all);
+        $this->assertContains('tactical_set_default_alert_template', $all);
+        $this->assertContains('tactical_get_or_create_installer', $all);
         $this->assertContains('send_email', $all);
         $this->assertContains('stage_email', $all);
         $this->assertContains('write_public_note', $all);
