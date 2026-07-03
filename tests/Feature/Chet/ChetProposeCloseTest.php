@@ -25,7 +25,12 @@ class ChetProposeCloseTest extends TestCase
 
     private function chetToken(array $tools): string
     {
-        return McpConfig::rotateStaffToken(allowedTools: $tools, label: 'chet');
+        return McpConfig::rotateStaffToken(
+            allowedTools: $tools,
+            label: 'chet',
+            aiActor: true,
+            requireExplicitClientScope: true,
+        );
     }
 
     private function callTool(string $token, string $name, array $arguments): TestResponse
@@ -118,6 +123,64 @@ class ChetProposeCloseTest extends TestCase
         $this->assertTrue((bool) $response->json('result.isError'));
         $this->assertStringContainsString('different client', (string) $response->json('result.content.0.text'));
         $this->assertSame(0, TechnicianRun::where('ticket_id', $otherTicket->id)->count());
+    }
+
+    public function test_non_chet_token_with_explicit_scope_requires_client_id_and_ticket_membership(): void
+    {
+        $requestingClient = Client::factory()->create();
+        $otherClient = Client::factory()->create();
+        $otherTicket = Ticket::factory()->create(['client_id' => $otherClient->id]);
+        $token = McpConfig::rotateStaffToken(
+            allowedTools: ['propose_close'],
+            label: 'office-bot',
+            requireExplicitClientScope: true,
+        );
+
+        $missing = $this->callTool($token, 'propose_close', [
+            'ticket_id' => $otherTicket->id,
+            'reason' => 'Missing client scope.',
+            'confidence' => 0.95,
+        ]);
+        $missing->assertOk();
+        $this->assertTrue((bool) $missing->json('result.isError'));
+        $this->assertStringContainsString('client_id is required', (string) $missing->json('result.content.0.text'));
+
+        $crossClient = $this->callTool($token, 'propose_close', [
+            'client_id' => $requestingClient->id,
+            'ticket_id' => $otherTicket->id,
+            'reason' => 'Cross-client write.',
+            'confidence' => 0.95,
+        ]);
+        $crossClient->assertOk();
+        $this->assertTrue((bool) $crossClient->json('result.isError'));
+        $this->assertStringContainsString('different client', (string) $crossClient->json('result.content.0.text'));
+        $this->assertSame(0, TechnicianRun::where('ticket_id', $otherTicket->id)->count());
+    }
+
+    public function test_non_chet_token_without_explicit_scope_keeps_derived_ticket_scope(): void
+    {
+        $ticket = Ticket::factory()->create(['status' => TicketStatus::New]);
+        $otherClient = Client::factory()->create();
+        $token = McpConfig::rotateStaffToken(
+            allowedTools: ['propose_close'],
+            label: 'staff-trust',
+            requireExplicitClientScope: false,
+        );
+
+        $response = $this->callTool($token, 'propose_close', [
+            'client_id' => $otherClient->id,
+            'ticket_id' => $ticket->id,
+            'reason' => 'Staff-trust token derives client from the ticket.',
+            'confidence' => 0.95,
+        ]);
+
+        $response->assertOk();
+        $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
+        $this->assertDatabaseHas('technician_runs', [
+            'ticket_id' => $ticket->id,
+            'action_type' => 'propose_close',
+            'state' => TechnicianRunState::AwaitingApproval->value,
+        ]);
     }
 
     public function test_chet_token_without_propose_close_scope_is_denied(): void

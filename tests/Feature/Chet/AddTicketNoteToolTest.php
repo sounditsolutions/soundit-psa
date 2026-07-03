@@ -24,7 +24,12 @@ class AddTicketNoteToolTest extends TestCase
 
     private function chetToken(array $tools = ['find_staff', 'get_staff', 'add_ticket_note']): string
     {
-        return McpConfig::rotateStaffToken(allowedTools: $tools, label: 'chet');
+        return McpConfig::rotateStaffToken(
+            allowedTools: $tools,
+            label: 'chet',
+            aiActor: true,
+            requireExplicitClientScope: true,
+        );
     }
 
     private function callTool(string $token, string $name, array $arguments): TestResponse
@@ -105,6 +110,62 @@ class AddTicketNoteToolTest extends TestCase
         $this->assertSame($ticket->id, $audit->arguments['ticket_id']);
         $this->assertSame('[note body withheld]', $audit->arguments['body']);
         $this->assertStringNotContainsString($body, (string) json_encode($audit->arguments));
+    }
+
+    public function test_ai_actor_flag_not_chet_label_controls_note_actor(): void
+    {
+        $actor = $this->configureAiActor();
+        $token = McpConfig::rotateStaffToken(
+            allowedTools: ['add_ticket_note'],
+            label: 'office-bot',
+            aiActor: true,
+            requireExplicitClientScope: true,
+        );
+        $client = Client::factory()->create();
+        $ticket = Ticket::factory()->create(['client_id' => $client->id]);
+
+        $response = $this->callTool($token, 'add_ticket_note', [
+            'client_id' => $client->id,
+            'ticket_id' => $ticket->id,
+            'body' => 'Non-Chet AI actor note.',
+        ]);
+
+        $response->assertOk();
+        $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
+
+        $note = TicketNote::findOrFail($this->decodedResult($response)['note_id']);
+        $this->assertSame($actor->id, $note->author_id);
+        $this->assertDatabaseHas('mcp_audit_logs', [
+            'method' => 'tools/call',
+            'tool_name' => 'add_ticket_note',
+            'status' => 'success',
+            'actor_label' => 'mcp-staff:office-bot',
+        ]);
+    }
+
+    public function test_chet_label_without_ai_actor_flag_does_not_trigger_required_ai_actor_path(): void
+    {
+        $serviceUser = User::factory()->create(['name' => 'Service Account']);
+        $token = McpConfig::rotateStaffToken(
+            allowedTools: ['add_ticket_note'],
+            label: 'chet',
+            aiActor: false,
+            requireExplicitClientScope: true,
+        );
+        $client = Client::factory()->create();
+        $ticket = Ticket::factory()->create(['client_id' => $client->id]);
+
+        $response = $this->callTool($token, 'add_ticket_note', [
+            'client_id' => $client->id,
+            'ticket_id' => $ticket->id,
+            'body' => 'Chet label alone must not require an AI actor setting.',
+        ]);
+
+        $response->assertOk();
+        $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
+
+        $note = TicketNote::findOrFail($this->decodedResult($response)['note_id']);
+        $this->assertSame($serviceUser->id, $note->author_id);
     }
 
     public function test_chet_note_write_requires_explicit_ai_actor_configuration(): void

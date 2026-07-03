@@ -54,20 +54,20 @@ class TechnicianConfig
     }
 
     /**
-     * Strict Chet write actor. Unlike aiActorUserId(), this never falls back to
-     * the first user because MCP-authored Chet writes need explicit attribution.
+     * Strict AI-authored write actor. Unlike aiActorUserId(), this never falls
+     * back to the first user because MCP-authored writes need explicit attribution.
      */
     public static function requiredAiActorUserId(): int
     {
         $configured = Setting::getValue('triage_system_user_id');
 
         if (! is_numeric($configured) || (int) $configured <= 0) {
-            throw new \RuntimeException('AI actor user is not configured for Chet writes.');
+            throw new \RuntimeException('AI actor user is not configured for MCP AI-authored writes.');
         }
 
         $actorId = (int) $configured;
         if (! User::whereKey($actorId)->exists()) {
-            throw new \RuntimeException('Configured AI actor user does not exist for Chet writes.');
+            throw new \RuntimeException('Configured AI actor user does not exist for MCP AI-authored writes.');
         }
 
         return $actorId;

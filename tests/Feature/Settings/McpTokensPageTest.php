@@ -145,6 +145,144 @@ class McpTokensPageTest extends TestCase
         $this->assertStringNotContainsString($plain, json_encode($row->getAttributes()));
     }
 
+    public function test_store_applies_safer_trust_defaults_and_audits_flags(): void
+    {
+        $this->actingAs($this->user)->post(route('settings.mcp-tokens.store'), [
+            'label' => 'opsbot',
+            'tools' => ['find_staff'],
+        ])->assertOk();
+
+        $row = McpToken::where('label', 'opsbot')->firstOrFail();
+        $this->assertFalse($row->ai_actor);
+        $this->assertTrue($row->require_explicit_client_scope);
+
+        $audit = McpAuditLog::where('method', 'token/mint')->where('tool_name', 'opsbot')->firstOrFail();
+        $this->assertSame([
+            'tools' => ['find_staff'],
+            'ai_actor' => false,
+            'require_explicit_client_scope' => true,
+        ], $audit->arguments);
+    }
+
+    public function test_store_preserves_existing_trust_flags_when_rotating_tokens(): void
+    {
+        McpConfig::rotateStaffToken(
+            allowedTools: ['find_staff'],
+            label: 'chet',
+            aiActor: true,
+            requireExplicitClientScope: true,
+        );
+        McpConfig::rotateStaffToken(
+            allowedTools: ['find_staff'],
+            label: 'office-teams-pack',
+            aiActor: false,
+            requireExplicitClientScope: false,
+        );
+
+        $this->actingAs($this->user)->post(route('settings.mcp-tokens.store'), [
+            'label' => 'chet',
+            'tools' => ['get_staff'],
+            'ai_actor' => '0',
+            'require_explicit_client_scope' => '0',
+        ])->assertOk();
+
+        $chet = McpToken::where('label', 'chet')->firstOrFail();
+        $this->assertTrue($chet->ai_actor);
+        $this->assertTrue($chet->require_explicit_client_scope);
+        $this->assertSame(['get_staff'], $chet->tools);
+
+        $this->actingAs($this->user)->post(route('settings.mcp-tokens.store'), [
+            'label' => 'office-teams-pack',
+            'tools' => ['get_staff'],
+            'ai_actor' => '0',
+            'require_explicit_client_scope' => '1',
+        ])->assertOk();
+
+        $teams = McpToken::where('label', 'office-teams-pack')->firstOrFail();
+        $this->assertFalse($teams->ai_actor);
+        $this->assertFalse($teams->require_explicit_client_scope);
+        $this->assertSame(['get_staff'], $teams->tools);
+    }
+
+    public function test_store_preserves_existing_trust_flags_when_submitted_label_normalizes_to_existing_token(): void
+    {
+        McpConfig::rotateStaffToken(
+            allowedTools: ['find_staff'],
+            label: 'chet',
+            aiActor: true,
+            requireExplicitClientScope: true,
+        );
+
+        $this->actingAs($this->user)->post(route('settings.mcp-tokens.store'), [
+            'label' => '-chet-',
+            'tools' => ['get_staff'],
+            'ai_actor' => '0',
+            'require_explicit_client_scope' => '0',
+        ])->assertOk();
+
+        $this->assertSame(1, McpToken::where('label', 'chet')->count());
+        $chet = McpToken::where('label', 'chet')->firstOrFail();
+        $this->assertTrue($chet->ai_actor);
+        $this->assertTrue($chet->require_explicit_client_scope);
+        $this->assertSame(['get_staff'], $chet->tools);
+    }
+
+    public function test_store_treats_revoked_label_as_new_token_for_trust_defaults(): void
+    {
+        McpConfig::rotateStaffToken(
+            allowedTools: ['find_staff'],
+            label: 'office-teams-pack',
+            aiActor: false,
+            requireExplicitClientScope: false,
+        );
+        McpToken::where('label', 'office-teams-pack')->firstOrFail()
+            ->forceFill(['revoked_at' => now()])
+            ->save();
+
+        $this->actingAs($this->user)->post(route('settings.mcp-tokens.store'), [
+            'label' => 'office-teams-pack',
+            'tools' => ['get_staff'],
+        ])->assertOk();
+
+        $token = McpToken::where('label', 'office-teams-pack')->firstOrFail();
+        $this->assertNull($token->revoked_at);
+        $this->assertFalse($token->ai_actor);
+        $this->assertTrue($token->require_explicit_client_scope);
+        $this->assertSame(['get_staff'], $token->tools);
+    }
+
+    public function test_detail_page_updates_trust_flags(): void
+    {
+        McpConfig::rotateStaffToken(
+            allowedTools: ['find_staff'],
+            label: 'opsbot',
+            aiActor: false,
+            requireExplicitClientScope: false,
+        );
+        $token = McpToken::where('label', 'opsbot')->firstOrFail();
+
+        $this->actingAs($this->user)
+            ->get(route('settings.mcp-tokens.show', $token))
+            ->assertOk()
+            ->assertSee('Trust Controls')
+            ->assertSee('name="ai_actor"', false)
+            ->assertSee('name="require_explicit_client_scope"', false);
+
+        $this->actingAs($this->user)
+            ->patch(route('settings.mcp-tokens.trust-flags', $token), [
+                'ai_actor' => '1',
+                'require_explicit_client_scope' => '1',
+            ])
+            ->assertRedirect(route('settings.mcp-tokens.show', $token));
+
+        $this->assertTrue($token->fresh()->ai_actor);
+        $this->assertTrue($token->fresh()->require_explicit_client_scope);
+        $this->assertDatabaseHas('mcp_audit_logs', [
+            'method' => 'token/trust_flags',
+            'tool_name' => 'opsbot',
+        ]);
+    }
+
     public function test_store_rejects_unknown_tool_names(): void
     {
         $this->actingAs($this->user)->post(route('settings.mcp-tokens.store'), [
@@ -299,7 +437,11 @@ class McpTokensPageTest extends TestCase
 
         $row = McpAuditLog::where('method', 'token/mint')->firstOrFail();
         $this->assertStringContainsString($this->user->email, (string) $row->actor_label);
-        $this->assertSame(['tools' => ['find_staff', 'get_staff']], $row->arguments);
+        $this->assertSame([
+            'tools' => ['find_staff', 'get_staff'],
+            'ai_actor' => false,
+            'require_explicit_client_scope' => true,
+        ], $row->arguments);
     }
 
     public function test_re_minting_an_existing_label_is_audited_as_rotate(): void

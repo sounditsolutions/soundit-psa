@@ -29,7 +29,12 @@ class ChetSendReplyTest extends TestCase
 
     private function chetToken(array $tools = ['send_reply']): string
     {
-        return McpConfig::rotateStaffToken(allowedTools: $tools, label: 'chet');
+        return McpConfig::rotateStaffToken(
+            allowedTools: $tools,
+            label: 'chet',
+            aiActor: true,
+            requireExplicitClientScope: true,
+        );
     }
 
     private function callTool(string $token, string $name, array $arguments): TestResponse

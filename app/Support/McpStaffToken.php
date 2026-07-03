@@ -16,6 +16,8 @@ final class McpStaffToken
         public readonly ?string $label = null,
         public readonly ?int $id = null,
         public readonly ?string $directive = null,
+        public readonly bool $aiActor = false,
+        public readonly bool $requireExplicitClientScope = false,
     ) {}
 
     public function allows(string $toolName): bool

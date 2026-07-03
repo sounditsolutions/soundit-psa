@@ -30,7 +30,12 @@ class WikiAddFactToolTest extends TestCase
 
     private function chetToken(array $tools = ['wiki_add_fact'], string $label = 'chet'): string
     {
-        return McpConfig::rotateStaffToken(allowedTools: $tools, label: $label);
+        return McpConfig::rotateStaffToken(
+            allowedTools: $tools,
+            label: $label,
+            aiActor: true,
+            requireExplicitClientScope: true,
+        );
     }
 
     private function callTool(string $token, string $name, array $arguments): TestResponse
@@ -227,6 +232,29 @@ class WikiAddFactToolTest extends TestCase
             'section_anchor' => 'assets',
             'subject_key' => 'asset:dc01:role',
             'statement' => 'This should not reach the executor without explicit client scope.',
+        ]);
+
+        $response->assertOk();
+        $this->assertTrue((bool) $response->json('result.isError'));
+        $this->assertStringContainsString('client_id is required', (string) $response->json('result.content.0.text'));
+        $this->assertSame(0, WikiFact::count());
+    }
+
+    public function test_client_fact_requires_client_id_for_any_token_label(): void
+    {
+        $this->configureAiActor();
+        $token = McpConfig::rotateStaffToken(
+            allowedTools: ['wiki_add_fact'],
+            label: 'office-bot',
+            aiActor: true,
+        );
+
+        $response = $this->callTool($token, 'wiki_add_fact', [
+            'scope' => 'client',
+            'page_slug' => 'infrastructure',
+            'section_anchor' => 'assets',
+            'subject_key' => 'asset:dc01:role',
+            'statement' => 'Client-scoped facts always need explicit client scope.',
         ]);
 
         $response->assertOk();

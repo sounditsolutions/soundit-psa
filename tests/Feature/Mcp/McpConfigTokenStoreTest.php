@@ -33,6 +33,37 @@ class McpConfigTokenStoreTest extends TestCase
         $this->assertFalse($resolved->allows('create_ticket'));
     }
 
+    public function test_scoped_rotate_uses_safer_app_layer_trust_defaults_and_resolves_flags(): void
+    {
+        $plain = McpConfig::rotateStaffToken(allowedTools: ['find_staff'], label: 'opsbot');
+
+        $row = McpToken::where('label', 'opsbot')->firstOrFail();
+        $this->assertFalse($row->ai_actor);
+        $this->assertTrue($row->require_explicit_client_scope);
+
+        $resolved = McpConfig::resolveStaffToken($plain);
+        $this->assertFalse($resolved->aiActor);
+        $this->assertTrue($resolved->requireExplicitClientScope);
+    }
+
+    public function test_scoped_rotate_can_store_explicit_trust_flags(): void
+    {
+        $plain = McpConfig::rotateStaffToken(
+            allowedTools: ['find_staff'],
+            label: 'office-bot',
+            aiActor: true,
+            requireExplicitClientScope: false,
+        );
+
+        $row = McpToken::where('label', 'office-bot')->firstOrFail();
+        $this->assertTrue($row->ai_actor);
+        $this->assertFalse($row->require_explicit_client_scope);
+
+        $resolved = McpConfig::resolveStaffToken($plain);
+        $this->assertTrue($resolved->aiActor);
+        $this->assertFalse($resolved->requireExplicitClientScope);
+    }
+
     public function test_resolve_carries_token_directive(): void
     {
         $plain = McpConfig::rotateStaffToken(allowedTools: ['find_staff'], label: 'chet');
@@ -65,6 +96,31 @@ class McpConfigTokenStoreTest extends TestCase
         $this->assertSame(['get_staff'], McpConfig::resolveStaffToken($new)->allowedTools);
     }
 
+    public function test_rotating_revoked_label_uses_new_token_trust_defaults(): void
+    {
+        McpConfig::rotateStaffToken(
+            allowedTools: ['find_staff'],
+            label: 'office-bot',
+            aiActor: false,
+            requireExplicitClientScope: false,
+        );
+        McpToken::where('label', 'office-bot')->firstOrFail()
+            ->forceFill(['revoked_at' => now()])
+            ->save();
+
+        $plain = McpConfig::rotateStaffToken(allowedTools: ['get_staff'], label: 'office-bot');
+
+        $row = McpToken::where('label', 'office-bot')->firstOrFail();
+        $this->assertNull($row->revoked_at);
+        $this->assertFalse($row->ai_actor);
+        $this->assertTrue($row->require_explicit_client_scope);
+        $this->assertSame(['get_staff'], $row->tools);
+
+        $resolved = McpConfig::resolveStaffToken($plain);
+        $this->assertFalse($resolved->aiActor);
+        $this->assertTrue($resolved->requireExplicitClientScope);
+    }
+
     public function test_revoked_token_no_longer_resolves(): void
     {
         $plain = McpConfig::rotateStaffToken(allowedTools: ['find_staff'], label: 'chet');
@@ -82,6 +138,8 @@ class McpConfigTokenStoreTest extends TestCase
         $this->assertNotNull($resolved);
         $this->assertNull($resolved->allowedTools, 'legacy token = full surface');
         $this->assertSame('mcp-legacy', $resolved->actorLabel(), 'legacy actor label is platform-neutral');
+        $this->assertFalse($resolved->aiActor);
+        $this->assertFalse($resolved->requireExplicitClientScope);
     }
 
     public function test_legacy_actor_label_does_not_collide_with_scoped_legacy_label(): void

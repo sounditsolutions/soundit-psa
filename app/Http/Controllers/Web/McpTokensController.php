@@ -47,24 +47,31 @@ class McpTokensController extends Controller
             'label' => ['required', 'string', 'max:100', 'regex:/^[A-Za-z0-9_.:-]+$/'],
             'tools' => ['required', 'array', 'min:1'],
             'tools.*' => ['string', Rule::in(McpToolRegistry::allToolNames())],
+            'ai_actor' => ['sometimes', 'boolean'],
+            'require_explicit_client_scope' => ['sometimes', 'boolean'],
         ]);
 
         $tools = array_values($validated['tools']);
-        $isRotate = McpConfig::hasScopedStaffTokenLabel($validated['label']);
+        $label = McpConfig::normalizeLabel($validated['label']);
+        $existingToken = McpToken::query()->where('label', $label)->first();
+        $isRotate = $existingToken !== null && ! $existingToken->isRevoked();
+        $flags = $this->trustFlagsForMintOrRotate($request, $isRotate ? $existingToken : null);
 
         $token = McpConfig::rotateStaffToken(
             allowedTools: $tools,
-            label: $validated['label'],
+            label: $label,
+            aiActor: $flags['ai_actor'],
+            requireExplicitClientScope: $flags['require_explicit_client_scope'],
         );
 
         $this->audit(
             $request,
             $isRotate ? 'token/rotate' : 'token/mint',
-            $validated['label'],
-            ['tools' => $tools],
+            $label,
+            ['tools' => $tools] + $flags,
         );
 
-        return $this->indexView($token, $validated['label']);
+        return $this->indexView($token, $label);
     }
 
     public function updateTools(Request $request, McpToken $token)
@@ -98,6 +105,22 @@ class McpTokensController extends Controller
 
         return redirect()->route('settings.mcp-tokens.show', $token)
             ->with('success', 'Token directive updated.');
+    }
+
+    public function updateTrustFlags(Request $request, McpToken $token)
+    {
+        $request->validate([
+            'ai_actor' => ['sometimes', 'boolean'],
+            'require_explicit_client_scope' => ['sometimes', 'boolean'],
+        ]);
+
+        $flags = $this->trustFlagsFromRequest($request, $token);
+        $token->forceFill($flags)->save();
+
+        $this->audit($request, 'token/trust_flags', $token->label, $flags);
+
+        return redirect()->route('settings.mcp-tokens.show', $token)
+            ->with('success', 'Token trust controls updated.');
     }
 
     public function updateToolInstructions(Request $request)
@@ -193,6 +216,36 @@ class McpTokensController extends Controller
             ->latest()
             ->limit(50)
             ->get();
+    }
+
+    /** @return array{ai_actor: bool, require_explicit_client_scope: bool} */
+    private function trustFlagsForMintOrRotate(Request $request, ?McpToken $existingToken = null): array
+    {
+        if ($existingToken !== null) {
+            return [
+                'ai_actor' => (bool) $existingToken->ai_actor,
+                'require_explicit_client_scope' => (bool) $existingToken->require_explicit_client_scope,
+            ];
+        }
+
+        return $this->trustFlagsFromRequest($request);
+    }
+
+    /** @return array{ai_actor: bool, require_explicit_client_scope: bool} */
+    private function trustFlagsFromRequest(Request $request, ?McpToken $existingToken = null): array
+    {
+        $aiActor = $request->has('ai_actor')
+            ? $request->boolean('ai_actor')
+            : (bool) ($existingToken?->ai_actor ?? false);
+
+        $requireExplicitClientScope = $request->has('require_explicit_client_scope')
+            ? $request->boolean('require_explicit_client_scope')
+            : ($existingToken !== null ? (bool) $existingToken->require_explicit_client_scope : true);
+
+        return [
+            'ai_actor' => $aiActor,
+            'require_explicit_client_scope' => $requireExplicitClientScope,
+        ];
     }
 
     /** @param  array<string, mixed>  $arguments */
