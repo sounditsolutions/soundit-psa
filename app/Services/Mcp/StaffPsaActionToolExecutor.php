@@ -12,6 +12,7 @@ use App\Models\TechnicianActionLog;
 use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Models\TicketNote;
+use App\Services\Assistant\AssistantTicketCreator;
 use App\Services\EmailService;
 use App\Services\Technician\TechnicianActionGate;
 use App\Services\Technician\TechnicianDisclosure;
@@ -28,12 +29,14 @@ class StaffPsaActionToolExecutor
         private readonly TechnicianActionGate $gate,
         private readonly TechnicianDisclosure $disclosure,
         private readonly EmailService $email,
+        private readonly AssistantTicketCreator $ticketCreator,
     ) {}
 
     /** @return array<string, mixed> */
     public function execute(string $name, array $arguments, int $clientId, string $actorLabel): array
     {
         return match ($name) {
+            'create_ticket' => $this->createTicket($arguments, $clientId, $actorLabel),
             'send_email' => $this->sendEmail($arguments, $clientId, $actorLabel),
             'write_public_note' => $this->writePublicNote($arguments, $clientId, $actorLabel),
             'stage_email' => $this->stageTicketAction('stage_email', $arguments, $clientId, $actorLabel, requiresContactEmail: true),
@@ -41,6 +44,55 @@ class StaffPsaActionToolExecutor
             'propose_merge' => $this->proposeMerge($arguments, $clientId, $actorLabel),
             default => ['error' => "Unknown PSA action tool: {$name}"],
         };
+    }
+
+    /** @return array<string, mixed> */
+    private function createTicket(array $arguments, int $clientId, string $actorLabel): array
+    {
+        if ($error = $this->guardDirectAction()) {
+            return $error;
+        }
+
+        $reason = $this->requiredString($arguments, 'reason');
+        if ($reason === null) {
+            return ['error' => 'reason is required'];
+        }
+
+        try {
+            $payload = $this->ticketCreator->payload($clientId, $arguments);
+        } catch (\InvalidArgumentException $e) {
+            return ['error' => $e->getMessage()];
+        }
+
+        $contentHash = $this->ticketCreator->contentHashFromPayload($payload);
+        $existing = $this->alreadyCreatedTicketLog($clientId, $contentHash);
+        if ($existing !== null) {
+            return $this->idempotentCreateTicketResult($existing);
+        }
+
+        $ticket = DB::transaction(function () use ($payload, $actorLabel, $contentHash, $reason): Ticket {
+            $actorId = TechnicianConfig::requiredAiActorUserId();
+            $ticket = $this->ticketCreator->createFromPayload($payload, $actorId);
+            $this->auditDirectExecution(
+                'create_ticket',
+                $ticket,
+                $actorLabel,
+                $contentHash,
+                'Direct MCP ticket created: '.$reason,
+                $actorId,
+            );
+
+            return $ticket;
+        });
+
+        return [
+            'success' => true,
+            'ticket_id' => $ticket->id,
+            'ticket_display_id' => $ticket->display_id,
+            'display_id' => $ticket->display_id,
+            'url' => route('tickets.show', $ticket),
+            'message' => 'Ticket created.',
+        ];
     }
 
     /** @return array<string, mixed> */
@@ -471,6 +523,18 @@ class StaffPsaActionToolExecutor
             ->exists();
     }
 
+    private function alreadyCreatedTicketLog(int $clientId, string $contentHash): ?TechnicianActionLog
+    {
+        return TechnicianActionLog::query()
+            ->where('action_type', 'create_ticket')
+            ->where('client_id', $clientId)
+            ->where('result_status', 'executed')
+            ->where('content_hash', $contentHash)
+            ->where('created_at', '>=', now()->subHours(self::DIRECT_DEDUP_HOURS))
+            ->latest('id')
+            ->first();
+    }
+
     private function rateLimited(string $actionType, int $ticketId, int $cooldownSeconds): bool
     {
         if ($cooldownSeconds <= 0) {
@@ -493,6 +557,22 @@ class StaffPsaActionToolExecutor
     }
 
     /** @return array<string, mixed> */
+    private function idempotentCreateTicketResult(TechnicianActionLog $log): array
+    {
+        $ticket = $log->ticket_id ? Ticket::find($log->ticket_id) : null;
+
+        return [
+            'success' => true,
+            'idempotent' => true,
+            'ticket_id' => $ticket?->id ?? $log->ticket_id,
+            'ticket_display_id' => $ticket?->display_id,
+            'display_id' => $ticket?->display_id,
+            'url' => $ticket ? route('tickets.show', $ticket) : null,
+            'message' => 'Already created identical create_ticket recently; no new ticket was created.',
+        ];
+    }
+
+    /** @return array<string, mixed> */
     private function idempotentResult(string $actionType, Ticket $ticket): array
     {
         return [
@@ -504,10 +584,10 @@ class StaffPsaActionToolExecutor
         ];
     }
 
-    private function auditDirectExecution(string $actionType, Ticket $ticket, string $actorLabel, string $contentHash, string $summary): void
+    private function auditDirectExecution(string $actionType, Ticket $ticket, string $actorLabel, string $contentHash, string $summary, ?int $actorId = null): void
     {
         TechnicianActionLog::create([
-            'actor_id' => TechnicianConfig::requiredAiActorUserId(),
+            'actor_id' => $actorId ?? TechnicianConfig::requiredAiActorUserId(),
             'approver_user_id' => null,
             'actor_label' => $actorLabel,
             'action_type' => $actionType,

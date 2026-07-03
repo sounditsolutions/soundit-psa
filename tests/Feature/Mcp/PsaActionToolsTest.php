@@ -6,7 +6,10 @@ use App\Enums\EmailDirection;
 use App\Enums\NoteType;
 use App\Enums\PersonType;
 use App\Enums\TechnicianRunState;
+use App\Enums\TicketPriority;
+use App\Enums\TicketSource;
 use App\Enums\TicketStatus;
+use App\Enums\TicketType;
 use App\Models\Client;
 use App\Models\Email;
 use App\Models\McpAuditLog;
@@ -40,6 +43,14 @@ class PsaActionToolsTest extends TestCase
         return McpConfig::rotateStaffToken();
     }
 
+    private function configureAiActor(): User
+    {
+        $actor = User::factory()->create(['name' => 'AI Actor']);
+        Setting::setValue('triage_system_user_id', (string) $actor->id);
+
+        return $actor;
+    }
+
     private function callTool(string $token, string $name, array $arguments): TestResponse
     {
         return $this->withHeaders(['Authorization' => 'Bearer '.$token])
@@ -62,6 +73,12 @@ class PsaActionToolsTest extends TestCase
                 'params' => [],
             ])
             ->json('result.tools') ?? [];
+    }
+
+    /** @return array<string, mixed> */
+    private function decodedResult(TestResponse $response): array
+    {
+        return json_decode((string) $response->json('result.content.0.text'), true) ?? [];
     }
 
     private function ticketWithContact(?Client $client = null, ?string $email = 'client@example.test'): Ticket
@@ -116,17 +133,25 @@ class PsaActionToolsTest extends TestCase
         $this->assertTrue($groups['psa_action']['sensitive']);
 
         $actionNames = array_column($groups['psa_action']['tools'], 'name');
-        foreach (['send_email', 'stage_email', 'write_public_note', 'stage_public_note', 'propose_merge'] as $name) {
+        foreach (['create_ticket', 'send_email', 'stage_email', 'write_public_note', 'stage_public_note', 'propose_merge'] as $name) {
             $this->assertContains($name, $actionNames);
         }
 
         $legacyNames = collect($this->tools($this->legacyToken()))->pluck('name')->all();
+        $this->assertNotContains('create_ticket', $legacyNames);
         $this->assertNotContains('send_email', $legacyNames);
         $this->assertNotContains('write_public_note', $legacyNames);
 
-        $scopedTools = collect($this->tools($this->token(['send_email'])))->keyBy('name');
+        $scopedTools = collect($this->tools($this->token(['create_ticket', 'send_email'], 'chet')))->keyBy('name');
+        $this->assertTrue($scopedTools->has('create_ticket'));
         $this->assertTrue($scopedTools->has('send_email'));
         $this->assertFalse($scopedTools->has('write_public_note'));
+
+        $createSchema = $scopedTools['create_ticket']['inputSchema'];
+        foreach (['client_id', 'subject', 'description', 'reason'] as $required) {
+            $this->assertContains($required, $createSchema['required']);
+        }
+        $this->assertArrayNotHasKey('ticket_id', $createSchema['properties']);
 
         $schema = $scopedTools['send_email']['inputSchema'];
         $this->assertContains('client_id', $schema['required']);
@@ -134,6 +159,134 @@ class PsaActionToolsTest extends TestCase
         $this->assertArrayNotHasKey('to', $schema['properties']);
         $this->assertArrayNotHasKey('cc', $schema['properties']);
         $this->assertArrayNotHasKey('subject', $schema['properties']);
+    }
+
+    public function test_granted_chet_token_creates_ticket_with_reason_audits_and_ai_actor(): void
+    {
+        $actor = $this->configureAiActor();
+        $client = Client::factory()->create();
+        $token = $this->token(['create_ticket'], 'chet');
+        $description = 'Please provision a replacement laptop for the new hire starting Monday.';
+
+        $response = $this->callTool($token, 'create_ticket', [
+            'client_id' => $client->id,
+            'subject' => 'New hire laptop setup',
+            'description' => $description,
+            'priority' => 2,
+            'reason' => 'Chet recognized a valid service request from the client chat.',
+        ]);
+
+        $response->assertOk();
+        $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
+
+        $result = $this->decodedResult($response);
+        $ticket = Ticket::findOrFail($result['ticket_id']);
+
+        $this->assertSame($client->id, $ticket->client_id);
+        $this->assertSame($actor->id, $ticket->created_by);
+        $this->assertSame('New hire laptop setup', $ticket->subject);
+        $this->assertSame($description, $ticket->description);
+        $this->assertSame(TicketPriority::P2, $ticket->priority);
+        $this->assertSame(TicketSource::Assistant, $ticket->source);
+        $this->assertSame(TicketType::ServiceRequest, $ticket->type);
+
+        $audit = McpAuditLog::where('tool_name', 'create_ticket')->firstOrFail();
+        $this->assertSame('success', $audit->status);
+        $this->assertSame('mcp-staff:chet', $audit->actor_label);
+        $this->assertSame($client->id, $audit->arguments['client_id']);
+        $this->assertSame('New hire laptop setup', $audit->arguments['subject']);
+        $this->assertSame('[ticket description withheld]', $audit->arguments['description']);
+        $this->assertSame(mb_strlen($description), $audit->arguments['description_length']);
+        $this->assertSame('Chet recognized a valid service request from the client chat.', $audit->arguments['reason']);
+        $this->assertStringNotContainsString($description, (string) json_encode($audit->arguments));
+
+        $this->assertDatabaseHas('technician_action_logs', [
+            'action_type' => 'create_ticket',
+            'result_status' => 'executed',
+            'ticket_id' => $ticket->id,
+            'client_id' => $client->id,
+            'actor_id' => $actor->id,
+            'actor_label' => 'mcp-staff:chet',
+            'approver_user_id' => null,
+        ]);
+        $this->assertMatchesRegularExpression(
+            '/^[a-f0-9]{64}$/',
+            (string) TechnicianActionLog::where('action_type', 'create_ticket')->value('content_hash'),
+        );
+    }
+
+    public function test_create_ticket_requires_client_scope_and_reason_before_creating(): void
+    {
+        $token = $this->token(['create_ticket'], 'chet');
+        $client = Client::factory()->create();
+
+        $missingClient = $this->callTool($token, 'create_ticket', [
+            'subject' => 'Missing client',
+            'description' => 'This must not create a ticket.',
+            'reason' => 'Boundary validation test.',
+        ]);
+        $missingClient->assertOk();
+        $this->assertTrue((bool) $missingClient->json('result.isError'));
+        $this->assertStringContainsString('client_id is required', (string) $missingClient->json('result.content.0.text'));
+
+        $missingReason = $this->callTool($token, 'create_ticket', [
+            'client_id' => $client->id,
+            'subject' => 'Missing reason',
+            'description' => 'This must not create a ticket.',
+        ]);
+        $missingReason->assertOk();
+        $this->assertTrue((bool) $missingReason->json('result.isError'));
+        $this->assertStringContainsString('reason is required', (string) $missingReason->json('result.content.0.text'));
+
+        $this->assertSame(0, Ticket::count());
+    }
+
+    public function test_create_ticket_dedup_blocks_duplicate_within_window(): void
+    {
+        $this->configureAiActor();
+        $client = Client::factory()->create();
+        $token = $this->token(['create_ticket'], 'chet');
+        $arguments = [
+            'client_id' => $client->id,
+            'subject' => 'Duplicate service request',
+            'description' => 'The same request appeared twice from the same client.',
+            'priority' => 3,
+            'reason' => 'Initial request from Chet.',
+        ];
+
+        $first = $this->callTool($token, 'create_ticket', $arguments);
+        $first->assertOk();
+        $this->assertFalse((bool) $first->json('result.isError'), (string) $first->json('result.content.0.text'));
+
+        $second = $this->callTool($token, 'create_ticket', [
+            ...$arguments,
+            'reason' => 'Replay from the same chat transcript.',
+        ]);
+        $second->assertOk();
+        $this->assertFalse((bool) $second->json('result.isError'), (string) $second->json('result.content.0.text'));
+
+        $result = $this->decodedResult($second);
+        $this->assertTrue((bool) $result['idempotent']);
+        $this->assertSame(1, Ticket::where('client_id', $client->id)->count());
+        $this->assertSame(1, TechnicianActionLog::where('action_type', 'create_ticket')->where('result_status', 'executed')->count());
+    }
+
+    public function test_allowlisted_but_unpublished_staff_tools_are_not_listed_or_callable(): void
+    {
+        $client = Client::factory()->create();
+        $token = $this->token(['create_ticket', 'close_ticket', 'tactical_run_diagnostic'], 'chet');
+
+        $names = collect($this->tools($token))->pluck('name')->all();
+        $this->assertContains('create_ticket', $names);
+        $this->assertNotContains('close_ticket', $names);
+        $this->assertNotContains('tactical_run_diagnostic', $names);
+
+        foreach (['close_ticket', 'tactical_run_diagnostic'] as $tool) {
+            $response = $this->callTool($token, $tool, ['client_id' => $client->id]);
+            $response->assertOk();
+            $this->assertTrue((bool) $response->json('result.isError'), "{$tool} should fail.");
+            $this->assertStringContainsString('not allowed for this token', (string) $response->json('result.content.0.text'));
+        }
     }
 
     public function test_send_email_directly_sends_to_derived_contact_with_audit_and_action_trail(): void

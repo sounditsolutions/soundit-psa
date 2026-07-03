@@ -51,19 +51,6 @@ class McpStaffController extends Controller
 
     private const WHOAMI_TOOL = 'whoami';
 
-    /**
-     * Write tools a chet-labeled token may NEVER call, regardless of its
-     * scoped tools list. propose_close is deliberately absent (Spike-2): the
-     * per-token scope is the operator-controlled gate, and the MCP path lands
-     * in ProposeCloseTool::executeHeld — held-by-construction, a human cockpit
-     * tap is still required before anything closes.
-     */
-    private const CHET_DENIED_WRITE_TOOLS = [
-        'create_ticket',
-        'close_ticket',
-        'tactical_run_diagnostic',
-    ];
-
     /** Chet write tools that must carry an explicit client_id scope. */
     private const CHET_CLIENT_SCOPED_WRITE_TOOLS = [
         'add_ticket_note',
@@ -72,6 +59,8 @@ class McpStaffController extends Controller
     ];
 
     private const NOTE_BODY_AUDIT_PLACEHOLDER = '[note body withheld]';
+
+    private const TICKET_DESCRIPTION_AUDIT_PLACEHOLDER = '[ticket description withheld]';
 
     private const WIKI_FACT_STATEMENT_AUDIT_PLACEHOLDER = '[wiki fact statement withheld]';
 
@@ -91,6 +80,7 @@ class McpStaffController extends Controller
     ];
 
     private const PSA_ACTION_TOOLS = [
+        'create_ticket',
         'send_email',
         'stage_email',
         'write_public_note',
@@ -314,10 +304,14 @@ class McpStaffController extends Controller
         $hasClientIdArgument = array_key_exists('client_id', $arguments);
         $clientId = $this->positiveIntegerArgument($arguments['client_id'] ?? null);
         unset($arguments['client_id']);
+        $auditArguments = $arguments;
+        if ((string) $name === 'create_ticket' && $clientId !== null) {
+            $auditArguments['client_id'] = $clientId;
+        }
 
         if ($this->isWikiGlobalScopeWrite((string) $name, $arguments) && $hasClientIdArgument) {
             $message = 'client_id must be omitted for wiki_add_fact global-scope writes.';
-            $this->audit('tools/call', (string) $name, $arguments, 'error', $message, $start, $request);
+            $this->audit('tools/call', (string) $name, $auditArguments, 'error', $message, $start, $request);
 
             return response()->json([
                 'jsonrpc' => '2.0',
@@ -331,7 +325,7 @@ class McpStaffController extends Controller
 
         if ($this->isWikiPageAuthoringWrite((string) $name) && $hasClientIdArgument) {
             $message = 'client_id must be omitted for wiki page authoring writes.';
-            $this->audit('tools/call', (string) $name, $arguments, 'error', $message, $start, $request);
+            $this->audit('tools/call', (string) $name, $auditArguments, 'error', $message, $start, $request);
 
             return response()->json([
                 'jsonrpc' => '2.0',
@@ -345,7 +339,7 @@ class McpStaffController extends Controller
 
         if ($this->isChetWikiClientScopeWrite($request, (string) $name, $arguments) && $clientId === null) {
             $message = 'client_id is required for Chet wiki_add_fact client-scope writes.';
-            $this->audit('tools/call', (string) $name, $arguments, 'error', $message, $start, $request);
+            $this->audit('tools/call', (string) $name, $auditArguments, 'error', $message, $start, $request);
 
             return response()->json([
                 'jsonrpc' => '2.0',
@@ -359,7 +353,7 @@ class McpStaffController extends Controller
 
         if ($this->isChetClientScopedWrite($request, (string) $name) && $clientId === null) {
             $message = "client_id is required for Chet {$name} writes.";
-            $this->audit('tools/call', (string) $name, $arguments, 'error', $message, $start, $request);
+            $this->audit('tools/call', (string) $name, $auditArguments, 'error', $message, $start, $request);
 
             return response()->json([
                 'jsonrpc' => '2.0',
@@ -373,7 +367,7 @@ class McpStaffController extends Controller
 
         if ($this->isPsaActionTool((string) $name) && $clientId === null) {
             $message = "client_id is required for {$name}.";
-            $this->audit('tools/call', (string) $name, $arguments, 'error', $message, $start, $request);
+            $this->audit('tools/call', (string) $name, $auditArguments, 'error', $message, $start, $request);
 
             return response()->json([
                 'jsonrpc' => '2.0',
@@ -387,7 +381,7 @@ class McpStaffController extends Controller
 
         if (CippMcpTool::handles((string) $name) && $clientId === null) {
             $message = "client_id is required for {$name}.";
-            $this->audit('tools/call', (string) $name, $arguments, 'error', $message, $start, $request);
+            $this->audit('tools/call', (string) $name, $auditArguments, 'error', $message, $start, $request);
 
             return response()->json([
                 'jsonrpc' => '2.0',
@@ -407,7 +401,7 @@ class McpStaffController extends Controller
         if ($this->isChetHeldTicketAction($request, (string) $name)) {
             if (! $this->ticketBelongsToClient($arguments, $clientId)) {
                 $message = 'Ticket not found or belongs to a different client';
-                $this->audit('tools/call', (string) $name, $arguments, 'error', $message, $start, $request);
+                $this->audit('tools/call', (string) $name, $auditArguments, 'error', $message, $start, $request);
 
                 return response()->json([
                     'jsonrpc' => '2.0',
@@ -422,7 +416,7 @@ class McpStaffController extends Controller
 
         if (ChetDataSurfaceTools::requiresClient((string) $name) && $clientId === null) {
             $message = "client_id is required for {$name}.";
-            $this->audit('tools/call', (string) $name, $arguments, 'error', $message, $start, $request);
+            $this->audit('tools/call', (string) $name, $auditArguments, 'error', $message, $start, $request);
 
             return response()->json([
                 'jsonrpc' => '2.0',
@@ -472,7 +466,7 @@ class McpStaffController extends Controller
             $isError = is_array($result) && isset($result['error']);
 
             $this->audit(
-                'tools/call', $name, $arguments,
+                'tools/call', $name, $auditArguments,
                 $isError ? 'error' : 'success',
                 $isError ? (string) $result['error'] : null,
                 $start, $request,
@@ -494,7 +488,7 @@ class McpStaffController extends Controller
                 'error' => $e->getMessage(),
             ]);
 
-            $this->audit('tools/call', $name, $arguments, 'error', $e->getMessage(), $start, $request);
+            $this->audit('tools/call', $name, $auditArguments, 'error', $e->getMessage(), $start, $request);
 
             return response()->json([
                 'jsonrpc' => '2.0',
@@ -601,6 +595,10 @@ class McpStaffController extends Controller
             return $this->auditSendReplyArguments($args);
         }
 
+        if ($tool === 'create_ticket') {
+            return $this->auditCreateTicketArguments($args);
+        }
+
         if (in_array((string) $tool, self::BODY_LENGTH_AUDIT_TOOLS, true)) {
             return $this->auditBodyLengthArguments($args);
         }
@@ -629,6 +627,27 @@ class McpStaffController extends Controller
         }
 
         return $redacted;
+    }
+
+    /** @return array<string, mixed> */
+    private function auditCreateTicketArguments(array $arguments): array
+    {
+        $safe = [];
+
+        foreach ($arguments as $key => $value) {
+            $normalized = mb_strtolower((string) $key);
+
+            if (in_array($normalized, ['client_id', 'subject', 'priority', 'reason'], true)) {
+                $safe[$normalized] = $value;
+            }
+
+            if ($normalized === 'description') {
+                $safe['description'] = self::TICKET_DESCRIPTION_AUDIT_PLACEHOLDER;
+                $safe['description_length'] = is_string($value) ? mb_strlen($value) : 0;
+            }
+        }
+
+        return $safe;
     }
 
     /** @return array<string, mixed> */
@@ -779,7 +798,7 @@ class McpStaffController extends Controller
             return true;
         }
 
-        if ($this->isChetToken($request) && in_array($toolName, self::CHET_DENIED_WRITE_TOOLS, true)) {
+        if ($token->allowedTools !== null && ! in_array($toolName, McpToolRegistry::allToolNames(), true)) {
             return false;
         }
 

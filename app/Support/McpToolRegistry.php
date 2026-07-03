@@ -33,15 +33,18 @@ class McpToolRegistry
         ));
         $integrationNames = array_flip(array_column($integration, 'name'));
 
+        $psaActions = self::shape(self::psaActionTools());
+        $psaActionNames = array_flip(array_column($psaActions, 'name'));
+
         $client = array_values(array_filter(
             self::shape(AssistantToolDefinitions::getTools(hasClient: true)),
             fn (array $tool): bool => ! isset($generalNames[$tool['name']])
-                && ! isset($integrationNames[$tool['name']]),
+                && ! isset($integrationNames[$tool['name']])
+                && ! isset($psaActionNames[$tool['name']]),
         ));
 
         $bridge = self::shape(OperatorBridgeTools::definitions());
         $wikiWrites = self::shape([self::wikiAddFactTool(), self::wikiCreatePageTool(), self::wikiUpdatePageTool()]);
-        $psaActions = self::shape(self::psaActionTools());
         $cippWrites = self::shape(self::dynamicCippWriteTools());
 
         return [
@@ -180,11 +183,44 @@ class McpToolRegistry
     public static function psaActionTools(): array
     {
         return [
+            self::createTicketTool(),
             self::sendEmailTool(),
             self::stageEmailTool(),
             self::writePublicNoteTool(),
             self::stagePublicNoteTool(),
             self::proposeMergeTool(),
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public static function createTicketTool(): array
+    {
+        return [
+            'name' => 'create_ticket',
+            'description' => 'Create a new client ticket immediately. The server fixes ticket source/type through the Assistant ticket creator, requires a concrete reason, deduplicates identical subject and description for the same client, and writes an action audit row. Requires an explicit token grant.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'subject' => [
+                        'type' => 'string',
+                        'description' => 'Ticket subject.',
+                    ],
+                    'description' => [
+                        'type' => 'string',
+                        'description' => 'Initial ticket description.',
+                    ],
+                    'priority' => [
+                        'type' => 'integer',
+                        'enum' => [1, 2, 3, 4],
+                        'description' => 'Optional priority: 1 critical, 2 high, 3 medium, 4 low. Defaults to 3.',
+                    ],
+                    'reason' => [
+                        'type' => 'string',
+                        'description' => 'Specific client evidence for creating this ticket now.',
+                    ],
+                ],
+                'required' => ['subject', 'description', 'reason'],
+            ],
         ];
     }
 

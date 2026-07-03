@@ -189,30 +189,25 @@ class AddTicketNoteToolTest extends TestCase
         $this->assertSame(0, TicketNote::where('ticket_id', $ticket->id)->count());
     }
 
-    public function test_chet_token_cannot_use_other_write_tools_even_if_accidentally_scoped(): void
+    public function test_chet_token_does_not_publish_nonexistent_write_tools_even_if_accidentally_scoped(): void
     {
-        $token = $this->chetToken(['find_staff', 'get_staff', 'add_ticket_note', 'create_ticket', 'propose_close']);
+        $token = $this->chetToken(['find_staff', 'get_staff', 'add_ticket_note', 'close_ticket', 'tactical_run_diagnostic', 'propose_close']);
 
         $names = $this->listToolNames($token);
         $this->assertContains('add_ticket_note', $names);
-        $this->assertNotContains('create_ticket', $names);
+        $this->assertNotContains('close_ticket', $names);
+        $this->assertNotContains('tactical_run_diagnostic', $names);
         // Spike-2: propose_close is allowed-when-scoped (held-by-construction);
         // full behavior is covered in ChetProposeCloseTest.
         $this->assertContains('propose_close', $names);
 
         $client = Client::factory()->create();
-        $before = Ticket::count();
-
-        $create = $this->callTool($token, 'create_ticket', [
-            'client_id' => $client->id,
-            'subject' => 'Should not be created by Chet',
-            'description' => 'Chet only gets private internal notes in this increment.',
-        ]);
-
-        $create->assertOk();
-        $this->assertTrue((bool) $create->json('result.isError'));
-        $this->assertStringContainsString('not allowed for this token', (string) $create->json('result.content.0.text'));
-        $this->assertSame($before, Ticket::count());
+        foreach (['close_ticket', 'tactical_run_diagnostic'] as $tool) {
+            $response = $this->callTool($token, $tool, ['client_id' => $client->id]);
+            $response->assertOk();
+            $this->assertTrue((bool) $response->json('result.isError'), "{$tool} should fail.");
+            $this->assertStringContainsString('not allowed for this token', (string) $response->json('result.content.0.text'));
+        }
 
         $ticket = Ticket::factory()->create(['client_id' => $client->id]);
         $propose = $this->callTool($token, 'propose_close', [
