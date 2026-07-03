@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\McpAuditLog;
 use App\Models\McpToken;
 use App\Models\Ticket;
+use App\Services\Agent\RequestToolTool;
 use App\Services\Agent\SendReplyTool;
 use App\Services\Assistant\AssistantToolDefinitions;
 use App\Services\Assistant\AssistantToolExecutor;
@@ -184,6 +185,7 @@ class McpStaffController extends Controller
             [
                 McpToolRegistry::proposeCloseTool(),
                 McpToolRegistry::sendReplyTool(),
+                McpToolRegistry::requestToolTool(),
                 McpToolRegistry::wikiAddFactTool(),
                 McpToolRegistry::wikiCreatePageTool(),
                 McpToolRegistry::wikiUpdatePageTool(),
@@ -394,6 +396,8 @@ class McpStaffController extends Controller
                 $result = app(ChetDataSurfaceToolExecutor::class)->execute((string) $name, $arguments, $clientId);
             } elseif ((string) $name === 'send_reply') {
                 $result = $this->sendReply($arguments, $request);
+            } elseif ((string) $name === 'request_tool') {
+                $result = $this->requestTool($arguments);
             } else {
                 $userId = $this->userIdForToolCall($request, (string) $name);
                 $executor = new AssistantToolExecutor(ticket: null, clientId: $clientId, userId: $userId);
@@ -473,6 +477,29 @@ class McpStaffController extends Controller
         }
 
         $message = app(SendReplyTool::class)->executeHeld($ticket, $input, $this->actorLabel($request));
+
+        return [
+            'success' => true,
+            'ticket_id' => $ticket->id,
+            'ticket_display_id' => $ticket->display_id,
+            'message' => $message,
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private function requestTool(array $arguments): array
+    {
+        $ticketId = $this->positiveIntegerArgument($arguments['ticket_id'] ?? null);
+        if ($ticketId === null) {
+            return ['error' => 'ticket_id is required'];
+        }
+
+        $ticket = Ticket::find($ticketId);
+        if (! $ticket) {
+            return ['error' => 'Ticket not found'];
+        }
+
+        $message = app(RequestToolTool::class)->execute($ticket, $arguments);
 
         return [
             'success' => true,
