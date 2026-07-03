@@ -18,6 +18,7 @@ use App\Services\Agent\SignificanceGate;
 use App\Services\Agent\TechnicianAgent;
 use App\Services\Cipp\CippClient;
 use App\Services\Cipp\CippMcpClient;
+use App\Services\Cipp\CippRestWriteClient;
 use App\Services\Graph\GraphClient;
 use App\Services\Level\LevelClient;
 use App\Services\Mesh\MeshClient;
@@ -129,6 +130,19 @@ class AppServiceProvider extends ServiceProvider
                     'tenant_id' => CippConfig::get('tenant_id'),
                     'client_id' => CippConfig::get('mcp_client_id'),
                     'client_secret' => CippConfig::get('mcp_client_secret'),
+                ],
+                $app->make(\Illuminate\Contracts\Cache\Repository::class),
+            );
+        });
+
+        $this->app->singleton(CippRestWriteClient::class, function ($app) {
+            return new CippRestWriteClient(
+                [
+                    'api_url' => CippConfig::get('api_url'),
+                    'tenant_id' => CippConfig::get('tenant_id'),
+                    'client_id' => CippConfig::get('client_id'),
+                    'client_secret' => CippConfig::get('client_secret'),
+                    'application_id' => CippConfig::get('application_id'),
                 ],
                 $app->make(\Illuminate\Contracts\Cache\Repository::class),
             );

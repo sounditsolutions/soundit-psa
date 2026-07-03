@@ -7,6 +7,7 @@ use App\Services\Agent\RequestToolTool;
 use App\Services\Assistant\AssistantToolDefinitions;
 use App\Services\Chet\ChetDataSurfaceTools;
 use App\Services\Chet\OperatorBridgeTools;
+use App\Services\Mcp\StaffCippWriteToolExecutor;
 use App\Services\Mcp\StaffTacticalActionToolExecutor;
 use App\Services\Mcp\StaffTacticalAdminToolExecutor;
 use App\Services\Triage\TriageToolDefinitions;
@@ -54,7 +55,10 @@ class McpToolRegistry
 
             $bridge = self::shape(OperatorBridgeTools::definitions());
             $wikiWrites = self::shape([self::wikiAddFactTool(), self::wikiCreatePageTool(), self::wikiUpdatePageTool()]);
-            $cippWrites = self::shape(self::dynamicCippWriteTools());
+            $cippWrites = self::shape(array_merge(
+                self::dynamicCippWriteTools(),
+                self::cippWriteTools(),
+            ));
             $tacticalActions = self::shape(self::tacticalActionTools());
             $tacticalAdmin = self::shape(self::tacticalAdminTools());
 
@@ -162,6 +166,12 @@ class McpToolRegistry
     public static function tacticalActionTools(): array
     {
         return StaffTacticalActionToolExecutor::definitions();
+    }
+
+    /** @return array<int, array<string, mixed>> */
+    public static function cippWriteTools(): array
+    {
+        return StaffCippWriteToolExecutor::definitions();
     }
 
     /** @return array<int, array<string, mixed>> */
