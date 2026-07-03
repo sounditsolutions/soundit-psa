@@ -77,7 +77,7 @@ class AssistantToolDefinitions
             ],
             [
                 'name' => 'list_my_tickets',
-                'description' => 'List tickets assigned to the current technician. Sorted by priority then age (oldest first). Use for "what should I work on next" type questions.',
+                'description' => 'List tickets assigned to the current staff user. Sorted by priority then age (oldest first).',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -219,9 +219,7 @@ class AssistantToolDefinitions
             ],
             [
                 'name' => 'create_ticket',
-                'description' => 'Create a new ticket for this client. Use this when the technician asks you to create a follow-up ticket, '
-                    .'report a new issue, or log something that needs attention separately. '
-                    .'Always confirm with the technician before creating a ticket.',
+                'description' => 'Create a new ticket for this client with a subject, description, and optional priority.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -244,8 +242,7 @@ class AssistantToolDefinitions
             ],
             [
                 'name' => 'add_ticket_note',
-                'description' => 'Add a private note to the current ticket. Use this when the technician asks you to save a summary, '
-                    .'document findings, or add investigation notes to the ticket. The note is attributed to the technician.',
+                'description' => 'Add a private note to a ticket. The note is attributed to the current staff user.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -263,7 +260,7 @@ class AssistantToolDefinitions
             ],
             [
                 'name' => 'get_client',
-                'description' => 'Get profile details for the current client, including free-form notes maintained by technicians. Use this to check for special handling instructions, known account quirks, or stored preferences.',
+                'description' => 'Get profile details for the current client, including free-form notes maintained by staff.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => (object) [],
@@ -271,7 +268,7 @@ class AssistantToolDefinitions
             ],
             [
                 'name' => 'get_person',
-                'description' => 'Look up a contact at this client by id, email, or name (partial match). Returns job title, department, emails, M365 enrichment, and any free-form notes. Use when the technician asks about a contact or you need context on who is involved in a ticket.',
+                'description' => 'Look up a contact at this client by id, email, or name (partial match). Returns job title, department, emails, M365 enrichment, and any free-form notes.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -293,7 +290,7 @@ class AssistantToolDefinitions
             ],
             [
                 'name' => 'get_asset',
-                'description' => 'Look up a device (asset) at this client by id or hostname. Returns hardware, OS, warranty, RMM IDs, and free-form notes. Use when the technician asks about a specific device or you need context on a ticket-linked asset.',
+                'description' => 'Look up a device (asset) at this client by id or hostname. Returns hardware, OS, warranty, RMM IDs, and free-form notes.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [

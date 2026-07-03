@@ -6,6 +6,8 @@ use App\Models\McpToken;
 
 final class McpStaffToken
 {
+    public const LEGACY_ACTOR_LABEL = 'mcp-legacy';
+
     /**
      * @param  array<int, string>|null  $allowedTools  Null means legacy full-surface token.
      */
@@ -24,7 +26,7 @@ final class McpStaffToken
     public function actorLabel(): string
     {
         if ($this->label === null || $this->label === '') {
-            return 'teams-bot';
+            return self::LEGACY_ACTOR_LABEL;
         }
 
         return 'mcp-staff:'.$this->label;

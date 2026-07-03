@@ -17,6 +17,7 @@ The plan also includes the Mayor's `SCOPE +1`: remove the legacy `teams-bot` fal
 - `psa-u6gm`: sweep `McpToolRegistry` and `AssistantToolDefinitions` descriptions to be purely functional and policy-free.
 - `psa-u6gm`: add an MSP-global per-tool custom-instruction text box in settings; append that text at `tools/list` time. Per-token layering is explicitly later; token-level directive already exists via `whoami`.
 - Mayor comment 2026-07-03 00:03Z: also replace literal `teams-bot` fallback strings in `McpStaffController::actorLabel()`, `McpStaffController::whoami()`, and `McpStaffToken::actorLabel()` with a platform-neutral legacy actor label.
+- Mayor plan review 2026-07-03 00:18Z: approved with adjustments: do not run `/soundpsa-review-pr`; forbidden-phrase tests must sweep the full exposed registry plus runtime `tools/list`; legacy fallback must not collide with mintable `mcp-staff:<label>` labels.
 
 ## Current Shape
 
@@ -170,12 +171,13 @@ Files:
 
 Change:
 
-- Add a single constant, likely `McpStaffToken::LEGACY_ACTOR_LABEL = 'mcp-staff:legacy'`.
+- Add a single constant, `McpStaffToken::LEGACY_ACTOR_LABEL = 'mcp-legacy'`.
 - Use it in:
   - `McpStaffToken::actorLabel()` for null/blank labels.
   - `McpStaffController::actorLabel()` fallback when middleware did not attach a token object.
   - `McpStaffController::whoami()` fallback label.
 - Keep labeled token attribution unchanged as `mcp-staff:<label>`.
+- Assert the fallback cannot collide with a future token labeled `legacy`, which would render as `mcp-staff:legacy`.
 
 ## TDD Sequence
 
@@ -209,7 +211,7 @@ Green:
 
 Red tests:
 
-- Add focused registry/definition assertions that exposed descriptions do not contain forbidden platform-specific/policy phrases:
+- Add focused registry/definition assertions that every exposed description does not contain forbidden platform-specific/policy phrases. The test must programmatically sweep the full exposed surface from `McpToolRegistry::groups()` and runtime `tools/list`, so provider additions cannot bypass the check:
   - `Chet`
   - `teammate-chet`
   - `teams-bot`
@@ -226,9 +228,10 @@ Green:
 
 Red tests:
 
-- Update `McpConfigTokenStoreTest` legacy full-surface token assertion from `teams-bot` to `mcp-staff:legacy`.
+- Update `McpConfigTokenStoreTest` legacy full-surface token assertion from `teams-bot` to `mcp-legacy`.
 - Add/update `McpStaffWhoamiTest` coverage for a legacy/labelless token returning platform-neutral fallback label.
-- Add/update audit test proving the fallback actor label is `mcp-staff:legacy`.
+- Add/update audit test proving the fallback actor label is `mcp-legacy`.
+- Assert a scoped token labeled `legacy` still renders as `mcp-staff:legacy`, distinct from the fallback `mcp-legacy`.
 
 Green:
 
@@ -268,7 +271,7 @@ Operational:
 
 - Restart `soundit-psa-queue.service` and `soundit-psa-dev.service` after code changes.
 - Smoke `/settings/mcp-tokens` locally if the dev service is active.
-- Run `/soundpsa-review-pr <branch>` before reporting PR-ready.
+- PR-ready gate is push + CI green + bead comment + nudge `gastown.mayor`; do not run `/soundpsa-review-pr`.
 
 ## Review Focus
 
@@ -276,4 +279,4 @@ Operational:
 - Confirm MSP custom instructions are appended only at runtime `tools/list`, not baked into registry definitions.
 - Confirm MSP instruction audit stores only tool names/counts/lengths, never custom instruction bodies.
 - Confirm the settings UI is MSP-global per tool, not per-token.
-- Confirm `teams-bot` no longer appears on the legacy MCP staff path while labeled tokens remain `mcp-staff:<label>`.
+- Confirm `teams-bot` no longer appears on the legacy MCP staff path while labeled tokens remain `mcp-staff:<label>`, including a non-collision assertion for label `legacy`.

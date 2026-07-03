@@ -3,7 +3,7 @@
 namespace App\Services\Chet;
 
 /**
- * MCP tool definitions for the GC Chet Teams bridge. These are wired only at the
+ * MCP tool definitions for the operator Teams bridge. These are wired only at the
  * staff MCP boundary so they do not leak into the in-app assistant or native Teams
  * teammate tool surfaces.
  */
@@ -66,7 +66,7 @@ class OperatorBridgeTools
             ],
             [
                 'name' => 'poll_operator_messages',
-                'description' => 'Drain inbound operator messages for the configured Chet Teams chat. Pass cursor equal to the highest message id whose processing was confirmed; the server acks rows up to that cursor and returns the next still-undelivered batch plus next_cursor.',
+                'description' => 'Drain inbound operator messages for the configured operator Teams chat. Pass cursor equal to the highest message id whose processing was confirmed; the server acks rows up to that cursor and returns the next still-undelivered batch plus next_cursor.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
