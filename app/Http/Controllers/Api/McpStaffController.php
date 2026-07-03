@@ -18,10 +18,12 @@ use App\Services\Chet\OperatorBridgeTextSanitizer;
 use App\Services\Chet\OperatorBridgeToolExecutor;
 use App\Services\Chet\OperatorBridgeTools;
 use App\Services\Cipp\CippMcpDynamicToolExecutor;
+use App\Services\Mcp\StaffCippWriteToolExecutor;
 use App\Services\Mcp\StaffPsaActionToolExecutor;
 use App\Services\Mcp\StaffTacticalActionToolExecutor;
 use App\Services\Mcp\StaffTacticalAdminToolExecutor;
 use App\Services\Tactical\Actions\ActionRedactor;
+use App\Support\CippConfig;
 use App\Support\McpInputSchema;
 use App\Support\McpStaffToken;
 use App\Support\McpToolInstructions;
@@ -217,6 +219,7 @@ class McpStaffController extends Controller
             ChetDataSurfaceTools::clientTools(),
             McpToolRegistry::dynamicCippReadTools(),
             McpToolRegistry::dynamicCippWriteTools(),
+            (CippConfig::isEnabled() && CippConfig::isConfigured()) ? McpToolRegistry::cippWriteTools() : [],
             TacticalConfig::isConfigured() ? McpToolRegistry::tacticalActionTools() : [],
         );
 
@@ -242,14 +245,15 @@ class McpStaffController extends Controller
             $schema = $t['input_schema'] ?? ['type' => 'object', 'properties' => new \stdClass];
             $requiresExplicitClientScope = $this->requiresExplicitClientScope($request, (string) $t['name']);
             $isPsaActionTool = $this->isPsaActionTool((string) $t['name']);
+            $isCippWriteTool = $this->isCippWriteTool((string) $t['name']);
             $isTacticalActionTool = $this->isTacticalActionTool((string) $t['name']);
             $isTacticalAdminTool = $this->isTacticalAdminTool((string) $t['name']);
             $requiresTacticalAdminClientScope = $isTacticalAdminTool && StaffTacticalAdminToolExecutor::requiresClient((string) $t['name']);
-            $isClientScoped = ! isset($generalNames[$t['name']]) || $requiresExplicitClientScope || $isPsaActionTool || $isTacticalActionTool || $requiresTacticalAdminClientScope;
+            $isClientScoped = ! isset($generalNames[$t['name']]) || $requiresExplicitClientScope || $isPsaActionTool || $isCippWriteTool || $isTacticalActionTool || $requiresTacticalAdminClientScope;
 
             if ($isClientScoped) {
                 $props = (array) ($schema['properties'] ?? []);
-                $clientIdRequired = $requiresExplicitClientScope || $isPsaActionTool || $isTacticalActionTool || $requiresTacticalAdminClientScope || ! in_array($t['name'], $clientIdOptionalFor, true);
+                $clientIdRequired = $requiresExplicitClientScope || $isPsaActionTool || $isCippWriteTool || $isTacticalActionTool || $requiresTacticalAdminClientScope || ! in_array($t['name'], $clientIdOptionalFor, true);
                 $props['client_id'] = [
                     'type' => 'integer',
                     'description' => $clientIdRequired
@@ -339,6 +343,9 @@ class McpStaffController extends Controller
         if ((string) $name === 'create_ticket' && $clientId !== null) {
             $auditArguments['client_id'] = $clientId;
         }
+        if ($this->isCippWriteTool((string) $name) && $clientId !== null) {
+            $auditArguments['client_id'] = $clientId;
+        }
 
         if ($this->isWikiGlobalScopeWrite((string) $name, $arguments) && $hasClientIdArgument) {
             $message = 'client_id must be omitted for wiki_add_fact global-scope writes.';
@@ -411,6 +418,20 @@ class McpStaffController extends Controller
         }
 
         if ($this->isTacticalActionTool((string) $name) && $clientId === null) {
+            $message = "client_id is required for {$name}.";
+            $this->audit('tools/call', (string) $name, $auditArguments, 'error', $message, $start, $request);
+
+            return response()->json([
+                'jsonrpc' => '2.0',
+                'id' => $id,
+                'result' => [
+                    'content' => [['type' => 'text', 'text' => $message]],
+                    'isError' => true,
+                ],
+            ]);
+        }
+
+        if ($this->isCippWriteTool((string) $name) && $clientId === null) {
             $message = "client_id is required for {$name}.";
             $this->audit('tools/call', (string) $name, $auditArguments, 'error', $message, $start, $request);
 
@@ -500,6 +521,13 @@ class McpStaffController extends Controller
                 );
             } elseif (ChetDataSurfaceTools::handles((string) $name)) {
                 $result = app(ChetDataSurfaceToolExecutor::class)->execute((string) $name, $arguments, $clientId);
+            } elseif ($this->isCippWriteTool((string) $name)) {
+                $result = app(StaffCippWriteToolExecutor::class)->execute(
+                    (string) $name,
+                    $arguments,
+                    (int) $clientId,
+                    $this->actorLabel($request),
+                );
             } elseif (CippMcpTool::handles((string) $name)) {
                 $result = app(CippMcpDynamicToolExecutor::class)->execute(
                     (string) $name,
@@ -698,6 +726,10 @@ class McpStaffController extends Controller
             return $this->auditTicketNoteArguments($redacted);
         }
 
+        if ($this->isCippWriteTool((string) $tool)) {
+            return $this->auditCippWriteArguments($redacted);
+        }
+
         if ($tool === 'wiki_add_fact') {
             return $this->auditWikiAddFactArguments($redacted);
         }
@@ -878,6 +910,26 @@ class McpStaffController extends Controller
         return $safe;
     }
 
+    /** @return array<string, mixed> */
+    private function auditCippWriteArguments(array $arguments): array
+    {
+        $safe = [];
+
+        foreach ($arguments as $key => $value) {
+            $normalized = mb_strtolower((string) $key);
+
+            if (in_array($normalized, ['client_id', 'person_id', 'license_type_id', 'ticket_id', 'reason', 'state'], true)) {
+                $safe[$normalized] = $value;
+            }
+
+            if ($normalized === 'confirm_upn') {
+                $safe['confirm_upn'] = '[withheld]';
+            }
+        }
+
+        return $safe;
+    }
+
     private function positiveIntegerArgument(mixed $value): ?int
     {
         if (is_int($value)) {
@@ -911,6 +963,10 @@ class McpStaffController extends Controller
         }
 
         if ($this->isPsaActionTool($toolName)) {
+            return $token->allowedTools !== null && $token->allows($toolName);
+        }
+
+        if ($this->isCippWriteTool($toolName)) {
             return $token->allowedTools !== null && $token->allows($toolName);
         }
 
@@ -1002,6 +1058,11 @@ class McpStaffController extends Controller
     private function isPsaActionTool(string $toolName): bool
     {
         return in_array($toolName, self::PSA_ACTION_TOOLS, true);
+    }
+
+    private function isCippWriteTool(string $toolName): bool
+    {
+        return StaffCippWriteToolExecutor::handles($toolName);
     }
 
     private function isTacticalActionTool(string $toolName): bool

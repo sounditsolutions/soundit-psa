@@ -34,6 +34,13 @@
                         'tactical_stage_shutdown' => ['bg-danger',       'Tactical shutdown'],
                         'tactical_stage_recover_mesh' => ['bg-info',     'Tactical recovery'],
                         'tactical_stage_maintenance' => ['bg-info',      'Tactical maintenance'],
+                        'cipp_stage_disable_user_sign_in' => ['bg-danger', 'CIPP disable sign-in'],
+                        'cipp_stage_enable_user_sign_in' => ['bg-warning text-dark', 'CIPP enable sign-in'],
+                        'cipp_stage_revoke_user_sessions' => ['bg-warning text-dark', 'CIPP revoke sessions'],
+                        'cipp_stage_remove_user_mfa_methods' => ['bg-danger', 'CIPP remove MFA'],
+                        'cipp_stage_set_legacy_per_user_mfa' => ['bg-danger', 'CIPP legacy MFA'],
+                        'cipp_stage_assign_user_license' => ['bg-warning text-dark', 'CIPP assign license'],
+                        'cipp_stage_remove_user_license' => ['bg-danger', 'CIPP remove license'],
                         default              => ['bg-primary',           'Reply'],
                     };
                 @endphp
@@ -85,6 +92,24 @@
             @elseif (\App\Services\Mcp\StaffTacticalActionToolExecutor::isStagedActionType($run->action_type))
                 {{-- TACTICAL ACTION ARM: read-only redacted summary; approval executes through TacticalActionService --}}
                 <p class="text-muted small mb-1">Endpoint action (not run until approved):</p>
+                <p class="form-control-plaintext border rounded p-2 mb-2 bg-light small">{{ $run->proposed_content }}</p>
+                @if(!empty($run->proposed_meta['drafted_by']))
+                    <p class="text-muted small mb-2">Drafted by: {{ $run->proposed_meta['drafted_by'] }}</p>
+                @endif
+
+                <div class="d-flex gap-2">
+                    <form id="approve-{{ $run->id }}" method="POST" action="{{ route('cockpit.approve', $run) }}">
+                        @csrf
+                        <button type="submit" class="btn btn-danger"><i class="bi bi-check2-circle me-1"></i>Approve action</button>
+                    </form>
+                    <form method="POST" action="{{ route('cockpit.deny', $run) }}">
+                        @csrf
+                        <button type="submit" class="btn btn-outline-secondary"><i class="bi bi-x-lg me-1"></i>Hold it</button>
+                    </form>
+                </div>
+            @elseif (\App\Services\Mcp\StaffCippWriteToolExecutor::isStagedActionType($run->action_type))
+                {{-- CIPP WRITE ARM: read-only local summary; approval revalidates server-derived scope --}}
+                <p class="text-muted small mb-1">CIPP write action (not run until approved):</p>
                 <p class="form-control-plaintext border rounded p-2 mb-2 bg-light small">{{ $run->proposed_content }}</p>
                 @if(!empty($run->proposed_meta['drafted_by']))
                     <p class="text-muted small mb-2">Drafted by: {{ $run->proposed_meta['drafted_by'] }}</p>

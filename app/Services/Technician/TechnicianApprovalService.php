@@ -10,6 +10,7 @@ use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Models\TicketNote;
 use App\Services\EmailService;
+use App\Services\Mcp\StaffCippWriteToolExecutor;
 use App\Services\Mcp\StaffTacticalActionToolExecutor;
 use App\Services\TicketService;
 use App\Support\TechnicianConfig;
@@ -265,6 +266,11 @@ class TechnicianApprovalService
     public function approveStagedTacticalAction(TechnicianRun $run, int $approverId): TechnicianApprovalResult
     {
         return app(StaffTacticalActionToolExecutor::class)->approveStagedRun($run, $approverId);
+    }
+
+    public function approveStagedCippWriteAction(TechnicianRun $run, int $approverId): TechnicianApprovalResult
+    {
+        return app(StaffCippWriteToolExecutor::class)->approveStagedRun($run, $approverId);
     }
 
     public function deny(TechnicianRun $run): void

@@ -47,6 +47,13 @@ class TechnicianCockpitController extends Controller
             'tactical_stage_shutdown',
             'tactical_stage_recover_mesh',
             'tactical_stage_maintenance' => $service->approveStagedTacticalAction($run, (int) auth()->id()),
+            'cipp_stage_disable_user_sign_in',
+            'cipp_stage_enable_user_sign_in',
+            'cipp_stage_revoke_user_sessions',
+            'cipp_stage_remove_user_mfa_methods',
+            'cipp_stage_set_legacy_per_user_mfa',
+            'cipp_stage_assign_user_license',
+            'cipp_stage_remove_user_license' => $service->approveStagedCippWriteAction($run, (int) auth()->id()),
             // Body is required only on the reply/resolution path, validated inside this arm.
             'send_reply', 'propose_resolution' => $service->approveAndSend(
                 $run,
@@ -63,7 +70,7 @@ class TechnicianCockpitController extends Controller
                 'closed' => 'Ticket closed.',
                 'published' => 'Public note published.',
                 'merged' => 'Tickets merged.',
-                'executed' => 'Tactical action approved and executed.',
+                'executed' => 'Held action approved and executed.',
                 'already_handled' => 'That draft was already handled.',
                 default => 'Could not send — the Technician declined (it may be paused). Try again.',
             },
