@@ -471,6 +471,25 @@ class TacticalClient
         return $this->get("winupdate/{$agentId}/", $timeout);
     }
 
+    public function getServices(string $agentId, ?int $timeout = null): array
+    {
+        return $this->get("services/{$agentId}/", $timeout);
+    }
+
+    public function controlService(string $agentId, string $serviceName, string $action): mixed
+    {
+        return $this->post("services/{$agentId}/{$this->pathSegment($serviceName)}/", [
+            'sv_action' => $action,
+        ]);
+    }
+
+    public function setServiceStartType(string $agentId, string $serviceName, string $startType): mixed
+    {
+        return $this->put("services/{$agentId}/{$this->pathSegment($serviceName)}/", [
+            'startType' => $startType,
+        ]);
+    }
+
     public function getAgentChecks(string $agentId, ?int $timeout = null): array
     {
         return $this->get("agents/{$agentId}/checks/", $timeout);
@@ -698,5 +717,10 @@ class TacticalClient
             downloadUrl: $url,
             instructions: 'Download the installer and run it. Your device will automatically register with our management system.',
         );
+    }
+
+    private function pathSegment(string $value): string
+    {
+        return rawurlencode($value);
     }
 }

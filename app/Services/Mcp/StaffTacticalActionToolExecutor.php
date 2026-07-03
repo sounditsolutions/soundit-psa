@@ -18,6 +18,8 @@ use App\Services\Tactical\Actions\RebootAction;
 use App\Services\Tactical\Actions\RecoverAction;
 use App\Services\Tactical\Actions\RunCommandAction;
 use App\Services\Tactical\Actions\RunScriptAction;
+use App\Services\Tactical\Actions\ServiceControlAction;
+use App\Services\Tactical\Actions\ServiceStartTypeAction;
 use App\Services\Tactical\Actions\SetMaintenanceAction;
 use App\Services\Tactical\Actions\ShutdownAction;
 use App\Services\Tactical\Actions\TacticalAction;
@@ -53,6 +55,10 @@ class StaffTacticalActionToolExecutor
         'tactical_client_name',
         'tactical_site_name',
         'tactical_script_id',
+        'service_id',
+        'svcname',
+        'upstream_service_name',
+        'tactical_service_name',
     ];
 
     /** @var array<string, int> */
@@ -71,6 +77,12 @@ class StaffTacticalActionToolExecutor
         'tactical_stage_maintenance' => 60,
         'tactical_open_remote_control' => 60,
         'tactical_refresh_device_snapshot' => 60,
+        'tactical_start_service' => 120,
+        'tactical_stop_service' => 300,
+        'tactical_stage_stop_service' => 300,
+        'tactical_restart_service' => 300,
+        'tactical_stage_restart_service' => 300,
+        'tactical_set_service_start_type' => 300,
     ];
 
     /** @var array<string, string> */
@@ -81,6 +93,8 @@ class StaffTacticalActionToolExecutor
         'tactical_stage_shutdown' => 'tactical_shutdown_device',
         'tactical_stage_recover_mesh' => 'tactical_recover_mesh',
         'tactical_stage_maintenance' => 'tactical_set_maintenance',
+        'tactical_stage_stop_service' => 'tactical_stop_service',
+        'tactical_stage_restart_service' => 'tactical_restart_service',
     ];
 
     public function __construct(
@@ -108,6 +122,12 @@ class StaffTacticalActionToolExecutor
             self::stageMaintenanceTool(),
             self::remoteControlTool(),
             self::refreshSnapshotTool(),
+            self::startServiceTool(),
+            self::stopServiceTool(),
+            self::stageStopServiceTool(),
+            self::restartServiceTool(),
+            self::stageRestartServiceTool(),
+            self::setServiceStartTypeTool(),
         ];
     }
 
@@ -149,7 +169,11 @@ class StaffTacticalActionToolExecutor
             'tactical_reboot_device',
             'tactical_shutdown_device',
             'tactical_recover_mesh',
-            'tactical_set_maintenance' => $this->executeBusTool($name, $arguments, $clientId, $actorLabel),
+            'tactical_set_maintenance',
+            'tactical_start_service',
+            'tactical_stop_service',
+            'tactical_restart_service',
+            'tactical_set_service_start_type' => $this->executeBusTool($name, $arguments, $clientId, $actorLabel),
             'tactical_open_remote_control' => $this->openRemoteControl($arguments, $clientId, $actorLabel),
             'tactical_refresh_device_snapshot' => $this->refreshSnapshot($arguments, $clientId, $actorLabel),
             default => ['error' => "Unknown Tactical action tool: {$name}"],
@@ -200,6 +224,14 @@ class StaffTacticalActionToolExecutor
 
             if (TechnicianConfig::killSwitchEngaged()) {
                 $this->auditAttempt($run->action_type, 'blocked', (int) $run->client_id, $ticket, $asset, $run->content_hash, 'Technician kill-switch engaged; staged Tactical action refused.', $this->approverLabel($approverId), $run->id, $approverId);
+                $run->releaseClaim();
+
+                return new TechnicianApprovalResult('gate_declined');
+            }
+
+            $payload = $this->revalidateStagedPayload($payload, $asset);
+            if (isset($payload['error'])) {
+                $this->auditAttempt($run->action_type, 'rejected', (int) $run->client_id, $ticket, $asset, $run->content_hash, (string) $payload['error'], $this->approverLabel($approverId), $run->id, $approverId);
                 $run->releaseClaim();
 
                 return new TechnicianApprovalResult('gate_declined');
@@ -269,6 +301,22 @@ class StaffTacticalActionToolExecutor
         $ticket = $context['ticket'];
         $reason = $context['reason'];
 
+        if ($error = $this->confirmHostnameError($tool, $arguments, $asset)) {
+            $contentHash = $this->contentHash($tool, $clientId, $asset->id, $ticket?->id, $arguments);
+            $this->auditAttempt($tool, 'rejected', $clientId, $ticket, $asset, $contentHash, $error, $actorLabel);
+
+            return ['error' => $error];
+        }
+
+        $prepared = $this->prepareArgumentsForTool($tool, $arguments, $asset);
+        if (isset($prepared['error'])) {
+            $contentHash = $this->contentHash($tool, $clientId, $asset->id, $ticket?->id, $arguments);
+            $this->auditAttempt($tool, 'rejected', $clientId, $ticket, $asset, $contentHash, (string) $prepared['error'], $actorLabel);
+
+            return ['error' => $prepared['error']];
+        }
+        $arguments = $prepared['arguments'] ?? $arguments;
+
         [$action, $params, $paramError] = $this->actionAndParamsFromArguments($tool, $arguments);
         $contentHash = $this->contentHash($tool, $clientId, $asset->id, $ticket?->id, $params ?: $arguments);
 
@@ -279,7 +327,7 @@ class StaffTacticalActionToolExecutor
             return ['error' => $paramError, 'tactical_status' => $result->status];
         }
 
-        if ($error = $this->confirmHostnameError($tool, $arguments, $asset)) {
+        if ($error = $this->confirmServiceNameError($tool, $arguments, $params)) {
             $this->auditAttempt($tool, 'rejected', $clientId, $ticket, $asset, $contentHash, $error, $actorLabel);
 
             return ['error' => $error];
@@ -645,6 +693,10 @@ class StaffTacticalActionToolExecutor
                 'tactical_shutdown_device' => [new ShutdownAction, [], null],
                 'tactical_recover_mesh' => [new RecoverAction, ['mode' => 'mesh'], null],
                 'tactical_set_maintenance' => [new SetMaintenanceAction, ['enabled' => $arguments['enabled'] ?? null], null],
+                'tactical_start_service' => [new ServiceControlAction('start'), ['service_name' => $arguments['service_name'] ?? null], null],
+                'tactical_stop_service' => [new ServiceControlAction('stop'), ['service_name' => $arguments['service_name'] ?? null], null],
+                'tactical_restart_service' => [new ServiceControlAction('restart'), ['service_name' => $arguments['service_name'] ?? null], null],
+                'tactical_set_service_start_type' => [new ServiceStartTypeAction, ['service_name' => $arguments['service_name'] ?? null, 'start_type' => $arguments['start_type'] ?? null], null],
                 default => throw new \InvalidArgumentException("Unsupported Tactical action tool {$tool}"),
             };
         } catch (\InvalidArgumentException|InvalidActionParams $e) {
@@ -657,6 +709,12 @@ class StaffTacticalActionToolExecutor
      */
     private function stagePayload(string $stageTool, string $directTool, array $arguments, Asset $asset): array
     {
+        $prepared = $this->prepareArgumentsForTool($directTool, $arguments, $asset);
+        if (isset($prepared['error'])) {
+            return [$this->fallbackAction($directTool), $this->rawParamsForTool($directTool, $arguments), (string) $prepared['error'], ''];
+        }
+        $arguments = $prepared['arguments'] ?? $arguments;
+
         [$action, $params, $error] = $this->actionAndParamsFromArguments($directTool, $arguments);
         if ($error !== null) {
             return [$action, $params, $error, ''];
@@ -681,6 +739,10 @@ class StaffTacticalActionToolExecutor
             'tactical_shutdown_device' => [new ShutdownAction, $params],
             'tactical_recover_mesh' => [new RecoverAction, $params],
             'tactical_set_maintenance' => [new SetMaintenanceAction, $params],
+            'tactical_start_service' => [new ServiceControlAction('start'), $params],
+            'tactical_stop_service' => [new ServiceControlAction('stop'), $params],
+            'tactical_restart_service' => [new ServiceControlAction('restart'), $params],
+            'tactical_set_service_start_type' => [new ServiceStartTypeAction, $params],
             default => throw new \InvalidArgumentException("Unsupported staged Tactical direct tool {$directTool}"),
         };
     }
@@ -744,6 +806,10 @@ class StaffTacticalActionToolExecutor
             'tactical_shutdown_device' => new ShutdownAction,
             'tactical_recover_mesh' => new RecoverAction,
             'tactical_set_maintenance' => new SetMaintenanceAction,
+            'tactical_start_service' => new ServiceControlAction('start'),
+            'tactical_stop_service' => new ServiceControlAction('stop'),
+            'tactical_restart_service' => new ServiceControlAction('restart'),
+            'tactical_set_service_start_type' => new ServiceStartTypeAction,
             default => new RecoverAction,
         };
     }
@@ -764,6 +830,13 @@ class StaffTacticalActionToolExecutor
             ],
             'tactical_set_maintenance' => ['enabled' => $arguments['enabled'] ?? null],
             'tactical_recover_mesh' => ['mode' => 'mesh'],
+            'tactical_start_service', 'tactical_stop_service', 'tactical_restart_service' => [
+                'service_name' => $arguments['service_name'] ?? null,
+            ],
+            'tactical_set_service_start_type' => [
+                'service_name' => $arguments['service_name'] ?? null,
+                'start_type' => $arguments['start_type'] ?? null,
+            ],
             default => [],
         };
     }
@@ -789,7 +862,7 @@ class StaffTacticalActionToolExecutor
 
     private function confirmHostnameError(string $tool, array $arguments, Asset $asset): ?string
     {
-        if (! in_array($tool, ['tactical_run_command', 'tactical_reboot_device', 'tactical_shutdown_device'], true)) {
+        if (! in_array($tool, ['tactical_run_command', 'tactical_reboot_device', 'tactical_shutdown_device', 'tactical_stop_service', 'tactical_restart_service'], true)) {
             return null;
         }
 
@@ -802,6 +875,21 @@ class StaffTacticalActionToolExecutor
         return null;
     }
 
+    private function confirmServiceNameError(string $tool, array $arguments, array $params): ?string
+    {
+        if (! in_array($tool, ['tactical_stop_service', 'tactical_restart_service'], true)) {
+            return null;
+        }
+
+        $typed = trim((string) ($arguments['confirm_service_name'] ?? ''));
+        $expected = trim((string) ($params['service_name'] ?? ''));
+        if ($expected === '' || strcasecmp($expected, $typed) !== 0) {
+            return 'The typed service name does not match this service. Tactical service action cancelled.';
+        }
+
+        return null;
+    }
+
     private function linkedAgentError(Asset $asset): ?string
     {
         $asset->loadMissing('tacticalAsset');
@@ -809,6 +897,96 @@ class StaffTacticalActionToolExecutor
         return empty($asset->tacticalAsset?->agent_id)
             ? 'Device has no Tactical agent'
             : null;
+    }
+
+    /**
+     * @return array{arguments?: array<string, mixed>, error?: string}
+     */
+    private function prepareArgumentsForTool(string $tool, array $arguments, Asset $asset): array
+    {
+        if ($tool === 'tactical_set_service_start_type' && ServiceStartTypeAction::normalizeStartType($arguments['start_type'] ?? null) === null) {
+            return ['error' => 'start_type must be one of: '.implode(', ', ServiceStartTypeAction::ALLOWED_START_TYPES).'.'];
+        }
+
+        if (! $this->isServiceTool($tool)) {
+            return ['arguments' => $arguments];
+        }
+
+        $resolved = $this->resolveServiceName($asset, $arguments);
+        if (isset($resolved['error'])) {
+            return ['error' => $resolved['error']];
+        }
+
+        $arguments['service_name'] = $resolved['service_name'];
+
+        return ['arguments' => $arguments];
+    }
+
+    /**
+     * @return array{service_name?: string, error?: string}
+     */
+    private function resolveServiceName(Asset $asset, array $arguments): array
+    {
+        $selector = isset($arguments['service_name']) && is_scalar($arguments['service_name'])
+            ? trim((string) $arguments['service_name'])
+            : '';
+        if ($selector === '') {
+            return ['error' => 'service_name is required'];
+        }
+
+        try {
+            $services = $this->client->getServices((string) $asset->tacticalAsset->agent_id);
+        } catch (TacticalClientException) {
+            return ['error' => 'Could not read Tactical services to resolve service scope; no service action was sent.'];
+        }
+
+        $selectorLower = mb_strtolower($selector);
+        foreach ($services as $service) {
+            if (! is_array($service)) {
+                continue;
+            }
+
+            $name = isset($service['name']) && is_scalar($service['name']) ? trim((string) $service['name']) : '';
+            $displayName = isset($service['display_name']) && is_scalar($service['display_name']) ? trim((string) $service['display_name']) : '';
+            if ($name === '') {
+                continue;
+            }
+
+            if (mb_strtolower($name) === $selectorLower || ($displayName !== '' && mb_strtolower($displayName) === $selectorLower)) {
+                return ['service_name' => $name];
+            }
+        }
+
+        return ['error' => 'Service was not found on the server-derived Tactical agent; no service action was sent.'];
+    }
+
+    /** @return array<string, mixed> */
+    private function revalidateStagedPayload(array $payload, Asset $asset): array
+    {
+        $directTool = (string) ($payload['direct_tool'] ?? '');
+        if (! $this->isServiceTool($directTool)) {
+            return $payload;
+        }
+
+        $params = is_array($payload['params'] ?? null) ? $payload['params'] : [];
+        $prepared = $this->prepareArgumentsForTool($directTool, $params, $asset);
+        if (isset($prepared['error'])) {
+            return ['error' => $prepared['error']];
+        }
+
+        $payload['params'] = $prepared['arguments'] ?? $params;
+
+        return $payload;
+    }
+
+    private function isServiceTool(string $tool): bool
+    {
+        return in_array($tool, [
+            'tactical_start_service',
+            'tactical_stop_service',
+            'tactical_restart_service',
+            'tactical_set_service_start_type',
+        ], true);
     }
 
     /** @return array<int, string> */
@@ -899,6 +1077,10 @@ class StaffTacticalActionToolExecutor
             'tactical_recover_mesh', 'tactical_stage_recover_mesh' => 'tactical.recover',
             'tactical_set_maintenance', 'tactical_stage_maintenance' => 'tactical.set_maintenance',
             'tactical_open_remote_control' => 'tactical.remote_control',
+            'tactical_start_service' => 'tactical.service_start',
+            'tactical_stop_service', 'tactical_stage_stop_service' => 'tactical.service_stop',
+            'tactical_restart_service', 'tactical_stage_restart_service' => 'tactical.service_restart',
+            'tactical_set_service_start_type' => 'tactical.service_start_type',
             default => null,
         };
     }
@@ -1058,6 +1240,7 @@ class StaffTacticalActionToolExecutor
             'tactical_shutdown_device' => (new ShutdownAction)->summary([]).' Target: '.$this->targetHostname($asset).'.',
             'tactical_recover_mesh' => 'Recover Mesh agent services on '.$this->targetHostname($asset).'.',
             'tactical_set_maintenance' => (new SetMaintenanceAction)->summary($params).' on '.$this->targetHostname($asset).'.',
+            'tactical_stop_service', 'tactical_restart_service' => $action->summary($params).' on '.$this->targetHostname($asset).'.',
             default => "{$stageTool} for ".$this->targetHostname($asset).'.',
         };
 
@@ -1298,6 +1481,104 @@ class StaffTacticalActionToolExecutor
             'Refresh the local Tactical device snapshot for one server-derived endpoint. This is a live read plus local write, not an endpoint mutation; it still requires an explicit token grant, reason, kill-switch, and cooldown.',
             self::targetProperties(),
             ['reason'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function serviceSelectorProperties(): array
+    {
+        return [
+            'service_name' => [
+                'type' => 'string',
+                'description' => 'Service selector. The server resolves this against the current service list for the server-derived Tactical agent and then sends the canonical service name upstream.',
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private static function destructiveServiceConfirmProperties(): array
+    {
+        return [
+            'confirm_hostname' => [
+                'type' => 'string',
+                'description' => 'Typed target hostname. Defense-in-depth friction only.',
+            ],
+            'confirm_service_name' => [
+                'type' => 'string',
+                'description' => 'Typed canonical service name. The server compares it after resolving service_name from the current service list.',
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private static function startServiceTool(): array
+    {
+        return self::tool(
+            'tactical_start_service',
+            'Start one Windows service on a server-derived endpoint immediately using Tactical POST services/{agent_id}/{svcname}/ with sv_action=start. Requires an explicit token grant, reason, kill-switch, current service-list resolution, dedup/cooldown, and audited TacticalActionService dispatch.',
+            array_merge(self::targetProperties(), self::serviceSelectorProperties()),
+            ['reason', 'service_name'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function stopServiceTool(): array
+    {
+        return self::tool(
+            'tactical_stop_service',
+            'Stop one Windows service on a server-derived endpoint immediately. This can interrupt applications or dependent services. Requires an explicit token grant, reason, confirm_hostname, confirm_service_name, kill-switch, current service-list resolution, dedup/cooldown, and audited TacticalActionService dispatch.',
+            array_merge(self::targetProperties(), self::serviceSelectorProperties(), self::destructiveServiceConfirmProperties()),
+            ['reason', 'service_name', 'confirm_hostname', 'confirm_service_name'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function stageStopServiceTool(): array
+    {
+        return self::tool(
+            'tactical_stage_stop_service',
+            'Stage a Windows service stop for cockpit approval instead of stopping it now. Stopping a service can interrupt applications or dependent services; approval revalidates ticket, asset, kill-switch, cooldown, and current service scope before dispatch.',
+            array_merge(self::targetProperties(ticket: true), self::serviceSelectorProperties()),
+            ['ticket_id', 'reason', 'service_name'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function restartServiceTool(): array
+    {
+        return self::tool(
+            'tactical_restart_service',
+            'Restart one Windows service on a server-derived endpoint immediately. Tactical stops then starts the service, which can interrupt applications or dependent services. Requires an explicit token grant, reason, confirm_hostname, confirm_service_name, kill-switch, current service-list resolution, dedup/cooldown, and audited TacticalActionService dispatch.',
+            array_merge(self::targetProperties(), self::serviceSelectorProperties(), self::destructiveServiceConfirmProperties()),
+            ['reason', 'service_name', 'confirm_hostname', 'confirm_service_name'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function stageRestartServiceTool(): array
+    {
+        return self::tool(
+            'tactical_stage_restart_service',
+            'Stage a Windows service restart for cockpit approval instead of restarting it now. Tactical stops then starts the service; approval revalidates ticket, asset, kill-switch, cooldown, and current service scope before dispatch.',
+            array_merge(self::targetProperties(ticket: true), self::serviceSelectorProperties()),
+            ['ticket_id', 'reason', 'service_name'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function setServiceStartTypeTool(): array
+    {
+        return self::tool(
+            'tactical_set_service_start_type',
+            'Set one Windows service start type on a server-derived endpoint using Tactical PUT services/{agent_id}/{svcname}/ with startType. This can affect service startup after reboot or recovery. Requires an explicit token grant, reason, kill-switch, current service-list resolution, start_type allowlist, dedup/cooldown, and audited TacticalActionService dispatch.',
+            array_merge(self::targetProperties(), self::serviceSelectorProperties(), [
+                'start_type' => [
+                    'type' => 'string',
+                    'enum' => ServiceStartTypeAction::ALLOWED_START_TYPES,
+                    'description' => 'Allowed Tactical startType value.',
+                ],
+            ]),
+            ['reason', 'service_name', 'start_type'],
         );
     }
 }
