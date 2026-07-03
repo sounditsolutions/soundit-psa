@@ -44,6 +44,11 @@ class StaffTacticalAdminToolExecutor
         'tactical_generate_installer',
         'tactical_sync_devices_now',
         'tactical_assign_automation_policy',
+        'tactical_list_agent_tasks',
+        'tactical_create_agent_task',
+        'tactical_run_agent_task',
+        'tactical_run_policy_task_on_agent',
+        'tactical_stage_run_policy_task_all',
         'tactical_create_patch_policy',
         'tactical_update_patch_policy',
         'tactical_delete_patch_policy',
@@ -74,6 +79,17 @@ class StaffTacticalAdminToolExecutor
         'policy_pk',
         'upstream_policy_id',
         'tactical_policy_id',
+        'task',
+        'task_pk',
+        'upstream_task_id',
+        'tactical_task_id',
+        'assigned_check',
+        'check',
+        'check_id',
+        'upstream_check_id',
+        'tactical_check_id',
+        'custom_field',
+        'custom_field_id',
         'patch_policy_id',
         'patch_policy_pk',
         'winupdatepolicy',
@@ -113,6 +129,14 @@ class StaffTacticalAdminToolExecutor
         'tactical_update_automation_policy' => 300,
         'tactical_delete_automation_policy' => 600,
         'tactical_assign_automation_policy' => 600,
+        'tactical_create_agent_task' => 300,
+        'tactical_create_policy_task' => 300,
+        'tactical_update_task' => 300,
+        'tactical_delete_task' => 600,
+        'tactical_run_agent_task' => 300,
+        'tactical_run_policy_task_on_agent' => 300,
+        'tactical_run_policy_task_all' => 900,
+        'tactical_stage_run_policy_task_all' => 900,
     ];
 
     /** @var array<string, int> */
@@ -127,6 +151,7 @@ class StaffTacticalAdminToolExecutor
     /** @var array<string, string> */
     private const STAGED_TO_DIRECT = [
         'tactical_stage_reset_patch_policies' => 'tactical_reset_patch_policies',
+        'tactical_stage_run_policy_task_all' => 'tactical_run_policy_task_all',
     ];
 
     /** @var array<int, string> */
@@ -142,6 +167,21 @@ class StaffTacticalAdminToolExecutor
     private const SCRIPT_SHELLS = ['powershell', 'cmd', 'python', 'shell', 'nushell', 'deno'];
 
     private const SCRIPT_BODY_AUDIT_PLACEHOLDER = '[script body withheld]';
+
+    private const TASK_COMMAND_AUDIT_PLACEHOLDER = '[task command withheld]';
+
+    private const TASK_SCRIPT_ARGS_AUDIT_PLACEHOLDER = '[task script args withheld]';
+
+    private const TASK_RUN_ALL_CONFIRMATION = 'run policy task for all affected agents';
+
+    /** @var array<int, string> */
+    private const TASK_TYPES = ['daily', 'weekly', 'monthly', 'monthlydow', 'checkfailure', 'manual', 'runonce', 'onboarding'];
+
+    /** @var array<int, string> */
+    private const TASK_ALERT_SEVERITIES = ['info', 'warning', 'error'];
+
+    /** @var array<int, string> */
+    private const TASK_SUPPORTED_PLATFORMS = ['windows', 'linux', 'darwin'];
 
     public function __construct(
         private readonly TacticalClient $client,
@@ -179,6 +219,18 @@ class StaffTacticalAdminToolExecutor
             self::deleteAutomationPolicyTool(),
             self::getAutomationPolicyRelatedTool(),
             self::assignAutomationPolicyTool(),
+            self::listTasksTool(),
+            self::listAgentTasksTool(),
+            self::listPolicyTasksTool(),
+            self::createAgentTaskTool(),
+            self::createPolicyTaskTool(),
+            self::getTaskTool(),
+            self::updateTaskTool(),
+            self::deleteTaskTool(),
+            self::runAgentTaskTool(),
+            self::runPolicyTaskOnAgentTool(),
+            self::runPolicyTaskAllTool(),
+            self::stageRunPolicyTaskAllTool(),
             self::createPatchPolicyTool(),
             self::updatePatchPolicyTool(),
             self::deletePatchPolicyTool(),
@@ -216,7 +268,11 @@ class StaffTacticalAdminToolExecutor
         }
 
         if (isset(self::STAGED_TO_DIRECT[$name])) {
-            return $this->stagePatchPolicyReset($arguments, (int) $clientId, $actorLabel);
+            return match ($name) {
+                'tactical_stage_reset_patch_policies' => $this->stagePatchPolicyReset($arguments, (int) $clientId, $actorLabel),
+                'tactical_stage_run_policy_task_all' => $this->stagePolicyTaskRunAll($arguments, (int) $clientId, $actorLabel),
+                default => ['error' => "Unknown Tactical staged admin tool: {$name}"],
+            };
         }
 
         return match ($name) {
@@ -242,6 +298,17 @@ class StaffTacticalAdminToolExecutor
             'tactical_delete_automation_policy' => $this->deleteAutomationPolicy($arguments, $actorLabel),
             'tactical_get_automation_policy_related' => $this->getAutomationPolicyRelated($arguments, $actorLabel),
             'tactical_assign_automation_policy' => $this->assignAutomationPolicy($arguments, (int) $clientId, $actorLabel),
+            'tactical_list_tasks' => $this->listTasks($arguments, $actorLabel),
+            'tactical_list_agent_tasks' => $this->listAgentTasks($arguments, (int) $clientId, $actorLabel),
+            'tactical_list_policy_tasks' => $this->listPolicyTasks($arguments, $actorLabel),
+            'tactical_create_agent_task' => $this->createAgentTask($arguments, (int) $clientId, $actorLabel),
+            'tactical_create_policy_task' => $this->createPolicyTask($arguments, $actorLabel),
+            'tactical_get_task' => $this->getTask($arguments, $actorLabel),
+            'tactical_update_task' => $this->updateTask($arguments, $actorLabel),
+            'tactical_delete_task' => $this->deleteTask($arguments, $actorLabel),
+            'tactical_run_agent_task' => $this->runAgentTask($arguments, (int) $clientId, $actorLabel),
+            'tactical_run_policy_task_on_agent' => $this->runPolicyTaskOnAgent($arguments, (int) $clientId, $actorLabel),
+            'tactical_run_policy_task_all' => $this->runPolicyTaskAll($arguments, $actorLabel),
             'tactical_create_patch_policy' => $this->createPatchPolicy($arguments, (int) $clientId, $actorLabel),
             'tactical_update_patch_policy' => $this->updatePatchPolicy($arguments, (int) $clientId, $actorLabel),
             'tactical_delete_patch_policy' => $this->deletePatchPolicy($arguments, (int) $clientId, $actorLabel),
@@ -1413,6 +1480,573 @@ class StaffTacticalAdminToolExecutor
     }
 
     /** @return array<string, mixed> */
+    private function listTasks(array $arguments, string $actorLabel): array
+    {
+        $tool = 'tactical_list_tasks';
+        $guard = $this->baseGuard($tool, $arguments, null, $actorLabel);
+        if (isset($guard['error'])) {
+            return ['error' => $guard['error']];
+        }
+
+        $contentHash = $this->contentHash($tool, null, 'tasks', ['list' => true]);
+        try {
+            $tasks = $this->client->getTasks();
+        } catch (TacticalClientException $e) {
+            $message = $this->tacticalFailureMessage($e, 'Tactical task list');
+            $this->auditAttempt($tool, 'error', null, $contentHash, $message, $actorLabel);
+
+            return ['error' => $message];
+        }
+
+        $mapped = $this->mapTasksForResponse($tasks);
+        $this->auditAttempt($tool, 'executed', null, $contentHash, 'Listed Tactical automated task metadata.', $actorLabel);
+
+        return ['success' => true, 'count' => count($mapped), 'tasks' => $mapped];
+    }
+
+    /** @return array<string, mixed> */
+    private function listAgentTasks(array $arguments, int $clientId, string $actorLabel): array
+    {
+        $tool = 'tactical_list_agent_tasks';
+        $guard = $this->baseGuard($tool, $arguments, $clientId, $actorLabel);
+        if (isset($guard['error'])) {
+            return ['error' => $guard['error']];
+        }
+
+        $asset = $this->resolveAsset($arguments, $clientId);
+        $contentHash = $this->contentHash($tool, $clientId, 'agent-tasks', [
+            'asset_id' => $asset instanceof Asset ? $asset->id : null,
+            'hostname' => $arguments['hostname'] ?? null,
+        ]);
+        if (is_array($asset)) {
+            $this->auditAttempt($tool, 'rejected', $clientId, $contentHash, $asset['error'], $actorLabel);
+
+            return ['error' => $asset['error']];
+        }
+        if ($error = $this->linkedAgentError($asset)) {
+            $this->auditAttempt($tool, 'rejected', $clientId, $contentHash, $error, $actorLabel);
+
+            return ['error' => $error];
+        }
+
+        try {
+            $tasks = $this->client->getAgentTasks((string) $asset->tacticalAsset->agent_id);
+        } catch (TacticalClientException $e) {
+            $message = $this->tacticalFailureMessage($e, 'Tactical agent task list');
+            $this->auditAttempt($tool, 'error', $clientId, $contentHash, $message, $actorLabel);
+
+            return ['error' => $message];
+        }
+
+        $mapped = $this->mapTasksForResponse($tasks);
+        $this->auditAttempt($tool, 'executed', $clientId, $contentHash, 'Listed Tactical tasks for agent '.$this->targetHostname($asset).'.', $actorLabel);
+
+        return ['success' => true, 'asset_id' => $asset->id, 'hostname' => $this->targetHostname($asset), 'count' => count($mapped), 'tasks' => $mapped];
+    }
+
+    /** @return array<string, mixed> */
+    private function listPolicyTasks(array $arguments, string $actorLabel): array
+    {
+        $tool = 'tactical_list_policy_tasks';
+        $guard = $this->baseGuard($tool, $arguments, null, $actorLabel);
+        if (isset($guard['error'])) {
+            return ['error' => $guard['error']];
+        }
+
+        $resolvedPolicy = $this->resolvedAutomationPolicy($arguments, $tool, $actorLabel);
+        if (isset($resolvedPolicy['error'])) {
+            return ['error' => $resolvedPolicy['error']];
+        }
+
+        $contentHash = $this->contentHash($tool, null, 'policy-'.$resolvedPolicy['policy_id'].'-tasks', ['list' => true]);
+        try {
+            $tasks = $this->client->getPolicyTasks((int) $resolvedPolicy['policy_id']);
+        } catch (TacticalClientException $e) {
+            $message = $this->tacticalFailureMessage($e, 'Tactical policy task list');
+            $this->auditAttempt($tool, 'error', null, $contentHash, $message, $actorLabel);
+
+            return ['error' => $message];
+        }
+
+        $mapped = $this->mapTasksForResponse($tasks);
+        $this->auditAttempt($tool, 'executed', null, $contentHash, "Listed Tactical tasks for automation policy '{$resolvedPolicy['policy_name']}'.", $actorLabel);
+
+        return ['success' => true, 'policy_id' => $resolvedPolicy['policy_id'], 'policy_name' => $resolvedPolicy['policy_name'], 'count' => count($mapped), 'tasks' => $mapped];
+    }
+
+    /** @return array<string, mixed> */
+    private function createAgentTask(array $arguments, int $clientId, string $actorLabel): array
+    {
+        $tool = 'tactical_create_agent_task';
+        $guard = $this->baseGuard($tool, $arguments, $clientId, $actorLabel);
+        if (isset($guard['error'])) {
+            return ['error' => $guard['error']];
+        }
+
+        $asset = $this->resolveAsset($arguments, $clientId);
+        $contentHash = $this->contentHash($tool, $clientId, 'agent-task-create', $this->safeTaskHashParams($arguments));
+        if (is_array($asset)) {
+            $this->auditAttempt($tool, 'rejected', $clientId, $contentHash, $asset['error'], $actorLabel);
+
+            return ['error' => $asset['error']];
+        }
+        if ($error = $this->linkedAgentError($asset)) {
+            $this->auditAttempt($tool, 'rejected', $clientId, $contentHash, $error, $actorLabel);
+
+            return ['error' => $error];
+        }
+
+        $body = $this->taskBody($arguments, requireCreate: true, nonBody: ['client_id', 'reason', 'asset_id', 'hostname']);
+        if (isset($body['error'])) {
+            $this->auditAttempt($tool, 'rejected', $clientId, $contentHash, $body['error'], $actorLabel);
+
+            return ['error' => $body['error']];
+        }
+
+        $payload = ['agent' => (string) $asset->tacticalAsset->agent_id] + $body['body'];
+        $contentHash = $this->contentHash($tool, $clientId, 'agent-'.$asset->id, $payload);
+        if ($this->alreadyExecuted($tool, $clientId, $contentHash)) {
+            $this->auditAttempt($tool, 'blocked', $clientId, $contentHash, 'Duplicate agent task create suppressed before upstream call.', $actorLabel);
+
+            return ['success' => true, 'idempotent' => true, 'message' => 'Already created an identical Tactical agent task recently; no upstream call was made.'];
+        }
+        if ($this->cooldownActive($tool, $clientId, self::COOLDOWNS[$tool])) {
+            $this->auditAttempt($tool, 'blocked', $clientId, $contentHash, 'Agent task create cooldown active; upstream call refused.', $actorLabel);
+
+            return ['error' => 'tactical_create_agent_task cooldown active for this client; no upstream call was made.'];
+        }
+
+        try {
+            $result = $this->client->createTask($payload);
+        } catch (TacticalClientException $e) {
+            $message = $this->tacticalFailureMessage($e, 'Tactical agent task create');
+            $this->auditAttempt($tool, 'error', $clientId, $contentHash, $message, $actorLabel);
+
+            return ['error' => $message];
+        }
+
+        $taskName = (string) ($payload['name'] ?? 'task');
+        $this->auditAttempt($tool, 'executed', $clientId, $contentHash, "Created Tactical agent task '{$taskName}' for ".$this->targetHostname($asset).'.', $actorLabel);
+
+        return ['success' => true, 'task_name' => $taskName, 'asset_id' => $asset->id, 'message' => is_scalar($result) ? (string) $result : 'Tactical agent task created.'];
+    }
+
+    /** @return array<string, mixed> */
+    private function createPolicyTask(array $arguments, string $actorLabel): array
+    {
+        $tool = 'tactical_create_policy_task';
+        $guard = $this->baseGuard($tool, $arguments, null, $actorLabel);
+        if (isset($guard['error'])) {
+            return ['error' => $guard['error']];
+        }
+
+        $resolvedPolicy = $this->resolvedAutomationPolicy($arguments, $tool, $actorLabel);
+        $contentHash = $this->contentHash($tool, null, 'policy-task-create', $this->safeTaskHashParams($arguments));
+        if (isset($resolvedPolicy['error'])) {
+            return ['error' => $resolvedPolicy['error']];
+        }
+
+        $body = $this->taskBody($arguments, requireCreate: true, nonBody: ['reason', 'policy_id']);
+        if (isset($body['error'])) {
+            $this->auditAttempt($tool, 'rejected', null, $contentHash, $body['error'], $actorLabel);
+
+            return ['error' => $body['error']];
+        }
+
+        $payload = ['policy' => (int) $resolvedPolicy['policy_id']] + $body['body'];
+        $contentHash = $this->contentHash($tool, null, 'policy-'.$resolvedPolicy['policy_id'], $payload);
+        if ($this->alreadyExecuted($tool, null, $contentHash)) {
+            $this->auditAttempt($tool, 'blocked', null, $contentHash, 'Duplicate policy task create suppressed before upstream call.', $actorLabel);
+
+            return ['success' => true, 'idempotent' => true, 'message' => 'Already created an identical Tactical policy task recently; no upstream call was made.'];
+        }
+        if ($this->cooldownActive($tool, null, self::COOLDOWNS[$tool])) {
+            $this->auditAttempt($tool, 'blocked', null, $contentHash, 'Policy task create cooldown active; upstream call refused.', $actorLabel);
+
+            return ['error' => 'tactical_create_policy_task cooldown active; no upstream call was made.'];
+        }
+
+        try {
+            $result = $this->client->createTask($payload);
+        } catch (TacticalClientException $e) {
+            $message = $this->tacticalFailureMessage($e, 'Tactical policy task create');
+            $this->auditAttempt($tool, 'error', null, $contentHash, $message, $actorLabel);
+
+            return ['error' => $message];
+        }
+
+        $taskName = (string) ($payload['name'] ?? 'task');
+        $this->auditAttempt($tool, 'executed', null, $contentHash, "Created Tactical policy task '{$taskName}' for policy '{$resolvedPolicy['policy_name']}'.", $actorLabel);
+
+        return ['success' => true, 'task_name' => $taskName, 'policy_id' => $resolvedPolicy['policy_id'], 'message' => is_scalar($result) ? (string) $result : 'Tactical policy task created.'];
+    }
+
+    /** @return array<string, mixed> */
+    private function getTask(array $arguments, string $actorLabel): array
+    {
+        $tool = 'tactical_get_task';
+        $guard = $this->baseGuard($tool, $arguments, null, $actorLabel);
+        if (isset($guard['error'])) {
+            return ['error' => $guard['error']];
+        }
+
+        $resolved = $this->resolvedTask($arguments, $tool, $actorLabel);
+        if (isset($resolved['error'])) {
+            return ['error' => $resolved['error']];
+        }
+
+        $contentHash = $this->contentHash($tool, null, 'task-'.$resolved['task_id'], ['detail' => true]);
+        try {
+            $task = $this->client->getTask((int) $resolved['task_id']);
+        } catch (TacticalClientException $e) {
+            $message = $this->tacticalFailureMessage($e, 'Tactical task detail');
+            $this->auditAttempt($tool, 'error', null, $contentHash, $message, $actorLabel);
+
+            return ['error' => $message];
+        }
+
+        $this->auditAttempt($tool, 'executed', null, $contentHash, "Read Tactical task '{$resolved['task_name']}' with action payloads redacted.", $actorLabel);
+
+        return ['success' => true, 'task' => $this->mapTaskForResponse($task)];
+    }
+
+    /** @return array<string, mixed> */
+    private function updateTask(array $arguments, string $actorLabel): array
+    {
+        $tool = 'tactical_update_task';
+        $guard = $this->baseGuard($tool, $arguments, null, $actorLabel);
+        if (isset($guard['error'])) {
+            return ['error' => $guard['error']];
+        }
+
+        $body = $this->taskBody($arguments, requireCreate: false, nonBody: ['reason', 'task_id']);
+        $taskId = $this->positiveInteger($arguments['task_id'] ?? null);
+        $contentHash = $this->contentHash($tool, null, 'task-'.($taskId ?? 'unknown'), $body['body'] ?? $this->safeTaskHashParams($arguments));
+        if (isset($body['error'])) {
+            $this->auditAttempt($tool, 'rejected', null, $contentHash, $body['error'], $actorLabel);
+
+            return ['error' => $body['error']];
+        }
+
+        if (($body['body'] ?? []) === []) {
+            $this->auditAttempt($tool, 'rejected', null, $contentHash, 'At least one task field is required.', $actorLabel);
+
+            return ['error' => 'At least one task field is required'];
+        }
+
+        $resolved = $this->resolvedTask($arguments, $tool, $actorLabel);
+        if (isset($resolved['error'])) {
+            return ['error' => $resolved['error']];
+        }
+        $contentHash = $this->contentHash($tool, null, 'task-'.$resolved['task_id'], $body['body']);
+
+        if ($this->alreadyExecuted($tool, null, $contentHash)) {
+            $this->auditAttempt($tool, 'blocked', null, $contentHash, 'Duplicate task update suppressed before upstream call.', $actorLabel);
+
+            return ['success' => true, 'idempotent' => true, 'message' => 'Already updated this Tactical task recently; no upstream call was made.'];
+        }
+        if ($this->cooldownActive($tool, null, self::COOLDOWNS[$tool])) {
+            $this->auditAttempt($tool, 'blocked', null, $contentHash, 'Task update cooldown active; upstream call refused.', $actorLabel);
+
+            return ['error' => 'tactical_update_task cooldown active; no upstream call was made.'];
+        }
+
+        try {
+            $result = $this->client->updateTask((int) $resolved['task_id'], $body['body']);
+        } catch (TacticalClientException $e) {
+            $message = $this->tacticalFailureMessage($e, 'Tactical task update');
+            $this->auditAttempt($tool, 'error', null, $contentHash, $message, $actorLabel);
+
+            return ['error' => $message];
+        }
+
+        $this->auditAttempt($tool, 'executed', null, $contentHash, "Updated Tactical task '{$resolved['task_name']}'.", $actorLabel);
+
+        return ['success' => true, 'task_id' => $resolved['task_id'], 'task_name' => $resolved['task_name'], 'message' => is_scalar($result) ? (string) $result : 'Tactical task updated.'];
+    }
+
+    /** @return array<string, mixed> */
+    private function deleteTask(array $arguments, string $actorLabel): array
+    {
+        $tool = 'tactical_delete_task';
+        $guard = $this->baseGuard($tool, $arguments, null, $actorLabel);
+        if (isset($guard['error'])) {
+            return ['error' => $guard['error']];
+        }
+
+        $resolved = $this->resolvedTask($arguments, $tool, $actorLabel);
+        if (isset($resolved['error'])) {
+            return ['error' => $resolved['error']];
+        }
+
+        $contentHash = $this->contentHash($tool, null, 'task-'.$resolved['task_id'], ['delete' => true]);
+        if (! $this->taskNameConfirmed($arguments, (string) $resolved['task_name'])) {
+            $this->auditAttempt($tool, 'rejected', null, $contentHash, 'The typed task name does not match this Tactical task.', $actorLabel);
+
+            return ['error' => 'The typed task name does not match this Tactical task.'];
+        }
+
+        if ($this->alreadyExecuted($tool, null, $contentHash)) {
+            $this->auditAttempt($tool, 'blocked', null, $contentHash, 'Duplicate task delete suppressed before upstream call.', $actorLabel);
+
+            return ['success' => true, 'idempotent' => true, 'message' => 'Already deleted this Tactical task recently; no upstream call was made.'];
+        }
+        if ($this->cooldownActive($tool, null, self::COOLDOWNS[$tool])) {
+            $this->auditAttempt($tool, 'blocked', null, $contentHash, 'Task delete cooldown active; upstream call refused.', $actorLabel);
+
+            return ['error' => 'tactical_delete_task cooldown active; no upstream call was made.'];
+        }
+
+        try {
+            $result = $this->client->deleteTask((int) $resolved['task_id']);
+        } catch (TacticalClientException $e) {
+            $message = $this->tacticalFailureMessage($e, 'Tactical task delete');
+            $this->auditAttempt($tool, 'error', null, $contentHash, $message, $actorLabel);
+
+            return ['error' => $message];
+        }
+
+        $this->auditAttempt($tool, 'executed', null, $contentHash, "Deleted Tactical task '{$resolved['task_name']}'.", $actorLabel);
+
+        return ['success' => true, 'task_id' => $resolved['task_id'], 'task_name' => $resolved['task_name'], 'message' => is_scalar($result) ? (string) $result : 'Tactical task deleted.'];
+    }
+
+    /** @return array<string, mixed> */
+    private function runAgentTask(array $arguments, int $clientId, string $actorLabel): array
+    {
+        $tool = 'tactical_run_agent_task';
+        $guard = $this->baseGuard($tool, $arguments, $clientId, $actorLabel);
+        if (isset($guard['error'])) {
+            return ['error' => $guard['error']];
+        }
+
+        $agent = $this->resolvedAgentTask($arguments, $clientId, $tool, $actorLabel);
+        if (isset($agent['error'])) {
+            return ['error' => $agent['error']];
+        }
+
+        /** @var Asset $asset */
+        $asset = $agent['asset'];
+        $task = $agent['task'];
+        $contentHash = $this->contentHash($tool, $clientId, 'agent-'.$asset->id.'-task-'.$agent['task_id'], ['run' => true]);
+        if (! $this->hostnameConfirmed($arguments, $asset)) {
+            $this->auditAttempt($tool, 'rejected', $clientId, $contentHash, 'The typed hostname does not match this device.', $actorLabel);
+
+            return ['error' => 'The typed hostname does not match this device.'];
+        }
+        if (! $this->taskNameConfirmed($arguments, (string) ($task['name'] ?? $agent['task_id']))) {
+            $this->auditAttempt($tool, 'rejected', $clientId, $contentHash, 'The typed task name does not match this Tactical task.', $actorLabel);
+
+            return ['error' => 'The typed task name does not match this Tactical task.'];
+        }
+
+        if ($this->alreadyExecuted($tool, $clientId, $contentHash)) {
+            $this->auditAttempt($tool, 'blocked', $clientId, $contentHash, 'Duplicate agent task run suppressed before upstream call.', $actorLabel);
+
+            return ['success' => true, 'idempotent' => true, 'message' => 'Already ran this Tactical agent task recently; no upstream call was made.'];
+        }
+        if ($this->cooldownActive($tool, $clientId, self::COOLDOWNS[$tool])) {
+            $this->auditAttempt($tool, 'blocked', $clientId, $contentHash, 'Agent task run cooldown active; upstream call refused.', $actorLabel);
+
+            return ['error' => 'tactical_run_agent_task cooldown active for this client; no upstream call was made.'];
+        }
+
+        try {
+            $result = $this->client->runTask((int) $agent['task_id']);
+        } catch (TacticalClientException $e) {
+            $message = $this->tacticalFailureMessage($e, 'Tactical agent task run');
+            $this->auditAttempt($tool, 'error', $clientId, $contentHash, $message, $actorLabel);
+
+            return ['error' => $message];
+        }
+
+        $taskName = (string) ($task['name'] ?? $agent['task_id']);
+        $this->auditAttempt($tool, 'executed', $clientId, $contentHash, "Ran Tactical agent task '{$taskName}' on ".$this->targetHostname($asset).'.', $actorLabel);
+
+        return ['success' => true, 'task_id' => $agent['task_id'], 'task_name' => $taskName, 'asset_id' => $asset->id, 'message' => is_scalar($result) ? (string) $result : 'Tactical agent task run requested.'];
+    }
+
+    /** @return array<string, mixed> */
+    private function runPolicyTaskOnAgent(array $arguments, int $clientId, string $actorLabel): array
+    {
+        $tool = 'tactical_run_policy_task_on_agent';
+        $guard = $this->baseGuard($tool, $arguments, $clientId, $actorLabel);
+        if (isset($guard['error'])) {
+            return ['error' => $guard['error']];
+        }
+
+        $asset = $this->resolveAsset($arguments, $clientId);
+        if (is_array($asset)) {
+            $this->auditAttempt($tool, 'rejected', $clientId, $this->contentHash($tool, $clientId, 'policy-task-agent', $arguments), $asset['error'], $actorLabel);
+
+            return ['error' => $asset['error']];
+        }
+        if ($error = $this->linkedAgentError($asset)) {
+            $this->auditAttempt($tool, 'rejected', $clientId, $this->contentHash($tool, $clientId, 'policy-task-agent', $arguments), $error, $actorLabel);
+
+            return ['error' => $error];
+        }
+
+        $resolved = $this->resolvedPolicyTask($arguments, $tool, $actorLabel, $clientId);
+        if (isset($resolved['error'])) {
+            return ['error' => $resolved['error']];
+        }
+
+        $contentHash = $this->contentHash($tool, $clientId, 'policy-'.$resolved['policy_id'].'-task-'.$resolved['task_id'].'-agent-'.$asset->id, ['run' => true]);
+        if (! $this->hostnameConfirmed($arguments, $asset)) {
+            $this->auditAttempt($tool, 'rejected', $clientId, $contentHash, 'The typed hostname does not match this device.', $actorLabel);
+
+            return ['error' => 'The typed hostname does not match this device.'];
+        }
+        if (! $this->taskNameConfirmed($arguments, (string) $resolved['task_name'])) {
+            $this->auditAttempt($tool, 'rejected', $clientId, $contentHash, 'The typed task name does not match this Tactical policy task.', $actorLabel);
+
+            return ['error' => 'The typed task name does not match this Tactical policy task.'];
+        }
+
+        if ($this->alreadyExecuted($tool, $clientId, $contentHash)) {
+            $this->auditAttempt($tool, 'blocked', $clientId, $contentHash, 'Duplicate policy task single-agent run suppressed before upstream call.', $actorLabel);
+
+            return ['success' => true, 'idempotent' => true, 'message' => 'Already ran this Tactical policy task on that agent recently; no upstream call was made.'];
+        }
+        if ($this->cooldownActive($tool, $clientId, self::COOLDOWNS[$tool])) {
+            $this->auditAttempt($tool, 'blocked', $clientId, $contentHash, 'Policy task single-agent run cooldown active; upstream call refused.', $actorLabel);
+
+            return ['error' => 'tactical_run_policy_task_on_agent cooldown active for this client; no upstream call was made.'];
+        }
+
+        try {
+            $result = $this->client->runTask((int) $resolved['task_id'], (string) $asset->tacticalAsset->agent_id);
+        } catch (TacticalClientException $e) {
+            $message = $this->tacticalFailureMessage($e, 'Tactical policy task single-agent run');
+            $this->auditAttempt($tool, 'error', $clientId, $contentHash, $message, $actorLabel);
+
+            return ['error' => $message];
+        }
+
+        $this->auditAttempt($tool, 'executed', $clientId, $contentHash, "Ran Tactical policy task '{$resolved['task_name']}' on ".$this->targetHostname($asset).'.', $actorLabel);
+
+        return ['success' => true, 'policy_id' => $resolved['policy_id'], 'task_id' => $resolved['task_id'], 'task_name' => $resolved['task_name'], 'asset_id' => $asset->id, 'message' => is_scalar($result) ? (string) $result : 'Tactical policy task run requested for one agent.'];
+    }
+
+    /** @return array<string, mixed> */
+    private function runPolicyTaskAll(array $arguments, string $actorLabel): array
+    {
+        $tool = 'tactical_run_policy_task_all';
+        $guard = $this->baseGuard($tool, $arguments, null, $actorLabel);
+        if (isset($guard['error'])) {
+            return ['error' => $guard['error']];
+        }
+
+        return $this->executePolicyTaskRunAll($tool, $arguments, null, $actorLabel);
+    }
+
+    /** @return array<string, mixed> */
+    private function stagePolicyTaskRunAll(array $arguments, int $clientId, string $actorLabel): array
+    {
+        $tool = 'tactical_stage_run_policy_task_all';
+        $guard = $this->baseGuard($tool, $arguments, $clientId, $actorLabel);
+        if (isset($guard['error'])) {
+            return ['error' => $guard['error']];
+        }
+
+        $client = Client::find($clientId);
+        if (! $client) {
+            $this->auditAttempt($tool, 'rejected', $clientId, $this->contentHash($tool, $clientId, 'policy-task-run-all', $arguments), 'Client not found.', $actorLabel);
+
+            return ['error' => 'Client not found'];
+        }
+
+        $ticket = $this->ticketForClient($arguments['ticket_id'] ?? null, $clientId);
+        if (is_array($ticket)) {
+            $this->auditAttempt($tool, 'rejected', $clientId, $this->contentHash($tool, $clientId, 'policy-task-run-all', $arguments), $ticket['error'], $actorLabel);
+
+            return ['error' => $ticket['error']];
+        }
+
+        $resolved = $this->resolvedPolicyTask($arguments, $tool, $actorLabel, $clientId);
+        if (isset($resolved['error'])) {
+            return ['error' => $resolved['error']];
+        }
+
+        $contentHash = $this->contentHash($tool, $clientId, 'policy-'.$resolved['policy_id'].'-task-'.$resolved['task_id'], ['run_all' => true]);
+        if ($error = $this->policyTaskRunAllConfirmationError($arguments, $resolved)) {
+            $this->auditAttempt($tool, 'rejected', $clientId, $contentHash, $error, $actorLabel);
+
+            return ['error' => $error];
+        }
+
+        if ($this->alreadyAwaitingOrExecuted($tool, $clientId, $contentHash)) {
+            $run = TechnicianRun::query()
+                ->where('ticket_id', $ticket->id)
+                ->where('action_type', $tool)
+                ->where('content_hash', $contentHash)
+                ->where('state', TechnicianRunState::AwaitingApproval->value)
+                ->first();
+
+            return [
+                'success' => true,
+                'idempotent' => true,
+                'ticket_id' => $ticket->id,
+                'ticket_display_id' => $ticket->display_id,
+                'run_id' => $run?->id,
+                'message' => 'Already staged; awaiting approval.',
+            ];
+        }
+        if ($this->cooldownActive($tool, $clientId, self::COOLDOWNS[$tool])) {
+            $this->auditAttempt($tool, 'blocked', $clientId, $contentHash, 'Policy task all-agents run proposal cooldown active.', $actorLabel);
+
+            return ['error' => 'tactical_stage_run_policy_task_all cooldown active for this client; no proposal was staged.'];
+        }
+
+        $run = TechnicianRun::create([
+            'ticket_id' => $ticket->id,
+            'client_id' => $clientId,
+            'action_type' => $tool,
+            'content_hash' => $contentHash,
+            'state' => TechnicianRunState::AwaitingApproval,
+            'proposed_content' => "Stage Tactical policy task '{$resolved['task_name']}' to run on ALL affected agents under policy '{$resolved['policy_name']}'.\nReason: ".$guard['reason'],
+            'proposed_meta' => [
+                'drafted_by' => $actorLabel,
+                'reasons' => [$guard['reason']],
+                'direct_tool' => self::STAGED_TO_DIRECT[$tool],
+                'redacted_params' => [
+                    'policy_id' => $resolved['policy_id'],
+                    'policy_name' => $resolved['policy_name'],
+                    'task_id' => $resolved['task_id'],
+                    'task_name' => $resolved['task_name'],
+                    'impact' => 'all affected agents under policy',
+                ],
+                'encrypted_payload' => Crypt::encryptString(json_encode([
+                    'direct_tool' => self::STAGED_TO_DIRECT[$tool],
+                    'client_id' => $clientId,
+                    'ticket_id' => $ticket->id,
+                    'arguments' => [
+                        'policy_id' => $resolved['policy_id'],
+                        'task_id' => $resolved['task_id'],
+                        'confirm_policy_name' => $resolved['policy_name'],
+                        'confirm_task_name' => $resolved['task_name'],
+                        'confirm_run_all' => self::TASK_RUN_ALL_CONFIRMATION,
+                        'reason' => $guard['reason'],
+                    ],
+                ], JSON_THROW_ON_ERROR)),
+            ],
+            'confidence' => null,
+            'tokens_used' => 0,
+        ]);
+
+        $this->auditAttempt($tool, 'awaiting_approval', $clientId, $contentHash, "MCP staged Tactical policy task '{$resolved['task_name']}' for all affected agents under '{$resolved['policy_name']}'.", $actorLabel, $run->id);
+
+        return [
+            'success' => true,
+            'ticket_id' => $ticket->id,
+            'ticket_display_id' => $ticket->display_id,
+            'run_id' => $run->id,
+            'message' => 'Staged for cockpit approval.',
+        ];
+    }
+
+    /** @return array<string, mixed> */
     private function provisionAlertTicketing(array $arguments, string $actorLabel): array
     {
         $tool = 'tactical_provision_alert_ticketing';
@@ -1770,7 +2404,11 @@ class StaffTacticalAdminToolExecutor
             }
 
             $arguments = is_array($payload['arguments'] ?? null) ? $payload['arguments'] : [];
-            $result = $this->executePatchPolicyReset($run->action_type, $arguments, $client, $this->approverLabel($approverId), $run, $approverId);
+            $result = match ($directTool) {
+                'tactical_reset_patch_policies' => $this->executePatchPolicyReset($run->action_type, $arguments, $client, $this->approverLabel($approverId), $run, $approverId),
+                'tactical_run_policy_task_all' => $this->executePolicyTaskRunAll($directTool, $arguments, (int) $run->client_id, $this->approverLabel($approverId), $run, $approverId),
+                default => ['error' => 'Unsupported Tactical staged admin action.'],
+            };
             if (isset($result['error'])) {
                 $run->releaseClaim();
 
@@ -2423,6 +3061,598 @@ class StaffTacticalAdminToolExecutor
         return ['error' => "Tactical client {$clientName} was not found; no assignment was sent."];
     }
 
+    /** @return array{task?: array<string, mixed>, task_id?: int, task_name?: string, error?: string} */
+    private function resolvedTask(array $arguments, string $tool, string $actorLabel, ?int $clientId = null): array
+    {
+        $taskId = $this->positiveInteger($arguments['task_id'] ?? null);
+        $contentHash = $this->contentHash($tool, $clientId, 'task', ['task_id' => $taskId]);
+        if ($taskId === null) {
+            $this->auditAttempt($tool, 'rejected', $clientId, $contentHash, 'task_id is required.', $actorLabel);
+
+            return ['error' => 'task_id is required'];
+        }
+
+        try {
+            $task = $this->taskById($this->client->getTasks(), $taskId);
+        } catch (TacticalClientException $e) {
+            $message = $this->tacticalFailureMessage($e, 'Tactical task lookup');
+            $this->auditAttempt($tool, 'error', $clientId, $contentHash, $message, $actorLabel);
+
+            return ['error' => $message];
+        }
+
+        if ($task === null) {
+            $message = "Task id {$taskId} was not found in Tactical getTasks.";
+            $this->auditAttempt($tool, 'rejected', $clientId, $contentHash, $message, $actorLabel);
+
+            return ['error' => $message];
+        }
+
+        return [
+            'task' => $task,
+            'task_id' => $taskId,
+            'task_name' => (string) ($task['name'] ?? $taskId),
+        ];
+    }
+
+    /** @return array{policy?: array<string, mixed>, policy_id?: int, policy_name?: string, task?: array<string, mixed>, task_id?: int, task_name?: string, error?: string} */
+    private function resolvedPolicyTask(array $arguments, string $tool, string $actorLabel, ?int $clientId = null): array
+    {
+        $resolvedPolicy = $this->resolvedAutomationPolicy($arguments, $tool, $actorLabel, $clientId);
+        if (isset($resolvedPolicy['error'])) {
+            return ['error' => $resolvedPolicy['error']];
+        }
+
+        $taskId = $this->positiveInteger($arguments['task_id'] ?? null);
+        $contentHash = $this->contentHash($tool, $clientId, 'policy-task', [
+            'policy_id' => $resolvedPolicy['policy_id'] ?? null,
+            'task_id' => $taskId,
+        ]);
+        if ($taskId === null) {
+            $this->auditAttempt($tool, 'rejected', $clientId, $contentHash, 'task_id is required.', $actorLabel);
+
+            return ['error' => 'task_id is required'];
+        }
+
+        try {
+            $task = $this->taskById($this->client->getPolicyTasks((int) $resolvedPolicy['policy_id']), $taskId);
+        } catch (TacticalClientException $e) {
+            $message = $this->tacticalFailureMessage($e, 'Tactical policy task lookup');
+            $this->auditAttempt($tool, 'error', $clientId, $contentHash, $message, $actorLabel);
+
+            return ['error' => $message];
+        }
+
+        if ($task === null) {
+            $message = "Task id {$taskId} was not found in Tactical policy {$resolvedPolicy['policy_id']} tasks.";
+            $this->auditAttempt($tool, 'rejected', $clientId, $contentHash, $message, $actorLabel);
+
+            return ['error' => $message];
+        }
+
+        return $resolvedPolicy + [
+            'task' => $task,
+            'task_id' => $taskId,
+            'task_name' => (string) ($task['name'] ?? $taskId),
+        ];
+    }
+
+    /** @return array{asset?: Asset, task?: array<string, mixed>, task_id?: int, error?: string} */
+    private function resolvedAgentTask(array $arguments, int $clientId, string $tool, string $actorLabel): array
+    {
+        $asset = $this->resolveAsset($arguments, $clientId);
+        if (is_array($asset)) {
+            $this->auditAttempt($tool, 'rejected', $clientId, $this->contentHash($tool, $clientId, 'agent-task', $arguments), $asset['error'], $actorLabel);
+
+            return ['error' => $asset['error']];
+        }
+        if ($error = $this->linkedAgentError($asset)) {
+            $this->auditAttempt($tool, 'rejected', $clientId, $this->contentHash($tool, $clientId, 'agent-task', $arguments), $error, $actorLabel);
+
+            return ['error' => $error];
+        }
+
+        $taskId = $this->positiveInteger($arguments['task_id'] ?? null);
+        $contentHash = $this->contentHash($tool, $clientId, 'agent-'.$asset->id.'-task', ['task_id' => $taskId]);
+        if ($taskId === null) {
+            $this->auditAttempt($tool, 'rejected', $clientId, $contentHash, 'task_id is required.', $actorLabel);
+
+            return ['error' => 'task_id is required'];
+        }
+
+        try {
+            $task = $this->taskById($this->client->getAgentTasks((string) $asset->tacticalAsset->agent_id), $taskId);
+        } catch (TacticalClientException $e) {
+            $message = $this->tacticalFailureMessage($e, 'Tactical agent task lookup');
+            $this->auditAttempt($tool, 'error', $clientId, $contentHash, $message, $actorLabel);
+
+            return ['error' => $message];
+        }
+
+        if ($task === null) {
+            $message = "Task id {$taskId} was not found in this PSA-derived Tactical agent task list.";
+            $this->auditAttempt($tool, 'rejected', $clientId, $contentHash, $message, $actorLabel);
+
+            return ['error' => $message];
+        }
+
+        return ['asset' => $asset, 'task' => $task, 'task_id' => $taskId];
+    }
+
+    /** @param array<int, mixed> $tasks */
+    private function taskById(array $tasks, int $taskId): ?array
+    {
+        foreach ($tasks as $task) {
+            if (is_array($task) && (int) ($task['id'] ?? 0) === $taskId) {
+                return $task;
+            }
+        }
+
+        return null;
+    }
+
+    /** @param array<int, mixed> $tasks */
+    private function mapTasksForResponse(array $tasks): array
+    {
+        return array_values(array_map(
+            fn (array $task): array => $this->mapTaskForResponse($task),
+            array_filter($tasks, 'is_array'),
+        ));
+    }
+
+    /** @return array<string, mixed> */
+    private function mapTaskForResponse(array $task): array
+    {
+        $actions = is_array($task['actions'] ?? null) ? $task['actions'] : [];
+
+        return [
+            'task_id' => $this->positiveInteger($task['id'] ?? $task['pk'] ?? null),
+            'name' => (string) ($task['name'] ?? ''),
+            'agent' => $task['agent'] ?? null,
+            'policy' => $task['policy'] ?? null,
+            'enabled' => (bool) ($task['enabled'] ?? false),
+            'task_type' => (string) ($task['task_type'] ?? ''),
+            'schedule' => $task['schedule'] ?? null,
+            'continue_on_error' => (bool) ($task['continue_on_error'] ?? false),
+            'alert_severity' => $task['alert_severity'] ?? null,
+            'email_alert' => (bool) ($task['email_alert'] ?? false),
+            'text_alert' => (bool) ($task['text_alert'] ?? false),
+            'dashboard_alert' => (bool) ($task['dashboard_alert'] ?? false),
+            'actions_count' => count($actions),
+            'actions' => $this->mapTaskActionsForResponse($actions),
+            'task_result' => $this->mapTaskResultForResponse($task['task_result'] ?? []),
+        ];
+    }
+
+    /** @param array<int, mixed> $actions */
+    private function mapTaskActionsForResponse(array $actions): array
+    {
+        $mapped = [];
+        foreach ($actions as $action) {
+            if (! is_array($action)) {
+                continue;
+            }
+
+            $type = mb_strtolower((string) ($action['type'] ?? ''));
+            if ($type === 'cmd') {
+                $command = is_string($action['command'] ?? null) ? $action['command'] : '';
+                $mapped[] = [
+                    'type' => 'cmd',
+                    'shell' => $action['shell'] ?? null,
+                    'command' => self::TASK_COMMAND_AUDIT_PLACEHOLDER,
+                    'command_length' => mb_strlen($command),
+                    'timeout' => $this->positiveInteger($action['timeout'] ?? null),
+                ];
+
+                continue;
+            }
+
+            if ($type === 'script') {
+                $args = is_array($action['script_args'] ?? null) ? $action['script_args'] : [];
+                $mapped[] = [
+                    'type' => 'script',
+                    'script_name' => $action['name'] ?? $action['script_name'] ?? null,
+                    'script_args' => self::TASK_SCRIPT_ARGS_AUDIT_PLACEHOLDER,
+                    'script_args_count' => count($args),
+                    'timeout' => $this->positiveInteger($action['timeout'] ?? null),
+                ];
+            }
+        }
+
+        return $mapped;
+    }
+
+    private function mapTaskResultForResponse(mixed $taskResult): array
+    {
+        if (! is_array($taskResult) || $taskResult === []) {
+            return [];
+        }
+
+        return [
+            'status' => $taskResult['status'] ?? null,
+            'sync_status' => $taskResult['sync_status'] ?? null,
+            'run_status' => $taskResult['run_status'] ?? null,
+            'retcode' => $taskResult['retcode'] ?? null,
+            'last_run' => $taskResult['last_run'] ?? null,
+            'stdout_withheld' => array_key_exists('stdout', $taskResult),
+            'stderr_withheld' => array_key_exists('stderr', $taskResult),
+        ];
+    }
+
+    /**
+     * @return array{body?: array<string, mixed>, error?: string}
+     */
+    private function taskBody(array $arguments, bool $requireCreate, array $nonBody): array
+    {
+        $allowed = [
+            'name',
+            'enabled',
+            'continue_on_error',
+            'alert_severity',
+            'email_alert',
+            'text_alert',
+            'dashboard_alert',
+            'collector_all_output',
+            'task_type',
+            'run_time_date',
+            'expire_date',
+            'daily_interval',
+            'weekly_interval',
+            'run_time_bit_weekdays',
+            'monthly_months_of_year',
+            'monthly_days_of_month',
+            'monthly_weeks_of_month',
+            'task_repetition_duration',
+            'task_repetition_interval',
+            'stop_task_at_duration_end',
+            'random_task_delay',
+            'remove_if_not_scheduled',
+            'run_asap_after_missed',
+            'task_instance_policy',
+            'task_supported_platforms',
+            'actions',
+        ];
+        $unsupported = array_values(array_diff(array_keys($arguments), array_merge($allowed, $nonBody)));
+        if ($unsupported !== []) {
+            return ['error' => 'Unsupported task fields: '.implode(', ', $unsupported).'.'];
+        }
+
+        $scheduleFields = [
+            'run_time_date',
+            'expire_date',
+            'daily_interval',
+            'weekly_interval',
+            'run_time_bit_weekdays',
+            'monthly_months_of_year',
+            'monthly_days_of_month',
+            'monthly_weeks_of_month',
+            'task_repetition_duration',
+            'task_repetition_interval',
+            'stop_task_at_duration_end',
+            'random_task_delay',
+            'remove_if_not_scheduled',
+            'run_asap_after_missed',
+            'task_instance_policy',
+        ];
+        if (! $requireCreate && ! array_key_exists('task_type', $arguments) && array_intersect(array_keys($arguments), $scheduleFields) !== []) {
+            return ['error' => 'include task_type when changing schedule fields; omit schedule fields for metadata-only edits so Tactical preserves the existing schedule.'];
+        }
+
+        $body = [];
+        if (array_key_exists('name', $arguments)) {
+            if (! is_scalar($arguments['name']) || trim((string) $arguments['name']) === '') {
+                return ['error' => 'name must be a non-empty string.'];
+            }
+            $body['name'] = trim((string) $arguments['name']);
+        }
+
+        foreach (['enabled', 'continue_on_error', 'email_alert', 'text_alert', 'dashboard_alert', 'collector_all_output', 'stop_task_at_duration_end', 'remove_if_not_scheduled', 'run_asap_after_missed'] as $key) {
+            if (array_key_exists($key, $arguments)) {
+                if (! is_bool($arguments[$key])) {
+                    return ['error' => "{$key} must be a boolean."];
+                }
+                $body[$key] = $arguments[$key];
+            }
+        }
+
+        if (array_key_exists('alert_severity', $arguments)) {
+            $severity = $this->enumValue($arguments['alert_severity'], self::TASK_ALERT_SEVERITIES);
+            if ($severity === null) {
+                return ['error' => 'alert_severity must be one of: '.implode(', ', self::TASK_ALERT_SEVERITIES).'.'];
+            }
+            $body['alert_severity'] = $severity;
+        }
+
+        $taskType = null;
+        if (array_key_exists('task_type', $arguments)) {
+            $taskType = $this->enumValue($arguments['task_type'], self::TASK_TYPES);
+            if ($taskType === null) {
+                return ['error' => 'task_type must be one of: '.implode(', ', self::TASK_TYPES).'.'];
+            }
+            if ($taskType === 'checkfailure') {
+                return ['error' => 'checkfailure tasks are not exposed by this tool because assigned_check requires a server-derived Tactical check resolver; no task was sent.'];
+            }
+            $body['task_type'] = $taskType;
+        }
+
+        foreach (['run_time_date', 'expire_date', 'task_repetition_duration', 'task_repetition_interval', 'random_task_delay'] as $key) {
+            if (array_key_exists($key, $arguments)) {
+                if ($arguments[$key] !== null && ! is_scalar($arguments[$key])) {
+                    return ['error' => "{$key} must be a string or null."];
+                }
+                $body[$key] = $arguments[$key] === null ? null : trim((string) $arguments[$key]);
+            }
+        }
+
+        foreach (['daily_interval', 'weekly_interval', 'run_time_bit_weekdays', 'monthly_months_of_year', 'monthly_days_of_month', 'monthly_weeks_of_month', 'task_instance_policy'] as $key) {
+            if (array_key_exists($key, $arguments)) {
+                $value = $this->positiveInteger($arguments[$key]);
+                if ($value === null) {
+                    return ['error' => "{$key} must be a positive integer."];
+                }
+                $body[$key] = $value;
+            }
+        }
+
+        if (array_key_exists('task_supported_platforms', $arguments)) {
+            $platforms = $this->enumList($arguments['task_supported_platforms'], self::TASK_SUPPORTED_PLATFORMS);
+            if ($platforms === null || $platforms === []) {
+                return ['error' => 'task_supported_platforms must contain one or more of: '.implode(', ', self::TASK_SUPPORTED_PLATFORMS).'.'];
+            }
+            $body['task_supported_platforms'] = $platforms;
+        }
+
+        if (array_key_exists('actions', $arguments)) {
+            $actions = $this->taskActions($arguments['actions']);
+            if (isset($actions['error'])) {
+                return ['error' => $actions['error']];
+            }
+            $body['actions'] = $actions['actions'];
+        }
+
+        if ($requireCreate) {
+            if (! isset($body['name'])) {
+                return ['error' => 'name is required'];
+            }
+            if ($taskType === null) {
+                return ['error' => 'task_type is required'];
+            }
+            if (($body['actions'] ?? []) === []) {
+                return ['error' => 'actions must contain at least one action'];
+            }
+        }
+
+        if ($taskType !== null) {
+            if ($error = $this->taskScheduleError($taskType, $body)) {
+                return ['error' => $error];
+            }
+        }
+
+        return ['body' => $body];
+    }
+
+    /**
+     * @return array{actions?: array<int, array<string, mixed>>, error?: string}
+     */
+    private function taskActions(mixed $value): array
+    {
+        if (! is_array($value) || ! array_is_list($value) || $value === []) {
+            return ['error' => 'actions must be a non-empty list.'];
+        }
+
+        $actions = [];
+        foreach ($value as $index => $action) {
+            if (! is_array($action)) {
+                return ['error' => "actions[{$index}] must be an object."];
+            }
+
+            $type = $this->enumValue($action['type'] ?? null, ['script', 'cmd']);
+            if ($type === null) {
+                return ['error' => "actions[{$index}].type must be one of: script, cmd."];
+            }
+
+            if ($type === 'script') {
+                $unsupported = array_values(array_diff(array_keys($action), ['type', 'script_id', 'script_name', 'script_args', 'timeout']));
+                if (in_array('script', $unsupported, true)) {
+                    return ['error' => "actions[{$index}] script action must use script_id or script_name; caller-supplied upstream script ids are not accepted."];
+                }
+                if ($unsupported !== []) {
+                    return ['error' => "Unsupported script action fields at actions[{$index}]: ".implode(', ', $unsupported).'.'];
+                }
+
+                $resolved = $this->resolvedScript([
+                    'script_id' => $action['script_id'] ?? null,
+                    'script_name' => $action['script_name'] ?? null,
+                ], 'tactical_task_action_script_lookup', 'task action resolver');
+                if (isset($resolved['error'])) {
+                    return ['error' => $resolved['error']];
+                }
+
+                $scriptArgs = $this->listOfStrings($action['script_args'] ?? null);
+                if ($scriptArgs === null) {
+                    return ['error' => "actions[{$index}].script_args must be a list of strings."];
+                }
+                $timeout = $this->positiveInteger($action['timeout'] ?? null);
+                if ($timeout === null) {
+                    return ['error' => "actions[{$index}].timeout must be a positive integer."];
+                }
+
+                $actions[] = [
+                    'type' => 'script',
+                    'script' => (int) $resolved['script_id'],
+                    'name' => (string) $resolved['script_name'],
+                    'script_args' => $scriptArgs,
+                    'timeout' => $timeout,
+                ];
+
+                continue;
+            }
+
+            $unsupported = array_values(array_diff(array_keys($action), ['type', 'shell', 'command', 'timeout']));
+            if ($unsupported !== []) {
+                return ['error' => "Unsupported cmd action fields at actions[{$index}]: ".implode(', ', $unsupported).'.'];
+            }
+
+            $shell = $this->enumValue($action['shell'] ?? null, self::SCRIPT_SHELLS);
+            if ($shell === null) {
+                return ['error' => "actions[{$index}].shell must be one of: ".implode(', ', self::SCRIPT_SHELLS).'.'];
+            }
+            if (! is_scalar($action['command'] ?? null) || trim((string) $action['command']) === '') {
+                return ['error' => "actions[{$index}].command must be a non-empty string."];
+            }
+            $timeout = $this->positiveInteger($action['timeout'] ?? null);
+            if ($timeout === null) {
+                return ['error' => "actions[{$index}].timeout must be a positive integer."];
+            }
+
+            $actions[] = [
+                'type' => 'cmd',
+                'shell' => $shell,
+                'command' => (string) $action['command'],
+                'timeout' => $timeout,
+            ];
+        }
+
+        return ['actions' => $actions];
+    }
+
+    /** @param array<int, string> $allowed */
+    private function enumList(mixed $value, array $allowed): ?array
+    {
+        if (! is_array($value) || ! array_is_list($value)) {
+            return null;
+        }
+
+        $items = [];
+        foreach ($value as $item) {
+            $normalized = $this->enumValue($item, $allowed);
+            if ($normalized === null) {
+                return null;
+            }
+            $items[] = $normalized;
+        }
+
+        return array_values(array_unique($items));
+    }
+
+    /** @param array<string, mixed> $body */
+    private function taskScheduleError(string $taskType, array $body): ?string
+    {
+        if (in_array($taskType, ['daily', 'weekly', 'monthly', 'monthlydow', 'runonce'], true) && empty($body['run_time_date'])) {
+            return "run_time_date is required for task_type '{$taskType}'";
+        }
+        if ($taskType === 'daily' && empty($body['daily_interval'])) {
+            return "daily_interval is required for task_type 'daily'";
+        }
+        if ($taskType === 'weekly' && (empty($body['weekly_interval']) || empty($body['run_time_bit_weekdays']))) {
+            return "weekly_interval and run_time_bit_weekdays are required for task_type 'weekly'";
+        }
+        if ($taskType === 'monthly' && (empty($body['monthly_months_of_year']) || empty($body['monthly_days_of_month']))) {
+            return "monthly_months_of_year and monthly_days_of_month are required for task_type 'monthly'";
+        }
+        if ($taskType === 'monthlydow' && (empty($body['monthly_months_of_year']) || empty($body['monthly_weeks_of_month']) || empty($body['run_time_bit_weekdays']))) {
+            return "monthly_months_of_year, monthly_weeks_of_month, and run_time_bit_weekdays are required for task_type 'monthlydow'";
+        }
+
+        return null;
+    }
+
+    private function hostnameConfirmed(array $arguments, Asset $asset): bool
+    {
+        $typed = trim((string) ($arguments['confirm_hostname'] ?? ''));
+
+        return $typed !== '' && strcasecmp($typed, $this->targetHostname($asset)) === 0;
+    }
+
+    private function taskNameConfirmed(array $arguments, string $taskName): bool
+    {
+        $typed = trim((string) ($arguments['confirm_task_name'] ?? ''));
+
+        return $typed !== '' && strcasecmp($typed, $taskName) === 0;
+    }
+
+    /** @param array<string, mixed> $resolved */
+    private function policyTaskRunAllConfirmationError(array $arguments, array $resolved): ?string
+    {
+        if (strcasecmp(trim((string) ($arguments['confirm_policy_name'] ?? '')), (string) ($resolved['policy_name'] ?? '')) !== 0) {
+            return 'The typed policy name does not match this Tactical automation policy.';
+        }
+        if (! $this->taskNameConfirmed($arguments, (string) ($resolved['task_name'] ?? ''))) {
+            return 'The typed task name does not match this Tactical policy task.';
+        }
+        if (mb_strtolower(trim((string) ($arguments['confirm_run_all'] ?? ''))) !== self::TASK_RUN_ALL_CONFIRMATION) {
+            return "confirm_run_all must exactly be '".self::TASK_RUN_ALL_CONFIRMATION."'.";
+        }
+
+        return null;
+    }
+
+    /** @return array<string, mixed> */
+    private function executePolicyTaskRunAll(
+        string $tool,
+        array $arguments,
+        ?int $clientId,
+        string $actorLabel,
+        ?TechnicianRun $run = null,
+        ?int $approverId = null,
+    ): array {
+        $resolved = $this->resolvedPolicyTask($arguments, $tool, $actorLabel, $clientId);
+        $contentHash = $run?->content_hash ?? $this->contentHash($tool, $clientId, 'policy-task-run-all', [
+            'policy_id' => $resolved['policy_id'] ?? null,
+            'task_id' => $resolved['task_id'] ?? null,
+        ]);
+        if (isset($resolved['error'])) {
+            return ['error' => $resolved['error']];
+        }
+        if ($error = $this->policyTaskRunAllConfirmationError($arguments, $resolved)) {
+            $this->auditAttempt($tool, 'rejected', $clientId, $contentHash, $error, $actorLabel, $run?->id, $approverId);
+
+            return ['error' => $error];
+        }
+
+        if ($run === null) {
+            if ($this->alreadyExecuted($tool, $clientId, $contentHash)) {
+                $this->auditAttempt($tool, 'blocked', $clientId, $contentHash, 'Duplicate policy task all-agents run suppressed before upstream call.', $actorLabel);
+
+                return ['success' => true, 'idempotent' => true, 'message' => 'Already ran this Tactical policy task for all affected agents recently; no upstream call was made.'];
+            }
+            if ($this->cooldownActive($tool, $clientId, self::COOLDOWNS[$tool])) {
+                $this->auditAttempt($tool, 'blocked', $clientId, $contentHash, 'Policy task all-agents run cooldown active; upstream call refused.', $actorLabel);
+
+                return ['error' => 'tactical_run_policy_task_all cooldown active; no upstream call was made.'];
+            }
+        }
+
+        try {
+            $result = $this->client->runPolicyTask((int) $resolved['task_id']);
+        } catch (TacticalClientException $e) {
+            $message = $this->tacticalFailureMessage($e, 'Tactical policy task all-agents run');
+            $this->auditAttempt($tool, 'error', $clientId, $contentHash, $message, $actorLabel, $run?->id, $approverId);
+
+            return ['error' => $message];
+        }
+
+        $this->auditAttempt($tool, 'executed', $clientId, $contentHash, "Ran Tactical policy task '{$resolved['task_name']}' for ALL affected agents under policy '{$resolved['policy_name']}'.", $actorLabel, $run?->id, $approverId);
+
+        return ['success' => true, 'policy_id' => $resolved['policy_id'], 'policy_name' => $resolved['policy_name'], 'task_id' => $resolved['task_id'], 'task_name' => $resolved['task_name'], 'message' => is_scalar($result) ? (string) $result : 'Tactical policy task queued for all affected agents.'];
+    }
+
+    /** @return array<string, mixed> */
+    private function safeTaskHashParams(array $arguments): array
+    {
+        $safe = $arguments;
+        if (isset($safe['actions']) && is_array($safe['actions'])) {
+            $safe['actions_count'] = count($safe['actions']);
+            $safe['action_types'] = array_values(array_filter(array_map(
+                fn (mixed $action): ?string => is_array($action) && is_scalar($action['type'] ?? null) ? (string) $action['type'] : null,
+                $safe['actions'],
+            )));
+            unset($safe['actions']);
+        }
+
+        return $safe;
+    }
+
     /** @return array<int, string> */
     private function unsupportedAutomationPolicyAssignmentFields(array $arguments): array
     {
@@ -2777,7 +4007,7 @@ class StaffTacticalAdminToolExecutor
             return false;
         }
 
-        $statuses = $tool === 'tactical_reset_patch_policies'
+        $statuses = in_array($tool, ['tactical_reset_patch_policies', 'tactical_run_policy_task_all'], true)
             ? ['executed']
             : ['executed', 'awaiting_approval'];
 
@@ -2804,6 +4034,7 @@ class StaffTacticalAdminToolExecutor
     {
         $actionTypes = match ($tool) {
             'tactical_reset_patch_policies' => ['tactical_reset_patch_policies', 'tactical_stage_reset_patch_policies'],
+            'tactical_run_policy_task_all' => ['tactical_run_policy_task_all', 'tactical_stage_run_policy_task_all'],
             default => [$tool],
         };
         $query = TechnicianActionLog::query()->whereIn('action_type', $actionTypes);
@@ -3385,6 +4616,203 @@ class StaffTacticalAdminToolExecutor
                 'block_policy_inheritance' => ['type' => 'boolean', 'description' => 'Optional Tactical block_policy_inheritance value to set with the assignment.'],
             ]),
             ['client_id', 'reason', 'target_type', 'policy_id'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function taskSelectorProperties(): array
+    {
+        return [
+            'task_id' => ['type' => 'integer', 'description' => 'Tactical task id from tactical_list_tasks, tactical_list_agent_tasks, or tactical_list_policy_tasks. The server verifies it against a Tactical get* task list before use.'],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private static function taskBodyProperties(): array
+    {
+        return [
+            'name' => ['type' => 'string', 'description' => 'Task name. Required on create.'],
+            'enabled' => ['type' => 'boolean', 'description' => 'Whether the task is enabled.'],
+            'continue_on_error' => ['type' => 'boolean', 'description' => 'Whether Tactical should continue later actions after a failed action.'],
+            'alert_severity' => ['type' => 'string', 'enum' => self::TASK_ALERT_SEVERITIES, 'description' => 'Alert severity for task failures.'],
+            'email_alert' => ['type' => 'boolean', 'description' => 'Whether task failures email according to Tactical alert settings.'],
+            'text_alert' => ['type' => 'boolean', 'description' => 'Whether task failures text according to Tactical alert settings.'],
+            'dashboard_alert' => ['type' => 'boolean', 'description' => 'Whether task failures create dashboard alerts.'],
+            'collector_all_output' => ['type' => 'boolean', 'description' => 'Whether collector tasks save all output.'],
+            'task_type' => ['type' => 'string', 'enum' => self::TASK_TYPES, 'description' => 'Task schedule type. Include task_type whenever changing schedule fields on update; otherwise schedule fields are rejected to avoid Tactical silently ignoring them. checkfailure is currently refused because assigned_check needs a server-derived check resolver.'],
+            'run_time_date' => ['type' => 'string', 'description' => 'ISO date/time required for daily, weekly, monthly, monthlydow, and runonce.'],
+            'expire_date' => ['type' => 'string', 'description' => 'Optional ISO expiration date/time.'],
+            'daily_interval' => ['type' => 'integer', 'description' => 'Daily interval required for daily tasks.'],
+            'weekly_interval' => ['type' => 'integer', 'description' => 'Weekly interval required for weekly tasks.'],
+            'run_time_bit_weekdays' => ['type' => 'integer', 'description' => 'Tactical weekday bitmask required for weekly and monthlydow tasks.'],
+            'monthly_months_of_year' => ['type' => 'integer', 'description' => 'Tactical month bitmask required for monthly and monthlydow tasks.'],
+            'monthly_days_of_month' => ['type' => 'integer', 'description' => 'Tactical day-of-month bitmask required for monthly tasks.'],
+            'monthly_weeks_of_month' => ['type' => 'integer', 'description' => 'Tactical week-of-month bitmask required for monthlydow tasks.'],
+            'task_repetition_duration' => ['type' => 'string', 'description' => 'Optional Tactical repetition duration string.'],
+            'task_repetition_interval' => ['type' => 'string', 'description' => 'Optional Tactical repetition interval string.'],
+            'stop_task_at_duration_end' => ['type' => 'boolean', 'description' => 'Whether repetition stops at duration end.'],
+            'random_task_delay' => ['type' => 'string', 'description' => 'Optional Tactical random-delay string.'],
+            'remove_if_not_scheduled' => ['type' => 'boolean', 'description' => 'Delete expired scheduled task from agent when no longer scheduled.'],
+            'run_asap_after_missed' => ['type' => 'boolean', 'description' => 'Run as soon as possible after missed schedule.'],
+            'task_instance_policy' => ['type' => 'integer', 'description' => 'Tactical task multiple-instance policy value.'],
+            'task_supported_platforms' => ['type' => 'array', 'items' => ['type' => 'string', 'enum' => self::TASK_SUPPORTED_PLATFORMS], 'description' => 'Supported agent platforms.'],
+            'actions' => [
+                'type' => 'array',
+                'description' => 'Task actions. Script actions must use script_id (local PSA script catalog id) or unique script_name; the server resolves the Tactical script pk via getScripts. Command actions require shell from the allowlist and command text. Commands and script args are withheld from audits.',
+                'items' => ['type' => 'object'],
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private static function taskConfirmProperties(): array
+    {
+        return [
+            'confirm_task_name' => ['type' => 'string', 'description' => 'Typed Tactical task name. Must match the resolved current task name.'],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private static function listTasksTool(): array
+    {
+        return self::tool(
+            'tactical_list_tasks',
+            'List metadata for all visible Tactical automated tasks via GET tasks/. No task changes are made. Task action command text and script arguments are withheld from the response and audits.',
+            self::reasonProperties(),
+            ['reason'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function listAgentTasksTool(): array
+    {
+        return self::tool(
+            'tactical_list_agent_tasks',
+            'List Tactical automated tasks visible on one PSA-derived agent via GET agents/{agent}/tasks/. The upstream agent id is resolved from PSA asset_id or hostname; caller-supplied Tactical agent ids are refused.',
+            array_merge(self::reasonProperties(), self::endpointSelectorProperties()),
+            ['client_id', 'reason'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function listPolicyTasksTool(): array
+    {
+        return self::tool(
+            'tactical_list_policy_tasks',
+            'List Tactical automated tasks attached to one verified automation policy via GET automation/policies/{policy}/tasks/. No task changes are made.',
+            array_merge(self::reasonProperties(), self::automationPolicySelectorProperties()),
+            ['reason', 'policy_id'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function createAgentTaskTool(): array
+    {
+        return self::tool(
+            'tactical_create_agent_task',
+            'Create one Tactical automated task on a PSA-derived agent using POST tasks/ with the agent field set server-side. Tasks can run scripts or commands on a schedule, so this requires explicit grant, reason, kill-switch, dedup, cooldown, narrowed TaskSerializer fields, shell allowlists, and getScripts validation for script actions.',
+            array_merge(self::reasonProperties(), self::endpointSelectorProperties(), self::taskBodyProperties()),
+            ['client_id', 'reason', 'name', 'task_type', 'actions'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function createPolicyTaskTool(): array
+    {
+        return self::tool(
+            'tactical_create_policy_task',
+            'Create one Tactical automated task under a verified automation policy using POST tasks/ with the policy field set server-side. This can schedule scripts or commands for policy-affected devices; it requires explicit grant, reason, kill-switch, dedup, cooldown, narrowed TaskSerializer fields, shell allowlists, getPolicies validation, and getScripts validation for script actions.',
+            array_merge(self::reasonProperties(), self::automationPolicySelectorProperties(), self::taskBodyProperties()),
+            ['reason', 'policy_id', 'name', 'task_type', 'actions'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function getTaskTool(): array
+    {
+        return self::tool(
+            'tactical_get_task',
+            'Read one Tactical automated task via GET tasks/{pk}/ after verifying task_id against GET tasks/. Existing task actions can contain secrets, so command text and script arguments are withheld from the response and audits.',
+            array_merge(self::reasonProperties(), self::taskSelectorProperties()),
+            ['reason', 'task_id'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function updateTaskTool(): array
+    {
+        return self::tool(
+            'tactical_update_task',
+            'Update one Tactical automated task using PUT tasks/{pk}/ after verifying task_id against GET tasks/. Sends only narrowed TaskSerializer fields. To change schedule fields, include task_type and the required schedule fields for that type; metadata-only edits omit task_type so the existing schedule is preserved.',
+            array_merge(self::reasonProperties(), self::taskSelectorProperties(), self::taskBodyProperties()),
+            ['reason', 'task_id'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function deleteTaskTool(): array
+    {
+        return self::tool(
+            'tactical_delete_task',
+            'Delete one Tactical automated task using DELETE tasks/{pk}/ after verifying task_id against GET tasks/. This can remove a scheduled script/command from an agent or policy and cannot be undone; requires typed task-name confirmation, explicit grant, reason, kill-switch, dedup, and cooldown.',
+            array_merge(self::reasonProperties(), self::taskSelectorProperties(), self::taskConfirmProperties()),
+            ['reason', 'task_id', 'confirm_task_name'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function runAgentTaskTool(): array
+    {
+        return self::tool(
+            'tactical_run_agent_task',
+            'Run one Tactical agent task now via POST tasks/{pk}/run/ after verifying the task belongs to the PSA-derived agent from GET agents/{agent}/tasks/. This can execute scripts or commands immediately; requires typed hostname and typed task-name confirmation, explicit grant, reason, kill-switch, dedup, and cooldown.',
+            array_merge(self::reasonProperties(), self::endpointSelectorProperties(), self::taskSelectorProperties(), self::taskConfirmProperties(), [
+                'confirm_hostname' => ['type' => 'string', 'description' => 'Typed Tactical hostname. Must match the PSA-derived Tactical agent.'],
+            ]),
+            ['client_id', 'reason', 'task_id', 'confirm_hostname', 'confirm_task_name'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function runPolicyTaskOnAgentTool(): array
+    {
+        return self::tool(
+            'tactical_run_policy_task_on_agent',
+            'Run one verified Tactical policy task on one PSA-derived agent via POST tasks/{pk}/run/ with {agent_id} set server-side. Caller-supplied Tactical agent ids are refused. This can execute scripts or commands immediately on the target device; requires typed hostname and task-name confirmation, explicit grant, reason, kill-switch, dedup, and cooldown.',
+            array_merge(self::reasonProperties(), self::endpointSelectorProperties(), self::automationPolicySelectorProperties(), self::taskSelectorProperties(), self::taskConfirmProperties(), [
+                'confirm_hostname' => ['type' => 'string', 'description' => 'Typed Tactical hostname. Must match the PSA-derived Tactical agent.'],
+            ]),
+            ['client_id', 'reason', 'policy_id', 'task_id', 'confirm_hostname', 'confirm_task_name'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function runPolicyTaskAllTool(): array
+    {
+        return self::tool(
+            'tactical_run_policy_task_all',
+            'BROAD IMPACT: run one verified Tactical policy task on ALL affected agents under that automation policy via POST automation/tasks/{task}/run/. This can execute scripts or commands across many devices; requires typed policy name, typed task name, exact all-agents confirmation phrase, explicit grant, reason, kill-switch, dedup, and cooldown.',
+            array_merge(self::reasonProperties(), self::automationPolicySelectorProperties(), self::taskSelectorProperties(), self::taskConfirmProperties(), [
+                'confirm_policy_name' => ['type' => 'string', 'description' => 'Typed Tactical automation policy name. Must match the resolved policy.'],
+                'confirm_run_all' => ['type' => 'string', 'description' => "Must exactly be '".self::TASK_RUN_ALL_CONFIRMATION."'."],
+            ]),
+            ['reason', 'policy_id', 'task_id', 'confirm_policy_name', 'confirm_task_name', 'confirm_run_all'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function stageRunPolicyTaskAllTool(): array
+    {
+        return self::tool(
+            'tactical_stage_run_policy_task_all',
+            'Stage the broad-impact Tactical policy task run for cockpit approval instead of executing immediately. Approval revalidates getPolicies and automation/policies/{policy}/tasks/ before POST automation/tasks/{task}/run/. This can execute scripts or commands on ALL affected agents, so it requires a ticket, typed policy/task confirmation, exact all-agents phrase, explicit grant, reason, kill-switch, dedup, and cooldown.',
+            array_merge(self::reasonProperties(), self::automationPolicySelectorProperties(), self::taskSelectorProperties(), self::taskConfirmProperties(), [
+                'client_id' => ['type' => 'integer', 'description' => 'PSA client id for the ticket used to hold this staged action.'],
+                'ticket_id' => ['type' => 'integer', 'description' => 'PSA ticket id that will receive the cockpit approval item. Must belong to client_id.'],
+                'confirm_policy_name' => ['type' => 'string', 'description' => 'Typed Tactical automation policy name. Must match the resolved policy.'],
+                'confirm_run_all' => ['type' => 'string', 'description' => "Must exactly be '".self::TASK_RUN_ALL_CONFIRMATION."'."],
+            ]),
+            ['client_id', 'ticket_id', 'reason', 'policy_id', 'task_id', 'confirm_policy_name', 'confirm_task_name', 'confirm_run_all'],
         );
     }
 
