@@ -35,14 +35,20 @@ class McpStaffWhoamiTest extends TestCase
     /** @return array<int, string> */
     private function listToolNames(string $token): array
     {
-        return collect($this->withHeaders(['Authorization' => 'Bearer '.$token])
+        return collect($this->listTools($token))->pluck('name')->all();
+    }
+
+    /** @return array<int, array<string, mixed>> */
+    private function listTools(string $token): array
+    {
+        return $this->withHeaders(['Authorization' => 'Bearer '.$token])
             ->postJson('/api/mcp/staff', [
                 'jsonrpc' => '2.0',
                 'id' => 1,
                 'method' => 'tools/list',
                 'params' => [],
             ])
-            ->json('result.tools'))->pluck('name')->all();
+            ->json('result.tools') ?? [];
     }
 
     public function test_whoami_is_listed_for_scoped_tokens_without_explicit_grant(): void
@@ -56,7 +62,20 @@ class McpStaffWhoamiTest extends TestCase
         $this->assertNotContains('get_staff', $names);
     }
 
-    public function test_whoami_returns_label_directive_allowed_tools_and_posture(): void
+    public function test_whoami_description_names_identity_fields_without_safety_posture(): void
+    {
+        $plain = McpConfig::rotateStaffToken(allowedTools: ['find_staff'], label: 'chet');
+
+        $whoami = collect($this->listTools($plain))->firstWhere('name', 'whoami');
+
+        $this->assertIsArray($whoami);
+        $this->assertSame(
+            'Return this MCP token label, directive, and effective allowed tools.',
+            $whoami['description'],
+        );
+    }
+
+    public function test_whoami_returns_label_directive_and_allowed_tools_without_posture(): void
     {
         Setting::setValue('agent_enabled', '1');
         Setting::setValue('technician_kill_switch', '1');
@@ -74,28 +93,13 @@ class McpStaffWhoamiTest extends TestCase
         $this->assertSame('chet', $payload['label']);
         $this->assertSame('You are the Chet bridge token.', $payload['directive']);
         $this->assertSame(['whoami', 'find_staff'], $payload['allowed_tools']);
-        $this->assertTrue($payload['posture']['agent_enabled']);
-        $this->assertTrue($payload['posture']['kill_switch']);
-        $this->assertTrue($payload['posture']['held_only']);
-        $this->assertTrue($payload['posture']['auto_close_enabled']);
-        $this->assertSame(0.95, $payload['posture']['auto_close_threshold']);
+        $this->assertArrayNotHasKey('posture', $payload);
         $this->assertDatabaseHas('mcp_audit_logs', [
             'method' => 'tools/call',
             'tool_name' => 'whoami',
             'status' => 'success',
             'actor_label' => 'mcp-staff:chet',
         ]);
-    }
-
-    public function test_whoami_reports_held_only_when_auto_close_threshold_is_null(): void
-    {
-        $plain = McpConfig::rotateStaffToken(allowedTools: ['find_staff'], label: 'chet');
-
-        $payload = json_decode((string) $this->callTool($plain, 'whoami')->json('result.content.0.text'), true);
-
-        $this->assertTrue($payload['posture']['held_only']);
-        $this->assertFalse($payload['posture']['auto_close_enabled']);
-        $this->assertNull($payload['posture']['auto_close_threshold']);
     }
 
     public function test_whoami_uses_non_colliding_legacy_label_for_labelless_token(): void
