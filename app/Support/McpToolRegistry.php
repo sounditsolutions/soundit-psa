@@ -7,6 +7,7 @@ use App\Services\Agent\RequestToolTool;
 use App\Services\Assistant\AssistantToolDefinitions;
 use App\Services\Chet\ChetDataSurfaceTools;
 use App\Services\Chet\OperatorBridgeTools;
+use App\Services\Mcp\StaffTacticalActionToolExecutor;
 use App\Services\Triage\TriageToolDefinitions;
 
 class McpToolRegistry
@@ -53,12 +54,14 @@ class McpToolRegistry
             $bridge = self::shape(OperatorBridgeTools::definitions());
             $wikiWrites = self::shape([self::wikiAddFactTool(), self::wikiCreatePageTool(), self::wikiUpdatePageTool()]);
             $cippWrites = self::shape(self::dynamicCippWriteTools());
+            $tacticalActions = self::shape(self::tacticalActionTools());
 
             return [
                 'general' => ['label' => 'General (no client context)', 'sensitive' => false, 'tools' => $general],
                 'client' => ['label' => 'Client-scoped', 'sensitive' => false, 'tools' => $client],
                 'integration' => ['label' => 'Integration (RMM / M365)', 'sensitive' => false, 'tools' => $integration],
                 'cipp_write' => ['label' => 'CIPP write-class (sensitive)', 'sensitive' => true, 'tools' => $cippWrites],
+                'tactical_action' => ['label' => 'Tactical endpoint actions (sensitive)', 'sensitive' => true, 'tools' => $tacticalActions],
                 'wiki_write' => ['label' => 'Wiki write (sensitive)', 'sensitive' => true, 'tools' => $wikiWrites],
                 'psa_action' => ['label' => 'PSA actions (sensitive)', 'sensitive' => true, 'tools' => $psaActions],
                 'bridge' => ['label' => 'Operator bridge (sensitive)', 'sensitive' => true, 'tools' => $bridge],
@@ -150,6 +153,12 @@ class McpToolRegistry
         });
 
         return $toolNames;
+    }
+
+    /** @return array<int, array<string, mixed>> */
+    public static function tacticalActionTools(): array
+    {
+        return StaffTacticalActionToolExecutor::definitions();
     }
 
     public static function flushMemoized(): void
