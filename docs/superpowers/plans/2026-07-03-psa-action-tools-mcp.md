@@ -25,6 +25,12 @@ Recipient and visibility decisions stay server-side. Callers provide ticket IDs,
 - `psa-sx99`: direct client-facing tools ship ungranted by default.
 - `psa-sx99`: recipient/visibility derivation stays server-side.
 - Parent epic `psa-fhjb`: per-token grants, dangerous tools ungranted, and public OSS platform behavior with no tenant-specific baked policy.
+- Mayor plan review 2026-07-03: approved with five required direct-tool additions:
+  - `send_email` and `write_public_note` must check `TechnicianConfig::killSwitchEngaged()` and fail closed without note/email side effects.
+  - direct tools need flood controls: content-hash idempotency plus per-ticket AI outbound cooldowns with settings knobs.
+  - direct executions must write `TechnicianActionLog` rows with `result_status=executed`, MCP token actor label, and no approver.
+  - `reason` is required on direct `send_email` and `write_public_note`.
+  - PR gate is push + CI green + bead comment + nudge Mayor; do not use `/soundpsa-review-pr`.
 
 There are no bead comments on `psa-sx99` at plan time; this plan is based on the bead description and current source.
 
@@ -72,15 +78,13 @@ Add a new sensitive registry group, likely:
 Tools:
 
 - `send_email`
-  - Required: `ticket_id`, `body`
-  - Optional: `reason`
+  - Required: `ticket_id`, `body`, `reason`
   - No `to`, `cc`, `subject`, `visibility`, or author fields.
 - `stage_email`
   - Required: `ticket_id`, `body`, `reason`
   - Holds the body verbatim for cockpit review.
 - `write_public_note`
-  - Required: `ticket_id`, `body`
-  - Optional: `reason`
+  - Required: `ticket_id`, `body`, `reason`
   - No `is_private` or `note_type`.
 - `stage_public_note`
   - Required: `ticket_id`, `body`, `reason`
@@ -107,16 +111,24 @@ Responsibilities:
   - merge actions: both tickets exist, both match `client_id`, and the pair passes the same same-client/self/already-merged guard expected by `TicketService::mergeTickets`
 - Resolve actor identity using `TechnicianConfig::requiredAiActorUserId()` and `TechnicianConfig::aiActorName()`.
 - For direct `send_email`:
+  - fail closed when `TechnicianConfig::killSwitchEngaged()` is true
   - derive recipient from `$ticket->contact?->email`
   - fail cleanly if no contact email
+  - idempotently no-op when an identical body was already executed recently for that ticket
+  - refuse rapid distinct sends when the per-ticket cooldown is still active; default `mcp_direct_send_email_cooldown_seconds = 300`
   - apply disclosure to the body
   - create a public `Reply` note with `ai_authored=true`
   - call `EmailService::sendTicketReplyNote($ticket, $note, $ticket->contact->email, [])`
   - link `email_id` on the note when an `Email` is returned
+  - write an append-only `TechnicianActionLog` executed row with `actor_label = <MCP actor label>` and `approver_user_id = null`
 - For direct `write_public_note`:
+  - fail closed when `TechnicianConfig::killSwitchEngaged()` is true
+  - idempotently no-op when an identical body was already executed recently for that ticket
+  - refuse rapid distinct notes when the per-ticket cooldown is still active; default `mcp_direct_write_public_note_cooldown_seconds = 60`
   - apply disclosure to the body
   - create a public `Note` with `ai_authored=true`
   - do not call `EmailService`
+  - write an append-only `TechnicianActionLog` executed row with `actor_label = <MCP actor label>` and `approver_user_id = null`
 - For staged `stage_email` and `stage_public_note`:
   - create or revive an `AwaitingApproval` `TechnicianRun`
   - `action_type` is the tool name
@@ -241,7 +253,13 @@ Red tests:
 
 - `send_email` with a granted token writes an AI-authored public reply note, sends through `EmailService::sendTicketReplyNote()` to the ticket contact, ignores an attacker-supplied recipient field, links the email, and audits `body_length` without body text.
 - `send_email` fails cleanly when the ticket has no contact email and creates no note/email.
+- `send_email` fails closed under the kill switch with no note/email side effects and an audited MCP error.
+- `send_email` identical rapid replay no-ops; rapid distinct replay is refused by the cooldown setting.
 - `write_public_note` writes an AI-authored public note, does not call `EmailService`, ignores malicious `is_private` / `note_type`, and audits `body_length` without body text.
+- `write_public_note` fails closed under the kill switch with no note/email side effects and an audited MCP error.
+- `write_public_note` identical rapid replay no-ops; rapid distinct replay is refused by the cooldown setting.
+- Direct successful `send_email` and `write_public_note` create `TechnicianActionLog` executed rows with MCP token `actor_label` and `approver_user_id = null`.
+- Direct `send_email` and `write_public_note` require `reason`.
 - Both tools reject missing/malformed `client_id` and cross-client ticket IDs without side effects.
 
 Green:
@@ -323,4 +341,4 @@ sudo systemctl restart soundit-psa-queue.service soundit-psa-dev.service
 systemctl is-active soundit-psa-queue.service soundit-psa-dev.service
 ```
 
-For the PR-ready gate, use the Mayor-confirmed convention for this bead. If no bead comment changes it during plan review, default to the `gc prime` gate: Pint clean, relevant tests green, PR pushed, and `/soundpsa-review-pr <branch>` clean before reporting ready.
+For the PR-ready gate, use the Mayor-confirmed convention for this bead: branch pushed, GitHub CI green, bead comment added, and `gc session nudge gastown.mayor`. Do not run `/soundpsa-review-pr`.

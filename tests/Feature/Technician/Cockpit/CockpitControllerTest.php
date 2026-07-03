@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Technician\Cockpit;
 
+use App\Enums\NoteType;
 use App\Enums\TechnicianRunState;
 use App\Models\Client;
 use App\Models\Person;
@@ -65,6 +66,72 @@ class CockpitControllerTest extends TestCase
 
         $this->assertSame(TechnicianRunState::Done, $run->fresh()->state);
         $this->assertSame(1, TicketNote::where('ticket_id', $run->ticket_id)->where('ai_authored', true)->count());
+    }
+
+    public function test_cockpit_shows_distinct_labels_for_staged_actions_and_merge(): void
+    {
+        $actor = User::factory()->create(['name' => 'Chet']);
+        $run = $this->heldRun($actor);
+        $ticket = $run->ticket;
+
+        TechnicianRun::create([
+            'ticket_id' => $ticket->id,
+            'client_id' => $ticket->client_id,
+            'action_type' => 'stage_email',
+            'content_hash' => hash('sha256', 'stage-email'),
+            'state' => TechnicianRunState::AwaitingApproval,
+            'proposed_content' => 'Proactive outreach.',
+            'proposed_meta' => ['drafted_by' => 'mcp-staff:opsbot'],
+        ]);
+        TechnicianRun::create([
+            'ticket_id' => $ticket->id,
+            'client_id' => $ticket->client_id,
+            'action_type' => 'stage_public_note',
+            'content_hash' => hash('sha256', 'stage-note'),
+            'state' => TechnicianRunState::AwaitingApproval,
+            'proposed_content' => 'Public note.',
+            'proposed_meta' => ['drafted_by' => 'mcp-staff:opsbot'],
+        ]);
+        TechnicianRun::create([
+            'ticket_id' => $ticket->id,
+            'client_id' => $ticket->client_id,
+            'action_type' => 'propose_merge',
+            'content_hash' => hash('sha256', 'merge'),
+            'state' => TechnicianRunState::AwaitingApproval,
+            'proposed_content' => 'Duplicate issue.',
+            'proposed_meta' => ['secondary_ticket_id' => $ticket->id + 1],
+        ]);
+
+        $this->actingAs(User::factory()->create())
+            ->get(route('cockpit.index'))
+            ->assertOk()
+            ->assertSee('Staged email')
+            ->assertSee('Staged public note')
+            ->assertSee('Proposed merge')
+            ->assertSee('Send email')
+            ->assertSee('Publish public note')
+            ->assertSee('Approve merge');
+    }
+
+    public function test_route_approves_staged_public_note_with_body(): void
+    {
+        $actor = User::factory()->create(['name' => 'Chet']);
+        $run = $this->heldRun($actor);
+        $run->update([
+            'action_type' => 'stage_public_note',
+            'content_hash' => hash('sha256', 'stage-public-note'),
+            'proposed_content' => 'Original public note.',
+        ]);
+        $this->mock(EmailService::class, fn (MockInterface $m) => $m->shouldReceive('sendTicketReplyNote')->never());
+
+        $this->actingAs(User::factory()->create())
+            ->post(route('cockpit.approve', $run), ['body' => 'Edited public note.'])
+            ->assertRedirect(route('cockpit.index'));
+
+        $note = TicketNote::where('ticket_id', $run->ticket_id)->firstOrFail();
+        $this->assertSame(NoteType::Note, $note->note_type);
+        $this->assertFalse((bool) $note->is_private);
+        $this->assertSame(TechnicianRunState::Done, $run->fresh()->state);
     }
 
     public function test_deny_removes_the_draft_from_the_queue(): void

@@ -30,6 +30,17 @@ class TechnicianCockpitController extends Controller
         // Fail-closed: an unrecognized action type must NOT fall through to a send.
         $result = match ($run->action_type) {
             'propose_close' => $service->approveClose($run, (int) auth()->id()),
+            'propose_merge' => $service->approveMerge($run, (int) auth()->id()),
+            'stage_email' => $service->approveStagedEmail(
+                $run,
+                $request->validate(['body' => ['required', 'string']])['body'],
+                (int) auth()->id(),
+            ),
+            'stage_public_note' => $service->approveStagedPublicNote(
+                $run,
+                $request->validate(['body' => ['required', 'string']])['body'],
+                (int) auth()->id(),
+            ),
             // Body is required only on the reply/resolution path, validated inside this arm.
             'send_reply', 'propose_resolution' => $service->approveAndSend(
                 $run,
@@ -40,10 +51,12 @@ class TechnicianCockpitController extends Controller
         };
 
         return redirect()->route('cockpit.index')->with(
-            in_array($result->status, ['sent', 'closed'], true) ? 'success' : 'error',
+            in_array($result->status, ['sent', 'closed', 'published', 'merged'], true) ? 'success' : 'error',
             match ($result->status) {
                 'sent' => 'Reply approved and sent.',
                 'closed' => 'Ticket closed.',
+                'published' => 'Public note published.',
+                'merged' => 'Tickets merged.',
                 'already_handled' => 'That draft was already handled.',
                 default => 'Could not send — the Technician declined (it may be paused). Try again.',
             },

@@ -14,7 +14,7 @@ class McpToolRegistryTest extends TestCase
     {
         $groups = McpToolRegistry::groups();
 
-        $this->assertSame(['general', 'client', 'integration', 'wiki_write', 'bridge'], array_keys($groups));
+        $this->assertSame(['general', 'client', 'integration', 'wiki_write', 'psa_action', 'bridge'], array_keys($groups));
 
         $names = fn (string $group): array => array_column($groups[$group]['tools'], 'name');
 
@@ -28,8 +28,14 @@ class McpToolRegistryTest extends TestCase
         $this->assertContains('list_teams_chats', $names('general'));
         $this->assertNotContains('tactical_run_diagnostic', $names('integration'));
         $this->assertContains('wiki_add_fact', $names('wiki_write'));
+        $this->assertContains('send_email', $names('psa_action'));
+        $this->assertContains('stage_email', $names('psa_action'));
+        $this->assertContains('write_public_note', $names('psa_action'));
+        $this->assertContains('stage_public_note', $names('psa_action'));
+        $this->assertContains('propose_merge', $names('psa_action'));
         $this->assertContains('post_to_operator', $names('bridge'));
         $this->assertTrue($groups['wiki_write']['sensitive']);
+        $this->assertTrue($groups['psa_action']['sensitive']);
         $this->assertTrue($groups['bridge']['sensitive']);
         $this->assertFalse($groups['general']['sensitive']);
     }
@@ -42,6 +48,8 @@ class McpToolRegistryTest extends TestCase
         $this->assertNotEmpty($bridge['description']);
         $wikiWrite = collect($groups['wiki_write']['tools'])->firstWhere('name', 'wiki_add_fact');
         $this->assertNotEmpty($wikiWrite['description']);
+        $psaAction = collect($groups['psa_action']['tools'])->firstWhere('name', 'send_email');
+        $this->assertNotEmpty($psaAction['description']);
 
         $seen = [];
         foreach ($groups as $group) {
@@ -64,6 +72,11 @@ class McpToolRegistryTest extends TestCase
         $this->assertContains('tactical_get_device', $all);
         $this->assertContains('list_teams_chats', $all);
         $this->assertContains('wiki_add_fact', $all);
+        $this->assertContains('send_email', $all);
+        $this->assertContains('stage_email', $all);
+        $this->assertContains('write_public_note', $all);
+        $this->assertContains('stage_public_note', $all);
+        $this->assertContains('propose_merge', $all);
         $this->assertContains('post_to_operator', $all);
         $this->assertSame(array_values(array_unique($all)), $all, 'no duplicates');
     }

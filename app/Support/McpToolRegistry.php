@@ -39,12 +39,14 @@ class McpToolRegistry
 
         $bridge = self::shape(OperatorBridgeTools::definitions());
         $wikiWrites = self::shape([self::wikiAddFactTool(), self::wikiCreatePageTool(), self::wikiUpdatePageTool()]);
+        $psaActions = self::shape(self::psaActionTools());
 
         return [
             'general' => ['label' => 'General (no client context)', 'sensitive' => false, 'tools' => $general],
             'client' => ['label' => 'Client-scoped', 'sensitive' => false, 'tools' => $client],
             'integration' => ['label' => 'Integration (RMM / M365)', 'sensitive' => false, 'tools' => $integration],
             'wiki_write' => ['label' => 'Wiki write (sensitive)', 'sensitive' => true, 'tools' => $wikiWrites],
+            'psa_action' => ['label' => 'PSA actions (sensitive)', 'sensitive' => true, 'tools' => $psaActions],
             'bridge' => ['label' => 'Operator bridge (sensitive)', 'sensitive' => true, 'tools' => $bridge],
         ];
     }
@@ -132,6 +134,153 @@ class McpToolRegistry
         $tool['input_schema'] = $schema;
 
         return $tool;
+    }
+
+    /** @return array<int, array<string, mixed>> */
+    public static function psaActionTools(): array
+    {
+        return [
+            self::sendEmailTool(),
+            self::stageEmailTool(),
+            self::writePublicNoteTool(),
+            self::stagePublicNoteTool(),
+            self::proposeMergeTool(),
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public static function sendEmailTool(): array
+    {
+        return [
+            'name' => 'send_email',
+            'description' => 'Send a client-facing ticket email immediately. The server derives the recipient and subject from the ticket contact and ticket metadata, appends the configured AI disclosure, records a public reply note, sends the email, and writes an action audit row. Requires an explicit token grant.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'ticket_id' => [
+                        'type' => 'integer',
+                        'description' => 'The ticket ID to email about. The server derives and validates the client and recipient from this ticket.',
+                    ],
+                    'reason' => [
+                        'type' => 'string',
+                        'description' => 'Specific ticket-based reason for sending a client-facing email now.',
+                    ],
+                    'body' => [
+                        'type' => 'string',
+                        'description' => 'Client-facing message body to send after server-side disclosure is appended.',
+                    ],
+                ],
+                'required' => ['ticket_id', 'reason', 'body'],
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public static function stageEmailTool(): array
+    {
+        return [
+            'name' => 'stage_email',
+            'description' => 'Stage a proactive client-facing ticket email draft in the cockpit for human approval. The call does not send email directly. The server derives recipient and subject from the ticket; the supplied body is held verbatim for review.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'ticket_id' => [
+                        'type' => 'integer',
+                        'description' => 'The ticket ID to stage an email draft for. The server derives and validates the client and recipient from this ticket.',
+                    ],
+                    'reason' => [
+                        'type' => 'string',
+                        'description' => 'Specific ticket-based reason a human should approve this proactive email.',
+                    ],
+                    'body' => [
+                        'type' => 'string',
+                        'description' => 'Proposed client-facing email body. It is held verbatim for cockpit review.',
+                    ],
+                ],
+                'required' => ['ticket_id', 'reason', 'body'],
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public static function writePublicNoteTool(): array
+    {
+        return [
+            'name' => 'write_public_note',
+            'description' => 'Write a public client-visible note to a ticket immediately. The server fixes the note visibility to public, appends the configured AI disclosure, and writes an action audit row. It does not send email. Requires an explicit token grant.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'ticket_id' => [
+                        'type' => 'integer',
+                        'description' => 'The ticket ID to write the public note on. The server derives and validates the client from this ticket.',
+                    ],
+                    'reason' => [
+                        'type' => 'string',
+                        'description' => 'Specific ticket-based reason for publishing this client-visible note now.',
+                    ],
+                    'body' => [
+                        'type' => 'string',
+                        'description' => 'Client-visible note body to publish after server-side disclosure is appended.',
+                    ],
+                ],
+                'required' => ['ticket_id', 'reason', 'body'],
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public static function stagePublicNoteTool(): array
+    {
+        return [
+            'name' => 'stage_public_note',
+            'description' => 'Stage a public client-visible ticket note in the cockpit for human approval. The call does not publish the note directly. The server fixes visibility to public; the supplied body is held verbatim for review.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'ticket_id' => [
+                        'type' => 'integer',
+                        'description' => 'The ticket ID to stage a public note for. The server derives and validates the client from this ticket.',
+                    ],
+                    'reason' => [
+                        'type' => 'string',
+                        'description' => 'Specific ticket-based reason a human should approve publishing this note.',
+                    ],
+                    'body' => [
+                        'type' => 'string',
+                        'description' => 'Proposed public note body. It is held verbatim for cockpit review.',
+                    ],
+                ],
+                'required' => ['ticket_id', 'reason', 'body'],
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public static function proposeMergeTool(): array
+    {
+        return [
+            'name' => 'propose_merge',
+            'description' => 'Submit a held ticket-merge proposal for cockpit approval. The call does not merge tickets directly; approval revalidates both tickets and executes the existing merge workflow.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'primary_ticket_id' => [
+                        'type' => 'integer',
+                        'description' => 'Ticket ID that should remain as the primary ticket.',
+                    ],
+                    'secondary_ticket_id' => [
+                        'type' => 'integer',
+                        'description' => 'Ticket ID that should be merged into the primary ticket.',
+                    ],
+                    'reason' => [
+                        'type' => 'string',
+                        'description' => 'Specific ticket-based evidence that the two tickets are duplicates.',
+                    ],
+                ],
+                'required' => ['primary_ticket_id', 'secondary_ticket_id', 'reason'],
+            ],
+        ];
     }
 
     /** @return array<string, mixed> */

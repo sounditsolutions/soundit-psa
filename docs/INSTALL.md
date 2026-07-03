@@ -1034,7 +1034,9 @@ When enabled, portal-enabled contacts automatically receive email notifications 
 
 An MCP (Model Context Protocol) server is exposed at `POST /api/mcp/staff`, intended for use as a remote MCP endpoint by staff automation clients via Anthropic's MCP connector beta. The surface is token-scoped: read/data tools remain the default shape, while sensitive write tools are only exposed when explicitly granted.
 
-Held actions such as `propose_close` and `send_reply` never execute directly from MCP. They create held cockpit proposals for a human operator to approve. Client-scoped staff tokens must pass `client_id` for these actions, and `send_reply` accepts an optional `body` that is held verbatim for cockpit review.
+Held actions such as `propose_close`, `send_reply`, `stage_email`, `stage_public_note`, and `propose_merge` never execute directly from MCP. They create held cockpit proposals for a human operator to approve. Client-scoped staff tokens must pass `client_id` for these actions, and supplied bodies are held verbatim for cockpit review.
+
+PSA action tools are sensitive and must be explicitly granted per token. `send_email` sends a ticket email immediately, and `write_public_note` publishes a client-visible ticket note immediately; both derive recipient/visibility server-side, require a `reason`, append the configured AI disclosure, honor the Technician kill-switch, write `TechnicianActionLog` executed rows, dedupe identical ticket/body content, and rate-limit per ticket. The cooldown settings are `mcp_direct_send_email_cooldown_seconds` (default 300) and `mcp_direct_write_public_note_cooldown_seconds` (default 60). Prefer the staged variants for cockpit-reviewed client-facing output.
 
 The `request_tool` grant lets a staff MCP client record an internal tooling gap against a ticket. It only writes a `ToolingGap` row for later operator triage; it does not mutate the ticket, create a Technician run, send email, or trigger follow-up work directly.
 
