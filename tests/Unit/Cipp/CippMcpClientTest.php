@@ -63,6 +63,47 @@ class CippMcpClientTest extends TestCase
         });
     }
 
+    public function test_lists_cipp_mcp_tools_with_json_rpc_tools_list(): void
+    {
+        Http::fake([
+            'login.microsoftonline.com/*' => Http::response([
+                'access_token' => 'MCP-TOKEN',
+                'expires_in' => 3600,
+            ]),
+            'cipp.example.test/api/ExecMCP*' => Http::response([
+                'jsonrpc' => '2.0',
+                'id' => 1,
+                'result' => [
+                    'tools' => [
+                        [
+                            'name' => 'ListDBCache',
+                            'description' => '[CIPP] List cache.',
+                            'inputSchema' => ['type' => 'object', 'properties' => []],
+                            'annotations' => ['readOnlyHint' => true],
+                        ],
+                    ],
+                ],
+            ]),
+        ]);
+
+        $client = new CippMcpClient([
+            'api_url' => 'https://cipp.example.test',
+            'tenant_id' => 'tenant-1',
+            'client_id' => 'mcp-client-1',
+            'client_secret' => 'mcp-secret',
+        ], Cache::store(), fn (string $host): array => ['93.184.216.34']);
+
+        $tools = $client->listTools();
+
+        $this->assertSame('ListDBCache', $tools[0]['name']);
+
+        Http::assertSent(function ($request) {
+            return str_contains($request->url(), 'cipp.example.test/api/ExecMCP')
+                && $request->hasHeader('Authorization', 'Bearer MCP-TOKEN')
+                && $request['method'] === 'tools/list';
+        });
+    }
+
     public function test_rejects_unsafe_exec_mcp_url_before_token_request(): void
     {
         Http::fake();

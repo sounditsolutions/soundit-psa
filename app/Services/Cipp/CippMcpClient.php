@@ -54,6 +54,36 @@ class CippMcpClient
         return $this->decodeJsonRpcPayload((string) $response->body());
     }
 
+    /**
+     * List the official CIPP MCP tools currently advertised by ExecMCP.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function listTools(): array
+    {
+        $execMcpUrl = $this->execMcpUrl();
+
+        $response = Http::timeout(60)
+            ->acceptJson()
+            ->withOptions($this->safeRequestOptions($execMcpUrl))
+            ->withToken($this->getToken())
+            ->post($execMcpUrl, [
+                'jsonrpc' => '2.0',
+                'id' => 1,
+                'method' => 'tools/list',
+                'params' => new \stdClass,
+            ]);
+
+        if ($response->failed()) {
+            throw new CippClientException('CIPP MCP tools/list failed: HTTP '.$response->status().' '.mb_substr($response->body(), 0, 500));
+        }
+
+        $payload = $this->decodeJsonRpcPayload((string) $response->body());
+        $tools = $payload['tools'] ?? [];
+
+        return is_array($tools) ? array_values(array_filter($tools, 'is_array')) : [];
+    }
+
     private function getToken(): string
     {
         $tenantId = (string) ($this->config['tenant_id'] ?? '');

@@ -53,6 +53,13 @@ class CippConfig
             && self::isMcpConfigured();
     }
 
+    public static function isMcpCatalogSyncEnabled(): bool
+    {
+        return self::isEnabled()
+            && self::isMcpConfigured()
+            && Setting::getValue('cipp_mcp_catalog_sync_enabled', '0') === '1';
+    }
+
     public static function isMcpConfigured(): bool
     {
         return ! empty(self::get('api_url'))

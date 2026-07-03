@@ -3,6 +3,8 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\CippMcpTool;
+use App\Models\Client;
 use App\Models\McpAuditLog;
 use App\Models\McpToken;
 use App\Models\Ticket;
@@ -15,6 +17,7 @@ use App\Services\Chet\ChetDataSurfaceTools;
 use App\Services\Chet\OperatorBridgeTextSanitizer;
 use App\Services\Chet\OperatorBridgeToolExecutor;
 use App\Services\Chet\OperatorBridgeTools;
+use App\Services\Cipp\CippMcpDynamicToolExecutor;
 use App\Services\Mcp\StaffPsaActionToolExecutor;
 use App\Services\Tactical\Actions\ActionRedactor;
 use App\Support\AgentConfig;
@@ -216,6 +219,8 @@ class McpStaffController extends Controller
         $clientScopedTools = array_merge(
             AssistantToolDefinitions::getTools(hasClient: true),
             ChetDataSurfaceTools::clientTools(),
+            McpToolRegistry::dynamicCippReadTools(),
+            McpToolRegistry::dynamicCippWriteTools(),
         );
 
         // Merge by tool name (general tools win on duplicate names).
@@ -381,6 +386,20 @@ class McpStaffController extends Controller
             ]);
         }
 
+        if (CippMcpTool::handles((string) $name) && $clientId === null) {
+            $message = "client_id is required for {$name}.";
+            $this->audit('tools/call', (string) $name, $arguments, 'error', $message, $start, $request);
+
+            return response()->json([
+                'jsonrpc' => '2.0',
+                'id' => $id,
+                'result' => [
+                    'content' => [['type' => 'text', 'text' => $message]],
+                    'isError' => true,
+                ],
+            ]);
+        }
+
         // Chet's held ticket actions are client-scoped end-to-end: the ticket must belong
         // to the client context Chet supplied. Enforced HERE at the Chet boundary —
         // the staff-trust surface deliberately keeps the opposite contract (derive
@@ -428,6 +447,13 @@ class McpStaffController extends Controller
                 );
             } elseif (ChetDataSurfaceTools::handles((string) $name)) {
                 $result = app(ChetDataSurfaceToolExecutor::class)->execute((string) $name, $arguments, $clientId);
+            } elseif (CippMcpTool::handles((string) $name)) {
+                $result = app(CippMcpDynamicToolExecutor::class)->execute(
+                    (string) $name,
+                    $arguments,
+                    $clientId !== null ? Client::find($clientId) : null,
+                    $clientId,
+                );
             } elseif ($this->isPsaActionTool((string) $name)) {
                 $result = app(StaffPsaActionToolExecutor::class)->execute(
                     (string) $name,
@@ -763,6 +789,10 @@ class McpStaffController extends Controller
         }
 
         if ($this->isPsaActionTool($toolName)) {
+            return $token->allowedTools !== null && $token->allows($toolName);
+        }
+
+        if (CippMcpTool::handles($toolName)) {
             return $token->allowedTools !== null && $token->allows($toolName);
         }
 

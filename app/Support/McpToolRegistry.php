@@ -2,6 +2,7 @@
 
 namespace App\Support;
 
+use App\Models\CippMcpTool;
 use App\Services\Agent\RequestToolTool;
 use App\Services\Assistant\AssistantToolDefinitions;
 use App\Services\Chet\ChetDataSurfaceTools;
@@ -27,6 +28,7 @@ class McpToolRegistry
             TriageToolDefinitions::levelTools(),
             TriageToolDefinitions::meshTools(),
             TriageToolDefinitions::cippTools(),
+            self::dynamicCippReadTools(),
             ChetDataSurfaceTools::registryIntegrationTools(),
         ));
         $integrationNames = array_flip(array_column($integration, 'name'));
@@ -40,11 +42,13 @@ class McpToolRegistry
         $bridge = self::shape(OperatorBridgeTools::definitions());
         $wikiWrites = self::shape([self::wikiAddFactTool(), self::wikiCreatePageTool(), self::wikiUpdatePageTool()]);
         $psaActions = self::shape(self::psaActionTools());
+        $cippWrites = self::shape(self::dynamicCippWriteTools());
 
         return [
             'general' => ['label' => 'General (no client context)', 'sensitive' => false, 'tools' => $general],
             'client' => ['label' => 'Client-scoped', 'sensitive' => false, 'tools' => $client],
             'integration' => ['label' => 'Integration (RMM / M365)', 'sensitive' => false, 'tools' => $integration],
+            'cipp_write' => ['label' => 'CIPP write-class (sensitive)', 'sensitive' => true, 'tools' => $cippWrites],
             'wiki_write' => ['label' => 'Wiki write (sensitive)', 'sensitive' => true, 'tools' => $wikiWrites],
             'psa_action' => ['label' => 'PSA actions (sensitive)', 'sensitive' => true, 'tools' => $psaActions],
             'bridge' => ['label' => 'Operator bridge (sensitive)', 'sensitive' => true, 'tools' => $bridge],
@@ -63,6 +67,42 @@ class McpToolRegistry
         }
 
         return array_keys($names);
+    }
+
+    /** @return array<int, array<string, mixed>> */
+    public static function dynamicCippReadTools(): array
+    {
+        try {
+            return CippMcpTool::query()
+                ->active()
+                ->where('read_only', true)
+                ->where('sensitive', false)
+                ->orderBy('local_name')
+                ->get()
+                ->map(fn (CippMcpTool $tool): array => $tool->toolDefinition())
+                ->all();
+        } catch (\Throwable) {
+            return [];
+        }
+    }
+
+    /** @return array<int, array<string, mixed>> */
+    public static function dynamicCippWriteTools(): array
+    {
+        try {
+            return CippMcpTool::query()
+                ->active()
+                ->where(function ($query) {
+                    $query->where('read_only', false)
+                        ->orWhere('sensitive', true);
+                })
+                ->orderBy('local_name')
+                ->get()
+                ->map(fn (CippMcpTool $tool): array => $tool->toolDefinition())
+                ->all();
+        } catch (\Throwable) {
+            return [];
+        }
     }
 
     /** @return array<string, mixed> */

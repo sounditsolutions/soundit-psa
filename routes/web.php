@@ -362,6 +362,7 @@ Route::middleware('auth')->group(function () {
     Route::post('/settings/integrations/cipp', [IntegrationsController::class, 'updateCipp'])->name('settings.integrations.cipp.update');
     Route::post('/settings/integrations/cipp/test', [IntegrationsController::class, 'testCipp'])->name('settings.integrations.cipp.test');
     Route::post('/settings/integrations/cipp/sync', [IntegrationsController::class, 'syncCipp'])->name('settings.integrations.cipp.sync');
+    Route::post('/settings/integrations/cipp/sync-mcp-catalog', [IntegrationsController::class, 'syncCippMcpCatalog'])->name('settings.integrations.cipp.sync-mcp-catalog');
     Route::post('/settings/integrations/cipp/sync-contacts', [IntegrationsController::class, 'syncCippContacts'])->name('settings.integrations.cipp.sync-contacts');
     Route::get('/settings/integrations/cipp/tenants/{domain}/groups', [CippTenantController::class, 'groups'])->where('domain', '.*')->name('settings.cipp-tenants.groups');
     Route::post('/settings/integrations/cipp/sync-devices', [IntegrationsController::class, 'syncCippDevices'])->name('settings.integrations.cipp.sync-devices');

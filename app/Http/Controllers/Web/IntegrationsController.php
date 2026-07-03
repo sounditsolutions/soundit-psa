@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Web;
 use App\Http\Controllers\Controller;
 use App\Models\Setting;
 use App\Models\TacticalWebhook;
+use App\Services\Cipp\CippMcpCatalogSyncService;
 use App\Services\Graph\GraphClient;
 use App\Services\Graph\GraphWebhookManager;
 use App\Services\Level\LevelClient;
@@ -209,6 +210,7 @@ class IntegrationsController extends Controller
         $cippMcpEnabled = CippConfig::isMcpRelayEnabled();
         $cippContactSyncEnabled = CippConfig::isContactSyncEnabled();
         $cippDeviceSyncEnabled = CippConfig::isDeviceSyncEnabled();
+        $cippMcpCatalogSyncEnabled = CippConfig::isMcpCatalogSyncEnabled();
         $huntressEnabled = HuntressConfig::isEnabled();
         $servosityEnabled = ServosityConfig::isEnabled();
         $controldEnabled = ControlDConfig::isEnabled();
@@ -339,7 +341,7 @@ class IntegrationsController extends Controller
             'zorusConfigured', 'zorusConnected', 'zorusEnabled',
             'appriverConfigured', 'appriverConnected', 'appriverConnectedAt', 'appriverEnabled',
             'printixConfigured', 'printixPartnerId', 'printixHasSecret', 'printixConnected', 'printixEnabled',
-            'cippConfigured', 'cippApiUrl', 'cippTenantId', 'cippClientId', 'cippApplicationId', 'cippHasSecret', 'cippMcpClientId', 'cippMcpHasSecret', 'cippMcpConfigured', 'cippConnected', 'cippEnabled', 'cippMcpEnabled', 'cippContactSyncEnabled', 'cippDeviceSyncEnabled',
+            'cippConfigured', 'cippApiUrl', 'cippTenantId', 'cippClientId', 'cippApplicationId', 'cippHasSecret', 'cippMcpClientId', 'cippMcpHasSecret', 'cippMcpConfigured', 'cippConnected', 'cippEnabled', 'cippMcpEnabled', 'cippContactSyncEnabled', 'cippDeviceSyncEnabled', 'cippMcpCatalogSyncEnabled',
             'plivoAuthId', 'plivoDidNumber', 'plivoAppId', 'plivoHasToken', 'plivoHasWebhookSecret', 'plivoConnectedAt', 'plivoEnabled',
             'graphMailbox', 'graphConnectedAt', 'graphEmailSignature', 'emailAutoTicket', 'graphEnabled', 'autoCloseResolvedDays', 'gravatarDefault',
             'aiProvider', 'aiHasKey', 'aiModel', 'aiConnectedAt', 'aiEnabled', 'aiReplyGuidelines',
@@ -366,7 +368,7 @@ class IntegrationsController extends Controller
     public function toggleIntegration(Request $request)
     {
         $allowed = [
-            'ninja', 'level', 'mesh', 'cipp', 'cipp_mcp', 'cipp_contact_sync', 'cipp_device_sync', 'huntress', 'servosity', 'controld', 'zorus', 'appriver', 'printix',
+            'ninja', 'level', 'mesh', 'cipp', 'cipp_mcp', 'cipp_contact_sync', 'cipp_device_sync', 'cipp_mcp_catalog_sync', 'huntress', 'servosity', 'controld', 'zorus', 'appriver', 'printix',
             'plivo', 'graph', 'stripe', 't2t', 'ai', 'screenconnect', 'tactical',
         ];
 
@@ -382,6 +384,13 @@ class IntegrationsController extends Controller
 
             return redirect()->route('settings.integrations')
                 ->with('error', 'CIPP MCP relay requires MCP Client ID and secret before it can be enabled.');
+        }
+
+        if ($request->input('integration') === 'cipp_mcp_catalog_sync' && $enabled === '1' && ! CippConfig::isMcpConfigured()) {
+            Setting::setValue('cipp_mcp_catalog_sync_enabled', '0');
+
+            return redirect()->route('settings.integrations')
+                ->with('error', 'CIPP MCP catalog auto-sync requires MCP Client ID and secret before it can be enabled.');
         }
 
         Setting::setValue($key, $enabled);
@@ -958,6 +967,24 @@ class IntegrationsController extends Controller
             return back()->with('success', "CIPP sync complete: {$result->created} created, {$result->updated} updated.");
         } catch (\Throwable $e) {
             return back()->with('error', "CIPP sync failed: {$e->getMessage()}");
+        }
+    }
+
+    public function syncCippMcpCatalog(CippMcpCatalogSyncService $service)
+    {
+        if (! CippConfig::isMcpConfigured()) {
+            return redirect()->route('settings.integrations')
+                ->with('error', 'CIPP MCP is not configured. Save MCP Client ID and secret first.');
+        }
+
+        try {
+            $result = $service->sync();
+
+            return redirect()->route('settings.integrations')
+                ->with('success', $result->summary());
+        } catch (\Throwable $e) {
+            return redirect()->route('settings.integrations')
+                ->with('error', "CIPP MCP catalog sync failed: {$e->getMessage()}");
         }
     }
 
