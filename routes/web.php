@@ -298,6 +298,7 @@ Route::middleware('auth')->group(function () {
     Route::post('/settings/mcp-tokens/{token}/activate', [McpTokensController::class, 'activate'])->name('settings.mcp-tokens.activate');
     Route::post('/settings/mcp-tokens/{token}/pause', [McpTokensController::class, 'pause'])->name('settings.mcp-tokens.pause');
     Route::post('/settings/mcp-tokens/{token}/resume', [McpTokensController::class, 'resume'])->name('settings.mcp-tokens.resume');
+    Route::post('/settings/mcp-tokens/{token}/regenerate', [McpTokensController::class, 'regenerate'])->name('settings.mcp-tokens.regenerate');
     Route::post('/settings/mcp-tokens/{token}/signal-destinations', [McpTokensController::class, 'linkSignalDestination'])->name('settings.mcp-tokens.signal-destinations.link');
     Route::delete('/settings/mcp-tokens/{token}/signal-destinations/{destination}', [McpTokensController::class, 'unlinkSignalDestination'])->name('settings.mcp-tokens.signal-destinations.unlink');
     Route::delete('/settings/mcp-tokens/{token}', [McpTokensController::class, 'revoke'])->name('settings.mcp-tokens.revoke');

@@ -128,6 +128,19 @@ class McpConfig
         return $token;
     }
 
+    public static function regenerateSecret(McpToken $token): string
+    {
+        $plain = 'psa-mcp-'.Str::random(48);
+
+        $token->forceFill([
+            'token_hash' => hash('sha256', $plain),
+            'token_prefix' => self::tokenPrefix($plain),
+            'last_used_at' => null,
+        ])->save();
+
+        return $plain;
+    }
+
     public static function hasScopedStaffTokenLabel(string $label): bool
     {
         return McpToken::query()->active()

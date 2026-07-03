@@ -145,6 +145,24 @@ class McpTokensController extends Controller
         return $this->respond($request, $token->fresh(), 'Token resumed.');
     }
 
+    public function regenerate(Request $request, McpToken $token)
+    {
+        if ($token->isRevoked()) {
+            return redirect()->route('settings.mcp-tokens.show', $token)
+                ->with('error', "Revoked tokens can't be regenerated — create a new one instead.");
+        }
+
+        $plain = McpConfig::regenerateSecret($token);
+
+        $this->audit($request, 'token/regenerate', $token->label, [
+            'tools' => $token->tools,
+        ]);
+
+        return redirect()
+            ->route('settings.mcp-tokens.show', $token)
+            ->with('mcp_new_token', $plain);
+    }
+
     public function updateTools(Request $request, McpToken $token)
     {
         $validated = $request->validate([
