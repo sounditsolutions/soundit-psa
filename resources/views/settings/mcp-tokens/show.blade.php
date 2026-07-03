@@ -322,7 +322,7 @@
                         <span class="badge rounded-pill bg-light text-dark border ms-auto">Per token</span></div>
                     <div class="card-body">
                         <p class="text-muted small">The system directive prepended to this token's calls. It sets who this token is and how it behaves. Unique to this token.</p>
-                        <textarea class="form-control" id="mcpDirective" rows="6" maxlength="5000" @disabled($readOnly)>{{ $token->directiveOrDefault() }}</textarea>
+                        <textarea class="form-control" id="mcpDirective" rows="6" maxlength="20000" @disabled($readOnly)>{{ $token->directiveOrDefault() }}</textarea>
                         <div class="small text-muted mt-2" id="mcpDirectiveStatus"><i class="bi bi-info-circle me-1"></i>Saves automatically.</div>
                     </div>
                 </div>
