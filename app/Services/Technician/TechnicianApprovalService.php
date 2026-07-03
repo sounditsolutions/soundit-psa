@@ -268,9 +268,9 @@ class TechnicianApprovalService
         return app(StaffTacticalActionToolExecutor::class)->approveStagedRun($run, $approverId);
     }
 
-    public function approveStagedCippWriteAction(TechnicianRun $run, int $approverId): TechnicianApprovalResult
+    public function approveStagedCippWriteAction(TechnicianRun $run, int $approverId, array $approvalInputs = []): TechnicianApprovalResult
     {
-        return app(StaffCippWriteToolExecutor::class)->approveStagedRun($run, $approverId);
+        return app(StaffCippWriteToolExecutor::class)->approveStagedRun($run, $approverId, $approvalInputs);
     }
 
     public function deny(TechnicianRun $run): void

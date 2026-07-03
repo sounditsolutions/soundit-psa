@@ -41,6 +41,10 @@
                         'cipp_stage_set_legacy_per_user_mfa' => ['bg-danger', 'CIPP legacy MFA'],
                         'cipp_stage_assign_user_license' => ['bg-warning text-dark', 'CIPP assign license'],
                         'cipp_stage_remove_user_license' => ['bg-danger', 'CIPP remove license'],
+                        'cipp_stage_convert_mailbox' => ['bg-warning text-dark', 'CIPP mailbox convert'],
+                        'cipp_stage_set_mailbox_forwarding' => ['bg-danger', 'CIPP mailbox forwarding'],
+                        'cipp_stage_set_mailbox_gal_visibility' => ['bg-warning text-dark', 'CIPP GAL visibility'],
+                        'cipp_stage_set_mailbox_out_of_office' => ['bg-warning text-dark', 'CIPP out of office'],
                         default              => ['bg-primary',           'Reply'],
                     };
                 @endphp
@@ -109,10 +113,24 @@
                 </div>
             @elseif (\App\Services\Mcp\StaffCippWriteToolExecutor::isStagedActionType($run->action_type))
                 {{-- CIPP WRITE ARM: read-only local summary; approval revalidates server-derived scope --}}
+                @php($cippInputs = (array)($run->proposed_meta['sensitive_inputs'] ?? []))
                 <p class="text-muted small mb-1">CIPP write action (not run until approved):</p>
                 <p class="form-control-plaintext border rounded p-2 mb-2 bg-light small">{{ $run->proposed_content }}</p>
                 @if(!empty($run->proposed_meta['drafted_by']))
                     <p class="text-muted small mb-2">Drafted by: {{ $run->proposed_meta['drafted_by'] }}</p>
+                @endif
+
+                @if(in_array('external_smtp', $cippInputs, true))
+                    <label class="form-label small text-muted mb-1" for="external-smtp-{{ $run->id }}">External SMTP address</label>
+                    <input class="form-control mb-2" id="external-smtp-{{ $run->id }}" name="external_smtp" type="email" form="approve-{{ $run->id }}" required>
+                @endif
+                @if(in_array('internal_message', $cippInputs, true))
+                    <label class="form-label small text-muted mb-1" for="internal-message-{{ $run->id }}">Internal auto-reply message</label>
+                    <textarea class="form-control mb-2" id="internal-message-{{ $run->id }}" name="internal_message" rows="3" maxlength="2000" form="approve-{{ $run->id }}" required></textarea>
+                @endif
+                @if(in_array('external_message', $cippInputs, true))
+                    <label class="form-label small text-muted mb-1" for="external-message-{{ $run->id }}">External auto-reply message</label>
+                    <textarea class="form-control mb-2" id="external-message-{{ $run->id }}" name="external_message" rows="3" maxlength="2000" form="approve-{{ $run->id }}" required></textarea>
                 @endif
 
                 <div class="d-flex gap-2">
