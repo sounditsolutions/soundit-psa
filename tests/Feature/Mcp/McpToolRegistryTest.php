@@ -23,12 +23,13 @@ class McpToolRegistryTest extends TestCase
         $this->assertContains('propose_close', $names('general'));
         $this->assertContains('send_reply', $names('general'));
         $this->assertContains('request_tool', $names('general'));
-        $this->assertContains('create_ticket', $names('client'));
+        $this->assertNotContains('create_ticket', $names('client'));
         $this->assertContains('ninja_get_device', $names('integration'));
         $this->assertContains('tactical_get_device', $names('integration'));
         $this->assertContains('list_teams_chats', $names('general'));
         $this->assertNotContains('tactical_run_diagnostic', $names('integration'));
         $this->assertContains('wiki_add_fact', $names('wiki_write'));
+        $this->assertContains('create_ticket', $names('psa_action'));
         $this->assertContains('send_email', $names('psa_action'));
         $this->assertContains('stage_email', $names('psa_action'));
         $this->assertContains('write_public_note', $names('psa_action'));

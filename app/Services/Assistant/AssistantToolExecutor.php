@@ -3,8 +3,6 @@
 namespace App\Services\Assistant;
 
 use App\Enums\NoteType;
-use App\Enums\TicketSource;
-use App\Enums\TicketType;
 use App\Models\Asset;
 use App\Models\Client;
 use App\Models\Person;
@@ -535,34 +533,13 @@ class AssistantToolExecutor
 
     private function createTicket(array $input): array
     {
-        if (! $this->clientId) {
-            return ['error' => 'No client context — cannot create ticket'];
-        }
-
-        $subject = $input['subject'] ?? null;
-        $description = $input['description'] ?? null;
-        if (! $subject || ! $description) {
-            return ['error' => 'subject and description are required'];
-        }
-
-        $priorityLevel = $input['priority'] ?? 3;
-        $priorityMap = [1 => 'p1', 2 => 'p2', 3 => 'p3', 4 => 'p4'];
-        $priority = $priorityMap[$priorityLevel] ?? 'p3';
-
         try {
-            $ticket = app(TicketService::class)->createTicket([
-                'client_id' => $this->clientId,
-                'subject' => $subject,
-                'description' => $description,
-                'priority' => $priority,
-                'type' => TicketType::ServiceRequest->value,
-                'source' => TicketSource::Assistant->value,
-            ], $this->userId);
+            $ticket = app(AssistantTicketCreator::class)->create($this->clientId, $input, $this->userId);
 
             Log::info('[Assistant] AI created ticket', [
                 'ticket_id' => $ticket->id,
                 'client_id' => $this->clientId,
-                'subject' => $subject,
+                'subject' => $ticket->subject,
             ]);
 
             return [
@@ -571,6 +548,8 @@ class AssistantToolExecutor
                 'display_id' => $ticket->display_id,
                 'url' => route('tickets.show', $ticket),
             ];
+        } catch (\InvalidArgumentException $e) {
+            return ['error' => $e->getMessage()];
         } catch (\Throwable $e) {
             Log::warning('[Assistant] Ticket creation failed', ['error' => $e->getMessage()]);
 
