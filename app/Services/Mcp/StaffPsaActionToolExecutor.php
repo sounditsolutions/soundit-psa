@@ -7,19 +7,26 @@ use App\Enums\TechnicianRunState;
 use App\Enums\TechnicianTier;
 use App\Enums\WhoType;
 use App\Helpers\MarkdownRenderer;
+use App\Models\Asset;
+use App\Models\Client;
+use App\Models\Person;
 use App\Models\Setting;
 use App\Models\TechnicianActionLog;
 use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Models\TicketNote;
+use App\Models\User;
 use App\Services\Assistant\AssistantTicketCreator;
 use App\Services\EmailService;
 use App\Services\Technician\TechnicianActionGate;
 use App\Services\Technician\TechnicianDisclosure;
+use App\Services\TicketService;
 use App\Support\TechnicianConfig;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
 
 class StaffPsaActionToolExecutor
 {
@@ -30,6 +37,7 @@ class StaffPsaActionToolExecutor
         private readonly TechnicianDisclosure $disclosure,
         private readonly EmailService $email,
         private readonly AssistantTicketCreator $ticketCreator,
+        private readonly TicketService $ticketService,
     ) {}
 
     /** @return array<string, mixed> */
@@ -42,6 +50,13 @@ class StaffPsaActionToolExecutor
             'stage_email' => $this->stageTicketAction('stage_email', $arguments, $clientId, $actorLabel, requiresContactEmail: true),
             'stage_public_note' => $this->stageTicketAction('stage_public_note', $arguments, $clientId, $actorLabel, requiresContactEmail: false),
             'propose_merge' => $this->proposeMerge($arguments, $clientId, $actorLabel),
+            'update_ticket' => $this->updateTicket($arguments, $clientId, $actorLabel),
+            'set_ticket_status' => $this->setTicketStatus($arguments, $clientId, $actorLabel),
+            'assign_ticket' => $this->assignTicket($arguments, $clientId, $actorLabel),
+            'assign_asset' => $this->assignAsset($arguments, $clientId, $actorLabel),
+            'unassign_asset' => $this->unassignAsset($arguments, $clientId, $actorLabel),
+            'set_ticket_contact' => $this->setTicketContact($arguments, $clientId, $actorLabel),
+            'move_ticket_to_client' => $this->moveTicketToClient($arguments, $clientId, $actorLabel),
             default => ['error' => "Unknown PSA action tool: {$name}"],
         };
     }
@@ -92,6 +107,400 @@ class StaffPsaActionToolExecutor
             'display_id' => $ticket->display_id,
             'url' => route('tickets.show', $ticket),
             'message' => 'Ticket created.',
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private function updateTicket(array $arguments, int $clientId, string $actorLabel): array
+    {
+        if ($error = $this->guardDirectAction()) {
+            return $error;
+        }
+
+        $ticket = $this->ticketForClient($arguments['ticket_id'] ?? null, $clientId);
+        if (is_array($ticket)) {
+            return $ticket;
+        }
+
+        $reason = $this->optionalString($arguments, 'reason');
+        $validated = $this->validateTicketUpdatePayload($arguments);
+        if (is_array($validated) && isset($validated['error'])) {
+            return $validated;
+        }
+        if ($validated === []) {
+            return ['error' => 'update_ticket requires at least one editable field'];
+        }
+
+        $before = [
+            'subject' => $ticket->subject,
+            'description' => $ticket->description,
+            'priority' => $ticket->priority?->value,
+            'type' => $ticket->type?->value,
+        ];
+
+        $updated = DB::transaction(function () use ($ticket, $validated, $actorLabel, $reason, $before): Ticket {
+            $updated = $this->ticketService->updateTicket($ticket, $validated);
+            $after = [
+                'subject' => $updated->subject,
+                'description' => $updated->description,
+                'priority' => $updated->priority?->value,
+                'type' => $updated->type?->value,
+            ];
+            $diff = $this->fieldDiff($before, $after);
+            $summary = 'Ticket updated'.($reason ? ': '.$reason : '.');
+            if ($diff !== []) {
+                $summary .= ' Changes: '.$this->stringifyDiff($diff).'.';
+            }
+
+            $this->auditDirectExecution(
+                'update_ticket',
+                $updated,
+                $actorLabel,
+                $this->mutationContentHash('update_ticket', $updated->id, $validated, $reason),
+                $summary,
+                TechnicianConfig::requiredAiActorUserId(),
+            );
+
+            return $updated;
+        });
+
+        return [
+            'success' => true,
+            'ticket_id' => $updated->id,
+            'ticket_display_id' => $updated->display_id,
+            'message' => 'Ticket updated.',
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private function setTicketStatus(array $arguments, int $clientId, string $actorLabel): array
+    {
+        if ($error = $this->guardDirectAction()) {
+            return $error;
+        }
+
+        $ticket = $this->ticketForClient($arguments['ticket_id'] ?? null, $clientId);
+        if (is_array($ticket)) {
+            return $ticket;
+        }
+
+        $status = $this->ticketStatusFrom($arguments['status'] ?? null);
+        if ($status === null) {
+            return ['error' => 'status is required'];
+        }
+
+        $reason = $this->optionalString($arguments, 'reason');
+        $note = $this->optionalString($arguments, 'note');
+        $resolution = $this->optionalString($arguments, 'resolution');
+
+        if ($status->isTerminal()) {
+            if ($reason === null) {
+                return ['error' => 'reason is required'];
+            }
+
+            $confirm = $this->optionalString($arguments, 'confirm_status');
+            if (! $this->confirmStatusMatches($status, $confirm)) {
+                return ['error' => 'The typed confirm_status does not match the requested ticket status. Ticket status change cancelled.'];
+            }
+        }
+
+        try {
+            $updated = $this->ticketService->changeStatus(
+                $ticket,
+                $status,
+                TechnicianConfig::requiredAiActorUserId(),
+                $note,
+                $resolution,
+            );
+        } catch (\InvalidArgumentException $e) {
+            return ['error' => $e->getMessage()];
+        }
+
+        $summary = "Status changed to {$status->label()}".($reason ? ': '.$reason : '.');
+        $this->auditDirectExecution(
+            'set_ticket_status',
+            $updated,
+            $actorLabel,
+            $this->mutationContentHash('set_ticket_status', $updated->id, [
+                'status' => $status->value,
+                'note' => $note,
+                'resolution' => $resolution,
+                'reason' => $reason,
+            ]),
+            $summary,
+            TechnicianConfig::requiredAiActorUserId(),
+        );
+
+        return [
+            'success' => true,
+            'ticket_id' => $updated->id,
+            'ticket_display_id' => $updated->display_id,
+            'status' => $updated->status->value,
+            'message' => "Status changed to {$status->label()}.",
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private function assignTicket(array $arguments, int $clientId, string $actorLabel): array
+    {
+        if ($error = $this->guardDirectAction()) {
+            return $error;
+        }
+
+        $ticket = $this->ticketForClient($arguments['ticket_id'] ?? null, $clientId);
+        if (is_array($ticket)) {
+            return $ticket;
+        }
+
+        $reason = $this->optionalString($arguments, 'reason');
+        $userId = $this->nullableUserId($arguments['user_id'] ?? null);
+        if (($arguments['user_id'] ?? null) !== null && $userId === null) {
+            return ['error' => 'user_id must be a positive integer or null'];
+        }
+
+        if ($userId !== null && ! User::whereKey($userId)->exists()) {
+            return ['error' => 'User not found'];
+        }
+
+        $updated = $this->ticketService->assignTicket($ticket, $userId, TechnicianConfig::requiredAiActorUserId());
+
+        $summary = $userId === null
+            ? 'Ticket unassigned'.($reason ? ': '.$reason : '.')
+            : 'Ticket assigned to user #'.$userId.($reason ? ': '.$reason : '.');
+
+        $this->auditDirectExecution(
+            'assign_ticket',
+            $updated,
+            $actorLabel,
+            $this->mutationContentHash('assign_ticket', $updated->id, ['user_id' => $userId, 'reason' => $reason]),
+            $summary,
+            TechnicianConfig::requiredAiActorUserId(),
+        );
+
+        return [
+            'success' => true,
+            'ticket_id' => $updated->id,
+            'ticket_display_id' => $updated->display_id,
+            'assignee_id' => $updated->assignee_id,
+            'message' => $userId === null ? 'Ticket unassigned.' : 'Ticket assigned.',
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private function assignAsset(array $arguments, int $clientId, string $actorLabel): array
+    {
+        if ($error = $this->guardDirectAction()) {
+            return $error;
+        }
+
+        $ticket = $this->ticketForClient($arguments['ticket_id'] ?? null, $clientId);
+        if (is_array($ticket)) {
+            return $ticket;
+        }
+
+        $assetId = $this->positiveInteger($arguments['asset_id'] ?? null);
+        if ($assetId === null) {
+            return ['error' => 'asset_id is required'];
+        }
+
+        $asset = Asset::find($assetId);
+        if (! $asset) {
+            return ['error' => 'Asset not found'];
+        }
+
+        if ((int) $asset->client_id !== (int) $ticket->client_id) {
+            return ['error' => 'Asset does not belong to this client; different client boundary enforced.'];
+        }
+
+        $isPrimary = (bool) ($arguments['is_primary'] ?? false);
+        $reason = $this->optionalString($arguments, 'reason');
+
+        $ticket->assets()->syncWithoutDetaching([
+            $asset->id => ['is_primary' => $isPrimary],
+        ]);
+
+        $this->auditDirectExecution(
+            'assign_asset',
+            $ticket,
+            $actorLabel,
+            $this->mutationContentHash('assign_asset', $ticket->id, ['asset_id' => $asset->id, 'is_primary' => $isPrimary, 'reason' => $reason]),
+            'Asset '.$asset->id.' linked to ticket'.($reason ? ': '.$reason : '.'),
+            TechnicianConfig::requiredAiActorUserId(),
+        );
+
+        return [
+            'success' => true,
+            'ticket_id' => $ticket->id,
+            'ticket_display_id' => $ticket->display_id,
+            'asset_id' => $asset->id,
+            'is_primary' => $isPrimary,
+            'message' => 'Asset linked.',
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private function unassignAsset(array $arguments, int $clientId, string $actorLabel): array
+    {
+        if ($error = $this->guardDirectAction()) {
+            return $error;
+        }
+
+        $ticket = $this->ticketForClient($arguments['ticket_id'] ?? null, $clientId);
+        if (is_array($ticket)) {
+            return $ticket;
+        }
+
+        $assetId = $this->positiveInteger($arguments['asset_id'] ?? null);
+        if ($assetId === null) {
+            return ['error' => 'asset_id is required'];
+        }
+
+        $asset = Asset::find($assetId);
+        if (! $asset) {
+            return ['error' => 'Asset not found'];
+        }
+
+        if ((int) $asset->client_id !== (int) $ticket->client_id) {
+            return ['error' => 'Asset does not belong to this client; different client boundary enforced.'];
+        }
+
+        $reason = $this->optionalString($arguments, 'reason');
+        $ticket->assets()->detach($asset->id);
+
+        $this->auditDirectExecution(
+            'unassign_asset',
+            $ticket,
+            $actorLabel,
+            $this->mutationContentHash('unassign_asset', $ticket->id, ['asset_id' => $asset->id, 'reason' => $reason]),
+            'Asset '.$asset->id.' unlinked from ticket'.($reason ? ': '.$reason : '.'),
+            TechnicianConfig::requiredAiActorUserId(),
+        );
+
+        return [
+            'success' => true,
+            'ticket_id' => $ticket->id,
+            'ticket_display_id' => $ticket->display_id,
+            'asset_id' => $asset->id,
+            'message' => 'Asset unlinked.',
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private function setTicketContact(array $arguments, int $clientId, string $actorLabel): array
+    {
+        if ($error = $this->guardDirectAction()) {
+            return $error;
+        }
+
+        $ticket = $this->ticketForClient($arguments['ticket_id'] ?? null, $clientId);
+        if (is_array($ticket)) {
+            return $ticket;
+        }
+
+        $contactId = $this->positiveInteger($arguments['contact_id'] ?? null);
+        if ($contactId === null) {
+            return ['error' => 'contact_id is required'];
+        }
+
+        $contact = Person::find($contactId);
+        if (! $contact) {
+            return ['error' => 'Contact not found'];
+        }
+
+        if ((int) $contact->client_id !== (int) $ticket->client_id) {
+            return ['error' => 'Contact does not belong to this client; different client boundary enforced.'];
+        }
+
+        $reason = $this->optionalString($arguments, 'reason');
+        $before = $ticket->contact_id;
+        $ticket->update(['contact_id' => $contact->id]);
+
+        $this->auditDirectExecution(
+            'set_ticket_contact',
+            $ticket,
+            $actorLabel,
+            $this->mutationContentHash('set_ticket_contact', $ticket->id, ['contact_id' => $contact->id, 'reason' => $reason]),
+            'Contact changed from '.($before ?? 'none').' to '.$contact->id.($reason ? ': '.$reason : '.'),
+            TechnicianConfig::requiredAiActorUserId(),
+        );
+
+        return [
+            'success' => true,
+            'ticket_id' => $ticket->id,
+            'ticket_display_id' => $ticket->display_id,
+            'contact_id' => $contact->id,
+            'message' => 'Contact updated.',
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private function moveTicketToClient(array $arguments, int $clientId, string $actorLabel): array
+    {
+        if ($error = $this->guardDirectAction()) {
+            return $error;
+        }
+
+        $ticket = $this->ticketForClient($arguments['ticket_id'] ?? null, $clientId);
+        if (is_array($ticket)) {
+            return $ticket;
+        }
+
+        $newClientId = $this->positiveInteger($arguments['new_client_id'] ?? null);
+        if ($newClientId === null) {
+            return ['error' => 'new_client_id is required'];
+        }
+
+        $confirm = $this->optionalString($arguments, 'confirm_client_name');
+        $newClient = Client::find($newClientId);
+        if (! $newClient) {
+            return ['error' => 'Client not found'];
+        }
+
+        if (! $this->confirmClientMatches($newClient, $confirm)) {
+            return ['error' => 'The typed confirm_client_name does not match the target client. Ticket move cancelled.'];
+        }
+
+        $newContactId = $this->positiveInteger($arguments['new_contact_id'] ?? null);
+        if (($arguments['new_contact_id'] ?? null) !== null && $newContactId === null) {
+            return ['error' => 'new_contact_id must be a positive integer or null'];
+        }
+
+        $reason = $this->optionalString($arguments, 'reason');
+        $detachedAssets = $ticket->assets()->where('assets.client_id', $ticket->client_id)->pluck('assets.id')->all();
+
+        try {
+            $this->ticketService->moveToClient(
+                $ticket,
+                $newClient->id,
+                $newContactId,
+                TechnicianConfig::requiredAiActorUserId(),
+            );
+        } catch (\InvalidArgumentException $e) {
+            return ['error' => $e->getMessage()];
+        }
+
+        $moved = $ticket->fresh(['assets', 'contact']);
+        $this->auditDirectExecution(
+            'move_ticket_to_client',
+            $moved,
+            $actorLabel,
+            $this->mutationContentHash('move_ticket_to_client', $moved->id, [
+                'new_client_id' => $newClient->id,
+                'new_contact_id' => $newContactId,
+                'reason' => $reason,
+            ]),
+            'Ticket moved to client #'.$newClient->id.'. Detached assets: '.count($detachedAssets).($reason ? ': '.$reason : '.'),
+            TechnicianConfig::requiredAiActorUserId(),
+        );
+
+        return [
+            'success' => true,
+            'ticket_id' => $moved->id,
+            'ticket_display_id' => $moved->display_id,
+            'client_id' => $moved->client_id,
+            'contact_id' => $moved->contact_id,
+            'detached_asset_ids' => array_values($detachedAssets),
+            'message' => 'Ticket moved.',
         ];
     }
 
@@ -439,7 +848,7 @@ class StaffPsaActionToolExecutor
             return ['error' => 'ticket_id is required'];
         }
 
-        $ticket = Ticket::with('contact')->find($ticketId);
+        $ticket = Ticket::with(['contact', 'assets'])->find($ticketId);
         if (! $ticket || (int) $ticket->client_id !== $clientId) {
             return ['error' => 'Ticket not found or belongs to a different client'];
         }
@@ -477,6 +886,117 @@ class StaffPsaActionToolExecutor
         }
 
         return ['primary' => $primary, 'secondary' => $secondary];
+    }
+
+    /** @return array<string, mixed>|null */
+    private function validateTicketUpdatePayload(array $arguments): ?array
+    {
+        $allowed = ['ticket_id', 'subject', 'description', 'priority', 'type', 'reason'];
+        $unexpected = array_values(array_diff(array_keys($arguments), $allowed));
+        if ($unexpected !== []) {
+            return ['error' => 'update_ticket accepts only subject, description, priority, and type'];
+        }
+
+        $validator = Validator::make($arguments, [
+            'subject' => ['sometimes', 'required', 'string', 'max:255'],
+            'description' => ['sometimes', 'nullable', 'string'],
+            'priority' => ['sometimes', 'required', Rule::enum(\App\Enums\TicketPriority::class)],
+            'type' => ['sometimes', 'required', Rule::enum(\App\Enums\TicketType::class)],
+            'reason' => ['sometimes', 'nullable', 'string'],
+        ]);
+
+        if ($validator->fails()) {
+            return ['error' => $validator->errors()->first()];
+        }
+
+        $validated = $validator->validated();
+        unset($validated['reason']);
+
+        return $validated;
+    }
+
+    private function ticketStatusFrom(mixed $value): ?\App\Enums\TicketStatus
+    {
+        if (! is_string($value) || trim($value) === '') {
+            return null;
+        }
+
+        return \App\Enums\TicketStatus::tryFrom(trim($value));
+    }
+
+    private function confirmStatusMatches(\App\Enums\TicketStatus $status, ?string $typed): bool
+    {
+        if ($typed === null) {
+            return false;
+        }
+
+        $typed = mb_strtolower(trim($typed));
+
+        return $typed === mb_strtolower($status->value) || $typed === mb_strtolower($status->label());
+    }
+
+    private function confirmClientMatches(Client $client, ?string $typed): bool
+    {
+        if ($typed === null) {
+            return false;
+        }
+
+        return strcasecmp(trim($typed), (string) $client->name) === 0;
+    }
+
+    private function optionalString(array $arguments, string $key): ?string
+    {
+        if (! array_key_exists($key, $arguments) || ! is_scalar($arguments[$key])) {
+            return null;
+        }
+
+        $value = trim((string) $arguments[$key]);
+
+        return $value !== '' ? $value : null;
+    }
+
+    private function nullableUserId(mixed $value): ?int
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        return $this->positiveInteger($value);
+    }
+
+    /** @param array<string, mixed>|string|null $payload */
+    private function mutationContentHash(string $actionType, int $ticketId, mixed $payload, ?string $reason = null): string
+    {
+        return hash('sha256', json_encode([
+            'action' => $actionType,
+            'ticket_id' => $ticketId,
+            'payload' => $payload,
+            'reason' => $reason,
+        ]));
+    }
+
+    /** @param array<string, mixed> $before @param array<string, mixed> $after */
+    private function fieldDiff(array $before, array $after): array
+    {
+        $diff = [];
+        foreach ($after as $field => $value) {
+            if (($before[$field] ?? null) !== $value) {
+                $diff[$field] = ['before' => $before[$field] ?? null, 'after' => $value];
+            }
+        }
+
+        return $diff;
+    }
+
+    /** @param array<string, array{before:mixed, after:mixed}> $diff */
+    private function stringifyDiff(array $diff): string
+    {
+        $parts = [];
+        foreach ($diff as $field => $change) {
+            $parts[] = $field.': '.json_encode($change['before']).' -> '.json_encode($change['after']);
+        }
+
+        return implode('; ', $parts);
     }
 
     private function disclosedBody(string $body): string
