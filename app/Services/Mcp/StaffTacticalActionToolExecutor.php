@@ -278,7 +278,15 @@ class StaffTacticalActionToolExecutor
                 $ticket->id,
             );
 
-            $status = $result->isOk() ? 'executed' : $result->status;
+            // Offline device (bd psa-xr84): instead of the silent dead-end, park the
+            // approved action in the queue to auto-run on reconnect. v1 = scripts only.
+            $agentId = (string) ($asset->tacticalAsset->agent_id ?? '');
+            $willQueue = $result->isOffline()
+                && $agentId !== ''
+                && $directTool === 'tactical_run_script'
+                && TacticalConfig::offlineQueueEnabled();
+
+            $status = $result->isOk() ? 'executed' : ($willQueue ? 'queued_offline' : $result->status);
             $this->auditAttempt(
                 $run->action_type,
                 $status,
@@ -291,6 +299,10 @@ class StaffTacticalActionToolExecutor
                 $run->id,
                 $approverId,
             );
+
+            if ($willQueue) {
+                return $this->enqueueOfflineRun($run, $agentId, $directTool, $params, $approverId);
+            }
 
             if (! $result->isOk()) {
                 $run->releaseClaim();
@@ -306,6 +318,52 @@ class StaffTacticalActionToolExecutor
 
             throw $e;
         }
+    }
+
+    /**
+     * Park a claimed (executing) run in the offline queue, or coalesce onto an
+     * identical one already waiting (bd psa-xr84 §5). Dedup key = (agent, script,
+     * args): a duplicate approval bumps the existing row's coalesce_count and this
+     * run supersedes rather than creating a second queued row. The approver is
+     * persisted so the eventual reconnect-run attributes its audit correctly.
+     */
+    private function enqueueOfflineRun(TechnicianRun $run, string $agentId, string $directTool, array $params, int $approverId): TechnicianApprovalResult
+    {
+        $dedupKey = $this->queueDedupKey($agentId, $directTool, $params);
+
+        $existing = TechnicianRun::query()
+            ->where('state', TechnicianRunState::QueuedOffline->value)
+            ->where('queued_dedup_key', $dedupKey)
+            ->whereKeyNot($run->getKey())
+            ->first();
+
+        if ($existing !== null) {
+            $existing->increment('coalesce_count');
+            $run->markSuperseded();
+
+            return new TechnicianApprovalResult('queued_offline');
+        }
+
+        // Preserve the original window on a re-queue (failed reconnect-run); set it
+        // fresh on the first enqueue.
+        $queuedAt = $run->queued_at ?? now();
+        $expiresAt = $run->expires_at ?? now()->addDays(TacticalConfig::offlineQueueExpiryDays());
+
+        $run->queueForOffline($agentId, $dedupKey, $queuedAt, $expiresAt);
+        $run->proposed_meta = array_merge($run->proposed_meta ?? [], ['queued_approver_id' => $approverId]);
+        $run->save();
+
+        return new TechnicianApprovalResult('queued_offline');
+    }
+
+    /** sha256 of (agent, direct tool, canonical params) — one queued row per identical action. */
+    private function queueDedupKey(string $agentId, string $directTool, array $params): string
+    {
+        return hash('sha256', (string) json_encode([
+            'agent' => $agentId,
+            'tool' => $directTool,
+            'params' => $this->canonical($params),
+        ]));
     }
 
     /** @return array<string, mixed> */
