@@ -7,6 +7,7 @@ use App\Models\CippMcpTool;
 use App\Models\Client;
 use App\Models\McpAuditLog;
 use App\Models\McpToken;
+use App\Models\Person;
 use App\Models\Ticket;
 use App\Services\Agent\RequestToolTool;
 use App\Services\Agent\SendReplyTool;
@@ -115,12 +116,17 @@ class McpStaffController extends Controller
         'move_ticket_to_client',
     ];
 
-    /** PSA records write-surface (P2a) — native client CRUD, dispatched through StaffPsaActionToolExecutor. */
+    /** PSA records write-surface (P2a/P2b) — native client + contact CRUD, dispatched through StaffPsaActionToolExecutor. */
     private const PSA_RECORDS_TOOLS = [
         'create_client',
         'update_client',
         'update_client_site_notes',
         'delete_client',
+        'create_contact',
+        'update_contact',
+        'set_primary_contact',
+        'move_contact_to_client',
+        'delete_contact',
     ];
 
     /** psa_records tools that act on an existing client — client_id is the required target, not ambient scope. */
@@ -128,6 +134,18 @@ class McpStaffController extends Controller
         'update_client',
         'update_client_site_notes',
         'delete_client',
+    ];
+
+    /**
+     * psa_records tools that act on an existing contact — contact_id is the entity
+     * key; client_id is derived server-side from the contact and a supplied
+     * client_id is rejected (mirrors PSA_TICKET_SCOPED_TOOLS' derive-from-ticket_id).
+     */
+    private const PSA_RECORDS_CONTACT_SCOPED_TOOLS = [
+        'update_contact',
+        'set_primary_contact',
+        'move_contact_to_client',
+        'delete_contact',
     ];
 
     private const BODY_LENGTH_AUDIT_TOOLS = [
@@ -385,7 +403,7 @@ class McpStaffController extends Controller
         if ($this->isCippWriteTool((string) $name) && $clientId !== null) {
             $auditArguments['client_id'] = $clientId;
         }
-        if ($this->isPsaRecordsClientScopedTool((string) $name) && $clientId !== null) {
+        if ($this->psaRecordsRequiresClientId((string) $name) && $clientId !== null) {
             $auditArguments['client_id'] = $clientId;
         }
 
@@ -506,9 +524,9 @@ class McpStaffController extends Controller
             ]);
         }
 
-        // update_client / update_client_site_notes / delete_client act on an
-        // existing client — client_id is the required target, derived server-side.
-        if ($this->isPsaRecordsClientScopedTool((string) $name) && $clientId === null) {
+        // Client-entity targets (update/delete client) + the create_contact parent
+        // scope require an explicit client_id argument.
+        if ($this->psaRecordsRequiresClientId((string) $name) && $clientId === null) {
             $message = "client_id is required for {$name}.";
             $this->audit('tools/call', (string) $name, $auditArguments, 'error', $message, $start, $request);
 
@@ -520,6 +538,40 @@ class McpStaffController extends Controller
                     'isError' => true,
                 ],
             ]);
+        }
+
+        // Contact-scoped psa_records tools (update/set_primary/move/delete_contact)
+        // reject a supplied client_id and derive scope from contact_id, mirroring
+        // the ticket-scoped tools' derive-from-ticket_id pattern.
+        if ($this->isPsaRecordsContactScopedTool((string) $name)) {
+            if ($hasClientIdArgument) {
+                $message = "client_id must be omitted for {$name}; the server derives scope from contact_id.";
+                $this->audit('tools/call', (string) $name, $auditArguments, 'error', $message, $start, $request);
+
+                return response()->json([
+                    'jsonrpc' => '2.0',
+                    'id' => $id,
+                    'result' => [
+                        'content' => [['type' => 'text', 'text' => $message]],
+                        'isError' => true,
+                    ],
+                ]);
+            }
+
+            $clientId = $this->contactClientIdForArguments($arguments);
+            if ($clientId === null) {
+                $message = 'contact_id is required and must resolve to an existing contact.';
+                $this->audit('tools/call', (string) $name, $auditArguments, 'error', $message, $start, $request);
+
+                return response()->json([
+                    'jsonrpc' => '2.0',
+                    'id' => $id,
+                    'result' => [
+                        'content' => [['type' => 'text', 'text' => $message]],
+                        'isError' => true,
+                    ],
+                ]);
+            }
         }
 
         if ($this->isTacticalActionTool((string) $name) && $clientId === null) {
@@ -865,6 +917,22 @@ class McpStaffController extends Controller
             return $this->auditDeleteClientArguments($args);
         }
 
+        if ($tool === 'create_contact' || $tool === 'update_contact') {
+            return $this->auditContactWriteArguments($args);
+        }
+
+        if ($tool === 'set_primary_contact') {
+            return $this->auditSetPrimaryContactArguments($args);
+        }
+
+        if ($tool === 'move_contact_to_client') {
+            return $this->auditMoveContactArguments($args);
+        }
+
+        if ($tool === 'delete_contact') {
+            return $this->auditDeleteContactArguments($args);
+        }
+
         $redacted = app(ActionRedactor::class)->redactParams($args);
 
         if ($tool === 'post_to_operator' && isset($redacted['message']) && is_string($redacted['message'])) {
@@ -1158,6 +1226,81 @@ class McpStaffController extends Controller
             $normalized = mb_strtolower((string) $key);
 
             if (in_array($normalized, ['client_id', 'confirm_client_name', 'reason'], true)) {
+                $safe[$normalized] = $value;
+            }
+        }
+
+        return $safe;
+    }
+
+    /**
+     * Redaction for create_contact / update_contact: safelist the contact fields,
+     * reduce free-text notes to a length and additional_emails to a count.
+     *
+     * @return array<string, mixed>
+     */
+    private function auditContactWriteArguments(array $arguments): array
+    {
+        $safe = [];
+
+        foreach ($arguments as $key => $value) {
+            $normalized = mb_strtolower((string) $key);
+
+            if (in_array($normalized, ['client_id', 'contact_id', 'first_name', 'last_name', 'email', 'phone', 'mobile', 'job_title', 'person_type', 'is_primary', 'is_active'], true)) {
+                $safe[$normalized] = $value;
+            }
+
+            if ($normalized === 'notes') {
+                $safe['notes_length'] = is_string($value) ? mb_strlen($value) : 0;
+            }
+
+            if ($normalized === 'additional_emails') {
+                $safe['additional_emails_count'] = is_array($value) ? count($value) : 0;
+            }
+        }
+
+        return $safe;
+    }
+
+    /** @return array<string, mixed> */
+    private function auditSetPrimaryContactArguments(array $arguments): array
+    {
+        $safe = [];
+
+        foreach ($arguments as $key => $value) {
+            if (mb_strtolower((string) $key) === 'contact_id') {
+                $safe['contact_id'] = $value;
+            }
+        }
+
+        return $safe;
+    }
+
+    /** @return array<string, mixed> */
+    private function auditMoveContactArguments(array $arguments): array
+    {
+        $safe = [];
+
+        foreach ($arguments as $key => $value) {
+            $normalized = mb_strtolower((string) $key);
+
+            if (in_array($normalized, ['contact_id', 'new_client_id', 'confirm_client_name', 'reason'], true)) {
+                $safe[$normalized] = $value;
+            }
+        }
+
+        return $safe;
+    }
+
+    /** @return array<string, mixed> */
+    private function auditDeleteContactArguments(array $arguments): array
+    {
+        $safe = [];
+
+        foreach ($arguments as $key => $value) {
+            $normalized = mb_strtolower((string) $key);
+
+            if (in_array($normalized, ['contact_id', 'confirm_contact_name', 'reason'], true)) {
                 $safe[$normalized] = $value;
             }
         }
@@ -1564,6 +1707,29 @@ class McpStaffController extends Controller
     private function isPsaRecordsClientScopedTool(string $toolName): bool
     {
         return in_array($toolName, self::PSA_RECORDS_CLIENT_SCOPED_TOOLS, true);
+    }
+
+    private function isPsaRecordsContactScopedTool(string $toolName): bool
+    {
+        return in_array($toolName, self::PSA_RECORDS_CONTACT_SCOPED_TOOLS, true);
+    }
+
+    /** psa_records tools that carry an explicit client_id argument: client-entity targets + the create_contact parent scope. */
+    private function psaRecordsRequiresClientId(string $toolName): bool
+    {
+        return $this->isPsaRecordsClientScopedTool($toolName) || $toolName === 'create_contact';
+    }
+
+    private function contactClientIdForArguments(array $arguments): ?int
+    {
+        $contactId = $this->positiveIntegerArgument($arguments['contact_id'] ?? null);
+        if ($contactId === null) {
+            return null;
+        }
+
+        $clientId = Person::whereKey($contactId)->value('client_id');
+
+        return is_numeric($clientId) ? (int) $clientId : null;
     }
 
     private function isCippWriteTool(string $toolName): bool

@@ -72,7 +72,7 @@ class McpToolRegistry
                 'tactical_admin' => ['label' => 'Tactical admin/provisioning (sensitive)', 'sensitive' => true, 'tools' => $tacticalAdmin],
                 'wiki_write' => ['label' => 'Wiki write (sensitive)', 'sensitive' => true, 'tools' => $wikiWrites],
                 'psa_action' => ['label' => 'PSA actions (sensitive)', 'sensitive' => true, 'tools' => $psaActions],
-                'psa_records' => ['label' => 'PSA records — clients (sensitive)', 'sensitive' => true, 'tools' => $psaRecords],
+                'psa_records' => ['label' => 'PSA records — clients, people (sensitive)', 'sensitive' => true, 'tools' => $psaRecords],
                 'bridge' => ['label' => 'Operator bridge (sensitive)', 'sensitive' => true, 'tools' => $bridge],
             ];
         });
@@ -854,6 +854,11 @@ class McpToolRegistry
             self::updateClientTool(),
             self::updateClientSiteNotesTool(),
             self::deleteClientTool(),
+            self::createContactTool(),
+            self::updateContactTool(),
+            self::setPrimaryContactTool(),
+            self::moveContactToClientTool(),
+            self::deleteContactTool(),
         ];
     }
 
@@ -948,6 +953,129 @@ class McpToolRegistry
                 'required' => ['client_id', 'confirm_client_name'],
             ],
         ];
+    }
+
+    /** @return array<string, mixed> */
+    public static function createContactTool(): array
+    {
+        return [
+            'name' => 'create_contact',
+            'description' => 'Create a new contact (person) under a client immediately. The server requires client_id as the parent, validates the same fields as the contact create form, normalizes phone numbers, auto-demotes any existing primary when is_primary is set, syncs additional emails, and writes an action audit row. Requires an explicit token grant.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => self::contactWritableProperties([
+                    'client_id' => ['type' => 'integer', 'description' => 'Parent client ID this contact belongs to.'],
+                ]),
+                'required' => ['client_id'],
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public static function updateContactTool(): array
+    {
+        return [
+            'name' => 'update_contact',
+            'description' => 'Update an existing contact immediately. The server derives the client scope from contact_id (a stray client_id is rejected), validates the same fields as the contact edit form, and writes an action audit row. Use move_contact_to_client to reparent a contact. Requires an explicit token grant.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => self::contactWritableProperties([
+                    'contact_id' => ['type' => 'integer', 'description' => 'The contact (person) ID to update. The server derives the client from this contact.'],
+                ]),
+                'required' => ['contact_id'],
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public static function setPrimaryContactTool(): array
+    {
+        return [
+            'name' => 'set_primary_contact',
+            'description' => 'Mark a contact as the primary contact for its client immediately. The server derives the client scope from contact_id and demotes the prior primary, then writes an action audit row. Requires an explicit token grant.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'contact_id' => ['type' => 'integer', 'description' => 'The contact (person) ID to set as primary. The server derives the client from this contact.'],
+                ],
+                'required' => ['contact_id'],
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public static function moveContactToClientTool(): array
+    {
+        return [
+            'name' => 'move_contact_to_client',
+            'description' => 'Reparent a contact to another client immediately. The server derives the source client from contact_id, requires a typed confirmation of the target client name, and writes an action audit row. Requires an explicit token grant.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'contact_id' => ['type' => 'integer', 'description' => 'The contact (person) ID to move. The server derives the source client from this contact.'],
+                    'new_client_id' => ['type' => 'integer', 'description' => 'Target client ID to move the contact to.'],
+                    'confirm_client_name' => ['type' => 'string', 'description' => 'Typed target client name confirmation.'],
+                    'reason' => ['type' => 'string', 'description' => 'Specific reason for moving the contact.'],
+                ],
+                'required' => ['contact_id', 'new_client_id', 'confirm_client_name'],
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public static function deleteContactTool(): array
+    {
+        return [
+            'name' => 'delete_contact',
+            'description' => 'Soft-delete a contact immediately. The server derives the client scope from contact_id, requires a typed confirmation of the exact contact full name, and refuses when the contact still has open tickets. Writes an action audit row. Requires an explicit token grant.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'contact_id' => ['type' => 'integer', 'description' => 'The contact (person) ID to delete. The server derives the client from this contact.'],
+                    'confirm_contact_name' => ['type' => 'string', 'description' => 'Typed confirmation — must exactly match the contact full name (first + last).'],
+                    'reason' => ['type' => 'string', 'description' => 'Optional reason for the deletion, recorded in the audit log.'],
+                ],
+                'required' => ['contact_id', 'confirm_contact_name'],
+            ],
+        ];
+    }
+
+    /**
+     * The contact field schema shared by create_contact / update_contact. The
+     * caller passes the scope key (client_id for create, contact_id for update)
+     * which is prepended. Mirrors PersonStore/UpdateRequest — deliberately
+     * excludes portal_enabled / password / company_wide_access / cipp_* /
+     * mailbox_* / department / office_location.
+     *
+     * @param  array<string, mixed>  $scope
+     * @return array<string, mixed>
+     */
+    private static function contactWritableProperties(array $scope): array
+    {
+        return array_merge($scope, [
+            'first_name' => ['type' => 'string', 'description' => 'Contact first name.'],
+            'last_name' => ['type' => 'string', 'description' => 'Contact last name.'],
+            'email' => ['type' => 'string', 'description' => 'Primary email address.'],
+            'phone' => ['type' => 'string', 'description' => 'Phone number.'],
+            'mobile' => ['type' => 'string', 'description' => 'Mobile number.'],
+            'job_title' => ['type' => 'string', 'description' => 'Job title.'],
+            'notes' => ['type' => 'string', 'description' => 'Internal notes about the contact.'],
+            'person_type' => ['type' => 'string', 'enum' => ['user', 'service_account', 'shared_mailbox', 'room_resource'], 'description' => 'Contact type. Defaults to user.'],
+            'is_primary' => ['type' => 'boolean', 'description' => 'Whether this is the primary contact for the client (demotes the prior primary).'],
+            'is_active' => ['type' => 'boolean', 'description' => 'Whether the contact is active.'],
+            'additional_emails' => [
+                'type' => 'array',
+                'description' => 'Optional additional email addresses (max 10). Replace-syncs the full list.',
+                'items' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'email' => ['type' => 'string', 'description' => 'Email address.'],
+                        'label' => ['type' => 'string', 'description' => 'Optional label (e.g. work, personal).'],
+                    ],
+                    'required' => ['email'],
+                ],
+            ],
+        ]);
     }
 
     /** @return array<string, mixed> */
