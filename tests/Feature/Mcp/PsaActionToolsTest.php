@@ -10,6 +10,7 @@ use App\Enums\TicketPriority;
 use App\Enums\TicketSource;
 use App\Enums\TicketStatus;
 use App\Enums\TicketType;
+use App\Models\Asset;
 use App\Models\Client;
 use App\Models\Email;
 use App\Models\McpAuditLog;
@@ -104,6 +105,20 @@ class PsaActionToolsTest extends TestCase
         ]);
     }
 
+    private function ticketWithAsset(?Client $client = null): array
+    {
+        $client ??= Client::factory()->create();
+        $ticket = $this->ticketWithContact($client);
+        $asset = Asset::factory()->for($client)->create([
+            'name' => 'WORKSTATION-1',
+            'hostname' => 'WORKSTATION-1',
+        ]);
+
+        $ticket->assets()->attach($asset->id, ['is_primary' => true]);
+
+        return [$ticket->fresh(['assets', 'contact']), $asset->fresh()];
+    }
+
     private function outboundEmail(Ticket $ticket, TicketNote $note): Email
     {
         return Email::create([
@@ -133,7 +148,7 @@ class PsaActionToolsTest extends TestCase
         $this->assertTrue($groups['psa_action']['sensitive']);
 
         $actionNames = array_column($groups['psa_action']['tools'], 'name');
-        foreach (['create_ticket', 'send_email', 'stage_email', 'write_public_note', 'stage_public_note', 'propose_merge'] as $name) {
+        foreach (['create_ticket', 'send_email', 'stage_email', 'write_public_note', 'stage_public_note', 'propose_merge', 'update_ticket', 'set_ticket_status', 'assign_ticket', 'assign_asset', 'unassign_asset', 'set_ticket_contact', 'move_ticket_to_client'] as $name) {
             $this->assertContains($name, $actionNames);
         }
 
@@ -142,10 +157,11 @@ class PsaActionToolsTest extends TestCase
         $this->assertNotContains('send_email', $legacyNames);
         $this->assertNotContains('write_public_note', $legacyNames);
 
-        $scopedTools = collect($this->tools($this->token(['create_ticket', 'send_email'], 'chet')))->keyBy('name');
+        $scopedTools = collect($this->tools($this->token(['create_ticket', 'send_email', 'update_ticket', 'set_ticket_status', 'assign_ticket', 'assign_asset', 'unassign_asset', 'set_ticket_contact', 'move_ticket_to_client'], 'chet')))->keyBy('name');
         $this->assertTrue($scopedTools->has('create_ticket'));
         $this->assertTrue($scopedTools->has('send_email'));
         $this->assertFalse($scopedTools->has('write_public_note'));
+        $this->assertFalse($scopedTools['update_ticket']['inputSchema']['properties']['client_id'] ?? false);
 
         $createSchema = $scopedTools['create_ticket']['inputSchema'];
         foreach (['client_id', 'subject', 'description', 'reason'] as $required) {
@@ -159,6 +175,10 @@ class PsaActionToolsTest extends TestCase
         $this->assertArrayNotHasKey('to', $schema['properties']);
         $this->assertArrayNotHasKey('cc', $schema['properties']);
         $this->assertArrayNotHasKey('subject', $schema['properties']);
+
+        foreach (['update_ticket', 'set_ticket_status', 'assign_ticket', 'assign_asset', 'unassign_asset', 'set_ticket_contact', 'move_ticket_to_client'] as $name) {
+            $this->assertArrayNotHasKey('client_id', $scopedTools[$name]['inputSchema']['properties']);
+        }
     }
 
     public function test_granted_chet_token_creates_ticket_with_reason_audits_and_ai_actor(): void
@@ -584,5 +604,220 @@ class PsaActionToolsTest extends TestCase
         $this->assertNull($secondary->fresh()->parent_ticket_id);
         $this->assertSame(TicketStatus::InProgress, $secondary->fresh()->status);
         $this->assertSame(1, TechnicianRun::where('action_type', 'propose_merge')->count());
+    }
+
+    public function test_update_ticket_assign_ticket_and_contact_mutations_use_ticket_scope_and_audit_diff(): void
+    {
+        $this->configureAiActor();
+        $token = $this->token(['update_ticket', 'assign_ticket', 'set_ticket_contact'], 'chet');
+        $ticket = $this->ticketWithContact();
+        $assignee = User::factory()->create(['name' => 'Technician One']);
+        $newContact = Person::create([
+            'client_id' => $ticket->client_id,
+            'person_type' => PersonType::User,
+            'first_name' => 'New',
+            'last_name' => 'Contact',
+            'email' => 'new@example.test',
+            'is_active' => true,
+        ]);
+        $otherClientContact = Person::create([
+            'client_id' => Client::factory()->create()->id,
+            'person_type' => PersonType::User,
+            'first_name' => 'Other',
+            'last_name' => 'Client',
+            'email' => 'other@example.test',
+            'is_active' => true,
+        ]);
+
+        $update = $this->callTool($token, 'update_ticket', [
+            'ticket_id' => $ticket->id,
+            'subject' => 'Updated subject',
+            'description' => 'Updated body text.',
+            'priority' => TicketPriority::P2->value,
+            'type' => TicketType::Change->value,
+        ]);
+        $update->assertOk();
+        $this->assertFalse((bool) $update->json('result.isError'), (string) $update->json('result.content.0.text'));
+
+        $ticket->refresh();
+        $this->assertSame('Updated subject', $ticket->subject);
+        $this->assertSame('Updated body text.', $ticket->description);
+        $this->assertSame(TicketPriority::P2, $ticket->priority);
+        $this->assertSame(TicketType::Change, $ticket->type);
+
+        $assign = $this->callTool($token, 'assign_ticket', [
+            'ticket_id' => $ticket->id,
+            'user_id' => $assignee->id,
+        ]);
+        $assign->assertOk();
+        $ticket->refresh();
+        $this->assertSame($assignee->id, $ticket->assignee_id);
+
+        $setContact = $this->callTool($token, 'set_ticket_contact', [
+            'ticket_id' => $ticket->id,
+            'contact_id' => $newContact->id,
+        ]);
+        $setContact->assertOk();
+        $ticket->refresh();
+        $this->assertSame($newContact->id, $ticket->contact_id);
+
+        $foreign = $this->callTool($token, 'set_ticket_contact', [
+            'ticket_id' => $ticket->id,
+            'contact_id' => $otherClientContact->id,
+        ]);
+        $foreign->assertOk();
+        $this->assertTrue((bool) $foreign->json('result.isError'));
+        $this->assertStringContainsString('different client', (string) $foreign->json('result.content.0.text'));
+
+        $this->assertDatabaseHas('technician_action_logs', [
+            'action_type' => 'update_ticket',
+            'result_status' => 'executed',
+            'ticket_id' => $ticket->id,
+            'actor_label' => 'mcp-staff:chet',
+        ]);
+        $this->assertDatabaseHas('technician_action_logs', [
+            'action_type' => 'assign_ticket',
+            'result_status' => 'executed',
+            'ticket_id' => $ticket->id,
+            'actor_label' => 'mcp-staff:chet',
+        ]);
+        $this->assertDatabaseHas('technician_action_logs', [
+            'action_type' => 'set_ticket_contact',
+            'result_status' => 'executed',
+            'ticket_id' => $ticket->id,
+            'actor_label' => 'mcp-staff:chet',
+        ]);
+
+        $audit = McpAuditLog::where('tool_name', 'update_ticket')->firstOrFail();
+        $this->assertSame('success', $audit->status);
+        $this->assertSame('Updated subject', $audit->arguments['subject']);
+        $this->assertSame(mb_strlen('Updated body text.'), $audit->arguments['description_length']);
+    }
+
+    public function test_assign_asset_and_unassign_asset_enforce_ticket_client_boundary(): void
+    {
+        $this->configureAiActor();
+        $token = $this->token(['assign_asset', 'unassign_asset'], 'chet');
+        [$ticket, $asset] = $this->ticketWithAsset();
+        $otherAsset = Asset::factory()->create();
+
+        $assign = $this->callTool($token, 'assign_asset', [
+            'ticket_id' => $ticket->id,
+            'asset_id' => $asset->id,
+            'is_primary' => true,
+        ]);
+        $assign->assertOk();
+        $ticket->refresh();
+        $this->assertTrue($ticket->assets()->where('assets.id', $asset->id)->exists());
+        $this->assertTrue((bool) $ticket->assets()->where('assets.id', $asset->id)->first()->pivot->is_primary);
+
+        $crossClient = $this->callTool($token, 'assign_asset', [
+            'ticket_id' => $ticket->id,
+            'asset_id' => $otherAsset->id,
+        ]);
+        $crossClient->assertOk();
+        $this->assertTrue((bool) $crossClient->json('result.isError'));
+        $this->assertStringContainsString('different client', (string) $crossClient->json('result.content.0.text'));
+
+        $unassign = $this->callTool($token, 'unassign_asset', [
+            'ticket_id' => $ticket->id,
+            'asset_id' => $asset->id,
+        ]);
+        $unassign->assertOk();
+        $this->assertFalse($ticket->fresh()->assets()->where('assets.id', $asset->id)->exists());
+    }
+
+    public function test_set_ticket_status_requires_typed_confirm_for_terminal_transitions(): void
+    {
+        $this->configureAiActor();
+        $token = $this->token(['set_ticket_status'], 'chet');
+        $ticket = $this->ticketWithContact();
+
+        $missingConfirm = $this->callTool($token, 'set_ticket_status', [
+            'ticket_id' => $ticket->id,
+            'status' => TicketStatus::Closed->value,
+            'reason' => 'Closing after confirmation from the client.',
+        ]);
+        $missingConfirm->assertOk();
+        $this->assertTrue((bool) $missingConfirm->json('result.isError'));
+        $this->assertStringContainsString('confirm_status', (string) $missingConfirm->json('result.content.0.text'));
+
+        $direct = $this->callTool($token, 'set_ticket_status', [
+            'ticket_id' => $ticket->id,
+            'status' => TicketStatus::PendingClient->value,
+        ]);
+        $direct->assertOk();
+        $this->assertFalse((bool) $direct->json('result.isError'), (string) $direct->json('result.content.0.text'));
+        $this->assertSame(TicketStatus::PendingClient, $ticket->fresh()->status);
+
+        $confirmed = $this->callTool($token, 'set_ticket_status', [
+            'ticket_id' => $ticket->id,
+            'status' => TicketStatus::Closed->value,
+            'confirm_status' => 'closed',
+            'reason' => 'The issue was resolved and the client confirmed closure.',
+            'resolution' => 'Client confirmed the fix worked.',
+            'note' => 'Closing after typed confirmation.',
+        ]);
+        $confirmed->assertOk();
+        $this->assertFalse((bool) $confirmed->json('result.isError'), (string) $confirmed->json('result.content.0.text'));
+        $fresh = $ticket->fresh();
+        $this->assertSame(TicketStatus::Closed, $fresh->status);
+        $this->assertSame('Client confirmed the fix worked.', $fresh->resolution);
+
+        $this->assertDatabaseHas('technician_action_logs', [
+            'action_type' => 'set_ticket_status',
+            'result_status' => 'executed',
+            'ticket_id' => $ticket->id,
+            'actor_label' => 'mcp-staff:chet',
+        ]);
+    }
+
+    public function test_move_ticket_to_client_requires_typed_confirm_and_rehomes_assets(): void
+    {
+        $this->configureAiActor();
+        $token = $this->token(['move_ticket_to_client'], 'chet');
+        [$ticket, $asset] = $this->ticketWithAsset();
+        $newClient = Client::factory()->create();
+        $newContact = Person::create([
+            'client_id' => $newClient->id,
+            'person_type' => PersonType::User,
+            'first_name' => 'Move',
+            'last_name' => 'Target',
+            'email' => 'move-target@example.test',
+            'is_active' => true,
+        ]);
+        $oldContactId = $ticket->contact_id;
+
+        $missingConfirm = $this->callTool($token, 'move_ticket_to_client', [
+            'ticket_id' => $ticket->id,
+            'new_client_id' => $newClient->id,
+            'new_contact_id' => $newContact->id,
+            'reason' => 'Move after client merge.',
+        ]);
+        $missingConfirm->assertOk();
+        $this->assertTrue((bool) $missingConfirm->json('result.isError'));
+        $this->assertStringContainsString('confirm_client_name', (string) $missingConfirm->json('result.content.0.text'));
+
+        $confirmed = $this->callTool($token, 'move_ticket_to_client', [
+            'ticket_id' => $ticket->id,
+            'new_client_id' => $newClient->id,
+            'new_contact_id' => $newContact->id,
+            'confirm_client_name' => $newClient->name,
+            'reason' => 'Move after client merger to the target account.',
+        ]);
+        $confirmed->assertOk();
+        $this->assertFalse((bool) $confirmed->json('result.isError'), (string) $confirmed->json('result.content.0.text'));
+
+        $fresh = $ticket->fresh(['assets']);
+        $this->assertSame($newClient->id, $fresh->client_id);
+        $this->assertSame($newContact->id, $fresh->contact_id);
+        $this->assertFalse($fresh->assets()->where('assets.id', $asset->id)->exists());
+        $this->assertDatabaseHas('technician_action_logs', [
+            'action_type' => 'move_ticket_to_client',
+            'result_status' => 'executed',
+            'ticket_id' => $ticket->id,
+            'client_id' => $newClient->id,
+            'actor_label' => 'mcp-staff:chet',
+        ]);
     }
 }

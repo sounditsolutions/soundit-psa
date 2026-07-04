@@ -433,6 +433,13 @@ class McpToolRegistry
             self::writePublicNoteTool(),
             self::stagePublicNoteTool(),
             self::proposeMergeTool(),
+            self::updateTicketTool(),
+            self::setTicketStatusTool(),
+            self::assignTicketTool(),
+            self::assignAssetTool(),
+            self::unassignAssetTool(),
+            self::setTicketContactTool(),
+            self::moveTicketToClientTool(),
         ];
     }
 
@@ -464,6 +471,234 @@ class McpToolRegistry
                     ],
                 ],
                 'required' => ['subject', 'description', 'reason'],
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public static function updateTicketTool(): array
+    {
+        return [
+            'name' => 'update_ticket',
+            'description' => 'Update the current ticket subject, description, priority, or type immediately. The server derives the ticket client from ticket_id, validates the same ticket edit rules as the web form, and writes an action audit row. Requires an explicit token grant.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'ticket_id' => [
+                        'type' => 'integer',
+                        'description' => 'The ticket ID to update. The server derives the client from this ticket.',
+                    ],
+                    'subject' => [
+                        'type' => 'string',
+                        'description' => 'Optional replacement ticket subject.',
+                    ],
+                    'description' => [
+                        'type' => 'string',
+                        'description' => 'Optional replacement ticket description.',
+                    ],
+                    'priority' => [
+                        'type' => 'string',
+                        'enum' => ['p1', 'p2', 'p3', 'p4'],
+                        'description' => 'Optional ticket priority.',
+                    ],
+                    'type' => [
+                        'type' => 'string',
+                        'enum' => ['incident', 'service_request', 'change', 'problem'],
+                        'description' => 'Optional ticket type.',
+                    ],
+                    'reason' => [
+                        'type' => 'string',
+                        'description' => 'Optional ticket-specific reason for this update.',
+                    ],
+                ],
+                'required' => ['ticket_id'],
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public static function setTicketStatusTool(): array
+    {
+        return [
+            'name' => 'set_ticket_status',
+            'description' => 'Change a ticket status immediately. Open and in-progress transitions are direct; terminal transitions to Resolved or Closed require typed confirmation and a concrete reason. The server derives the ticket client from ticket_id and writes an action audit row. Requires an explicit token grant.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'ticket_id' => [
+                        'type' => 'integer',
+                        'description' => 'The ticket ID to update. The server derives the client from this ticket.',
+                    ],
+                    'status' => [
+                        'type' => 'string',
+                        'enum' => ['new', 'in_progress', 'pending_client', 'pending_third_party', 'resolved', 'closed'],
+                        'description' => 'Target ticket status.',
+                    ],
+                    'confirm_status' => [
+                        'type' => 'string',
+                        'description' => 'Typed status confirmation required for Resolved and Closed transitions.',
+                    ],
+                    'reason' => [
+                        'type' => 'string',
+                        'description' => 'Optional ticket-specific reason for the status change. Required for Resolved and Closed transitions.',
+                    ],
+                    'note' => [
+                        'type' => 'string',
+                        'description' => 'Optional private status-change note.',
+                    ],
+                    'resolution' => [
+                        'type' => 'string',
+                        'description' => 'Optional resolution text for Resolved/Closed transitions.',
+                    ],
+                ],
+                'required' => ['ticket_id', 'status'],
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public static function assignTicketTool(): array
+    {
+        return [
+            'name' => 'assign_ticket',
+            'description' => 'Assign or unassign the ticket technician immediately. The server derives the ticket client from ticket_id and validates the assignee user id before writing the change and audit row. Requires an explicit token grant.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'ticket_id' => [
+                        'type' => 'integer',
+                        'description' => 'The ticket ID to update. The server derives the client from this ticket.',
+                    ],
+                    'user_id' => [
+                        'type' => 'integer',
+                        'description' => 'Optional staff user ID. Omit or null to unassign.',
+                    ],
+                    'reason' => [
+                        'type' => 'string',
+                        'description' => 'Optional ticket-specific reason for the assignment change.',
+                    ],
+                ],
+                'required' => ['ticket_id'],
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public static function assignAssetTool(): array
+    {
+        return [
+            'name' => 'assign_asset',
+            'description' => 'Link one asset to the current ticket immediately. The server derives the ticket client from ticket_id, enforces asset.client_id == ticket.client_id, and writes an action audit row. Requires an explicit token grant.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'ticket_id' => [
+                        'type' => 'integer',
+                        'description' => 'The ticket ID to update. The server derives the client from this ticket.',
+                    ],
+                    'asset_id' => [
+                        'type' => 'integer',
+                        'description' => 'Asset ID to link to this ticket.',
+                    ],
+                    'is_primary' => [
+                        'type' => 'boolean',
+                        'description' => 'Whether the asset should be marked primary on the ticket. Defaults to false.',
+                    ],
+                    'reason' => [
+                        'type' => 'string',
+                        'description' => 'Optional ticket-specific reason for linking the asset.',
+                    ],
+                ],
+                'required' => ['ticket_id', 'asset_id'],
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public static function unassignAssetTool(): array
+    {
+        return [
+            'name' => 'unassign_asset',
+            'description' => 'Unlink one asset from the current ticket immediately. The server derives the ticket client from ticket_id, enforces asset.client_id == ticket.client_id, and writes an action audit row. Requires an explicit token grant.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'ticket_id' => [
+                        'type' => 'integer',
+                        'description' => 'The ticket ID to update. The server derives the client from this ticket.',
+                    ],
+                    'asset_id' => [
+                        'type' => 'integer',
+                        'description' => 'Asset ID to unlink from this ticket.',
+                    ],
+                    'reason' => [
+                        'type' => 'string',
+                        'description' => 'Optional ticket-specific reason for unlinking the asset.',
+                    ],
+                ],
+                'required' => ['ticket_id', 'asset_id'],
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public static function setTicketContactTool(): array
+    {
+        return [
+            'name' => 'set_ticket_contact',
+            'description' => 'Set the ticket contact immediately. The server derives the ticket client from ticket_id and enforces that the contact belongs to that client before writing the change and audit row. Requires an explicit token grant.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'ticket_id' => [
+                        'type' => 'integer',
+                        'description' => 'The ticket ID to update. The server derives the client from this ticket.',
+                    ],
+                    'contact_id' => [
+                        'type' => 'integer',
+                        'description' => 'Person ID to set as the ticket contact.',
+                    ],
+                    'reason' => [
+                        'type' => 'string',
+                        'description' => 'Optional ticket-specific reason for the contact change.',
+                    ],
+                ],
+                'required' => ['ticket_id', 'contact_id'],
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public static function moveTicketToClientTool(): array
+    {
+        return [
+            'name' => 'move_ticket_to_client',
+            'description' => 'Move the ticket to another client immediately. The server derives the source client from ticket_id, requires typed confirmation of the target client name, revalidates the target contact, detaches the old client assets through TicketService, and writes an action audit row. Requires an explicit token grant.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'ticket_id' => [
+                        'type' => 'integer',
+                        'description' => 'The ticket ID to move. The server derives the source client from this ticket.',
+                    ],
+                    'new_client_id' => [
+                        'type' => 'integer',
+                        'description' => 'Target client ID.',
+                    ],
+                    'new_contact_id' => [
+                        'type' => 'integer',
+                        'description' => 'Optional target contact ID belonging to the target client.',
+                    ],
+                    'confirm_client_name' => [
+                        'type' => 'string',
+                        'description' => 'Typed target client name confirmation.',
+                    ],
+                    'reason' => [
+                        'type' => 'string',
+                        'description' => 'Specific reason for moving the ticket to another client.',
+                    ],
+                ],
+                'required' => ['ticket_id', 'new_client_id', 'confirm_client_name', 'reason'],
             ],
         ];
     }
