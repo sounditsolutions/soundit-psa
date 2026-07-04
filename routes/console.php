@@ -103,6 +103,18 @@ Schedule::command('tactical:sync-scripts')
     ->runInBackground()
     ->when(fn () => \App\Support\TacticalConfig::isConfigured());
 
+// Offline-script queue fallback sweep (bd psa-xr84) — runs queued actions whose
+// device is back online and expires stale ones. The device-sync hook + webhook
+// fast-path are the low-latency triggers; this is the safety net at the configured
+// interval (default 10 min). Registered everyMinute with a deferred throttle (so the
+// interval Setting is read at run time, never at schedule registration). Runs
+// whenever Tactical is configured so expiry still drains even if the toggle is off.
+Schedule::command('tactical:sweep-queued-actions')
+    ->everyMinute()
+    ->withoutOverlapping()
+    ->runInBackground()
+    ->when(fn () => \App\Support\TacticalConfig::isConfigured() && \App\Support\TacticalConfig::offlineQueueSweepDue());
+
 // NinjaRMM backup usage + license sync — daily
 Schedule::command('ninja:sync-backup')
     ->dailyAt('05:30')

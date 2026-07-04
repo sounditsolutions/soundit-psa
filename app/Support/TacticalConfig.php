@@ -3,6 +3,7 @@
 namespace App\Support;
 
 use App\Models\Setting;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Str;
 
 class TacticalConfig
@@ -173,5 +174,26 @@ class TacticalConfig
     public static function offlineQueueNotifyOnRun(): bool
     {
         return (bool) Setting::getValue('tactical_offline_queue_notify_on_run');
+    }
+
+    /**
+     * Throttle gate for the everyMinute fallback-sweep schedule: true at most once
+     * per offlineQueueSweepMinutes. Reading the interval at run time (inside the
+     * scheduler's deferred when-closure), never at registration, keeps `php artisan`
+     * boots DB-free. Records the run time on a true result so the next N minutes gate.
+     */
+    public static function offlineQueueSweepDue(): bool
+    {
+        $key = 'tactical_offline_queue_last_sweep';
+        $intervalSeconds = self::offlineQueueSweepMinutes() * 60;
+        $last = (int) Cache::get($key, 0);
+
+        if (now()->getTimestamp() - $last < $intervalSeconds) {
+            return false;
+        }
+
+        Cache::put($key, now()->getTimestamp(), now()->addDay());
+
+        return true;
     }
 }

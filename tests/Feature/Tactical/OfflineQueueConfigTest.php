@@ -54,4 +54,14 @@ class OfflineQueueConfigTest extends TestCase
         Setting::setValue('tactical_offline_queue_notify_on_run', '1');
         $this->assertTrue(TacticalConfig::offlineQueueNotifyOnRun());
     }
+
+    public function test_sweep_due_throttles_to_the_configured_interval(): void
+    {
+        // First check is due; the next within the window is not; past the window is due again.
+        $this->assertTrue(TacticalConfig::offlineQueueSweepDue());
+        $this->assertFalse(TacticalConfig::offlineQueueSweepDue());
+
+        $this->travel(11)->minutes();
+        $this->assertTrue(TacticalConfig::offlineQueueSweepDue());
+    }
 }
