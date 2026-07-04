@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Enums\TechnicianRunState;
+use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
@@ -17,6 +18,11 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * @property array|null $proposed_meta
  * @property float|null $confidence
  * @property int $tokens_used
+ * @property string|null $queued_agent_id
+ * @property string|null $queued_dedup_key
+ * @property \Illuminate\Support\Carbon|null $queued_at
+ * @property \Illuminate\Support\Carbon|null $expires_at
+ * @property int $coalesce_count
  */
 class TechnicianRun extends Model
 {
@@ -30,6 +36,11 @@ class TechnicianRun extends Model
         'proposed_meta',
         'confidence',
         'tokens_used',
+        'queued_agent_id',
+        'queued_dedup_key',
+        'queued_at',
+        'expires_at',
+        'coalesce_count',
     ];
 
     protected function casts(): array
@@ -39,6 +50,9 @@ class TechnicianRun extends Model
             'proposed_meta' => 'array',
             'confidence' => 'float',
             'tokens_used' => 'integer',
+            'queued_at' => 'datetime',
+            'expires_at' => 'datetime',
+            'coalesce_count' => 'integer',
         ];
     }
 
@@ -70,10 +84,95 @@ class TechnicianRun extends Model
     /** Release a claimed run back to the queue (executing → awaiting_approval). Direct update because claimForExecution bypasses dirty tracking. */
     public function releaseClaim(): void
     {
+        $this->releaseClaimTo(TechnicianRunState::AwaitingApproval);
+    }
+
+    /**
+     * Release a claimed (executing) run back to a specific waiting state. A live
+     * approval releases to AwaitingApproval; a reconnect-run that fails releases
+     * to QueuedOffline so the queue keeps waiting rather than re-entering the
+     * human approval lane. Direct update because the claim bypasses dirty tracking.
+     */
+    public function releaseClaimTo(TechnicianRunState $state): void
+    {
         static::query()->whereKey($this->getKey())
             ->where('state', TechnicianRunState::Executing->value)
-            ->update(['state' => TechnicianRunState::AwaitingApproval->value]);
-        $this->state = TechnicianRunState::AwaitingApproval;
+            ->update(['state' => $state->value]);
+        $this->state = $state;
+    }
+
+    /**
+     * Park an approved-but-offline action in the queue (executing → queued_offline)
+     * with its target agent, coalesce key, and safety window. CAS latch: only the
+     * claim winner that is still Executing transitions. queued_at/expires_at are
+     * passed in so a failed reconnect-run can re-queue preserving the ORIGINAL
+     * window rather than resetting the expiry clock. Returns true for the winner.
+     */
+    public function queueForOffline(string $agentId, string $dedupKey, CarbonInterface $queuedAt, CarbonInterface $expiresAt): bool
+    {
+        $queued = static::query()
+            ->whereKey($this->getKey())
+            ->where('state', TechnicianRunState::Executing->value)
+            ->update([
+                'state' => TechnicianRunState::QueuedOffline->value,
+                'queued_agent_id' => $agentId,
+                'queued_dedup_key' => $dedupKey,
+                'queued_at' => $queuedAt,
+                'expires_at' => $expiresAt,
+            ]) === 1;
+
+        if ($queued) {
+            $this->state = TechnicianRunState::QueuedOffline;
+            $this->queued_agent_id = $agentId;
+            $this->queued_dedup_key = $dedupKey;
+            $this->queued_at = $queuedAt;
+            $this->expires_at = $expiresAt;
+        }
+
+        return $queued;
+    }
+
+    /**
+     * Claim a queued action for a reconnect-run (queued_offline → executing).
+     * Single-use latch mirroring claimForExecution so two concurrent sweeps (device
+     * sync + webhook fast-path) can never double-run the same queued action.
+     */
+    public function claimQueuedForExecution(): bool
+    {
+        return $this->casTransition(TechnicianRunState::QueuedOffline, TechnicianRunState::Executing);
+    }
+
+    /** Operator cancelled a queued action from the cockpit (queued_offline → cancelled). CAS: no-op if it already ran/expired. */
+    public function cancelQueued(): bool
+    {
+        return $this->casTransition(TechnicianRunState::QueuedOffline, TechnicianRunState::Cancelled);
+    }
+
+    /** Safety-window elapsed (queued_offline → expired). CAS so it can't race a reconnect-run that just claimed it. */
+    public function expireQueued(): bool
+    {
+        return $this->casTransition(TechnicianRunState::QueuedOffline, TechnicianRunState::Expired);
+    }
+
+    /** Operator re-confirms an expired action (expired → awaiting_approval), re-arming the normal approval flow. */
+    public function reconfirmExpired(): bool
+    {
+        return $this->casTransition(TechnicianRunState::Expired, TechnicianRunState::AwaitingApproval);
+    }
+
+    /** State-guarded CAS: transition only if currently in $from; returns true for the winner. */
+    private function casTransition(TechnicianRunState $from, TechnicianRunState $to): bool
+    {
+        $moved = static::query()
+            ->whereKey($this->getKey())
+            ->where('state', $from->value)
+            ->update(['state' => $to->value]) === 1;
+
+        if ($moved) {
+            $this->state = $to;
+        }
+
+        return $moved;
     }
 
     public function deny(): bool
