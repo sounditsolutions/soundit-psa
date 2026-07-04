@@ -65,6 +65,7 @@ class StaffCippWriteToolExecutor
         'cipp_stage_set_mailbox_gal_visibility' => 300,
         'cipp_set_mailbox_out_of_office' => 300,
         'cipp_stage_set_mailbox_out_of_office' => 300,
+        'cipp_reset_user_password' => 300,
     ];
 
     private const OOO_MESSAGE_MAX = 2000;
@@ -165,6 +166,7 @@ class StaffCippWriteToolExecutor
             self::stageSetMailboxGalVisibilityTool(),
             self::setMailboxOutOfOfficeTool(),
             self::stageSetMailboxOutOfOfficeTool(),
+            self::resetUserPasswordTool(),
         ];
     }
 
@@ -194,6 +196,10 @@ class StaffCippWriteToolExecutor
     {
         if (! CippConfig::isEnabled() || ! CippConfig::isConfigured()) {
             return ['error' => 'CIPP is not enabled or configured'];
+        }
+
+        if ($name === 'cipp_reset_user_password') {
+            return $this->executeResetPassword($name, $arguments, $clientId, $actorLabel);
         }
 
         if (isset(self::STAGED_TO_DIRECT[$name])) {
@@ -333,6 +339,96 @@ class StaffCippWriteToolExecutor
             'person_id' => $person->person->id,
             'ticket_id' => $ticket?->id,
             'message' => 'CIPP action executed.',
+        ];
+    }
+
+    /**
+     * Dedicated direct path for the password reset — the only cipp_write tool that reads
+     * back an upstream value (the temp password). Reuses every context() gate; skips the
+     * idempotent alreadyExecuted() short-circuit (a password reset is NON-idempotent — a
+     * second reset must generate a new password, not return a stale "already done"). A
+     * cooldown still guards runaway repeats. The credential lives ONLY in the returned
+     * result; auditAttempt() records the action + target UPN, never the password.
+     *
+     * @return array<string, mixed>
+     */
+    private function executeResetPassword(string $tool, array $arguments, int $clientId, string $actorLabel): array
+    {
+        $context = $this->context($tool, $arguments, $clientId, $actorLabel, requireTicket: false);
+        if (isset($context['error'])) {
+            return ['error' => $context['error']];
+        }
+
+        /** @var Client $client */
+        $client = $context['client'];
+        /** @var string $tenant */
+        $tenant = $context['tenant'];
+        /** @var ResolvedCippPerson $person */
+        $person = $context['person'];
+        /** @var Ticket|null $ticket */
+        $ticket = $context['ticket'];
+        $reason = (string) $context['reason'];
+
+        try {
+            $mustChange = array_key_exists('must_change', $arguments)
+                ? $this->booleanValue($arguments['must_change'], 'must_change')
+                : true;
+        } catch (CippWriteScopeException $e) {
+            $this->auditAttempt($tool, 'rejected', $client->id, $ticket, $person, null, $this->contentHash($tool, $client->id, $person->person->id, $ticket?->id, []), $e->getMessage(), $actorLabel);
+
+            return ['error' => $e->getMessage()];
+        }
+
+        $contentHash = $this->contentHash($tool, $client->id, $person->person->id, $ticket?->id, ['must_change' => $mustChange]);
+
+        if ($this->cooldownActive($tool, $client->id, $person, null, self::COOLDOWNS[$tool] ?? 300)) {
+            $this->auditAttempt($tool, 'blocked', $client->id, $ticket, $person, null, $contentHash, "{$tool} cooldown active; upstream call refused.", $actorLabel);
+
+            return ['error' => "{$tool} cooldown active for this target; no reset was performed. Wait before retrying a password reset."];
+        }
+
+        try {
+            $upstream = $this->client->resetUserPassword($tenant, $person->userPrincipalName, $mustChange);
+        } catch (CippClientException $e) {
+            $this->auditAttempt($tool, 'error', $client->id, $ticket, $person, null, $contentHash, $this->safeFailureSummary($tool, $e), $actorLabel);
+
+            return ['error' => "CIPP password reset failed for {$tool}; no password was returned."];
+        }
+
+        // Audit records the action + target + the EFFECTIVE must_change flag (a boolean, not a
+        // credential) so the immutable log distinguishes a temp reset from a permanent one. NO password.
+        $mustChangeLabel = $mustChange ? 'true' : 'false';
+        $this->auditAttempt($tool, 'executed', $client->id, $ticket, $person, null, $contentHash, "{$tool} executed (must_change={$mustChangeLabel}): {$reason}", $actorLabel);
+
+        $results = is_array($upstream['body']['Results'] ?? null) ? $upstream['body']['Results'] : [];
+        $password = (isset($results['copyField']) && is_string($results['copyField']) && $results['copyField'] !== '')
+            ? $results['copyField']
+            : null;
+        $state = isset($results['state']) && is_string($results['state']) ? $results['state'] : null;
+
+        if ($password === null) {
+            return [
+                'success' => true,
+                'tool' => $tool,
+                'person_id' => $person->person->id,
+                'password_returned' => false,
+                'message' => 'CIPP reported a successful reset but returned no password value. Verify in CIPP; if PwPush is configured the value may be delivered as a link instead.',
+            ];
+        }
+
+        $adSynced = $state === 'warning';
+
+        return [
+            'success' => true,
+            'tool' => $tool,
+            'person_id' => $person->person->id,
+            'user_principal_name' => $person->userPrincipalName,
+            'temporary_password' => $password,
+            'must_change_at_next_logon' => $mustChange,
+            'ad_synced_warning' => $adSynced,
+            'message' => 'Temporary password generated. Relay it to the user over a secure channel and instruct them to change it at first sign-in.'
+                .($adSynced ? ' WARNING: this account appears to be directory-synced (AD-synced); a cloud password reset may not take effect if on-prem Active Directory is authoritative — verify with the on-prem/hybrid identity source.' : ''),
+            'guidance' => 'If your CIPP instance has PwPush enabled, the temporary_password value may be a one-time secure link rather than the literal password.',
         ];
     }
 
@@ -1199,6 +1295,17 @@ class StaffCippWriteToolExecutor
     }
 
     /** @return array<string, mixed> */
+    private static function resetUserPasswordProperties(): array
+    {
+        return [
+            'must_change' => [
+                'type' => 'boolean',
+                'description' => 'Whether the user must change the password at next sign-in. Defaults to true (the temporary-password method). Set false only for a deliberate permanent reset.',
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
     private static function outOfOfficeProperties(): array
     {
         return [
@@ -1483,6 +1590,17 @@ class StaffCippWriteToolExecutor
             'Stage mailbox out-of-office state/messages/schedule for cockpit approval. Message bodies are re-entered at approval and are not stored; the proposal stores message lengths only plus safe schedule metadata.',
             array_merge(self::personProperties(ticket: true), self::outOfOfficeProperties()),
             ['person_id', 'state', 'ticket_id', 'confirm_upn', 'reason'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function resetUserPasswordTool(): array
+    {
+        return self::tool(
+            'cipp_reset_user_password',
+            'Reset the Microsoft 365 password for one server-derived CIPP user and return a newly generated temporary password. The password is generated by CIPP/Microsoft and returned only in this tool result — it is never written to any log or audit record. Defaults to must-change-at-next-sign-in. Relay the password to the user over a secure channel and have them change it at first sign-in. Requires an explicit token grant, reason, confirm_upn friction, kill-switch, cooldown, and TechnicianActionLog audit. Consequential: performs a live credential reset immediately.',
+            array_merge(self::personProperties(), self::resetUserPasswordProperties()),
+            ['person_id', 'confirm_upn', 'reason'],
         );
     }
 }

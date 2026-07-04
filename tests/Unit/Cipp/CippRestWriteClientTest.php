@@ -37,6 +37,7 @@ class CippRestWriteClientTest extends TestCase
         $this->assertContains('disableMailboxForwarding', $methods);
         $this->assertContains('setMailboxGalVisibility', $methods);
         $this->assertContains('setMailboxOutOfOffice', $methods);
+        $this->assertContains('resetUserPassword', $methods);
         $this->assertNotContains('post', $methods);
         $this->assertNotContains('request', $methods);
     }
@@ -270,5 +271,71 @@ class CippRestWriteClientTest extends TestCase
         } finally {
             Http::assertNothingSent();
         }
+    }
+
+    public function test_reset_password_posts_exec_reset_pass_shape_and_captures_the_password_body(): void
+    {
+        Http::fake([
+            'login.microsoftonline.com/*' => Http::response([
+                'access_token' => 'WRITE-TOKEN',
+                'expires_in' => 3600,
+            ]),
+            'cipp.example.test/api/ExecResetPass' => Http::response([
+                'Results' => [
+                    'resultText' => 'Successfully reset the password for Alex, alex@acme.example. The new password is Temp-P@ss-9x!',
+                    'copyField' => 'Temp-P@ss-9x!',
+                    'state' => 'success',
+                ],
+            ]),
+        ]);
+
+        $client = new CippRestWriteClient([
+            'api_url' => 'https://cipp.example.test',
+            'tenant_id' => 'tenant-1',
+            'client_id' => 'write-client',
+            'client_secret' => 'write-secret',
+            'application_id' => 'write-app',
+        ], Cache::store(), fn (string $host): array => ['93.184.216.34']);
+
+        $result = $client->resetUserPassword('acme.onmicrosoft.com', 'alex@acme.example', true);
+
+        // captureBody path returns the decoded body so the temp password is available to the executor.
+        $this->assertTrue($result['success']);
+        $this->assertSame(200, $result['status']);
+        $this->assertSame('Temp-P@ss-9x!', $result['body']['Results']['copyField']);
+        $this->assertSame('success', $result['body']['Results']['state']);
+
+        Http::assertSent(fn ($request) => $request->url() === 'https://cipp.example.test/api/ExecResetPass'
+            && $request->method() === 'POST'
+            && $request->hasHeader('Authorization', 'Bearer WRITE-TOKEN')
+            && $request->data() === [
+                'tenantFilter' => 'acme.onmicrosoft.com',
+                'ID' => 'alex@acme.example',
+                'MustChange' => true,
+            ]);
+    }
+
+    public function test_reset_password_forwards_must_change_false_when_requested(): void
+    {
+        Http::fake([
+            'login.microsoftonline.com/*' => Http::response(['access_token' => 'WRITE-TOKEN', 'expires_in' => 3600]),
+            'cipp.example.test/api/ExecResetPass' => Http::response(['Results' => ['copyField' => 'pw', 'state' => 'success']]),
+        ]);
+
+        $client = new CippRestWriteClient([
+            'api_url' => 'https://cipp.example.test',
+            'tenant_id' => 'tenant-1',
+            'client_id' => 'write-client',
+            'client_secret' => 'write-secret',
+        ], Cache::store(), fn (string $host): array => ['93.184.216.34']);
+
+        $client->resetUserPassword('acme.onmicrosoft.com', 'alex@acme.example', false);
+
+        Http::assertSent(fn ($request) => $request->url() === 'https://cipp.example.test/api/ExecResetPass'
+            && $request->data() === [
+                'tenantFilter' => 'acme.onmicrosoft.com',
+                'ID' => 'alex@acme.example',
+                'MustChange' => false,
+            ]);
     }
 }
