@@ -96,6 +96,23 @@ class McpStaffController extends Controller
         'write_public_note',
         'stage_public_note',
         'propose_merge',
+        'update_ticket',
+        'set_ticket_status',
+        'assign_ticket',
+        'assign_asset',
+        'unassign_asset',
+        'set_ticket_contact',
+        'move_ticket_to_client',
+    ];
+
+    private const PSA_TICKET_SCOPED_TOOLS = [
+        'update_ticket',
+        'set_ticket_status',
+        'assign_ticket',
+        'assign_asset',
+        'unassign_asset',
+        'set_ticket_contact',
+        'move_ticket_to_client',
     ];
 
     private const BODY_LENGTH_AUDIT_TOOLS = [
@@ -247,6 +264,7 @@ class McpStaffController extends Controller
             $schema = $t['input_schema'] ?? ['type' => 'object', 'properties' => new \stdClass];
             $requiresExplicitClientScope = $this->requiresExplicitClientScope($request, (string) $t['name']);
             $isPsaActionTool = $this->isPsaActionTool((string) $t['name']);
+            $isPsaTicketScopedTool = $this->isPsaTicketScopedTool((string) $t['name']);
             $isCippWriteTool = $this->isCippWriteTool((string) $t['name']);
             $isTacticalActionTool = $this->isTacticalActionTool((string) $t['name']);
             $isTacticalAdminTool = $this->isTacticalAdminTool((string) $t['name']);
@@ -255,20 +273,22 @@ class McpStaffController extends Controller
 
             if ($isClientScoped) {
                 $props = (array) ($schema['properties'] ?? []);
-                $clientIdRequired = $requiresExplicitClientScope || $isPsaActionTool || $isCippWriteTool || $isTacticalActionTool || $requiresTacticalAdminClientScope || ! in_array($t['name'], $clientIdOptionalFor, true);
-                $props['client_id'] = [
-                    'type' => 'integer',
-                    'description' => $clientIdRequired
-                        ? 'PSA client ID (required). Use find_clients(query) to resolve a name to an ID.'
-                        : 'PSA client ID (optional). Provide to scope the search to one client; omit to search across all clients.',
-                ];
-                $schema['properties'] = $props;
-                if ($clientIdRequired) {
-                    $required = $schema['required'] ?? [];
-                    if (! in_array('client_id', $required, true)) {
-                        $required[] = 'client_id';
+                $clientIdRequired = $requiresExplicitClientScope || ($isPsaActionTool && ! $isPsaTicketScopedTool) || $isCippWriteTool || $isTacticalActionTool || $requiresTacticalAdminClientScope || ! in_array($t['name'], $clientIdOptionalFor, true);
+                if (! $isPsaTicketScopedTool) {
+                    $props['client_id'] = [
+                        'type' => 'integer',
+                        'description' => $clientIdRequired
+                            ? 'PSA client ID (required). Use find_clients(query) to resolve a name to an ID.'
+                            : 'PSA client ID (optional). Provide to scope the search to one client; omit to search across all clients.',
+                    ];
+                    $schema['properties'] = $props;
+                    if ($clientIdRequired) {
+                        $required = $schema['required'] ?? [];
+                        if (! in_array('client_id', $required, true)) {
+                            $required[] = 'client_id';
+                        }
+                        $schema['required'] = $required;
                     }
-                    $schema['required'] = $required;
                 }
             }
 
@@ -339,6 +359,7 @@ class McpStaffController extends Controller
         // honored. Anything malformed — 0, negative, non-numeric "garbage" —
         // collapses to null (GLOBAL-only scope), never a `client_id = 0` query.
         $hasClientIdArgument = array_key_exists('client_id', $arguments);
+        $ticketScopedPsaTool = $this->isPsaTicketScopedTool((string) $name);
         $clientId = $this->positiveIntegerArgument($arguments['client_id'] ?? null);
         unset($arguments['client_id']);
         $auditArguments = $arguments;
@@ -405,7 +426,38 @@ class McpStaffController extends Controller
             ]);
         }
 
-        if ($this->isPsaActionTool((string) $name) && $clientId === null) {
+        if ($ticketScopedPsaTool) {
+            if ($hasClientIdArgument) {
+                $message = "client_id must be omitted for {$name}; the server derives scope from ticket_id.";
+                $this->audit('tools/call', (string) $name, $auditArguments, 'error', $message, $start, $request);
+
+                return response()->json([
+                    'jsonrpc' => '2.0',
+                    'id' => $id,
+                    'result' => [
+                        'content' => [['type' => 'text', 'text' => $message]],
+                        'isError' => true,
+                    ],
+                ]);
+            }
+
+            $clientId = $this->ticketClientIdForArguments($arguments);
+            if ($clientId === null) {
+                $message = 'ticket_id is required and must resolve to an existing ticket.';
+                $this->audit('tools/call', (string) $name, $auditArguments, 'error', $message, $start, $request);
+
+                return response()->json([
+                    'jsonrpc' => '2.0',
+                    'id' => $id,
+                    'result' => [
+                        'content' => [['type' => 'text', 'text' => $message]],
+                        'isError' => true,
+                    ],
+                ]);
+            }
+        }
+
+        if ($this->isPsaActionTool((string) $name) && ! $ticketScopedPsaTool && $clientId === null) {
             $message = "client_id is required for {$name}.";
             $this->audit('tools/call', (string) $name, $auditArguments, 'error', $message, $start, $request);
 
@@ -717,6 +769,30 @@ class McpStaffController extends Controller
             return $this->auditProposeMergeArguments($args);
         }
 
+        if ($tool === 'update_ticket') {
+            return $this->auditUpdateTicketArguments($args);
+        }
+
+        if ($tool === 'set_ticket_status') {
+            return $this->auditSetTicketStatusArguments($args);
+        }
+
+        if ($tool === 'assign_ticket') {
+            return $this->auditAssignTicketArguments($args);
+        }
+
+        if (in_array((string) $tool, ['assign_asset', 'unassign_asset'], true)) {
+            return $this->auditAssetAssignmentArguments($args);
+        }
+
+        if ($tool === 'set_ticket_contact') {
+            return $this->auditSetTicketContactArguments($args);
+        }
+
+        if ($tool === 'move_ticket_to_client') {
+            return $this->auditMoveTicketArguments($args);
+        }
+
         $redacted = app(ActionRedactor::class)->redactParams($args);
 
         if ($tool === 'post_to_operator' && isset($redacted['message']) && is_string($redacted['message'])) {
@@ -837,6 +913,114 @@ class McpStaffController extends Controller
             $normalized = mb_strtolower((string) $key);
 
             if (in_array($normalized, ['client_id', 'primary_ticket_id', 'secondary_ticket_id'], true)) {
+                $safe[$normalized] = $value;
+            }
+
+            if ($normalized === 'reason') {
+                $safe['reason_length'] = is_string($value) ? mb_strlen($value) : 0;
+            }
+        }
+
+        return $safe;
+    }
+
+    /** @return array<string, mixed> */
+    private function auditUpdateTicketArguments(array $arguments): array
+    {
+        $safe = [];
+
+        foreach ($arguments as $key => $value) {
+            $normalized = mb_strtolower((string) $key);
+
+            if (in_array($normalized, ['ticket_id', 'subject', 'priority', 'type', 'reason'], true)) {
+                $safe[$normalized] = $value;
+            }
+
+            if ($normalized === 'description') {
+                $safe['description_length'] = is_string($value) ? mb_strlen($value) : 0;
+            }
+        }
+
+        return $safe;
+    }
+
+    /** @return array<string, mixed> */
+    private function auditSetTicketStatusArguments(array $arguments): array
+    {
+        $safe = [];
+
+        foreach ($arguments as $key => $value) {
+            $normalized = mb_strtolower((string) $key);
+
+            if (in_array($normalized, ['ticket_id', 'status', 'confirm_status'], true)) {
+                $safe[$normalized] = $value;
+            }
+
+            if (in_array($normalized, ['reason', 'note', 'resolution'], true)) {
+                $safe[$normalized.'_length'] = is_string($value) ? mb_strlen($value) : 0;
+            }
+        }
+
+        return $safe;
+    }
+
+    /** @return array<string, mixed> */
+    private function auditAssignTicketArguments(array $arguments): array
+    {
+        $safe = [];
+
+        foreach ($arguments as $key => $value) {
+            $normalized = mb_strtolower((string) $key);
+
+            if (in_array($normalized, ['ticket_id', 'user_id', 'reason'], true)) {
+                $safe[$normalized] = $value;
+            }
+        }
+
+        return $safe;
+    }
+
+    /** @return array<string, mixed> */
+    private function auditAssetAssignmentArguments(array $arguments): array
+    {
+        $safe = [];
+
+        foreach ($arguments as $key => $value) {
+            $normalized = mb_strtolower((string) $key);
+
+            if (in_array($normalized, ['ticket_id', 'asset_id', 'is_primary', 'reason'], true)) {
+                $safe[$normalized] = $value;
+            }
+        }
+
+        return $safe;
+    }
+
+    /** @return array<string, mixed> */
+    private function auditSetTicketContactArguments(array $arguments): array
+    {
+        $safe = [];
+
+        foreach ($arguments as $key => $value) {
+            $normalized = mb_strtolower((string) $key);
+
+            if (in_array($normalized, ['ticket_id', 'contact_id', 'reason'], true)) {
+                $safe[$normalized] = $value;
+            }
+        }
+
+        return $safe;
+    }
+
+    /** @return array<string, mixed> */
+    private function auditMoveTicketArguments(array $arguments): array
+    {
+        $safe = [];
+
+        foreach ($arguments as $key => $value) {
+            $normalized = mb_strtolower((string) $key);
+
+            if (in_array($normalized, ['ticket_id', 'new_client_id', 'new_contact_id', 'confirm_client_name'], true)) {
                 $safe[$normalized] = $value;
             }
 
@@ -1099,6 +1283,23 @@ class McpStaffController extends Controller
         }
 
         return null;
+    }
+
+    private function isPsaTicketScopedTool(string $toolName): bool
+    {
+        return in_array($toolName, self::PSA_TICKET_SCOPED_TOOLS, true);
+    }
+
+    private function ticketClientIdForArguments(array $arguments): ?int
+    {
+        $ticketId = $this->positiveIntegerArgument($arguments['ticket_id'] ?? null);
+        if ($ticketId === null) {
+            return null;
+        }
+
+        $clientId = Ticket::whereKey($ticketId)->value('client_id');
+
+        return is_numeric($clientId) ? (int) $clientId : null;
     }
 
     private function toolAllowed(Request $request, string $toolName): bool
