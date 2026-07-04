@@ -58,6 +58,15 @@ class ProcessTacticalWebhook implements ShouldQueue
         }
 
         $webhook->markProcessed();
+
+        // Fast-path (bd psa-xr84): a resolved alert for an agent with queued actions is
+        // a low-latency signal the device may be back — trigger a targeted sweep so its
+        // queue runs without waiting for the next device sync. Best-effort: Tactical
+        // drops availability alerts for workstations (G4), so the device-sync hook is
+        // the authoritative/complete trigger; this only accelerates the server case.
+        if ($event === 'alert_resolved' && $webhook->agent_id) {
+            SweepQueuedActionsForAgent::dispatchIfQueued((string) $webhook->agent_id);
+        }
     }
 
     public function failed(\Throwable $e): void

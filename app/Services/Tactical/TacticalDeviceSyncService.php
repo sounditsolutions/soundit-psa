@@ -98,25 +98,12 @@ class TacticalDeviceSyncService
     }
 
     /**
-     * Dispatch a reconnect sweep for an agent that just came online — but only if it
-     * actually has unexpired queued actions, so a routine reconnect doesn't spawn a
-     * no-op job. The sweep itself runs off this path (queued job).
+     * Dispatch a reconnect sweep for an agent that just came online (only if it has
+     * unexpired queued actions). Delegates to the shared guard on the job.
      */
     private function dispatchSweepIfQueued(string $agentId): void
     {
-        if ($agentId === '') {
-            return;
-        }
-
-        $hasQueued = TechnicianRun::query()
-            ->where('state', TechnicianRunState::QueuedOffline->value)
-            ->where('queued_agent_id', $agentId)
-            ->where('expires_at', '>', now())
-            ->exists();
-
-        if ($hasQueued) {
-            SweepQueuedActionsForAgent::dispatch($agentId);
-        }
+        SweepQueuedActionsForAgent::dispatchIfQueued($agentId);
     }
 
     public function syncDevices(?int $clientId = null): SyncResult
