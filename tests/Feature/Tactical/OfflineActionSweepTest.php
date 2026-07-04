@@ -43,14 +43,27 @@ class OfflineActionSweepTest extends TestCase
         ]);
     }
 
-    private function queuedRun(string $agentId = 'agent-1', string $status = 'online', ?CarbonInterface $expiresAt = null): TechnicianRun
+    /** @var array<string, array{0: Client, 1: Asset}> agentId → [client, asset], so multiple queued runs on one agent share the one device (agent_id is unique). */
+    private array $endpoints = [];
+
+    private function endpointFor(string $agentId, string $status): array
     {
-        $client = Client::factory()->create();
-        $asset = Asset::factory()->create(['client_id' => $client->id, 'hostname' => 'PC-01', 'name' => 'PC-01']);
-        TacticalAsset::create([
-            'asset_id' => $asset->id, 'agent_id' => $agentId, 'hostname' => 'PC-01',
-            'status' => $status, 'synced_at' => now(),
-        ]);
+        if (! isset($this->endpoints[$agentId])) {
+            $client = Client::factory()->create();
+            $asset = Asset::factory()->create(['client_id' => $client->id, 'hostname' => 'PC-'.$agentId, 'name' => 'PC-'.$agentId]);
+            TacticalAsset::create([
+                'asset_id' => $asset->id, 'agent_id' => $agentId, 'hostname' => 'PC-'.$agentId,
+                'status' => $status, 'synced_at' => now(),
+            ]);
+            $this->endpoints[$agentId] = [$client, $asset];
+        }
+
+        return $this->endpoints[$agentId];
+    }
+
+    private function queuedRun(string $agentId = 'agent-1', string $status = 'online', ?CarbonInterface $expiresAt = null, ?string $dedupKey = null, string $args = '-Check Disk'): TechnicianRun
+    {
+        [$client, $asset] = $this->endpointFor($agentId, $status);
         $ticket = Ticket::factory()->for($client)->create();
         $ticket->assets()->attach($asset->id, ['is_primary' => true]);
 
@@ -61,7 +74,7 @@ class OfflineActionSweepTest extends TestCase
             'client_id' => $client->id,
             // args stored as the raw string exactly as staging persists it; the action
             // argv-tokenizes it at dispatch time.
-            'params' => ['tactical_script_id' => 201, 'args' => '-Check Disk', 'timeout' => 120],
+            'params' => ['tactical_script_id' => 201, 'args' => $args, 'timeout' => 120],
         ];
 
         return TechnicianRun::create([
@@ -75,7 +88,7 @@ class OfflineActionSweepTest extends TestCase
                 'queued_approver_id' => $this->approver->id,
             ],
             'queued_agent_id' => $agentId,
-            'queued_dedup_key' => hash('sha256', 'dedup-'.$ticket->id),
+            'queued_dedup_key' => $dedupKey ?? hash('sha256', 'dedup-'.$ticket->id),
             'queued_at' => now()->subMinutes(30),
             'expires_at' => $expiresAt ?? now()->addDays(7),
         ]);
@@ -153,5 +166,39 @@ class OfflineActionSweepTest extends TestCase
 
         $this->assertSame(0, app(OfflineActionSweep::class)->sweepAgent('agent-1'));
         $this->assertSame(TechnicianRunState::QueuedOffline, $run->fresh()->state);
+    }
+
+    public function test_run_time_dedup_runs_one_and_supersedes_a_duplicate_dedup_key(): void
+    {
+        // Two rows with the SAME dedup key (a concurrent parking race that slipped past
+        // the enqueue-time coalesce) — only one runs; the duplicate is superseded.
+        $first = $this->queuedRun('agent-1', 'online', dedupKey: 'shared-key');
+        $second = $this->queuedRun('agent-1', 'online', dedupKey: 'shared-key');
+        $this->fakeClient(fn ($m) => $m->shouldReceive('runScript')->once()->andReturn(['stdout' => 'ok', 'retcode' => 0]));
+
+        $ran = app(OfflineActionSweep::class)->sweepAgent('agent-1');
+
+        $this->assertSame(1, $ran);
+        $this->assertSame(TechnicianRunState::Done, $first->fresh()->state);
+        $this->assertSame(TechnicianRunState::Superseded, $second->fresh()->state);
+    }
+
+    public function test_a_failing_reconnect_run_does_not_abort_the_rest_of_the_sweep(): void
+    {
+        // Distinct dedup keys → both processed. The first throws a non-offline error;
+        // the second must still run (per-item isolation, mirrors EmergencySweep).
+        $failing = $this->queuedRun('agent-1', 'online', dedupKey: 'k1', args: 'FAIL');
+        $healthy = $this->queuedRun('agent-1', 'online', dedupKey: 'k2', args: 'OK');
+        $this->fakeClient(function ($m) {
+            $m->shouldReceive('runScript')->with('agent-1', 201, ['FAIL'], 120)->andThrow(new \RuntimeException('boom'));
+            $m->shouldReceive('runScript')->with('agent-1', 201, ['OK'], 120)->andReturn(['stdout' => 'ok', 'retcode' => 0]);
+        });
+
+        $ran = app(OfflineActionSweep::class)->sweepAgent('agent-1');
+
+        $this->assertSame(1, $ran, 'the healthy run still executes despite the failing one');
+        $this->assertSame(TechnicianRunState::Done, $healthy->fresh()->state);
+        // The thrower was released back to the queue for a later retry.
+        $this->assertSame(TechnicianRunState::QueuedOffline, $failing->fresh()->state);
     }
 }

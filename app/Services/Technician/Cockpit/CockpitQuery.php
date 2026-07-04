@@ -32,11 +32,16 @@ class CockpitQuery
 
     public function pendingCount(): int
     {
-        // Everything the away operator must act on in the cockpit: executable
-        // proposals (AwaitingApproval) AND held flags (Flagged). Feeds the nav badge.
+        // Everything the away operator should see on the nav badge: executable
+        // proposals (AwaitingApproval), held flags (Flagged), and — bd psa-xr84 —
+        // offline-queued actions (QueuedOffline, cancellable) plus Expired ones that
+        // need an explicit re-confirm, so an expired action can't go unnoticed by an
+        // operator who never opens /cockpit. Matches counts()'s pending/total fold-in.
         return TechnicianRun::whereIn('state', [
             TechnicianRunState::AwaitingApproval->value,
             TechnicianRunState::Flagged->value,
+            TechnicianRunState::QueuedOffline->value,
+            TechnicianRunState::Expired->value,
         ])->count();
     }
 

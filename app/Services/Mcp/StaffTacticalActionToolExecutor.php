@@ -37,6 +37,7 @@ use App\Services\Technician\TechnicianApprovalResult;
 use App\Support\TacticalConfig;
 use App\Support\TechnicianConfig;
 use Illuminate\Support\Facades\Crypt;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
 
@@ -362,29 +363,40 @@ class StaffTacticalActionToolExecutor
     {
         $dedupKey = $this->queueDedupKey($agentId, $directTool, $params);
 
-        $existing = TechnicianRun::query()
-            ->where('state', TechnicianRunState::QueuedOffline->value)
-            ->where('queued_dedup_key', $dedupKey)
-            ->whereKeyNot($run->getKey())
-            ->first();
+        return DB::transaction(function () use ($run, $agentId, $dedupKey, $approverId) {
+            // Coalesce onto an identical queued action already waiting. lockForUpdate +
+            // the transaction serialize near-concurrent enqueues on MariaDB (no-op on
+            // SQLite, which serializes writes anyway); sweepAgent additionally de-dups
+            // by key at run time, and the per-asset cooldown re-check blocks a duplicate
+            // run — so a duplicate queued row cannot fire the same script twice.
+            $existing = TechnicianRun::query()
+                ->where('state', TechnicianRunState::QueuedOffline->value)
+                ->where('queued_dedup_key', $dedupKey)
+                ->whereKeyNot($run->getKey())
+                ->lockForUpdate()
+                ->first();
 
-        if ($existing !== null) {
-            $existing->increment('coalesce_count');
-            $run->markSuperseded();
+            if ($existing !== null) {
+                $existing->increment('coalesce_count');
+                $run->markSuperseded();
+
+                return new TechnicianApprovalResult('queued_offline');
+            }
+
+            // Preserve the original window on a re-queue (failed reconnect-run); a fresh
+            // approval (queued_at/expires_at null, incl. after a reconfirm) starts a new one.
+            $queuedAt = $run->queued_at ?? now();
+            $expiresAt = $run->expires_at ?? now()->addDays(TacticalConfig::offlineQueueExpiryDays());
+
+            // Approver folded into the CAS update — no second write to race a concurrent
+            // cancel/expire. A false result means the claim was lost (run no longer
+            // Executing); nothing to queue.
+            if (! $run->queueForOffline($agentId, $dedupKey, $queuedAt, $expiresAt, ['queued_approver_id' => $approverId])) {
+                return new TechnicianApprovalResult('already_handled');
+            }
 
             return new TechnicianApprovalResult('queued_offline');
-        }
-
-        // Preserve the original window on a re-queue (failed reconnect-run); set it
-        // fresh on the first enqueue.
-        $queuedAt = $run->queued_at ?? now();
-        $expiresAt = $run->expires_at ?? now()->addDays(TacticalConfig::offlineQueueExpiryDays());
-
-        $run->queueForOffline($agentId, $dedupKey, $queuedAt, $expiresAt);
-        $run->proposed_meta = array_merge($run->proposed_meta ?? [], ['queued_approver_id' => $approverId]);
-        $run->save();
-
-        return new TechnicianApprovalResult('queued_offline');
+        });
     }
 
     /** sha256 of (agent, direct tool, canonical params) — one queued row per identical action. */

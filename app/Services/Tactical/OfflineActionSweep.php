@@ -7,6 +7,7 @@ use App\Models\TacticalAsset;
 use App\Models\TechnicianRun;
 use App\Services\Mcp\StaffTacticalActionToolExecutor;
 use App\Support\TacticalConfig;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Runs the offline-script queue (bd psa-xr84): dispatch queued actions when their
@@ -31,18 +32,43 @@ class OfflineActionSweep
             return 0;
         }
 
-        $ran = 0;
-        TechnicianRun::query()
+        $runs = TechnicianRun::query()
             ->where('state', TechnicianRunState::QueuedOffline->value)
             ->where('queued_agent_id', $agentId)
             ->where('expires_at', '>', now())
             ->orderBy('id')
-            ->get()
-            ->each(function (TechnicianRun $run) use (&$ran) {
+            ->get();
+
+        $ran = 0;
+        $seenKeys = [];
+
+        foreach ($runs as $run) {
+            // Run-time coalesce: one run per (agent, script, args) dedup key. If a
+            // duplicate slipped past the enqueue-time coalesce (a concurrent parking
+            // race), supersede the extra so the same script can't fire twice.
+            $key = $run->queued_dedup_key;
+            if ($key !== null && isset($seenKeys[$key])) {
+                $run->markSuperseded();
+
+                continue;
+            }
+            $seenKeys[$key] = true;
+
+            try {
                 if ($this->executor->runQueuedOnReconnect($run)->status === 'executed') {
                     $ran++;
                 }
-            });
+            } catch (\Throwable $e) {
+                // One failing reconnect-run must never abort the rest of the sweep
+                // (mirrors EmergencySweep). The run was released back to the queue by
+                // executeClaimedRun's catch, so the next sweep retries it.
+                Log::warning('[OfflineQueue] reconnect-run failed', [
+                    'run_id' => $run->id,
+                    'agent_id' => $agentId,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
 
         return $ran;
     }
@@ -73,7 +99,15 @@ class OfflineActionSweep
                 ->pluck('agent_id');
 
             foreach ($onlineAgents as $agentId) {
-                $ran += $this->sweepAgent((string) $agentId);
+                try {
+                    $ran += $this->sweepAgent((string) $agentId);
+                } catch (\Throwable $e) {
+                    // Isolate a failing agent so the rest of the pass still runs.
+                    Log::warning('[OfflineQueue] agent sweep failed', [
+                        'agent_id' => $agentId,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
             }
         }
 

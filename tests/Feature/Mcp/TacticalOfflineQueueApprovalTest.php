@@ -145,6 +145,21 @@ class TacticalOfflineQueueApprovalTest extends TestCase
         ]);
     }
 
+    public function test_cockpit_approve_route_shows_a_queued_message_for_an_offline_device(): void
+    {
+        $approver = $this->configure();
+        $fixture = $this->endpointFixture();
+        $run = $this->stageScript($fixture['client'], $fixture['ticket'], $this->script());
+        $this->offlineClient();
+
+        $this->actingAs($approver)
+            ->post(route('cockpit.approve', $run))
+            ->assertRedirect()
+            ->assertSessionHas('success', 'Device offline — queued to run automatically when it comes back online.');
+
+        $this->assertSame(TechnicianRunState::QueuedOffline, $run->fresh()->state);
+    }
+
     public function test_disabled_feature_falls_back_to_the_dead_end(): void
     {
         $approver = $this->configure();

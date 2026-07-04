@@ -89,13 +89,15 @@ class TechnicianCockpitController extends Controller
             default => abort(422, 'Unsupported action type for approval.'),
         };
 
-        $ok = in_array($result->status, ['sent', 'closed', 'published', 'merged', 'executed'], true);
+        $ok = in_array($result->status, ['sent', 'closed', 'published', 'merged', 'executed', 'queued_offline'], true);
         $message = match ($result->status) {
             'sent' => 'Reply approved and sent.',
             'closed' => 'Ticket closed.',
             'published' => 'Public note published.',
             'merged' => 'Tickets merged.',
             'executed' => 'Held action approved and executed.',
+            // bd psa-xr84: approved but the device was offline — parked to auto-run on reconnect.
+            'queued_offline' => 'Device offline — queued to run automatically when it comes back online.',
             'already_handled' => 'That draft was already handled.',
             default => 'Could not send — the Technician declined (it may be paused). Try again.',
         };

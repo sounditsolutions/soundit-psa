@@ -130,6 +130,17 @@ class CockpitOfflineQueueLaneTest extends TestCase
         $this->assertSame(2, $counts['total']);
     }
 
+    public function test_pending_count_nav_badge_includes_queued_and_expired(): void
+    {
+        // The always-visible nav badge must surface an Expired action (needs re-confirm)
+        // so it can't go unnoticed by an operator who never opens /cockpit.
+        $ticket = $this->ticket();
+        $this->queuedRun($ticket);
+        $this->expiredRun($ticket);
+
+        $this->assertSame(2, app(CockpitQuery::class)->pendingCount());
+    }
+
     // ── rendering ────────────────────────────────────────────────────────────
 
     public function test_cockpit_index_renders_queued_run_with_device_name_and_waiting_copy(): void

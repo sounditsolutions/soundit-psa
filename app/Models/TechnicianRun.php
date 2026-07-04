@@ -108,8 +108,13 @@ class TechnicianRun extends Model
      * passed in so a failed reconnect-run can re-queue preserving the ORIGINAL
      * window rather than resetting the expiry clock. Returns true for the winner.
      */
-    public function queueForOffline(string $agentId, string $dedupKey, CarbonInterface $queuedAt, CarbonInterface $expiresAt): bool
+    public function queueForOffline(string $agentId, string $dedupKey, CarbonInterface $queuedAt, CarbonInterface $expiresAt, array $metaPatch = []): bool
     {
+        // Merge the meta patch (e.g. queued_approver_id) INTO the single CAS update so
+        // there is no second write to race: a separate ->save() would re-persist the
+        // whole model and could stomp a concurrent cancel/expire back to queued_offline.
+        $meta = array_merge($this->proposed_meta ?? [], $metaPatch);
+
         $queued = static::query()
             ->whereKey($this->getKey())
             ->where('state', TechnicianRunState::Executing->value)
@@ -119,6 +124,7 @@ class TechnicianRun extends Model
                 'queued_dedup_key' => $dedupKey,
                 'queued_at' => $queuedAt,
                 'expires_at' => $expiresAt,
+                'proposed_meta' => json_encode($meta),
             ]) === 1;
 
         if ($queued) {
@@ -127,6 +133,7 @@ class TechnicianRun extends Model
             $this->queued_dedup_key = $dedupKey;
             $this->queued_at = $queuedAt;
             $this->expires_at = $expiresAt;
+            $this->proposed_meta = $meta;
         }
 
         return $queued;
@@ -135,11 +142,23 @@ class TechnicianRun extends Model
     /**
      * Claim a queued action for a reconnect-run (queued_offline → executing).
      * Single-use latch mirroring claimForExecution so two concurrent sweeps (device
-     * sync + webhook fast-path) can never double-run the same queued action.
+     * sync + webhook fast-path) can never double-run the same queued action. The
+     * `expires_at > now()` guard is part of the CAS so a run that crossed its safety
+     * window between the sweep's fetch and this claim can never still execute.
      */
     public function claimQueuedForExecution(): bool
     {
-        return $this->casTransition(TechnicianRunState::QueuedOffline, TechnicianRunState::Executing);
+        $claimed = static::query()
+            ->whereKey($this->getKey())
+            ->where('state', TechnicianRunState::QueuedOffline->value)
+            ->where('expires_at', '>', now())
+            ->update(['state' => TechnicianRunState::Executing->value]) === 1;
+
+        if ($claimed) {
+            $this->state = TechnicianRunState::Executing;
+        }
+
+        return $claimed;
     }
 
     /** Operator cancelled a queued action from the cockpit (queued_offline → cancelled). CAS: no-op if it already ran/expired. */
@@ -154,10 +173,30 @@ class TechnicianRun extends Model
         return $this->casTransition(TechnicianRunState::QueuedOffline, TechnicianRunState::Expired);
     }
 
-    /** Operator re-confirms an expired action (expired → awaiting_approval), re-arming the normal approval flow. */
+    /**
+     * Operator re-confirms an expired action (expired → awaiting_approval), re-arming
+     * the normal approval flow. Clears the stale queue window so that re-approving
+     * while the device is still offline starts a FRESH safety window instead of
+     * inheriting the already-elapsed expires_at and re-expiring immediately.
+     */
     public function reconfirmExpired(): bool
     {
-        return $this->casTransition(TechnicianRunState::Expired, TechnicianRunState::AwaitingApproval);
+        $moved = static::query()
+            ->whereKey($this->getKey())
+            ->where('state', TechnicianRunState::Expired->value)
+            ->update([
+                'state' => TechnicianRunState::AwaitingApproval->value,
+                'queued_at' => null,
+                'expires_at' => null,
+            ]) === 1;
+
+        if ($moved) {
+            $this->state = TechnicianRunState::AwaitingApproval;
+            $this->queued_at = null;
+            $this->expires_at = null;
+        }
+
+        return $moved;
     }
 
     /** State-guarded CAS: transition only if currently in $from; returns true for the winner. */

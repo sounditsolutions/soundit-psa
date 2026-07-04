@@ -28,6 +28,9 @@ class TechnicianRunOfflineQueueTest extends TestCase
             'action_type' => 'tactical_stage_script',
             'content_hash' => str_repeat($hash, 64),
             'state' => $state,
+            // A real queued_offline run always carries a future window; the claim CAS
+            // now guards on it, so the fixture must set it (individual tests override).
+            'expires_at' => now()->addDays(7),
         ]);
     }
 
@@ -93,5 +96,38 @@ class TechnicianRunOfflineQueueTest extends TestCase
         $run->releaseClaimTo(TechnicianRunState::QueuedOffline);
 
         $this->assertSame(TechnicianRunState::QueuedOffline, $run->fresh()->state);
+    }
+
+    public function test_queue_for_offline_persists_a_meta_patch_atomically(): void
+    {
+        $run = $this->stagedRun(TechnicianRunState::Executing);
+
+        $this->assertTrue($run->queueForOffline('agent-1', 'dedup', now(), now()->addDays(7), ['queued_approver_id' => 42]));
+
+        $this->assertSame(42, $run->fresh()->proposed_meta['queued_approver_id']);
+    }
+
+    public function test_claim_queued_rejects_an_expired_run(): void
+    {
+        // A run past its safety window must never be claimed for execution, even if
+        // its state is still queued_offline (the expiry sweep hasn't run yet).
+        $run = $this->stagedRun(TechnicianRunState::QueuedOffline);
+        $run->update(['expires_at' => now()->subMinute()]);
+
+        $this->assertFalse($run->claimQueuedForExecution());
+        $this->assertSame(TechnicianRunState::QueuedOffline, $run->fresh()->state);
+    }
+
+    public function test_reconfirm_expired_clears_the_stale_window(): void
+    {
+        $run = $this->stagedRun(TechnicianRunState::Expired);
+        $run->update(['queued_at' => now()->subDays(8), 'expires_at' => now()->subDay()]);
+
+        $this->assertTrue($run->reconfirmExpired());
+
+        $fresh = $run->fresh();
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $fresh->state);
+        $this->assertNull($fresh->queued_at, 'a fresh window must be computed on re-approval');
+        $this->assertNull($fresh->expires_at);
     }
 }

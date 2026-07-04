@@ -140,7 +140,7 @@ class TacticalConfig
     {
         $v = Setting::getValue('tactical_offline_queue_enabled');
 
-        return $v === null ? true : (bool) $v;
+        return $v === null ? true : filter_var($v, FILTER_VALIDATE_BOOLEAN);
     }
 
     /**
