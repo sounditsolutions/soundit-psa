@@ -62,6 +62,7 @@ class McpToolRegistry
             $tacticalActions = self::shape(self::tacticalActionTools());
             $tacticalAdmin = self::shape(self::tacticalAdminTools());
             $psaRecords = self::shape(self::psaRecordsTools());
+            $psaRead = self::shape(self::psaContractReadTools());
 
             return [
                 'general' => ['label' => 'General (no client context)', 'sensitive' => false, 'tools' => $general],
@@ -73,6 +74,7 @@ class McpToolRegistry
                 'wiki_write' => ['label' => 'Wiki write (sensitive)', 'sensitive' => true, 'tools' => $wikiWrites],
                 'psa_action' => ['label' => 'PSA actions (sensitive)', 'sensitive' => true, 'tools' => $psaActions],
                 'psa_records' => ['label' => 'PSA records — clients, people, assets (sensitive)', 'sensitive' => true, 'tools' => $psaRecords],
+                'psa_read' => ['label' => 'PSA reads — contracts (sensitive)', 'sensitive' => true, 'tools' => $psaRead],
                 'bridge' => ['label' => 'Operator bridge (sensitive)', 'sensitive' => true, 'tools' => $bridge],
             ];
         });
@@ -117,6 +119,7 @@ class McpToolRegistry
             $sensitiveMap = [
                 'psa_action' => ['psa', 'write', 'Write & act', 2],
                 'psa_records' => ['psa', 'write', 'Write & act', 2],
+                'psa_read' => ['psa', 'contracts', 'Contracts (read)', 3],
                 'cipp_write' => ['cipp', 'write', 'Write & remediate', 2],
                 'tactical_action' => ['tactical', 'actions', 'Endpoint actions', 2],
                 'tactical_admin' => ['tactical', 'admin', 'Admin & provisioning', 3],
@@ -866,6 +869,56 @@ class McpToolRegistry
             self::linkAssetUserTool(),
             self::unlinkAssetUserTool(),
             self::setPrimaryAssetUserTool(),
+        ];
+    }
+
+    /**
+     * PSA read surface (P3) — contract coverage reads. Grant-gated/dormant.
+     * Executed through AssistantToolExecutor (the read executor). Coverage/SLA
+     * only — pricing/financial fields are held from v1.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public static function psaContractReadTools(): array
+    {
+        return [
+            self::listClientContractsTool(),
+            self::getContractTool(),
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public static function listClientContractsTool(): array
+    {
+        return [
+            'name' => 'list_client_contracts',
+            'description' => 'List a client\'s contracts (coverage summary rows: id, name, type, status, start/end dates, SLA flag, and linked asset/person/license counts). Read-only; pricing and financial fields are not exposed. Requires an explicit token grant.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'client_id' => ['type' => 'integer', 'description' => 'The client whose contracts to list.'],
+                    'status' => ['type' => 'string', 'enum' => ['active', 'expired', 'cancelled'], 'description' => 'Optional status filter.'],
+                    'limit' => ['type' => 'integer', 'description' => 'Max results (default 25, max 50).'],
+                ],
+                'required' => ['client_id'],
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public static function getContractTool(): array
+    {
+        return [
+            'name' => 'get_contract',
+            'description' => 'Get one contract\'s coverage detail (type, status, dates, term, auto-renew, SLA terms, notes, and linked asset/person/license/profile/document counts), scoped to the client. Read-only; pricing and financial fields are not exposed. Requires an explicit token grant.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'client_id' => ['type' => 'integer', 'description' => 'The client that owns the contract.'],
+                    'contract_id' => ['type' => 'integer', 'description' => 'The contract ID to read.'],
+                ],
+                'required' => ['client_id', 'contract_id'],
+            ],
         ];
     }
 

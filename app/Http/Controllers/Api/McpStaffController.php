@@ -170,6 +170,12 @@ class McpStaffController extends Controller
         'set_primary_asset_user',
     ];
 
+    /** PSA read surface (P3) — grant-gated client-scoped contract reads, executed via AssistantToolExecutor. */
+    private const PSA_READ_TOOLS = [
+        'list_client_contracts',
+        'get_contract',
+    ];
+
     private const BODY_LENGTH_AUDIT_TOOLS = [
         'send_email',
         'stage_email',
@@ -283,6 +289,7 @@ class McpStaffController extends Controller
             ],
             McpToolRegistry::psaActionTools(),
             McpToolRegistry::psaRecordsTools(),
+            McpToolRegistry::psaContractReadTools(),
             TacticalConfig::isConfigured() ? McpToolRegistry::tacticalAdminTools() : [],
             ChetDataSurfaceTools::generalTools(),
             OperatorBridgeTools::definitions(),
@@ -1732,6 +1739,10 @@ class McpStaffController extends Controller
             return $token->allowedTools !== null && $token->allows($toolName);
         }
 
+        if ($this->isPsaReadTool($toolName)) {
+            return $token->allowedTools !== null && $token->allows($toolName);
+        }
+
         if ($this->isCippWriteTool($toolName)) {
             return $token->allowedTools !== null && $token->allows($toolName);
         }
@@ -1844,6 +1855,11 @@ class McpStaffController extends Controller
     private function isPsaRecordsAssetScopedTool(string $toolName): bool
     {
         return in_array($toolName, self::PSA_RECORDS_ASSET_SCOPED_TOOLS, true);
+    }
+
+    private function isPsaReadTool(string $toolName): bool
+    {
+        return in_array($toolName, self::PSA_READ_TOOLS, true);
     }
 
     /** psa_records tools that carry an explicit client_id argument: client-entity targets + the create_contact / create_asset parent scope. */

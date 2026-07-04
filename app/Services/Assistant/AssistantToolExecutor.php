@@ -2,9 +2,11 @@
 
 namespace App\Services\Assistant;
 
+use App\Enums\ContractStatus;
 use App\Enums\NoteType;
 use App\Models\Asset;
 use App\Models\Client;
+use App\Models\Contract;
 use App\Models\Person;
 use App\Models\PhoneCall;
 use App\Models\Ticket;
@@ -89,6 +91,8 @@ class AssistantToolExecutor
             'find_clients' => $this->findClients($input),
             'find_persons' => $this->findPersons($input),
             'find_assets' => $this->findAssets($input),
+            'list_client_contracts' => $this->listClientContracts($input),
+            'get_contract' => $this->getContract($input),
 
             // NinjaRMM tools
             'ninja_search_devices' => $this->ninjaSearchDevices($input),
@@ -829,6 +833,107 @@ class AssistantToolExecutor
                 'last_user' => $a->last_user,
                 'is_active' => $a->is_active,
             ])->toArray(),
+        ];
+    }
+
+    /**
+     * list_client_contracts — hard client-scoped read (mirrors get_person/search_tickets).
+     * Coverage/SLA summary rows only; pricing/financial fields are never exposed.
+     *
+     * @param  array<string, mixed>  $input
+     * @return array<string, mixed>
+     */
+    private function listClientContracts(array $input): array
+    {
+        if (! $this->clientId) {
+            return ['error' => 'No client context — cannot list contracts'];
+        }
+
+        // max(1, …) guards the lower bound: Laravel's limit() treats a negative
+        // value as "no limit", which would return the whole (client-scoped) set.
+        $limit = max(1, min((int) ($input['limit'] ?? 25), 50));
+
+        $query = Contract::where('client_id', $this->clientId)
+            ->withCount(['assets', 'people', 'licenses']);
+
+        $status = trim((string) ($input['status'] ?? ''));
+        if ($status !== '' && ($case = ContractStatus::tryFrom($status)) !== null) {
+            $query->where('status', $case);
+        }
+
+        $contracts = $query->orderByDesc('start_date')
+            ->limit($limit)
+            ->get();
+
+        return [
+            'count' => $contracts->count(),
+            'client_id' => $this->clientId,
+            'contracts' => $contracts->map(fn (Contract $c) => [
+                'id' => $c->id,
+                'name' => $c->name,
+                'type' => $c->type?->value,
+                'type_label' => $c->type?->label(),
+                'status' => $c->status?->value,
+                'start_date' => $c->start_date?->toDateString(),
+                'end_date' => $c->end_date?->toDateString(),
+                'auto_renew' => (bool) $c->auto_renew,
+                'has_sla' => $c->hasSla(),
+                'assets_count' => $c->assets_count,
+                'people_count' => $c->people_count,
+                'licenses_count' => $c->licenses_count,
+            ])->toArray(),
+        ];
+    }
+
+    /**
+     * get_contract — one contract's coverage detail, scoped to the client. Pricing/
+     * financial fields are never exposed (see the PR design notes for the held list).
+     *
+     * @param  array<string, mixed>  $input
+     * @return array<string, mixed>
+     */
+    private function getContract(array $input): array
+    {
+        if (! $this->clientId) {
+            return ['error' => 'No client context — cannot look up contract'];
+        }
+
+        $contractId = (int) ($input['contract_id'] ?? 0);
+        if ($contractId <= 0) {
+            return ['error' => 'contract_id is required'];
+        }
+
+        $contract = Contract::where('client_id', $this->clientId)
+            ->withCount(['assets', 'people', 'licenses', 'profiles', 'documents'])
+            ->find($contractId);
+
+        if (! $contract) {
+            return ['error' => 'Contract not found at this client'];
+        }
+
+        return [
+            'id' => $contract->id,
+            'client_id' => $contract->client_id,
+            'name' => $contract->name,
+            'type' => $contract->type?->value,
+            'type_label' => $contract->type?->label(),
+            'status' => $contract->status?->value,
+            'status_label' => $contract->status?->label(),
+            'start_date' => $contract->start_date?->toDateString(),
+            'end_date' => $contract->end_date?->toDateString(),
+            'term_length_months' => $contract->term_length_months,
+            'auto_renew' => (bool) $contract->auto_renew,
+            'is_expired' => $contract->is_expired,
+            'cancelled_at' => $contract->cancelled_at?->toIso8601String(),
+            'cancellation_reason' => $contract->cancellation_reason,
+            'has_sla' => $contract->hasSla(),
+            'sla_terms' => $contract->sla_terms,
+            'notes' => $contract->notes !== null ? mb_substr((string) $contract->notes, 0, 2000) : null,
+            'assets_count' => $contract->assets_count,
+            'people_count' => $contract->people_count,
+            'licenses_count' => $contract->licenses_count,
+            'profiles_count' => $contract->profiles_count,
+            'documents_count' => $contract->documents_count,
         ];
     }
 
