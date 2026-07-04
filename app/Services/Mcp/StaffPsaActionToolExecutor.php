@@ -552,18 +552,25 @@ class StaffPsaActionToolExecutor
             return ['error' => 'A client with identical details was already created recently. Change at least one field, or use find_clients to check for an existing match, before retrying.'];
         }
 
-        $client = $this->clientService->createClient($validated);
+        // Create + audit atomically: the audit row is now the dedup guard's only
+        // memory, so a create that isn't recorded would let an identical retry slip
+        // through. Mirrors create_ticket's transactional create+audit.
+        $client = DB::transaction(function () use ($validated, $actorLabel, $contentHash): Client {
+            $client = $this->clientService->createClient($validated);
 
-        $this->auditEntityExecution(
-            'create_client',
-            'client',
-            (int) $client->id,
-            (int) $client->id,
-            $actorLabel,
-            $contentHash,
-            'Client created: '.$client->name.'.',
-            TechnicianConfig::requiredAiActorUserId(),
-        );
+            $this->auditEntityExecution(
+                'create_client',
+                'client',
+                (int) $client->id,
+                (int) $client->id,
+                $actorLabel,
+                $contentHash,
+                'Client created: '.$client->name.'.',
+                TechnicianConfig::requiredAiActorUserId(),
+            );
+
+            return $client;
+        });
 
         return [
             'success' => true,

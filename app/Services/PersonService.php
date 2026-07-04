@@ -89,21 +89,30 @@ class PersonService
      * other than the person's CURRENT client — after a cross-client move such a
      * link is factually wrong (regardless of assignment_source). Idempotent.
      *
+     * Contract detaches route through ContractAssignmentService::unassignPerson so
+     * each one leaves a ContractActivity 'assignment_removed' record — consistent
+     * with the rest of the contract-assignment surface and important for billing
+     * traceability (contract_person feeds per-user/per-workstation quantities).
+     * Device (asset) links have no equivalent activity log, so they detach directly.
+     *
      * @return array{contracts:int, assets:int}
      */
     public function detachCrossClientPivots(Person $person): array
     {
-        $contractIds = $person->contracts()->where('contracts.client_id', '!=', $person->client_id)->pluck('contracts.id')->all();
+        $crossContracts = $person->contracts()->where('contracts.client_id', '!=', $person->client_id)->get();
         $assetIds = $person->assets()->where('assets.client_id', '!=', $person->client_id)->pluck('assets.id')->all();
 
-        if ($contractIds !== []) {
-            $person->contracts()->detach($contractIds);
+        if ($crossContracts->isNotEmpty()) {
+            $assignmentService = app(ContractAssignmentService::class);
+            foreach ($crossContracts as $contract) {
+                $assignmentService->unassignPerson($contract, $person);
+            }
         }
         if ($assetIds !== []) {
             $person->assets()->detach($assetIds);
         }
 
-        return ['contracts' => count($contractIds), 'assets' => count($assetIds)];
+        return ['contracts' => $crossContracts->count(), 'assets' => count($assetIds)];
     }
 
     public function deletePerson(Person $person): void

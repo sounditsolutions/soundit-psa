@@ -412,6 +412,13 @@ class PsaPeopleToolsTest extends TestCase
         $result = $this->decodedResult($response);
         $this->assertSame(1, $result['contracts_detached']);
         $this->assertSame(1, $result['assets_detached']);
+
+        // The contract detach leaves a billing-audit trail, like every other
+        // contract-assignment change (routed through ContractAssignmentService).
+        $this->assertDatabaseHas('contract_activities', [
+            'contract_id' => $contract->id,
+            'action' => 'assignment_removed',
+        ]);
     }
 
     public function test_move_contact_preserves_links_already_pointing_at_the_target_client(): void
