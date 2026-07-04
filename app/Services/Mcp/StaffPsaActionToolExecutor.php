@@ -19,6 +19,7 @@ use App\Models\User;
 use App\Services\Assistant\AssistantTicketCreator;
 use App\Services\ClientService;
 use App\Services\EmailService;
+use App\Services\PersonService;
 use App\Services\Technician\TechnicianActionGate;
 use App\Services\Technician\TechnicianDisclosure;
 use App\Services\TicketService;
@@ -40,6 +41,7 @@ class StaffPsaActionToolExecutor
         private readonly AssistantTicketCreator $ticketCreator,
         private readonly TicketService $ticketService,
         private readonly ClientService $clientService,
+        private readonly PersonService $personService,
     ) {}
 
     /** @return array<string, mixed> */
@@ -63,6 +65,11 @@ class StaffPsaActionToolExecutor
             'update_client' => $this->updateClient($arguments, $clientId, $actorLabel),
             'update_client_site_notes' => $this->updateClientSiteNotes($arguments, $clientId, $actorLabel),
             'delete_client' => $this->deleteClient($arguments, $clientId, $actorLabel),
+            'create_contact' => $this->createContact($arguments, $clientId, $actorLabel),
+            'update_contact' => $this->updateContact($arguments, $actorLabel),
+            'set_primary_contact' => $this->setPrimaryContact($arguments, $actorLabel),
+            'move_contact_to_client' => $this->moveContactToClient($arguments, $actorLabel),
+            'delete_contact' => $this->deleteContact($arguments, $actorLabel),
             default => ['error' => "Unknown PSA action tool: {$name}"],
         };
     }
@@ -754,6 +761,335 @@ class StaffPsaActionToolExecutor
 
         if (! $isCreate && $validated === []) {
             return ['error' => 'update_client requires at least one field to change.'];
+        }
+
+        return $validated;
+    }
+
+    /**
+     * create_contact — parent-scoped. client_id is the required parent (supplied
+     * by the controller). Wraps PersonService::createPerson (primary-demotion +
+     * additional-email sync happen in the service).
+     *
+     * @return array<string, mixed>
+     */
+    private function createContact(array $arguments, int $clientId, string $actorLabel): array
+    {
+        if ($error = $this->guardDirectAction()) {
+            return $error;
+        }
+
+        $validated = $this->validatePersonPayload($arguments, isCreate: true);
+        if (isset($validated['error'])) {
+            return $validated;
+        }
+
+        $validated['client_id'] = $clientId;
+        $person = $this->personService->createPerson($validated);
+
+        $this->auditEntityExecution(
+            'create_contact',
+            'person',
+            (int) $person->id,
+            (int) $person->client_id,
+            $actorLabel,
+            $this->mutationContentHash('create_contact', (int) $person->id, $validated),
+            'Contact created: '.$this->contactDisplayName($person).' (client #'.$person->client_id.').',
+            TechnicianConfig::requiredAiActorUserId(),
+        );
+
+        return [
+            'success' => true,
+            'contact_id' => $person->id,
+            'client_id' => $person->client_id,
+            'name' => trim((string) $person->full_name),
+            'message' => 'Contact created.',
+        ];
+    }
+
+    /**
+     * update_contact — contact-scoped. The controller derives client scope from
+     * contact_id and forbids a stray client_id. Wraps PersonService::updatePerson.
+     *
+     * @return array<string, mixed>
+     */
+    private function updateContact(array $arguments, string $actorLabel): array
+    {
+        if ($error = $this->guardDirectAction()) {
+            return $error;
+        }
+
+        $person = $this->personForContact($arguments);
+        if (is_array($person)) {
+            return $person;
+        }
+
+        $fields = $arguments;
+        unset($fields['contact_id']);
+        $validated = $this->validatePersonPayload($fields, isCreate: false);
+        if (isset($validated['error'])) {
+            return $validated;
+        }
+
+        $updated = $this->personService->updatePerson($person, $validated);
+
+        $this->auditEntityExecution(
+            'update_contact',
+            'person',
+            (int) $updated->id,
+            (int) $updated->client_id,
+            $actorLabel,
+            $this->mutationContentHash('update_contact', (int) $updated->id, $validated),
+            'Contact updated ('.implode(', ', array_keys($validated)).').',
+            TechnicianConfig::requiredAiActorUserId(),
+        );
+
+        return [
+            'success' => true,
+            'contact_id' => $updated->id,
+            'client_id' => $updated->client_id,
+            'name' => trim((string) $updated->full_name),
+            'message' => 'Contact updated.',
+        ];
+    }
+
+    /**
+     * set_primary_contact — contact-scoped convenience. Promotes the contact to
+     * primary; the service demotes the prior primary for that client.
+     *
+     * @return array<string, mixed>
+     */
+    private function setPrimaryContact(array $arguments, string $actorLabel): array
+    {
+        if ($error = $this->guardDirectAction()) {
+            return $error;
+        }
+
+        $person = $this->personForContact($arguments);
+        if (is_array($person)) {
+            return $person;
+        }
+
+        $unexpected = array_values(array_diff(array_keys($arguments), ['contact_id']));
+        if ($unexpected !== []) {
+            return ['error' => 'set_primary_contact accepts only contact_id.'];
+        }
+
+        $updated = $this->personService->updatePerson($person, ['is_primary' => true]);
+
+        $this->auditEntityExecution(
+            'set_primary_contact',
+            'person',
+            (int) $updated->id,
+            (int) $updated->client_id,
+            $actorLabel,
+            $this->mutationContentHash('set_primary_contact', (int) $updated->id, ['is_primary' => true]),
+            'Contact set as primary: '.$this->contactDisplayName($updated).'.',
+            TechnicianConfig::requiredAiActorUserId(),
+        );
+
+        return [
+            'success' => true,
+            'contact_id' => $updated->id,
+            'client_id' => $updated->client_id,
+            'message' => 'Primary contact set.',
+        ];
+    }
+
+    /**
+     * move_contact_to_client — contact-scoped, typed-confirm. Reparents the
+     * contact to the target client (via updatePerson client_id change).
+     *
+     * @return array<string, mixed>
+     */
+    private function moveContactToClient(array $arguments, string $actorLabel): array
+    {
+        if ($error = $this->guardDirectAction()) {
+            return $error;
+        }
+
+        $person = $this->personForContact($arguments);
+        if (is_array($person)) {
+            return $person;
+        }
+
+        $unexpected = array_values(array_diff(array_keys($arguments), ['contact_id', 'new_client_id', 'confirm_client_name', 'reason']));
+        if ($unexpected !== []) {
+            return ['error' => 'move_contact_to_client accepts only contact_id, new_client_id, confirm_client_name, and reason.'];
+        }
+
+        $newClientId = $this->positiveInteger($arguments['new_client_id'] ?? null);
+        if ($newClientId === null) {
+            return ['error' => 'new_client_id is required'];
+        }
+
+        $newClient = Client::find($newClientId);
+        if (! $newClient) {
+            return ['error' => 'Client not found'];
+        }
+
+        $confirm = $this->optionalString($arguments, 'confirm_client_name');
+        if (! $this->confirmClientMatches($newClient, $confirm)) {
+            return ['error' => 'The typed confirm_client_name does not match the target client. Contact move cancelled.'];
+        }
+
+        $reason = $this->optionalString($arguments, 'reason');
+        $oldClientId = (int) $person->client_id;
+
+        // Reparent as a non-primary in the target client — a moved contact must
+        // not silently become a second primary there (the target keeps its own).
+        $updated = $this->personService->updatePerson($person, ['client_id' => $newClient->id, 'is_primary' => false]);
+
+        $this->auditEntityExecution(
+            'move_contact_to_client',
+            'person',
+            (int) $updated->id,
+            (int) $updated->client_id,
+            $actorLabel,
+            $this->mutationContentHash('move_contact_to_client', (int) $updated->id, ['new_client_id' => $newClient->id], $reason),
+            'Contact '.$this->contactDisplayName($updated).' moved from client #'.$oldClientId.' to #'.$newClient->id.($reason ? ' — '.$reason : '').'.',
+            TechnicianConfig::requiredAiActorUserId(),
+        );
+
+        return [
+            'success' => true,
+            'contact_id' => $updated->id,
+            'client_id' => $updated->client_id,
+            'message' => 'Contact moved.',
+        ];
+    }
+
+    /**
+     * delete_contact — contact-scoped, typed-confirm on the full name.
+     * PersonService::deletePerson blocks on open tickets (surfaced as a clean
+     * error) and soft-deletes.
+     *
+     * @return array<string, mixed>
+     */
+    private function deleteContact(array $arguments, string $actorLabel): array
+    {
+        if ($error = $this->guardDirectAction()) {
+            return $error;
+        }
+
+        $person = $this->personForContact($arguments);
+        if (is_array($person)) {
+            return $person;
+        }
+
+        $unexpected = array_values(array_diff(array_keys($arguments), ['contact_id', 'confirm_contact_name', 'reason']));
+        if ($unexpected !== []) {
+            return ['error' => 'delete_contact accepts only contact_id, confirm_contact_name, and reason.'];
+        }
+
+        $confirm = $this->optionalString($arguments, 'confirm_contact_name');
+        if (! $this->confirmContactMatches($person, $confirm)) {
+            return ['error' => 'The typed confirm_contact_name does not match the target contact. Deletion cancelled.'];
+        }
+
+        $reason = $this->optionalString($arguments, 'reason');
+        $clientId = (int) $person->client_id;
+        $display = $this->contactDisplayName($person);
+
+        try {
+            $this->personService->deletePerson($person);
+        } catch (\RuntimeException $e) {
+            return ['error' => $e->getMessage()];
+        }
+
+        $this->auditEntityExecution(
+            'delete_contact',
+            'person',
+            (int) $person->id,
+            $clientId,
+            $actorLabel,
+            $this->mutationContentHash('delete_contact', (int) $person->id, ['name' => $person->full_name], $reason),
+            'Contact soft-deleted: '.$display.($reason ? ' — '.$reason : '').'.',
+            TechnicianConfig::requiredAiActorUserId(),
+        );
+
+        return [
+            'success' => true,
+            'contact_id' => $person->id,
+            'client_id' => $clientId,
+            'message' => 'Contact deleted.',
+        ];
+    }
+
+    /** @return Person|array<string, string> */
+    private function personForContact(array $arguments): Person|array
+    {
+        $contactId = $this->positiveInteger($arguments['contact_id'] ?? null);
+        if ($contactId === null) {
+            return ['error' => 'contact_id is required'];
+        }
+
+        $person = Person::find($contactId);
+        if (! $person) {
+            return ['error' => 'Contact not found'];
+        }
+
+        return $person;
+    }
+
+    private function confirmContactMatches(Person $person, ?string $typed): bool
+    {
+        if ($typed === null) {
+            return false;
+        }
+
+        return strcasecmp(trim($typed), trim((string) $person->full_name)) === 0;
+    }
+
+    private function contactDisplayName(Person $person): string
+    {
+        $name = trim((string) $person->full_name);
+
+        return $name !== '' ? $name : 'contact #'.$person->id;
+    }
+
+    /**
+     * Allowlist + validate a contact create/update payload against the same rules
+     * as PersonStore/UpdateRequest. The Person model leaves portal_enabled /
+     * password / company_wide_access / cipp_* / mailbox_* mass-assignable, so
+     * THIS allowlist is the security boundary — it also excludes department /
+     * office_location (CIPP-sync-only, absent from the FormRequests).
+     *
+     * @param  array<string, mixed>  $arguments
+     * @return array<string, mixed> Validated data, or ['error' => string].
+     */
+    private function validatePersonPayload(array $arguments, bool $isCreate): array
+    {
+        $allowed = ['first_name', 'last_name', 'email', 'phone', 'mobile', 'job_title', 'notes', 'person_type', 'is_primary', 'is_active', 'additional_emails'];
+        $unexpected = array_values(array_diff(array_keys($arguments), $allowed));
+        if ($unexpected !== []) {
+            return ['error' => 'This tool accepts only: '.implode(', ', $allowed).'.'];
+        }
+
+        $validator = Validator::make($arguments, [
+            'first_name' => ['sometimes', 'nullable', 'string', 'max:100'],
+            'last_name' => ['sometimes', 'nullable', 'string', 'max:100'],
+            'email' => ['sometimes', 'nullable', 'email', 'max:255'],
+            'phone' => ['sometimes', 'nullable', 'string', 'max:20'],
+            'mobile' => ['sometimes', 'nullable', 'string', 'max:20'],
+            'job_title' => ['sometimes', 'nullable', 'string', 'max:255'],
+            'notes' => ['sometimes', 'nullable', 'string', 'max:10000'],
+            'person_type' => ['sometimes', 'required', 'string', Rule::in(array_column(\App\Enums\PersonType::cases(), 'value'))],
+            'is_primary' => ['sometimes', 'boolean'],
+            'is_active' => ['sometimes', 'boolean'],
+            'additional_emails' => ['sometimes', 'nullable', 'array', 'max:10'],
+            'additional_emails.*.email' => ['required', 'email', 'max:255'],
+            'additional_emails.*.label' => ['sometimes', 'nullable', 'string', 'max:50'],
+        ]);
+
+        if ($validator->fails()) {
+            return ['error' => $validator->errors()->first()];
+        }
+
+        $validated = $validator->validated();
+
+        if (! $isCreate && $validated === []) {
+            return ['error' => 'update_contact requires at least one field to change.'];
         }
 
         return $validated;
