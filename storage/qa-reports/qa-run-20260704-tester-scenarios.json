@@ -1,0 +1,85 @@
+{
+  "run_label": "tester full scenario run 2026-07-04",
+  "results": [
+    {
+      "scenario": "client-overview",
+      "status": "pass"
+    },
+    {
+      "scenario": "client-search-create",
+      "status": "pass"
+    },
+    {
+      "scenario": "client-contacts",
+      "status": "fail"
+    },
+    {
+      "scenario": "tix-create-manual",
+      "status": "pass"
+    },
+    {
+      "scenario": "tix-resolve",
+      "status": "fail"
+    },
+    {
+      "scenario": "tix-statuses",
+      "status": "pass"
+    },
+    {
+      "scenario": "tix-reopen",
+      "status": "pass"
+    },
+    {
+      "scenario": "asset-inventory",
+      "status": "pass"
+    },
+    {
+      "scenario": "asset-detail",
+      "status": "fail"
+    },
+    {
+      "scenario": "asset-ticket-link",
+      "status": "fail"
+    },
+    {
+      "scenario": "invoice-list",
+      "status": "fail"
+    },
+    {
+      "scenario": "invoice-detail",
+      "status": "fail"
+    },
+    {
+      "scenario": "contract-to-invoice",
+      "status": "fail"
+    },
+    {
+      "scenario": "wiki-gate",
+      "status": "pass"
+    },
+    {
+      "scenario": "wiki-client-nav",
+      "status": "fail"
+    },
+    {
+      "scenario": "wiki-mine-verify",
+      "status": "fail"
+    },
+    {
+      "scenario": "wiki-fact-actions",
+      "status": "pass"
+    }
+  ],
+  "findings": [
+    {
+      "id": "psa-sp30",
+      "kind": "ux",
+      "title": "Asset detail shows conflicting OS values without a source/conflict warning"
+    },
+    {
+      "id": "psa-qxu1",
+      "kind": "bug",
+      "title": "Wiki search misses exact hyphenated identifiers visible in facts"
+    }
+  ]
+}
