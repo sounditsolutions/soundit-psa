@@ -414,6 +414,34 @@ class PsaPeopleToolsTest extends TestCase
         $this->assertSame(1, $result['assets_detached']);
     }
 
+    public function test_move_contact_preserves_links_already_pointing_at_the_target_client(): void
+    {
+        $this->configureAiActor();
+        $from = Client::factory()->create(['name' => 'From Co']);
+        $to = Client::factory()->create(['name' => 'To Co']);
+        $person = $this->contact($from);
+
+        // One link at the OLD client (cross-client after the move) and one already at
+        // the TARGET client (must NOT be detached — the != filter must not over-reach).
+        $oldContract = Contract::create(['client_id' => $from->id, 'name' => 'From MSA', 'type' => 'managed', 'start_date' => '2026-01-01']);
+        $targetContract = Contract::create(['client_id' => $to->id, 'name' => 'To MSA', 'type' => 'managed', 'start_date' => '2026-01-01']);
+        $person->contracts()->attach($oldContract->id, ['assignment_source' => 'manual', 'assigned_at' => now()]);
+        $person->contracts()->attach($targetContract->id, ['assignment_source' => 'manual', 'assigned_at' => now()]);
+
+        $token = $this->token(['move_contact_to_client'], 'chet');
+        $response = $this->callTool($token, 'move_contact_to_client', [
+            'contact_id' => $person->id,
+            'new_client_id' => $to->id,
+            'confirm_client_name' => 'To Co',
+        ]);
+        $response->assertOk();
+        $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
+
+        // Only the old-client link is gone; the target-client link survives; count is exactly 1.
+        $this->assertSame([$targetContract->id], $person->fresh()->contracts()->pluck('contracts.id')->all());
+        $this->assertSame(1, $this->decodedResult($response)['contracts_detached']);
+    }
+
     public function test_delete_contact_requires_typed_confirm_and_soft_deletes(): void
     {
         $this->configureAiActor();

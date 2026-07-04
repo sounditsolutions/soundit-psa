@@ -987,7 +987,7 @@ class StaffPsaActionToolExecutor
             'contracts_detached' => $pivots['contracts'],
             'assets_detached' => $pivots['assets'],
             'message' => 'Contact moved.'.($pivots['contracts'] + $pivots['assets'] > 0
-                ? ' Detached '.$pivots['contracts'].' contract and '.$pivots['assets'].' device link(s) that pointed at the previous client.'
+                ? ' Detached '.$pivots['contracts'].' contract and '.$pivots['assets'].' device link(s) that pointed at a different client.'
                 : ''),
         ];
     }
