@@ -305,7 +305,7 @@ class PsaRecordsToolsTest extends TestCase
 
     public function test_update_client_site_notes_writes_and_audits(): void
     {
-        $this->configureAiActor();
+        $actor = $this->configureAiActor();
         $client = Client::factory()->create();
         $token = $this->token(['update_client_site_notes'], 'chet');
         $siteNotes = 'Rack is in the east closet. Gateway 10.0.0.1.';
@@ -321,6 +321,7 @@ class PsaRecordsToolsTest extends TestCase
         $client->refresh();
         $this->assertSame($siteNotes, $client->site_notes);
         $this->assertNotNull($client->site_notes_html);
+        $this->assertSame($actor->id, $client->site_notes_updated_by);
 
         $this->assertDatabaseHas('technician_action_logs', [
             'action_type' => 'update_client_site_notes',

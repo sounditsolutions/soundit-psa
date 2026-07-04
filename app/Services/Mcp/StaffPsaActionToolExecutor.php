@@ -652,7 +652,7 @@ class StaffPsaActionToolExecutor
         }
 
         try {
-            $this->clientService->updateSiteNotes($client, $siteNotes, $expectedUpdatedAt);
+            $this->clientService->updateSiteNotes($client, $siteNotes, $expectedUpdatedAt, TechnicianConfig::requiredAiActorUserId());
         } catch (\RuntimeException $e) {
             return ['error' => $e->getMessage()];
         }

@@ -35,7 +35,7 @@ class ClientService
         return $client->fresh();
     }
 
-    public function updateSiteNotes(Client $client, ?string $siteNotes, ?string $expectedUpdatedAt = null): Client
+    public function updateSiteNotes(Client $client, ?string $siteNotes, ?string $expectedUpdatedAt = null, ?int $updatedByUserId = null): Client
     {
         $trimmed = $siteNotes ? trim($siteNotes) : null;
         $trimmed = $trimmed ?: null;
@@ -60,7 +60,7 @@ class ClientService
             'site_notes' => $trimmed,
             'site_notes_html' => $trimmed ? MarkdownRenderer::render($trimmed) : null,
             'site_notes_updated_at' => now(),
-            'site_notes_updated_by' => auth()->id(),
+            'site_notes_updated_by' => $updatedByUserId ?? auth()->id(),
         ]);
 
         return $client;
