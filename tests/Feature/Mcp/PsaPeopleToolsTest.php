@@ -336,6 +336,25 @@ class PsaPeopleToolsTest extends TestCase
         ]);
     }
 
+    public function test_move_contact_to_same_client_is_rejected(): void
+    {
+        $this->configureAiActor();
+        $client = Client::factory()->create(['name' => 'Same Co']);
+        $person = $this->contact($client);
+        $token = $this->token(['move_contact_to_client'], 'chet');
+
+        $response = $this->callTool($token, 'move_contact_to_client', [
+            'contact_id' => $person->id,
+            'new_client_id' => $client->id,
+            'confirm_client_name' => 'Same Co',
+            'reason' => 'A no-op same-client move must be refused, not report phantom detaches.',
+        ]);
+
+        $response->assertOk();
+        $this->assertTrue((bool) $response->json('result.isError'));
+        $this->assertStringContainsString('already belongs to that client', (string) $response->json('result.content.0.text'));
+    }
+
     public function test_move_contact_does_not_create_duplicate_primary_in_target(): void
     {
         $this->configureAiActor();

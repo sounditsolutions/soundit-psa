@@ -953,6 +953,13 @@ class StaffPsaActionToolExecutor
         $reason = $this->optionalString($arguments, 'reason');
         $oldClientId = (int) $person->client_id;
 
+        // A same-client "move" is a no-op — reject it so we never report detach
+        // counts for a move that didn't change client_id (updatePerson would skip
+        // the pivot reconcile since client_id is unchanged).
+        if ($newClient->id === $oldClientId) {
+            return ['error' => 'Contact already belongs to that client; nothing to move.'];
+        }
+
         // Count the links that will become cross-client BEFORE updatePerson detaches them.
         $pivots = $this->personService->crossClientPivotCounts($person, $newClient->id);
 
