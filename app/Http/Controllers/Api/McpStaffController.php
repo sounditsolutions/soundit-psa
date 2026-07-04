@@ -115,6 +115,21 @@ class McpStaffController extends Controller
         'move_ticket_to_client',
     ];
 
+    /** PSA records write-surface (P2a) — native client CRUD, dispatched through StaffPsaActionToolExecutor. */
+    private const PSA_RECORDS_TOOLS = [
+        'create_client',
+        'update_client',
+        'update_client_site_notes',
+        'delete_client',
+    ];
+
+    /** psa_records tools that act on an existing client — client_id is the required target, not ambient scope. */
+    private const PSA_RECORDS_CLIENT_SCOPED_TOOLS = [
+        'update_client',
+        'update_client_site_notes',
+        'delete_client',
+    ];
+
     private const BODY_LENGTH_AUDIT_TOOLS = [
         'send_email',
         'stage_email',
@@ -227,6 +242,7 @@ class McpStaffController extends Controller
                 McpToolRegistry::wikiUpdatePageTool(),
             ],
             McpToolRegistry::psaActionTools(),
+            McpToolRegistry::psaRecordsTools(),
             TacticalConfig::isConfigured() ? McpToolRegistry::tacticalAdminTools() : [],
             ChetDataSurfaceTools::generalTools(),
             OperatorBridgeTools::definitions(),
@@ -369,6 +385,9 @@ class McpStaffController extends Controller
         if ($this->isCippWriteTool((string) $name) && $clientId !== null) {
             $auditArguments['client_id'] = $clientId;
         }
+        if ($this->isPsaRecordsClientScopedTool((string) $name) && $clientId !== null) {
+            $auditArguments['client_id'] = $clientId;
+        }
 
         if ($this->isWikiGlobalScopeWrite((string) $name, $arguments) && $hasClientIdArgument) {
             $message = 'client_id must be omitted for wiki_add_fact global-scope writes.';
@@ -458,6 +477,38 @@ class McpStaffController extends Controller
         }
 
         if ($this->isPsaActionTool((string) $name) && ! $ticketScopedPsaTool && $clientId === null) {
+            $message = "client_id is required for {$name}.";
+            $this->audit('tools/call', (string) $name, $auditArguments, 'error', $message, $start, $request);
+
+            return response()->json([
+                'jsonrpc' => '2.0',
+                'id' => $id,
+                'result' => [
+                    'content' => [['type' => 'text', 'text' => $message]],
+                    'isError' => true,
+                ],
+            ]);
+        }
+
+        // create_client is a GLOBAL psa_records write (a new client has no parent
+        // scope) — reject a supplied client_id, mirroring the wiki global writes.
+        if ((string) $name === 'create_client' && $hasClientIdArgument) {
+            $message = 'client_id must be omitted for create_client; it is a global write.';
+            $this->audit('tools/call', (string) $name, $auditArguments, 'error', $message, $start, $request);
+
+            return response()->json([
+                'jsonrpc' => '2.0',
+                'id' => $id,
+                'result' => [
+                    'content' => [['type' => 'text', 'text' => $message]],
+                    'isError' => true,
+                ],
+            ]);
+        }
+
+        // update_client / update_client_site_notes / delete_client act on an
+        // existing client — client_id is the required target, derived server-side.
+        if ($this->isPsaRecordsClientScopedTool((string) $name) && $clientId === null) {
             $message = "client_id is required for {$name}.";
             $this->audit('tools/call', (string) $name, $auditArguments, 'error', $message, $start, $request);
 
@@ -604,6 +655,15 @@ class McpStaffController extends Controller
                     $this->actorLabel($request),
                 );
             } elseif ($this->isPsaActionTool((string) $name)) {
+                $result = app(StaffPsaActionToolExecutor::class)->execute(
+                    (string) $name,
+                    $arguments,
+                    (int) $clientId,
+                    $this->actorLabel($request),
+                );
+            } elseif ($this->isPsaRecordsTool((string) $name)) {
+                // create_client is global ($clientId null → 0, ignored by the
+                // handler); the other three carry client_id as the target.
                 $result = app(StaffPsaActionToolExecutor::class)->execute(
                     (string) $name,
                     $arguments,
@@ -791,6 +851,18 @@ class McpStaffController extends Controller
 
         if ($tool === 'move_ticket_to_client') {
             return $this->auditMoveTicketArguments($args);
+        }
+
+        if ($tool === 'create_client' || $tool === 'update_client') {
+            return $this->auditClientWriteArguments($args);
+        }
+
+        if ($tool === 'update_client_site_notes') {
+            return $this->auditClientSiteNotesArguments($args);
+        }
+
+        if ($tool === 'delete_client') {
+            return $this->auditDeleteClientArguments($args);
         }
 
         $redacted = app(ActionRedactor::class)->redactParams($args);
@@ -1026,6 +1098,67 @@ class McpStaffController extends Controller
 
             if ($normalized === 'reason') {
                 $safe['reason_length'] = is_string($value) ? mb_strlen($value) : 0;
+            }
+        }
+
+        return $safe;
+    }
+
+    /**
+     * Redaction for create_client / update_client: safelist the client fields,
+     * reduce the free-text notes body to a length only.
+     *
+     * @return array<string, mixed>
+     */
+    private function auditClientWriteArguments(array $arguments): array
+    {
+        $safe = [];
+
+        foreach ($arguments as $key => $value) {
+            $normalized = mb_strtolower((string) $key);
+
+            if (in_array($normalized, ['client_id', 'name', 'phone', 'email', 'website', 'address_line1', 'address_line2', 'city', 'state', 'postcode', 'is_active', 'primary_tech_id', 'reseller_id'], true)) {
+                $safe[$normalized] = $value;
+            }
+
+            if ($normalized === 'notes') {
+                $safe['notes_length'] = is_string($value) ? mb_strlen($value) : 0;
+            }
+        }
+
+        return $safe;
+    }
+
+    /** @return array<string, mixed> */
+    private function auditClientSiteNotesArguments(array $arguments): array
+    {
+        $safe = [];
+
+        foreach ($arguments as $key => $value) {
+            $normalized = mb_strtolower((string) $key);
+
+            if (in_array($normalized, ['client_id', 'expected_updated_at'], true)) {
+                $safe[$normalized] = $value;
+            }
+
+            if ($normalized === 'site_notes') {
+                $safe['site_notes_length'] = is_string($value) ? mb_strlen($value) : 0;
+            }
+        }
+
+        return $safe;
+    }
+
+    /** @return array<string, mixed> */
+    private function auditDeleteClientArguments(array $arguments): array
+    {
+        $safe = [];
+
+        foreach ($arguments as $key => $value) {
+            $normalized = mb_strtolower((string) $key);
+
+            if (in_array($normalized, ['client_id', 'confirm_client_name', 'reason'], true)) {
+                $safe[$normalized] = $value;
             }
         }
 
@@ -1325,6 +1458,10 @@ class McpStaffController extends Controller
             return $token->allowedTools !== null && $token->allows($toolName);
         }
 
+        if ($this->isPsaRecordsTool($toolName)) {
+            return $token->allowedTools !== null && $token->allows($toolName);
+        }
+
         if ($this->isCippWriteTool($toolName)) {
             return $token->allowedTools !== null && $token->allows($toolName);
         }
@@ -1417,6 +1554,16 @@ class McpStaffController extends Controller
     private function isPsaActionTool(string $toolName): bool
     {
         return in_array($toolName, self::PSA_ACTION_TOOLS, true);
+    }
+
+    private function isPsaRecordsTool(string $toolName): bool
+    {
+        return in_array($toolName, self::PSA_RECORDS_TOOLS, true);
+    }
+
+    private function isPsaRecordsClientScopedTool(string $toolName): bool
+    {
+        return in_array($toolName, self::PSA_RECORDS_CLIENT_SCOPED_TOOLS, true);
     }
 
     private function isCippWriteTool(string $toolName): bool

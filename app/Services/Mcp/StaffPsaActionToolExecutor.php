@@ -17,6 +17,7 @@ use App\Models\Ticket;
 use App\Models\TicketNote;
 use App\Models\User;
 use App\Services\Assistant\AssistantTicketCreator;
+use App\Services\ClientService;
 use App\Services\EmailService;
 use App\Services\Technician\TechnicianActionGate;
 use App\Services\Technician\TechnicianDisclosure;
@@ -38,6 +39,7 @@ class StaffPsaActionToolExecutor
         private readonly EmailService $email,
         private readonly AssistantTicketCreator $ticketCreator,
         private readonly TicketService $ticketService,
+        private readonly ClientService $clientService,
     ) {}
 
     /** @return array<string, mixed> */
@@ -57,6 +59,10 @@ class StaffPsaActionToolExecutor
             'unassign_asset' => $this->unassignAsset($arguments, $clientId, $actorLabel),
             'set_ticket_contact' => $this->setTicketContact($arguments, $clientId, $actorLabel),
             'move_ticket_to_client' => $this->moveTicketToClient($arguments, $clientId, $actorLabel),
+            'create_client' => $this->createClient($arguments, $actorLabel),
+            'update_client' => $this->updateClient($arguments, $clientId, $actorLabel),
+            'update_client_site_notes' => $this->updateClientSiteNotes($arguments, $clientId, $actorLabel),
+            'delete_client' => $this->deleteClient($arguments, $clientId, $actorLabel),
             default => ['error' => "Unknown PSA action tool: {$name}"],
         };
     }
@@ -502,6 +508,255 @@ class StaffPsaActionToolExecutor
             'detached_asset_ids' => array_values($detachedAssets),
             'message' => 'Ticket moved.',
         ];
+    }
+
+    /**
+     * create_client — global write. Creates a new PSA client from the same
+     * fields the web create form accepts (minus site_notes/credentials/stage
+     * and integration IDs). No client scope: a new client has no parent.
+     *
+     * @return array<string, mixed>
+     */
+    private function createClient(array $arguments, string $actorLabel): array
+    {
+        if ($error = $this->guardDirectAction()) {
+            return $error;
+        }
+
+        $validated = $this->validateClientPayload($arguments, isCreate: true);
+        if (isset($validated['error'])) {
+            return $validated;
+        }
+
+        $client = $this->clientService->createClient($validated);
+
+        $this->auditEntityExecution(
+            'create_client',
+            'client',
+            (int) $client->id,
+            (int) $client->id,
+            $actorLabel,
+            $this->mutationContentHash('create_client', (int) $client->id, $validated),
+            'Client created: '.$client->name.'.',
+            TechnicianConfig::requiredAiActorUserId(),
+        );
+
+        return [
+            'success' => true,
+            'client_id' => $client->id,
+            'name' => $client->name,
+            'message' => 'Client created.',
+        ];
+    }
+
+    /**
+     * update_client — entity-scoped. client_id is the target (derived server-side
+     * by the controller). Site notes and credentials are handled by their own
+     * tools and are rejected here.
+     *
+     * @return array<string, mixed>
+     */
+    private function updateClient(array $arguments, int $clientId, string $actorLabel): array
+    {
+        if ($error = $this->guardDirectAction()) {
+            return $error;
+        }
+
+        $client = Client::find($clientId);
+        if (! $client) {
+            return ['error' => 'Client not found'];
+        }
+
+        $validated = $this->validateClientPayload($arguments, isCreate: false);
+        if (isset($validated['error'])) {
+            return $validated;
+        }
+
+        if (array_key_exists('reseller_id', $validated) && (int) $validated['reseller_id'] === (int) $client->id) {
+            return ['error' => 'A client cannot be its own reseller.'];
+        }
+
+        $updated = $this->clientService->updateClient($client, $validated);
+
+        $this->auditEntityExecution(
+            'update_client',
+            'client',
+            (int) $updated->id,
+            (int) $updated->id,
+            $actorLabel,
+            $this->mutationContentHash('update_client', (int) $updated->id, $validated),
+            'Client updated ('.implode(', ', array_keys($validated)).').',
+            TechnicianConfig::requiredAiActorUserId(),
+        );
+
+        return [
+            'success' => true,
+            'client_id' => $updated->id,
+            'name' => $updated->name,
+            'message' => 'Client updated.',
+        ];
+    }
+
+    /**
+     * update_client_site_notes — entity-scoped. Passes expected_updated_at
+     * through to the optimistic-concurrency guard; a stale write surfaces the
+     * service RuntimeException as a clean tool error.
+     *
+     * @return array<string, mixed>
+     */
+    private function updateClientSiteNotes(array $arguments, int $clientId, string $actorLabel): array
+    {
+        if ($error = $this->guardDirectAction()) {
+            return $error;
+        }
+
+        $client = Client::find($clientId);
+        if (! $client) {
+            return ['error' => 'Client not found'];
+        }
+
+        $unexpected = array_values(array_diff(array_keys($arguments), ['site_notes', 'expected_updated_at']));
+        if ($unexpected !== []) {
+            return ['error' => 'update_client_site_notes accepts only site_notes and expected_updated_at.'];
+        }
+
+        if (! array_key_exists('site_notes', $arguments)) {
+            return ['error' => 'site_notes is required.'];
+        }
+
+        $siteNotes = $arguments['site_notes'];
+        if ($siteNotes !== null && ! is_string($siteNotes)) {
+            return ['error' => 'site_notes must be a string or null.'];
+        }
+
+        $expectedUpdatedAt = $this->optionalString($arguments, 'expected_updated_at');
+        if ($expectedUpdatedAt !== null
+            && Validator::make(['expected_updated_at' => $expectedUpdatedAt], ['expected_updated_at' => ['date']])->fails()) {
+            return ['error' => 'expected_updated_at must be a valid ISO-8601 timestamp.'];
+        }
+
+        try {
+            $this->clientService->updateSiteNotes($client, $siteNotes, $expectedUpdatedAt);
+        } catch (\RuntimeException $e) {
+            return ['error' => $e->getMessage()];
+        }
+
+        $length = is_string($siteNotes) ? mb_strlen($siteNotes) : 0;
+        $this->auditEntityExecution(
+            'update_client_site_notes',
+            'client',
+            (int) $client->id,
+            (int) $client->id,
+            $actorLabel,
+            $this->mutationContentHash('update_client_site_notes', (int) $client->id, ['length' => $length], $expectedUpdatedAt),
+            'Client site notes updated ('.$length.' chars).',
+            TechnicianConfig::requiredAiActorUserId(),
+        );
+
+        return [
+            'success' => true,
+            'client_id' => $client->id,
+            'message' => 'Client site notes updated.',
+        ];
+    }
+
+    /**
+     * delete_client — entity-scoped, typed-confirm. Requires the exact client
+     * name; ClientService::deleteClient blocks on open tickets / active
+     * contracts / unpaid invoices (surfaced as clean tool errors) and soft-deletes.
+     *
+     * @return array<string, mixed>
+     */
+    private function deleteClient(array $arguments, int $clientId, string $actorLabel): array
+    {
+        if ($error = $this->guardDirectAction()) {
+            return $error;
+        }
+
+        $client = Client::find($clientId);
+        if (! $client) {
+            return ['error' => 'Client not found'];
+        }
+
+        $unexpected = array_values(array_diff(array_keys($arguments), ['confirm_client_name', 'reason']));
+        if ($unexpected !== []) {
+            return ['error' => 'delete_client accepts only confirm_client_name and reason.'];
+        }
+
+        $confirm = $this->optionalString($arguments, 'confirm_client_name');
+        if (! $this->confirmClientMatches($client, $confirm)) {
+            return ['error' => 'The typed confirm_client_name does not match the target client. Deletion cancelled.'];
+        }
+
+        $reason = $this->optionalString($arguments, 'reason');
+
+        try {
+            $this->clientService->deleteClient($client);
+        } catch (\RuntimeException $e) {
+            return ['error' => $e->getMessage()];
+        }
+
+        $this->auditEntityExecution(
+            'delete_client',
+            'client',
+            (int) $client->id,
+            (int) $client->id,
+            $actorLabel,
+            $this->mutationContentHash('delete_client', (int) $client->id, ['name' => $client->name], $reason),
+            'Client soft-deleted: '.$client->name.($reason ? ' — '.$reason : '').'.',
+            TechnicianConfig::requiredAiActorUserId(),
+        );
+
+        return [
+            'success' => true,
+            'client_id' => $client->id,
+            'message' => 'Client deleted.',
+        ];
+    }
+
+    /**
+     * Allowlist + validate a client create/update payload against the same
+     * rules as ClientStoreRequest / ClientUpdateRequest, minus site_notes,
+     * credentials, stage, and all integration IDs (never client-editable via MCP).
+     *
+     * @param  array<string, mixed>  $arguments
+     * @return array<string, mixed> Validated data, or ['error' => string].
+     */
+    private function validateClientPayload(array $arguments, bool $isCreate): array
+    {
+        $allowed = ['name', 'notes', 'phone', 'email', 'website', 'address_line1', 'address_line2', 'city', 'state', 'postcode', 'is_active', 'primary_tech_id', 'reseller_id'];
+        $unexpected = array_values(array_diff(array_keys($arguments), $allowed));
+        if ($unexpected !== []) {
+            return ['error' => 'This tool accepts only: '.implode(', ', $allowed).'.'];
+        }
+
+        $validator = Validator::make($arguments, [
+            'name' => $isCreate ? ['required', 'string', 'max:255'] : ['sometimes', 'required', 'string', 'max:255'],
+            'notes' => ['sometimes', 'nullable', 'string', 'max:10000'],
+            'phone' => ['sometimes', 'nullable', 'string', 'max:20'],
+            'email' => ['sometimes', 'nullable', 'email', 'max:255'],
+            'website' => ['sometimes', 'nullable', 'url', 'max:255'],
+            'address_line1' => ['sometimes', 'nullable', 'string', 'max:255'],
+            'address_line2' => ['sometimes', 'nullable', 'string', 'max:255'],
+            'city' => ['sometimes', 'nullable', 'string', 'max:100'],
+            'state' => ['sometimes', 'nullable', 'string', 'max:50'],
+            'postcode' => ['sometimes', 'nullable', 'string', 'max:20'],
+            'is_active' => ['sometimes', 'boolean'],
+            'primary_tech_id' => ['sometimes', 'nullable', 'integer', 'exists:users,id'],
+            'reseller_id' => ['sometimes', 'nullable', 'integer', 'exists:clients,id,deleted_at,NULL'],
+        ]);
+
+        if ($validator->fails()) {
+            return ['error' => $validator->errors()->first()];
+        }
+
+        $validated = $validator->validated();
+
+        if (! $isCreate && $validated === []) {
+            return ['error' => 'update_client requires at least one field to change.'];
+        }
+
+        return $validated;
     }
 
     /** @return array<string, mixed> */
@@ -1106,6 +1361,23 @@ class StaffPsaActionToolExecutor
 
     private function auditDirectExecution(string $actionType, Ticket $ticket, string $actorLabel, string $contentHash, string $summary, ?int $actorId = null): void
     {
+        $this->recordActionLog($actionType, $ticket->id, (int) $ticket->client_id, $actorLabel, $contentHash, $summary, $actorId);
+    }
+
+    /**
+     * Append-only audit for a non-ticket PSA entity mutation (client, person,
+     * asset). Mirrors auditDirectExecution but leaves ticket_id null and encodes
+     * the entity type/id in the summary, since technician_action_logs has no
+     * entity_type/entity_id columns (v1 — see psa-wsje).
+     */
+    private function auditEntityExecution(string $actionType, string $entityType, ?int $entityId, int $clientId, string $actorLabel, string $contentHash, string $summary, ?int $actorId = null): void
+    {
+        $tag = '['.$entityType.($entityId !== null ? '#'.$entityId : '').'] ';
+        $this->recordActionLog($actionType, null, $clientId, $actorLabel, $contentHash, $tag.$summary, $actorId);
+    }
+
+    private function recordActionLog(string $actionType, ?int $ticketId, ?int $clientId, string $actorLabel, string $contentHash, string $summary, ?int $actorId): void
+    {
         TechnicianActionLog::create([
             'actor_id' => $actorId ?? TechnicianConfig::requiredAiActorUserId(),
             'approver_user_id' => null,
@@ -1113,8 +1385,8 @@ class StaffPsaActionToolExecutor
             'action_type' => $actionType,
             'tier' => TechnicianTier::Approve->value,
             'result_status' => 'executed',
-            'ticket_id' => $ticket->id,
-            'client_id' => $ticket->client_id,
+            'ticket_id' => $ticketId,
+            'client_id' => $clientId,
             'run_id' => null,
             'content_hash' => $contentHash,
             'summary' => mb_substr($summary, 0, 1000),
