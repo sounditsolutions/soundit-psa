@@ -217,8 +217,9 @@ class CippWritePasswordResetPr3Test extends TestCase
         $this->assertFalse($result['ad_synced_warning']);
         $this->assertStringContainsString('Relay it', $result['message']);
 
-        // An 'executed' audit row exists...
-        $this->assertSame(1, TechnicianActionLog::where('action_type', self::TOOL)->where('result_status', 'executed')->count());
+        // An 'executed' audit row exists, recording the effective must_change (defaulted true here)...
+        $executedRow = TechnicianActionLog::where('action_type', self::TOOL)->where('result_status', 'executed')->sole();
+        $this->assertStringContainsString('must_change=true', $executedRow->summary);
 
         // ...but the credential is in NO persistent sink and NO log line.
         $this->assertStringNotContainsString($secret, json_encode(TechnicianActionLog::all()->toArray()));
@@ -254,6 +255,10 @@ class CippWritePasswordResetPr3Test extends TestCase
 
         $response->assertOk();
         $this->assertFalse($this->decodedResult($response)['must_change_at_next_logon']);
+
+        // The immutable audit records the EFFECTIVE must_change so a permanent reset is distinguishable.
+        $this->assertStringContainsString('must_change=false', TechnicianActionLog::where('action_type', self::TOOL)
+            ->where('result_status', 'executed')->latest('id')->firstOrFail()->summary);
     }
 
     public function test_surfaces_ad_sync_warning(): void

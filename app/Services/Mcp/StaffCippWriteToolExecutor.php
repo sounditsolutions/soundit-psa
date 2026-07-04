@@ -395,8 +395,10 @@ class StaffCippWriteToolExecutor
             return ['error' => "CIPP password reset failed for {$tool}; no password was returned."];
         }
 
-        // Audit records the action + target only. The summary carries NO credential.
-        $this->auditAttempt($tool, 'executed', $client->id, $ticket, $person, null, $contentHash, "{$tool} executed: {$reason}", $actorLabel);
+        // Audit records the action + target + the EFFECTIVE must_change flag (a boolean, not a
+        // credential) so the immutable log distinguishes a temp reset from a permanent one. NO password.
+        $mustChangeLabel = $mustChange ? 'true' : 'false';
+        $this->auditAttempt($tool, 'executed', $client->id, $ticket, $person, null, $contentHash, "{$tool} executed (must_change={$mustChangeLabel}): {$reason}", $actorLabel);
 
         $results = is_array($upstream['body']['Results'] ?? null) ? $upstream['body']['Results'] : [];
         $password = (isset($results['copyField']) && is_string($results['copyField']) && $results['copyField'] !== '')
