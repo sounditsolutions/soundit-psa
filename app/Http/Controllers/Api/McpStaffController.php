@@ -184,6 +184,20 @@ class McpStaffController extends Controller
         'get_phone_call',
     ];
 
+    /**
+     * Intake MANAGE surface (W2 Task 2/3) — the 5 front-door verbs that act on
+     * unresolved email/call intake items, dispatched through
+     * StaffPsaActionToolExecutor. None carry client_id; scope lives on the
+     * targeted email/call/ticket ids themselves.
+     */
+    private const INTAKE_MANAGE_TOOLS = [
+        'link_email_to_ticket',
+        'create_ticket_from_email',
+        'dismiss_email_item',
+        'link_call_to_ticket',
+        'create_ticket_from_call',
+    ];
+
     private const BODY_LENGTH_AUDIT_TOOLS = [
         'send_email',
         'stage_email',
@@ -298,6 +312,7 @@ class McpStaffController extends Controller
             McpToolRegistry::psaActionTools(),
             McpToolRegistry::psaRecordsTools(),
             McpToolRegistry::psaReadTools(),
+            McpToolRegistry::intakeManageTools(),
             TacticalConfig::isConfigured() ? McpToolRegistry::tacticalAdminTools() : [],
             ChetDataSurfaceTools::generalTools(),
             OperatorBridgeTools::definitions(),
@@ -789,6 +804,16 @@ class McpStaffController extends Controller
             } elseif ($this->isPsaRecordsTool((string) $name)) {
                 // create_client is global ($clientId null → 0, ignored by the
                 // handler); the other three carry client_id as the target.
+                $result = app(StaffPsaActionToolExecutor::class)->execute(
+                    (string) $name,
+                    $arguments,
+                    (int) $clientId,
+                    $this->actorLabel($request),
+                );
+            } elseif ($this->isIntakeManageTool((string) $name)) {
+                // None of these carry client_id — scope lives on the targeted
+                // email/call/ticket ids themselves ($clientId is always null → 0,
+                // ignored by the handlers, mirroring create_client above).
                 $result = app(StaffPsaActionToolExecutor::class)->execute(
                     (string) $name,
                     $arguments,
@@ -1752,6 +1777,10 @@ class McpStaffController extends Controller
             return $token->allowedTools !== null && $token->allows($toolName);
         }
 
+        if ($this->isIntakeManageTool($toolName)) {
+            return $token->allowedTools !== null && $token->allows($toolName);
+        }
+
         if ($this->isCippWriteTool($toolName)) {
             return $token->allowedTools !== null && $token->allows($toolName);
         }
@@ -1869,6 +1898,11 @@ class McpStaffController extends Controller
     private function isPsaReadTool(string $toolName): bool
     {
         return in_array($toolName, self::PSA_READ_TOOLS, true);
+    }
+
+    private function isIntakeManageTool(string $toolName): bool
+    {
+        return in_array($toolName, self::INTAKE_MANAGE_TOOLS, true);
     }
 
     /** psa_records tools that carry an explicit client_id argument: client-entity targets + the create_contact / create_asset parent scope. */

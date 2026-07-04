@@ -21,6 +21,7 @@ use App\Services\Assistant\AssistantTicketCreator;
 use App\Services\ClientService;
 use App\Services\EmailService;
 use App\Services\PersonService;
+use App\Services\PhoneCallService;
 use App\Services\Technician\TechnicianActionGate;
 use App\Services\Technician\TechnicianDisclosure;
 use App\Services\TicketService;
@@ -44,6 +45,7 @@ class StaffPsaActionToolExecutor
         private readonly ClientService $clientService,
         private readonly PersonService $personService,
         private readonly AssetService $assetService,
+        private readonly PhoneCallService $phoneCallService,
     ) {}
 
     /** @return array<string, mixed> */
