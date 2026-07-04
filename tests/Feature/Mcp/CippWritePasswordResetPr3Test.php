@@ -8,6 +8,7 @@ use App\Models\McpAuditLog;
 use App\Models\Person;
 use App\Models\Setting;
 use App\Models\TechnicianActionLog;
+use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Models\User;
 use App\Services\Cipp\CippRestWriteClient;
@@ -222,6 +223,9 @@ class CippWritePasswordResetPr3Test extends TestCase
         // ...but the credential is in NO persistent sink and NO log line.
         $this->assertStringNotContainsString($secret, json_encode(TechnicianActionLog::all()->toArray()));
         $this->assertStringNotContainsString($secret, json_encode(McpAuditLog::all()->toArray()));
+        // Direct-only tool: no staged run is created, and the credential never reaches a TechnicianRun payload.
+        $this->assertSame(0, TechnicianRun::count());
+        $this->assertStringNotContainsString($secret, json_encode(TechnicianRun::all()->toArray()));
         foreach ($logged as $line) {
             $this->assertStringNotContainsString($secret, $line, 'temp password leaked into a log line');
         }
