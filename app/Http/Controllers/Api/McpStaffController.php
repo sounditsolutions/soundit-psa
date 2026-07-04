@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\Asset;
 use App\Models\CippMcpTool;
 use App\Models\Client;
 use App\Models\McpAuditLog;
@@ -116,7 +117,7 @@ class McpStaffController extends Controller
         'move_ticket_to_client',
     ];
 
-    /** PSA records write-surface (P2a/P2b) — native client + contact CRUD, dispatched through StaffPsaActionToolExecutor. */
+    /** PSA records write-surface (P2a/P2b/P2c) — native client + contact + asset CRUD, dispatched through StaffPsaActionToolExecutor. */
     private const PSA_RECORDS_TOOLS = [
         'create_client',
         'update_client',
@@ -127,6 +128,13 @@ class McpStaffController extends Controller
         'set_primary_contact',
         'move_contact_to_client',
         'delete_contact',
+        'create_asset',
+        'update_asset',
+        'retire_asset',
+        'restore_asset',
+        'link_asset_user',
+        'unlink_asset_user',
+        'set_primary_asset_user',
     ];
 
     /** psa_records tools that act on an existing client — client_id is the required target, not ambient scope. */
@@ -146,6 +154,20 @@ class McpStaffController extends Controller
         'set_primary_contact',
         'move_contact_to_client',
         'delete_contact',
+    ];
+
+    /**
+     * psa_records tools that act on an existing asset — asset_id is the entity
+     * key; client_id is derived server-side (withTrashed, since restore_asset
+     * targets a soft-deleted asset) and a supplied client_id is rejected.
+     */
+    private const PSA_RECORDS_ASSET_SCOPED_TOOLS = [
+        'update_asset',
+        'retire_asset',
+        'restore_asset',
+        'link_asset_user',
+        'unlink_asset_user',
+        'set_primary_asset_user',
     ];
 
     private const BODY_LENGTH_AUDIT_TOOLS = [
@@ -574,6 +596,42 @@ class McpStaffController extends Controller
             }
         }
 
+        // Asset-scoped psa_records tools (update/retire/restore/link/unlink/set_primary_asset_user)
+        // reject a supplied client_id and derive scope from asset_id (withTrashed, since
+        // restore targets a soft-deleted asset). client_id may be null for a client-less asset.
+        if ($this->isPsaRecordsAssetScopedTool((string) $name)) {
+            if ($hasClientIdArgument) {
+                $message = "client_id must be omitted for {$name}; the server derives scope from asset_id.";
+                $this->audit('tools/call', (string) $name, $auditArguments, 'error', $message, $start, $request);
+
+                return response()->json([
+                    'jsonrpc' => '2.0',
+                    'id' => $id,
+                    'result' => [
+                        'content' => [['type' => 'text', 'text' => $message]],
+                        'isError' => true,
+                    ],
+                ]);
+            }
+
+            $assetId = $this->positiveIntegerArgument($arguments['asset_id'] ?? null);
+            if ($assetId === null || ! Asset::withTrashed()->whereKey($assetId)->exists()) {
+                $message = 'asset_id is required and must resolve to an existing asset.';
+                $this->audit('tools/call', (string) $name, $auditArguments, 'error', $message, $start, $request);
+
+                return response()->json([
+                    'jsonrpc' => '2.0',
+                    'id' => $id,
+                    'result' => [
+                        'content' => [['type' => 'text', 'text' => $message]],
+                        'isError' => true,
+                    ],
+                ]);
+            }
+
+            $clientId = $this->assetClientIdForArguments($arguments);
+        }
+
         if ($this->isTacticalActionTool((string) $name) && $clientId === null) {
             $message = "client_id is required for {$name}.";
             $this->audit('tools/call', (string) $name, $auditArguments, 'error', $message, $start, $request);
@@ -931,6 +989,18 @@ class McpStaffController extends Controller
 
         if ($tool === 'delete_contact') {
             return $this->auditDeleteContactArguments($args);
+        }
+
+        if ($tool === 'create_asset' || $tool === 'update_asset') {
+            return $this->auditAssetWriteArguments($args);
+        }
+
+        if ($tool === 'retire_asset') {
+            return $this->auditRetireAssetArguments($args);
+        }
+
+        if (in_array((string) $tool, ['restore_asset', 'link_asset_user', 'unlink_asset_user', 'set_primary_asset_user'], true)) {
+            return $this->auditAssetScopedIdArguments($args);
         }
 
         $redacted = app(ActionRedactor::class)->redactParams($args);
@@ -1301,6 +1371,63 @@ class McpStaffController extends Controller
             $normalized = mb_strtolower((string) $key);
 
             if (in_array($normalized, ['contact_id', 'confirm_contact_name', 'reason'], true)) {
+                $safe[$normalized] = $value;
+            }
+        }
+
+        return $safe;
+    }
+
+    /**
+     * Redaction for create_asset / update_asset: safelist the asset fields,
+     * reduce free-text notes to a length only.
+     *
+     * @return array<string, mixed>
+     */
+    private function auditAssetWriteArguments(array $arguments): array
+    {
+        $safe = [];
+
+        foreach ($arguments as $key => $value) {
+            $normalized = mb_strtolower((string) $key);
+
+            if (in_array($normalized, ['client_id', 'asset_id', 'name', 'asset_type', 'serial_number', 'hostname', 'os', 'ip_address', 'is_active'], true)) {
+                $safe[$normalized] = $value;
+            }
+
+            if ($normalized === 'notes') {
+                $safe['notes_length'] = is_string($value) ? mb_strlen($value) : 0;
+            }
+        }
+
+        return $safe;
+    }
+
+    /** @return array<string, mixed> */
+    private function auditRetireAssetArguments(array $arguments): array
+    {
+        $safe = [];
+
+        foreach ($arguments as $key => $value) {
+            $normalized = mb_strtolower((string) $key);
+
+            if (in_array($normalized, ['asset_id', 'confirm_asset_name', 'reason'], true)) {
+                $safe[$normalized] = $value;
+            }
+        }
+
+        return $safe;
+    }
+
+    /** @return array<string, mixed> */
+    private function auditAssetScopedIdArguments(array $arguments): array
+    {
+        $safe = [];
+
+        foreach ($arguments as $key => $value) {
+            $normalized = mb_strtolower((string) $key);
+
+            if (in_array($normalized, ['asset_id', 'person_id'], true)) {
                 $safe[$normalized] = $value;
             }
         }
@@ -1714,10 +1841,16 @@ class McpStaffController extends Controller
         return in_array($toolName, self::PSA_RECORDS_CONTACT_SCOPED_TOOLS, true);
     }
 
-    /** psa_records tools that carry an explicit client_id argument: client-entity targets + the create_contact parent scope. */
+    private function isPsaRecordsAssetScopedTool(string $toolName): bool
+    {
+        return in_array($toolName, self::PSA_RECORDS_ASSET_SCOPED_TOOLS, true);
+    }
+
+    /** psa_records tools that carry an explicit client_id argument: client-entity targets + the create_contact / create_asset parent scope. */
     private function psaRecordsRequiresClientId(string $toolName): bool
     {
-        return $this->isPsaRecordsClientScopedTool($toolName) || $toolName === 'create_contact';
+        return $this->isPsaRecordsClientScopedTool($toolName)
+            || in_array($toolName, ['create_contact', 'create_asset'], true);
     }
 
     private function contactClientIdForArguments(array $arguments): ?int
@@ -1728,6 +1861,19 @@ class McpStaffController extends Controller
         }
 
         $clientId = Person::whereKey($contactId)->value('client_id');
+
+        return is_numeric($clientId) ? (int) $clientId : null;
+    }
+
+    private function assetClientIdForArguments(array $arguments): ?int
+    {
+        $assetId = $this->positiveIntegerArgument($arguments['asset_id'] ?? null);
+        if ($assetId === null) {
+            return null;
+        }
+
+        // withTrashed: restore_asset resolves scope from a soft-deleted asset.
+        $clientId = Asset::withTrashed()->whereKey($assetId)->value('client_id');
 
         return is_numeric($clientId) ? (int) $clientId : null;
     }

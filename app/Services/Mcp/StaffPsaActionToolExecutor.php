@@ -16,6 +16,7 @@ use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Models\TicketNote;
 use App\Models\User;
+use App\Services\AssetService;
 use App\Services\Assistant\AssistantTicketCreator;
 use App\Services\ClientService;
 use App\Services\EmailService;
@@ -42,6 +43,7 @@ class StaffPsaActionToolExecutor
         private readonly TicketService $ticketService,
         private readonly ClientService $clientService,
         private readonly PersonService $personService,
+        private readonly AssetService $assetService,
     ) {}
 
     /** @return array<string, mixed> */
@@ -70,6 +72,13 @@ class StaffPsaActionToolExecutor
             'set_primary_contact' => $this->setPrimaryContact($arguments, $actorLabel),
             'move_contact_to_client' => $this->moveContactToClient($arguments, $actorLabel),
             'delete_contact' => $this->deleteContact($arguments, $actorLabel),
+            'create_asset' => $this->createAsset($arguments, $clientId, $actorLabel),
+            'update_asset' => $this->updateAsset($arguments, $actorLabel),
+            'retire_asset' => $this->retireAsset($arguments, $actorLabel),
+            'restore_asset' => $this->restoreAsset($arguments, $actorLabel),
+            'link_asset_user' => $this->linkAssetUser($arguments, $actorLabel),
+            'unlink_asset_user' => $this->unlinkAssetUser($arguments, $actorLabel),
+            'set_primary_asset_user' => $this->setPrimaryAssetUser($arguments, $actorLabel),
             default => ['error' => "Unknown PSA action tool: {$name}"],
         };
     }
@@ -1095,6 +1104,446 @@ class StaffPsaActionToolExecutor
         return $validated;
     }
 
+    /**
+     * create_asset — parent-scoped. client_id is the required parent (supplied
+     * by the controller). Wraps AssetService::createAsset.
+     *
+     * @return array<string, mixed>
+     */
+    private function createAsset(array $arguments, int $clientId, string $actorLabel): array
+    {
+        if ($error = $this->guardDirectAction()) {
+            return $error;
+        }
+
+        $validated = $this->validateAssetPayload($arguments, isCreate: true);
+        if (isset($validated['error'])) {
+            return $validated;
+        }
+
+        $validated['client_id'] = $clientId;
+        $asset = $this->assetService->createAsset($validated);
+
+        $this->auditEntityExecution(
+            'create_asset',
+            'asset',
+            (int) $asset->id,
+            $asset->client_id,
+            $actorLabel,
+            $this->mutationContentHash('create_asset', (int) $asset->id, $validated),
+            'Asset created: '.$asset->name.' (client #'.$asset->client_id.').',
+            TechnicianConfig::requiredAiActorUserId(),
+        );
+
+        return [
+            'success' => true,
+            'asset_id' => $asset->id,
+            'client_id' => $asset->client_id,
+            'name' => $asset->name,
+            'message' => 'Asset created.',
+        ];
+    }
+
+    /**
+     * update_asset — asset-scoped. The controller derives scope from asset_id
+     * and forbids a stray client_id. Wraps AssetService::updateAsset. Only the
+     * manual AssetUpdateRequest fields are accepted (never vendor/RMM fields).
+     *
+     * @return array<string, mixed>
+     */
+    private function updateAsset(array $arguments, string $actorLabel): array
+    {
+        if ($error = $this->guardDirectAction()) {
+            return $error;
+        }
+
+        $asset = $this->assetForId($arguments);
+        if (is_array($asset)) {
+            return $asset;
+        }
+
+        $fields = $arguments;
+        unset($fields['asset_id']);
+        $validated = $this->validateAssetPayload($fields, isCreate: false);
+        if (isset($validated['error'])) {
+            return $validated;
+        }
+
+        $updated = $this->assetService->updateAsset($asset, $validated);
+
+        $this->auditEntityExecution(
+            'update_asset',
+            'asset',
+            (int) $updated->id,
+            $updated->client_id,
+            $actorLabel,
+            $this->mutationContentHash('update_asset', (int) $updated->id, $validated),
+            'Asset updated ('.implode(', ', array_keys($validated)).').',
+            TechnicianConfig::requiredAiActorUserId(),
+        );
+
+        return [
+            'success' => true,
+            'asset_id' => $updated->id,
+            'client_id' => $updated->client_id,
+            'name' => $updated->name,
+            'message' => 'Asset updated.',
+        ];
+    }
+
+    /**
+     * retire_asset — asset-scoped, typed-confirm on the asset name.
+     * AssetService::deleteAsset blocks on open tickets (surfaced as a clean
+     * error) and is the only sanctioned soft-delete path.
+     *
+     * @return array<string, mixed>
+     */
+    private function retireAsset(array $arguments, string $actorLabel): array
+    {
+        if ($error = $this->guardDirectAction()) {
+            return $error;
+        }
+
+        $asset = $this->assetForId($arguments);
+        if (is_array($asset)) {
+            return $asset;
+        }
+
+        $unexpected = array_values(array_diff(array_keys($arguments), ['asset_id', 'confirm_asset_name', 'reason']));
+        if ($unexpected !== []) {
+            return ['error' => 'retire_asset accepts only asset_id, confirm_asset_name, and reason.'];
+        }
+
+        $confirm = $this->optionalString($arguments, 'confirm_asset_name');
+        if (! $this->confirmAssetMatches($asset, $confirm)) {
+            return ['error' => 'The typed confirm_asset_name does not match the target asset. Retire cancelled.'];
+        }
+
+        $reason = $this->optionalString($arguments, 'reason');
+        $clientId = $asset->client_id;
+        $name = (string) $asset->name;
+
+        try {
+            $this->assetService->deleteAsset($asset);
+        } catch (\RuntimeException $e) {
+            return ['error' => $e->getMessage()];
+        }
+
+        $this->auditEntityExecution(
+            'retire_asset',
+            'asset',
+            (int) $asset->id,
+            $clientId,
+            $actorLabel,
+            $this->mutationContentHash('retire_asset', (int) $asset->id, ['name' => $name], $reason),
+            'Asset retired: '.$name.($reason ? ' — '.$reason : '').'.',
+            TechnicianConfig::requiredAiActorUserId(),
+        );
+
+        return [
+            'success' => true,
+            'asset_id' => $asset->id,
+            'client_id' => $clientId,
+            'message' => 'Asset retired.',
+        ];
+    }
+
+    /**
+     * restore_asset — asset-scoped (operates on a soft-deleted asset). Mirrors
+     * AssetController::restore: withTrashed find, restore, reactivate.
+     *
+     * @return array<string, mixed>
+     */
+    private function restoreAsset(array $arguments, string $actorLabel): array
+    {
+        if ($error = $this->guardDirectAction()) {
+            return $error;
+        }
+
+        $unexpected = array_values(array_diff(array_keys($arguments), ['asset_id']));
+        if ($unexpected !== []) {
+            return ['error' => 'restore_asset accepts only asset_id.'];
+        }
+
+        $assetId = $this->positiveInteger($arguments['asset_id'] ?? null);
+        if ($assetId === null) {
+            return ['error' => 'asset_id is required'];
+        }
+
+        $asset = Asset::withTrashed()->find($assetId);
+        if (! $asset) {
+            return ['error' => 'Asset not found'];
+        }
+        if (! $asset->trashed()) {
+            return ['error' => 'Asset is not retired; nothing to restore.'];
+        }
+
+        $asset->restore();
+        $asset->is_active = true;
+        $asset->save();
+
+        $this->auditEntityExecution(
+            'restore_asset',
+            'asset',
+            (int) $asset->id,
+            $asset->client_id,
+            $actorLabel,
+            $this->mutationContentHash('restore_asset', (int) $asset->id, ['restored' => true]),
+            'Asset restored: '.$asset->name.'.',
+            TechnicianConfig::requiredAiActorUserId(),
+        );
+
+        return [
+            'success' => true,
+            'asset_id' => $asset->id,
+            'client_id' => $asset->client_id,
+            'message' => 'Asset restored.',
+        ];
+    }
+
+    /**
+     * link_asset_user — asset-scoped. Mirrors AssetController::addUser: enforces
+     * person.client_id === asset.client_id, dedups, attaches a manual pivot.
+     *
+     * @return array<string, mixed>
+     */
+    private function linkAssetUser(array $arguments, string $actorLabel): array
+    {
+        if ($error = $this->guardDirectAction()) {
+            return $error;
+        }
+
+        $asset = $this->assetForId($arguments);
+        if (is_array($asset)) {
+            return $asset;
+        }
+
+        $unexpected = array_values(array_diff(array_keys($arguments), ['asset_id', 'person_id']));
+        if ($unexpected !== []) {
+            return ['error' => 'link_asset_user accepts only asset_id and person_id.'];
+        }
+
+        $personId = $this->positiveInteger($arguments['person_id'] ?? null);
+        if ($personId === null) {
+            return ['error' => 'person_id is required'];
+        }
+
+        // Cross-client guard: the person must belong to the asset's client.
+        $person = Person::where('id', $personId)->where('client_id', $asset->client_id)->first();
+        if (! $person) {
+            return ['error' => 'Person not found or does not belong to the asset client.'];
+        }
+
+        // Idempotent if already linked.
+        if ($asset->users()->where('person_id', $personId)->exists()) {
+            return [
+                'success' => true,
+                'idempotent' => true,
+                'asset_id' => $asset->id,
+                'person_id' => $personId,
+                'message' => 'Person already linked to this asset.',
+            ];
+        }
+
+        $asset->users()->attach($personId, ['is_primary' => false, 'assignment_source' => 'manual', 'last_seen_at' => null]);
+
+        $this->auditEntityExecution(
+            'link_asset_user',
+            'asset',
+            (int) $asset->id,
+            $asset->client_id,
+            $actorLabel,
+            $this->mutationContentHash('link_asset_user', (int) $asset->id, ['person_id' => $personId]),
+            'Linked person #'.$personId.' to asset '.$asset->name.'.',
+            TechnicianConfig::requiredAiActorUserId(),
+        );
+
+        return [
+            'success' => true,
+            'asset_id' => $asset->id,
+            'person_id' => $personId,
+            'message' => 'Person linked to asset.',
+        ];
+    }
+
+    /**
+     * unlink_asset_user — asset-scoped. Mirrors AssetController::removeUser
+     * (pivot detach); idempotent when the person is not linked.
+     *
+     * @return array<string, mixed>
+     */
+    private function unlinkAssetUser(array $arguments, string $actorLabel): array
+    {
+        if ($error = $this->guardDirectAction()) {
+            return $error;
+        }
+
+        $asset = $this->assetForId($arguments);
+        if (is_array($asset)) {
+            return $asset;
+        }
+
+        $unexpected = array_values(array_diff(array_keys($arguments), ['asset_id', 'person_id']));
+        if ($unexpected !== []) {
+            return ['error' => 'unlink_asset_user accepts only asset_id and person_id.'];
+        }
+
+        $personId = $this->positiveInteger($arguments['person_id'] ?? null);
+        if ($personId === null) {
+            return ['error' => 'person_id is required'];
+        }
+
+        if (! $asset->users()->where('person_id', $personId)->exists()) {
+            return [
+                'success' => true,
+                'idempotent' => true,
+                'asset_id' => $asset->id,
+                'person_id' => $personId,
+                'message' => 'Person was not linked to this asset.',
+            ];
+        }
+
+        $asset->users()->detach($personId);
+
+        $this->auditEntityExecution(
+            'unlink_asset_user',
+            'asset',
+            (int) $asset->id,
+            $asset->client_id,
+            $actorLabel,
+            $this->mutationContentHash('unlink_asset_user', (int) $asset->id, ['person_id' => $personId]),
+            'Unlinked person #'.$personId.' from asset '.$asset->name.'.',
+            TechnicianConfig::requiredAiActorUserId(),
+        );
+
+        return [
+            'success' => true,
+            'asset_id' => $asset->id,
+            'person_id' => $personId,
+            'message' => 'Person unlinked from asset.',
+        ];
+    }
+
+    /**
+     * set_primary_asset_user — asset-scoped. Mirrors AssetController::setPrimaryUser
+     * (demote-then-promote), hardened to require the person be linked first
+     * (the controller silently no-ops otherwise).
+     *
+     * @return array<string, mixed>
+     */
+    private function setPrimaryAssetUser(array $arguments, string $actorLabel): array
+    {
+        if ($error = $this->guardDirectAction()) {
+            return $error;
+        }
+
+        $asset = $this->assetForId($arguments);
+        if (is_array($asset)) {
+            return $asset;
+        }
+
+        $unexpected = array_values(array_diff(array_keys($arguments), ['asset_id', 'person_id']));
+        if ($unexpected !== []) {
+            return ['error' => 'set_primary_asset_user accepts only asset_id and person_id.'];
+        }
+
+        $personId = $this->positiveInteger($arguments['person_id'] ?? null);
+        if ($personId === null) {
+            return ['error' => 'person_id is required'];
+        }
+
+        if (! $asset->users()->where('person_id', $personId)->exists()) {
+            return ['error' => 'That person is not linked to this asset; link them first.'];
+        }
+
+        DB::table('asset_person')->where('asset_id', $asset->id)->where('is_primary', true)->update(['is_primary' => false]);
+        DB::table('asset_person')->where('asset_id', $asset->id)->where('person_id', $personId)->update(['is_primary' => true]);
+
+        $this->auditEntityExecution(
+            'set_primary_asset_user',
+            'asset',
+            (int) $asset->id,
+            $asset->client_id,
+            $actorLabel,
+            $this->mutationContentHash('set_primary_asset_user', (int) $asset->id, ['person_id' => $personId]),
+            'Set person #'.$personId.' as primary user of asset '.$asset->name.'.',
+            TechnicianConfig::requiredAiActorUserId(),
+        );
+
+        return [
+            'success' => true,
+            'asset_id' => $asset->id,
+            'person_id' => $personId,
+            'message' => 'Primary asset user set.',
+        ];
+    }
+
+    /** @return Asset|array<string, string> */
+    private function assetForId(array $arguments): Asset|array
+    {
+        $assetId = $this->positiveInteger($arguments['asset_id'] ?? null);
+        if ($assetId === null) {
+            return ['error' => 'asset_id is required'];
+        }
+
+        $asset = Asset::find($assetId);
+        if (! $asset) {
+            return ['error' => 'Asset not found'];
+        }
+
+        return $asset;
+    }
+
+    private function confirmAssetMatches(Asset $asset, ?string $typed): bool
+    {
+        if ($typed === null) {
+            return false;
+        }
+
+        return strcasecmp(trim($typed), trim((string) $asset->name)) === 0;
+    }
+
+    /**
+     * Allowlist + validate an asset create/update payload against the same rules
+     * as AssetStore/UpdateRequest. The Asset model's $fillable carries ~60
+     * vendor/sync fields (ninja/level/controld/zorus/m365/comet/servosity/
+     * screenconnect/tactical, rmm_online, …), so THIS allowlist is the boundary.
+     *
+     * @param  array<string, mixed>  $arguments
+     * @return array<string, mixed> Validated data, or ['error' => string].
+     */
+    private function validateAssetPayload(array $arguments, bool $isCreate): array
+    {
+        $allowed = ['name', 'notes', 'asset_type', 'serial_number', 'hostname', 'os', 'ip_address', 'is_active'];
+        $unexpected = array_values(array_diff(array_keys($arguments), $allowed));
+        if ($unexpected !== []) {
+            return ['error' => 'This tool accepts only: '.implode(', ', $allowed).'.'];
+        }
+
+        $validator = Validator::make($arguments, [
+            'name' => $isCreate ? ['required', 'string', 'max:255'] : ['sometimes', 'required', 'string', 'max:255'],
+            'notes' => ['sometimes', 'nullable', 'string', 'max:10000'],
+            'asset_type' => ['sometimes', 'nullable', 'string', 'max:100'],
+            'serial_number' => ['sometimes', 'nullable', 'string', 'max:255'],
+            'hostname' => ['sometimes', 'nullable', 'string', 'max:255'],
+            'os' => ['sometimes', 'nullable', 'string', 'max:255'],
+            'ip_address' => ['sometimes', 'nullable', 'ip'],
+            'is_active' => ['sometimes', 'boolean'],
+        ]);
+
+        if ($validator->fails()) {
+            return ['error' => $validator->errors()->first()];
+        }
+
+        $validated = $validator->validated();
+
+        if (! $isCreate && $validated === []) {
+            return ['error' => 'update_asset requires at least one field to change.'];
+        }
+
+        return $validated;
+    }
+
     /** @return array<string, mixed> */
     private function sendEmail(array $arguments, int $clientId, string $actorLabel): array
     {
@@ -1706,7 +2155,7 @@ class StaffPsaActionToolExecutor
      * the entity type/id in the summary, since technician_action_logs has no
      * entity_type/entity_id columns (v1 — see psa-wsje).
      */
-    private function auditEntityExecution(string $actionType, string $entityType, ?int $entityId, int $clientId, string $actorLabel, string $contentHash, string $summary, ?int $actorId = null): void
+    private function auditEntityExecution(string $actionType, string $entityType, ?int $entityId, ?int $clientId, string $actorLabel, string $contentHash, string $summary, ?int $actorId = null): void
     {
         $tag = '['.$entityType.($entityId !== null ? '#'.$entityId : '').'] ';
         $this->recordActionLog($actionType, null, $clientId, $actorLabel, $contentHash, $tag.$summary, $actorId);

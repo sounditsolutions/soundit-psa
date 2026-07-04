@@ -72,7 +72,7 @@ class McpToolRegistry
                 'tactical_admin' => ['label' => 'Tactical admin/provisioning (sensitive)', 'sensitive' => true, 'tools' => $tacticalAdmin],
                 'wiki_write' => ['label' => 'Wiki write (sensitive)', 'sensitive' => true, 'tools' => $wikiWrites],
                 'psa_action' => ['label' => 'PSA actions (sensitive)', 'sensitive' => true, 'tools' => $psaActions],
-                'psa_records' => ['label' => 'PSA records — clients, people (sensitive)', 'sensitive' => true, 'tools' => $psaRecords],
+                'psa_records' => ['label' => 'PSA records — clients, people, assets (sensitive)', 'sensitive' => true, 'tools' => $psaRecords],
                 'bridge' => ['label' => 'Operator bridge (sensitive)', 'sensitive' => true, 'tools' => $bridge],
             ];
         });
@@ -859,6 +859,13 @@ class McpToolRegistry
             self::setPrimaryContactTool(),
             self::moveContactToClientTool(),
             self::deleteContactTool(),
+            self::createAssetTool(),
+            self::updateAssetTool(),
+            self::retireAssetTool(),
+            self::restoreAssetTool(),
+            self::linkAssetUserTool(),
+            self::unlinkAssetUserTool(),
+            self::setPrimaryAssetUserTool(),
         ];
     }
 
@@ -1075,6 +1082,147 @@ class McpToolRegistry
                     'required' => ['email'],
                 ],
             ],
+        ]);
+    }
+
+    /** @return array<string, mixed> */
+    public static function createAssetTool(): array
+    {
+        return [
+            'name' => 'create_asset',
+            'description' => 'Create a new asset (device) under a client immediately. The server requires client_id as the parent, validates the same fields as the asset create form, and writes an action audit row. Vendor/RMM fields are never accepted. Requires an explicit token grant.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => self::assetWritableProperties([
+                    'client_id' => ['type' => 'integer', 'description' => 'Parent client ID this asset belongs to.'],
+                ]),
+                'required' => ['client_id', 'name'],
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public static function updateAssetTool(): array
+    {
+        return [
+            'name' => 'update_asset',
+            'description' => 'Update an existing asset immediately. The server derives the client scope from asset_id (a stray client_id is rejected), validates the same manual fields as the asset edit form, and writes an action audit row. Vendor/RMM fields are never accepted. Requires an explicit token grant.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => self::assetWritableProperties([
+                    'asset_id' => ['type' => 'integer', 'description' => 'The asset ID to update. The server derives the client from this asset.'],
+                ]),
+                'required' => ['asset_id'],
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public static function retireAssetTool(): array
+    {
+        return [
+            'name' => 'retire_asset',
+            'description' => 'Retire (soft-delete / offboard) an asset immediately. The server derives the client scope from asset_id, requires a typed confirmation of the exact asset name, and refuses when the asset still has open tickets. Writes an action audit row. Requires an explicit token grant.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'asset_id' => ['type' => 'integer', 'description' => 'The asset ID to retire. The server derives the client from this asset.'],
+                    'confirm_asset_name' => ['type' => 'string', 'description' => 'Typed confirmation — must exactly match the target asset name.'],
+                    'reason' => ['type' => 'string', 'description' => 'Optional reason for retiring the asset, recorded in the audit log.'],
+                ],
+                'required' => ['asset_id', 'confirm_asset_name'],
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public static function restoreAssetTool(): array
+    {
+        return [
+            'name' => 'restore_asset',
+            'description' => 'Restore a previously retired asset immediately, reactivating it. The server derives the client scope from asset_id and writes an action audit row. Requires an explicit token grant.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'asset_id' => ['type' => 'integer', 'description' => 'The retired asset ID to restore. The server derives the client from this asset.'],
+                ],
+                'required' => ['asset_id'],
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public static function linkAssetUserTool(): array
+    {
+        return [
+            'name' => 'link_asset_user',
+            'description' => 'Link a contact (person) to an asset as a manual user assignment immediately. The server derives the client scope from asset_id and enforces that the person belongs to the same client. Writes an action audit row. Requires an explicit token grant.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'asset_id' => ['type' => 'integer', 'description' => 'The asset ID. The server derives the client from this asset.'],
+                    'person_id' => ['type' => 'integer', 'description' => 'The contact (person) ID to link. Must belong to the asset client.'],
+                ],
+                'required' => ['asset_id', 'person_id'],
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public static function unlinkAssetUserTool(): array
+    {
+        return [
+            'name' => 'unlink_asset_user',
+            'description' => 'Unlink a contact (person) from an asset immediately. The server derives the client scope from asset_id and writes an action audit row. Requires an explicit token grant.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'asset_id' => ['type' => 'integer', 'description' => 'The asset ID. The server derives the client from this asset.'],
+                    'person_id' => ['type' => 'integer', 'description' => 'The contact (person) ID to unlink.'],
+                ],
+                'required' => ['asset_id', 'person_id'],
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public static function setPrimaryAssetUserTool(): array
+    {
+        return [
+            'name' => 'set_primary_asset_user',
+            'description' => 'Mark a linked contact as the primary user of an asset immediately. The server derives the client scope from asset_id, requires the person to already be linked, demotes the prior primary, and writes an action audit row. Requires an explicit token grant.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'asset_id' => ['type' => 'integer', 'description' => 'The asset ID. The server derives the client from this asset.'],
+                    'person_id' => ['type' => 'integer', 'description' => 'The linked contact (person) ID to set as primary user.'],
+                ],
+                'required' => ['asset_id', 'person_id'],
+            ],
+        ];
+    }
+
+    /**
+     * The asset field schema shared by create_asset / update_asset. The caller
+     * passes the scope key (client_id for create, asset_id for update) which is
+     * prepended. Mirrors AssetStore/UpdateRequest — deliberately excludes the
+     * ~60 vendor/sync/RMM fields (ninja_*, level_*, controld_*, zorus_*, m365_*,
+     * comet_*, servosity_*, screenconnect_*, tactical_asset_id, rmm_online, …).
+     *
+     * @param  array<string, mixed>  $scope
+     * @return array<string, mixed>
+     */
+    private static function assetWritableProperties(array $scope): array
+    {
+        return array_merge($scope, [
+            'name' => ['type' => 'string', 'description' => 'Asset name or label.'],
+            'notes' => ['type' => 'string', 'description' => 'Internal notes about the asset.'],
+            'asset_type' => ['type' => 'string', 'description' => 'Asset type, e.g. Workstation, Laptop, Server, Network Device, Printer, Mobile, Other.'],
+            'serial_number' => ['type' => 'string', 'description' => 'Serial number.'],
+            'hostname' => ['type' => 'string', 'description' => 'Hostname.'],
+            'os' => ['type' => 'string', 'description' => 'Operating system.'],
+            'ip_address' => ['type' => 'string', 'description' => 'IP address (IPv4 or IPv6).'],
+            'is_active' => ['type' => 'boolean', 'description' => 'Whether the asset is active.'],
         ]);
     }
 
