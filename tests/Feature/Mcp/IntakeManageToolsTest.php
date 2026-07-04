@@ -229,6 +229,35 @@ class IntakeManageToolsTest extends TestCase
         $this->assertStringNotContainsString('SECRET BODY', (string) json_encode(McpAuditLog::all()->toArray()));
     }
 
+    public function test_link_email_to_ticket_succeeds_for_a_client_less_ticket(): void
+    {
+        $this->configureAiActor();
+        // A client-less ticket is a real, live state — the audit client_id must stay
+        // null, not be cast to 0 (which would violate the technician_action_logs FK
+        // and leave a mutated-but-unaudited state).
+        $ticket = Ticket::factory()->create(['client_id' => null]);
+        $email = Email::create([
+            'direction' => EmailDirection::Inbound,
+            'from_address' => 'client@example.test',
+            'subject' => 'Need help',
+            'received_at' => now(),
+        ]);
+        $token = $this->token(['link_email_to_ticket'], 'chet');
+
+        $response = $this->callTool($token, 'link_email_to_ticket', [
+            'email_id' => $email->id,
+            'ticket_id' => $ticket->id,
+            'reason' => 'triage a client-less ticket',
+        ]);
+
+        $response->assertOk();
+        $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
+        $this->assertSame($ticket->id, $email->fresh()->ticket_id);
+
+        $log = TechnicianActionLog::where('action_type', 'link_email_to_ticket')->firstOrFail();
+        $this->assertNull($log->client_id, 'audit client_id must stay null for a client-less ticket');
+    }
+
     public function test_link_email_to_ticket_rejects_unknown_ids(): void
     {
         $this->configureAiActor();

@@ -1546,18 +1546,21 @@ class StaffPsaActionToolExecutor
             return ['error' => 'Ticket not found'];
         }
 
-        $this->email->linkEmailToTicket($email, $ticket);
-
-        $this->auditEntityExecution(
-            'link_email_to_ticket',
-            'email',
-            (int) $email->id,
-            (int) $ticket->client_id,
-            $actorLabel,
-            $this->mutationContentHash('link_email_to_ticket', (int) $email->id, ['ticket_id' => $ticket->id], $reason),
-            'Email #'.$email->id.' linked to ticket #'.$ticket->id.': '.$reason,
-            TechnicianConfig::requiredAiActorUserId(),
-        );
+        // Mutation + audit atomic (the ticket's client_id is nullable — pass it through
+        // as ?int, never (int)-cast it to 0 which would violate the audit FK).
+        DB::transaction(function () use ($email, $ticket, $actorLabel, $reason): void {
+            $this->email->linkEmailToTicket($email, $ticket);
+            $this->auditEntityExecution(
+                'link_email_to_ticket',
+                'email',
+                (int) $email->id,
+                $ticket->client_id,
+                $actorLabel,
+                $this->mutationContentHash('link_email_to_ticket', (int) $email->id, ['ticket_id' => $ticket->id], $reason),
+                'Email #'.$email->id.' linked to ticket #'.$ticket->id.': '.$reason,
+                TechnicianConfig::requiredAiActorUserId(),
+            );
+        });
 
         return [
             'success' => true,
@@ -1596,18 +1599,21 @@ class StaffPsaActionToolExecutor
             return ['error' => 'Email has no resolved client; resolve the sender to a client before creating a ticket.'];
         }
 
-        $ticket = $this->email->autoCreateTicketFromEmail($email);
+        $ticket = DB::transaction(function () use ($email, $actorLabel, $reason): Ticket {
+            $ticket = $this->email->autoCreateTicketFromEmail($email);
+            $this->auditEntityExecution(
+                'create_ticket_from_email',
+                'email',
+                (int) $email->id,
+                $ticket->client_id,
+                $actorLabel,
+                $this->mutationContentHash('create_ticket_from_email', (int) $email->id, ['ticket_id' => $ticket->id], $reason),
+                'Email #'.$email->id.' created/linked ticket #'.$ticket->id.': '.$reason,
+                TechnicianConfig::requiredAiActorUserId(),
+            );
 
-        $this->auditEntityExecution(
-            'create_ticket_from_email',
-            'email',
-            (int) $email->id,
-            (int) $ticket->client_id,
-            $actorLabel,
-            $this->mutationContentHash('create_ticket_from_email', (int) $email->id, ['ticket_id' => $ticket->id], $reason),
-            'Email #'.$email->id.' created/linked ticket #'.$ticket->id.': '.$reason,
-            TechnicianConfig::requiredAiActorUserId(),
-        );
+            return $ticket;
+        });
 
         return [
             'success' => true,
@@ -1642,18 +1648,19 @@ class StaffPsaActionToolExecutor
         }
 
         $actorId = TechnicianConfig::requiredAiActorUserId();
-        $this->email->dismissEmail($email, $actorId);
-
-        $this->auditEntityExecution(
-            'dismiss_email_item',
-            'email',
-            (int) $email->id,
-            $email->client_id,
-            $actorLabel,
-            $this->mutationContentHash('dismiss_email_item', (int) $email->id, [], $reason),
-            'Email #'.$email->id.' dismissed: '.$reason,
-            $actorId,
-        );
+        DB::transaction(function () use ($email, $actorLabel, $reason, $actorId): void {
+            $this->email->dismissEmail($email, $actorId);
+            $this->auditEntityExecution(
+                'dismiss_email_item',
+                'email',
+                (int) $email->id,
+                $email->client_id,
+                $actorLabel,
+                $this->mutationContentHash('dismiss_email_item', (int) $email->id, [], $reason),
+                'Email #'.$email->id.' dismissed: '.$reason,
+                $actorId,
+            );
+        });
 
         return [
             'success' => true,
@@ -1691,18 +1698,19 @@ class StaffPsaActionToolExecutor
             return ['error' => 'Ticket not found'];
         }
 
-        $this->phoneCallService->linkCallToTicketWithNote($call, $ticket->id, "Linked via MCP: {$reason}");
-
-        $this->auditEntityExecution(
-            'link_call_to_ticket',
-            'phone_call',
-            (int) $call->id,
-            (int) $ticket->client_id,
-            $actorLabel,
-            $this->mutationContentHash('link_call_to_ticket', (int) $call->id, ['ticket_id' => $ticket->id], $reason),
-            'Phone call #'.$call->id.' linked to ticket #'.$ticket->id.': '.$reason,
-            TechnicianConfig::requiredAiActorUserId(),
-        );
+        DB::transaction(function () use ($call, $ticket, $actorLabel, $reason): void {
+            $this->phoneCallService->linkCallToTicketWithNote($call, $ticket->id, "Linked via MCP: {$reason}");
+            $this->auditEntityExecution(
+                'link_call_to_ticket',
+                'phone_call',
+                (int) $call->id,
+                $ticket->client_id,
+                $actorLabel,
+                $this->mutationContentHash('link_call_to_ticket', (int) $call->id, ['ticket_id' => $ticket->id], $reason),
+                'Phone call #'.$call->id.' linked to ticket #'.$ticket->id.': '.$reason,
+                TechnicianConfig::requiredAiActorUserId(),
+            );
+        });
 
         return [
             'success' => true,
@@ -1743,18 +1751,21 @@ class StaffPsaActionToolExecutor
             return ['error' => 'Phone call has no resolved client; resolve the caller to a client before creating a ticket.'];
         }
 
-        $ticket = $this->phoneCallService->createTicketFromCall($call);
+        $ticket = DB::transaction(function () use ($call, $actorLabel, $reason): Ticket {
+            $ticket = $this->phoneCallService->createTicketFromCall($call);
+            $this->auditEntityExecution(
+                'create_ticket_from_call',
+                'phone_call',
+                (int) $call->id,
+                $ticket->client_id,
+                $actorLabel,
+                $this->mutationContentHash('create_ticket_from_call', (int) $call->id, ['ticket_id' => $ticket->id], $reason),
+                'Phone call #'.$call->id.' created ticket #'.$ticket->id.': '.$reason,
+                TechnicianConfig::requiredAiActorUserId(),
+            );
 
-        $this->auditEntityExecution(
-            'create_ticket_from_call',
-            'phone_call',
-            (int) $call->id,
-            (int) $ticket->client_id,
-            $actorLabel,
-            $this->mutationContentHash('create_ticket_from_call', (int) $call->id, ['ticket_id' => $ticket->id], $reason),
-            'Phone call #'.$call->id.' created ticket #'.$ticket->id.': '.$reason,
-            TechnicianConfig::requiredAiActorUserId(),
-        );
+            return $ticket;
+        });
 
         return [
             'success' => true,
