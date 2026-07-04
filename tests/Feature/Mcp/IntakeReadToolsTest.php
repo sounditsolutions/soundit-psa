@@ -112,6 +112,7 @@ class IntakeReadToolsTest extends TestCase
             ['list_email_items', []],
             ['get_email_item', ['email_id' => $email->id]],
             ['list_phone_calls', []],
+            ['get_phone_call', ['phone_call_id' => 1]],
         ];
 
         foreach ([$this->token(['create_ticket'], 'chet'), $this->legacyToken()] as $token) {
