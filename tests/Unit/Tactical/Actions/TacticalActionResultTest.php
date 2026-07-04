@@ -35,11 +35,11 @@ class TacticalActionResultTest extends TestCase
         $this->assertSame('some stderr text', $r->stderr);
     }
 
-    public function test_ok_retcode_defaults_to_zero(): void
+    public function test_ok_retcode_defaults_to_null_when_upstream_did_not_report_one(): void
     {
         $r = TacticalActionResult::ok('done');
 
-        $this->assertSame(0, $r->retcode);
+        $this->assertNull($r->retcode);
         $this->assertTrue($r->isOk());
     }
 

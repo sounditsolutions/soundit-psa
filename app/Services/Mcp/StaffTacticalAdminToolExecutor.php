@@ -129,6 +129,7 @@ class StaffTacticalAdminToolExecutor
         'tactical_update_automation_policy' => 300,
         'tactical_delete_automation_policy' => 600,
         'tactical_assign_automation_policy' => 600,
+        'tactical_create_check' => 300,
         'tactical_create_agent_task' => 300,
         'tactical_create_policy_task' => 300,
         'tactical_update_task' => 300,
@@ -219,6 +220,7 @@ class StaffTacticalAdminToolExecutor
             self::deleteAutomationPolicyTool(),
             self::getAutomationPolicyRelatedTool(),
             self::assignAutomationPolicyTool(),
+            self::createCheckTool(),
             self::listTasksTool(),
             self::listAgentTasksTool(),
             self::listPolicyTasksTool(),
@@ -298,6 +300,7 @@ class StaffTacticalAdminToolExecutor
             'tactical_delete_automation_policy' => $this->deleteAutomationPolicy($arguments, $actorLabel),
             'tactical_get_automation_policy_related' => $this->getAutomationPolicyRelated($arguments, $actorLabel),
             'tactical_assign_automation_policy' => $this->assignAutomationPolicy($arguments, (int) $clientId, $actorLabel),
+            'tactical_create_check' => $this->createCheck($arguments, $clientId, $actorLabel),
             'tactical_list_tasks' => $this->listTasks($arguments, $actorLabel),
             'tactical_list_agent_tasks' => $this->listAgentTasks($arguments, (int) $clientId, $actorLabel),
             'tactical_list_policy_tasks' => $this->listPolicyTasks($arguments, $actorLabel),
@@ -1575,6 +1578,95 @@ class StaffTacticalAdminToolExecutor
     }
 
     /** @return array<string, mixed> */
+    private function createCheck(array $arguments, ?int $clientId, string $actorLabel): array
+    {
+        $tool = 'tactical_create_check';
+        $guard = $this->baseGuard($tool, $arguments, $clientId, $actorLabel);
+        if (isset($guard['error'])) {
+            return ['error' => $guard['error']];
+        }
+
+        $body = $this->checkBody($arguments);
+        $contentHash = $this->contentHash($tool, $clientId, 'check-create', $body['body'] ?? $arguments);
+        if (isset($body['error'])) {
+            $this->auditAttempt($tool, 'rejected', $clientId, $contentHash, $body['error'], $actorLabel);
+
+            return ['error' => $body['error']];
+        }
+
+        $target = $this->checkTarget($arguments, $clientId, $tool, $actorLabel);
+        if (isset($target['error'])) {
+            $this->auditAttempt($tool, 'rejected', $clientId, $contentHash, $target['error'], $actorLabel);
+
+            return ['error' => $target['error']];
+        }
+
+        if (($target['target_type'] ?? null) === 'policy' && ! $this->policyNameConfirmed($arguments, (string) ($target['policy_name'] ?? ''))) {
+            $message = 'The typed policy name does not match this Tactical automation policy.';
+            $this->auditAttempt($tool, 'rejected', $clientId, $contentHash, $message, $actorLabel);
+
+            return ['error' => $message];
+        }
+
+        if (($target['target_type'] ?? null) === 'agent' && ! $this->targetHostnameConfirmed($arguments, (string) ($target['hostname'] ?? ''))) {
+            $message = 'The typed hostname does not match this PSA-derived Tactical agent.';
+            $this->auditAttempt($tool, 'rejected', $clientId, $contentHash, $message, $actorLabel);
+
+            return ['error' => $message];
+        }
+
+        $resolvedScript = $this->resolvedScript($arguments, $tool, $actorLabel);
+        if (isset($resolvedScript['error'])) {
+            return ['error' => $resolvedScript['error']];
+        }
+
+        $payload = $target['body'];
+        $payload['check_type'] = $body['body']['check_type'];
+        $payload['script'] = (int) $resolvedScript['script_id'];
+        foreach ($body['body'] as $key => $value) {
+            if ($key !== 'check_type') {
+                $payload[$key] = $value;
+            }
+        }
+
+        $targetKey = (string) ($target['target_key'] ?? 'check-create');
+        $targetClientId = ($target['target_type'] ?? null) === 'agent' ? $clientId : null;
+        $contentHash = $this->contentHash($tool, $targetClientId, $targetKey, $payload);
+        if ($this->alreadyExecuted($tool, $targetClientId, $contentHash)) {
+            $this->auditAttempt($tool, 'blocked', $targetClientId, $contentHash, 'Duplicate Tactical check create suppressed before upstream call.', $actorLabel);
+
+            return ['success' => true, 'idempotent' => true, 'message' => 'Already created an identical Tactical check recently; no upstream call was made.'];
+        }
+        if ($this->cooldownActive($tool, $targetClientId, self::COOLDOWNS[$tool])) {
+            $this->auditAttempt($tool, 'blocked', $targetClientId, $contentHash, 'Tactical check create cooldown active; upstream call refused.', $actorLabel);
+
+            return ['error' => 'tactical_create_check cooldown active; no upstream call was made.'];
+        }
+
+        try {
+            $result = $this->client->createCheck($payload);
+            $checkId = $this->createdCheckId($target, $payload);
+        } catch (TacticalClientException $e) {
+            $message = $this->tacticalFailureMessage($e, 'Tactical check create');
+            $this->auditAttempt($tool, 'error', $targetClientId, $contentHash, $message, $actorLabel);
+
+            return ['error' => $message];
+        }
+
+        $checkName = (string) ($payload['name'] ?? $resolvedScript['script_name']);
+        $this->auditAttempt($tool, 'executed', $targetClientId, $contentHash, "Created Tactical script check '{$checkName}' for {$target['label']} using script '{$resolvedScript['script_name']}'.", $actorLabel);
+
+        return [
+            'success' => true,
+            'check_id' => $checkId,
+            'target_type' => $target['target_type'],
+            'target_id' => $target['target_id'],
+            'script_name' => $resolvedScript['script_name'],
+            'message' => is_scalar($result) ? (string) $result : 'Tactical check created.',
+        ];
+    }
+
+    /** @return array<string, mixed> */
     private function createAgentTask(array $arguments, int $clientId, string $actorLabel): array
     {
         $tool = 'tactical_create_agent_task';
@@ -1635,7 +1727,7 @@ class StaffTacticalAdminToolExecutor
     private function createPolicyTask(array $arguments, string $actorLabel): array
     {
         $tool = 'tactical_create_policy_task';
-        $guard = $this->baseGuard($tool, $arguments, null, $actorLabel);
+        $guard = $this->baseGuard($tool, $arguments, null, $actorLabel, allowedUpstreamIdentifierKeys: ['assigned_check']);
         if (isset($guard['error'])) {
             return ['error' => $guard['error']];
         }
@@ -1646,11 +1738,29 @@ class StaffTacticalAdminToolExecutor
             return ['error' => $resolvedPolicy['error']];
         }
 
-        $body = $this->taskBody($arguments, requireCreate: true, nonBody: ['reason', 'policy_id']);
+        $body = $this->taskBody($arguments, requireCreate: true, nonBody: ['reason', 'policy_id'], allowAssignedCheck: true);
         if (isset($body['error'])) {
             $this->auditAttempt($tool, 'rejected', null, $contentHash, $body['error'], $actorLabel);
 
             return ['error' => $body['error']];
+        }
+
+        if (($body['body']['task_type'] ?? null) === 'checkfailure') {
+            try {
+                $check = $this->policyCheckById((int) $resolvedPolicy['policy_id'], (int) $body['body']['assigned_check']);
+            } catch (TacticalClientException $e) {
+                $message = $this->tacticalFailureMessage($e, 'Tactical policy check lookup');
+                $this->auditAttempt($tool, 'error', null, $contentHash, $message, $actorLabel);
+
+                return ['error' => $message];
+            }
+
+            if ($check === null) {
+                $message = "Check id {$body['body']['assigned_check']} was not found in Tactical policy {$resolvedPolicy['policy_id']} checks.";
+                $this->auditAttempt($tool, 'rejected', null, $contentHash, $message, $actorLabel);
+
+                return ['error' => $message];
+            }
         }
 
         $payload = ['policy' => (int) $resolvedPolicy['policy_id']] + $body['body'];
@@ -3280,9 +3390,269 @@ class StaffTacticalAdminToolExecutor
     }
 
     /**
+     * @return array{target_type?: string, target_id?: int|string, target_key?: string, label?: string, body?: array<string, mixed>, policy_name?: string, hostname?: string, error?: string}
+     */
+    private function checkTarget(array $arguments, ?int $clientId, string $tool, string $actorLabel): array
+    {
+        $policyProvided = array_key_exists('policy_id', $arguments);
+        $endpointProvided = array_key_exists('asset_id', $arguments) || trim((string) ($arguments['hostname'] ?? '')) !== '';
+
+        if ($policyProvided && $endpointProvided) {
+            return ['error' => 'Create a check for exactly one target: policy_id or a PSA-derived agent, not both.'];
+        }
+
+        if (! $policyProvided && ! $endpointProvided) {
+            return ['error' => 'policy_id, asset_id, or hostname is required'];
+        }
+
+        if ($policyProvided) {
+            $resolvedPolicy = $this->resolvedAutomationPolicy($arguments, $tool, $actorLabel);
+            if (isset($resolvedPolicy['error'])) {
+                return ['error' => $resolvedPolicy['error']];
+            }
+
+            return [
+                'target_type' => 'policy',
+                'target_id' => (int) $resolvedPolicy['policy_id'],
+                'target_key' => 'policy-'.$resolvedPolicy['policy_id'].'-check',
+                'label' => "policy '{$resolvedPolicy['policy_name']}'",
+                'policy_name' => (string) $resolvedPolicy['policy_name'],
+                'body' => ['policy' => (int) $resolvedPolicy['policy_id']],
+            ];
+        }
+
+        if ($clientId === null) {
+            return ['error' => 'client_id is required when creating an agent check'];
+        }
+
+        $asset = $this->resolveAsset($arguments, $clientId);
+        if (is_array($asset)) {
+            return ['error' => $asset['error']];
+        }
+
+        if ($error = $this->linkedAgentError($asset)) {
+            return ['error' => $error];
+        }
+
+        $agentId = (string) $asset->tacticalAsset->agent_id;
+
+        return [
+            'target_type' => 'agent',
+            'target_id' => $agentId,
+            'target_key' => 'agent-'.$asset->id.'-check',
+            'label' => 'agent '.$this->targetHostname($asset),
+            'hostname' => $this->targetHostname($asset),
+            'body' => ['agent' => $agentId],
+        ];
+    }
+
+    /** @return array{body?: array<string, mixed>, error?: string} */
+    private function checkBody(array $arguments): array
+    {
+        $allowed = [
+            'check_type',
+            'name',
+            'fails_b4_alert',
+            'timeout',
+            'run_interval',
+            'script_args',
+            'env_vars',
+            'success_return_codes',
+            'info_return_codes',
+            'warning_return_codes',
+            'email_alert',
+            'text_alert',
+            'dashboard_alert',
+            'alert_severity',
+        ];
+        $nonBody = [
+            'reason',
+            'client_id',
+            'policy_id',
+            'asset_id',
+            'hostname',
+            'confirm_policy_name',
+            'confirm_hostname',
+            'script_id',
+            'script_name',
+        ];
+        $unsupported = array_values(array_diff(array_keys($arguments), array_merge($allowed, $nonBody)));
+        if ($unsupported !== []) {
+            return ['error' => 'Unsupported check fields: '.implode(', ', $unsupported).'.'];
+        }
+
+        $checkType = $this->enumValue($arguments['check_type'] ?? 'script', ['script']);
+        if ($checkType === null) {
+            return ['error' => 'check_type must be script.'];
+        }
+
+        $body = ['check_type' => $checkType];
+        if (array_key_exists('name', $arguments)) {
+            if (! is_scalar($arguments['name']) || trim((string) $arguments['name']) === '') {
+                return ['error' => 'name must be a non-empty string.'];
+            }
+            $body['name'] = trim((string) $arguments['name']);
+        }
+
+        $failsBeforeAlert = array_key_exists('fails_b4_alert', $arguments)
+            ? $this->positiveInteger($arguments['fails_b4_alert'])
+            : 1;
+        if ($failsBeforeAlert === null) {
+            return ['error' => 'fails_b4_alert must be a positive integer.'];
+        }
+        $body['fails_b4_alert'] = $failsBeforeAlert;
+
+        foreach (['timeout', 'run_interval'] as $key) {
+            if (array_key_exists($key, $arguments)) {
+                $value = $this->positiveInteger($arguments[$key]);
+                if ($value === null) {
+                    return ['error' => "{$key} must be a positive integer."];
+                }
+                $body[$key] = $value;
+            }
+        }
+
+        foreach (['script_args', 'env_vars'] as $key) {
+            if (array_key_exists($key, $arguments)) {
+                $value = $this->listOfStrings($arguments[$key]);
+                if ($value === null) {
+                    return ['error' => "{$key} must be a list of strings."];
+                }
+                $body[$key] = $value;
+            }
+        }
+
+        foreach (['success_return_codes' => [0], 'info_return_codes' => [], 'warning_return_codes' => []] as $key => $default) {
+            if (array_key_exists($key, $arguments)) {
+                $codes = $this->returnCodeList($arguments[$key], $key);
+                if (isset($codes['error'])) {
+                    return ['error' => $codes['error']];
+                }
+                $body[$key] = $codes['values'];
+
+                continue;
+            }
+
+            $body[$key] = $default;
+        }
+
+        foreach (['email_alert', 'text_alert', 'dashboard_alert'] as $key) {
+            if (array_key_exists($key, $arguments)) {
+                if (! is_bool($arguments[$key])) {
+                    return ['error' => "{$key} must be a boolean."];
+                }
+                $body[$key] = $arguments[$key];
+            }
+        }
+
+        if (array_key_exists('alert_severity', $arguments)) {
+            $severity = $this->enumValue($arguments['alert_severity'], self::TASK_ALERT_SEVERITIES);
+            if ($severity === null) {
+                return ['error' => 'alert_severity must be one of: '.implode(', ', self::TASK_ALERT_SEVERITIES).'.'];
+            }
+            $body['alert_severity'] = $severity;
+        }
+
+        return ['body' => $body];
+    }
+
+    /**
+     * @return array{values?: array<int, int>, error?: string}
+     */
+    private function returnCodeList(mixed $value, string $field): array
+    {
+        if (! is_array($value) || ! array_is_list($value)) {
+            return ['error' => "{$field} must be a list of non-negative integers."];
+        }
+
+        $codes = [];
+        foreach ($value as $code) {
+            $integer = $this->nonNegativeInteger($code);
+            if ($integer === null) {
+                return ['error' => "{$field} must be a list of non-negative integers."];
+            }
+            $codes[] = $integer;
+        }
+
+        return ['values' => array_values(array_unique($codes))];
+    }
+
+    /** @param array<string, mixed> $target */
+    private function createdCheckId(array $target, array $payload): ?int
+    {
+        try {
+            $checks = ($target['target_type'] ?? null) === 'policy'
+                ? $this->client->getPolicyChecks((int) $target['target_id'])
+                : $this->client->getAgentChecks((string) $target['target_id']);
+        } catch (TacticalClientException) {
+            return null;
+        }
+
+        $matches = [];
+        foreach ($checks as $check) {
+            if (is_array($check) && $this->checkMatchesPayload($check, $payload)) {
+                $matches[] = $check;
+            }
+        }
+
+        usort($matches, fn (array $a, array $b): int => ($this->checkId($b) ?? 0) <=> ($this->checkId($a) ?? 0));
+
+        return isset($matches[0]) ? $this->checkId($matches[0]) : null;
+    }
+
+    /** @param array<string, mixed> $check */
+    private function checkMatchesPayload(array $check, array $payload): bool
+    {
+        if ((string) ($check['check_type'] ?? '') !== (string) ($payload['check_type'] ?? '')) {
+            return false;
+        }
+
+        if ($this->checkScriptId($check['script'] ?? null) !== $this->positiveInteger($payload['script'] ?? null)) {
+            return false;
+        }
+
+        if (isset($payload['name'])) {
+            if (! is_scalar($check['name'] ?? null)) {
+                return false;
+            }
+            if (strcasecmp((string) $payload['name'], (string) $check['name']) !== 0) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private function policyCheckById(int $policyId, int $checkId): ?array
+    {
+        foreach ($this->client->getPolicyChecks($policyId) as $check) {
+            if (is_array($check) && $this->checkId($check) === $checkId) {
+                return $check;
+            }
+        }
+
+        return null;
+    }
+
+    /** @param array<string, mixed> $check */
+    private function checkId(array $check): ?int
+    {
+        return $this->positiveInteger($check['id'] ?? $check['pk'] ?? null);
+    }
+
+    private function checkScriptId(mixed $script): ?int
+    {
+        if (is_array($script)) {
+            return $this->positiveInteger($script['id'] ?? $script['pk'] ?? null);
+        }
+
+        return $this->positiveInteger($script);
+    }
+
+    /**
      * @return array{body?: array<string, mixed>, error?: string}
      */
-    private function taskBody(array $arguments, bool $requireCreate, array $nonBody): array
+    private function taskBody(array $arguments, bool $requireCreate, array $nonBody, bool $allowAssignedCheck = false): array
     {
         $allowed = [
             'name',
@@ -3312,6 +3682,9 @@ class StaffTacticalAdminToolExecutor
             'task_supported_platforms',
             'actions',
         ];
+        if ($allowAssignedCheck) {
+            $allowed[] = 'assigned_check';
+        }
         $unsupported = array_values(array_diff(array_keys($arguments), array_merge($allowed, $nonBody)));
         if ($unsupported !== []) {
             return ['error' => 'Unsupported task fields: '.implode(', ', $unsupported).'.'];
@@ -3369,10 +3742,26 @@ class StaffTacticalAdminToolExecutor
             if ($taskType === null) {
                 return ['error' => 'task_type must be one of: '.implode(', ', self::TASK_TYPES).'.'];
             }
-            if ($taskType === 'checkfailure') {
-                return ['error' => 'checkfailure tasks are not exposed by this tool because assigned_check requires a server-derived Tactical check resolver; no task was sent.'];
-            }
             $body['task_type'] = $taskType;
+        }
+
+        $assignedCheck = null;
+        if (array_key_exists('assigned_check', $arguments)) {
+            if (! $allowAssignedCheck) {
+                return ['error' => 'assigned_check is only supported by tactical_create_policy_task checkfailure tasks.'];
+            }
+            $assignedCheck = $this->positiveInteger($arguments['assigned_check']);
+            if ($assignedCheck === null) {
+                return ['error' => 'assigned_check must be a positive integer.'];
+            }
+            $body['assigned_check'] = $assignedCheck;
+        }
+
+        if ($taskType === 'checkfailure' && $assignedCheck === null) {
+            return ['error' => "assigned_check is required for task_type 'checkfailure'."];
+        }
+        if ($assignedCheck !== null && $taskType !== 'checkfailure') {
+            return ['error' => "assigned_check is only valid for task_type 'checkfailure'."];
         }
 
         foreach (['run_time_date', 'expire_date', 'task_repetition_duration', 'task_repetition_interval', 'random_task_delay'] as $key) {
@@ -3555,6 +3944,20 @@ class StaffTacticalAdminToolExecutor
         }
 
         return null;
+    }
+
+    private function policyNameConfirmed(array $arguments, string $policyName): bool
+    {
+        $typed = trim((string) ($arguments['confirm_policy_name'] ?? ''));
+
+        return $typed !== '' && strcasecmp($typed, $policyName) === 0;
+    }
+
+    private function targetHostnameConfirmed(array $arguments, string $hostname): bool
+    {
+        $typed = trim((string) ($arguments['confirm_hostname'] ?? ''));
+
+        return $typed !== '' && strcasecmp($typed, $hostname) === 0;
     }
 
     private function hostnameConfirmed(array $arguments, Asset $asset): bool
@@ -3856,9 +4259,9 @@ class StaffTacticalAdminToolExecutor
     /**
      * @return array{reason?: string, error?: string}
      */
-    private function baseGuard(string $tool, array $arguments, ?int $clientId, string $actorLabel): array
+    private function baseGuard(string $tool, array $arguments, ?int $clientId, string $actorLabel, array $allowedUpstreamIdentifierKeys = []): array
     {
-        if ($keys = $this->upstreamIdentifierKeys($arguments)) {
+        if ($keys = $this->upstreamIdentifierKeys($arguments, $allowedUpstreamIdentifierKeys)) {
             $this->auditAttempt($tool, 'rejected', $clientId, $this->contentHash($tool, $clientId, 'guard', $arguments), 'Caller-supplied upstream Tactical identifiers are not accepted: '.implode(', ', $keys).'.', $actorLabel);
 
             return ['error' => 'Caller-supplied upstream Tactical identifiers are not accepted; provide PSA-facing selectors instead.'];
@@ -3971,10 +4374,13 @@ class StaffTacticalAdminToolExecutor
     }
 
     /** @return array<int, string> */
-    private function upstreamIdentifierKeys(array $arguments): array
+    private function upstreamIdentifierKeys(array $arguments, array $allowed = []): array
     {
         $keys = [];
         foreach (self::UPSTREAM_IDENTIFIER_KEYS as $key) {
+            if (in_array($key, $allowed, true)) {
+                continue;
+            }
             if (array_key_exists($key, $arguments)) {
                 $keys[] = $key;
             }
@@ -4109,6 +4515,10 @@ class StaffTacticalAdminToolExecutor
         if (isset($safe['env_vars']) && is_array($safe['env_vars'])) {
             $safe['env_vars_count'] = count($safe['env_vars']);
             unset($safe['env_vars']);
+        }
+        if (isset($safe['script_args']) && is_array($safe['script_args'])) {
+            $safe['script_args_count'] = count($safe['script_args']);
+            unset($safe['script_args']);
         }
 
         return $safe;
@@ -4620,6 +5030,44 @@ class StaffTacticalAdminToolExecutor
     }
 
     /** @return array<string, mixed> */
+    private static function checkBodyProperties(): array
+    {
+        return [
+            'client_id' => ['type' => 'integer', 'description' => 'PSA client id. Required only when creating an agent check; policy checks do not require client scope.'],
+            'policy_id' => ['type' => 'integer', 'description' => 'Tactical automation policy id from tactical_list_automation_policies. Use this for broad policy-level checks; the server verifies it with getPolicies.'],
+            'asset_id' => ['type' => 'integer', 'description' => 'Optional PSA asset ID for an agent check. The server verifies it belongs to client_id and derives the Tactical agent.'],
+            'hostname' => ['type' => 'string', 'description' => 'Optional hostname for an agent check. The server resolves it within client_id and derives the Tactical agent.'],
+            'confirm_policy_name' => ['type' => 'string', 'description' => 'Typed Tactical automation policy name. Required for policy-level check creation.'],
+            'confirm_hostname' => ['type' => 'string', 'description' => 'Typed Tactical hostname. Required for agent check creation.'],
+            'check_type' => ['type' => 'string', 'enum' => ['script'], 'description' => 'Check type. Only script checks are exposed by this tool.'],
+            'name' => ['type' => 'string', 'description' => 'Optional Tactical check name.'],
+            'fails_b4_alert' => ['type' => 'integer', 'description' => 'Number of consecutive failures before Tactical alerts. Default 1.'],
+            'timeout' => ['type' => 'integer', 'description' => 'Optional script check timeout seconds.'],
+            'run_interval' => ['type' => 'integer', 'description' => 'Optional Tactical check interval.'],
+            'script_args' => ['type' => 'array', 'items' => ['type' => 'string'], 'description' => 'Script arguments sent upstream but withheld from audits.'],
+            'env_vars' => ['type' => 'array', 'items' => ['type' => 'string'], 'description' => 'Script environment variables sent upstream but withheld from audits.'],
+            'success_return_codes' => ['type' => 'array', 'items' => ['type' => 'integer'], 'description' => 'Exit codes Tactical treats as success. Default [0].'],
+            'info_return_codes' => ['type' => 'array', 'items' => ['type' => 'integer'], 'description' => 'Exit codes Tactical treats as info. Default [].'],
+            'warning_return_codes' => ['type' => 'array', 'items' => ['type' => 'integer'], 'description' => 'Exit codes Tactical treats as warning. Default [].'],
+            'email_alert' => ['type' => 'boolean', 'description' => 'Whether check failures email according to Tactical alert settings.'],
+            'text_alert' => ['type' => 'boolean', 'description' => 'Whether check failures text according to Tactical alert settings.'],
+            'dashboard_alert' => ['type' => 'boolean', 'description' => 'Whether check failures create dashboard alerts.'],
+            'alert_severity' => ['type' => 'string', 'enum' => self::TASK_ALERT_SEVERITIES, 'description' => 'Alert severity for check failures.'],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private static function createCheckTool(): array
+    {
+        return self::tool(
+            'tactical_create_check',
+            'Create one Tactical script check on a verified automation policy or PSA-derived agent using POST checks/. Policy-level checks can affect all policy agents and require typed policy-name confirmation; agent checks require typed hostname confirmation. The tool resolves scripts through getScripts and refuses caller-supplied Tactical agent/script aliases.',
+            array_merge(self::reasonProperties(), self::scriptSelectorProperties(), self::checkBodyProperties()),
+            ['reason'],
+        );
+    }
+
+    /** @return array<string, mixed> */
     private static function taskSelectorProperties(): array
     {
         return [
@@ -4628,9 +5076,9 @@ class StaffTacticalAdminToolExecutor
     }
 
     /** @return array<string, mixed> */
-    private static function taskBodyProperties(): array
+    private static function taskBodyProperties(bool $includeAssignedCheck = false): array
     {
-        return [
+        $properties = [
             'name' => ['type' => 'string', 'description' => 'Task name. Required on create.'],
             'enabled' => ['type' => 'boolean', 'description' => 'Whether the task is enabled.'],
             'continue_on_error' => ['type' => 'boolean', 'description' => 'Whether Tactical should continue later actions after a failed action.'],
@@ -4639,7 +5087,7 @@ class StaffTacticalAdminToolExecutor
             'text_alert' => ['type' => 'boolean', 'description' => 'Whether task failures text according to Tactical alert settings.'],
             'dashboard_alert' => ['type' => 'boolean', 'description' => 'Whether task failures create dashboard alerts.'],
             'collector_all_output' => ['type' => 'boolean', 'description' => 'Whether collector tasks save all output.'],
-            'task_type' => ['type' => 'string', 'enum' => self::TASK_TYPES, 'description' => 'Task schedule type. Include task_type whenever changing schedule fields on update; otherwise schedule fields are rejected to avoid Tactical silently ignoring them. checkfailure is currently refused because assigned_check needs a server-derived check resolver.'],
+            'task_type' => ['type' => 'string', 'enum' => self::TASK_TYPES, 'description' => 'Task schedule type. Include task_type whenever changing schedule fields on update; otherwise schedule fields are rejected to avoid Tactical silently ignoring them.'],
             'run_time_date' => ['type' => 'string', 'description' => 'ISO date/time required for daily, weekly, monthly, monthlydow, and runonce.'],
             'expire_date' => ['type' => 'string', 'description' => 'Optional ISO expiration date/time.'],
             'daily_interval' => ['type' => 'integer', 'description' => 'Daily interval required for daily tasks.'],
@@ -4662,6 +5110,12 @@ class StaffTacticalAdminToolExecutor
                 'items' => ['type' => 'object'],
             ],
         ];
+
+        if ($includeAssignedCheck) {
+            $properties['assigned_check'] = ['type' => 'integer', 'description' => 'Tactical check id for task_type=checkfailure. The server verifies it belongs to the selected policy via automation/policies/{policy}/checks/ before task creation.'];
+        }
+
+        return $properties;
     }
 
     /** @return array<string, mixed> */
@@ -4721,8 +5175,8 @@ class StaffTacticalAdminToolExecutor
     {
         return self::tool(
             'tactical_create_policy_task',
-            'Create one Tactical automated task under a verified automation policy using POST tasks/ with the policy field set server-side. This can schedule scripts or commands for policy-affected devices; it requires explicit grant, reason, kill-switch, dedup, cooldown, narrowed TaskSerializer fields, shell allowlists, getPolicies validation, and getScripts validation for script actions.',
-            array_merge(self::reasonProperties(), self::automationPolicySelectorProperties(), self::taskBodyProperties()),
+            'Create one Tactical automated task under a verified automation policy using POST tasks/ with the policy field set server-side. This can schedule scripts or commands for policy-affected devices or bind a checkfailure task to a verified policy check through assigned_check; it requires explicit grant, reason, kill-switch, dedup, cooldown, narrowed TaskSerializer fields, shell allowlists, getPolicies validation, and getScripts/check validation.',
+            array_merge(self::reasonProperties(), self::automationPolicySelectorProperties(), self::taskBodyProperties(includeAssignedCheck: true)),
             ['reason', 'policy_id', 'name', 'task_type', 'actions'],
         );
     }

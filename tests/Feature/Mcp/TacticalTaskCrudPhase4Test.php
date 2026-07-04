@@ -206,6 +206,7 @@ class TacticalTaskCrudPhase4Test extends TestCase
         $this->assertContains('client_id', $scoped['tactical_list_agent_tasks']['inputSchema']['required']);
         $this->assertContains('client_id', $scoped['tactical_create_agent_task']['inputSchema']['required']);
         $this->assertNotContains('client_id', $scoped['tactical_create_policy_task']['inputSchema']['required'] ?? []);
+        $this->assertArrayHasKey('assigned_check', $scoped['tactical_create_policy_task']['inputSchema']['properties']);
         $this->assertContains('confirm_run_all', $scoped['tactical_run_policy_task_all']['inputSchema']['required']);
         $this->assertContains('ticket_id', $scoped['tactical_stage_run_policy_task_all']['inputSchema']['required']);
         $this->assertStringContainsString('ALL affected agents', $scoped['tactical_run_policy_task_all']['description']);
@@ -249,20 +250,24 @@ class TacticalTaskCrudPhase4Test extends TestCase
         $this->assertTrue((bool) $badNestedScript->json('result.isError'));
         $this->assertStringContainsString('script action must use script_id or script_name', (string) $badNestedScript->json('result.content.0.text'));
 
-        $badCheckFailure = $this->callTool($token, 'tactical_create_policy_task', [
-            'reason' => 'Reject free upstream check id.',
-            'policy_id' => 7,
+        $badAgentCheckFailure = $this->callTool($token, 'tactical_create_agent_task', [
+            'client_id' => $fixture['client']->id,
+            'reason' => 'Reject check-failure agent task with caller-supplied upstream check id.',
+            'hostname' => 'PC-01',
             'name' => 'Check task',
             'task_type' => 'checkfailure',
             'assigned_check' => 99,
             'actions' => [['type' => 'cmd', 'shell' => 'powershell', 'command' => 'whoami', 'timeout' => 30]],
         ]);
-        $this->assertTrue((bool) $badCheckFailure->json('result.isError'));
-        $this->assertStringContainsString('upstream Tactical identifiers are not accepted', (string) $badCheckFailure->json('result.content.0.text'));
+        $this->assertTrue((bool) $badAgentCheckFailure->json('result.isError'));
+        $this->assertStringContainsString('upstream Tactical identifiers are not accepted', (string) $badAgentCheckFailure->json('result.content.0.text'));
 
         $tactical = Mockery::mock(TacticalClient::class);
         $tactical->shouldReceive('getScripts')->twice()->with(true, true)->andReturn($this->scripts());
         $tactical->shouldReceive('getPolicies')->once()->andReturn($this->policies());
+        $tactical->shouldReceive('getPolicyChecks')->once()->with(7)->andReturn([
+            ['id' => 99, 'name' => 'HelpDesk Buttons detector', 'check_type' => 'script', 'script' => 102],
+        ]);
         $tactical->shouldReceive('createTask')->once()->with([
             'agent' => 'agent-1',
             'name' => 'Daily cleanup',
@@ -277,9 +282,10 @@ class TacticalTaskCrudPhase4Test extends TestCase
         ])->andReturn('The task has been created. It will show up on the agent on next checkin');
         $tactical->shouldReceive('createTask')->once()->with([
             'policy' => 7,
-            'name' => 'Policy cleanup',
+            'name' => 'Policy self-heal',
             'enabled' => true,
-            'task_type' => 'manual',
+            'task_type' => 'checkfailure',
+            'assigned_check' => 99,
             'actions' => [
                 ['type' => 'script', 'script' => 102, 'name' => 'Deploy App', 'script_args' => [], 'timeout' => 90],
             ],
@@ -303,11 +309,12 @@ class TacticalTaskCrudPhase4Test extends TestCase
         $this->assertFalse((bool) $agentTask->json('result.isError'), (string) $agentTask->json('result.content.0.text'));
 
         $policyTask = $this->callTool($token, 'tactical_create_policy_task', [
-            'reason' => 'Create manual policy task.',
+            'reason' => 'Create check-failure policy remediation task.',
             'policy_id' => 7,
-            'name' => 'Policy cleanup',
+            'name' => 'Policy self-heal',
             'enabled' => true,
-            'task_type' => 'manual',
+            'task_type' => 'checkfailure',
+            'assigned_check' => 99,
             'actions' => [
                 ['type' => 'script', 'script_name' => 'Deploy App', 'script_args' => [], 'timeout' => 90],
             ],
@@ -322,6 +329,15 @@ class TacticalTaskCrudPhase4Test extends TestCase
         $this->assertStringNotContainsString('SECRET_TOKEN', $auditJson);
         $this->assertStringNotContainsString('SECRET_ARG', $auditJson);
         $this->assertStringContainsString('actions_count', $auditJson);
+
+        $policyAuditJson = McpAuditLog::query()
+            ->where('tool_name', 'tactical_create_policy_task')
+            ->get()
+            ->map(fn (McpAuditLog $log): string => json_encode($log->arguments, JSON_THROW_ON_ERROR))
+            ->implode("\n");
+        $this->assertStringContainsString('"assigned_check":99', $policyAuditJson);
+        $this->assertStringContainsString('actions_count', $policyAuditJson);
+        $this->assertStringNotContainsString('script_args', $policyAuditJson);
 
         $summaries = TechnicianActionLog::query()
             ->where('action_type', 'tactical_create_agent_task')

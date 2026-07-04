@@ -933,12 +933,20 @@ class McpStaffController extends Controller
                 'run_asap_after_missed',
                 'task_instance_policy',
                 'task_supported_platforms',
+                'assigned_check',
                 'continue_on_error',
                 'alert_severity',
                 'email_alert',
                 'text_alert',
                 'dashboard_alert',
                 'collector_all_output',
+                'check_type',
+                'fails_b4_alert',
+                'timeout',
+                'run_interval',
+                'success_return_codes',
+                'info_return_codes',
+                'warning_return_codes',
                 'target_type',
                 'policy_kind',
                 'block_policy_inheritance',
@@ -981,6 +989,10 @@ class McpStaffController extends Controller
 
             if ($normalized === 'args') {
                 $safe['args'] = app(ActionRedactor::class)->redactParams(is_array($value) ? $value : []);
+            }
+
+            if ($normalized === 'script_args') {
+                $safe['script_args_count'] = is_array($value) ? count($value) : 0;
             }
 
             if ($normalized === 'env_vars') {

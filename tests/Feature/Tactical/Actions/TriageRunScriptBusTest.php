@@ -45,7 +45,11 @@ class TriageRunScriptBusTest extends TestCase
             'status' => 'online',
         ]);
 
-        $this->bindClient([new Response(200, [], json_encode(['stdout' => 'diag output', 'retcode' => 0]))]);
+        $this->bindClient([
+            new Response(200, [], json_encode([])),
+            new Response(200, [], json_encode('diag output')),
+            new Response(200, [], json_encode([['id' => 1, 'script' => 201, 'script_results' => ['stdout' => 'diag output', 'stderr' => '', 'retcode' => 0]]])),
+        ]);
 
         $out = (new TriageToolExecutor($ticket))->execute('tactical_run_diagnostic', [
             'hostname' => 'AI-HOST-1',

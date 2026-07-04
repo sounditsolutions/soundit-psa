@@ -320,6 +320,16 @@ class TacticalClient
         return $this->get("automation/policies/{$policyId}/tasks/");
     }
 
+    public function getPolicyChecks(int $policyId): array
+    {
+        return $this->get("automation/policies/{$policyId}/checks/");
+    }
+
+    public function createCheck(array $body): mixed
+    {
+        return $this->post('checks/', $body);
+    }
+
     public function createTask(array $body): mixed
     {
         return $this->post('tasks/', $body);
@@ -469,15 +479,24 @@ class TacticalClient
     }
 
     /**
-     * Run a curated script on an agent (sync `wait`). Typed `mixed`, not `array`:
-     * post() returns whatever the endpoint's JSON decodes to. The runscript
-     * endpoint normally returns an object, but — like reboot, which returns the
-     * scalar "ok" (live-verified) — a non-object reply must not raise an
-     * uncaught TypeError that bypasses the bus's TacticalClientException catch.
-     * RunScriptAction::execute normalizes a non-array result defensively.
+     * Run a curated script on an agent (sync `wait`). Tactical's wait endpoint
+     * returns a legacy stdout/stderr string, then the agent patches the real
+     * stdout/stderr/retcode to AgentHistory.script_results out-of-band. Keep
+     * the normal script-run route for Tactical-side audit/history semantics,
+     * then read the new history row to recover the true retcode when available.
      */
     public function runScript(string $agentId, int $scriptId, ?array $args = null, int $timeout = 120): mixed
     {
+        $previousHistoryId = null;
+        $historySnapshotAvailable = false;
+        try {
+            $previousHistoryId = $this->latestScriptHistoryId($this->getAgentHistory($agentId), $scriptId);
+            $historySnapshotAvailable = true;
+        } catch (TacticalClientException) {
+            // Older Tactical roles may lack AgentHistoryPerms. Preserve the run
+            // path and fall back to the legacy immediate response below.
+        }
+
         $body = [
             'output' => 'wait',
             'script' => $scriptId,
@@ -491,7 +510,130 @@ class TacticalClient
             'save_all_output' => false,
         ];
 
-        return $this->post("agents/{$agentId}/runscript/", $body);
+        $raw = $this->post("agents/{$agentId}/runscript/", $body);
+
+        if (! $historySnapshotAvailable) {
+            return $raw;
+        }
+
+        try {
+            return $this->waitForScriptHistoryResult($agentId, $scriptId, $previousHistoryId, $raw) ?? $raw;
+        } catch (TacticalClientException) {
+            return $raw;
+        }
+    }
+
+    public function getAgentHistory(string $agentId): array
+    {
+        return $this->get("agents/{$agentId}/history/");
+    }
+
+    private function waitForScriptHistoryResult(string $agentId, int $scriptId, ?int $previousHistoryId, mixed $legacyResponse): ?array
+    {
+        $legacyOutput = is_scalar($legacyResponse) ? (string) $legacyResponse : null;
+
+        for ($attempt = 0; $attempt < 4; $attempt++) {
+            if ($attempt > 0) {
+                usleep(250_000);
+            }
+
+            $result = $this->scriptHistoryResult($this->getAgentHistory($agentId), $scriptId, $previousHistoryId, $legacyOutput);
+            if ($result !== null) {
+                return $result;
+            }
+        }
+
+        return null;
+    }
+
+    /** @param array<int, mixed> $history */
+    private function latestScriptHistoryId(array $history, int $scriptId): ?int
+    {
+        $latest = null;
+        foreach ($history as $item) {
+            if (! is_array($item) || $this->historyScriptId($item) !== $scriptId) {
+                continue;
+            }
+
+            $id = $this->positiveInteger($item['id'] ?? null);
+            if ($id !== null && ($latest === null || $id > $latest)) {
+                $latest = $id;
+            }
+        }
+
+        return $latest;
+    }
+
+    /** @param array<int, mixed> $history */
+    private function scriptHistoryResult(array $history, int $scriptId, ?int $previousHistoryId, ?string $legacyOutput): ?array
+    {
+        $bestId = null;
+        $bestResult = null;
+        foreach ($history as $item) {
+            if (! is_array($item) || $this->historyScriptId($item) !== $scriptId) {
+                continue;
+            }
+
+            $id = $this->positiveInteger($item['id'] ?? null);
+            if ($id === null || ($previousHistoryId !== null && $id <= $previousHistoryId)) {
+                continue;
+            }
+
+            $result = $item['script_results'] ?? null;
+            if (! is_array($result)) {
+                continue;
+            }
+            if (! $this->historyResultMatchesLegacyOutput($result, $legacyOutput)) {
+                continue;
+            }
+
+            if ($bestId === null || $id > $bestId) {
+                $bestId = $id;
+                $bestResult = $result;
+            }
+        }
+
+        return $bestResult;
+    }
+
+    /** @param array<string, mixed> $result */
+    private function historyResultMatchesLegacyOutput(array $result, ?string $legacyOutput): bool
+    {
+        if ($legacyOutput === null) {
+            return true;
+        }
+
+        $stdout = $result['stdout'] ?? '';
+        $stderr = $result['stderr'] ?? '';
+        if (! is_scalar($stdout) || ! is_scalar($stderr)) {
+            return false;
+        }
+
+        return (string) $stdout.(string) $stderr === $legacyOutput;
+    }
+
+    /** @param array<string, mixed> $history */
+    private function historyScriptId(array $history): ?int
+    {
+        $script = $history['script'] ?? null;
+        if (is_array($script)) {
+            return $this->positiveInteger($script['id'] ?? $script['pk'] ?? null);
+        }
+
+        return $this->positiveInteger($script);
+    }
+
+    private function positiveInteger(mixed $value): ?int
+    {
+        if (is_int($value)) {
+            return $value > 0 ? $value : null;
+        }
+
+        if (is_string($value) && preg_match('/^[1-9][0-9]*$/', $value) === 1) {
+            return (int) $value;
+        }
+
+        return null;
     }
 
     /**

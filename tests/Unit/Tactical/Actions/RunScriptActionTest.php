@@ -28,6 +28,31 @@ class RunScriptActionTest extends TestCase
         $this->action = new RunScriptAction;
     }
 
+    private function client(Response $runResponse, ?array $scriptResults = null, ?array &$history = null): TacticalClient
+    {
+        $afterHistory = $scriptResults === null
+            ? [['id' => 11, 'script' => 201]]
+            : [['id' => 11, 'script' => 201, 'script_results' => $scriptResults]];
+
+        $queue = [
+            new Response(200, [], json_encode([['id' => 10, 'script' => 201, 'script_results' => ['retcode' => 0]]])),
+            $runResponse,
+            new Response(200, [], json_encode($afterHistory)),
+        ];
+        if ($scriptResults === null) {
+            $queue[] = new Response(200, [], json_encode($afterHistory));
+            $queue[] = new Response(200, [], json_encode($afterHistory));
+            $queue[] = new Response(200, [], json_encode($afterHistory));
+        }
+
+        $stack = HandlerStack::create(new MockHandler($queue));
+        if ($history !== null) {
+            $stack->push(Middleware::history($history));
+        }
+
+        return new TacticalClient(new GuzzleClient(['base_uri' => 'https://t.example.com/', 'handler' => $stack]));
+    }
+
     public function test_key_and_non_destructive(): void
     {
         $this->assertSame('tactical.run_script', $this->action->key());
@@ -99,11 +124,7 @@ class RunScriptActionTest extends TestCase
     public function test_execute_posts_the_mapped_runscript_body(): void
     {
         $history = [];
-        $stack = HandlerStack::create(new MockHandler([
-            new Response(200, [], json_encode(['stdout' => 'hello', 'retcode' => 0])),
-        ]));
-        $stack->push(Middleware::history($history));
-        $client = new TacticalClient(new GuzzleClient(['base_uri' => 'https://t.example.com/', 'handler' => $stack]));
+        $client = $this->client(new Response(200, [], json_encode('hello')), ['stdout' => 'hello', 'retcode' => 0], $history);
 
         $params = $this->action->validateParams([
             'tactical_script_id' => 201,
@@ -118,7 +139,10 @@ class RunScriptActionTest extends TestCase
         $this->assertSame(0, $result->retcode);
 
         /** @var RequestInterface $req */
-        $req = $history[0]['request'];
+        $this->assertSame('GET', $history[0]['request']->getMethod());
+        $this->assertSame('/agents/AGENT-1/history/', $history[0]['request']->getUri()->getPath());
+
+        $req = $history[1]['request'];
         $this->assertSame('POST', $req->getMethod());
         $this->assertSame('/agents/AGENT-1/runscript/', $req->getUri()->getPath());
         $body = json_decode((string) $req->getBody(), true);
@@ -126,15 +150,17 @@ class RunScriptActionTest extends TestCase
         $this->assertSame(201, $body['script']);
         $this->assertSame(['-Foo', 'bar'], $body['args']);
         $this->assertSame(90, $body['timeout']);
+        $this->assertFalse($body['run_as_user']);
+        $this->assertSame([], $body['env_vars']);
+
+        $this->assertSame('GET', $history[2]['request']->getMethod());
+        $this->assertSame('/agents/AGENT-1/history/', $history[2]['request']->getUri()->getPath());
     }
 
     public function test_execute_maps_alternate_output_keys(): void
     {
         // TRMM sometimes returns `output`/`return_code` — map them like the old controllers did.
-        $stack = HandlerStack::create(new MockHandler([
-            new Response(200, [], json_encode(['output' => 'alt-out', 'return_code' => 3])),
-        ]));
-        $client = new TacticalClient(new GuzzleClient(['base_uri' => 'https://t.example.com/', 'handler' => $stack]));
+        $client = $this->client(new Response(200, [], json_encode(['output' => 'legacy alt'])), ['output' => 'alt-out', 'return_code' => 3]);
 
         $params = $this->action->validateParams(['tactical_script_id' => 201, 'timeout' => 60]);
         $result = $this->action->execute($client, 'AGENT-1', $params);
@@ -143,12 +169,31 @@ class RunScriptActionTest extends TestCase
         $this->assertSame(3, $result->retcode);
     }
 
+    public function test_execute_maps_nested_script_results_payload(): void
+    {
+        // The Tactical agent records wait-run results under `script_results` on
+        // the history callback; preserve its real retcode if that shape is
+        // proxied back by a Tactical build.
+        $client = $this->client(new Response(200, [], json_encode(['status' => 'queued'])), [
+            'script_results' => [
+                'stdout' => 'nested-out',
+                'stderr' => 'nested-error',
+                'retcode' => 7,
+                'execution_time' => 1.234,
+            ],
+        ]);
+
+        $params = $this->action->validateParams(['tactical_script_id' => 201, 'timeout' => 60]);
+        $result = $this->action->execute($client, 'AGENT-1', $params);
+
+        $this->assertSame('nested-out', $result->stdout);
+        $this->assertSame('nested-error', $result->stderr);
+        $this->assertSame(7, $result->retcode);
+    }
+
     public function test_execute_carries_stderr_from_the_response(): void
     {
-        $stack = HandlerStack::create(new MockHandler([
-            new Response(200, [], json_encode(['stdout' => 'out', 'stderr' => 'a warning occurred', 'retcode' => 1])),
-        ]));
-        $client = new TacticalClient(new GuzzleClient(['base_uri' => 'https://t.example.com/', 'handler' => $stack]));
+        $client = $this->client(new Response(200, [], json_encode('outa warning occurred')), ['stdout' => 'out', 'stderr' => 'a warning occurred', 'retcode' => 1]);
 
         $params = $this->action->validateParams(['tactical_script_id' => 201, 'timeout' => 60]);
         $result = $this->action->execute($client, 'AGENT-1', $params);
@@ -191,15 +236,13 @@ class RunScriptActionTest extends TestCase
         // scalar instead of an object, runScript() (typed `mixed`) returns a
         // non-array and execute() must normalize it to an ok result — NOT raise
         // an uncaught TypeError that bypasses the bus's exception catch.
-        $stack = HandlerStack::create(new MockHandler([
-            new Response(200, [], json_encode('ok')), // body is the JSON string "ok"
-        ]));
-        $client = new TacticalClient(new GuzzleClient(['base_uri' => 'https://t.example.com/', 'handler' => $stack]));
+        $client = $this->client(new Response(200, [], json_encode('ok'))); // body is the JSON string "ok"
 
         $params = $this->action->validateParams(['tactical_script_id' => 201, 'timeout' => 60]);
         $result = $this->action->execute($client, 'AGENT-1', $params);
 
         $this->assertTrue($result->isOk());
         $this->assertSame('ok', $result->stdout);
+        $this->assertNull($result->retcode);
     }
 }
