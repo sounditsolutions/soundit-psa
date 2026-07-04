@@ -30,7 +30,7 @@ final class TacticalActionResult
         public readonly ?string $stderr = null,
     ) {}
 
-    public static function ok(?string $stdout = null, int $retcode = 0, ?string $stderr = null): self
+    public static function ok(?string $stdout = null, ?int $retcode = null, ?string $stderr = null): self
     {
         return new self('ok', $stdout, $retcode, null, $stderr);
     }

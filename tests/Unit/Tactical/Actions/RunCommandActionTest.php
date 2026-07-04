@@ -256,6 +256,7 @@ class RunCommandActionTest extends TestCase
 
         $this->assertTrue($result->isOk());
         $this->assertSame('admin', $result->stdout);
+        $this->assertNull($result->retcode);
 
         /** @var RequestInterface $req */
         $req = $history[0]['request'];
@@ -280,6 +281,7 @@ class RunCommandActionTest extends TestCase
 
         $this->assertTrue($result->isOk());
         $this->assertStringContainsString('Windows IP Configuration', (string) $result->stdout);
+        $this->assertNull($result->retcode);
     }
 
     public function test_execute_treats_an_empty_string_output_as_ok_not_error(): void
@@ -293,6 +295,7 @@ class RunCommandActionTest extends TestCase
 
         $this->assertTrue($result->isOk());
         $this->assertSame('', $result->stdout);
+        $this->assertNull($result->retcode);
     }
 
     public function test_execute_handles_an_object_response_as_the_secondary_shape(): void
@@ -305,6 +308,17 @@ class RunCommandActionTest extends TestCase
 
         $this->assertSame('obj-out', $result->stdout);
         $this->assertSame(2, $result->retcode);
+    }
+
+    public function test_execute_maps_alternate_object_output_and_return_code(): void
+    {
+        $client = $this->client(new Response(200, [], json_encode(['output' => 'alt-out', 'return_code' => 7])));
+
+        $params = $this->action->validateParams(['cmd' => 'whoami', 'shell' => 'cmd', 'timeout' => 30]);
+        $result = $this->action->execute($client, 'AGENT-1', $params);
+
+        $this->assertSame('alt-out', $result->stdout);
+        $this->assertSame(7, $result->retcode);
     }
 
     public function test_execute_lets_a_transport_failure_bubble_for_the_bus(): void

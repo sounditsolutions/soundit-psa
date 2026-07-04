@@ -143,13 +143,30 @@ class RunCommandAction implements TacticalAction
         // An empty string is a command that printed nothing: still `ok`, never a
         // falsy-triggered error. An object reply is the secondary/defensive case.
         if (is_array($raw)) {
-            $stdout = $raw['stdout'] ?? $raw['output'] ?? '';
-            $retcode = $raw['retcode'] ?? $raw['return_code'] ?? 0;
+            $stdout = $raw['stdout'] ?? $raw['output'] ?? $raw['results'] ?? '';
+            if (! is_scalar($stdout)) {
+                $stdout = '';
+            }
             $stderr = $raw['stderr'] ?? null;
+            if (! is_scalar($stderr)) {
+                $stderr = null;
+            }
 
-            return TacticalActionResult::ok((string) $stdout, (int) $retcode, $stderr ?: null);
+            return TacticalActionResult::ok((string) $stdout, $this->retcode($raw), $stderr !== null && (string) $stderr !== '' ? (string) $stderr : null);
         }
 
         return TacticalActionResult::ok(is_scalar($raw) ? (string) $raw : '');
+    }
+
+    /** @param array<string, mixed> $payload */
+    private function retcode(array $payload): ?int
+    {
+        foreach (['retcode', 'return_code', 'exit_code'] as $key) {
+            if (array_key_exists($key, $payload) && is_numeric($payload[$key])) {
+                return (int) $payload[$key];
+            }
+        }
+
+        return null;
     }
 }

@@ -81,13 +81,20 @@ class TacticalClientHttpTest extends TestCase
         $this->assertSame([['agent_id' => 'a1']], $result);
     }
 
-    public function test_run_script_posts_to_the_runscript_endpoint(): void
+    public function test_run_script_posts_to_the_runscript_endpoint_and_reads_history_retcode(): void
     {
-        $client = $this->clientReturning([new Response(200, [], json_encode(['stdout' => 'ok', 'retcode' => 0]))]);
+        $client = $this->clientReturning([
+            new Response(200, [], json_encode([['id' => 10, 'script' => 201, 'script_results' => ['retcode' => 0]]])),
+            new Response(200, [], json_encode('ok')),
+            new Response(200, [], json_encode([['id' => 11, 'script' => 201, 'script_results' => ['stdout' => 'ok', 'retcode' => 7]]])),
+        ]);
 
         $result = $client->runScript('AGENT123', 201, ['--foo'], 90);
 
-        $req = $this->lastRequest();
+        $this->assertSame('GET', $this->history[0]['request']->getMethod());
+        $this->assertSame('/agents/AGENT123/history/', $this->history[0]['request']->getUri()->getPath());
+
+        $req = $this->history[1]['request'];
         $this->assertSame('POST', $req->getMethod());
         $this->assertSame('/agents/AGENT123/runscript/', $req->getUri()->getPath());
 
@@ -95,7 +102,13 @@ class TacticalClientHttpTest extends TestCase
         $this->assertSame('wait', $body['output']);
         $this->assertSame(201, $body['script']);
         $this->assertSame(['--foo'], $body['args']);
-        $this->assertSame(['stdout' => 'ok', 'retcode' => 0], $result);
+        $this->assertSame(90, $body['timeout']);
+        $this->assertFalse($body['run_as_user']);
+        $this->assertSame([], $body['env_vars']);
+
+        $this->assertSame('GET', $this->history[2]['request']->getMethod());
+        $this->assertSame('/agents/AGENT123/history/', $this->history[2]['request']->getUri()->getPath());
+        $this->assertSame(['stdout' => 'ok', 'retcode' => 7], $result);
     }
 
     public function test_patch_alerts_hits_the_alerts_endpoint(): void

@@ -50,7 +50,9 @@ class TacticalClientTaskCrudTest extends TestCase
             new Response(200, [], json_encode([['id' => 21, 'name' => 'Daily cleanup']])),
             new Response(200, [], json_encode([['id' => 21, 'name' => 'Daily cleanup']])),
             new Response(200, [], json_encode([['id' => 22, 'name' => 'Policy cleanup']])),
+            new Response(200, [], json_encode([['id' => 31, 'name' => 'Detector', 'check_type' => 'script']])),
             new Response(200, [], json_encode('created')),
+            new Response(200, [], json_encode('Script Check: Detector was added!')),
             new Response(200, [], json_encode(['id' => 21, 'name' => 'Daily cleanup'])),
             new Response(200, [], json_encode('updated')),
             new Response(200, [], json_encode('Daily cleanup will be deleted shortly')),
@@ -71,6 +73,10 @@ class TacticalClientTaskCrudTest extends TestCase
         $this->assertSame('GET', $this->lastRequest()->getMethod());
         $this->assertSame('/automation/policies/7/tasks/', $this->lastRequest()->getUri()->getPath());
 
+        $this->assertSame([['id' => 31, 'name' => 'Detector', 'check_type' => 'script']], $client->getPolicyChecks(7));
+        $this->assertSame('GET', $this->lastRequest()->getMethod());
+        $this->assertSame('/automation/policies/7/checks/', $this->lastRequest()->getUri()->getPath());
+
         $body = [
             'agent' => 'agent-1',
             'name' => 'Daily cleanup',
@@ -84,6 +90,20 @@ class TacticalClientTaskCrudTest extends TestCase
         $this->assertSame('POST', $this->lastRequest()->getMethod());
         $this->assertSame('/tasks/', $this->lastRequest()->getUri()->getPath());
         $this->assertSame($body, $this->lastBody());
+
+        $checkBody = [
+            'policy' => 7,
+            'check_type' => 'script',
+            'script' => 102,
+            'success_return_codes' => [0],
+            'info_return_codes' => [],
+            'warning_return_codes' => [7],
+            'fails_b4_alert' => 2,
+        ];
+        $this->assertSame('Script Check: Detector was added!', $client->createCheck($checkBody));
+        $this->assertSame('POST', $this->lastRequest()->getMethod());
+        $this->assertSame('/checks/', $this->lastRequest()->getUri()->getPath());
+        $this->assertSame($checkBody, $this->lastBody());
 
         $this->assertSame(['id' => 21, 'name' => 'Daily cleanup'], $client->getTask(21));
         $this->assertSame('GET', $this->lastRequest()->getMethod());

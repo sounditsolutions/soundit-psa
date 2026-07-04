@@ -41,6 +41,18 @@ class RunScriptEndpointContractTest extends TestCase
         $this->app->instance(TacticalClient::class, new TacticalClient($http));
     }
 
+    /** @return array<int, Response> */
+    private function scriptRunResponses(array $scriptResults): array
+    {
+        $legacyOutput = (string) ($scriptResults['stdout'] ?? '').(string) ($scriptResults['stderr'] ?? '');
+
+        return [
+            new Response(200, [], json_encode([['id' => 10, 'script' => 4242, 'script_results' => ['retcode' => 0]]])),
+            new Response(200, [], json_encode($legacyOutput)),
+            new Response(200, [], json_encode([['id' => 11, 'script' => 4242, 'script_results' => $scriptResults]])),
+        ];
+    }
+
     private function script(): TacticalScript
     {
         return TacticalScript::create([
@@ -71,7 +83,7 @@ class RunScriptEndpointContractTest extends TestCase
         $user = User::factory()->create();
         $asset = $this->onlineAsset();
         $script = $this->script();
-        $this->bindClient([new Response(200, [], json_encode(['stdout' => 'hello out', 'stderr' => 'a warning', 'retcode' => 0]))]);
+        $this->bindClient($this->scriptRunResponses(['stdout' => 'hello out', 'stderr' => 'a warning', 'retcode' => 0]));
 
         $resp = $this->actingAs($user)->postJson(route('assets.run-tactical-script', $asset), [
             'script_id' => $script->id,
@@ -126,7 +138,10 @@ class RunScriptEndpointContractTest extends TestCase
             'status' => 'offline',
         ]);
         $script = $this->script();
-        $this->bindClient([new ConnectException('agent offline', new Request('POST', 'x'))]);
+        $this->bindClient([
+            new ConnectException('history unavailable', new Request('GET', 'x')),
+            new ConnectException('agent offline', new Request('POST', 'x')),
+        ]);
 
         $resp = $this->actingAs($user)->postJson(route('assets.run-tactical-script', $asset->refresh()), [
             'script_id' => $script->id,
@@ -150,7 +165,7 @@ class RunScriptEndpointContractTest extends TestCase
             'status' => 'offline',
         ]);
         $script = $this->script();
-        $this->bindClient([new Response(200, [], json_encode(['stdout' => 'back online', 'retcode' => 0]))]);
+        $this->bindClient($this->scriptRunResponses(['stdout' => 'back online', 'retcode' => 0]));
 
         $resp = $this->actingAs($user)->postJson(route('assets.run-tactical-script', $asset->refresh()), [
             'script_id' => $script->id,
@@ -167,7 +182,10 @@ class RunScriptEndpointContractTest extends TestCase
         $script = $this->script();
         // A transport failure during execute -> the bus returns `offline`; the
         // endpoint maps a non-ok result to an {error} body the JS can render.
-        $this->bindClient([new ConnectException('boom', new Request('POST', 'x'))]);
+        $this->bindClient([
+            new ConnectException('history unavailable', new Request('GET', 'x')),
+            new ConnectException('boom', new Request('POST', 'x')),
+        ]);
 
         $resp = $this->actingAs($user)->postJson(route('assets.run-tactical-script', $asset), [
             'script_id' => $script->id,
@@ -189,7 +207,10 @@ class RunScriptEndpointContractTest extends TestCase
         $user = User::factory()->create();
         $asset = $this->onlineAsset();
         $script = $this->script();
-        $this->bindClient([new Response(403, [], 'forbidden by role')]);
+        $this->bindClient([
+            new Response(403, [], 'history forbidden'),
+            new Response(403, [], 'forbidden by role'),
+        ]);
 
         $resp = $this->actingAs($user)->postJson(route('assets.run-tactical-script', $asset), [
             'script_id' => $script->id,
@@ -210,7 +231,7 @@ class RunScriptEndpointContractTest extends TestCase
         $ticket = Ticket::factory()->create();
         $ticket->assets()->attach($asset->id);
         $script = $this->script();
-        $this->bindClient([new Response(200, [], json_encode(['stdout' => 'ticket out', 'retcode' => 0]))]);
+        $this->bindClient($this->scriptRunResponses(['stdout' => 'ticket out', 'retcode' => 0]));
 
         $resp = $this->actingAs($user)->postJson(route('tickets.run-tactical-script', $ticket), [
             'asset_id' => $asset->id,

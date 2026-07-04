@@ -89,18 +89,47 @@ class RunScriptAction implements TacticalAction
             (int) ($params['timeout'] ?? self::TIMEOUT_DEFAULT),
         );
 
-        // Don't assume the Tactical response shape (the live reboot fix lesson):
-        // an object is the norm, but a scalar reply (e.g. "ok") must not blow up
-        // array access. Normalize a non-array result to a stdout-only payload.
-        $result = is_array($raw)
-            ? $raw
-            : ['stdout' => is_scalar($raw) ? (string) $raw : ''];
+        $result = $this->responsePayload($raw);
 
         $stdout = $result['stdout'] ?? $result['output'] ?? '';
-        $retcode = $result['retcode'] ?? $result['return_code'] ?? null;
-        $stderr = $result['stderr'] ?? null;
+        if (! is_scalar($stdout)) {
+            $stdout = '';
+        }
 
-        return TacticalActionResult::ok($stdout, $retcode ?? 0, $stderr ?: null);
+        $stderr = $result['stderr'] ?? null;
+        if (! is_scalar($stderr)) {
+            $stderr = null;
+        }
+
+        return TacticalActionResult::ok((string) $stdout, $this->retcode($result), $stderr !== null && (string) $stderr !== '' ? (string) $stderr : null);
+    }
+
+    /** @return array<string, mixed> */
+    private function responsePayload(mixed $raw): array
+    {
+        if (! is_array($raw)) {
+            return ['stdout' => is_scalar($raw) ? (string) $raw : ''];
+        }
+
+        foreach (['script_results', 'result', 'results'] as $key) {
+            if (isset($raw[$key]) && is_array($raw[$key])) {
+                return $raw[$key];
+            }
+        }
+
+        return $raw;
+    }
+
+    /** @param array<string, mixed> $payload */
+    private function retcode(array $payload): ?int
+    {
+        foreach (['retcode', 'return_code', 'exit_code'] as $key) {
+            if (array_key_exists($key, $payload) && is_numeric($payload[$key])) {
+                return (int) $payload[$key];
+            }
+        }
+
+        return null;
     }
 
     /**
