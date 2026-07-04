@@ -31,6 +31,8 @@ class TechnicianCockpitController extends Controller
             'needs' => $query->needsAttention(),
             'intake' => $query->intakeReview(),
             'intakeSpam' => $query->intakeSpamReview(),
+            'queued' => $query->queuedOffline(),
+            'expired' => $query->expiredQueue(),
             'counts' => $query->counts(),
         ]);
     }
@@ -119,6 +121,40 @@ class TechnicianCockpitController extends Controller
             $ok ? 'denied' : 'already_handled',
             $ok ? 'Draft dismissed; the ticket is back with your team.' : 'That draft was already handled.',
             undo: $ok ? $this->runUndoPayload($run, 'hold') : null,
+        );
+    }
+
+    /**
+     * Operator cancels a queued offline action from the cockpit (bd psa-xr84).
+     * CAS-guarded on the model: a no-op on anything not currently queued_offline
+     * (it already ran on reconnect, already expired, or was already cancelled).
+     */
+    public function cancel(Request $request, TechnicianRun $run)
+    {
+        $ok = $run->cancelQueued();
+
+        return $this->actionResponse(
+            $request,
+            $ok,
+            $ok ? 'cancelled' : 'already_handled',
+            $ok ? 'Queued action cancelled.' : 'That queued action was already handled.',
+        );
+    }
+
+    /**
+     * Operator re-confirms an expired queued action (bd psa-xr84), re-arming the
+     * normal approval flow (expired → awaiting_approval). CAS-guarded on the
+     * model: a no-op if the run is no longer Expired.
+     */
+    public function reconfirm(Request $request, TechnicianRun $run)
+    {
+        $ok = $run->reconfirmExpired();
+
+        return $this->actionResponse(
+            $request,
+            $ok,
+            $ok ? 'reconfirmed' : 'already_handled',
+            $ok ? 'Back in the approval queue.' : 'That expired action was already handled.',
         );
     }
 
