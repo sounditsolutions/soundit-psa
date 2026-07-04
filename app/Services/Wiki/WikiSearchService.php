@@ -5,7 +5,6 @@ namespace App\Services\Wiki;
 use App\Enums\WikiFactStatus;
 use App\Models\WikiFact;
 use App\Models\WikiPage;
-use Illuminate\Support\Facades\DB;
 
 class WikiSearchService
 {
@@ -81,11 +80,17 @@ class WikiSearchService
         return ['pages' => $pages, 'facts' => $facts];
     }
 
-    /** FULLTEXT on mysql/mariadb, LIKE elsewhere (SQLite dev/tests). Spec §9. */
+    /** FULLTEXT + literal-LIKE fallback on mysql/mariadb, LIKE elsewhere (SQLite dev/tests). Spec §9. */
     private function textMatch($query, array $columns, string $term)
     {
-        if (in_array(DB::connection()->getDriverName(), ['mysql', 'mariadb'], true)) {
-            return $query->whereFullText($columns, $term);
+        if (in_array($query->getConnection()->getDriverName(), ['mysql', 'mariadb'], true)) {
+            // FULLTEXT natural-language mode tokenizes on the hyphen and drops tokens
+            // shorter than innodb_ft_min_token_size (default 3), so an exact identifier
+            // like "QA-SW-A" (QA/SW/A) matches nothing. A literal LIKE on the whole term
+            // is the fallback that keeps switch/host/serial identifiers searchable. (bd psa-qxu1)
+            return $query
+                ->whereFullText($columns, $term)
+                ->orWhere(fn ($q) => $this->likeLiteral($q, $columns, $term));
         }
 
         // SQLite fallback mirrors MariaDB FULLTEXT natural-language mode: split on
@@ -101,6 +106,34 @@ class WikiSearchService
                 $first ? $query->where($column, 'like', $like) : $query->orWhere($column, 'like', $like);
                 $first = false;
             }
+        }
+
+        // Same literal-term fallback as the MariaDB branch, so an exact hyphenated
+        // identifier resolves consistently on either engine. (bd psa-qxu1)
+        return $query->orWhere(fn ($q) => $this->likeLiteral($q, $columns, $term));
+    }
+
+    /**
+     * OR-match the whole literal term (LIKE %term%) across every column. Catches exact
+     * identifiers (switch tags, hostnames, serials) that FULLTEXT tokenization would
+     * otherwise split below its minimum indexed token length.
+     */
+    private function likeLiteral($query, array $columns, string $term)
+    {
+        $term = trim($term);
+
+        // Nothing to match on an empty/whitespace term — skip so the fallback never
+        // degenerates into a "LIKE '%%'" match-all. (search() already short-circuits
+        // empty queries upstream; this keeps the helper safe for any caller.)
+        if ($term === '') {
+            return $query;
+        }
+
+        // Escape the LIKE escape char (\) FIRST, then the wildcards, so a user-supplied
+        // backslash cannot re-enable % / _ wildcards. MariaDB's default LIKE escape is \.
+        $like = '%'.str_replace(['\\', '%', '_'], ['\\\\', '\\%', '\\_'], $term).'%';
+        foreach ($columns as $column) {
+            $query->orWhere($column, 'like', $like);
         }
 
         return $query;
