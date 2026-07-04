@@ -411,6 +411,86 @@
         <div class="cockpit-empty">No flags right now.</div>
     </section>
 
+    {{-- bd psa-xr84: offline-script queue. An approved staged action whose device was
+         offline parks here and auto-runs on reconnect; if its safety window elapses
+         first, it moves to the Expired lane below for an explicit re-confirm. Both
+         sections render only when they have something to show — there is nothing to
+         filter into, so they sit outside the counts-driven filter strip above. --}}
+    @if($queued->isNotEmpty())
+        <section class="cockpit-section mb-4" data-section-key="queued">
+            <div class="cockpit-section-head">
+                <h2><i class="bi bi-hourglass-split me-2"></i>Queued — waiting for device</h2>
+                <span class="badge rounded-pill text-bg-light border">{{ $queued->count() }}</span>
+            </div>
+            <div class="vstack gap-3">
+                @foreach ($queued as $run)
+                    @php($badge = $badgeFor($run))
+                    @php($deviceName = $run->proposed_meta['asset_hostname'] ?? $run->queued_agent_id ?? 'the device')
+                    <article class="card cockpit-item">
+                        <div class="card-body">
+                            <div class="d-flex flex-wrap align-items-center gap-2 mb-2 small">
+                                <a href="{{ route('tickets.show', $run->ticket_id) }}" class="fw-semibold text-decoration-none">
+                                    {{ optional($run->ticket)->subject ?? 'Ticket #'.$run->ticket_id }}
+                                </a>
+                                @if($run->ticket?->client)
+                                    <span class="badge rounded-pill bg-light text-dark border">{{ $run->ticket->client->name }}</span>
+                                @endif
+                                <span class="badge rounded-pill {{ $badge[0] }}"><i class="bi {{ $badge[2] }} me-1"></i>{{ $badge[1] }}</span>
+                            </div>
+                            <p class="text-muted small mb-2">
+                                <i class="bi bi-hourglass-split me-1"></i>
+                                Queued — waiting for {{ $deviceName }} to come online · expires {{ optional($run->expires_at)->diffForHumans() }}
+                                @if($run->coalesce_count > 0)
+                                    <span class="text-muted">(+{{ $run->coalesce_count }} duplicate approvals)</span>
+                                @endif
+                            </p>
+                            <form method="POST" action="{{ route('cockpit.cancel', $run) }}">
+                                @csrf
+                                <button type="submit" class="btn btn-outline-secondary btn-sm"><i class="bi bi-x-lg me-1"></i>Cancel</button>
+                            </form>
+                        </div>
+                    </article>
+                @endforeach
+            </div>
+        </section>
+    @endif
+
+    @if($expired->isNotEmpty())
+        <section class="cockpit-section mb-4" data-section-key="expired-queue">
+            <div class="cockpit-section-head">
+                <h2><i class="bi bi-exclamation-octagon me-2"></i>Expired — needs re-confirm</h2>
+                <span class="badge rounded-pill text-bg-light border">{{ $expired->count() }}</span>
+            </div>
+            <div class="vstack gap-3">
+                @foreach ($expired as $run)
+                    @php($badge = $badgeFor($run))
+                    @php($deviceName = $run->proposed_meta['asset_hostname'] ?? $run->queued_agent_id ?? 'the device')
+                    <article class="card cockpit-item">
+                        <div class="card-body">
+                            <div class="d-flex flex-wrap align-items-center gap-2 mb-2 small">
+                                <a href="{{ route('tickets.show', $run->ticket_id) }}" class="fw-semibold text-decoration-none">
+                                    {{ optional($run->ticket)->subject ?? 'Ticket #'.$run->ticket_id }}
+                                </a>
+                                @if($run->ticket?->client)
+                                    <span class="badge rounded-pill bg-light text-dark border">{{ $run->ticket->client->name }}</span>
+                                @endif
+                                <span class="badge rounded-pill {{ $badge[0] }}"><i class="bi {{ $badge[2] }} me-1"></i>{{ $badge[1] }}</span>
+                            </div>
+                            <p class="text-muted small mb-2">
+                                <i class="bi bi-exclamation-octagon me-1"></i>
+                                This never auto-ran because {{ $deviceName }} stayed offline past the safety window &mdash; re-confirm to send it back to the approval queue.
+                            </p>
+                            <form method="POST" action="{{ route('cockpit.reconfirm', $run) }}">
+                                @csrf
+                                <button type="submit" class="btn btn-outline-primary btn-sm"><i class="bi bi-arrow-clockwise me-1"></i>Re-confirm</button>
+                            </form>
+                        </div>
+                    </article>
+                @endforeach
+            </div>
+        </section>
+    @endif
+
     <section class="cockpit-section mb-4" data-section-key="needs" x-show="visible('needs')" :class="{ 'cockpit-section-empty': counts.needs === 0 }">
         <div class="cockpit-section-head">
             <h2><i class="bi bi-exclamation-circle me-2"></i>Needs you</h2>

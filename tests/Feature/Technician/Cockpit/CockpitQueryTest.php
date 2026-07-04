@@ -136,6 +136,7 @@ class CockpitQueryTest extends TestCase
             'intake' => 2,
             'flagged' => 1,
             'needs' => 1,
+            'queued' => 0,
             'pending' => 9,
             'total' => 10,
         ], $query->counts());

@@ -32,15 +32,20 @@ class CockpitQuery
 
     public function pendingCount(): int
     {
-        // Everything the away operator must act on in the cockpit: executable
-        // proposals (AwaitingApproval) AND held flags (Flagged). Feeds the nav badge.
+        // Everything the away operator should see on the nav badge: executable
+        // proposals (AwaitingApproval), held flags (Flagged), and — bd psa-xr84 —
+        // offline-queued actions (QueuedOffline, cancellable) plus Expired ones that
+        // need an explicit re-confirm, so an expired action can't go unnoticed by an
+        // operator who never opens /cockpit. Matches counts()'s pending/total fold-in.
         return TechnicianRun::whereIn('state', [
             TechnicianRunState::AwaitingApproval->value,
             TechnicianRunState::Flagged->value,
+            TechnicianRunState::QueuedOffline->value,
+            TechnicianRunState::Expired->value,
         ])->count();
     }
 
-    /** @return array{replies:int,closures:int,actions:int,intake:int,flagged:int,needs:int,pending:int,total:int} */
+    /** @return array{replies:int,closures:int,actions:int,intake:int,flagged:int,needs:int,queued:int,pending:int,total:int} */
     public function counts(): array
     {
         $draftActionTypes = TechnicianRun::query()
@@ -60,8 +65,16 @@ class CockpitQuery
         $intake = $this->intakeReviewCount() + $this->intakeSpamReviewCount();
         $flagged = $this->flaggedForAttention()->count();
         $needs = $this->needsAttention()->count();
+        // bd psa-xr84 — offline-script queue: an approved action parked because its
+        // device was offline (QueuedOffline) still needs an eye kept on it (cancel is
+        // available), and one whose safety window elapsed (Expired) needs an explicit
+        // re-confirm. Folded into pending/total so the "you're all clear" empty state
+        // never fires while a queue item is still awaiting operator attention.
+        $queued = TechnicianRun::query()
+            ->whereIn('state', [TechnicianRunState::QueuedOffline->value, TechnicianRunState::Expired->value])
+            ->count();
 
-        $pending = $replies + $closures + $actions + $intake + $flagged;
+        $pending = $replies + $closures + $actions + $intake + $flagged + $queued;
         $total = $pending + $needs;
 
         return [
@@ -71,6 +84,7 @@ class CockpitQuery
             'intake' => $intake,
             'flagged' => $flagged,
             'needs' => $needs,
+            'queued' => $queued,
             'pending' => $pending,
             'total' => $total,
         ];
@@ -164,6 +178,37 @@ class CockpitQuery
                 optional($run->created_at)->getTimestamp() ?? 0,  // oldest first within lane
             ])
             ->values();
+    }
+
+    /**
+     * Approved staged actions parked because their target device was offline at
+     * approval time (bd psa-xr84). Soonest-to-expire first — the operator should
+     * see the most time-sensitive queue item first. Pure query.
+     */
+    public function queuedOffline(): Collection
+    {
+        return TechnicianRun::query()
+            ->where('state', TechnicianRunState::QueuedOffline->value)
+            ->with(['ticket.client', 'ticket.contact'])
+            ->orderBy('expires_at')
+            ->get();
+    }
+
+    /**
+     * Queued actions whose safety window elapsed before the device came back
+     * online (bd psa-xr84). These never auto-ran; they are re-surfaced here so
+     * the operator can explicitly re-confirm (→ back into the approval queue)
+     * or leave them be. Newest first — ordered by updated_at (not created_at):
+     * the CAS transition into Expired stamps updated_at, so this is "most
+     * recently expired first", not "most recently staged first". Pure query.
+     */
+    public function expiredQueue(): Collection
+    {
+        return TechnicianRun::query()
+            ->where('state', TechnicianRunState::Expired->value)
+            ->with(['ticket.client', 'ticket.contact'])
+            ->orderBy('updated_at', 'desc')
+            ->get();
     }
 
     public function needsAttention(): Collection

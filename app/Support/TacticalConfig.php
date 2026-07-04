@@ -3,6 +3,7 @@
 namespace App\Support;
 
 use App\Models\Setting;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Str;
 
 class TacticalConfig
@@ -125,5 +126,74 @@ class TacticalConfig
     public static function isAlertProvisioned(): bool
     {
         return self::urlActionId() !== null && self::alertTemplateId() !== null;
+    }
+
+    // ── Offline-script queue (bd psa-xr84) ───────────────────────────────────
+
+    /**
+     * Whether an approved staged Tactical action whose device is offline queues
+     * (and auto-runs on reconnect) instead of dead-ending. Default ON — it only
+     * replaces a dead-end for already-approved actions, so it is safe on by
+     * default; an operator can still turn it off.
+     */
+    public static function offlineQueueEnabled(): bool
+    {
+        $v = Setting::getValue('tactical_offline_queue_enabled');
+
+        return $v === null ? true : filter_var($v, FILTER_VALIDATE_BOOLEAN);
+    }
+
+    /**
+     * Days a queued action waits for its device before it expires and is
+     * re-surfaced for explicit re-confirm (never auto-runs stale). Default 7,
+     * mirroring EndpointInsight::LONG_OFFLINE_AFTER_DAYS. A zero/invalid setting
+     * falls back to the default rather than disabling the safety window.
+     */
+    public static function offlineQueueExpiryDays(): int
+    {
+        $v = (int) Setting::getValue('tactical_offline_queue_expiry_days');
+
+        return $v > 0 ? $v : 7;
+    }
+
+    /**
+     * Fallback sweep cadence (minutes) so queue processing never depends solely on
+     * device-sync cadence. Default 10. Zero/invalid falls back to the default.
+     */
+    public static function offlineQueueSweepMinutes(): int
+    {
+        $v = (int) Setting::getValue('tactical_offline_queue_sweep_minutes');
+
+        return $v > 0 ? $v : 10;
+    }
+
+    /**
+     * Whether to send a per-run notification when a queued action fires on
+     * reconnect. Default OFF — the cockpit history is the record.
+     */
+    public static function offlineQueueNotifyOnRun(): bool
+    {
+        return (bool) Setting::getValue('tactical_offline_queue_notify_on_run');
+    }
+
+    /**
+     * Throttle gate for the everyMinute fallback-sweep schedule: true at most once
+     * per offlineQueueSweepMinutes. Reading the interval at run time (inside the
+     * scheduler's deferred when-closure), never at registration, keeps `php artisan`
+     * boots DB-free. Records the run time on a true result so the next N minutes gate.
+     */
+    public static function offlineQueueSweepDue(): bool
+    {
+        $key = 'tactical_offline_queue_last_sweep';
+        $intervalSeconds = self::offlineQueueSweepMinutes() * 60;
+        $last = (int) Cache::get($key, 0);
+
+        if (now()->getTimestamp() - $last < $intervalSeconds) {
+            return false;
+        }
+
+        Cache::put($key, now()->getTimestamp(), now()->addDay());
+
+        return true;
     }
 }

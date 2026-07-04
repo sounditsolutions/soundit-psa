@@ -662,6 +662,9 @@ Route::middleware('auth')->group(function () {
     Route::post('/cockpit/undo', [\App\Http\Controllers\Web\TechnicianCockpitController::class, 'undo'])->name('cockpit.undo')->middleware('throttle:60,1');
     Route::post('/cockpit/runs/{run}/approve', [\App\Http\Controllers\Web\TechnicianCockpitController::class, 'approve'])->name('cockpit.approve');
     Route::post('/cockpit/runs/{run}/deny', [\App\Http\Controllers\Web\TechnicianCockpitController::class, 'deny'])->name('cockpit.deny');
+    // bd psa-xr84 — offline-script queue: cancel a queued_offline action, or re-confirm one that expired.
+    Route::post('/cockpit/runs/{run}/cancel', [\App\Http\Controllers\Web\TechnicianCockpitController::class, 'cancel'])->name('cockpit.cancel');
+    Route::post('/cockpit/runs/{run}/reconfirm', [\App\Http\Controllers\Web\TechnicianCockpitController::class, 'reconfirm'])->name('cockpit.reconfirm');
     // Increment H — resolve a held flag (no execution): acknowledge (→ Done) or dismiss (→ Denied).
     Route::post('/cockpit/runs/{run}/acknowledge', [\App\Http\Controllers\Web\TechnicianCockpitController::class, 'acknowledge'])->name('cockpit.acknowledge');
     Route::post('/cockpit/runs/{run}/dismiss', [\App\Http\Controllers\Web\TechnicianCockpitController::class, 'dismiss'])->name('cockpit.dismiss');

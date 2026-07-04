@@ -37,6 +37,7 @@ use App\Services\Technician\TechnicianApprovalResult;
 use App\Support\TacticalConfig;
 use App\Support\TechnicianConfig;
 use Illuminate\Support\Facades\Crypt;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
 
@@ -207,17 +208,48 @@ class StaffTacticalActionToolExecutor
             return new TechnicianApprovalResult('already_handled');
         }
 
+        return $this->executeClaimedRun($run, $approverId, TechnicianRunState::AwaitingApproval);
+    }
+
+    /**
+     * Re-run a queued_offline action when its device returns online (bd psa-xr84).
+     * Claims the queued run and drives it through the SAME gate-checked execution as
+     * a live approval (kill-switch, cooldown, payload revalidation, asset/ticket
+     * links all re-verified), so a delayed run is indistinguishable from a direct
+     * one. Attribution reuses the original approver stored at enqueue. A gate decline
+     * or a still-offline device releases the run back to the queue for the next sweep
+     * rather than the human approval lane.
+     */
+    public function runQueuedOnReconnect(TechnicianRun $run): TechnicianApprovalResult
+    {
+        $approverId = (int) ($run->proposed_meta['queued_approver_id'] ?? 0);
+
+        if (! self::isStagedActionType($run->action_type) || ! $run->claimQueuedForExecution()) {
+            return new TechnicianApprovalResult('already_handled');
+        }
+
+        return $this->executeClaimedRun($run, $approverId, TechnicianRunState::QueuedOffline);
+    }
+
+    /**
+     * The gate-checked execution shared by a live approval and a reconnect-run. The
+     * run is already claimed (executing); $releaseState is where a gate decline or
+     * error returns it — AwaitingApproval for a live approval, QueuedOffline for a
+     * reconnect-run so the queue keeps waiting for the device.
+     */
+    private function executeClaimedRun(TechnicianRun $run, int $approverId, TechnicianRunState $releaseState): TechnicianApprovalResult
+    {
         try {
             $payload = $this->decryptRunPayload($run);
             if ($payload === null) {
-                $run->releaseClaim();
+                $run->releaseClaimTo($releaseState);
 
                 return new TechnicianApprovalResult('gate_declined');
             }
 
             $directTool = (string) ($payload['direct_tool'] ?? '');
             if (! isset(self::STAGED_TO_DIRECT[$run->action_type]) || self::STAGED_TO_DIRECT[$run->action_type] !== $directTool) {
-                $run->releaseClaim();
+                $run->releaseClaimTo($releaseState);
 
                 return new TechnicianApprovalResult('gate_declined');
             }
@@ -225,27 +257,27 @@ class StaffTacticalActionToolExecutor
             $asset = Asset::with('tacticalAsset')->find((int) ($payload['asset_id'] ?? 0));
             $ticket = Ticket::find((int) ($payload['ticket_id'] ?? 0));
             if (! $asset || ! $ticket || (int) $ticket->client_id !== (int) $run->client_id) {
-                $run->releaseClaim();
+                $run->releaseClaimTo($releaseState);
 
                 return new TechnicianApprovalResult('gate_declined');
             }
 
             if (! $ticket->assets()->where('assets.id', $asset->id)->exists()) {
-                $run->releaseClaim();
+                $run->releaseClaimTo($releaseState);
 
                 return new TechnicianApprovalResult('gate_declined');
             }
 
             if ($error = $this->linkedAgentError($asset)) {
                 $this->auditAttempt($run->action_type, 'rejected', (int) $run->client_id, $ticket, $asset, $run->content_hash, $error, $this->approverLabel($approverId), $run->id, $approverId);
-                $run->releaseClaim();
+                $run->releaseClaimTo($releaseState);
 
                 return new TechnicianApprovalResult('gate_declined');
             }
 
             if (TechnicianConfig::killSwitchEngaged()) {
                 $this->auditAttempt($run->action_type, 'blocked', (int) $run->client_id, $ticket, $asset, $run->content_hash, 'Technician kill-switch engaged; staged Tactical action refused.', $this->approverLabel($approverId), $run->id, $approverId);
-                $run->releaseClaim();
+                $run->releaseClaimTo($releaseState);
 
                 return new TechnicianApprovalResult('gate_declined');
             }
@@ -253,14 +285,14 @@ class StaffTacticalActionToolExecutor
             $payload = $this->revalidateStagedPayload($payload, $asset);
             if (isset($payload['error'])) {
                 $this->auditAttempt($run->action_type, 'rejected', (int) $run->client_id, $ticket, $asset, $run->content_hash, (string) $payload['error'], $this->approverLabel($approverId), $run->id, $approverId);
-                $run->releaseClaim();
+                $run->releaseClaimTo($releaseState);
 
                 return new TechnicianApprovalResult('gate_declined');
             }
 
             if ($this->cooldownActive($directTool, $asset, $ticket, self::COOLDOWNS[$directTool] ?? 60)) {
                 $this->auditAttempt($run->action_type, 'blocked', (int) $run->client_id, $ticket, $asset, $run->content_hash, 'Tactical staged action cooldown active; approval refused before upstream call.', $this->approverLabel($approverId), $run->id, $approverId);
-                $run->releaseClaim();
+                $run->releaseClaimTo($releaseState);
 
                 return new TechnicianApprovalResult('gate_declined');
             }
@@ -278,7 +310,15 @@ class StaffTacticalActionToolExecutor
                 $ticket->id,
             );
 
-            $status = $result->isOk() ? 'executed' : $result->status;
+            // Offline device (bd psa-xr84): instead of the silent dead-end, park the
+            // approved action in the queue to auto-run on reconnect. v1 = scripts only.
+            $agentId = (string) ($asset->tacticalAsset->agent_id ?? '');
+            $willQueue = $result->isOffline()
+                && $agentId !== ''
+                && $directTool === 'tactical_run_script'
+                && TacticalConfig::offlineQueueEnabled();
+
+            $status = $result->isOk() ? 'executed' : ($willQueue ? 'queued_offline' : $result->status);
             $this->auditAttempt(
                 $run->action_type,
                 $status,
@@ -292,8 +332,12 @@ class StaffTacticalActionToolExecutor
                 $approverId,
             );
 
+            if ($willQueue) {
+                return $this->enqueueOfflineRun($run, $agentId, $directTool, $params, $approverId);
+            }
+
             if (! $result->isOk()) {
-                $run->releaseClaim();
+                $run->releaseClaimTo($releaseState);
 
                 return new TechnicianApprovalResult('gate_declined');
             }
@@ -302,10 +346,67 @@ class StaffTacticalActionToolExecutor
 
             return new TechnicianApprovalResult('executed');
         } catch (\Throwable $e) {
-            $run->releaseClaim();
+            $run->releaseClaimTo($releaseState);
 
             throw $e;
         }
+    }
+
+    /**
+     * Park a claimed (executing) run in the offline queue, or coalesce onto an
+     * identical one already waiting (bd psa-xr84 §5). Dedup key = (agent, script,
+     * args): a duplicate approval bumps the existing row's coalesce_count and this
+     * run supersedes rather than creating a second queued row. The approver is
+     * persisted so the eventual reconnect-run attributes its audit correctly.
+     */
+    private function enqueueOfflineRun(TechnicianRun $run, string $agentId, string $directTool, array $params, int $approverId): TechnicianApprovalResult
+    {
+        $dedupKey = $this->queueDedupKey($agentId, $directTool, $params);
+
+        return DB::transaction(function () use ($run, $agentId, $dedupKey, $approverId) {
+            // Coalesce onto an identical queued action already waiting. lockForUpdate +
+            // the transaction serialize near-concurrent enqueues on MariaDB (no-op on
+            // SQLite, which serializes writes anyway); sweepAgent additionally de-dups
+            // by key at run time, and the per-asset cooldown re-check blocks a duplicate
+            // run — so a duplicate queued row cannot fire the same script twice.
+            $existing = TechnicianRun::query()
+                ->where('state', TechnicianRunState::QueuedOffline->value)
+                ->where('queued_dedup_key', $dedupKey)
+                ->whereKeyNot($run->getKey())
+                ->lockForUpdate()
+                ->first();
+
+            if ($existing !== null) {
+                $existing->increment('coalesce_count');
+                $run->markSuperseded();
+
+                return new TechnicianApprovalResult('queued_offline');
+            }
+
+            // Preserve the original window on a re-queue (failed reconnect-run); a fresh
+            // approval (queued_at/expires_at null, incl. after a reconfirm) starts a new one.
+            $queuedAt = $run->queued_at ?? now();
+            $expiresAt = $run->expires_at ?? now()->addDays(TacticalConfig::offlineQueueExpiryDays());
+
+            // Approver folded into the CAS update — no second write to race a concurrent
+            // cancel/expire. A false result means the claim was lost (run no longer
+            // Executing); nothing to queue.
+            if (! $run->queueForOffline($agentId, $dedupKey, $queuedAt, $expiresAt, ['queued_approver_id' => $approverId])) {
+                return new TechnicianApprovalResult('already_handled');
+            }
+
+            return new TechnicianApprovalResult('queued_offline');
+        });
+    }
+
+    /** sha256 of (agent, direct tool, canonical params) — one queued row per identical action. */
+    private function queueDedupKey(string $agentId, string $directTool, array $params): string
+    {
+        return hash('sha256', (string) json_encode([
+            'agent' => $agentId,
+            'tool' => $directTool,
+            'params' => $this->canonical($params),
+        ]));
     }
 
     /** @return array<string, mixed> */
