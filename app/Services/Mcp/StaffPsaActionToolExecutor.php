@@ -1605,7 +1605,7 @@ class StaffPsaActionToolExecutor
             (int) $ticket->client_id,
             $actorLabel,
             $this->mutationContentHash('create_ticket_from_email', (int) $email->id, ['ticket_id' => $ticket->id], $reason),
-            'Email #'.$email->id.' created ticket #'.$ticket->id.': '.$reason,
+            'Email #'.$email->id.' created/linked ticket #'.$ticket->id.': '.$reason,
             TechnicianConfig::requiredAiActorUserId(),
         );
 
@@ -1614,7 +1614,7 @@ class StaffPsaActionToolExecutor
             'email_id' => $email->id,
             'ticket_id' => $ticket->id,
             'ticket_display_id' => $ticket->display_id,
-            'message' => 'Ticket created from email.',
+            'message' => 'Ticket created or linked from email.',
         ];
     }
 
