@@ -544,18 +544,33 @@ class StaffPsaActionToolExecutor
             return $validated;
         }
 
-        $client = $this->clientService->createClient($validated);
+        // Pre-creation payload hash (NOT the old post-creation hash that baked in
+        // the new client id and could never match a prior row). Honest refusal on
+        // a recent identical create — a client create is not a replayable idempotent op.
+        $contentHash = $this->createClientContentHash($validated);
+        if ($this->duplicateCreateClientRecently($contentHash)) {
+            return ['error' => 'A client with identical details was already created recently. Change at least one field, or use find_clients to check for an existing match, before retrying.'];
+        }
 
-        $this->auditEntityExecution(
-            'create_client',
-            'client',
-            (int) $client->id,
-            (int) $client->id,
-            $actorLabel,
-            $this->mutationContentHash('create_client', (int) $client->id, $validated),
-            'Client created: '.$client->name.'.',
-            TechnicianConfig::requiredAiActorUserId(),
-        );
+        // Create + audit atomically: the audit row is now the dedup guard's only
+        // memory, so a create that isn't recorded would let an identical retry slip
+        // through. Mirrors create_ticket's transactional create+audit.
+        $client = DB::transaction(function () use ($validated, $actorLabel, $contentHash): Client {
+            $client = $this->clientService->createClient($validated);
+
+            $this->auditEntityExecution(
+                'create_client',
+                'client',
+                (int) $client->id,
+                (int) $client->id,
+                $actorLabel,
+                $contentHash,
+                'Client created: '.$client->name.'.',
+                TechnicianConfig::requiredAiActorUserId(),
+            );
+
+            return $client;
+        });
 
         return [
             'success' => true,
@@ -652,7 +667,7 @@ class StaffPsaActionToolExecutor
         }
 
         try {
-            $this->clientService->updateSiteNotes($client, $siteNotes, $expectedUpdatedAt);
+            $this->clientService->updateSiteNotes($client, $siteNotes, $expectedUpdatedAt, TechnicianConfig::requiredAiActorUserId());
         } catch (\RuntimeException $e) {
             return ['error' => $e->getMessage()];
         }
@@ -945,6 +960,16 @@ class StaffPsaActionToolExecutor
         $reason = $this->optionalString($arguments, 'reason');
         $oldClientId = (int) $person->client_id;
 
+        // A same-client "move" is a no-op — reject it so we never report detach
+        // counts for a move that didn't change client_id (updatePerson would skip
+        // the pivot reconcile since client_id is unchanged).
+        if ($newClient->id === $oldClientId) {
+            return ['error' => 'Contact already belongs to that client; nothing to move.'];
+        }
+
+        // Count the links that will become cross-client BEFORE updatePerson detaches them.
+        $pivots = $this->personService->crossClientPivotCounts($person, $newClient->id);
+
         // Reparent as a non-primary in the target client — a moved contact must
         // not silently become a second primary there (the target keeps its own).
         $updated = $this->personService->updatePerson($person, ['client_id' => $newClient->id, 'is_primary' => false]);
@@ -956,7 +981,9 @@ class StaffPsaActionToolExecutor
             (int) $updated->client_id,
             $actorLabel,
             $this->mutationContentHash('move_contact_to_client', (int) $updated->id, ['new_client_id' => $newClient->id], $reason),
-            'Contact '.$this->contactDisplayName($updated).' moved from client #'.$oldClientId.' to #'.$newClient->id.($reason ? ' — '.$reason : '').'.',
+            'Contact '.$this->contactDisplayName($updated).' moved from client #'.$oldClientId.' to #'.$newClient->id
+                .($pivots['contracts'] + $pivots['assets'] > 0 ? ' (detached '.$pivots['contracts'].' contract, '.$pivots['assets'].' device link(s))' : '')
+                .($reason ? ' — '.$reason : '').'.',
             TechnicianConfig::requiredAiActorUserId(),
         );
 
@@ -964,7 +991,11 @@ class StaffPsaActionToolExecutor
             'success' => true,
             'contact_id' => $updated->id,
             'client_id' => $updated->client_id,
-            'message' => 'Contact moved.',
+            'contracts_detached' => $pivots['contracts'],
+            'assets_detached' => $pivots['assets'],
+            'message' => 'Contact moved.'.($pivots['contracts'] + $pivots['assets'] > 0
+                ? ' Detached '.$pivots['contracts'].' contract and '.$pivots['assets'].' device link(s) that pointed at a different client.'
+                : ''),
         ];
     }
 
@@ -2093,6 +2124,22 @@ class StaffPsaActionToolExecutor
             ->where('created_at', '>=', now()->subHours(self::DIRECT_DEDUP_HOURS))
             ->latest('id')
             ->first();
+    }
+
+    /** @param  array<string, mixed>  $validated */
+    private function createClientContentHash(array $validated): string
+    {
+        return hash('sha256', 'create_client:'.json_encode($validated, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+    }
+
+    private function duplicateCreateClientRecently(string $contentHash): bool
+    {
+        return TechnicianActionLog::query()
+            ->where('action_type', 'create_client')
+            ->where('result_status', 'executed')
+            ->where('content_hash', $contentHash)
+            ->where('created_at', '>=', now()->subHours(self::DIRECT_DEDUP_HOURS))
+            ->exists();
     }
 
     private function rateLimited(string $actionType, int $ticketId, int $cooldownSeconds): bool

@@ -4,7 +4,9 @@ namespace Tests\Feature\Mcp;
 
 use App\Enums\PersonType;
 use App\Enums\TicketStatus;
+use App\Models\Asset;
 use App\Models\Client;
+use App\Models\Contract;
 use App\Models\McpAuditLog;
 use App\Models\Person;
 use App\Models\Setting;
@@ -334,6 +336,25 @@ class PsaPeopleToolsTest extends TestCase
         ]);
     }
 
+    public function test_move_contact_to_same_client_is_rejected(): void
+    {
+        $this->configureAiActor();
+        $client = Client::factory()->create(['name' => 'Same Co']);
+        $person = $this->contact($client);
+        $token = $this->token(['move_contact_to_client'], 'chet');
+
+        $response = $this->callTool($token, 'move_contact_to_client', [
+            'contact_id' => $person->id,
+            'new_client_id' => $client->id,
+            'confirm_client_name' => 'Same Co',
+            'reason' => 'A no-op same-client move must be refused, not report phantom detaches.',
+        ]);
+
+        $response->assertOk();
+        $this->assertTrue((bool) $response->json('result.isError'));
+        $this->assertStringContainsString('already belongs to that client', (string) $response->json('result.content.0.text'));
+    }
+
     public function test_move_contact_does_not_create_duplicate_primary_in_target(): void
     {
         $this->configureAiActor();
@@ -357,6 +378,75 @@ class PsaPeopleToolsTest extends TestCase
         $this->assertFalse((bool) $moving->fresh()->is_primary);
         $this->assertTrue((bool) $targetPrimary->fresh()->is_primary);
         $this->assertSame(1, Person::where('client_id', $target->id)->where('is_primary', true)->count());
+    }
+
+    public function test_move_contact_detaches_cross_client_pivots_and_reports_counts(): void
+    {
+        $this->configureAiActor();
+        $from = Client::factory()->create(['name' => 'From Co']);
+        $to = Client::factory()->create(['name' => 'To Co']);
+        $person = $this->contact($from);
+
+        // A manual contract link + a device link, both at the OLD client.
+        $contract = Contract::create(['client_id' => $from->id, 'name' => 'From Co MSA', 'type' => 'managed', 'start_date' => '2026-01-01']);
+        $person->contracts()->attach($contract->id, ['assignment_source' => 'manual', 'assigned_at' => now()]);
+        $asset = Asset::factory()->for($from)->create();
+        $person->assets()->attach($asset->id, ['assignment_source' => 'manual']);
+
+        $token = $this->token(['move_contact_to_client'], 'chet');
+        $response = $this->callTool($token, 'move_contact_to_client', [
+            'contact_id' => $person->id,
+            'new_client_id' => $to->id,
+            'confirm_client_name' => 'To Co',
+        ]);
+
+        $response->assertOk();
+        $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
+
+        $person->refresh();
+        $this->assertSame($to->id, $person->client_id);
+        // The old-client pivots are gone (they'd otherwise point at From Co's contract/device).
+        $this->assertSame(0, $person->contracts()->count());
+        $this->assertSame(0, $person->assets()->count());
+
+        $result = $this->decodedResult($response);
+        $this->assertSame(1, $result['contracts_detached']);
+        $this->assertSame(1, $result['assets_detached']);
+
+        // The contract detach leaves a billing-audit trail, like every other
+        // contract-assignment change (routed through ContractAssignmentService).
+        $this->assertDatabaseHas('contract_activities', [
+            'contract_id' => $contract->id,
+            'action' => 'assignment_removed',
+        ]);
+    }
+
+    public function test_move_contact_preserves_links_already_pointing_at_the_target_client(): void
+    {
+        $this->configureAiActor();
+        $from = Client::factory()->create(['name' => 'From Co']);
+        $to = Client::factory()->create(['name' => 'To Co']);
+        $person = $this->contact($from);
+
+        // One link at the OLD client (cross-client after the move) and one already at
+        // the TARGET client (must NOT be detached — the != filter must not over-reach).
+        $oldContract = Contract::create(['client_id' => $from->id, 'name' => 'From MSA', 'type' => 'managed', 'start_date' => '2026-01-01']);
+        $targetContract = Contract::create(['client_id' => $to->id, 'name' => 'To MSA', 'type' => 'managed', 'start_date' => '2026-01-01']);
+        $person->contracts()->attach($oldContract->id, ['assignment_source' => 'manual', 'assigned_at' => now()]);
+        $person->contracts()->attach($targetContract->id, ['assignment_source' => 'manual', 'assigned_at' => now()]);
+
+        $token = $this->token(['move_contact_to_client'], 'chet');
+        $response = $this->callTool($token, 'move_contact_to_client', [
+            'contact_id' => $person->id,
+            'new_client_id' => $to->id,
+            'confirm_client_name' => 'To Co',
+        ]);
+        $response->assertOk();
+        $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
+
+        // Only the old-client link is gone; the target-client link survives; count is exactly 1.
+        $this->assertSame([$targetContract->id], $person->fresh()->contracts()->pluck('contracts.id')->all());
+        $this->assertSame(1, $this->decodedResult($response)['contracts_detached']);
     }
 
     public function test_delete_contact_requires_typed_confirm_and_soft_deletes(): void
