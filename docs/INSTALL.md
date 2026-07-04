@@ -332,6 +332,7 @@ These commands execute automatically based on their schedule:
 | `tactical:reconcile-alerts` | Hourly | Resolve PSA alerts whose Tactical alerts have closed — the at-least-once backstop for dropped resolve webhooks (resolves the alert only; does not auto-resolve a linked auto-ticket — only if Tactical configured) |
 | `tactical:sync-devices` | Daily at 05:32 | Sync devices from Tactical RMM into `tactical_assets` and hostname-link to assets (only if configured + clients mapped to a Tactical site) |
 | `tactical:sync-scripts` | Daily at 05:35 | Sync the script library from Tactical RMM (only if configured) |
+| `tactical:sweep-queued-actions` | Every `tactical_offline_queue_sweep_minutes` (default 10 min) | Offline-script queue fallback (only if Tactical configured): run approved actions whose device is back online and expire stale ones. The device-sync hook + resolved-alert webhook are the low-latency triggers; this is the safety net |
 | `mesh:sync-licenses` | Daily at 04:30 | Sync license counts from Mesh Email Security |
 | `cipp:sync-licenses` | Daily at 04:45 | Sync M365 license counts from CIPP |
 | `huntress:sync-licenses` | Daily at 05:00 | Sync EDR/ITDR license counts from Huntress (only if configured) |
