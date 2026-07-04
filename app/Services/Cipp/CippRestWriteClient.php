@@ -150,6 +150,21 @@ class CippRestWriteClient
         ]);
     }
 
+    /**
+     * Reset one user's M365 password. Returns the captured response body so the
+     * caller can read the server-generated temp password from Results.copyField.
+     *
+     * @return array<int|string, mixed>
+     */
+    public function resetUserPassword(string $tenantFilter, string $userPrincipalName, bool $mustChange): array
+    {
+        return $this->send('api/ExecResetPass', [
+            'tenantFilter' => $tenantFilter,
+            'ID' => $userPrincipalName,
+            'MustChange' => $mustChange,
+        ], captureBody: true);
+    }
+
     /** @return array<int|string, mixed> */
     public function setMailboxOutOfOffice(
         string $tenantFilter,
@@ -188,7 +203,7 @@ class CippRestWriteClient
      * @param  array<int|string, mixed>  $body
      * @return array<int|string, mixed>
      */
-    private function send(string $endpoint, array $body): array
+    private function send(string $endpoint, array $body, bool $captureBody = false): array
     {
         $url = $this->endpointUrl($endpoint);
         $options = $this->safeRequestOptions($url);
@@ -203,6 +218,12 @@ class CippRestWriteClient
 
         if ($response->failed()) {
             throw new CippClientException("CIPP write {$endpoint} failed: HTTP {$response->status()}");
+        }
+
+        if ($captureBody) {
+            // Opt-in: only the password-reset wrapper reads the upstream body (the temp
+            // password comes back in Results.copyField). All other callers discard it.
+            return ['success' => true, 'status' => $response->status(), 'body' => $response->json()];
         }
 
         return ['success' => true, 'status' => $response->status()];
