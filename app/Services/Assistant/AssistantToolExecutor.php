@@ -2,11 +2,15 @@
 
 namespace App\Services\Assistant;
 
+use App\Enums\CallDirection;
 use App\Enums\ContractStatus;
+use App\Enums\EmailDirection;
 use App\Enums\NoteType;
+use App\Enums\TranscriptionStatus;
 use App\Models\Asset;
 use App\Models\Client;
 use App\Models\Contract;
+use App\Models\Email;
 use App\Models\Person;
 use App\Models\PhoneCall;
 use App\Models\Ticket;
@@ -93,6 +97,12 @@ class AssistantToolExecutor
             'find_assets' => $this->findAssets($input),
             'list_client_contracts' => $this->listClientContracts($input),
             'get_contract' => $this->getContract($input),
+
+            // Cross-client staff-class reads (client_id optional filter, never required)
+            'list_email_items' => $this->listEmailItems($input),
+            'get_email_item' => $this->getEmailItem($input),
+            'list_phone_calls' => $this->listPhoneCalls($input),
+            'get_phone_call' => $this->getPhoneCall($input),
 
             // NinjaRMM tools
             'ninja_search_devices' => $this->ninjaSearchDevices($input),
@@ -935,6 +945,186 @@ class AssistantToolExecutor
             'profiles_count' => $contract->profiles_count,
             'documents_count' => $contract->documents_count,
         ];
+    }
+
+    /**
+     * list_email_items — cross-client staff-class read (mirrors find_persons/
+     * find_assets: client_id is an OPTIONAL filter resolved from $this->clientId,
+     * never required). Metadata + body_preview only; full body_text is only
+     * available via get_email_item. A woken Chet must be able to list
+     * unlinked/unresolved items that have no client yet, so this deliberately
+     * does not gate on $this->clientId the way the client-scoped tools above do.
+     *
+     * @param  array<string, mixed>  $input
+     * @return array<string, mixed>
+     */
+    private function listEmailItems(array $input): array
+    {
+        $limit = max(1, min((int) ($input['limit'] ?? 25), 50));
+
+        $query = Email::query()->orderByDesc('received_at');
+
+        if (($d = trim((string) ($input['direction'] ?? ''))) !== '' && ($case = EmailDirection::tryFrom($d)) !== null) {
+            $query->where('direction', $case);
+        }
+
+        if (! empty($input['unlinked'])) {
+            $query->whereNull('ticket_id');
+        }
+
+        // client_id comes from the constructor-derived scope, not $input — the
+        // MCP boundary strips client_id out of the raw arguments before dispatch
+        // (see McpStaffController::callTool), so this must mirror findPersons()/
+        // findAssets() rather than read $input['client_id'] directly.
+        if ($this->clientId) {
+            $query->where('client_id', $this->clientId);
+        }
+
+        if (($since = trim((string) ($input['since'] ?? ''))) !== '') {
+            try {
+                $query->where('received_at', '>=', \Carbon\Carbon::parse($since));
+            } catch (\Throwable) {
+                return ['error' => 'since must be a valid ISO-8601 timestamp'];
+            }
+        }
+
+        $items = $query->limit($limit)->get();
+
+        return [
+            'count' => $items->count(),
+            'email_items' => $items->map(fn (Email $e) => [
+                'id' => $e->id,
+                'direction' => $e->direction->value,
+                'from_address' => $e->from_address,
+                'subject' => $e->subject,
+                'received_at' => $e->received_at?->toIso8601String(),
+                'client_id' => $e->client_id,
+                'ticket_id' => $e->ticket_id,
+                'dismissed_at' => $e->dismissed_at?->toIso8601String(),
+                'body_preview' => $e->body_preview,
+            ])->toArray(),
+        ];
+    }
+
+    /**
+     * get_email_item — full email detail by id, cross-client (mirrors
+     * getTicketDetail's by-id-with-no-client-gating precedent). Includes the
+     * full body_text; only the by-id read exposes it, never the list.
+     *
+     * @param  array<string, mixed>  $input
+     * @return array<string, mixed>
+     */
+    private function getEmailItem(array $input): array
+    {
+        $id = (int) ($input['email_id'] ?? 0);
+        $email = $id > 0 ? Email::find($id) : null;
+        if (! $email) {
+            return ['error' => 'Email item not found'];
+        }
+
+        return ['email_item' => [
+            'id' => $email->id,
+            'direction' => $email->direction->value,
+            'from_address' => $email->from_address,
+            'from_name' => $email->from_name,
+            'subject' => $email->subject,
+            'received_at' => $email->received_at?->toIso8601String(),
+            'client_id' => $email->client_id,
+            'person_id' => $email->person_id,
+            'ticket_id' => $email->ticket_id,
+            'dismissed_at' => $email->dismissed_at?->toIso8601String(),
+            'body_text' => $email->body_text,
+        ]];
+    }
+
+    /**
+     * list_phone_calls — cross-client staff-class read, same shape as
+     * listEmailItems(). Metadata only; the transcript is only available via
+     * get_phone_call.
+     *
+     * @param  array<string, mixed>  $input
+     * @return array<string, mixed>
+     */
+    private function listPhoneCalls(array $input): array
+    {
+        $limit = max(1, min((int) ($input['limit'] ?? 25), 50));
+
+        $query = PhoneCall::query()->orderByDesc('started_at');
+
+        if (($d = trim((string) ($input['direction'] ?? ''))) !== '' && ($case = CallDirection::tryFrom($d)) !== null) {
+            $query->where('direction', $case);
+        }
+
+        if (! empty($input['unlinked'])) {
+            $query->whereNull('ticket_id');
+        }
+
+        // See listEmailItems() — client_id is the constructor-derived scope,
+        // not a raw $input argument.
+        if ($this->clientId) {
+            $query->where('client_id', $this->clientId);
+        }
+
+        if (($ts = trim((string) ($input['transcription_status'] ?? ''))) !== '' && ($case = TranscriptionStatus::tryFrom($ts)) !== null) {
+            $query->where('transcription_status', $case);
+        }
+
+        if (($since = trim((string) ($input['since'] ?? ''))) !== '') {
+            try {
+                $query->where('started_at', '>=', \Carbon\Carbon::parse($since));
+            } catch (\Throwable) {
+                return ['error' => 'since must be a valid ISO-8601 timestamp'];
+            }
+        }
+
+        $calls = $query->limit($limit)->get();
+
+        return [
+            'count' => $calls->count(),
+            'phone_calls' => $calls->map(fn (PhoneCall $c) => [
+                'id' => $c->id,
+                'direction' => $c->direction?->value,
+                'from_number' => $c->from_number,
+                'to_number' => $c->to_number,
+                'status' => $c->status?->value,
+                'started_at' => $c->started_at?->toIso8601String(),
+                'duration' => $c->duration,
+                'client_id' => $c->client_id,
+                'ticket_id' => $c->ticket_id,
+                'transcription_status' => $c->transcription_status?->value,
+            ])->toArray(),
+        ];
+    }
+
+    /**
+     * get_phone_call — full call detail by id, cross-client. Includes the
+     * transcription; only the by-id read exposes it, never the list.
+     *
+     * @param  array<string, mixed>  $input
+     * @return array<string, mixed>
+     */
+    private function getPhoneCall(array $input): array
+    {
+        $id = (int) ($input['phone_call_id'] ?? 0);
+        $call = $id > 0 ? PhoneCall::find($id) : null;
+        if (! $call) {
+            return ['error' => 'Phone call not found'];
+        }
+
+        return ['phone_call' => [
+            'id' => $call->id,
+            'direction' => $call->direction?->value,
+            'from_number' => $call->from_number,
+            'to_number' => $call->to_number,
+            'status' => $call->status?->value,
+            'started_at' => $call->started_at?->toIso8601String(),
+            'duration' => $call->duration,
+            'client_id' => $call->client_id,
+            'person_id' => $call->person_id,
+            'ticket_id' => $call->ticket_id,
+            'transcription_status' => $call->transcription_status?->value,
+            'transcription' => $call->transcription,
+        ]];
     }
 
     // ── NinjaRMM Tools ──

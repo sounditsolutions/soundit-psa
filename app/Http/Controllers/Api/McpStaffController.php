@@ -170,10 +170,32 @@ class McpStaffController extends Controller
         'set_primary_asset_user',
     ];
 
-    /** PSA read surface (P3) — grant-gated client-scoped contract reads, executed via AssistantToolExecutor. */
+    /**
+     * PSA read surface (P3+) — grant-gated reads executed via AssistantToolExecutor.
+     * list_client_contracts/get_contract are client-scoped; the email-item and
+     * phone-call tools are cross-client, with client_id as an optional filter.
+     */
     private const PSA_READ_TOOLS = [
         'list_client_contracts',
         'get_contract',
+        'list_email_items',
+        'get_email_item',
+        'list_phone_calls',
+        'get_phone_call',
+    ];
+
+    /**
+     * Intake MANAGE surface (W2 Task 2/3) — the 5 front-door verbs that act on
+     * unresolved email/call intake items, dispatched through
+     * StaffPsaActionToolExecutor. None carry client_id; scope lives on the
+     * targeted email/call/ticket ids themselves.
+     */
+    private const INTAKE_MANAGE_TOOLS = [
+        'link_email_to_ticket',
+        'create_ticket_from_email',
+        'dismiss_email_item',
+        'link_call_to_ticket',
+        'create_ticket_from_call',
     ];
 
     private const BODY_LENGTH_AUDIT_TOOLS = [
@@ -289,7 +311,8 @@ class McpStaffController extends Controller
             ],
             McpToolRegistry::psaActionTools(),
             McpToolRegistry::psaRecordsTools(),
-            McpToolRegistry::psaContractReadTools(),
+            McpToolRegistry::psaReadTools(),
+            McpToolRegistry::intakeManageTools(),
             TacticalConfig::isConfigured() ? McpToolRegistry::tacticalAdminTools() : [],
             ChetDataSurfaceTools::generalTools(),
             OperatorBridgeTools::definitions(),
@@ -781,6 +804,16 @@ class McpStaffController extends Controller
             } elseif ($this->isPsaRecordsTool((string) $name)) {
                 // create_client is global ($clientId null → 0, ignored by the
                 // handler); the other three carry client_id as the target.
+                $result = app(StaffPsaActionToolExecutor::class)->execute(
+                    (string) $name,
+                    $arguments,
+                    (int) $clientId,
+                    $this->actorLabel($request),
+                );
+            } elseif ($this->isIntakeManageTool((string) $name)) {
+                // None of these carry client_id — scope lives on the targeted
+                // email/call/ticket ids themselves ($clientId is always null → 0,
+                // ignored by the handlers, mirroring create_client above).
                 $result = app(StaffPsaActionToolExecutor::class)->execute(
                     (string) $name,
                     $arguments,
@@ -1744,6 +1777,10 @@ class McpStaffController extends Controller
             return $token->allowedTools !== null && $token->allows($toolName);
         }
 
+        if ($this->isIntakeManageTool($toolName)) {
+            return $token->allowedTools !== null && $token->allows($toolName);
+        }
+
         if ($this->isCippWriteTool($toolName)) {
             return $token->allowedTools !== null && $token->allows($toolName);
         }
@@ -1861,6 +1898,11 @@ class McpStaffController extends Controller
     private function isPsaReadTool(string $toolName): bool
     {
         return in_array($toolName, self::PSA_READ_TOOLS, true);
+    }
+
+    private function isIntakeManageTool(string $toolName): bool
+    {
+        return in_array($toolName, self::INTAKE_MANAGE_TOOLS, true);
     }
 
     /** psa_records tools that carry an explicit client_id argument: client-entity targets + the create_contact / create_asset parent scope. */

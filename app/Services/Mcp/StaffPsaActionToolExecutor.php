@@ -9,7 +9,9 @@ use App\Enums\WhoType;
 use App\Helpers\MarkdownRenderer;
 use App\Models\Asset;
 use App\Models\Client;
+use App\Models\Email;
 use App\Models\Person;
+use App\Models\PhoneCall;
 use App\Models\Setting;
 use App\Models\TechnicianActionLog;
 use App\Models\TechnicianRun;
@@ -21,6 +23,7 @@ use App\Services\Assistant\AssistantTicketCreator;
 use App\Services\ClientService;
 use App\Services\EmailService;
 use App\Services\PersonService;
+use App\Services\PhoneCallService;
 use App\Services\Technician\TechnicianActionGate;
 use App\Services\Technician\TechnicianDisclosure;
 use App\Services\TicketService;
@@ -44,6 +47,7 @@ class StaffPsaActionToolExecutor
         private readonly ClientService $clientService,
         private readonly PersonService $personService,
         private readonly AssetService $assetService,
+        private readonly PhoneCallService $phoneCallService,
     ) {}
 
     /** @return array<string, mixed> */
@@ -79,6 +83,11 @@ class StaffPsaActionToolExecutor
             'link_asset_user' => $this->linkAssetUser($arguments, $actorLabel),
             'unlink_asset_user' => $this->unlinkAssetUser($arguments, $actorLabel),
             'set_primary_asset_user' => $this->setPrimaryAssetUser($arguments, $actorLabel),
+            'link_email_to_ticket' => $this->linkEmailToTicket($arguments, $actorLabel),
+            'create_ticket_from_email' => $this->createTicketFromEmail($arguments, $actorLabel),
+            'dismiss_email_item' => $this->dismissEmailItem($arguments, $actorLabel),
+            'link_call_to_ticket' => $this->linkCallToTicket($arguments, $actorLabel),
+            'create_ticket_from_call' => $this->createTicketFromCall($arguments, $actorLabel),
             default => ['error' => "Unknown PSA action tool: {$name}"],
         };
     }
@@ -1506,6 +1515,264 @@ class StaffPsaActionToolExecutor
             'asset_id' => $asset->id,
             'person_id' => $personId,
             'message' => 'Primary asset user set.',
+        ];
+    }
+
+    /**
+     * link_email_to_ticket — intake MANAGE verb. Thin reuse of
+     * EmailService::linkEmailToTicket; no reimplementation. The audited
+     * summary is built from ids + reason only — never $email->body_text.
+     *
+     * @return array<string, mixed>
+     */
+    private function linkEmailToTicket(array $arguments, string $actorLabel): array
+    {
+        if ($error = $this->guardDirectAction()) {
+            return $error;
+        }
+
+        $reason = $this->requiredString($arguments, 'reason');
+        if ($reason === null) {
+            return ['error' => 'reason is required'];
+        }
+
+        $email = Email::find((int) ($arguments['email_id'] ?? 0));
+        if (! $email) {
+            return ['error' => 'Email item not found'];
+        }
+
+        $ticket = Ticket::find((int) ($arguments['ticket_id'] ?? 0));
+        if (! $ticket) {
+            return ['error' => 'Ticket not found'];
+        }
+
+        // Mutation + audit atomic (the ticket's client_id is nullable — pass it through
+        // as ?int, never (int)-cast it to 0 which would violate the audit FK).
+        DB::transaction(function () use ($email, $ticket, $actorLabel, $reason): void {
+            $this->email->linkEmailToTicket($email, $ticket);
+            $this->auditEntityExecution(
+                'link_email_to_ticket',
+                'email',
+                (int) $email->id,
+                $ticket->client_id,
+                $actorLabel,
+                $this->mutationContentHash('link_email_to_ticket', (int) $email->id, ['ticket_id' => $ticket->id], $reason),
+                'Email #'.$email->id.' linked to ticket #'.$ticket->id.': '.$reason,
+                TechnicianConfig::requiredAiActorUserId(),
+            );
+        });
+
+        return [
+            'success' => true,
+            'email_id' => $email->id,
+            'ticket_id' => $ticket->id,
+            'message' => 'Email linked to ticket.',
+        ];
+    }
+
+    /**
+     * create_ticket_from_email — intake MANAGE verb. Thin reuse of
+     * EmailService::autoCreateTicketFromEmail; no reimplementation. Guards
+     * client_id !== null (the native method has no such guard — it assumes
+     * the caller already resolved the sender). Audited summary is ids +
+     * reason only — never $email->body_text.
+     *
+     * @return array<string, mixed>
+     */
+    private function createTicketFromEmail(array $arguments, string $actorLabel): array
+    {
+        if ($error = $this->guardDirectAction()) {
+            return $error;
+        }
+
+        $reason = $this->requiredString($arguments, 'reason');
+        if ($reason === null) {
+            return ['error' => 'reason is required'];
+        }
+
+        $email = Email::find((int) ($arguments['email_id'] ?? 0));
+        if (! $email) {
+            return ['error' => 'Email item not found'];
+        }
+
+        if ($email->client_id === null) {
+            return ['error' => 'Email has no resolved client; resolve the sender to a client before creating a ticket.'];
+        }
+
+        $ticket = DB::transaction(function () use ($email, $actorLabel, $reason): Ticket {
+            $ticket = $this->email->autoCreateTicketFromEmail($email);
+            $this->auditEntityExecution(
+                'create_ticket_from_email',
+                'email',
+                (int) $email->id,
+                $ticket->client_id,
+                $actorLabel,
+                $this->mutationContentHash('create_ticket_from_email', (int) $email->id, ['ticket_id' => $ticket->id], $reason),
+                'Email #'.$email->id.' created/linked ticket #'.$ticket->id.': '.$reason,
+                TechnicianConfig::requiredAiActorUserId(),
+            );
+
+            return $ticket;
+        });
+
+        return [
+            'success' => true,
+            'email_id' => $email->id,
+            'ticket_id' => $ticket->id,
+            'ticket_display_id' => $ticket->display_id,
+            'message' => 'Ticket created or linked from email.',
+        ];
+    }
+
+    /**
+     * dismiss_email_item — intake MANAGE verb. Thin reuse of
+     * EmailService::dismissEmail; no reimplementation. Audited summary is id
+     * + reason only — never $email->body_text.
+     *
+     * @return array<string, mixed>
+     */
+    private function dismissEmailItem(array $arguments, string $actorLabel): array
+    {
+        if ($error = $this->guardDirectAction()) {
+            return $error;
+        }
+
+        $reason = $this->requiredString($arguments, 'reason');
+        if ($reason === null) {
+            return ['error' => 'reason is required'];
+        }
+
+        $email = Email::find((int) ($arguments['email_id'] ?? 0));
+        if (! $email) {
+            return ['error' => 'Email item not found'];
+        }
+
+        $actorId = TechnicianConfig::requiredAiActorUserId();
+        DB::transaction(function () use ($email, $actorLabel, $reason, $actorId): void {
+            $this->email->dismissEmail($email, $actorId);
+            $this->auditEntityExecution(
+                'dismiss_email_item',
+                'email',
+                (int) $email->id,
+                $email->client_id,
+                $actorLabel,
+                $this->mutationContentHash('dismiss_email_item', (int) $email->id, [], $reason),
+                'Email #'.$email->id.' dismissed: '.$reason,
+                $actorId,
+            );
+        });
+
+        return [
+            'success' => true,
+            'email_id' => $email->id,
+            'message' => 'Email dismissed.',
+        ];
+    }
+
+    /**
+     * link_call_to_ticket — intake MANAGE verb. Thin reuse of
+     * PhoneCallService::linkCallToTicketWithNote; no reimplementation. The
+     * audited summary is built from ids + reason only — never
+     * $call->transcription.
+     *
+     * @return array<string, mixed>
+     */
+    private function linkCallToTicket(array $arguments, string $actorLabel): array
+    {
+        if ($error = $this->guardDirectAction()) {
+            return $error;
+        }
+
+        $reason = $this->requiredString($arguments, 'reason');
+        if ($reason === null) {
+            return ['error' => 'reason is required'];
+        }
+
+        $call = PhoneCall::find((int) ($arguments['phone_call_id'] ?? 0));
+        if (! $call) {
+            return ['error' => 'Phone call not found'];
+        }
+
+        $ticket = Ticket::find((int) ($arguments['ticket_id'] ?? 0));
+        if (! $ticket) {
+            return ['error' => 'Ticket not found'];
+        }
+
+        DB::transaction(function () use ($call, $ticket, $actorLabel, $reason): void {
+            $this->phoneCallService->linkCallToTicketWithNote($call, $ticket->id, "Linked via MCP: {$reason}");
+            $this->auditEntityExecution(
+                'link_call_to_ticket',
+                'phone_call',
+                (int) $call->id,
+                $ticket->client_id,
+                $actorLabel,
+                $this->mutationContentHash('link_call_to_ticket', (int) $call->id, ['ticket_id' => $ticket->id], $reason),
+                'Phone call #'.$call->id.' linked to ticket #'.$ticket->id.': '.$reason,
+                TechnicianConfig::requiredAiActorUserId(),
+            );
+        });
+
+        return [
+            'success' => true,
+            'phone_call_id' => $call->id,
+            'ticket_id' => $ticket->id,
+            'message' => 'Phone call linked to ticket.',
+        ];
+    }
+
+    /**
+     * create_ticket_from_call — intake MANAGE verb. Thin reuse of
+     * PhoneCallService::createTicketFromCall (which itself calls
+     * linkCallToTicketWithNote internally); no reimplementation. Guards
+     * client_id !== null — the native method's docblock states this as a
+     * precondition the caller must already satisfy, it does not check it
+     * itself. Audited summary is ids + reason only — never
+     * $call->transcription.
+     *
+     * @return array<string, mixed>
+     */
+    private function createTicketFromCall(array $arguments, string $actorLabel): array
+    {
+        if ($error = $this->guardDirectAction()) {
+            return $error;
+        }
+
+        $reason = $this->requiredString($arguments, 'reason');
+        if ($reason === null) {
+            return ['error' => 'reason is required'];
+        }
+
+        $call = PhoneCall::find((int) ($arguments['phone_call_id'] ?? 0));
+        if (! $call) {
+            return ['error' => 'Phone call not found'];
+        }
+
+        if ($call->client_id === null) {
+            return ['error' => 'Phone call has no resolved client; resolve the caller to a client before creating a ticket.'];
+        }
+
+        $ticket = DB::transaction(function () use ($call, $actorLabel, $reason): Ticket {
+            $ticket = $this->phoneCallService->createTicketFromCall($call);
+            $this->auditEntityExecution(
+                'create_ticket_from_call',
+                'phone_call',
+                (int) $call->id,
+                $ticket->client_id,
+                $actorLabel,
+                $this->mutationContentHash('create_ticket_from_call', (int) $call->id, ['ticket_id' => $ticket->id], $reason),
+                'Phone call #'.$call->id.' created ticket #'.$ticket->id.': '.$reason,
+                TechnicianConfig::requiredAiActorUserId(),
+            );
+
+            return $ticket;
+        });
+
+        return [
+            'success' => true,
+            'phone_call_id' => $call->id,
+            'ticket_id' => $ticket->id,
+            'ticket_display_id' => $ticket->display_id,
+            'message' => 'Ticket created from phone call.',
         ];
     }
 

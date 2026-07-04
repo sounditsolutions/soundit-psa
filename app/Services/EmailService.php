@@ -786,8 +786,13 @@ PROMPT;
      * Auto-create a ticket from an inbound email for a known client.
      * Only called when: email_auto_ticket setting is on, client_id is set,
      * and the email was received within the last 24 hours (backfill guard).
+     *
+     * Public (psa-ip15 W2): reused directly by the MCP intake_manage
+     * create_ticket_from_email verb. Returns the ticket — either the
+     * newly-created one, or the existing ticket a vendor-notification burst
+     * was deduplicated onto (see the early-return branch below).
      */
-    private function autoCreateTicketFromEmail(Email $email): void
+    public function autoCreateTicketFromEmail(Email $email): Ticket
     {
         $isMeshDeliveryRequest = MeshEmailParser::isMeshDeliveryRequest($email);
         $isZorusUnblockRequest = ZorusEmailParser::isZorusUnblockRequest($email);
@@ -810,7 +815,7 @@ PROMPT;
                     'type' => $isMeshDeliveryRequest ? 'Mesh' : 'Zorus',
                 ]);
 
-                return;
+                return $existing;
             }
         }
 
@@ -897,6 +902,8 @@ PROMPT;
             'ticket_id' => $ticket->id,
             'mesh_delivery_request' => $isMeshDeliveryRequest,
         ]);
+
+        return $ticket;
     }
 
     /**

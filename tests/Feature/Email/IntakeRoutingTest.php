@@ -379,4 +379,55 @@ class IntakeRoutingTest extends TestCase
         $this->assertNull($email->fresh()->ticket_id,
             'email.ticket_id stays null — create threw before linking');
     }
+
+    // ── Promotion regression (psa-ip15 W2): public autoCreateTicketFromEmail returns Ticket ──
+
+    /**
+     * autoCreateTicketFromEmail was promoted private void → public Ticket (psa-ip15
+     * W2), reused directly by the MCP intake_manage create_ticket_from_email verb.
+     * The vendor-notification dedup branch had a bare `return;` that would be a
+     * fatal TypeError under the new `: Ticket` signature — it must now return the
+     * existing ticket it deduplicated onto instead of creating a second one.
+     */
+    public function test_auto_create_ticket_from_email_returns_existing_ticket_on_vendor_dedup(): void
+    {
+        $client = Client::factory()->create();
+        $existing = Ticket::factory()->create([
+            'client_id' => $client->id,
+            'subject' => 'Email Delivery Request: user@domain.com',
+            'status' => TicketStatus::New,
+        ]);
+
+        $email = Email::create([
+            'direction' => 'inbound',
+            'from_address' => 'noreply@emailsecurity.app',
+            'subject' => 'Email Delivery Request: user@domain.com',
+            'body_text' => 'A delivery was requested.',
+            'received_at' => now(),
+            'client_id' => $client->id,
+        ]);
+
+        $before = Ticket::count();
+
+        $returned = app(EmailService::class)->autoCreateTicketFromEmail($email);
+
+        $this->assertSame($existing->id, $returned->id, 'must return the existing ticket it deduplicated onto, not a new one');
+        $this->assertSame($before, Ticket::count(), 'no second ticket should be created for a deduplicated vendor request');
+        $this->assertSame($existing->id, $email->fresh()->ticket_id);
+    }
+
+    /**
+     * The normal (non-vendor, non-dedup) create path must also return the ticket it
+     * just created — the primary call site the MCP create_ticket_from_email verb relies on.
+     */
+    public function test_auto_create_ticket_from_email_returns_the_newly_created_ticket(): void
+    {
+        $client = Client::factory()->create();
+        $email = $this->makeInboundEmail($client);
+
+        $returned = app(EmailService::class)->autoCreateTicketFromEmail($email);
+
+        $this->assertNotNull($returned->id);
+        $this->assertSame($returned->id, $email->fresh()->ticket_id);
+    }
 }

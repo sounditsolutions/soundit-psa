@@ -62,7 +62,8 @@ class McpToolRegistry
             $tacticalActions = self::shape(self::tacticalActionTools());
             $tacticalAdmin = self::shape(self::tacticalAdminTools());
             $psaRecords = self::shape(self::psaRecordsTools());
-            $psaRead = self::shape(self::psaContractReadTools());
+            $psaRead = self::shape(self::psaReadTools());
+            $intakeManage = self::shape(self::intakeManageTools());
 
             return [
                 'general' => ['label' => 'General (no client context)', 'sensitive' => false, 'tools' => $general],
@@ -74,7 +75,8 @@ class McpToolRegistry
                 'wiki_write' => ['label' => 'Wiki write (sensitive)', 'sensitive' => true, 'tools' => $wikiWrites],
                 'psa_action' => ['label' => 'PSA actions (sensitive)', 'sensitive' => true, 'tools' => $psaActions],
                 'psa_records' => ['label' => 'PSA records — clients, people, assets (sensitive)', 'sensitive' => true, 'tools' => $psaRecords],
-                'psa_read' => ['label' => 'PSA reads — contracts (sensitive)', 'sensitive' => true, 'tools' => $psaRead],
+                'psa_read' => ['label' => 'PSA reads (sensitive)', 'sensitive' => true, 'tools' => $psaRead],
+                'intake_manage' => ['label' => 'Intake email/call manage (sensitive)', 'sensitive' => true, 'tools' => $intakeManage],
                 'bridge' => ['label' => 'Operator bridge (sensitive)', 'sensitive' => true, 'tools' => $bridge],
             ];
         });
@@ -119,7 +121,8 @@ class McpToolRegistry
             $sensitiveMap = [
                 'psa_action' => ['psa', 'write', 'Write & act', 2],
                 'psa_records' => ['psa', 'write', 'Write & act', 2],
-                'psa_read' => ['psa', 'contracts', 'Contracts (read)', 3],
+                'psa_read' => ['psa', 'read', 'Reads', 3],
+                'intake_manage' => ['psa', 'write', 'Write & act', 2],
                 'cipp_write' => ['cipp', 'write', 'Write & remediate', 2],
                 'tactical_action' => ['tactical', 'actions', 'Endpoint actions', 2],
                 'tactical_admin' => ['tactical', 'admin', 'Admin & provisioning', 3],
@@ -873,17 +876,28 @@ class McpToolRegistry
     }
 
     /**
-     * PSA read surface (P3) — contract coverage reads. Grant-gated/dormant.
-     * Executed through AssistantToolExecutor (the read executor). Coverage/SLA
-     * only — pricing/financial fields are held from v1.
+     * PSA read surface (P3+) — grant-gated/dormant reads executed through
+     * AssistantToolExecutor (the read executor). Two shapes coexist here:
+     * contract tools are hard client-scoped (coverage/SLA only — pricing and
+     * financial fields are held from v1); email-item and phone-call tools are
+     * cross-client staff-class reads where client_id is an OPTIONAL filter,
+     * never required — a woken Chet must be able to list unlinked/unresolved
+     * items that have no client yet (mirrors find_persons/find_assets, and
+     * get_ticket_detail's by-id-with-no-client-gating precedent). Lists return
+     * metadata plus a short preview only; full body_text/transcription are
+     * only available through the by-id get tools.
      *
      * @return array<int, array<string, mixed>>
      */
-    public static function psaContractReadTools(): array
+    public static function psaReadTools(): array
     {
         return [
             self::listClientContractsTool(),
             self::getContractTool(),
+            self::listEmailItemsTool(),
+            self::getEmailItemTool(),
+            self::listPhoneCallsTool(),
+            self::getPhoneCallTool(),
         ];
     }
 
@@ -918,6 +932,189 @@ class McpToolRegistry
                     'contract_id' => ['type' => 'integer', 'description' => 'The contract ID to read.'],
                 ],
                 'required' => ['client_id', 'contract_id'],
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public static function listEmailItemsTool(): array
+    {
+        return [
+            'name' => 'list_email_items',
+            'description' => 'List inbound/outbound email items (metadata + short body_preview only; never full bodies). Staff-class, cross-client. Filter by direction, unlinked (no ticket), client_id, since.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'direction' => ['type' => 'string', 'enum' => ['inbound', 'outbound'], 'description' => 'Filter by direction.'],
+                    'unlinked' => ['type' => 'boolean', 'description' => 'Only items not yet linked to a ticket.'],
+                    'client_id' => ['type' => 'integer', 'description' => 'Optional: scope to one client. Omit for cross-client triage of unresolved items.'],
+                    'since' => ['type' => 'string', 'description' => 'ISO-8601; only items received at/after this time.'],
+                    'limit' => ['type' => 'integer', 'description' => 'Max rows (default 25, cap 50).'],
+                ],
+                'required' => [],
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public static function getEmailItemTool(): array
+    {
+        return [
+            'name' => 'get_email_item',
+            'description' => 'Get one email item\'s full detail, including the full body text and its ticket/client linkage. Staff-class, cross-client — not scoped to a client_id.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'email_id' => ['type' => 'integer', 'description' => 'The email item ID to read.'],
+                ],
+                'required' => ['email_id'],
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public static function listPhoneCallsTool(): array
+    {
+        return [
+            'name' => 'list_phone_calls',
+            'description' => 'List phone calls (metadata only; never the transcript). Staff-class, cross-client. Filter by direction, unlinked (no ticket), client_id, transcription_status, since.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'direction' => ['type' => 'string', 'enum' => ['inbound', 'outbound'], 'description' => 'Filter by direction.'],
+                    'unlinked' => ['type' => 'boolean', 'description' => 'Only calls not yet linked to a ticket.'],
+                    'client_id' => ['type' => 'integer', 'description' => 'Optional: scope to one client. Omit for cross-client triage of unresolved calls.'],
+                    'transcription_status' => ['type' => 'string', 'enum' => ['pending', 'processing', 'completed', 'failed'], 'description' => 'Filter by transcription status.'],
+                    'since' => ['type' => 'string', 'description' => 'ISO-8601; only calls started at/after this time.'],
+                    'limit' => ['type' => 'integer', 'description' => 'Max rows (default 25, cap 50).'],
+                ],
+                'required' => [],
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public static function getPhoneCallTool(): array
+    {
+        return [
+            'name' => 'get_phone_call',
+            'description' => 'Get one phone call\'s full detail, including the transcription and its ticket/client linkage. Staff-class, cross-client — not scoped to a client_id.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'phone_call_id' => ['type' => 'integer', 'description' => 'The phone call ID to read.'],
+                ],
+                'required' => ['phone_call_id'],
+            ],
+        ];
+    }
+
+    /**
+     * Intake MANAGE surface (W2 Task 2/3) — the 5 front-door verbs that act on
+     * unresolved email/call intake items (link to an existing ticket, create a
+     * new ticket, or dismiss). Dormant until explicitly granted. Dispatched
+     * through StaffPsaActionToolExecutor; each is a thin reuse of the native
+     * EmailService/PhoneCallService path — no reimplementation. None of these
+     * schemas carry client_id (the target email/call/ticket ids carry their
+     * own client scope); the audited summary is built from ids + reason only —
+     * the email body / call transcript are never included.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public static function intakeManageTools(): array
+    {
+        return [
+            self::linkEmailToTicketTool(),
+            self::createTicketFromEmailTool(),
+            self::dismissEmailItemTool(),
+            self::linkCallToTicketTool(),
+            self::createTicketFromCallTool(),
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public static function linkEmailToTicketTool(): array
+    {
+        return [
+            'name' => 'link_email_to_ticket',
+            'description' => 'Link an unresolved inbound email item to an existing ticket immediately, reusing the native email-to-ticket linking path (records the client reply note and touches ticket activity). Audited by ids and reason only — the email body is never logged. Requires an explicit token grant.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'email_id' => ['type' => 'integer', 'description' => 'The email item ID to link.'],
+                    'ticket_id' => ['type' => 'integer', 'description' => 'The ticket ID to link the email to.'],
+                    'reason' => ['type' => 'string', 'description' => 'Specific reason this email belongs on this ticket.'],
+                ],
+                'required' => ['email_id', 'ticket_id', 'reason'],
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public static function createTicketFromEmailTool(): array
+    {
+        return [
+            'name' => 'create_ticket_from_email',
+            'description' => 'Create a new ticket from an unresolved inbound email item immediately, reusing the native auto-create-from-email path. The email must already be resolved to a client. Audited by ids and reason only — the email body is never logged. Requires an explicit token grant.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'email_id' => ['type' => 'integer', 'description' => 'The email item ID to create a ticket from. Must already have a resolved client_id.'],
+                    'reason' => ['type' => 'string', 'description' => 'Specific reason a new ticket (rather than linking to an existing one) is the right action for this email.'],
+                ],
+                'required' => ['email_id', 'reason'],
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public static function dismissEmailItemTool(): array
+    {
+        return [
+            'name' => 'dismiss_email_item',
+            'description' => 'Dismiss an unresolved inbound email item immediately — marks it handled with no ticket created — reusing the native dismiss path. Audited by id and reason only — the email body is never logged. Requires an explicit token grant.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'email_id' => ['type' => 'integer', 'description' => 'The email item ID to dismiss.'],
+                    'reason' => ['type' => 'string', 'description' => 'Specific reason this email needs no ticket (e.g., resolved elsewhere, not actionable, spam).'],
+                ],
+                'required' => ['email_id', 'reason'],
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public static function linkCallToTicketTool(): array
+    {
+        return [
+            'name' => 'link_call_to_ticket',
+            'description' => 'Link an unresolved phone call to an existing ticket immediately, reusing the native call-linking path (sets billability when already known and drops an internal note). Audited by ids and reason only — the call transcript is never logged. Requires an explicit token grant.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'phone_call_id' => ['type' => 'integer', 'description' => 'The phone call ID to link.'],
+                    'ticket_id' => ['type' => 'integer', 'description' => 'The ticket ID to link the call to.'],
+                    'reason' => ['type' => 'string', 'description' => 'Specific reason this call belongs on this ticket.'],
+                ],
+                'required' => ['phone_call_id', 'ticket_id', 'reason'],
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public static function createTicketFromCallTool(): array
+    {
+        return [
+            'name' => 'create_ticket_from_call',
+            'description' => 'Create a new ticket from an unresolved phone call immediately, reusing the native call-to-ticket creation path. The call must already be resolved to a client. Audited by ids and reason only — the call transcript is never logged. Requires an explicit token grant.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'phone_call_id' => ['type' => 'integer', 'description' => 'The phone call ID to create a ticket from. Must already have a resolved client_id.'],
+                    'reason' => ['type' => 'string', 'description' => 'Specific reason a new ticket (rather than linking to an existing one) is the right action for this call.'],
+                ],
+                'required' => ['phone_call_id', 'reason'],
             ],
         ];
     }
