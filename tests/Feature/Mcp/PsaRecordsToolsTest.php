@@ -238,6 +238,27 @@ class PsaRecordsToolsTest extends TestCase
         $this->assertSame(1, Client::query()->count());
     }
 
+    public function test_create_client_refuses_recent_duplicate_by_content_hash(): void
+    {
+        $this->configureAiActor();
+        $token = $this->token(['create_client'], 'chet');
+        $payload = ['name' => 'Dup Co', 'email' => 'dup@example.test', 'city' => 'Portland'];
+
+        $first = $this->callTool($token, 'create_client', $payload);
+        $first->assertOk();
+        $this->assertFalse((bool) $first->json('result.isError'), (string) $first->json('result.content.0.text'));
+
+        $second = $this->callTool($token, 'create_client', $payload);
+        $second->assertOk();
+        $this->assertTrue((bool) $second->json('result.isError'), 'a duplicate create_client must be refused');
+        $this->assertStringContainsString('already created', (string) $second->json('result.content.0.text'));
+        // Honest refusal, not idempotent replay:
+        $this->assertStringNotContainsString('idempotent', (string) $second->json('result.content.0.text'));
+
+        $this->assertSame(1, Client::query()->count());
+        $this->assertSame(1, TechnicianActionLog::where('action_type', 'create_client')->count());
+    }
+
     public function test_granted_token_updates_client_with_audit(): void
     {
         $this->configureAiActor();

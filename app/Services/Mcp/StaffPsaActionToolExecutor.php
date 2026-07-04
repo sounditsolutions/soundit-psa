@@ -544,6 +544,14 @@ class StaffPsaActionToolExecutor
             return $validated;
         }
 
+        // Pre-creation payload hash (NOT the old post-creation hash that baked in
+        // the new client id and could never match a prior row). Honest refusal on
+        // a recent identical create — a client create is not a replayable idempotent op.
+        $contentHash = $this->createClientContentHash($validated);
+        if ($this->duplicateCreateClientRecently($contentHash)) {
+            return ['error' => 'A client with identical details was already created recently. Change at least one field, or use find_clients to check for an existing match, before retrying.'];
+        }
+
         $client = $this->clientService->createClient($validated);
 
         $this->auditEntityExecution(
@@ -552,7 +560,7 @@ class StaffPsaActionToolExecutor
             (int) $client->id,
             (int) $client->id,
             $actorLabel,
-            $this->mutationContentHash('create_client', (int) $client->id, $validated),
+            $contentHash,
             'Client created: '.$client->name.'.',
             TechnicianConfig::requiredAiActorUserId(),
         );
@@ -2093,6 +2101,22 @@ class StaffPsaActionToolExecutor
             ->where('created_at', '>=', now()->subHours(self::DIRECT_DEDUP_HOURS))
             ->latest('id')
             ->first();
+    }
+
+    /** @param  array<string, mixed>  $validated */
+    private function createClientContentHash(array $validated): string
+    {
+        return hash('sha256', 'create_client:'.json_encode($validated, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+    }
+
+    private function duplicateCreateClientRecently(string $contentHash): bool
+    {
+        return TechnicianActionLog::query()
+            ->where('action_type', 'create_client')
+            ->where('result_status', 'executed')
+            ->where('content_hash', $contentHash)
+            ->where('created_at', '>=', now()->subHours(self::DIRECT_DEDUP_HOURS))
+            ->exists();
     }
 
     private function rateLimited(string $actionType, int $ticketId, int $cooldownSeconds): bool
