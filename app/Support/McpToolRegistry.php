@@ -61,6 +61,7 @@ class McpToolRegistry
             ));
             $tacticalActions = self::shape(self::tacticalActionTools());
             $tacticalAdmin = self::shape(self::tacticalAdminTools());
+            $psaRecords = self::shape(self::psaRecordsTools());
 
             return [
                 'general' => ['label' => 'General (no client context)', 'sensitive' => false, 'tools' => $general],
@@ -71,6 +72,7 @@ class McpToolRegistry
                 'tactical_admin' => ['label' => 'Tactical admin/provisioning (sensitive)', 'sensitive' => true, 'tools' => $tacticalAdmin],
                 'wiki_write' => ['label' => 'Wiki write (sensitive)', 'sensitive' => true, 'tools' => $wikiWrites],
                 'psa_action' => ['label' => 'PSA actions (sensitive)', 'sensitive' => true, 'tools' => $psaActions],
+                'psa_records' => ['label' => 'PSA records — clients (sensitive)', 'sensitive' => true, 'tools' => $psaRecords],
                 'bridge' => ['label' => 'Operator bridge (sensitive)', 'sensitive' => true, 'tools' => $bridge],
             ];
         });
@@ -114,6 +116,7 @@ class McpToolRegistry
             // [integration, tierKey, tierLabel, order]
             $sensitiveMap = [
                 'psa_action' => ['psa', 'write', 'Write & act', 2],
+                'psa_records' => ['psa', 'write', 'Write & act', 2],
                 'cipp_write' => ['cipp', 'write', 'Write & remediate', 2],
                 'tactical_action' => ['tactical', 'actions', 'Endpoint actions', 2],
                 'tactical_admin' => ['tactical', 'admin', 'Admin & provisioning', 3],
@@ -834,6 +837,115 @@ class McpToolRegistry
                     ],
                 ],
                 'required' => ['primary_ticket_id', 'secondary_ticket_id', 'reason'],
+            ],
+        ];
+    }
+
+    /**
+     * PSA records write-surface (P2a) — native client CRUD. All dormant until
+     * explicitly granted. Dispatched through StaffPsaActionToolExecutor.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public static function psaRecordsTools(): array
+    {
+        return [
+            self::createClientTool(),
+            self::updateClientTool(),
+            self::updateClientSiteNotesTool(),
+            self::deleteClientTool(),
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public static function createClientTool(): array
+    {
+        return [
+            'name' => 'create_client',
+            'description' => 'Create a new PSA client (company) record immediately. This is a global write — no client_id is accepted. The server validates the same fields as the client create form, normalizes the phone number, and writes an action audit row. Requires an explicit token grant.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'name' => ['type' => 'string', 'description' => 'Client (company) name.'],
+                    'notes' => ['type' => 'string', 'description' => 'Optional internal notes about the client.'],
+                    'phone' => ['type' => 'string', 'description' => 'Optional main phone number.'],
+                    'email' => ['type' => 'string', 'description' => 'Optional main contact email.'],
+                    'website' => ['type' => 'string', 'description' => 'Optional website URL.'],
+                    'address_line1' => ['type' => 'string', 'description' => 'Optional street address line 1.'],
+                    'address_line2' => ['type' => 'string', 'description' => 'Optional street address line 2.'],
+                    'city' => ['type' => 'string', 'description' => 'Optional city.'],
+                    'state' => ['type' => 'string', 'description' => 'Optional state or region.'],
+                    'postcode' => ['type' => 'string', 'description' => 'Optional postal code.'],
+                    'is_active' => ['type' => 'boolean', 'description' => 'Whether the client is active. Defaults to active.'],
+                    'primary_tech_id' => ['type' => 'integer', 'description' => 'Optional primary technician user ID.'],
+                    'reseller_id' => ['type' => 'integer', 'description' => 'Optional reseller (parent client) ID that this client is billed through.'],
+                ],
+                'required' => ['name'],
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public static function updateClientTool(): array
+    {
+        return [
+            'name' => 'update_client',
+            'description' => 'Update an existing PSA client record immediately. The server acts only on the supplied client_id, validates the same fields as the client edit form, and writes an action audit row. Site notes and credentials are handled by their own tools and are not accepted here. Requires an explicit token grant.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'client_id' => ['type' => 'integer', 'description' => 'The target client ID to update.'],
+                    'name' => ['type' => 'string', 'description' => 'Optional replacement client name.'],
+                    'notes' => ['type' => 'string', 'description' => 'Optional replacement internal notes.'],
+                    'phone' => ['type' => 'string', 'description' => 'Optional replacement main phone number.'],
+                    'email' => ['type' => 'string', 'description' => 'Optional replacement main contact email.'],
+                    'website' => ['type' => 'string', 'description' => 'Optional replacement website URL.'],
+                    'address_line1' => ['type' => 'string', 'description' => 'Optional replacement street address line 1.'],
+                    'address_line2' => ['type' => 'string', 'description' => 'Optional replacement street address line 2.'],
+                    'city' => ['type' => 'string', 'description' => 'Optional replacement city.'],
+                    'state' => ['type' => 'string', 'description' => 'Optional replacement state or region.'],
+                    'postcode' => ['type' => 'string', 'description' => 'Optional replacement postal code.'],
+                    'is_active' => ['type' => 'boolean', 'description' => 'Optional active flag.'],
+                    'primary_tech_id' => ['type' => 'integer', 'description' => 'Optional primary technician user ID.'],
+                    'reseller_id' => ['type' => 'integer', 'description' => 'Optional reseller (parent client) ID.'],
+                ],
+                'required' => ['client_id'],
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public static function updateClientSiteNotesTool(): array
+    {
+        return [
+            'name' => 'update_client_site_notes',
+            'description' => 'Replace a PSA client\'s site notes immediately. The server acts only on the supplied client_id, honors optimistic concurrency via expected_updated_at (rejecting a stale overwrite), renders markdown, and writes an action audit row. Requires an explicit token grant.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'client_id' => ['type' => 'integer', 'description' => 'The target client ID.'],
+                    'site_notes' => ['type' => 'string', 'description' => 'New site notes in markdown. Pass an empty string to clear them.'],
+                    'expected_updated_at' => ['type' => 'string', 'description' => 'Optional ISO-8601 timestamp of the site notes you last read. If it no longer matches, the write is rejected as a concurrent edit.'],
+                ],
+                'required' => ['client_id', 'site_notes'],
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public static function deleteClientTool(): array
+    {
+        return [
+            'name' => 'delete_client',
+            'description' => 'Soft-delete a PSA client immediately. The server acts only on the supplied client_id, requires a typed confirmation of the exact client name, and refuses when the client still has open tickets, active contracts, or unpaid invoices. Writes an action audit row. Requires an explicit token grant.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'client_id' => ['type' => 'integer', 'description' => 'The target client ID to delete.'],
+                    'confirm_client_name' => ['type' => 'string', 'description' => 'Typed confirmation — must exactly match the target client name.'],
+                    'reason' => ['type' => 'string', 'description' => 'Optional reason for the deletion, recorded in the audit log.'],
+                ],
+                'required' => ['client_id', 'confirm_client_name'],
             ],
         ];
     }

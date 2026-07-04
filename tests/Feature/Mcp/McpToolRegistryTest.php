@@ -15,7 +15,7 @@ class McpToolRegistryTest extends TestCase
     {
         $groups = McpToolRegistry::groups();
 
-        $this->assertSame(['general', 'client', 'integration', 'cipp_write', 'tactical_action', 'tactical_admin', 'wiki_write', 'psa_action', 'bridge'], array_keys($groups));
+        $this->assertSame(['general', 'client', 'integration', 'cipp_write', 'tactical_action', 'tactical_admin', 'wiki_write', 'psa_action', 'psa_records', 'bridge'], array_keys($groups));
 
         $names = fn (string $group): array => array_column($groups[$group]['tools'], 'name');
 
@@ -41,11 +41,16 @@ class McpToolRegistryTest extends TestCase
         $this->assertContains('write_public_note', $names('psa_action'));
         $this->assertContains('stage_public_note', $names('psa_action'));
         $this->assertContains('propose_merge', $names('psa_action'));
+        $this->assertContains('create_client', $names('psa_records'));
+        $this->assertContains('update_client', $names('psa_records'));
+        $this->assertContains('update_client_site_notes', $names('psa_records'));
+        $this->assertContains('delete_client', $names('psa_records'));
         $this->assertContains('post_to_operator', $names('bridge'));
         $this->assertTrue($groups['wiki_write']['sensitive']);
         $this->assertTrue($groups['tactical_action']['sensitive']);
         $this->assertTrue($groups['tactical_admin']['sensitive']);
         $this->assertTrue($groups['psa_action']['sensitive']);
+        $this->assertTrue($groups['psa_records']['sensitive']);
         $this->assertTrue($groups['bridge']['sensitive']);
         $this->assertTrue($groups['cipp_write']['sensitive']);
         $this->assertFalse($groups['general']['sensitive']);
