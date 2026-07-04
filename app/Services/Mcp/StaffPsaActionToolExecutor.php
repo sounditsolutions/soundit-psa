@@ -953,6 +953,9 @@ class StaffPsaActionToolExecutor
         $reason = $this->optionalString($arguments, 'reason');
         $oldClientId = (int) $person->client_id;
 
+        // Count the links that will become cross-client BEFORE updatePerson detaches them.
+        $pivots = $this->personService->crossClientPivotCounts($person, $newClient->id);
+
         // Reparent as a non-primary in the target client — a moved contact must
         // not silently become a second primary there (the target keeps its own).
         $updated = $this->personService->updatePerson($person, ['client_id' => $newClient->id, 'is_primary' => false]);
@@ -964,7 +967,9 @@ class StaffPsaActionToolExecutor
             (int) $updated->client_id,
             $actorLabel,
             $this->mutationContentHash('move_contact_to_client', (int) $updated->id, ['new_client_id' => $newClient->id], $reason),
-            'Contact '.$this->contactDisplayName($updated).' moved from client #'.$oldClientId.' to #'.$newClient->id.($reason ? ' — '.$reason : '').'.',
+            'Contact '.$this->contactDisplayName($updated).' moved from client #'.$oldClientId.' to #'.$newClient->id
+                .($pivots['contracts'] + $pivots['assets'] > 0 ? ' (detached '.$pivots['contracts'].' contract, '.$pivots['assets'].' device link(s))' : '')
+                .($reason ? ' — '.$reason : '').'.',
             TechnicianConfig::requiredAiActorUserId(),
         );
 
@@ -972,7 +977,11 @@ class StaffPsaActionToolExecutor
             'success' => true,
             'contact_id' => $updated->id,
             'client_id' => $updated->client_id,
-            'message' => 'Contact moved.',
+            'contracts_detached' => $pivots['contracts'],
+            'assets_detached' => $pivots['assets'],
+            'message' => 'Contact moved.'.($pivots['contracts'] + $pivots['assets'] > 0
+                ? ' Detached '.$pivots['contracts'].' contract and '.$pivots['assets'].' device link(s) that pointed at the previous client.'
+                : ''),
         ];
     }
 

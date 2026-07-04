@@ -58,12 +58,52 @@ class PersonService
 
             $person->update($data);
 
+            if ($person->wasChanged('client_id')) {
+                $this->detachCrossClientPivots($person);
+            }
+
             if ($additionalEmails !== null) {
                 $this->syncAdditionalEmails($person, $additionalEmails);
             }
 
             return $person->fresh();
         });
+    }
+
+    /**
+     * Count the person's contract/device pivot links that point at a client
+     * other than $clientId (i.e. would be cross-client after a move to it).
+     *
+     * @return array{contracts:int, assets:int}
+     */
+    public function crossClientPivotCounts(Person $person, int $clientId): array
+    {
+        return [
+            'contracts' => $person->contracts()->where('contracts.client_id', '!=', $clientId)->count(),
+            'assets' => $person->assets()->where('assets.client_id', '!=', $clientId)->count(),
+        ];
+    }
+
+    /**
+     * Detach the person's contract/device pivot links that point at a client
+     * other than the person's CURRENT client — after a cross-client move such a
+     * link is factually wrong (regardless of assignment_source). Idempotent.
+     *
+     * @return array{contracts:int, assets:int}
+     */
+    public function detachCrossClientPivots(Person $person): array
+    {
+        $contractIds = $person->contracts()->where('contracts.client_id', '!=', $person->client_id)->pluck('contracts.id')->all();
+        $assetIds = $person->assets()->where('assets.client_id', '!=', $person->client_id)->pluck('assets.id')->all();
+
+        if ($contractIds !== []) {
+            $person->contracts()->detach($contractIds);
+        }
+        if ($assetIds !== []) {
+            $person->assets()->detach($assetIds);
+        }
+
+        return ['contracts' => count($contractIds), 'assets' => count($assetIds)];
     }
 
     public function deletePerson(Person $person): void

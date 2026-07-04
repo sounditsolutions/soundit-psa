@@ -4,7 +4,9 @@ namespace Tests\Feature\Mcp;
 
 use App\Enums\PersonType;
 use App\Enums\TicketStatus;
+use App\Models\Asset;
 use App\Models\Client;
+use App\Models\Contract;
 use App\Models\McpAuditLog;
 use App\Models\Person;
 use App\Models\Setting;
@@ -357,6 +359,40 @@ class PsaPeopleToolsTest extends TestCase
         $this->assertFalse((bool) $moving->fresh()->is_primary);
         $this->assertTrue((bool) $targetPrimary->fresh()->is_primary);
         $this->assertSame(1, Person::where('client_id', $target->id)->where('is_primary', true)->count());
+    }
+
+    public function test_move_contact_detaches_cross_client_pivots_and_reports_counts(): void
+    {
+        $this->configureAiActor();
+        $from = Client::factory()->create(['name' => 'From Co']);
+        $to = Client::factory()->create(['name' => 'To Co']);
+        $person = $this->contact($from);
+
+        // A manual contract link + a device link, both at the OLD client.
+        $contract = Contract::create(['client_id' => $from->id, 'name' => 'From Co MSA', 'type' => 'managed', 'start_date' => '2026-01-01']);
+        $person->contracts()->attach($contract->id, ['assignment_source' => 'manual', 'assigned_at' => now()]);
+        $asset = Asset::factory()->for($from)->create();
+        $person->assets()->attach($asset->id, ['assignment_source' => 'manual']);
+
+        $token = $this->token(['move_contact_to_client'], 'chet');
+        $response = $this->callTool($token, 'move_contact_to_client', [
+            'contact_id' => $person->id,
+            'new_client_id' => $to->id,
+            'confirm_client_name' => 'To Co',
+        ]);
+
+        $response->assertOk();
+        $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
+
+        $person->refresh();
+        $this->assertSame($to->id, $person->client_id);
+        // The old-client pivots are gone (they'd otherwise point at From Co's contract/device).
+        $this->assertSame(0, $person->contracts()->count());
+        $this->assertSame(0, $person->assets()->count());
+
+        $result = $this->decodedResult($response);
+        $this->assertSame(1, $result['contracts_detached']);
+        $this->assertSame(1, $result['assets_detached']);
     }
 
     public function test_delete_contact_requires_typed_confirm_and_soft_deletes(): void

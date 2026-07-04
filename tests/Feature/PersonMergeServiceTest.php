@@ -298,6 +298,29 @@ class PersonMergeServiceTest extends TestCase
         $this->assertSame(0, PersonEmail::where('person_id', $dup->id)->count());
     }
 
+    /**
+     * Shared-behavior coverage: PersonService::updatePerson (used by both the web
+     * UI and the move_contact_to_client MCP tool) must reconcile contract/device
+     * pivots on a cross-client move, not just mergePeople.
+     */
+    public function test_update_person_detaches_cross_client_pivots_on_client_change(): void
+    {
+        $from = $this->client('From Co');
+        $to = $this->client('To Co');
+        $person = $this->person($from);
+        $contract = Contract::create(['client_id' => $from->id, 'name' => 'From Co MSA', 'type' => 'managed', 'start_date' => '2026-01-01']);
+        $person->contracts()->attach($contract->id, ['assignment_source' => 'manual', 'assigned_at' => now()]);
+        $asset = Asset::create(['client_id' => $from->id, 'name' => 'From Co PC']);
+        $person->assets()->attach($asset->id, ['assignment_source' => 'manual']);
+
+        $this->service()->updatePerson($person, ['client_id' => $to->id]);
+
+        $person->refresh();
+        $this->assertSame($to->id, $person->client_id);
+        $this->assertSame(0, $person->contracts()->count());
+        $this->assertSame(0, $person->assets()->count());
+    }
+
     public function test_rejects_self_merge(): void
     {
         $c = $this->client();
