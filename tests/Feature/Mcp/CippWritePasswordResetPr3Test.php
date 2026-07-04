@@ -338,4 +338,76 @@ class CippWritePasswordResetPr3Test extends TestCase
         $this->assertTrue((bool) $response->json('result.isError'));
         $this->assertStringContainsString('kill-switch', (string) $response->json('result.content.0.text'));
     }
+
+    public function test_success_response_is_marked_no_store(): void
+    {
+        $this->configureCipp();
+        $this->configureAiActor();
+        $fixture = $this->cippFixture();
+        $this->mockReset('pw-nostore');
+
+        $response = $this->callTool($this->token([self::TOOL]), self::TOOL, [
+            'client_id' => $fixture['client']->id,
+            'person_id' => $fixture['person']->id,
+            'confirm_upn' => 'alex@acme.example',
+            'reason' => 'Reset; response must not be cached.',
+        ]);
+
+        $response->assertOk();
+        $this->assertStringContainsString('no-store', (string) $response->headers->get('Cache-Control'));
+    }
+
+    public function test_must_change_is_recorded_as_safe_boolean_in_audit(): void
+    {
+        $this->configureCipp();
+        $this->configureAiActor();
+        $fixture = $this->cippFixture();
+        $this->mockReset('pw-audit');
+
+        $this->callTool($this->token([self::TOOL]), self::TOOL, [
+            'client_id' => $fixture['client']->id,
+            'person_id' => $fixture['person']->id,
+            'confirm_upn' => 'alex@acme.example',
+            'must_change' => true,
+            'reason' => 'Audit must record must_change.',
+        ]);
+
+        $args = McpAuditLog::where('tool_name', self::TOOL)->latest('id')->firstOrFail()->arguments;
+        $this->assertTrue($args['must_change']);
+        $this->assertSame('[withheld]', $args['confirm_upn']);
+    }
+
+    public function test_cooldown_blocks_a_second_reset_for_the_same_user(): void
+    {
+        $this->configureCipp();
+        $this->configureAiActor();
+        $fixture = $this->cippFixture();
+
+        $client = Mockery::mock(CippRestWriteClient::class);
+        $client->shouldReceive('resetUserPassword')
+            ->once() // ONLY the first attempt may reach upstream
+            ->andReturn(['success' => true, 'status' => 200, 'body' => [
+                'Results' => ['copyField' => 'pw-cooldown-1', 'state' => 'success'],
+            ]]);
+        $this->app->instance(CippRestWriteClient::class, $client);
+
+        $token = $this->token([self::TOOL]);
+        $args = [
+            'client_id' => $fixture['client']->id,
+            'person_id' => $fixture['person']->id,
+            'confirm_upn' => 'alex@acme.example',
+            'reason' => 'First reset, then an immediate retry that must be refused.',
+        ];
+
+        $first = $this->callTool($token, self::TOOL, $args);
+        $first->assertOk();
+        $this->assertFalse((bool) $first->json('result.isError'), (string) $first->json('result.content.0.text'));
+        $this->assertSame('pw-cooldown-1', $this->decodedResult($first)['temporary_password']);
+
+        // Immediate second attempt for the same person is refused by the cooldown;
+        // resetUserPassword must NOT be called a second time (Mockery ->once() enforces this).
+        $second = $this->callTool($token, self::TOOL, $args);
+        $this->assertTrue((bool) $second->json('result.isError'));
+        $this->assertStringContainsString('cooldown', (string) $second->json('result.content.0.text'));
+    }
 }
