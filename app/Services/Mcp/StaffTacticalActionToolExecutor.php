@@ -207,17 +207,48 @@ class StaffTacticalActionToolExecutor
             return new TechnicianApprovalResult('already_handled');
         }
 
+        return $this->executeClaimedRun($run, $approverId, TechnicianRunState::AwaitingApproval);
+    }
+
+    /**
+     * Re-run a queued_offline action when its device returns online (bd psa-xr84).
+     * Claims the queued run and drives it through the SAME gate-checked execution as
+     * a live approval (kill-switch, cooldown, payload revalidation, asset/ticket
+     * links all re-verified), so a delayed run is indistinguishable from a direct
+     * one. Attribution reuses the original approver stored at enqueue. A gate decline
+     * or a still-offline device releases the run back to the queue for the next sweep
+     * rather than the human approval lane.
+     */
+    public function runQueuedOnReconnect(TechnicianRun $run): TechnicianApprovalResult
+    {
+        $approverId = (int) ($run->proposed_meta['queued_approver_id'] ?? 0);
+
+        if (! self::isStagedActionType($run->action_type) || ! $run->claimQueuedForExecution()) {
+            return new TechnicianApprovalResult('already_handled');
+        }
+
+        return $this->executeClaimedRun($run, $approverId, TechnicianRunState::QueuedOffline);
+    }
+
+    /**
+     * The gate-checked execution shared by a live approval and a reconnect-run. The
+     * run is already claimed (executing); $releaseState is where a gate decline or
+     * error returns it — AwaitingApproval for a live approval, QueuedOffline for a
+     * reconnect-run so the queue keeps waiting for the device.
+     */
+    private function executeClaimedRun(TechnicianRun $run, int $approverId, TechnicianRunState $releaseState): TechnicianApprovalResult
+    {
         try {
             $payload = $this->decryptRunPayload($run);
             if ($payload === null) {
-                $run->releaseClaim();
+                $run->releaseClaimTo($releaseState);
 
                 return new TechnicianApprovalResult('gate_declined');
             }
 
             $directTool = (string) ($payload['direct_tool'] ?? '');
             if (! isset(self::STAGED_TO_DIRECT[$run->action_type]) || self::STAGED_TO_DIRECT[$run->action_type] !== $directTool) {
-                $run->releaseClaim();
+                $run->releaseClaimTo($releaseState);
 
                 return new TechnicianApprovalResult('gate_declined');
             }
@@ -225,27 +256,27 @@ class StaffTacticalActionToolExecutor
             $asset = Asset::with('tacticalAsset')->find((int) ($payload['asset_id'] ?? 0));
             $ticket = Ticket::find((int) ($payload['ticket_id'] ?? 0));
             if (! $asset || ! $ticket || (int) $ticket->client_id !== (int) $run->client_id) {
-                $run->releaseClaim();
+                $run->releaseClaimTo($releaseState);
 
                 return new TechnicianApprovalResult('gate_declined');
             }
 
             if (! $ticket->assets()->where('assets.id', $asset->id)->exists()) {
-                $run->releaseClaim();
+                $run->releaseClaimTo($releaseState);
 
                 return new TechnicianApprovalResult('gate_declined');
             }
 
             if ($error = $this->linkedAgentError($asset)) {
                 $this->auditAttempt($run->action_type, 'rejected', (int) $run->client_id, $ticket, $asset, $run->content_hash, $error, $this->approverLabel($approverId), $run->id, $approverId);
-                $run->releaseClaim();
+                $run->releaseClaimTo($releaseState);
 
                 return new TechnicianApprovalResult('gate_declined');
             }
 
             if (TechnicianConfig::killSwitchEngaged()) {
                 $this->auditAttempt($run->action_type, 'blocked', (int) $run->client_id, $ticket, $asset, $run->content_hash, 'Technician kill-switch engaged; staged Tactical action refused.', $this->approverLabel($approverId), $run->id, $approverId);
-                $run->releaseClaim();
+                $run->releaseClaimTo($releaseState);
 
                 return new TechnicianApprovalResult('gate_declined');
             }
@@ -253,14 +284,14 @@ class StaffTacticalActionToolExecutor
             $payload = $this->revalidateStagedPayload($payload, $asset);
             if (isset($payload['error'])) {
                 $this->auditAttempt($run->action_type, 'rejected', (int) $run->client_id, $ticket, $asset, $run->content_hash, (string) $payload['error'], $this->approverLabel($approverId), $run->id, $approverId);
-                $run->releaseClaim();
+                $run->releaseClaimTo($releaseState);
 
                 return new TechnicianApprovalResult('gate_declined');
             }
 
             if ($this->cooldownActive($directTool, $asset, $ticket, self::COOLDOWNS[$directTool] ?? 60)) {
                 $this->auditAttempt($run->action_type, 'blocked', (int) $run->client_id, $ticket, $asset, $run->content_hash, 'Tactical staged action cooldown active; approval refused before upstream call.', $this->approverLabel($approverId), $run->id, $approverId);
-                $run->releaseClaim();
+                $run->releaseClaimTo($releaseState);
 
                 return new TechnicianApprovalResult('gate_declined');
             }
@@ -305,7 +336,7 @@ class StaffTacticalActionToolExecutor
             }
 
             if (! $result->isOk()) {
-                $run->releaseClaim();
+                $run->releaseClaimTo($releaseState);
 
                 return new TechnicianApprovalResult('gate_declined');
             }
@@ -314,7 +345,7 @@ class StaffTacticalActionToolExecutor
 
             return new TechnicianApprovalResult('executed');
         } catch (\Throwable $e) {
-            $run->releaseClaim();
+            $run->releaseClaimTo($releaseState);
 
             throw $e;
         }

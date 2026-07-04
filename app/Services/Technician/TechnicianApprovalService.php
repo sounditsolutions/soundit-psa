@@ -17,15 +17,6 @@ use App\Services\TicketService;
 use App\Support\TechnicianConfig;
 use Illuminate\Support\Facades\Log;
 
-/** The outcome of an approve action. status ∈ {sent, closed, published, merged, already_handled, gate_declined}. */
-final class TechnicianApprovalResult
-{
-    public function __construct(
-        public readonly string $status,
-        public readonly ?int $noteId = null,
-    ) {}
-}
-
 /**
  * Turns a held draft into a real, human-approved, single-use client send (Plan 1B).
  * The run-state CAS latch (claimForExecution) makes it exactly-once even on a
