@@ -2,9 +2,12 @@
 
 namespace App\Services\Tactical;
 
+use App\Enums\TechnicianRunState;
+use App\Jobs\SweepQueuedActionsForAgent;
 use App\Models\Asset;
 use App\Models\Client;
 use App\Models\TacticalAsset;
+use App\Models\TechnicianRun;
 use App\Services\SyncResult;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
@@ -83,9 +86,37 @@ class TacticalDeviceSyncService
             $update['checks_total'] = (int) $agent['checks']['total'];
         }
 
+        $wasOnline = $ta->status === 'online';
         $ta->update($update);
 
+        // Offline→online: run any actions queued for this device (bd psa-xr84).
+        if (! $wasOnline && $ta->status === 'online') {
+            $this->dispatchSweepIfQueued((string) $ta->agent_id);
+        }
+
         return DetailSyncResult::success($ta->status, $ta->synced_at);
+    }
+
+    /**
+     * Dispatch a reconnect sweep for an agent that just came online — but only if it
+     * actually has unexpired queued actions, so a routine reconnect doesn't spawn a
+     * no-op job. The sweep itself runs off this path (queued job).
+     */
+    private function dispatchSweepIfQueued(string $agentId): void
+    {
+        if ($agentId === '') {
+            return;
+        }
+
+        $hasQueued = TechnicianRun::query()
+            ->where('state', TechnicianRunState::QueuedOffline->value)
+            ->where('queued_agent_id', $agentId)
+            ->where('expires_at', '>', now())
+            ->exists();
+
+        if ($hasQueued) {
+            SweepQueuedActionsForAgent::dispatch($agentId);
+        }
     }
 
     public function syncDevices(?int $clientId = null): SyncResult
@@ -118,6 +149,18 @@ class TacticalDeviceSyncService
 
         $seenAgentIds = [];
 
+        // Pre-sync status of agents that have queued offline actions, so an
+        // offline→online flip in this run can dispatch their queue (bd psa-xr84)
+        // without a per-agent lookup inside the loop.
+        $queuedAgentStatus = TacticalAsset::query()
+            ->whereIn('agent_id', TechnicianRun::query()
+                ->where('state', TechnicianRunState::QueuedOffline->value)
+                ->where('expires_at', '>', now())
+                ->whereNotNull('queued_agent_id')
+                ->distinct()
+                ->pluck('queued_agent_id'))
+            ->pluck('status', 'agent_id');
+
         foreach ($agents as $agent) {
             $agentId = $agent['agent_id'] ?? null;
             if (! $agentId) {
@@ -148,6 +191,11 @@ class TacticalDeviceSyncService
                 $result->created++;
             } else {
                 $result->updated++;
+            }
+
+            // Offline→online flip for an agent with queued actions → run its queue.
+            if (isset($queuedAgentStatus[$agentId]) && $queuedAgentStatus[$agentId] !== 'online' && $tacticalAsset->status === 'online') {
+                SweepQueuedActionsForAgent::dispatch((string) $agentId);
             }
 
             // Link to PSA asset if not already linked
