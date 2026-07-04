@@ -170,10 +170,18 @@ class McpStaffController extends Controller
         'set_primary_asset_user',
     ];
 
-    /** PSA read surface (P3) — grant-gated client-scoped contract reads, executed via AssistantToolExecutor. */
+    /**
+     * PSA read surface (P3+) — grant-gated reads executed via AssistantToolExecutor.
+     * list_client_contracts/get_contract are client-scoped; the email-item and
+     * phone-call tools are cross-client, with client_id as an optional filter.
+     */
     private const PSA_READ_TOOLS = [
         'list_client_contracts',
         'get_contract',
+        'list_email_items',
+        'get_email_item',
+        'list_phone_calls',
+        'get_phone_call',
     ];
 
     private const BODY_LENGTH_AUDIT_TOOLS = [
@@ -289,7 +297,7 @@ class McpStaffController extends Controller
             ],
             McpToolRegistry::psaActionTools(),
             McpToolRegistry::psaRecordsTools(),
-            McpToolRegistry::psaContractReadTools(),
+            McpToolRegistry::psaReadTools(),
             TacticalConfig::isConfigured() ? McpToolRegistry::tacticalAdminTools() : [],
             ChetDataSurfaceTools::generalTools(),
             OperatorBridgeTools::definitions(),
