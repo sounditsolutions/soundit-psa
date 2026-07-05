@@ -114,6 +114,29 @@ class TeamsPersonaRegistryTest extends TestCase
         $this->assertFalse($noSecret->fresh()->hasSecret());
     }
 
+    public function test_secret_is_hidden_from_array_and_json_serialization(): void
+    {
+        $persona = $this->makePersona([
+            'persona_key' => 'gus',
+            'bot_app_id' => 'serialize-app',
+            'bot_client_secret' => 'LEAKME-PLAINTEXT',
+        ]);
+
+        // The `encrypted` cast DECRYPTS on toArray()/toJson(), so without a
+        // $hidden guard the plaintext secret leaks through model serialization.
+        // No P1 path serializes a persona, but the P2 CRUD/wizard is exactly
+        // where response()->json($persona) / @json / ->toArray() tends to
+        // appear — defense-in-depth for the cardinal "no reveal, ever" rule.
+        $this->assertArrayNotHasKey('bot_client_secret', $persona->toArray());
+        $this->assertStringNotContainsString('LEAKME-PLAINTEXT', $persona->toJson());
+        $this->assertStringNotContainsString('LEAKME-PLAINTEXT', (string) json_encode($persona));
+
+        // The guard must not disturb the internal presence check (raw column,
+        // no decrypt) or the serialization of SAFE fields.
+        $this->assertTrue($persona->hasSecret());
+        $this->assertArrayHasKey('display_name', $persona->toArray());
+    }
+
     public function test_label_existence_validation(): void
     {
         McpToken::create(['label' => 'gus-mcp', 'token_hash' => hash('sha256', 'gus-mcp-token')]);

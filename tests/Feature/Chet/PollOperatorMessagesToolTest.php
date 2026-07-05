@@ -69,6 +69,18 @@ class PollOperatorMessagesToolTest extends TestCase
         $this->assertSame((string) OperatorInbox::max('id'), $out['next_cursor']);
     }
 
+    public function test_negative_cursor_is_clamped_to_zero(): void
+    {
+        // A negative cursor never acks (the `$cursor > 0` guard already holds),
+        // but it must not echo back as a negative next_cursor on an empty inbox
+        // — mirror poll_signals' max(0, …) so the tool's cursor contract is
+        // non-negative regardless of caller input.
+        $out = $this->poll(['cursor' => -7]);
+
+        $this->assertCount(0, $out['messages']);
+        $this->assertSame('0', $out['next_cursor']);
+    }
+
     public function test_operator_message_text_is_wrapped_in_an_untrusted_prompt_fence(): void
     {
         $this->seedMessage([

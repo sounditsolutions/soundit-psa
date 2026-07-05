@@ -196,7 +196,7 @@ class OperatorBridgeToolExecutor
         $persona = TeamsPersonaConfig::byTokenLabel($tokenLabel);
         $lane = $persona?->persona_key;
 
-        $cursor = isset($input['cursor']) && is_numeric($input['cursor']) ? (int) $input['cursor'] : 0;
+        $cursor = isset($input['cursor']) && is_numeric($input['cursor']) ? max(0, (int) $input['cursor']) : 0;
 
         if ($cursor > 0) {
             $this->laneScope(OperatorInbox::query(), $lane)

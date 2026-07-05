@@ -29,6 +29,19 @@ class TeamsPersona extends Model
         'enabled',
     ];
 
+    /**
+     * The `encrypted` cast DECRYPTS bot_client_secret on toArray()/toJson(), so
+     * hiding it from array/JSON serialization is the only guard against a
+     * casual response()->json($persona) / @json / ->toArray() leaking the
+     * plaintext client secret. Defense-in-depth for the "no reveal, ever"
+     * invariant ahead of the P2 provisioning wizard. Internal reads
+     * (hasSecret() via getRawOriginal, TeamsBotClient::token() via property
+     * access) are unaffected — $hidden only touches serialization.
+     */
+    protected $hidden = [
+        'bot_client_secret',
+    ];
+
     protected function casts(): array
     {
         return [
