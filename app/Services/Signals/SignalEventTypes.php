@@ -37,6 +37,16 @@ class SignalEventTypes
                 'core' => false,
                 'routable' => true,
             ],
+            'intake.email_unresolved' => [
+                'label' => 'Intake email unresolved',
+                'core' => false,
+                'routable' => true,
+            ],
+            'intake.call_transcribed' => [
+                'label' => 'Intake call transcribed',
+                'core' => false,
+                'routable' => true,
+            ],
             'agent.flag_attention' => [
                 'label' => 'Agent flagged for attention',
                 'core' => true,
