@@ -12,7 +12,9 @@ dolt.auto-start: false
 export.auto: false
 gc.endpoint_origin: inherited_city
 gc.endpoint_status: verified
-
+dolt:
+    disable-event-flush: true
+backup.enabled: false
 # Use no-db mode: JSONL-only, no Dolt database
 # When true, bd will use .beads/issues.jsonl as the source of truth
 # no-db: false
@@ -57,3 +59,6 @@ gc.endpoint_status: verified
 # - linear.api-key
 # - github.org
 # - github.repo
+types.custom: molecule,convoy,message,event,gate,merge-request,agent,role,rig,session,spec,convergence,step
+sync:
+    remote: "git+ssh://git@github.com/sounditsolutions/soundit-psa.git"
