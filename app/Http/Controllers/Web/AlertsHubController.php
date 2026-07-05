@@ -171,7 +171,7 @@ class AlertsHubController extends Controller
     {
         [$attributes, $steps] = $this->validatedRoutePayload($request);
 
-        DB::transaction(function () use ($request, $attributes, $steps): void {
+        $route = DB::transaction(function () use ($request, $attributes, $steps): SignalRoute {
             $route = SignalRoute::create([
                 ...$attributes,
                 'enabled' => false,
@@ -185,10 +185,20 @@ class AlertsHubController extends Controller
                 $route,
                 $this->routeChanges($attributes, $steps),
             );
+
+            return $route;
         });
 
-        return redirect()->route('settings.alerts.index')
+        return redirect()->route('settings.alerts.routes.show', $route)
             ->with('success', 'Route created.');
+    }
+
+    public function createRoute()
+    {
+        return view('settings.alerts.routes.create', [
+            'routeDestinations' => SignalDestination::query()->orderBy('label')->get(['id', 'label', 'type']),
+            'eventTypeGroups' => $this->eventTypeGroups(),
+        ]);
     }
 
     public function showRoute(SignalRoute $route)
