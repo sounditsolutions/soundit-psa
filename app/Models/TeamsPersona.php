@@ -2,6 +2,8 @@
 
 namespace App\Models;
 
+use App\Support\TeamsBotConfig;
+use App\Support\TeamsPersonaConfig;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -54,12 +56,29 @@ class TeamsPersona extends Model
     protected static function booted(): void
     {
         static::saving(function (TeamsPersona $persona) {
-            if (filled($persona->mcp_token_label) && ! McpToken::where('label', $persona->mcp_token_label)->exists()) {
+            if ($persona->isDirty('mcp_token_label') && filled($persona->mcp_token_label) && ! McpToken::where('label', $persona->mcp_token_label)->exists()) {
                 throw new InvalidArgumentException(
                     "mcp_token_label [{$persona->mcp_token_label}] does not match any McpToken.label."
                 );
             }
+
+            // A persona may never claim the legacy single-bot's App ID while
+            // enabled — two rows routing on the same App ID is an unresolvable
+            // JWT-audience collision. Reject (not warn) with the clean migration
+            // path: clear the legacy setting first, then register the persona.
+            $legacy = TeamsBotConfig::appId();
+            if ($persona->enabled && $legacy !== null && $persona->bot_app_id === $legacy) {
+                throw new InvalidArgumentException(
+                    "This persona's bot_app_id [{$legacy}] is already the legacy Teams bot. Clear the legacy teams_bot_app_id setting first, then register this persona."
+                );
+            }
         });
+
+        // TeamsPersonaConfig::enabled() memoizes per-request; bust it on every
+        // create/update/delete so no caller anywhere in the same request can
+        // observe a stale pre-change snapshot.
+        static::saved(fn () => TeamsPersonaConfig::flush());
+        static::deleted(fn () => TeamsPersonaConfig::flush());
     }
 
     /**

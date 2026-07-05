@@ -9,6 +9,7 @@ use App\Models\User;
 use App\Services\Teams\ResolvedSender;
 use App\Services\Teams\TeamsIdentityResolver;
 use App\Support\TeamsBotConfig;
+use App\Support\TeamsPersonaConfig;
 use Firebase\JWT\JWT;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Request;
@@ -41,6 +42,16 @@ class InboundAudBindingTest extends TestCase
 {
     use RefreshDatabase;
 
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        // TeamsPersonaConfig::enabled() memoizes in a bare PHP static, which
+        // (unlike the DB) RefreshDatabase does not reset between test methods
+        // in the same process — flush it explicitly so tests are order-independent.
+        TeamsPersonaConfig::flush();
+    }
+
     // ── shared fixtures ──────────────────────────────────────────────────────
 
     /** A Bot Framework activity, following TeamsIdentityResolverTest's shape. */
@@ -55,7 +66,12 @@ class InboundAudBindingTest extends TestCase
         ];
     }
 
-    /** Mirrors TeamsPersonaRegistryTest's fixture shape. */
+    /**
+     * Mirrors TeamsPersonaRegistryTest's fixture shape. Credential-complete by
+     * default (tenant_id + bot_client_secret) — psa-7drx T1 tightened
+     * TeamsPersonaConfig::active() (which byAppId()/appIds()/forAppId() all
+     * resolve through) to require enabled AND a full credential set.
+     */
     private function makePersona(array $overrides = []): TeamsPersona
     {
         return TeamsPersona::create(array_merge([
@@ -63,6 +79,7 @@ class InboundAudBindingTest extends TestCase
             'display_name' => 'Gus',
             'bot_app_id' => 'persona-app',
             'tenant_id' => 'persona-tenant',
+            'bot_client_secret' => 'persona-secret',
             'enabled' => true,
         ], $overrides));
     }

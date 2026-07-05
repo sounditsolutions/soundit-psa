@@ -18,6 +18,7 @@ use App\Services\Teams\TeamsBotClient;
 use App\Services\Teams\TeamsReplyService;
 use App\Services\Technician\Notify\TeamsNotifier;
 use App\Support\TeamsBotConfig;
+use App\Support\TeamsPersonaConfig;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
@@ -46,6 +47,13 @@ class PerPersonaOutboundTest extends TestCase
     {
         parent::setUp();
         Cache::flush();
+
+        // TeamsPersonaConfig::enabled() memoizes in a bare PHP static, which
+        // (unlike the DB) RefreshDatabase does not reset between test methods
+        // in the same process — flush it explicitly, same rationale as the
+        // Cache::flush() above.
+        TeamsPersonaConfig::flush();
+
         Setting::setValue('teams_bot_app_id', 'legacy-app-id');
         Setting::setValue('teams_bot_tenant_id', 'legacy-tenant-id');
         TeamsBotConfig::setClientSecret('legacy-secret');
