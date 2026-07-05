@@ -14,6 +14,7 @@ use App\Services\Technician\PromptFence;
 use App\Support\TeamsBotConfig;
 use App\Support\TeamsPersonaConfig;
 use App\Support\TechnicianConfig;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\DB;
 
 class OperatorBridgeToolExecutor
@@ -31,7 +32,7 @@ class OperatorBridgeToolExecutor
             'find_staff' => $this->findStaff($input),
             'get_staff' => $this->getStaff($input),
             'post_to_operator' => $this->postToOperator($input, $tokenLabel),
-            'poll_operator_messages' => $this->pollOperatorMessages($input),
+            'poll_operator_messages' => $this->pollOperatorMessages($input, $tokenLabel),
             'poll_signals' => $this->pollSignals($input, $tokenLabel),
             default => ['error' => "Unknown tool: {$name}"],
         };
@@ -173,26 +174,38 @@ class OperatorBridgeToolExecutor
         return rtrim($stripped ?? $message);
     }
 
-    /** @return array<string, mixed> */
-    private function pollOperatorMessages(array $input): array
+    /**
+     * $tokenLabel is the AUTHENTICATED McpStaffToken's label (see McpStaffController),
+     * never anything from $input — the persona LANE is derived server-side from it,
+     * the SAME trust boundary postToOperator() uses for outbound. An absent/empty
+     * label fails CLOSED (mirrors pollSignals): a scoped poll tool must never
+     * silently fall back to an undifferentiated drain. A label that authenticates
+     * but matches no ENABLED persona (TeamsPersonaConfig::byTokenLabel() is
+     * enabled()-scoped) resolves the LEGACY lane (persona IS NULL) — byte-identical
+     * to the pre-P1 single-lane behavior.
+     *
+     * @return array<string, mixed>
+     */
+    private function pollOperatorMessages(array $input, ?string $tokenLabel = null): array
     {
-        $conversationId = TeamsBotConfig::chetConversationId();
-        $cursor = isset($input['cursor']) && is_numeric($input['cursor']) ? (int) $input['cursor'] : 0;
-
-        if ($conversationId === null) {
-            return ['messages' => [], 'next_cursor' => (string) $cursor];
+        $tokenLabel = trim((string) $tokenLabel);
+        if ($tokenLabel === '') {
+            return ['error' => 'poll_operator_messages requires a scoped token'];
         }
 
+        $persona = TeamsPersonaConfig::byTokenLabel($tokenLabel);
+        $lane = $persona?->persona_key;
+
+        $cursor = isset($input['cursor']) && is_numeric($input['cursor']) ? (int) $input['cursor'] : 0;
+
         if ($cursor > 0) {
-            OperatorInbox::query()
-                ->where('conversation_id', $conversationId)
+            $this->laneScope(OperatorInbox::query(), $lane)
                 ->where('id', '<=', $cursor)
                 ->whereNull('delivered_at')
                 ->update(['delivered_at' => now()]);
         }
 
-        $rows = OperatorInbox::with('sender:id,name')
-            ->where('conversation_id', $conversationId)
+        $rows = $this->laneScope(OperatorInbox::with('sender:id,name'), $lane)
             ->whereNull('delivered_at')
             ->orderBy('id')
             ->limit(50)
@@ -216,6 +229,20 @@ class OperatorBridgeToolExecutor
             'messages' => $messages,
             'next_cursor' => $rows->isNotEmpty() ? (string) $rows->last()->id : (string) $cursor,
         ];
+    }
+
+    /**
+     * The SAME lane filter for both the ack UPDATE and the SELECT, so the two
+     * can never diverge. A null lane (legacy) MUST use whereNull — `where('persona',
+     * null)` compiles to `= NULL`, which matches zero rows in SQL and would
+     * silently break the legacy lane rather than draining it.
+     *
+     * @param  Builder<OperatorInbox>  $query
+     * @return Builder<OperatorInbox>
+     */
+    private function laneScope(Builder $query, ?string $lane): Builder
+    {
+        return $lane === null ? $query->whereNull('persona') : $query->where('persona', $lane);
     }
 
     /** @return array<string, mixed> */

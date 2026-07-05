@@ -128,10 +128,16 @@ class PollOperatorMessagesToolTest extends TestCase
         $this->assertSame((string) $c->id, $out['next_cursor']);
     }
 
-    public function test_scoped_to_chet_conversation_only(): void
+    public function test_scoped_to_the_legacy_persona_lane_only(): void
     {
+        // Teams AI-Staff Personas P1 Task 4: the poll is scoped by PERSONA LANE
+        // (operator_inbox.persona), not conversation_id — conversation-id
+        // scoping was retired because the persona lane subsumes it. A legacy
+        // (null-persona) token drains only `persona IS NULL` rows, regardless
+        // of conversation_id; a persona-laned row is invisible to it even when
+        // it shares no other distinguishing feature.
         $this->seedMessage();
-        $this->seedMessage(['conversation_id' => 'someone-else']);
+        $this->seedMessage(['conversation_id' => 'someone-else', 'persona' => 'gus']);
 
         $out = $this->poll();
         $this->assertCount(1, $out['messages']);

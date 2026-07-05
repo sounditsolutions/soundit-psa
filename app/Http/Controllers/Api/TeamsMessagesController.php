@@ -10,6 +10,7 @@ use App\Services\Teams\TeamsAmbientService;
 use App\Services\Teams\TeamsIdentityResolver;
 use App\Services\Teams\TeamsReplyService;
 use App\Support\TeamsBotConfig;
+use App\Support\TeamsPersonaConfig;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -49,8 +50,13 @@ class TeamsMessagesController extends Controller
         // resolution to the SIGNED claim rather than the activity body.
         $sender = $this->resolver->resolve($activity, $request->attributes->get('teams_bot_app_id'));
 
-        if ($this->routedToChet($activity)) {
-            if (! TeamsBotConfig::enabled()) {
+        if ($this->routedToPersona($sender, $activity)) {
+            // A resolved, ENABLED persona is its own gate — the shared
+            // teams_bot_enabled toggle only governs the legacy single-bot path
+            // (mirrors OperatorDelivery::send()'s persona-is-its-own-gate rule,
+            // Task 3 Cluster B).
+            $personaActive = $sender?->personaKey !== null;
+            if (! ($personaActive || TeamsBotConfig::enabled())) {
                 Log::info('[Teams Bot] Chet-routed turn ignored because Teams bot is disabled', [
                     'conversation_id' => $activity['conversation']['id'] ?? null,
                 ]);
@@ -85,18 +91,32 @@ class TeamsMessagesController extends Controller
         return response()->json(['status' => 'ok']);
     }
 
-    private function routedToChet(array $activity): bool
+    /**
+     * True iff this activity belongs in an OPERATOR lane — either a resolved
+     * persona's OWN operator conversation, or (no persona) the shared legacy
+     * Chet conversation. Symmetric with Task 3's outbound fail-closed rule
+     * (postToOperator(): an ENABLED persona with incomplete/mismatched targets
+     * DROPS rather than falling back to the shared legacy lane) — a resolved
+     * persona whose conversation doesn't match returns false outright here
+     * too, it never falls through to the legacy check below.
+     */
+    private function routedToPersona(?ResolvedSender $sender, array $activity): bool
     {
-        if (! TeamsBotConfig::chetRoutingEnabled()) {
+        $conversationId = $activity['conversation']['id'] ?? null;
+        if (! is_string($conversationId) || $conversationId === '') {
             return false;
         }
 
-        $chetConversationId = TeamsBotConfig::chetConversationId();
-        $conversationId = $activity['conversation']['id'] ?? null;
+        if ($sender?->personaKey !== null) {
+            $persona = TeamsPersonaConfig::byKey($sender->personaKey);
 
-        return $chetConversationId !== null
-            && is_string($conversationId)
-            && $conversationId === $chetConversationId;
+            return $persona !== null
+                && ($persona->conversation_refs['conversation_id'] ?? null) === $conversationId;
+        }
+
+        return TeamsBotConfig::chetRoutingEnabled()
+            && TeamsBotConfig::chetConversationId() !== null
+            && $conversationId === TeamsBotConfig::chetConversationId();
     }
 
     private function enqueueOperatorMessage(ResolvedSender $sender, array $activity): void
@@ -105,7 +125,10 @@ class TeamsMessagesController extends Controller
 
         OperatorInbox::create([
             'conversation_id' => (string) ($activity['conversation']['id'] ?? ''),
+            'persona' => $sender->personaKey,
+            'kind' => 'human',
             'sender_user_id' => $senderUserId,
+            'sender_persona' => null,
             'text' => $this->textSanitizer->sanitizeForPrompt($this->stripMention((string) ($activity['text'] ?? ''))),
             'ts' => $this->activityTimestamp($activity),
             'direct_mention' => $this->botMentioned($activity),
