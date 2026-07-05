@@ -289,6 +289,21 @@ class IntegrationsController extends Controller
         $teamsBotBanter = \App\Support\TeamsBotConfig::ambientBanter();
         $teamsBotCooldown = \App\Support\TeamsBotConfig::ambientCooldownSeconds();
 
+        // AI Staff roster (Teams AI-Staff Personas P1 Task 5) — read-only stub.
+        // SAFE fields only; bot_client_secret must never reach the view. Personas
+        // are hand-registered scaffolds in P1 — the provisioning wizard (create/
+        // edit/delete) arrives in P2.
+        $teamsPersonas = \App\Models\TeamsPersona::orderBy('display_name')->get()
+            ->map(fn (\App\Models\TeamsPersona $p) => [
+                'persona_key' => $p->persona_key,
+                'display_name' => $p->display_name,
+                'role_blurb' => $p->role_blurb,
+                'enabled' => (bool) $p->enabled,
+                'has_secret' => $p->hasSecret(),
+                'mcp_token_label' => $p->mcp_token_label,
+                'bot_app_id' => $p->bot_app_id,
+            ]);
+
         // Phase 2: emergency / escalation / availability / SMS view vars
         $technicianEscalationChain = \App\Support\TechnicianConfig::escalationChain();
         $technicianEscalationTimeout = \App\Support\TechnicianConfig::escalationTimeoutMinutes();
@@ -358,6 +373,7 @@ class IntegrationsController extends Controller
             'technicianAvailability', 'technicianOperatorPhones', 'activeUsers',
             'teamsBotAppId', 'teamsBotTenantId', 'teamsBotSecretSet', 'teamsBotConfigured', 'teamsBotEnabled',
             'teamsBotAmbientEnabled', 'teamsBotEagerness', 'teamsBotBanter', 'teamsBotCooldown',
+            'teamsPersonas',
             'screenconnectBaseUrl', 'screenconnectWebhookSecret', 'screenconnectEnabled', 'screenconnectConfigured',
             'tacticalConfigured', 'tacticalApiUrl', 'tacticalWebUrl', 'tacticalConnected', 'tacticalEnabled',
             'tacticalWebhookLastAt', 'tacticalWebhookProcessed24h', 'tacticalWebhookFailed',

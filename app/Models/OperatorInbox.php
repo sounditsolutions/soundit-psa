@@ -11,7 +11,10 @@ class OperatorInbox extends Model
 
     protected $fillable = [
         'conversation_id',
+        'persona',
+        'kind',
         'sender_user_id',
+        'sender_persona',
         'text',
         'ts',
         'direct_mention',

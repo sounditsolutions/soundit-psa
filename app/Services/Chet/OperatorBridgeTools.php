@@ -66,7 +66,7 @@ class OperatorBridgeTools
             ],
             [
                 'name' => 'poll_operator_messages',
-                'description' => 'Drain inbound operator messages for the configured operator Teams chat. Pass cursor equal to the highest message id whose processing was confirmed; the server acks rows up to that cursor and returns the next still-undelivered batch plus next_cursor.',
+                'description' => 'Drain inbound operator messages for the operator Teams chat, scoped to the calling token\'s own persona lane (or the legacy lane for an unlabeled/legacy token) — never another persona\'s messages. Pass cursor equal to the highest message id whose processing was confirmed; the server acks rows up to that cursor and returns the next still-undelivered batch plus next_cursor.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [

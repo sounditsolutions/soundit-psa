@@ -69,6 +69,18 @@ class PollOperatorMessagesToolTest extends TestCase
         $this->assertSame((string) OperatorInbox::max('id'), $out['next_cursor']);
     }
 
+    public function test_negative_cursor_is_clamped_to_zero(): void
+    {
+        // A negative cursor never acks (the `$cursor > 0` guard already holds),
+        // but it must not echo back as a negative next_cursor on an empty inbox
+        // — mirror poll_signals' max(0, …) so the tool's cursor contract is
+        // non-negative regardless of caller input.
+        $out = $this->poll(['cursor' => -7]);
+
+        $this->assertCount(0, $out['messages']);
+        $this->assertSame('0', $out['next_cursor']);
+    }
+
     public function test_operator_message_text_is_wrapped_in_an_untrusted_prompt_fence(): void
     {
         $this->seedMessage([
@@ -128,10 +140,21 @@ class PollOperatorMessagesToolTest extends TestCase
         $this->assertSame((string) $c->id, $out['next_cursor']);
     }
 
-    public function test_scoped_to_chet_conversation_only(): void
+    public function test_scoped_to_the_legacy_persona_lane_only(): void
     {
+        // Teams AI-Staff Personas P1 Task 4: the poll is scoped by PERSONA LANE
+        // (operator_inbox.persona), not conversation_id — conversation-id
+        // scoping was retired because the persona lane subsumes it. A legacy
+        // (null-persona) token drains only `persona IS NULL` rows, regardless
+        // of conversation_id; a persona-laned row is invisible to it even when
+        // it shares no other distinguishing feature. The persona row below
+        // intentionally shares the SAME conversation_id as the legacy row so
+        // the two differ ONLY by lane — isolating persona-scoping from
+        // conversation-scoping (Task 5 housekeeping: previously the persona
+        // row also used a different conversation_id, so the test couldn't
+        // tell which axis was doing the work).
         $this->seedMessage();
-        $this->seedMessage(['conversation_id' => 'someone-else']);
+        $this->seedMessage(['conversation_id' => 'chet-conv-1', 'persona' => 'gus']);
 
         $out = $this->poll();
         $this->assertCount(1, $out['messages']);

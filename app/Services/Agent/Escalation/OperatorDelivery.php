@@ -2,6 +2,7 @@
 
 namespace App\Services\Agent\Escalation;
 
+use App\Models\TeamsPersona;
 use App\Models\User;
 use App\Services\EmailService;
 use App\Services\Teams\TeamsBotClient;
@@ -51,23 +52,46 @@ class OperatorDelivery
         return TeamsText::escape($text);
     }
 
+    /**
+     * $persona (Teams AI-Staff Personas P1): when non-null, the bot chunk send is
+     * scoped to THAT persona's own bot credentials via TeamsBotClient::forPersona()
+     * — and its mere presence is its own enabled-gate (the only two sources that
+     * ever produce a non-null $persona here — TeamsPersonaConfig::byTokenLabel()/
+     * byKey() — already filter to enabled()=true rows), independent of the global
+     * teams_bot_enabled toggle. Callers that omit $persona (the pre-P1 call
+     * sites) are completely unaffected: null is the default and the legacy
+     * TeamsBotConfig::enabled() gate still applies exactly as before.
+     */
     public function send(
         ?User $recipient,
         ?string $conversationId,
         ?string $serviceUrl,
         string $subject,
         string $body,
+        ?TeamsPersona $persona = null,
     ): OperatorDeliveryResult {
         $postedToChat = false;
         $posted = false;
 
-        if (TeamsBotConfig::enabled() && $conversationId !== null && $serviceUrl !== null) {
+        if ($persona !== null && ($conversationId === null || $serviceUrl === null)) {
+            // FAIL-CLOSED: an enabled persona with incomplete conversation_refs must
+            // DROP, never fall through to the shared legacy webhook below — routing a
+            // persona's message into an unrelated channel is a cross-channel misroute.
+            // ($posted stays false; the trailing direct-to-user email fallback still runs.)
+            Log::warning('[OperatorDelivery] Persona enabled but conversation_refs incomplete - message dropped', [
+                'persona_key' => $persona->persona_key,
+            ]);
+        } elseif (($persona !== null || TeamsBotConfig::enabled()) && $conversationId !== null && $serviceUrl !== null) {
             try {
+                // Conditional (rather than an unconditional ->forPersona($persona) call)
+                // so the null-persona path never even touches forPersona() — byte-identical
+                // interaction with $this->bot, not just byte-identical net behavior.
+                $bot = $persona !== null ? $this->bot->forPersona($persona) : $this->bot;
                 $mentions = [];
                 $mentionPrefix = '';
 
                 if ($recipient?->microsoft_id !== null) {
-                    $member = $this->bot->getConversationMember($serviceUrl, $conversationId, $recipient->microsoft_id);
+                    $member = $bot->getConversationMember($serviceUrl, $conversationId, $recipient->microsoft_id);
                     if ($member !== null && isset($member['id'])) {
                         $mentionName = TeamsText::escape($recipient->name);
                         $mentionName = $mentionName !== '' ? $mentionName : 'operator';
@@ -76,7 +100,7 @@ class OperatorDelivery
                     }
                 }
 
-                $postedToChat = $this->sendBotChunks($serviceUrl, $conversationId, $body, $mentions, $mentionPrefix);
+                $postedToChat = $this->sendBotChunks($bot, $serviceUrl, $conversationId, $body, $mentions, $mentionPrefix);
                 $posted = $postedToChat;
             } catch (\Throwable $e) {
                 Log::warning('[OperatorDelivery] Bot send failed - falling back to email only', [
@@ -115,6 +139,7 @@ class OperatorDelivery
      * @param  array<int, array{mentionId: string, name: string}>  $mentions
      */
     private function sendBotChunks(
+        TeamsBotClient $bot,
         string $serviceUrl,
         string $conversationId,
         string $body,
@@ -125,7 +150,7 @@ class OperatorDelivery
         $postBodies = $this->postBodies($body, $mentionPrefix);
 
         foreach ($postBodies as $index => $postBody) {
-            $posted = $this->bot->sendMessageWithMentions(
+            $posted = $bot->sendMessageWithMentions(
                 $serviceUrl,
                 $conversationId,
                 $postBody,
