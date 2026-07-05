@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\OperatorInbox;
+use App\Models\TeamsPersona;
 use App\Services\Chet\OperatorBridgeTextSanitizer;
 use App\Services\Teams\ResolvedSender;
 use App\Services\Teams\TeamsAmbientService;
@@ -152,12 +153,28 @@ class TeamsMessagesController extends Controller
         }
 
         try {
-            $persona->forceFill([
-                'conversation_refs' => [
-                    'conversation_id' => $conversationId,
-                    'service_url' => $request->attributes->get('teams_bot_service_url'),
-                ],
-            ])->save();
+            // Atomic write-once bind. whereNull('conversation_refs') makes concurrent
+            // / Bot-Framework-redelivered first-contact turns race-safe — only the
+            // first writer matches a row, preserving the "first sender wins" backstop.
+            // Updating via the query builder (NOT forceFill on the byKey() instance,
+            // which the enabled()/active() memo holds a reference to) means a failure
+            // here can never leave a phantom in-memory conversation_id that this same
+            // request's routedToPersona() would mis-route into the operator lane.
+            $bound = TeamsPersona::whereKey($persona->id)
+                ->whereNull('conversation_refs')
+                ->update([
+                    'conversation_refs' => [
+                        'conversation_id' => $conversationId,
+                        'service_url' => $request->attributes->get('teams_bot_service_url'),
+                    ],
+                ]);
+
+            // Query-builder updates fire no model events, so the enabled()/active()
+            // memo is not auto-busted — flush explicitly on a successful bind so this
+            // same turn's routedToPersona() re-reads the freshly-persisted binding.
+            if ($bound === 1) {
+                TeamsPersonaConfig::flush();
+            }
         } catch (\Throwable $e) {
             Log::info('[Teams Bot] Persona conversation auto-capture failed (fail-soft)', [
                 'persona_key' => $sender->personaKey,

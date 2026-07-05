@@ -170,6 +170,33 @@ class PersonaConversationCaptureTest extends TestCase
         $this->assertSame(0, OperatorInbox::count(), 'conv-Z is not the personas own conversation (conv-Y) — must not enqueue');
     }
 
+    public function test_atomic_capture_matches_zero_rows_without_overwriting_or_phantom_routing(): void
+    {
+        // A persona whose conversation_refs is NON-null but carries no
+        // conversation_id — an anomalous shape that still passes the in-PHP
+        // "no conversation_id yet" guard. The atomic whereNull('conversation_refs')
+        // bind condition must therefore match ZERO rows: no overwrite. And because
+        // the write goes through the query builder (never forceFill on the byKey()
+        // instance the enabled()/active() memo holds), there is no phantom in-memory
+        // conversation_id to mis-route this same turn into the operator lane.
+        $partialRefs = ['service_url' => 'https://smba.trafficmanager.net/pre/'];
+        $persona = $this->makePersona(['conversation_refs' => $partialRefs]);
+
+        User::factory()->create(['microsoft_id' => 'aad-charlie', 'is_active' => true]);
+
+        $serviceUrl = 'https://smba.trafficmanager.net/amer/';
+        [$priv, $jwk] = $this->keypair('capture-atomic-kid');
+        $this->primeJwks($jwk);
+        $jwt = $this->sign($priv, $persona->bot_app_id, $serviceUrl, 'capture-atomic-kid');
+
+        $activity = $this->activity($persona->bot_app_id, $persona->tenant_id, 'aad-charlie', 'conv-atomic', $serviceUrl);
+
+        $this->sendActivity($jwt, $activity)->assertOk();
+
+        $this->assertSame($partialRefs, $persona->fresh()->conversation_refs, 'the atomic bind matched no rows — the existing non-null refs must be left untouched');
+        $this->assertSame(0, OperatorInbox::count(), 'no bind persisted, so this turn must not phantom-route into the persona operator lane');
+    }
+
     // ── item 8 follow-up: operator-allowlist guard on the auto-capture ───────
 
     public function test_allowlist_configured_and_sender_not_in_it_blocks_capture(): void
