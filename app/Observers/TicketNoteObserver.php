@@ -65,8 +65,15 @@ class TicketNoteObserver
             return;
         }
 
-        app(SignalHub::class)->emit('ticket.client_replied', $ticket, 'client replied', [
-            'client_id' => $ticket->client_id,
-        ]);
+        try {
+            app(SignalHub::class)->emit('ticket.client_replied', $ticket, 'client replied', [
+                'client_id' => $ticket->client_id,
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning('[TicketNoteObserver] Failed to emit client-replied signal', [
+                'note_id' => $note->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
     }
 }

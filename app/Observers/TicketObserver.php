@@ -16,6 +16,7 @@ use App\Support\T2TConfig;
 use App\Support\TechnicianConfig;
 use App\Support\TriageConfig;
 use App\Support\WikiConfig;
+use Illuminate\Support\Facades\Log;
 
 class TicketObserver
 {
@@ -24,10 +25,17 @@ class TicketObserver
      */
     public function created(Ticket $ticket): void
     {
-        app(SignalHub::class)->emit('ticket.created', $ticket, "Ticket #{$ticket->id} created", [
-            'client_id' => $ticket->client_id,
-            'priority' => $ticket->priority_order,
-        ]);
+        try {
+            app(SignalHub::class)->emit('ticket.created', $ticket, "Ticket #{$ticket->id} created", [
+                'client_id' => $ticket->client_id,
+                'priority' => $ticket->priority_order,
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning('[TicketObserver] Failed to emit ticket.created signal', [
+                'ticket_id' => $ticket->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
 
         app(NotificationService::class)->notifyTicketCreated($ticket);
 
