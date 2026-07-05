@@ -42,9 +42,12 @@ class TeamsMessagesController extends Controller
         $activity = $request->json()->all();
         $activity = is_array($activity) ? $activity : [];
 
-        // Per-person identity. Null (unknown / deactivated / cross-tenant) is already
-        // audited inside the resolver; we never act on an unresolved sender.
-        $sender = $this->resolver->resolve($activity);
+        // Per-person identity. Null (unknown / deactivated / cross-tenant / a
+        // signed-aud-vs-recipient mismatch) is already audited inside the resolver; we
+        // never act on an unresolved sender. The validated aud (P1 — Teams AI-Staff
+        // Personas) is threaded through so the resolver can bind persona/routing
+        // resolution to the SIGNED claim rather than the activity body.
+        $sender = $this->resolver->resolve($activity, $request->attributes->get('teams_bot_app_id'));
 
         if ($this->routedToChet($activity)) {
             if (! TeamsBotConfig::enabled()) {

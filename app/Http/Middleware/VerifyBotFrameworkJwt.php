@@ -22,7 +22,9 @@ use Symfony\Component\HttpFoundation\Response;
  *      (OpenID metadata → jwks_uri, cached ≥ 24h, refreshed when keys rotate);
  *   3. iss == https://api.botframework.com;
  *   4. aud == the bot's App ID (validated against the registered SET — the
- *      multi-MSP seam — not a hardcoded literal);
+ *      multi-MSP / multi-persona seam — not a hardcoded literal), matching
+ *      EXACTLY ONE registered bot (an aud intersecting more than one is
+ *      anomalous and also rejects — see matchedAudience());
  *   5. the token is within exp/nbf with industry-standard 5-minute clock skew.
  *
  * Any failure — including an UNCONFIGURED bot (mirrors VerifyTacticalWebhookKey)
@@ -30,6 +32,11 @@ use Symfony\Component\HttpFoundation\Response;
  * the Bot Framework Emulator issuer: a production endpoint accepts only the real
  * channel authority (strictly more fail-closed). There is intentionally no path
  * that disables validation.
+ *
+ * Teams AI-Staff Personas P1: the SINGLE matched App ID is surfaced as the
+ * `teams_bot_app_id` request attribute so TeamsIdentityResolver can bind persona
+ * resolution to this SIGNED claim rather than the activity body's
+ * (attacker-influenceable) recipient.id — see TeamsIdentityResolver::resolve().
  */
 class VerifyBotFrameworkJwt
 {
@@ -79,7 +86,8 @@ class VerifyBotFrameworkJwt
             return $this->reject($request, 'bad issuer');
         }
 
-        if (! $this->audienceMatches($claims->aud ?? null, $appIds)) {
+        $matchedAppId = $this->matchedAudience($claims->aud ?? null, $appIds);
+        if ($matchedAppId === null) {
             return $this->reject($request, 'bad audience');
         }
 
@@ -92,6 +100,13 @@ class VerifyBotFrameworkJwt
         // case (camelCase kept as a fallback) so the pin doesn't silently fail closed.
         $serviceUrlClaim = $claims->serviceurl ?? $claims->serviceUrl ?? null;
         $request->attributes->set('teams_bot_service_url', is_string($serviceUrlClaim) ? $serviceUrlClaim : null);
+
+        // Surface the SINGLE matched App ID (Teams AI-Staff Personas P1 — the
+        // multi-bot seam). With appIds() now a SET, this is the only trustworthy
+        // signal for WHICH registered bot the token is for; TeamsIdentityResolver
+        // binds persona/routing resolution to this value rather than the activity
+        // body's (attacker-influenceable) recipient.id.
+        $request->attributes->set('teams_bot_app_id', $matchedAppId);
 
         return $next($request);
     }
@@ -108,18 +123,28 @@ class VerifyBotFrameworkJwt
         return $token !== '' ? $token : null;
     }
 
-    /** aud may be a string (Bot Framework) or, per the JWT spec, an array. */
-    private function audienceMatches(mixed $aud, array $appIds): bool
+    /**
+     * aud may be a string (Bot Framework) or, per the JWT spec, an array. Returns the
+     * SINGLE matched App ID from the registered SET, or null when there is no match OR
+     * the match is ambiguous. An array aud intersecting MORE THAN ONE registered bot is
+     * anomalous — a legitimate Bot Connector token is audienced for exactly one App
+     * ID — so that case is also a rejection, never a "pick one" heuristic (P1's
+     * multi-bot seam is exactly why an ambiguous match here would be dangerous: it
+     * would leave WHICH bot the token is for undetermined).
+     */
+    private function matchedAudience(mixed $aud, array $appIds): ?string
     {
         if (is_string($aud)) {
-            return in_array($aud, $appIds, true);
+            return in_array($aud, $appIds, true) ? $aud : null;
         }
 
         if (is_array($aud)) {
-            return array_intersect(array_map('strval', $aud), $appIds) !== [];
+            $intersect = array_values(array_intersect(array_map('strval', $aud), $appIds));
+
+            return count($intersect) === 1 ? $intersect[0] : null;
         }
 
-        return false;
+        return null;
     }
 
     /**
