@@ -25,6 +25,7 @@ use Tests\TestCase;
  */
 class IntakeEmailEmissionsTest extends TestCase
 {
+    use InteractsWithSignalEvents;
     use RefreshDatabase;
 
     protected function setUp(): void
@@ -117,6 +118,7 @@ class IntakeEmailEmissionsTest extends TestCase
 
         $received = $this->assertSingleSignalEvent('intake.email_received');
         $this->assertStringContainsString('unresolved', $received->summary);
+        $this->assertSame(['client_id' => $client->id], $received->context);
 
         $this->assertSingleSignalEvent('intake.email_unresolved');
     }
@@ -139,7 +141,8 @@ class IntakeEmailEmissionsTest extends TestCase
 
         // Site B (E1) fires unconditionally on fallthrough; E2 is gated by the native
         // 24h notify guard, so a >24h backfill must NOT wake the unresolved feed.
-        $this->assertSingleSignalEvent('intake.email_received');
+        $received = $this->assertSingleSignalEvent('intake.email_received');
+        $this->assertSame(['client_id' => $client->id], $received->context);
         $this->assertSame(0, SignalEvent::where('type_key', 'intake.email_unresolved')->count());
     }
 
@@ -219,17 +222,5 @@ class IntakeEmailEmissionsTest extends TestCase
             'status' => TicketStatus::New,
             'priority' => TicketPriority::P3,
         ]));
-    }
-
-    private function assertSingleSignalEvent(string $typeKey): SignalEvent
-    {
-        $events = SignalEvent::query()->where('type_key', $typeKey)->get();
-
-        $this->assertSame(1, $events->count(), "Expected exactly one {$typeKey} signal event.");
-
-        /** @var SignalEvent $event */
-        $event = $events->first();
-
-        return $event;
     }
 }

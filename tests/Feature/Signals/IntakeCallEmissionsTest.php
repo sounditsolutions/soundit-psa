@@ -30,6 +30,7 @@ use Tests\TestCase;
  */
 class IntakeCallEmissionsTest extends TestCase
 {
+    use InteractsWithSignalEvents;
     use RefreshDatabase;
 
     protected function setUp(): void
@@ -158,6 +159,9 @@ class IntakeCallEmissionsTest extends TestCase
 
         // The whole point of the wrap: a SignalHub failure must NEVER flip a
         // successful transcription to Failed, and must never propagate.
+        // Proof the wrap holds: if finalizeSuccessfulTranscription's try/catch were
+        // removed, the throwing SignalHub would propagate through invoke() and error
+        // this test — reaching this assertion at all means the emit failure was swallowed.
         $this->assertSame(TranscriptionStatus::Completed, $call->fresh()->transcription_status);
         $this->assertDatabaseCount('signal_events', 0);
     }
@@ -229,17 +233,5 @@ class IntakeCallEmissionsTest extends TestCase
                 throw new \RuntimeException('boom');
             }
         });
-    }
-
-    private function assertSingleSignalEvent(string $typeKey): SignalEvent
-    {
-        $events = SignalEvent::query()->where('type_key', $typeKey)->get();
-
-        $this->assertSame(1, $events->count(), "Expected exactly one {$typeKey} signal event.");
-
-        /** @var SignalEvent $event */
-        $event = $events->first();
-
-        return $event;
     }
 }
