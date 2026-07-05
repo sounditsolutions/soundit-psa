@@ -2,6 +2,7 @@
 
 namespace App\Services\Teams;
 
+use App\Models\TeamsPersona;
 use App\Support\TeamsBotConfig;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
@@ -26,6 +27,34 @@ class TeamsBotClient
 
     /** Trusted Bot Framework channel host suffixes (exact host, or a *.suffix subdomain). */
     private const TRUSTED_HOST_SUFFIXES = ['botframework.com', 'smba.trafficmanager.net'];
+
+    /**
+     * Non-null when this instance is scoped to a Teams AI-Staff Persona (Task 3)
+     * rather than the legacy single global bot. Set ONLY via forPersona() — never
+     * mutated after construction, so the container-shared instance (injected into
+     * OperatorDelivery/TeamsReplyService) is always the legacy-scoped client.
+     */
+    private ?TeamsPersona $persona = null;
+
+    /**
+     * Return a client scoped to $persona's own bot credentials, or `$this`
+     * unchanged when $persona is null (the legacy path). Never mutates the
+     * receiver — this class is container-shared (a singleton-ish service
+     * injected into OperatorDelivery/TeamsReplyService), so a per-persona
+     * context must be a fresh clone, not an in-place config swap that would
+     * leak across requests/callers sharing the same instance.
+     */
+    public function forPersona(?TeamsPersona $persona): self
+    {
+        if ($persona === null) {
+            return $this;
+        }
+
+        $clone = clone $this;
+        $clone->persona = $persona;
+
+        return $clone;
+    }
 
     public function isTrustedServiceUrl(?string $url): bool
     {
@@ -165,16 +194,35 @@ class TeamsBotClient
     /**
      * Acquire (and cache) a Bot Framework token via the bot's SINGLE-TENANT authority
      * (AppType=SingleTenant). Mirrors GraphClient::getToken — cached for expires_in − 60s.
+     *
+     * Persona-scoped instances (see forPersona()) read the persona's own creds
+     * instead of the legacy global TeamsBotConfig singletons — dormant-safe: a
+     * persona missing any of the three required fields yields no token, mirroring
+     * TeamsBotConfig::configured()'s all-three-present gate for the legacy path.
      */
     private function token(): ?string
     {
-        if (! TeamsBotConfig::configured()) {
+        if ($this->persona !== null) {
+            $appId = $this->persona->bot_app_id;
+            $tenantId = $this->persona->tenant_id;
+            $clientSecret = $this->persona->bot_client_secret;
+
+            if (! is_string($appId) || $appId === ''
+                || ! is_string($tenantId) || $tenantId === ''
+                || ! is_string($clientSecret) || $clientSecret === '') {
+                return null;
+            }
+        } elseif (TeamsBotConfig::configured()) {
+            $appId = TeamsBotConfig::appId();
+            $tenantId = TeamsBotConfig::tenantId();
+            $clientSecret = TeamsBotConfig::clientSecret();
+        } else {
             return null;
         }
 
         // Key the cache per bot App ID so a second MSP's bot (multi-tenant product)
-        // can never be served another's token.
-        $cacheKey = self::TOKEN_CACHE_KEY.':'.TeamsBotConfig::appId();
+        // — or a second persona's bot — can never be served another's token.
+        $cacheKey = self::TOKEN_CACHE_KEY.':'.$appId;
 
         $cached = Cache::get($cacheKey);
         if (is_string($cached) && $cached !== '') {
@@ -182,11 +230,11 @@ class TeamsBotClient
         }
 
         $response = Http::asForm()->post(
-            'https://login.microsoftonline.com/'.TeamsBotConfig::tenantId().'/oauth2/v2.0/token',
+            'https://login.microsoftonline.com/'.$tenantId.'/oauth2/v2.0/token',
             [
                 'grant_type' => 'client_credentials',
-                'client_id' => TeamsBotConfig::appId(),
-                'client_secret' => TeamsBotConfig::clientSecret(),
+                'client_id' => $appId,
+                'client_secret' => $clientSecret,
                 'scope' => self::TOKEN_SCOPE,
             ],
         );

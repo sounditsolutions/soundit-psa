@@ -4,9 +4,11 @@ namespace App\Services\Teams;
 
 use App\Models\AssistantConversation;
 use App\Models\AssistantMessage;
+use App\Models\TeamsPersona;
 use App\Services\Ai\AiClient;
 use App\Support\AgentConfig;
 use App\Support\TeamsBotConfig;
+use App\Support\TeamsPersonaConfig;
 use App\Support\TechnicianConfig;
 use Illuminate\Support\Facades\Log;
 
@@ -37,18 +39,28 @@ class TeamsReplyService
     public function reply(ResolvedSender $sender, string $text, string $mspName): void
     {
         try {
+            // 0. Resolve the persona SERVER-SIDE from the signed-aud-derived personaKey
+            // (Task 2) — never from anything caller-supplied. Null for the legacy
+            // single-bot pilot, in which case every step below is byte-identical to
+            // pre-P1 behavior.
+            $persona = $sender->personaKey !== null ? TeamsPersonaConfig::byKey($sender->personaKey) : null;
+            // Conditional (rather than an unconditional ->forPersona($persona) call) so
+            // the null-persona path never even touches forPersona() — byte-identical
+            // interaction with $this->client, not just byte-identical net behavior.
+            $client = $persona !== null ? $this->client->forPersona($persona) : $this->client;
+
             // 1. Show we're working on it immediately.
-            $this->typing($sender);
+            $this->typing($sender, $client);
 
             // 2. Persist the human turn so the model sees who spoke.
-            $conversation = $this->conversation($sender);
+            $conversation = $this->conversation($sender, $persona);
             $conversation->messages()->create([
                 'role' => 'user',
                 'content' => $sender->user->name.': '.$text,
             ]);
 
             // 3-5. System prompt + recent transcript + read-only tools/executor.
-            $system = $this->systemPrompt($mspName);
+            $system = $this->systemPrompt($mspName, $persona);
             $messages = $this->history($conversation);
             // The full read-only surface (general queue tools + PSA entity lookups +
             // integration reads), minus the two mutators (stripped + executor-refused).
@@ -61,7 +73,7 @@ class TeamsReplyService
                 messages: $messages,
                 tools: $tools,
                 executor: $executor,
-                onToolCall: fn (string $tool) => $this->typing($sender),
+                onToolCall: fn (string $tool) => $this->typing($sender, $client),
                 enableCaching: true,
             );
 
@@ -70,7 +82,7 @@ class TeamsReplyService
             if ($replyText === '') {
                 $replyText = "Sorry — I couldn't come up with anything useful there.";
             }
-            $this->client->sendMessage($sender->serviceUrl, $sender->conversationId, $replyText);
+            $client->sendMessage($sender->serviceUrl, $sender->conversationId, $replyText);
 
             // 8. Persist the AI turn.
             $conversation->messages()->create([
@@ -85,24 +97,26 @@ class TeamsReplyService
     }
 
     /** Best-effort typing indicator; only when we have somewhere to send it. */
-    private function typing(ResolvedSender $sender): void
+    private function typing(ResolvedSender $sender, TeamsBotClient $client): void
     {
         if ($sender->serviceUrl !== null && $sender->conversationId !== null) {
-            $this->client->sendTyping($sender->serviceUrl, $sender->conversationId);
+            $client->sendTyping($sender->serviceUrl, $sender->conversationId);
         }
     }
 
     /**
-     * One conversation per Teams conversation, owned by the AI actor user. Keyed by
-     * the unique external_key (not title), and created via createOrFirst so a Teams
-     * retry / concurrent webhook can never split the transcript into two rows — the
-     * unique index makes the racing insert fail and re-select the winner.
+     * One conversation per Teams conversation, owned by the AI actor user — the
+     * PERSONA's own actor_user_id when one is in play, else the legacy global AI
+     * actor. Keyed by the unique external_key (not title), and created via
+     * createOrFirst so a Teams retry / concurrent webhook can never split the
+     * transcript into two rows — the unique index makes the racing insert fail
+     * and re-select the winner.
      */
-    private function conversation(ResolvedSender $sender): AssistantConversation
+    private function conversation(ResolvedSender $sender, ?TeamsPersona $persona): AssistantConversation
     {
         return AssistantConversation::createOrFirst(
             ['external_key' => 'teams:'.$sender->conversationId],
-            ['context_type' => 'teams_chat', 'user_id' => TechnicianConfig::aiActorUserId()],
+            ['context_type' => 'teams_chat', 'user_id' => $persona?->actor_user_id ?? TechnicianConfig::aiActorUserId()],
         );
     }
 
@@ -125,9 +139,9 @@ class TeamsReplyService
             ->all();
     }
 
-    private function systemPrompt(string $mspName): string
+    private function systemPrompt(string $mspName, ?TeamsPersona $persona): string
     {
-        $persona = TechnicianConfig::aiActorName();
+        $personaName = $persona?->display_name ?? TechnicianConfig::aiActorName();
 
         // Banter dial (E2b): a bit of warmth/personality when enabled — Charlie wants a
         // teammate, not a form. Tuned live via teams_ambient_banter.
@@ -135,7 +149,7 @@ class TeamsReplyService
             ? ' A little warmth and friendly personality is welcome — you are a teammate, not a form.'
             : '';
 
-        return "You are {$persona}, a helpful teammate in {$mspName}'s internal staff Teams chat. "
+        return "You are {$personaName}, a helpful teammate in {$mspName}'s internal staff Teams chat. "
             .'Be concise, friendly, and genuinely useful. You can look things up with your tools '
             ."but you cannot change anything (read-only). If you are unsure, say so.{$banter}";
     }

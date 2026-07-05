@@ -31,4 +31,9 @@ class TeamsPersonaConfig
     {
         return self::enabled()->firstWhere('mcp_token_label', $label);
     }
+
+    public static function byKey(string $personaKey): ?TeamsPersona
+    {
+        return self::enabled()->firstWhere('persona_key', $personaKey);
+    }
 }

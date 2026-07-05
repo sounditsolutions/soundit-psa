@@ -12,6 +12,7 @@ use App\Services\Agent\Escalation\OperatorDelivery;
 use App\Services\Technician\Notify\TeamsText;
 use App\Services\Technician\PromptFence;
 use App\Support\TeamsBotConfig;
+use App\Support\TeamsPersonaConfig;
 use App\Support\TechnicianConfig;
 use Illuminate\Support\Facades\DB;
 
@@ -29,7 +30,7 @@ class OperatorBridgeToolExecutor
         return match ($name) {
             'find_staff' => $this->findStaff($input),
             'get_staff' => $this->getStaff($input),
-            'post_to_operator' => $this->postToOperator($input),
+            'post_to_operator' => $this->postToOperator($input, $tokenLabel),
             'poll_operator_messages' => $this->pollOperatorMessages($input),
             'poll_signals' => $this->pollSignals($input, $tokenLabel),
             default => ['error' => "Unknown tool: {$name}"],
@@ -76,8 +77,17 @@ class OperatorBridgeToolExecutor
         return $this->serializeStaff($user);
     }
 
-    /** @return array<string, mixed> */
-    private function postToOperator(array $input): array
+    /**
+     * $tokenLabel is the AUTHENTICATED McpStaffToken's label (see McpStaffController),
+     * never anything from $input — the persona is derived server-side from it, the
+     * SAME trust boundary Task 2 established for inbound (signed-aud -> personaKey).
+     * An absent or unrecognized label resolves NO persona (TeamsPersonaConfig::
+     * byTokenLabel() is enabled()-scoped) and this falls back byte-identical to the
+     * pre-P1 legacy actor/targets — never a cross-persona leak.
+     *
+     * @return array<string, mixed>
+     */
+    private function postToOperator(array $input, ?string $tokenLabel = null): array
     {
         $category = OperatorMessageCategory::tryFrom(trim((string) ($input['category'] ?? '')));
         if ($category === null) {
@@ -99,8 +109,11 @@ class OperatorBridgeToolExecutor
         $recipientId = TechnicianConfig::operatorRecipientFor($category);
         $recipient = $recipientId ? User::find($recipientId) : null;
 
-        $actorName = TechnicianConfig::aiActorName();
-        $persona = TeamsText::escape($actorName);
+        $trimmedLabel = trim((string) $tokenLabel);
+        $persona = $trimmedLabel !== '' ? TeamsPersonaConfig::byTokenLabel($trimmedLabel) : null;
+
+        $actorName = $persona?->display_name ?? TechnicianConfig::aiActorName();
+        $actorLabel = TeamsText::escape($actorName);
         $safeMessage = $this->delivery->sanitizeMessage(
             $this->stripTrailingPersonaSignatures($message, $actorName),
         );
@@ -120,15 +133,26 @@ class OperatorBridgeToolExecutor
         };
 
         $subject = $ticket !== null
-            ? "{$persona} - {$label} - ticket #{$ticket->id}"
-            : "{$persona} - {$label}";
+            ? "{$actorLabel} - {$label} - ticket #{$ticket->id}"
+            : "{$actorLabel} - {$label}";
+
+        // conversation_refs shape: ['conversation_id' => string, 'service_url' => string].
+        // Missing/partial refs on an enabled persona resolve to null targets, which
+        // OperatorDelivery::send()'s own null-guard turns into "no bot post" — dormant-safe.
+        $conversationId = $persona !== null
+            ? ($persona->conversation_refs['conversation_id'] ?? null)
+            : TeamsBotConfig::chetConversationId();
+        $serviceUrl = $persona !== null
+            ? ($persona->conversation_refs['service_url'] ?? null)
+            : TeamsBotConfig::escalationServiceUrl();
 
         $result = $this->delivery->send(
             $recipient,
-            TeamsBotConfig::chetConversationId(),
-            TeamsBotConfig::escalationServiceUrl(),
+            $conversationId,
+            $serviceUrl,
             $subject,
             $body,
+            $persona,
         );
 
         return [
@@ -137,14 +161,14 @@ class OperatorBridgeToolExecutor
         ];
     }
 
-    private function stripTrailingPersonaSignatures(string $message, string $persona): string
+    private function stripTrailingPersonaSignatures(string $message, string $actorName): string
     {
-        if ($persona === '') {
+        if ($actorName === '') {
             return $message;
         }
 
-        $quotedPersona = preg_quote($persona, '/');
-        $stripped = preg_replace('/(?:\R\s*)+(?:(?:--|—)\s*'.$quotedPersona.'\s*[.!]?\s*(?:\R\s*)*)+$/iu', '', $message);
+        $quotedActorName = preg_quote($actorName, '/');
+        $stripped = preg_replace('/(?:\R\s*)+(?:(?:--|—)\s*'.$quotedActorName.'\s*[.!]?\s*(?:\R\s*)*)+$/iu', '', $message);
 
         return rtrim($stripped ?? $message);
     }
