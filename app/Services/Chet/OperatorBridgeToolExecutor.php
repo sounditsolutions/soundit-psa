@@ -83,8 +83,9 @@ class OperatorBridgeToolExecutor
      * never anything from $input — the persona is derived server-side from it, the
      * SAME trust boundary Task 2 established for inbound (signed-aud -> personaKey).
      * An absent or unrecognized label resolves NO persona (TeamsPersonaConfig::
-     * byTokenLabel() is enabled()-scoped) and this falls back byte-identical to the
-     * pre-P1 legacy actor/targets — never a cross-persona leak.
+     * byTokenLabel() is active()-scoped, per psa-7drx T1 — enabled=true AND
+     * credential-complete) and this falls back byte-identical to the pre-P1
+     * legacy actor/targets — never a cross-persona leak.
      *
      * @return array<string, mixed>
      */
@@ -179,10 +180,18 @@ class OperatorBridgeToolExecutor
      * never anything from $input — the persona LANE is derived server-side from it,
      * the SAME trust boundary postToOperator() uses for outbound. An absent/empty
      * label fails CLOSED (mirrors pollSignals): a scoped poll tool must never
-     * silently fall back to an undifferentiated drain. A label that authenticates
-     * but matches no ENABLED persona (TeamsPersonaConfig::byTokenLabel() is
-     * enabled()-scoped) resolves the LEGACY lane (persona IS NULL) — byte-identical
-     * to the pre-P1 single-lane behavior.
+     * silently fall back to an undifferentiated drain.
+     *
+     * Lane resolution uses TeamsPersonaConfig::byTokenLabelForLane() (enabled()-
+     * scoped) rather than byTokenLabel() (active()-scoped) — deliberately looser
+     * here (psa-2wis). An ENABLED persona's token ALWAYS resolves to its OWN lane
+     * (persona_key), even mid-credential-setup (missing bot_app_id/tenant_id/
+     * secret), when its own lane may currently be EMPTY. It must never fall
+     * through to the LEGACY lane (persona IS NULL) merely because its credential
+     * wizard isn't finished yet — that would drain rows belonging to the pre-P1
+     * single-bot operator inbox. Only a label that authenticates but matches NO
+     * enabled persona at all resolves the LEGACY lane — byte-identical to the
+     * pre-P1 single-lane behavior.
      *
      * @return array<string, mixed>
      */
@@ -193,7 +202,7 @@ class OperatorBridgeToolExecutor
             return ['error' => 'poll_operator_messages requires a scoped token'];
         }
 
-        $persona = TeamsPersonaConfig::byTokenLabel($tokenLabel);
+        $persona = TeamsPersonaConfig::byTokenLabelForLane($tokenLabel);
         $lane = $persona?->persona_key;
 
         $cursor = isset($input['cursor']) && is_numeric($input['cursor']) ? max(0, (int) $input['cursor']) : 0;
