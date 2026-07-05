@@ -22,12 +22,17 @@ return new class extends Migration
         Schema::table('operator_inbox', function (Blueprint $table) {
             $table->dropIndex(['conversation_id', 'delivered_at', 'id']);
             $table->index(['persona', 'delivered_at', 'id']);
+            // TeamsChatReadToolset::knownConversationIds() still groups by
+            // conversation_id — keep it indexed after the lane index replaces
+            // the old composite.
+            $table->index('conversation_id');
         });
     }
 
     public function down(): void
     {
         Schema::table('operator_inbox', function (Blueprint $table) {
+            $table->dropIndex(['conversation_id']);
             $table->dropIndex(['persona', 'delivered_at', 'id']);
             $table->index(['conversation_id', 'delivered_at', 'id']);
         });
