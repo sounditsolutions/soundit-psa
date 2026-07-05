@@ -139,7 +139,12 @@ class VerifyBotFrameworkJwt
         }
 
         if (is_array($aud)) {
-            $intersect = array_values(array_intersect(array_map('strval', $aud), $appIds));
+            // array_unique BEFORE counting: array_intersect() preserves duplicates
+            // from its first argument, so an aud that names the SAME registered bot
+            // twice (e.g. ['persona-app', 'persona-app']) would otherwise over-reject
+            // as "2 distinct hits" even though it is unambiguous. Two DISTINCT
+            // registered app_ids still produce 2 unique entries here and still reject.
+            $intersect = array_values(array_unique(array_intersect(array_map('strval', $aud), $appIds)));
 
             return count($intersect) === 1 ? $intersect[0] : null;
         }

@@ -141,10 +141,10 @@ class OperatorBridgeToolExecutor
         // Missing/partial refs on an enabled persona resolve to null targets, which
         // OperatorDelivery::send()'s own null-guard turns into "no bot post" — dormant-safe.
         $conversationId = $persona !== null
-            ? ($persona->conversation_refs['conversation_id'] ?? null)
+            ? (($persona->conversation_refs ?? [])['conversation_id'] ?? null)
             : TeamsBotConfig::chetConversationId();
         $serviceUrl = $persona !== null
-            ? ($persona->conversation_refs['service_url'] ?? null)
+            ? (($persona->conversation_refs ?? [])['service_url'] ?? null)
             : TeamsBotConfig::escalationServiceUrl();
 
         $result = $this->delivery->send(

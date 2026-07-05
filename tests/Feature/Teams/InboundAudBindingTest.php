@@ -265,4 +265,28 @@ class InboundAudBindingTest extends TestCase
             return $message === '[Teams Bot] Inbound JWT rejected' && ($context['reason'] ?? null) === 'bad audience';
         });
     }
+
+    /**
+     * psa-7drx T2 item 6: a duplicated aud entry for the SAME registered bot is not
+     * "more than one distinct match" — array_intersect() (unlike a set intersection)
+     * preserves duplicates from its first argument, so without de-duping first, an
+     * aud like ['persona-app', 'persona-app'] would over-reject as ambiguous even
+     * though it names exactly one registered bot. Two DISTINCT registered app_ids
+     * (test_array_audience_intersecting_two_registered_bots_is_rejected above) must
+     * still reject — that regression lock is unchanged by this fix.
+     */
+    public function test_duplicate_valid_audience_entry_is_not_treated_as_ambiguous(): void
+    {
+        $this->configureLegacyBot();
+        $this->makePersona(['bot_app_id' => 'persona-app']); // a SECOND registered bot
+        [$priv, $jwk] = $this->keypair();
+        $this->primeJwks($jwk);
+
+        // The SAME registered app id appears twice in the aud array (e.g. a channel
+        // or proxy that duplicates a claim) — unambiguous, so it must resolve.
+        [$status, $attr] = $this->runMiddleware($this->sign($priv, ['persona-app', 'persona-app']));
+
+        $this->assertSame(200, $status);
+        $this->assertSame('persona-app', $attr);
+    }
 }
