@@ -18,6 +18,11 @@ use App\Models\Setting;
  * multi-tenant, so the inbound JWT audience and the identity resolver work
  * against appIds() (a SET) and forAppId() rather than a single literal. Adding a
  * second MSP later is a storage change, not a code change at the call sites.
+ *
+ * Teams AI-Staff Personas seam: appIds()/forAppId() also fold in every enabled
+ * `teams_personas` row (see TeamsPersonaConfig) alongside this legacy single
+ * bot. With zero enabled personas both methods behave exactly as before —
+ * legacy-only behavior is preserved with zero config changes.
  */
 class TeamsBotConfig
 {
@@ -65,16 +70,21 @@ class TeamsBotConfig
 
     /**
      * The registered SET of bot App IDs — the inbound JWT audience is validated
-     * against this, not a single literal (the multi-MSP seam). One entry for the
-     * pilot; empty when unconfigured (so the middleware fails closed).
+     * against this, not a single literal (the multi-MSP seam). Legacy single-bot
+     * App ID first (if configured), unioned with every enabled teams_personas
+     * row's bot_app_id (the Teams AI-Staff Personas multi-bot seam — see
+     * TeamsPersonaConfig). Empty when nothing is configured (fails closed).
      *
      * @return array<int, string>
      */
     public static function appIds(): array
     {
-        $appId = self::appId();
+        $legacy = self::appId();
 
-        return $appId !== null ? [$appId] : [];
+        return array_values(array_unique(array_merge(
+            $legacy !== null ? [$legacy] : [],
+            TeamsPersonaConfig::enabled()->pluck('bot_app_id')->all(),
+        )));
     }
 
     /**
@@ -82,8 +92,10 @@ class TeamsBotConfig
      * recipient.id). Returns null when the App ID is not a registered bot — the
      * caller treats that as "not for us" and fails closed. The conversation/tenant
      * context returned here is what the identity resolver scopes the sender to.
+     * `persona_key` is null for the legacy single-bot pilot and non-null when the
+     * App ID belongs to an enabled teams_personas row.
      *
-     * @return array{app_id: string, tenant_id: ?string}|null
+     * @return array{app_id: string, tenant_id: ?string, persona_key: ?string}|null
      */
     public static function forAppId(?string $appId): ?array
     {
@@ -91,7 +103,11 @@ class TeamsBotConfig
             return null;
         }
 
-        return ['app_id' => $appId, 'tenant_id' => self::tenantId()];
+        if ($persona = TeamsPersonaConfig::byAppId($appId)) {
+            return ['app_id' => $appId, 'tenant_id' => $persona->tenant_id, 'persona_key' => $persona->persona_key];
+        }
+
+        return ['app_id' => $appId, 'tenant_id' => self::tenantId(), 'persona_key' => null];
     }
 
     // ── E2b: ambient chiming-in dials (Setting-backed, tuned live in the chat) ─
