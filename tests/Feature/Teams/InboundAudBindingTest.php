@@ -9,6 +9,7 @@ use App\Models\User;
 use App\Services\Teams\ResolvedSender;
 use App\Services\Teams\TeamsIdentityResolver;
 use App\Support\TeamsBotConfig;
+use App\Support\TeamsPersonaConfig;
 use Firebase\JWT\JWT;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Request;
@@ -41,6 +42,16 @@ class InboundAudBindingTest extends TestCase
 {
     use RefreshDatabase;
 
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        // TeamsPersonaConfig::enabled() memoizes in a bare PHP static, which
+        // (unlike the DB) RefreshDatabase does not reset between test methods
+        // in the same process — flush it explicitly so tests are order-independent.
+        TeamsPersonaConfig::flush();
+    }
+
     // ── shared fixtures ──────────────────────────────────────────────────────
 
     /** A Bot Framework activity, following TeamsIdentityResolverTest's shape. */
@@ -55,7 +66,12 @@ class InboundAudBindingTest extends TestCase
         ];
     }
 
-    /** Mirrors TeamsPersonaRegistryTest's fixture shape. */
+    /**
+     * Mirrors TeamsPersonaRegistryTest's fixture shape. Credential-complete by
+     * default (tenant_id + bot_client_secret) — psa-7drx T1 tightened
+     * TeamsPersonaConfig::active() (which byAppId()/appIds()/forAppId() all
+     * resolve through) to require enabled AND a full credential set.
+     */
     private function makePersona(array $overrides = []): TeamsPersona
     {
         return TeamsPersona::create(array_merge([
@@ -63,6 +79,7 @@ class InboundAudBindingTest extends TestCase
             'display_name' => 'Gus',
             'bot_app_id' => 'persona-app',
             'tenant_id' => 'persona-tenant',
+            'bot_client_secret' => 'persona-secret',
             'enabled' => true,
         ], $overrides));
     }
@@ -247,5 +264,29 @@ class InboundAudBindingTest extends TestCase
         Log::shouldHaveReceived('warning')->once()->withArgs(function (string $message, array $context) {
             return $message === '[Teams Bot] Inbound JWT rejected' && ($context['reason'] ?? null) === 'bad audience';
         });
+    }
+
+    /**
+     * psa-7drx T2 item 6: a duplicated aud entry for the SAME registered bot is not
+     * "more than one distinct match" — array_intersect() (unlike a set intersection)
+     * preserves duplicates from its first argument, so without de-duping first, an
+     * aud like ['persona-app', 'persona-app'] would over-reject as ambiguous even
+     * though it names exactly one registered bot. Two DISTINCT registered app_ids
+     * (test_array_audience_intersecting_two_registered_bots_is_rejected above) must
+     * still reject — that regression lock is unchanged by this fix.
+     */
+    public function test_duplicate_valid_audience_entry_is_not_treated_as_ambiguous(): void
+    {
+        $this->configureLegacyBot();
+        $this->makePersona(['bot_app_id' => 'persona-app']); // a SECOND registered bot
+        [$priv, $jwk] = $this->keypair();
+        $this->primeJwks($jwk);
+
+        // The SAME registered app id appears twice in the aud array (e.g. a channel
+        // or proxy that duplicates a claim) — unambiguous, so it must resolve.
+        [$status, $attr] = $this->runMiddleware($this->sign($priv, ['persona-app', 'persona-app']));
+
+        $this->assertSame(200, $status);
+        $this->assertSame('persona-app', $attr);
     }
 }

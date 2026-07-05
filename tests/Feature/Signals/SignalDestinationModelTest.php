@@ -25,10 +25,11 @@ class SignalDestinationModelTest extends TestCase
 
         $this->assertTrue($fresh->enabled);
         $this->assertSame('https://x.example/hook', $fresh->address);
-        $this->assertNotSame(
-            'https://x.example/hook',
-            DB::table('signal_destinations')->whereKey($destination->id)->value('address'),
-        );
+
+        $rawAddress = DB::table('signal_destinations')->where('id', $destination->id)->value('address');
+
+        $this->assertNotNull($rawAddress);
+        $this->assertNotSame('https://x.example/hook', $rawAddress);
     }
 
     public function test_config_log_record_inserts_actor_action_subject_and_changes(): void

@@ -71,9 +71,10 @@ class TeamsBotConfig
     /**
      * The registered SET of bot App IDs — the inbound JWT audience is validated
      * against this, not a single literal (the multi-MSP seam). Legacy single-bot
-     * App ID first (if configured), unioned with every enabled teams_personas
-     * row's bot_app_id (the Teams AI-Staff Personas multi-bot seam — see
-     * TeamsPersonaConfig). Empty when nothing is configured (fails closed).
+     * App ID first (if configured), unioned with every credential-complete,
+     * enabled teams_personas row's bot_app_id (TeamsPersonaConfig::active() —
+     * the Teams AI-Staff Personas multi-bot seam). Empty when nothing is
+     * configured (fails closed).
      *
      * @return array<int, string>
      */
@@ -83,7 +84,7 @@ class TeamsBotConfig
 
         return array_values(array_unique(array_merge(
             $legacy !== null ? [$legacy] : [],
-            TeamsPersonaConfig::enabled()->pluck('bot_app_id')->all(),
+            TeamsPersonaConfig::active()->pluck('bot_app_id')->all(),
         )));
     }
 
@@ -93,7 +94,7 @@ class TeamsBotConfig
      * caller treats that as "not for us" and fails closed. The conversation/tenant
      * context returned here is what the identity resolver scopes the sender to.
      * `persona_key` is null for the legacy single-bot pilot and non-null when the
-     * App ID belongs to an enabled teams_personas row.
+     * App ID belongs to an active (credential-complete + enabled) teams_personas row.
      *
      * @return array{app_id: string, tenant_id: ?string, persona_key: ?string}|null
      */

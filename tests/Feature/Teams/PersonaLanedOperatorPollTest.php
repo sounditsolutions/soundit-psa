@@ -10,6 +10,7 @@ use App\Models\TeamsPersona;
 use App\Models\User;
 use App\Services\Chet\OperatorBridgeToolExecutor;
 use App\Support\TeamsBotConfig;
+use App\Support\TeamsPersonaConfig;
 use Firebase\JWT\JWT;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
@@ -36,11 +37,23 @@ class PersonaLanedOperatorPollTest extends TestCase
     {
         parent::setUp();
         Cache::flush();
+
+        // TeamsPersonaConfig::enabled() memoizes in a bare PHP static, which
+        // (unlike the DB) RefreshDatabase does not reset between test methods
+        // in the same process — flush it explicitly, same rationale as the
+        // Cache::flush() above.
+        TeamsPersonaConfig::flush();
     }
 
     // ── shared fixtures ──────────────────────────────────────────────────────
 
-    /** Mirrors PerPersonaOutboundTest/InboundAudBindingTest's fixture shape. */
+    /**
+     * Mirrors PerPersonaOutboundTest/InboundAudBindingTest's fixture shape.
+     * Credential-complete by default (tenant_id + bot_client_secret) — psa-7drx
+     * T1 tightened TeamsPersonaConfig::active() (which byAppId()/byTokenLabel()/
+     * appIds()/forAppId() all resolve through) to require enabled AND a full
+     * credential set, not just enabled=true.
+     */
     private function makePersona(array $overrides = []): TeamsPersona
     {
         return TeamsPersona::create(array_merge([
@@ -48,6 +61,7 @@ class PersonaLanedOperatorPollTest extends TestCase
             'display_name' => 'Gus',
             'bot_app_id' => 'persona-app-id',
             'tenant_id' => 'persona-tenant-id',
+            'bot_client_secret' => 'persona-secret',
             'enabled' => true,
         ], $overrides));
     }

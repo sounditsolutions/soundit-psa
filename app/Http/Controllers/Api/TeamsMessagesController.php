@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\OperatorInbox;
+use App\Models\TeamsPersona;
 use App\Services\Chet\OperatorBridgeTextSanitizer;
 use App\Services\Teams\ResolvedSender;
 use App\Services\Teams\TeamsAmbientService;
@@ -50,12 +51,21 @@ class TeamsMessagesController extends Controller
         // resolution to the SIGNED claim rather than the activity body.
         $sender = $this->resolver->resolve($activity, $request->attributes->get('teams_bot_app_id'));
 
+        // Auto-capture (P2 hardening item 8): on a resolved persona's FIRST inbound
+        // turn, self-bind its operator-lane conversation from this already aud-
+        // verified + serviceUrl-pinned activity. Must run BEFORE routedToPersona()
+        // below so that very first turn is also correctly recognised as its own —
+        // see captureConversationRefs()'s docblock for the full interaction note.
+        if ($sender !== null) {
+            $this->captureConversationRefs($sender, $activity, $request);
+        }
+
+        // A resolved, ENABLED persona is its own gate everywhere below — the shared
+        // teams_bot_enabled toggle only governs the legacy single-bot path (mirrors
+        // OperatorDelivery::send()'s persona-is-its-own-gate rule, Task 3 Cluster B).
+        $personaActive = $sender?->personaKey !== null;
+
         if ($this->routedToPersona($sender, $activity)) {
-            // A resolved, ENABLED persona is its own gate — the shared
-            // teams_bot_enabled toggle only governs the legacy single-bot path
-            // (mirrors OperatorDelivery::send()'s persona-is-its-own-gate rule,
-            // Task 3 Cluster B).
-            $personaActive = $sender?->personaKey !== null;
             if (! ($personaActive || TeamsBotConfig::enabled())) {
                 Log::info('[Teams Bot] Chet-routed turn ignored because Teams bot is disabled', [
                     'conversation_id' => $activity['conversation']['id'] ?? null,
@@ -71,7 +81,7 @@ class TeamsMessagesController extends Controller
             return response()->json(['status' => 'ok']);
         }
 
-        if (TeamsBotConfig::enabled()
+        if (($personaActive || TeamsBotConfig::enabled())
             && $sender !== null
             && $this->serviceUrlPinned($request, $activity)
         ) {
@@ -85,10 +95,93 @@ class TeamsMessagesController extends Controller
                 'user_id' => $sender->user->id,
                 'conversation_id' => $sender->conversationId,
                 'enabled' => TeamsBotConfig::enabled(),
+                'persona_active' => $personaActive,
             ]);
         }
 
         return response()->json(['status' => 'ok']);
+    }
+
+    /**
+     * Auto-bind a resolved persona's operator-lane conversation on first contact
+     * (P2 hardening item 8). Guarded so it only ever WRITES once per persona:
+     * $sender must carry a personaKey (never fires for the legacy single-bot
+     * path), the serviceUrl must be pinned to the signed JWT claim (so the value
+     * captured is never attacker-influenceable), the activity must carry a
+     * non-empty conversation id, and the persona must not already have one bound
+     * — an existing binding is NEVER overwritten by a later turn. Fail-soft: a
+     * save failure is logged and swallowed, never turning an inbound ack into a
+     * 500. Decision (documented for the PR): this binds the persona to its
+     * (already aud-verified, hence safe) bot conversation on first contact so its
+     * subsequent DMs route consistently to its own operator lane, without a
+     * per-persona provisioning wizard. Interaction with item 3: because this runs
+     * BEFORE routedToPersona() below, the very first turn both captures AND is
+     * itself routed to the operator lane; the persona-is-its-own-gate reply path
+     * is reached only once a persona is already bound elsewhere and is mentioned
+     * from a different conversation — see PersonaReplyGateTest.
+     *
+     * Operator-allowlist guarded: the bind above is PERMANENT with no reset
+     * path, so an unguarded capture would let whoever DMs the bot first claim
+     * the persona's operator lane in both directions ("first sender wins").
+     * When TeamsBotConfig::operatorAllowlistUserIds() is NON-EMPTY, only an
+     * allowlisted sender's first turn may bind; a non-allowlisted sender's
+     * turn is a silent no-op (never captured, never routed to the persona
+     * lane either). Fails OPEN — captures regardless of sender — when the
+     * allowlist is empty/unconfigured, so hand-registered P2 bring-up still
+     * self-establishes with zero setup. Mirrors enqueueOperatorMessage()'s
+     * authorized_steer check below.
+     */
+    private function captureConversationRefs(ResolvedSender $sender, array $activity, Request $request): void
+    {
+        if ($sender->personaKey === null || ! $this->serviceUrlPinned($request, $activity)) {
+            return;
+        }
+
+        $conversationId = $activity['conversation']['id'] ?? null;
+        if (! is_string($conversationId) || $conversationId === '') {
+            return;
+        }
+
+        $persona = TeamsPersonaConfig::byKey($sender->personaKey);
+        if ($persona === null || (($persona->conversation_refs ?? [])['conversation_id'] ?? null) !== null) {
+            return;
+        }
+
+        $allowlist = TeamsBotConfig::operatorAllowlistUserIds();
+        if ($allowlist !== [] && ! in_array($sender->user->id, $allowlist, true)) {
+            return;
+        }
+
+        try {
+            // Atomic write-once bind. whereNull('conversation_refs') makes concurrent
+            // / Bot-Framework-redelivered first-contact turns race-safe — only the
+            // first writer matches a row, preserving the "first sender wins" backstop.
+            // Updating via the query builder (NOT forceFill on the byKey() instance,
+            // which the enabled()/active() memo holds a reference to) means a failure
+            // here can never leave a phantom in-memory conversation_id that this same
+            // request's routedToPersona() would mis-route into the operator lane.
+            $bound = TeamsPersona::whereKey($persona->id)
+                ->whereNull('conversation_refs')
+                ->update([
+                    'conversation_refs' => [
+                        'conversation_id' => $conversationId,
+                        'service_url' => $request->attributes->get('teams_bot_service_url'),
+                    ],
+                ]);
+
+            // Query-builder updates fire no model events, so the enabled()/active()
+            // memo is not auto-busted — flush explicitly on a successful bind so this
+            // same turn's routedToPersona() re-reads the freshly-persisted binding.
+            if ($bound === 1) {
+                TeamsPersonaConfig::flush();
+            }
+        } catch (\Throwable $e) {
+            Log::info('[Teams Bot] Persona conversation auto-capture failed (fail-soft)', [
+                'persona_key' => $sender->personaKey,
+                'conversation_id' => $conversationId,
+                'error' => $e->getMessage(),
+            ]);
+        }
     }
 
     /**
@@ -111,7 +204,7 @@ class TeamsMessagesController extends Controller
             $persona = TeamsPersonaConfig::byKey($sender->personaKey);
 
             return $persona !== null
-                && ($persona->conversation_refs['conversation_id'] ?? null) === $conversationId;
+                && (($persona->conversation_refs ?? [])['conversation_id'] ?? null) === $conversationId;
         }
 
         return TeamsBotConfig::chetRoutingEnabled()
