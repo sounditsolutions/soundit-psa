@@ -5,6 +5,7 @@ namespace Tests\Feature\Teams;
 use App\Http\Middleware\VerifyBotFrameworkJwt;
 use App\Models\McpToken;
 use App\Models\OperatorInbox;
+use App\Models\Setting;
 use App\Models\TeamsPersona;
 use App\Models\User;
 use App\Services\Agent\Escalation\OperatorDelivery;
@@ -38,6 +39,17 @@ use Tests\TestCase;
  * NEVER re-captured/overwritten by a later turn, even from a different
  * conversation — see PersonaReplyGateTest for the companion reply-gate
  * behavior once a persona is bound elsewhere.
+ *
+ * item 8 follow-up — operator-allowlist guard: because the bind above is
+ * PERMANENT with no reset path, an unguarded first-inbound-wins capture would
+ * let whoever DMs the persona's bot first claim its operator lane (both
+ * directions). When TeamsBotConfig::operatorAllowlistUserIds() is
+ * NON-EMPTY, only an allowlisted sender's first turn may bind — a
+ * non-allowlisted sender's turn is a no-op capture (never routed to the
+ * persona lane either, since conversation_refs stays unset). Fails OPEN
+ * (captures regardless of sender) when the allowlist is empty/unconfigured,
+ * so hand-registered P2 bring-up still self-establishes with zero setup.
+ * Mirrors enqueueOperatorMessage()'s authorized_steer check.
  */
 class PersonaConversationCaptureTest extends TestCase
 {
@@ -156,6 +168,85 @@ class PersonaConversationCaptureTest extends TestCase
 
         $this->assertSame($originalRefs, $persona->fresh()->conversation_refs, 'an existing binding must never be silently replaced by a later turn');
         $this->assertSame(0, OperatorInbox::count(), 'conv-Z is not the personas own conversation (conv-Y) — must not enqueue');
+    }
+
+    // ── item 8 follow-up: operator-allowlist guard on the auto-capture ───────
+
+    public function test_allowlist_configured_and_sender_not_in_it_blocks_capture(): void
+    {
+        $persona = $this->makePersona(['conversation_refs' => null]); // seeded-Gus shape
+
+        User::factory()->create(['microsoft_id' => 'aad-charlie', 'is_active' => true]);
+        $otherOperator = User::factory()->create(['microsoft_id' => 'aad-other', 'is_active' => true]);
+        Setting::setValue('teams_operator_allowlist_user_ids', json_encode([$otherOperator->id]));
+
+        $serviceUrl = 'https://smba.trafficmanager.net/amer/';
+        [$priv, $jwk] = $this->keypair('capture-allowlist-block-kid');
+        $this->primeJwks($jwk);
+        $jwt = $this->sign($priv, $persona->bot_app_id, $serviceUrl, 'capture-allowlist-block-kid');
+
+        // aad-charlie (NOT the allowlisted user) sends the first-ever turn.
+        $activity = $this->activity($persona->bot_app_id, $persona->tenant_id, 'aad-charlie', 'conv-blocked', $serviceUrl);
+
+        $this->sendActivity($jwt, $activity)->assertOk();
+
+        $this->assertNull(
+            $persona->fresh()->conversation_refs,
+            'a non-allowlisted sender must not bind the persona to their conversation — first-sender-wins must not apply once an allowlist is configured',
+        );
+        $this->assertSame(0, OperatorInbox::count(), 'capture never happened, so this is not (yet) recognised as the personas own conversation');
+    }
+
+    public function test_allowlist_configured_and_sender_in_it_allows_capture(): void
+    {
+        $persona = $this->makePersona(['conversation_refs' => null]); // seeded-Gus shape
+
+        $charlie = User::factory()->create(['microsoft_id' => 'aad-charlie', 'is_active' => true]);
+        Setting::setValue('teams_operator_allowlist_user_ids', json_encode([$charlie->id]));
+
+        $serviceUrl = 'https://smba.trafficmanager.net/amer/';
+        [$priv, $jwk] = $this->keypair('capture-allowlist-allow-kid');
+        $this->primeJwks($jwk);
+        $jwt = $this->sign($priv, $persona->bot_app_id, $serviceUrl, 'capture-allowlist-allow-kid');
+
+        $activity = $this->activity($persona->bot_app_id, $persona->tenant_id, 'aad-charlie', 'conv-allowed', $serviceUrl);
+
+        $this->sendActivity($jwt, $activity)->assertOk();
+
+        $this->assertSame(
+            ['conversation_id' => 'conv-allowed', 'service_url' => $serviceUrl],
+            $persona->fresh()->conversation_refs,
+            'an allowlisted senders first turn must still bind the persona',
+        );
+        $this->assertSame(1, OperatorInbox::count());
+    }
+
+    public function test_allowlist_explicitly_empty_still_captures_fail_open(): void
+    {
+        $persona = $this->makePersona(['conversation_refs' => null]); // seeded-Gus shape
+
+        User::factory()->create(['microsoft_id' => 'aad-charlie', 'is_active' => true]);
+        // Explicitly configured to an empty list (e.g. saved once via the UI with
+        // zero rows) — distinct from the setting simply never having been written,
+        // which the pre-existing test_first_inbound_turn_captures_conversation_refs_from_the_pinned_claim
+        // above already covers. Both shapes of "no allowlist" must fail OPEN.
+        Setting::setValue('teams_operator_allowlist_user_ids', json_encode([]));
+
+        $serviceUrl = 'https://smba.trafficmanager.net/amer/';
+        [$priv, $jwk] = $this->keypair('capture-allowlist-empty-kid');
+        $this->primeJwks($jwk);
+        $jwt = $this->sign($priv, $persona->bot_app_id, $serviceUrl, 'capture-allowlist-empty-kid');
+
+        $activity = $this->activity($persona->bot_app_id, $persona->tenant_id, 'aad-charlie', 'conv-fail-open', $serviceUrl);
+
+        $this->sendActivity($jwt, $activity)->assertOk();
+
+        $this->assertSame(
+            ['conversation_id' => 'conv-fail-open', 'service_url' => $serviceUrl],
+            $persona->fresh()->conversation_refs,
+            'an empty allowlist must fail OPEN so hand-registered P2 bring-up (allowlist not configured yet) still self-establishes',
+        );
+        $this->assertSame(1, OperatorInbox::count());
     }
 
     // ── item 5: null conversation_refs is safe, everywhere it is read ────────

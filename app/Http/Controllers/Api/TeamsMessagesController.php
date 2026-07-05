@@ -118,6 +118,17 @@ class TeamsMessagesController extends Controller
      * itself routed to the operator lane; the persona-is-its-own-gate reply path
      * is reached only once a persona is already bound elsewhere and is mentioned
      * from a different conversation — see PersonaReplyGateTest.
+     *
+     * Operator-allowlist guarded: the bind above is PERMANENT with no reset
+     * path, so an unguarded capture would let whoever DMs the bot first claim
+     * the persona's operator lane in both directions ("first sender wins").
+     * When TeamsBotConfig::operatorAllowlistUserIds() is NON-EMPTY, only an
+     * allowlisted sender's first turn may bind; a non-allowlisted sender's
+     * turn is a silent no-op (never captured, never routed to the persona
+     * lane either). Fails OPEN — captures regardless of sender — when the
+     * allowlist is empty/unconfigured, so hand-registered P2 bring-up still
+     * self-establishes with zero setup. Mirrors enqueueOperatorMessage()'s
+     * authorized_steer check below.
      */
     private function captureConversationRefs(ResolvedSender $sender, array $activity, Request $request): void
     {
@@ -132,6 +143,11 @@ class TeamsMessagesController extends Controller
 
         $persona = TeamsPersonaConfig::byKey($sender->personaKey);
         if ($persona === null || (($persona->conversation_refs ?? [])['conversation_id'] ?? null) !== null) {
+            return;
+        }
+
+        $allowlist = TeamsBotConfig::operatorAllowlistUserIds();
+        if ($allowlist !== [] && ! in_array($sender->user->id, $allowlist, true)) {
             return;
         }
 
