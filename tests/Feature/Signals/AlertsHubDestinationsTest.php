@@ -70,6 +70,17 @@ class AlertsHubDestinationsTest extends TestCase
             ->assertDontSee('wake-secret-1234');
     }
 
+    public function test_create_page_renders_and_store_redirects_to_detail(): void
+    {
+        $this->actingAs($this->user)->get(route('settings.alerts.destinations.create'))
+            ->assertOk()->assertSee('New destination')->assertSee('All destinations');
+
+        $this->actingAs($this->user)->post(route('settings.alerts.destinations.store'), [
+            'label' => 'Ops webhook', 'type' => 'webhook', 'address' => 'https://93.184.216.34/hooks/abcd1234',
+        ])->assertSessionHasNoErrors()
+            ->assertRedirect(route('settings.alerts.destinations.show', SignalDestination::firstOrFail()));
+    }
+
     public function test_stores_webhook_destination_with_safe_url_and_config_log(): void
     {
         $url = 'https://93.184.216.34/hooks/abcd1234';
@@ -81,7 +92,7 @@ class AlertsHubDestinationsTest extends TestCase
                 'address' => $url,
             ])
             ->assertSessionHasNoErrors()
-            ->assertRedirect(route('settings.alerts.index'));
+            ->assertRedirect(route('settings.alerts.destinations.show', SignalDestination::firstOrFail()));
 
         $destination = SignalDestination::firstOrFail();
         $this->assertSame('Ops webhook', $destination->label);

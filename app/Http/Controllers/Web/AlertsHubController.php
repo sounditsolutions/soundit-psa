@@ -77,8 +77,16 @@ class AlertsHubController extends Controller
             $this->changes([], $this->snapshot($destination)),
         );
 
-        return redirect()->route('settings.alerts.index')
+        return redirect()->route('settings.alerts.destinations.show', $destination)
             ->with('success', 'Destination created.');
+    }
+
+    public function createDestination()
+    {
+        return view('settings.alerts.destinations.create', [
+            'mcpTokens' => McpToken::query()->active()->orderBy('label')->get(['label']),
+            'secretMask' => self::SECRET_MASK,
+        ]);
     }
 
     public function showDestination(SignalDestination $destination)
