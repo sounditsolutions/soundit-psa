@@ -159,7 +159,7 @@ class AlertsHubRoutesTest extends TestCase
                 ],
             ])
             ->assertSessionHasNoErrors()
-            ->assertRedirect(route('settings.alerts.index'));
+            ->assertRedirect(route('settings.alerts.routes.show', $route));
 
         $route->refresh()->load('steps');
         $this->assertSame('All events to new', $route->label);
@@ -188,6 +188,7 @@ class AlertsHubRoutesTest extends TestCase
         ]);
 
         $this->actingAs($this->user)
+            ->from(route('settings.alerts.index'))
             ->post(route('settings.alerts.routes.toggle', $route))
             ->assertRedirect(route('settings.alerts.index'));
 
@@ -199,6 +200,7 @@ class AlertsHubRoutesTest extends TestCase
         ]);
 
         $this->actingAs($this->user)
+            ->from(route('settings.alerts.index'))
             ->post(route('settings.alerts.routes.toggle', $route))
             ->assertRedirect(route('settings.alerts.index'));
 

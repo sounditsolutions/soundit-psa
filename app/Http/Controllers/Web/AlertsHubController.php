@@ -191,6 +191,17 @@ class AlertsHubController extends Controller
             ->with('success', 'Route created.');
     }
 
+    public function showRoute(SignalRoute $route)
+    {
+        return view('settings.alerts.routes.show', [
+            'route' => $this->decorateRoute($route->load('steps.destination')),
+            'routeDestinations' => SignalDestination::query()->orderBy('label')->get(['id', 'label', 'type']),
+            'eventTypeGroups' => $this->eventTypeGroups(),
+            'recentFires' => SignalDelivery::query()->where('route_id', $route->id)
+                ->with(['destination', 'event'])->latest()->limit(20)->get(),
+        ]);
+    }
+
     public function updateRoute(Request $request, SignalRoute $route)
     {
         [$attributes, $steps] = $this->validatedRoutePayload($request);
@@ -207,7 +218,7 @@ class AlertsHubController extends Controller
             );
         });
 
-        return redirect()->route('settings.alerts.index')
+        return redirect()->route('settings.alerts.routes.show', $route)
             ->with('success', 'Route updated.');
     }
 
@@ -222,7 +233,7 @@ class AlertsHubController extends Controller
             ['enabled' => $route->enabled],
         );
 
-        return redirect()->route('settings.alerts.index')
+        return redirect()->back()
             ->with('success', $route->enabled ? 'Route enabled.' : 'Route disabled.');
     }
 
