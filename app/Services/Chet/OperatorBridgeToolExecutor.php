@@ -199,10 +199,12 @@ class OperatorBridgeToolExecutor
         $cursor = isset($input['cursor']) && is_numeric($input['cursor']) ? max(0, (int) $input['cursor']) : 0;
 
         if ($cursor > 0) {
-            $this->laneScope(OperatorInbox::query(), $lane)
-                ->where('id', '<=', $cursor)
-                ->whereNull('delivered_at')
-                ->update(['delivered_at' => now()]);
+            DB::transaction(function () use ($lane, $cursor): void {
+                $this->laneScope(OperatorInbox::query(), $lane)
+                    ->where('id', '<=', $cursor)
+                    ->whereNull('delivered_at')
+                    ->update(['delivered_at' => now()]);
+            });
         }
 
         $rows = $this->laneScope(OperatorInbox::with('sender:id,name'), $lane)
