@@ -107,6 +107,20 @@ class AlertsHubActivityTest extends TestCase
             ->assertSee('queue worker may be down');
     }
 
+    public function test_landing_shows_two_clickable_lists_create_buttons_and_activity(): void
+    {
+        $dest = SignalDestination::create(['label' => 'Ops webhook', 'type' => 'webhook', 'address' => 'https://93.184.216.34/h/aaaa1111']);
+        $route = SignalRoute::create(['label' => 'Ticket alerts', 'event_filter' => ['types' => ['ticket.created']], 'enabled' => true]);
+
+        $this->actingAs($this->user)->get(route('settings.alerts.index'))
+            ->assertOk()
+            ->assertSee('Destinations')->assertSee('Routes')->assertSee('Activity')
+            ->assertSee(route('settings.alerts.destinations.create'), false)
+            ->assertSee(route('settings.alerts.routes.create'), false)
+            ->assertSee(route('settings.alerts.destinations.show', $dest), false)   // row links to detail
+            ->assertSee(route('settings.alerts.routes.show', $route), false);
+    }
+
     private function pendingDelivery(SignalDestination $destination, SignalRoute $route): SignalDelivery
     {
         $event = SignalEvent::create([

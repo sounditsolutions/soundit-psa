@@ -64,10 +64,20 @@ class AlertsHubDestinationsTest extends TestCase
             ->assertSee('hooks.example.com')
             ->assertSee('1234')
             ->assertSee('Chet inbox')
-            ->assertSee('Rotating this token&#039;s label re-points or orphans this destination', false)
             ->assertDontSee('https://hooks.example.com/signal/super-secret-1234')
             ->assertDontSee('https://doorbell.example.com/wake/private-9999')
             ->assertDontSee('wake-secret-1234');
+    }
+
+    public function test_create_page_renders_and_store_redirects_to_detail(): void
+    {
+        $this->actingAs($this->user)->get(route('settings.alerts.destinations.create'))
+            ->assertOk()->assertSee('New destination')->assertSee('All destinations');
+
+        $this->actingAs($this->user)->post(route('settings.alerts.destinations.store'), [
+            'label' => 'Ops webhook', 'type' => 'webhook', 'address' => 'https://93.184.216.34/hooks/abcd1234',
+        ])->assertSessionHasNoErrors()
+            ->assertRedirect(route('settings.alerts.destinations.show', SignalDestination::firstOrFail()));
     }
 
     public function test_stores_webhook_destination_with_safe_url_and_config_log(): void
@@ -81,7 +91,7 @@ class AlertsHubDestinationsTest extends TestCase
                 'address' => $url,
             ])
             ->assertSessionHasNoErrors()
-            ->assertRedirect(route('settings.alerts.index'));
+            ->assertRedirect(route('settings.alerts.destinations.show', SignalDestination::firstOrFail()));
 
         $destination = SignalDestination::firstOrFail();
         $this->assertSame('Ops webhook', $destination->label);
@@ -173,7 +183,7 @@ class AlertsHubDestinationsTest extends TestCase
                 'address' => '',
             ])
             ->assertSessionHasNoErrors()
-            ->assertRedirect(route('settings.alerts.index'));
+            ->assertRedirect(route('settings.alerts.destinations.show', $destination));
 
         $destination->refresh();
         $this->assertSame('Ops renamed', $destination->label);
@@ -197,6 +207,7 @@ class AlertsHubDestinationsTest extends TestCase
         ]);
 
         $this->actingAs($this->user)
+            ->from(route('settings.alerts.index'))
             ->post(route('settings.alerts.destinations.toggle', $destination))
             ->assertRedirect(route('settings.alerts.index'));
 
@@ -207,6 +218,7 @@ class AlertsHubDestinationsTest extends TestCase
         ]);
 
         $this->actingAs($this->user)
+            ->from(route('settings.alerts.index'))
             ->post(route('settings.alerts.destinations.toggle', $destination))
             ->assertRedirect(route('settings.alerts.index'));
 
@@ -238,7 +250,7 @@ class AlertsHubDestinationsTest extends TestCase
         for ($i = 0; $i < 6; $i++) {
             $this->actingAs($this->user)
                 ->post(route('settings.alerts.destinations.test', $destination))
-                ->assertRedirect(route('settings.alerts.index'));
+                ->assertRedirect(route('settings.alerts.destinations.show', $destination));
         }
 
         $this->actingAs($this->user)
@@ -282,7 +294,7 @@ class AlertsHubDestinationsTest extends TestCase
         $this->actingAs($this->user)
             ->post(route('settings.alerts.destinations.test', $destination))
             ->assertSessionHasNoErrors()
-            ->assertRedirect(route('settings.alerts.index'));
+            ->assertRedirect(route('settings.alerts.destinations.show', $destination));
 
         $event = SignalEvent::where('type_key', 'system.test')->firstOrFail();
         $delivery = SignalDelivery::where('event_id', $event->id)->firstOrFail();

@@ -311,10 +311,14 @@ Route::middleware('auth')->group(function () {
     Route::get('/settings/integrations', [IntegrationsController::class, 'index'])->name('settings.integrations');
     Route::get('/settings/alerts', [AlertsHubController::class, 'index'])->name('settings.alerts.index');
     Route::post('/settings/alerts/destinations', [AlertsHubController::class, 'store'])->name('settings.alerts.destinations.store');
+    Route::get('/settings/alerts/destinations/create', [AlertsHubController::class, 'createDestination'])->name('settings.alerts.destinations.create');
+    Route::get('/settings/alerts/destinations/{destination}', [AlertsHubController::class, 'showDestination'])->name('settings.alerts.destinations.show');
     Route::put('/settings/alerts/destinations/{destination}', [AlertsHubController::class, 'update'])->name('settings.alerts.destinations.update');
     Route::post('/settings/alerts/destinations/{destination}/test', [AlertsHubController::class, 'test'])->middleware('throttle:6,1')->name('settings.alerts.destinations.test');
     Route::post('/settings/alerts/destinations/{destination}/toggle', [AlertsHubController::class, 'toggle'])->name('settings.alerts.destinations.toggle');
     Route::post('/settings/alerts/routes', [AlertsHubController::class, 'storeRoute'])->name('settings.alerts.routes.store');
+    Route::get('/settings/alerts/routes/create', [AlertsHubController::class, 'createRoute'])->name('settings.alerts.routes.create');
+    Route::get('/settings/alerts/routes/{route}', [AlertsHubController::class, 'showRoute'])->name('settings.alerts.routes.show');
     Route::put('/settings/alerts/routes/{route}', [AlertsHubController::class, 'updateRoute'])->name('settings.alerts.routes.update');
     Route::post('/settings/alerts/routes/{route}/toggle', [AlertsHubController::class, 'toggleRoute'])->name('settings.alerts.routes.toggle');
     Route::post('/settings/integrations/toggle', [IntegrationsController::class, 'toggleIntegration'])->name('settings.integrations.toggle');

@@ -23,7 +23,7 @@ class AlertsHubRoutesTest extends TestCase
         $this->user = User::factory()->create();
     }
 
-    public function test_index_renders_routes_tab_from_registry_without_non_routable_system_test(): void
+    public function test_route_create_page_renders_types_from_registry_without_non_routable_system_test(): void
     {
         SignalDestination::create([
             'label' => 'Ops webhook',
@@ -32,14 +32,32 @@ class AlertsHubRoutesTest extends TestCase
         ]);
 
         $this->actingAs($this->user)
-            ->get(route('settings.alerts.index'))
+            ->get(route('settings.alerts.routes.create'))
             ->assertOk()
-            ->assertSee('Routes')
+            ->assertSee('New route')
             ->assertSee('ticket.*')
             ->assertSee('agent.*')
             ->assertSee('value="ticket.created"', false)
             ->assertSee('value="agent.flag_attention"', false)
             ->assertDontSee('value="system.test"', false);
+    }
+
+    public function test_route_create_page_renders_and_store_redirects_to_detail(): void
+    {
+        $destination = $this->destination('Ops webhook');
+
+        $this->actingAs($this->user)->get(route('settings.alerts.routes.create'))
+            ->assertOk()->assertSee('New route')->assertSee('All routes');
+
+        $this->actingAs($this->user)->post(route('settings.alerts.routes.store'), [
+            'label' => 'Ticket alerts',
+            'event_filter' => ['types' => ['ticket.created']],
+            'cooldown_seconds' => 300,
+            'steps' => [
+                ['destination_id' => $destination->id],
+            ],
+        ])->assertSessionHasNoErrors()
+            ->assertRedirect(route('settings.alerts.routes.show', SignalRoute::firstOrFail()));
     }
 
     public function test_store_rejects_unknown_or_non_routable_event_types(): void
@@ -67,7 +85,7 @@ class AlertsHubRoutesTest extends TestCase
         $ops = $this->destination('Ops webhook');
         $manager = $this->destination('Manager email', 'email');
 
-        $this->actingAs($this->user)
+        $response = $this->actingAs($this->user)
             ->post(route('settings.alerts.routes.store'), [
                 'label' => 'Chet then humans',
                 'event_filter' => [
@@ -93,10 +111,10 @@ class AlertsHubRoutesTest extends TestCase
                     ],
                 ],
             ])
-            ->assertSessionHasNoErrors()
-            ->assertRedirect(route('settings.alerts.index'));
+            ->assertSessionHasNoErrors();
 
         $route = SignalRoute::with('steps')->firstOrFail();
+        $response->assertRedirect(route('settings.alerts.routes.show', $route));
         $this->assertSame('Chet then humans', $route->label);
         $this->assertFalse($route->enabled);
         $this->assertSame(600, $route->cooldown_seconds);
@@ -159,7 +177,7 @@ class AlertsHubRoutesTest extends TestCase
                 ],
             ])
             ->assertSessionHasNoErrors()
-            ->assertRedirect(route('settings.alerts.index'));
+            ->assertRedirect(route('settings.alerts.routes.show', $route));
 
         $route->refresh()->load('steps');
         $this->assertSame('All events to new', $route->label);
@@ -188,6 +206,7 @@ class AlertsHubRoutesTest extends TestCase
         ]);
 
         $this->actingAs($this->user)
+            ->from(route('settings.alerts.index'))
             ->post(route('settings.alerts.routes.toggle', $route))
             ->assertRedirect(route('settings.alerts.index'));
 
@@ -199,6 +218,7 @@ class AlertsHubRoutesTest extends TestCase
         ]);
 
         $this->actingAs($this->user)
+            ->from(route('settings.alerts.index'))
             ->post(route('settings.alerts.routes.toggle', $route))
             ->assertRedirect(route('settings.alerts.index'));
 

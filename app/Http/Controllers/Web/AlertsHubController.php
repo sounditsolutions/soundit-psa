@@ -35,15 +35,11 @@ class AlertsHubController extends Controller
                 ->orderBy('label')
                 ->get()
                 ->map(fn (SignalDestination $destination) => $this->decorateDestination($destination)),
-            'routeDestinations' => SignalDestination::query()
-                ->orderBy('label')
-                ->get(['id', 'label', 'type']),
             'routes' => SignalRoute::query()
                 ->with('steps.destination')
                 ->orderBy('label')
                 ->get()
                 ->map(fn (SignalRoute $route) => $this->decorateRoute($route)),
-            'eventTypeGroups' => $this->eventTypeGroups(),
             'recentDeliveries' => SignalDelivery::query()
                 ->with(['destination', 'event'])
                 ->latest()
@@ -57,11 +53,6 @@ class AlertsHubController extends Controller
                 ->where('status', 'pending')
                 ->where('created_at', '<', now()->subMinutes(10))
                 ->exists(),
-            'mcpTokens' => McpToken::query()
-                ->active()
-                ->orderBy('label')
-                ->get(['label']),
-            'secretMask' => self::SECRET_MASK,
         ]);
     }
 
@@ -77,8 +68,28 @@ class AlertsHubController extends Controller
             $this->changes([], $this->snapshot($destination)),
         );
 
-        return redirect()->route('settings.alerts.index')
+        return redirect()->route('settings.alerts.destinations.show', $destination)
             ->with('success', 'Destination created.');
+    }
+
+    public function createDestination()
+    {
+        return view('settings.alerts.destinations.create', [
+            'mcpTokens' => McpToken::query()->active()->orderBy('label')->get(['label']),
+            'secretMask' => self::SECRET_MASK,
+        ]);
+    }
+
+    public function showDestination(SignalDestination $destination)
+    {
+        return view('settings.alerts.destinations.show', [
+            'destination' => $this->decorateDestination($destination),
+            'recentDeliveries' => SignalDelivery::query()
+                ->where('destination_id', $destination->id)
+                ->with('event')->latest()->limit(20)->get(),
+            'mcpTokens' => McpToken::query()->active()->orderBy('label')->get(['label']),
+            'secretMask' => self::SECRET_MASK,
+        ]);
     }
 
     public function update(Request $request, SignalDestination $destination)
@@ -95,7 +106,7 @@ class AlertsHubController extends Controller
             $this->changes($before, $this->snapshot($destination)),
         );
 
-        return redirect()->route('settings.alerts.index')
+        return redirect()->route('settings.alerts.destinations.show', $destination)
             ->with('success', 'Destination updated.');
     }
 
@@ -110,7 +121,7 @@ class AlertsHubController extends Controller
             ['enabled' => $destination->enabled],
         );
 
-        return redirect()->route('settings.alerts.index')
+        return redirect()->back()
             ->with('success', $destination->enabled ? 'Destination enabled.' : 'Destination disabled.');
     }
 
@@ -139,11 +150,11 @@ class AlertsHubController extends Controller
         } catch (\Throwable $e) {
             $this->markFailedIfStillPending($destination, $delivery, $e);
 
-            return redirect()->route('settings.alerts.index')
+            return redirect()->route('settings.alerts.destinations.show', $destination)
                 ->with('error', 'Test signal failed: '.$delivery->fresh()->error);
         }
 
-        return redirect()->route('settings.alerts.index')
+        return redirect()->route('settings.alerts.destinations.show', $destination)
             ->with('success', 'Test signal delivered.');
     }
 
@@ -151,7 +162,7 @@ class AlertsHubController extends Controller
     {
         [$attributes, $steps] = $this->validatedRoutePayload($request);
 
-        DB::transaction(function () use ($request, $attributes, $steps): void {
+        $route = DB::transaction(function () use ($request, $attributes, $steps): SignalRoute {
             $route = SignalRoute::create([
                 ...$attributes,
                 'enabled' => false,
@@ -165,10 +176,31 @@ class AlertsHubController extends Controller
                 $route,
                 $this->routeChanges($attributes, $steps),
             );
+
+            return $route;
         });
 
-        return redirect()->route('settings.alerts.index')
+        return redirect()->route('settings.alerts.routes.show', $route)
             ->with('success', 'Route created.');
+    }
+
+    public function createRoute()
+    {
+        return view('settings.alerts.routes.create', [
+            'routeDestinations' => SignalDestination::query()->orderBy('label')->get(['id', 'label', 'type']),
+            'eventTypeGroups' => $this->eventTypeGroups(),
+        ]);
+    }
+
+    public function showRoute(SignalRoute $route)
+    {
+        return view('settings.alerts.routes.show', [
+            'route' => $this->decorateRoute($route->load('steps.destination')),
+            'routeDestinations' => SignalDestination::query()->orderBy('label')->get(['id', 'label', 'type']),
+            'eventTypeGroups' => $this->eventTypeGroups(),
+            'recentFires' => SignalDelivery::query()->where('route_id', $route->id)
+                ->with(['destination', 'event'])->latest()->limit(20)->get(),
+        ]);
     }
 
     public function updateRoute(Request $request, SignalRoute $route)
@@ -187,7 +219,7 @@ class AlertsHubController extends Controller
             );
         });
 
-        return redirect()->route('settings.alerts.index')
+        return redirect()->route('settings.alerts.routes.show', $route)
             ->with('success', 'Route updated.');
     }
 
@@ -202,7 +234,7 @@ class AlertsHubController extends Controller
             ['enabled' => $route->enabled],
         );
 
-        return redirect()->route('settings.alerts.index')
+        return redirect()->back()
             ->with('success', $route->enabled ? 'Route enabled.' : 'Route disabled.');
     }
 
