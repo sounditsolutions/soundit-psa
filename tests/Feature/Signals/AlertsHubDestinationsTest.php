@@ -64,7 +64,6 @@ class AlertsHubDestinationsTest extends TestCase
             ->assertSee('hooks.example.com')
             ->assertSee('1234')
             ->assertSee('Chet inbox')
-            ->assertSee('Rotating this token&#039;s label re-points or orphans this destination', false)
             ->assertDontSee('https://hooks.example.com/signal/super-secret-1234')
             ->assertDontSee('https://doorbell.example.com/wake/private-9999')
             ->assertDontSee('wake-secret-1234');

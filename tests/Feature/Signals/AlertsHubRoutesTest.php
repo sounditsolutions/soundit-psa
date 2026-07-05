@@ -23,7 +23,7 @@ class AlertsHubRoutesTest extends TestCase
         $this->user = User::factory()->create();
     }
 
-    public function test_index_renders_routes_tab_from_registry_without_non_routable_system_test(): void
+    public function test_route_create_page_renders_types_from_registry_without_non_routable_system_test(): void
     {
         SignalDestination::create([
             'label' => 'Ops webhook',
@@ -32,9 +32,9 @@ class AlertsHubRoutesTest extends TestCase
         ]);
 
         $this->actingAs($this->user)
-            ->get(route('settings.alerts.index'))
+            ->get(route('settings.alerts.routes.create'))
             ->assertOk()
-            ->assertSee('Routes')
+            ->assertSee('New route')
             ->assertSee('ticket.*')
             ->assertSee('agent.*')
             ->assertSee('value="ticket.created"', false)

@@ -1,12 +1,3 @@
-@if($hasStalePendingDelivery)
-    <div class="alert alert-danger shadow-sm" role="alert">
-        <div class="fw-semibold">
-            <i class="bi bi-exclamation-triangle me-1"></i>queue worker may be down
-        </div>
-        <div class="small">signals are enqueued but not delivering</div>
-    </div>
-@endif
-
 <div class="row g-4">
     <div class="col-xl-8">
         <div class="card card-static shadow-sm">

@@ -35,15 +35,11 @@ class AlertsHubController extends Controller
                 ->orderBy('label')
                 ->get()
                 ->map(fn (SignalDestination $destination) => $this->decorateDestination($destination)),
-            'routeDestinations' => SignalDestination::query()
-                ->orderBy('label')
-                ->get(['id', 'label', 'type']),
             'routes' => SignalRoute::query()
                 ->with('steps.destination')
                 ->orderBy('label')
                 ->get()
                 ->map(fn (SignalRoute $route) => $this->decorateRoute($route)),
-            'eventTypeGroups' => $this->eventTypeGroups(),
             'recentDeliveries' => SignalDelivery::query()
                 ->with(['destination', 'event'])
                 ->latest()
@@ -57,11 +53,6 @@ class AlertsHubController extends Controller
                 ->where('status', 'pending')
                 ->where('created_at', '<', now()->subMinutes(10))
                 ->exists(),
-            'mcpTokens' => McpToken::query()
-                ->active()
-                ->orderBy('label')
-                ->get(['label']),
-            'secretMask' => self::SECRET_MASK,
         ]);
     }
 

@@ -41,6 +41,7 @@ class AlertsHubDestinationDetailTest extends TestCase
             ->assertSee('1234')                    // last-4 shown
             ->assertSee('delivered')               // health + recent delivery
             ->assertSee('All destinations')        // back-link
+            ->assertSee('Rotating this token&#039;s label re-points or orphans this destination', false) // mcp_token_label rotate warning, from _form
             ->assertDontSee('https://93.184.216.34/hooks/super-secret-1234'); // full secret never rendered
     }
 }
