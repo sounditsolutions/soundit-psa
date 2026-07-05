@@ -4,8 +4,10 @@ namespace Tests\Feature\Chet;
 
 use App\Models\OperatorInbox;
 use App\Models\Setting;
+use App\Models\TeamsPersona;
 use App\Models\User;
 use App\Support\McpConfig;
+use App\Support\TeamsPersonaConfig;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -21,13 +23,20 @@ class PollOperatorMessagesToolTest extends TestCase
     {
         parent::setUp();
 
+        // TeamsPersonaConfig::enabled() memoizes in a bare PHP static, which
+        // (unlike the DB) RefreshDatabase does not reset between test methods
+        // in the same process — flush it explicitly so a persona created in
+        // one test method can never leak into another test's lane resolution.
+        TeamsPersonaConfig::flush();
+
         Setting::setValue('teams_chet_conversation_id', $this->conv);
         $this->token = McpConfig::rotateStaffToken(allowedTools: ['poll_operator_messages', 'post_to_operator'], label: 'office-teams-pack');
     }
 
-    private function poll(array $args = []): array
+    /** $token defaults to the class's own legacy-labeled token; pass a persona's own token to poll its lane instead. */
+    private function poll(array $args = [], ?string $token = null): array
     {
-        $r = $this->withHeaders(['Authorization' => 'Bearer '.$this->token])
+        $r = $this->withHeaders(['Authorization' => 'Bearer '.($token ?? $this->token)])
             ->postJson('/api/mcp/staff', [
                 'jsonrpc' => '2.0',
                 'id' => 1,
@@ -49,6 +58,26 @@ class PollOperatorMessagesToolTest extends TestCase
             'direct_mention' => false,
             'authorized_steer' => false,
             'delivered_at' => null,
+        ], $overrides));
+    }
+
+    /**
+     * Credential-complete (active()) by default — override tenant_id and/or
+     * bot_client_secret to null to build an ENABLED-but-incomplete persona
+     * for the psa-2wis regression lock below. mcp_token_label must match an
+     * already-created McpToken (TeamsPersona::booted() enforces this), so
+     * callers must rotate that token first.
+     */
+    private function makePersona(array $overrides = []): TeamsPersona
+    {
+        return TeamsPersona::create(array_merge([
+            'persona_key' => 'gus',
+            'display_name' => 'Gus',
+            'bot_app_id' => 'gus-app-id',
+            'tenant_id' => 'gus-tenant-id',
+            'bot_client_secret' => 'gus-secret',
+            'mcp_token_label' => 'gus-token',
+            'enabled' => true,
         ], $overrides));
     }
 
@@ -158,6 +187,92 @@ class PollOperatorMessagesToolTest extends TestCase
 
         $out = $this->poll();
         $this->assertCount(1, $out['messages']);
+    }
+
+    /**
+     * psa-2wis regression lock. TeamsPersonaConfig::byTokenLabel() is
+     * active()-scoped (enabled=true AND credential-complete, per psa-7drx
+     * T1). Before the fix, pollOperatorMessages() resolved the poll LANE
+     * through byTokenLabel() — an ENABLED-but-credential-incomplete
+     * persona's authenticated token would resolve $persona=null (active()
+     * excludes it), landing on lane=null, i.e. the LEGACY lane (persona IS
+     * NULL), and would both see AND drain (stamp delivered_at on) the live
+     * legacy operator inbox during a credential-wizard window. An enabled
+     * persona's token must resolve to its OWN lane regardless of
+     * credential completeness, and must never fall through to legacy.
+     */
+    public function test_incomplete_but_enabled_persona_token_polls_its_own_lane_not_legacy(): void
+    {
+        $incompleteToken = McpConfig::rotateStaffToken(
+            allowedTools: ['poll_operator_messages'],
+            label: 'gus-incomplete',
+        );
+        $this->makePersona([
+            'bot_app_id' => 'gus-incomplete-app',
+            'tenant_id' => null,
+            'bot_client_secret' => null,
+            'mcp_token_label' => 'gus-incomplete',
+        ]);
+
+        $legacyRow = $this->seedMessage(['text' => 'legacy chatter']);
+        $ownLaneRow = $this->seedMessage(['text' => 'gus lane chatter', 'persona' => 'gus']);
+
+        $out = $this->poll([], $incompleteToken);
+
+        $this->assertCount(1, $out['messages']);
+        $this->assertSame($ownLaneRow->id, $out['messages'][0]['id']);
+        $this->assertNull($legacyRow->fresh()->delivered_at, 'an incomplete-but-enabled persona token must never drain the legacy lane');
+
+        // The write side (ack-by-cursor) must share the same lane restriction.
+        $this->poll(['cursor' => $out['next_cursor']], $incompleteToken);
+        $this->assertNotNull($ownLaneRow->fresh()->delivered_at);
+        $this->assertNull($legacyRow->fresh()->delivered_at, 'ack-by-cursor must never touch the legacy row either');
+    }
+
+    /** A credential-complete (active()) persona's token polls its own lane exactly as before the fix. */
+    public function test_active_persona_token_polls_its_own_lane_same_as_before(): void
+    {
+        $activeToken = McpConfig::rotateStaffToken(
+            allowedTools: ['poll_operator_messages'],
+            label: 'gus-active',
+        );
+        $this->makePersona([
+            'bot_app_id' => 'gus-active-app',
+            'mcp_token_label' => 'gus-active',
+        ]);
+
+        $legacyRow = $this->seedMessage(['text' => 'legacy chatter']);
+        $ownLaneRow = $this->seedMessage(['text' => 'gus lane chatter', 'persona' => 'gus']);
+
+        $out = $this->poll([], $activeToken);
+
+        $this->assertCount(1, $out['messages']);
+        $this->assertSame($ownLaneRow->id, $out['messages'][0]['id']);
+        $this->assertNull($legacyRow->fresh()->delivered_at);
+
+        $this->poll(['cursor' => $out['next_cursor']], $activeToken);
+        $this->assertNotNull($ownLaneRow->fresh()->delivered_at);
+        $this->assertNull($legacyRow->fresh()->delivered_at);
+    }
+
+    /** A token matching NO enabled persona still resolves the legacy lane byte-identically, even with an enabled persona registered under a different label. */
+    public function test_legacy_token_still_drains_legacy_lane_when_an_enabled_persona_exists(): void
+    {
+        McpConfig::rotateStaffToken(allowedTools: ['poll_operator_messages'], label: 'gus-active');
+        $this->makePersona(['bot_app_id' => 'gus-active-app', 'mcp_token_label' => 'gus-active']);
+
+        $legacyRow = $this->seedMessage(['text' => 'legacy chatter']);
+        $personaRow = $this->seedMessage(['text' => 'gus lane chatter', 'persona' => 'gus']);
+
+        // $this->token (label 'office-teams-pack' from setUp()) matches no persona.
+        $out = $this->poll();
+
+        $this->assertCount(1, $out['messages']);
+        $this->assertSame($legacyRow->id, $out['messages'][0]['id']);
+
+        $this->poll(['cursor' => $out['next_cursor']]);
+        $this->assertNotNull($legacyRow->fresh()->delivered_at);
+        $this->assertNull($personaRow->fresh()->delivered_at, 'a legacy token must never drain a persona-laned row');
     }
 
     public function test_token_without_poll_scope_is_denied(): void
