@@ -4,6 +4,7 @@
     $routeDestinations = $routeDestinations ?? collect();
     $routeTypes = $route->event_filter['types'] ?? [];
     $existingSteps = ($route->steps ?? collect())->values();
+    $stepSlotCount = max(3, $existingSteps->count());
 @endphp
 
 <div class="mb-3">
@@ -73,7 +74,7 @@
     @error('steps')
         <div class="text-danger small mb-2">{{ $message }}</div>
     @enderror
-    @for($i = 0; $i < 3; $i++)
+    @for($i = 0; $i < $stepSlotCount; $i++)
         @php
             $existingStep = $existingSteps[$i] ?? null;
             $prevStep = $existingSteps[$i - 1] ?? null;
