@@ -3259,6 +3259,68 @@
             </div>
         </div>
 
+        {{-- AI Staff Roster Card (Teams AI-Staff Personas P1 Task 5) — read-only stub --}}
+        <div class="card shadow-sm mb-4">
+            <div class="card-header d-flex align-items-center">
+                <span>
+                    <i class="bi bi-person-badge me-2"></i>AI Staff
+                    <span class="badge bg-secondary ms-2">{{ count($teamsPersonas) }}</span>
+                </span>
+            </div>
+            <div class="card-body">
+                <p class="text-muted small">
+                    Hand-registered scaffolds for this P1 release — the provisioning wizard arrives in P2.
+                </p>
+
+                @if(count($teamsPersonas) === 0)
+                    <div class="text-center text-muted py-4">
+                        <div class="mb-2"><i class="bi bi-person-badge fs-1"></i></div>
+                        No AI-Staff personas yet — provision via the seeder/CLI; the wizard arrives in P2.
+                    </div>
+                @else
+                    <div class="table-responsive">
+                        <table class="table table-sm table-hover align-middle mb-0">
+                            <thead>
+                                <tr>
+                                    <th>Persona</th>
+                                    <th>Role</th>
+                                    <th>Status</th>
+                                    <th>Secret</th>
+                                    <th>MCP token label</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach($teamsPersonas as $persona)
+                                    <tr>
+                                        <td>
+                                            <strong>{{ $persona['display_name'] }}</strong>
+                                            <div class="text-muted small">{{ $persona['persona_key'] }}</div>
+                                        </td>
+                                        <td class="small">{{ $persona['role_blurb'] ?? '—' }}</td>
+                                        <td>
+                                            @if($persona['enabled'])
+                                                <span class="badge bg-success">Persona enabled</span>
+                                            @else
+                                                <span class="badge bg-secondary">Persona dormant</span>
+                                            @endif
+                                        </td>
+                                        <td>
+                                            @if($persona['has_secret'])
+                                                <span class="badge bg-success">Secret set</span>
+                                            @else
+                                                <span class="badge bg-secondary">No secret</span>
+                                            @endif
+                                        </td>
+                                        <td class="small">{{ $persona['mcp_token_label'] ?? '—' }}</td>
+                                    </tr>
+                                @endforeach
+                            </tbody>
+                        </table>
+                    </div>
+                @endif
+            </div>
+        </div>
+
         {{-- AI Technician Card --}}
         <div class="card shadow-sm mb-4">
             <div class="card-header d-flex align-items-center">

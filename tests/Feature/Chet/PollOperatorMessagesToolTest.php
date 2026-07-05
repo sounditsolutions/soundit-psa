@@ -135,9 +135,14 @@ class PollOperatorMessagesToolTest extends TestCase
         // scoping was retired because the persona lane subsumes it. A legacy
         // (null-persona) token drains only `persona IS NULL` rows, regardless
         // of conversation_id; a persona-laned row is invisible to it even when
-        // it shares no other distinguishing feature.
+        // it shares no other distinguishing feature. The persona row below
+        // intentionally shares the SAME conversation_id as the legacy row so
+        // the two differ ONLY by lane — isolating persona-scoping from
+        // conversation-scoping (Task 5 housekeeping: previously the persona
+        // row also used a different conversation_id, so the test couldn't
+        // tell which axis was doing the work).
         $this->seedMessage();
-        $this->seedMessage(['conversation_id' => 'someone-else', 'persona' => 'gus']);
+        $this->seedMessage(['conversation_id' => 'chet-conv-1', 'persona' => 'gus']);
 
         $out = $this->poll();
         $this->assertCount(1, $out['messages']);
