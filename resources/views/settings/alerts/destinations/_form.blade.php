@@ -56,7 +56,7 @@
 
 <div class="mb-3" data-field-for="mcp">
     <label for="wake_secret" class="form-label">Wake Secret</label>
-    <input type="password" id="wake_secret" name="wake_secret" placeholder="{{ $destination?->masked_wake_secret ?? $secretMask }}" class="form-control @error('wake_secret') is-invalid @enderror" autocomplete="new-password">
+    <input type="password" id="wake_secret" name="wake_secret" placeholder="{{ $secretMask }}" class="form-control @error('wake_secret') is-invalid @enderror" autocomplete="new-password">
     @error('wake_secret')
         <div class="invalid-feedback">{{ $message }}</div>
     @enderror

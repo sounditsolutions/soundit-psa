@@ -44,4 +44,23 @@ class AlertsHubDestinationDetailTest extends TestCase
             ->assertSee('Rotating this token&#039;s label re-points or orphans this destination', false) // mcp_token_label rotate warning, from _form
             ->assertDontSee('https://93.184.216.34/hooks/super-secret-1234'); // full secret never rendered
     }
+
+    public function test_show_never_reveals_any_wake_secret_chars_for_mcp_destination(): void
+    {
+        // Unlike address/wake_url (host + last-4 is a legit identifier), a
+        // SECRET must render zero characters — the edit-form placeholder is
+        // the opaque mask, never mask()'s ...last4 form (review finding, PR #163).
+        $dest = SignalDestination::create([
+            'label' => 'Chet doorbell', 'type' => 'mcp',
+            'mcp_token_label' => 'office-signals',
+            'wake_url' => 'https://198.51.100.7/wake',
+            'wake_secret' => 'hmac-secret-value-zx9q',
+        ]);
+
+        $this->actingAs($this->user)->get(route('settings.alerts.destinations.show', $dest))
+            ->assertOk()
+            ->assertSee('Chet doorbell')
+            ->assertDontSee('zx9q')                       // not even last-4
+            ->assertDontSee('hmac-secret-value-zx9q');    // never the value
+    }
 }
