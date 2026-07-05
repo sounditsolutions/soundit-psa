@@ -81,6 +81,18 @@ class AlertsHubController extends Controller
             ->with('success', 'Destination created.');
     }
 
+    public function showDestination(SignalDestination $destination)
+    {
+        return view('settings.alerts.destinations.show', [
+            'destination' => $this->decorateDestination($destination),
+            'recentDeliveries' => SignalDelivery::query()
+                ->where('destination_id', $destination->id)
+                ->with('event')->latest()->limit(20)->get(),
+            'mcpTokens' => McpToken::query()->active()->orderBy('label')->get(['label']),
+            'secretMask' => self::SECRET_MASK,
+        ]);
+    }
+
     public function update(Request $request, SignalDestination $destination)
     {
         $before = $this->snapshot($destination);
@@ -95,7 +107,7 @@ class AlertsHubController extends Controller
             $this->changes($before, $this->snapshot($destination)),
         );
 
-        return redirect()->route('settings.alerts.index')
+        return redirect()->route('settings.alerts.destinations.show', $destination)
             ->with('success', 'Destination updated.');
     }
 
@@ -110,7 +122,7 @@ class AlertsHubController extends Controller
             ['enabled' => $destination->enabled],
         );
 
-        return redirect()->route('settings.alerts.index')
+        return redirect()->back()
             ->with('success', $destination->enabled ? 'Destination enabled.' : 'Destination disabled.');
     }
 
@@ -139,11 +151,11 @@ class AlertsHubController extends Controller
         } catch (\Throwable $e) {
             $this->markFailedIfStillPending($destination, $delivery, $e);
 
-            return redirect()->route('settings.alerts.index')
+            return redirect()->route('settings.alerts.destinations.show', $destination)
                 ->with('error', 'Test signal failed: '.$delivery->fresh()->error);
         }
 
-        return redirect()->route('settings.alerts.index')
+        return redirect()->route('settings.alerts.destinations.show', $destination)
             ->with('success', 'Test signal delivered.');
     }
 

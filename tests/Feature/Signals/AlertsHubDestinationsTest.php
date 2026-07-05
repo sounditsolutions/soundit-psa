@@ -173,7 +173,7 @@ class AlertsHubDestinationsTest extends TestCase
                 'address' => '',
             ])
             ->assertSessionHasNoErrors()
-            ->assertRedirect(route('settings.alerts.index'));
+            ->assertRedirect(route('settings.alerts.destinations.show', $destination));
 
         $destination->refresh();
         $this->assertSame('Ops renamed', $destination->label);
@@ -197,6 +197,7 @@ class AlertsHubDestinationsTest extends TestCase
         ]);
 
         $this->actingAs($this->user)
+            ->from(route('settings.alerts.index'))
             ->post(route('settings.alerts.destinations.toggle', $destination))
             ->assertRedirect(route('settings.alerts.index'));
 
@@ -207,6 +208,7 @@ class AlertsHubDestinationsTest extends TestCase
         ]);
 
         $this->actingAs($this->user)
+            ->from(route('settings.alerts.index'))
             ->post(route('settings.alerts.destinations.toggle', $destination))
             ->assertRedirect(route('settings.alerts.index'));
 
@@ -238,7 +240,7 @@ class AlertsHubDestinationsTest extends TestCase
         for ($i = 0; $i < 6; $i++) {
             $this->actingAs($this->user)
                 ->post(route('settings.alerts.destinations.test', $destination))
-                ->assertRedirect(route('settings.alerts.index'));
+                ->assertRedirect(route('settings.alerts.destinations.show', $destination));
         }
 
         $this->actingAs($this->user)
@@ -282,7 +284,7 @@ class AlertsHubDestinationsTest extends TestCase
         $this->actingAs($this->user)
             ->post(route('settings.alerts.destinations.test', $destination))
             ->assertSessionHasNoErrors()
-            ->assertRedirect(route('settings.alerts.index'));
+            ->assertRedirect(route('settings.alerts.destinations.show', $destination));
 
         $event = SignalEvent::where('type_key', 'system.test')->firstOrFail();
         $delivery = SignalDelivery::where('event_id', $event->id)->firstOrFail();
