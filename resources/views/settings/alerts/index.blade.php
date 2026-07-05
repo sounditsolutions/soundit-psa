@@ -70,6 +70,17 @@
                         </td>
                         <td>
                             @include('settings.alerts._status_badge', ['enabled' => $destination->enabled])
+                            @if($destination->last_delivery_status === 'failed')
+                                {{-- At-a-glance broken-destination indicator. last_error can carry
+                                     remote-server response text, so it is HTML-escaped ({{ }}) in both
+                                     the badge label and the tooltip. Full detail on the detail page. --}}
+                                <div class="mt-1">
+                                    <span class="badge bg-danger-subtle text-danger-emphasis alerts-destination-failure"
+                                          title="{{ $destination->last_error }}">
+                                        <i class="bi bi-exclamation-triangle-fill me-1"></i>{{ \Illuminate\Support\Str::limit($destination->last_error, 40) }}
+                                    </span>
+                                </div>
+                            @endif
                             @if($destination->last_delivery_at)
                                 <div class="text-muted small mt-1">{{ $destination->last_delivery_at->toAppTz()->format('Y-m-d H:i') }}</div>
                             @endif

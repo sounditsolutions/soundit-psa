@@ -69,6 +69,38 @@ class AlertsHubDestinationsTest extends TestCase
             ->assertDontSee('wake-secret-1234');
     }
 
+    public function test_landing_shows_an_escaped_failure_indicator_only_for_broken_destinations(): void
+    {
+        SignalDestination::create([
+            'label' => 'Broken hook',
+            'type' => 'webhook',
+            'address' => 'https://93.184.216.34/hooks/abcd1234',
+            'last_delivery_at' => now()->subMinutes(2),
+            'last_delivery_status' => 'failed',
+            'last_error' => '<script>alert(1)</script> HTTP 500 Server Error',
+        ]);
+        SignalDestination::create([
+            'label' => 'Healthy hook',
+            'type' => 'webhook',
+            'address' => 'https://93.184.216.34/hooks/wxyz9999',
+            'last_delivery_at' => now()->subMinutes(1),
+            'last_delivery_status' => 'delivered',
+            'last_error' => null,
+        ]);
+
+        $response = $this->actingAs($this->user)
+            ->get(route('settings.alerts.index'))
+            ->assertOk();
+
+        // The broken destination surfaces its error text...
+        $response->assertSee('HTTP 500 Server Error');
+        // ...HTML-escaped (last_error can carry remote-server response text) — never raw.
+        $response->assertSee('&lt;script&gt;', false);
+        $response->assertDontSee('<script>alert(1)</script>', false);
+        // Exactly one failure indicator on the page (only the broken row, not the healthy one).
+        $this->assertSame(1, substr_count($response->getContent(), 'alerts-destination-failure'));
+    }
+
     public function test_create_page_renders_and_store_redirects_to_detail(): void
     {
         $this->actingAs($this->user)->get(route('settings.alerts.destinations.create'))
