@@ -18,6 +18,8 @@ class SignalEventTypesTest extends TestCase
             'ticket.sla_approaching',
             'intake.email_received',
             'intake.call_received',
+            'intake.email_unresolved',
+            'intake.call_transcribed',
             'agent.flag_attention',
             'operator.message',
             'agent.proposal_held',

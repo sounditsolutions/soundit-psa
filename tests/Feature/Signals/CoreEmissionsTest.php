@@ -32,6 +32,7 @@ use Tests\TestCase;
 
 class CoreEmissionsTest extends TestCase
 {
+    use InteractsWithSignalEvents;
     use RefreshDatabase;
 
     protected function setUp(): void
@@ -227,17 +228,5 @@ class CoreEmissionsTest extends TestCase
 
         $this->assertFalse($digest->isEmpty);
         $this->assertStringContainsString('Dead webhook', $digest->body);
-    }
-
-    private function assertSingleSignalEvent(string $typeKey): SignalEvent
-    {
-        $events = SignalEvent::query()->where('type_key', $typeKey)->get();
-
-        $this->assertSame(1, $events->count(), "Expected exactly one {$typeKey} signal event.");
-
-        /** @var SignalEvent $event */
-        $event = $events->first();
-
-        return $event;
     }
 }

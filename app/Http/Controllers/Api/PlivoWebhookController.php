@@ -43,6 +43,31 @@ class PlivoWebhookController extends Controller
     }
 
     /**
+     * Reference-only signal emission for the intake call feed (E3 intake.call_received,
+     * psa-ip15 W1 Task 3). Wrapped in its own try/catch because SignalHub::emit()'s
+     * internal catch only guards its own method body — the app(SignalHub::class)
+     * container resolution and the method dispatch happen in the CALLER's frame, so
+     * an unwrapped call here could still throw and break the native webhook response.
+     * Unwrapped, a throw here would make handle() return HTTP 500, and Plivo retries
+     * failed webhooks — a parallel-plane violation. The wrap prevents that.
+     *
+     * Fires for both inbound and outbound terminal calls (direction is carried in the
+     * summary word so downstream consumers can tell them apart).
+     */
+    private function emitCallReceived(?PhoneCall $call): void
+    {
+        if (! $call) {
+            return;
+        }
+        try {
+            $direction = $call->direction === \App\Enums\CallDirection::Outbound ? 'outbound' : 'inbound';
+            app(\App\Services\Signals\SignalHub::class)->emit('intake.call_received', $call, $direction.' call received', ['client_id' => $call->client_id]);
+        } catch (\Throwable $e) {
+            Log::warning('[PlivoWebhook] intake.call_received emit failed', ['call_uuid' => $call->call_uuid, 'error' => $e->getMessage()]);
+        }
+    }
+
+    /**
      * Answer URL for outbound calls from browser endpoints.
      * Returns Dial XML to connect the browser caller to the destination number.
      */
@@ -308,6 +333,7 @@ class PlivoWebhookController extends Controller
 
             $call = $this->phoneCallService->handleCallEnded($callUuid, $data);
             $this->resolveRecordingAfterEnd($call);
+            $this->emitCallReceived($call);
 
             return response('OK', 200);
         }
@@ -316,6 +342,7 @@ class PlivoWebhookController extends Controller
         if (in_array($callStatus, ['completed', 'busy', 'failed', 'timeout', 'no-answer', 'cancel'])) {
             $call = $this->phoneCallService->handleCallEnded($callUuid, $request->all());
             $this->resolveRecordingAfterEnd($call);
+            $this->emitCallReceived($call);
 
             return response('OK', 200);
         }

@@ -236,6 +236,8 @@ class EmailService
                 'ticket_id' => $ticket->id,
             ]);
 
+            $this->emitIntakeSignal('intake.email_received', $email, 'inbound email matched to existing ticket');
+
             return;
         }
 
@@ -272,6 +274,37 @@ class EmailService
         $email->refresh();
         if ($email->ticket_id === null && $email->received_at >= now()->subHours(24)) {
             app(NotificationService::class)->notifyUnresolvedEmail($email);
+
+            $this->emitIntakeSignal('intake.email_unresolved', $email, 'inbound email unresolved (no ticket)');
+        }
+
+        // E1 umbrella intake feed for fallthrough survivors. Outcome is derived from whether a
+        // ticket now exists. NOTE: a non-null ticket_id is labeled "created", but the dormant
+        // intake-router attach sub-path (routeInboundEmail) could also produce a non-null
+        // ticket_id via *attach* — accurate today because that path is off by default
+        // (AgentConfig::intakeEnabled()). Revisit this label if intake routing is enabled.
+        $outcome = $email->ticket_id !== null ? 'ticket created' : 'unresolved (no ticket)';
+        $this->emitIntakeSignal('intake.email_received', $email, 'inbound email received — '.$outcome);
+    }
+
+    /**
+     * Reference-only signal emission for the intake email feed (E1 intake.email_received /
+     * E2 intake.email_unresolved). Wrapped in its own try/catch because SignalHub::emit()'s
+     * internal catch only guards its own method body — the app(SignalHub::class) container
+     * resolution and the method dispatch happen in the CALLER's frame, so an unwrapped call
+     * here could still throw and break the native inbound-email path (parallel-plane
+     * violation). A signal delivery failure must never take down email processing.
+     */
+    private function emitIntakeSignal(string $typeKey, Email $email, string $summary): void
+    {
+        try {
+            app(\App\Services\Signals\SignalHub::class)->emit($typeKey, $email, $summary, ['client_id' => $email->client_id]);
+        } catch (\Throwable $e) {
+            Log::warning('[EmailService] Intake signal emit failed', [
+                'email_id' => $email->id,
+                'type_key' => $typeKey,
+                'error' => $e->getMessage(),
+            ]);
         }
     }
 
