@@ -258,21 +258,10 @@ TEMPLATE;
                 ]);
             }
 
-            // 5. Mark completed
-            $call->update([
-                'transcription_status' => TranscriptionStatus::Completed,
-                'transcribed_at' => now(),
-                'transcription_error' => null,
-            ]);
-
-            // 6. AI call-intake front-door (psa-xcyo): when enabled, hand the now-transcribed
-            //    call to the CallIntakePipeline (resolve → attach/create) on the success path
-            //    only. Gating the dispatch on intakeEnabled keeps transcription byte-identical
-            //    when intake is off (no job churn); the pipeline re-checks dormancy as defence
-            //    in depth. afterCommit() so the queued job sees the completed row.
-            if (\App\Support\AgentConfig::intakeEnabled()) {
-                \App\Jobs\CallIntakeJob::dispatch($call->id)->afterCommit();
-            }
+            // 5-6. Mark completed, emit the reference-only intake signal, and dispatch
+            // the AI call-intake front-door when enabled. Extracted to its own method
+            // (see finalizeSuccessfulTranscription() below) — behaviour-preserving.
+            $this->finalizeSuccessfulTranscription($call);
         } catch (\Throwable $e) {
             $call->update([
                 'transcription_status' => TranscriptionStatus::Failed,
@@ -301,6 +290,50 @@ TEMPLATE;
                     ]);
                 }
             }
+        }
+    }
+
+    /**
+     * Mark a transcription as successfully completed: update status, emit the
+     * reference-only intake.call_transcribed signal (E4, psa-ip15 W1 Task 3), and
+     * dispatch the AI call-intake front-door job when enabled.
+     *
+     * Extracted from transcribe()'s success tail purely to create a test seam —
+     * the private whisperTranscribe(...) and analyzeWithAi(...) helpers build
+     * their own raw GuzzleClient with no fake/mock seam, so the full transcribe()
+     * success path can't be driven end-to-end in tests. This method is
+     * behaviour-preserving: same statements, same order, called from the same
+     * place inside transcribe()'s try block.
+     *
+     * The signal emit is wrapped in its own try/catch: this method runs INSIDE
+     * transcribe()'s try block, so an unwrapped throw here would be caught by
+     * transcribe()'s catch and wrongly mark a SUCCESSFUL transcription as Failed
+     * (and rethrow) — a parallel-plane violation. The wrap prevents that; a
+     * signal delivery failure must never corrupt transcription status.
+     */
+    protected function finalizeSuccessfulTranscription(PhoneCall $call): void
+    {
+        $call->update([
+            'transcription_status' => TranscriptionStatus::Completed,
+            'transcribed_at' => now(),
+            'transcription_error' => null,
+        ]);
+
+        try {
+            app(\App\Services\Signals\SignalHub::class)->emit('intake.call_transcribed', $call, 'call transcribed', ['client_id' => $call->client_id]);
+        } catch (\Throwable $e) {
+            Log::warning('[Transcription] intake.call_transcribed emit failed', [
+                'call_id' => $call->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        // AI call-intake front-door (psa-xcyo): unchanged — dispatch only when intake enabled.
+        // Gating the dispatch on intakeEnabled keeps transcription byte-identical when intake
+        // is off (no job churn); the pipeline re-checks dormancy as defence in depth.
+        // afterCommit() so the queued job sees the completed row.
+        if (\App\Support\AgentConfig::intakeEnabled()) {
+            \App\Jobs\CallIntakeJob::dispatch($call->id)->afterCommit();
         }
     }
 
