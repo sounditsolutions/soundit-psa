@@ -1,0 +1,33 @@
+{
+  "run_label": "tester focused client ticket billing QA 2026-07-06 14:03 UTC",
+  "results": [
+    {
+      "scenario": "client-search-create: created QA Search Create Client 20260706140042, confirmed detail fields, and searched the client list back to the created record",
+      "status": "pass"
+    },
+    {
+      "scenario": "tix-create-manual: created ticket T-103 for Vandelay Industries, confirmed subject/description/client/priority on detail, and found it from ticket-list search",
+      "status": "pass"
+    },
+    {
+      "scenario": "invoice-detail: INV-2026107 totals/client rendered, but detail showed Posted while the invoice list showed Overdue; duplicate of open psa-oujh, not refiled",
+      "status": "fail"
+    }
+  ],
+  "findings": [
+    {
+      "id": "psa-oujh",
+      "kind": "bug",
+      "title": "Invoice detail shows Posted for an invoice the list marks Overdue (existing open finding, not refiled)"
+    }
+  ],
+  "screenshots": [
+    "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/client-search-create-20260706-created-client-detail.png",
+    "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/client-search-create-20260706-search-results.png",
+    "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/tix-create-manual-20260706-created-ticket-detail.png",
+    "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/tix-create-manual-20260706-ticket-list-search.png",
+    "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/tix-create-manual-20260706-description-check-ticket-detail-description.png",
+    "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/invoice-detail-20260706-discovery-invoice-list.png",
+    "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/invoice-detail-20260706-invoice-detail-overdue.png"
+  ]
+}
