@@ -1,0 +1,31 @@
+{
+  "run_label": "tester client-overview contract-to-invoice 2026-07-06 10:30 UTC",
+  "results": [
+    {
+      "scenario": "client-overview: Vandelay detail and linked people/assets/tickets/contracts pages loaded and exposed expected sections; ticket-count and blank-phone issues are already open",
+      "status": "pass"
+    },
+    {
+      "scenario": "contract-to-invoice: contract #4, its invoices tab, and INV-2026103 detail rendered expected client/status/totals, but the contract detail did not flag an overdue recurring run",
+      "status": "fail"
+    }
+  ],
+  "findings": [
+    {
+      "id": "psa-fbyq",
+      "kind": "ux",
+      "title": "Contract detail does not flag overdue recurring profile runs"
+    }
+  ],
+  "screenshots": [
+    "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/client-overview-20260706-1030-client-detail.png",
+    "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/client-overview-20260706-1030-client-people.png",
+    "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/client-overview-20260706-1030-client-assets.png",
+    "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/client-overview-20260706-1030-client-tickets.png",
+    "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/client-overview-20260706-1030-client-contracts.png",
+    "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/contract-to-invoice-20260706-1030-contract-detail.png",
+    "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/contract-to-invoice-20260706-1030-contract-invoices.png",
+    "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/contract-to-invoice-20260706-1030-invoice-detail.png",
+    "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/contract-to-invoice-20260706-profile-overdue-check-profile-detail.png"
+  ]
+}
