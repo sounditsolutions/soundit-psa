@@ -1,0 +1,46 @@
+{
+  "run_label": "tester focused client/asset/billing/ticket sweep 2026-07-06 10:51 UTC",
+  "results": [
+    {
+      "scenario": "client-overview: opened Vandelay Industries, verified the overview exposes the primary contact and contracts, then verified tickets/assets/contracts/primary-contact detail are reachable from the client context",
+      "status": "pass"
+    },
+    {
+      "scenario": "asset-ticket-link: opened T-9, confirmed VAN-APP01 is visible and clickable from the ticket, then confirmed the asset Alerts & Tickets tab links back to T-9",
+      "status": "pass"
+    },
+    {
+      "scenario": "invoice-list/invoice-detail: opened invoice list, status-filtered posted invoices, and verified INV-2026103 client/status/line totals on detail",
+      "status": "pass"
+    },
+    {
+      "scenario": "tix-create-manual: created T-102 for Vandelay Industries with subject QA create manual ticket 20260706105139, P2 priority, and a Markdown description; verified the saved detail and global queue search",
+      "status": "pass"
+    }
+  ],
+  "findings": [],
+  "artifacts": {
+    "screenshots": [
+      "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/client-overview-20260706-qa-client-overview-vandelay-detail.png",
+      "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/client-overview-20260706-direct-tabs-client-tickets-direct.png",
+      "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/client-overview-20260706-direct-tabs-client-contracts-direct.png",
+      "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/client-overview-20260706-direct-tabs-primary-contact-detail.png",
+      "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/client-overview-20260706-asset-main-row-client-asset-main-row-click.png",
+      "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/asset-ticket-link-20260706-bidi-ticket-linked-asset.png",
+      "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/asset-ticket-link-20260706-bidi-asset-alerts-tickets-from-ticket.png",
+      "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/invoice-list-detail-20260706-billing-invoice-list-start.png",
+      "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/invoice-list-detail-20260706-billing-invoice-list-posted-filter.png",
+      "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/invoice-list-detail-20260706-billing-invoice-detail-inv3.png",
+      "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/tix-create-manual-20260706-probe-ticket-create-form.png",
+      "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/tix-create-manual-20260706-create-created-ticket-detail.png",
+      "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/tix-create-manual-20260706-find-ticket-list-created-search.png"
+    ],
+    "notes": [
+      "No assigned tester bead or authenticated mail assignment was present at run start, so this was a focused autonomous scenario slice.",
+      "The client tickets tab first page did not show new T-102 because Vandelay has 61 tickets and the default paginated/sorted view starts with older high-priority rows; global queue search did find T-102. I did not file this as a bug.",
+      "The asset-ticket pass reproduced the already-open asset-badge console TypeError. Existing open finding psa-txh4 covers it, so no duplicate was filed.",
+      "Billing detail still lacks a standalone mark-paid action for posted INV-2026103, but existing open finding psa-8yhp covers that gap, so no duplicate was filed.",
+      "The broad text click on VAN-APP01 initially hit an already-known stale absolute Recent link to 127.0.0.1; existing open finding psa-1xlr covers Recent links storing host-qualified URLs."
+    ]
+  }
+}
