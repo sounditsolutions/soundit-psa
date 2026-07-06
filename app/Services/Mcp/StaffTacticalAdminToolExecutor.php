@@ -2086,20 +2086,36 @@ class StaffTacticalAdminToolExecutor
             return ['error' => $error];
         }
 
-        if ($this->alreadyAwaitingOrExecuted($tool, $clientId, $contentHash)) {
-            $run = TechnicianRun::query()
-                ->where('ticket_id', $ticket->id)
-                ->where('action_type', $tool)
-                ->where('content_hash', $contentHash)
-                ->where('state', TechnicianRunState::AwaitingApproval->value)
-                ->first();
-
+        // The audit log is IMMUTABLE and stays authoritative ONLY for "was this exact
+        // content already executed" (bd psa-k4s0 Root B). approveStagedRun's dispatch
+        // calls executePolicyTaskRunAll with $directTool (not $run->action_type), so its
+        // 'executed' audit rows are logged under the DIRECT tool name — reusing this same
+        // $contentHash verbatim (see executePolicyTaskRunAll: `$run?->content_hash ?? ...`).
+        // The lookup here must query the DIRECT name to ever find that row.
+        if ($this->alreadyExecuted(self::STAGED_TO_DIRECT[$tool], $clientId, $contentHash)) {
             return [
                 'success' => true,
                 'idempotent' => true,
                 'ticket_id' => $ticket->id,
                 'ticket_display_id' => $ticket->display_id,
-                'run_id' => $run?->id,
+                'run_id' => $this->executedRunId(self::STAGED_TO_DIRECT[$tool], $clientId, $contentHash),
+                'message' => 'Already executed identical action recently; no new proposal was staged.',
+            ];
+        }
+
+        // "Still awaiting approval" is decided by the LIVE runs table ONLY, never the
+        // audit log — a stale 'awaiting_approval' audit row survives an operator deny by
+        // design and can never be used to infer that a run is still live (bd psa-k4s0
+        // Root B). Checked before the cooldown so a legitimate identical re-send is
+        // reported idempotent rather than refused as a cooldown hit.
+        $liveAwaitingRun = $this->liveAwaitingRun($ticket->id, $tool, $contentHash);
+        if ($liveAwaitingRun !== null) {
+            return [
+                'success' => true,
+                'idempotent' => true,
+                'ticket_id' => $ticket->id,
+                'ticket_display_id' => $ticket->display_id,
+                'run_id' => $liveAwaitingRun->id,
                 'message' => 'Already staged; awaiting approval.',
             ];
         }
@@ -2109,41 +2125,72 @@ class StaffTacticalAdminToolExecutor
             return ['error' => 'tactical_stage_run_policy_task_all cooldown active for this client; no proposal was staged.'];
         }
 
-        $run = TechnicianRun::create([
-            'ticket_id' => $ticket->id,
-            'client_id' => $clientId,
-            'action_type' => $tool,
-            'content_hash' => $contentHash,
-            'state' => TechnicianRunState::AwaitingApproval,
-            'proposed_content' => "Stage Tactical policy task '{$resolved['task_name']}' to run on ALL affected agents under policy '{$resolved['policy_name']}'.\nReason: ".$guard['reason'],
-            'proposed_meta' => [
-                'drafted_by' => $actorLabel,
-                'reasons' => [$guard['reason']],
-                'direct_tool' => self::STAGED_TO_DIRECT[$tool],
-                'redacted_params' => [
-                    'policy_id' => $resolved['policy_id'],
-                    'policy_name' => $resolved['policy_name'],
-                    'task_id' => $resolved['task_id'],
-                    'task_name' => $resolved['task_name'],
-                    'impact' => 'all affected agents under policy',
-                ],
-                'encrypted_payload' => Crypt::encryptString(json_encode([
-                    'direct_tool' => self::STAGED_TO_DIRECT[$tool],
-                    'client_id' => $clientId,
-                    'ticket_id' => $ticket->id,
-                    'arguments' => [
-                        'policy_id' => $resolved['policy_id'],
-                        'task_id' => $resolved['task_id'],
-                        'confirm_policy_name' => $resolved['policy_name'],
-                        'confirm_task_name' => $resolved['task_name'],
-                        'confirm_run_all' => self::TASK_RUN_ALL_CONFIRMATION,
-                        'reason' => $guard['reason'],
-                    ],
-                ], JSON_THROW_ON_ERROR)),
+        $proposedContent = "Stage Tactical policy task '{$resolved['task_name']}' to run on ALL affected agents under policy '{$resolved['policy_name']}'.\nReason: ".$guard['reason'];
+        $meta = [
+            'drafted_by' => $actorLabel,
+            'reasons' => [$guard['reason']],
+            'direct_tool' => self::STAGED_TO_DIRECT[$tool],
+            'redacted_params' => [
+                'policy_id' => $resolved['policy_id'],
+                'policy_name' => $resolved['policy_name'],
+                'task_id' => $resolved['task_id'],
+                'task_name' => $resolved['task_name'],
+                'impact' => 'all affected agents under policy',
             ],
-            'confidence' => null,
-            'tokens_used' => 0,
-        ]);
+            'encrypted_payload' => Crypt::encryptString(json_encode([
+                'direct_tool' => self::STAGED_TO_DIRECT[$tool],
+                'client_id' => $clientId,
+                'ticket_id' => $ticket->id,
+                'arguments' => [
+                    'policy_id' => $resolved['policy_id'],
+                    'task_id' => $resolved['task_id'],
+                    'confirm_policy_name' => $resolved['policy_name'],
+                    'confirm_task_name' => $resolved['task_name'],
+                    'confirm_run_all' => self::TASK_RUN_ALL_CONFIRMATION,
+                    'reason' => $guard['reason'],
+                ],
+            ], JSON_THROW_ON_ERROR)),
+        ];
+
+        // Keyed on the DB's own idempotency invariant (technician_runs_idempotency:
+        // ticket_id + action_type + content_hash is UNIQUE) — see liveAwaitingRun() above
+        // for why "still awaiting" is never inferred from the audit log. firstOrCreate
+        // (rather than a bare create()) closes the TOCTOU gap against that check and
+        // revives a no-longer-live row (denied, etc.) instead of colliding with it.
+        $run = TechnicianRun::firstOrCreate(
+            [
+                'ticket_id' => $ticket->id,
+                'action_type' => $tool,
+                'content_hash' => $contentHash,
+            ],
+            [
+                'client_id' => $clientId,
+                'state' => TechnicianRunState::AwaitingApproval,
+                'proposed_content' => $proposedContent,
+                'proposed_meta' => $meta,
+                'confidence' => null,
+                'tokens_used' => 0,
+            ],
+        );
+
+        if (! $run->wasRecentlyCreated && $run->state !== TechnicianRunState::AwaitingApproval) {
+            $run->update([
+                'state' => TechnicianRunState::AwaitingApproval->value,
+                'proposed_content' => $proposedContent,
+                'proposed_meta' => $meta,
+                'confidence' => null,
+                'tokens_used' => 0,
+            ]);
+        } elseif (! $run->wasRecentlyCreated) {
+            return [
+                'success' => true,
+                'idempotent' => true,
+                'ticket_id' => $ticket->id,
+                'ticket_display_id' => $ticket->display_id,
+                'run_id' => $run->id,
+                'message' => 'Already staged; awaiting approval.',
+            ];
+        }
 
         $this->auditAttempt($tool, 'awaiting_approval', $clientId, $contentHash, "MCP staged Tactical policy task '{$resolved['task_name']}' for all affected agents under '{$resolved['policy_name']}'.", $actorLabel, $run->id);
 
@@ -2416,20 +2463,32 @@ class StaffTacticalAdminToolExecutor
 
             return ['error' => $scope['error']];
         }
-        if ($this->alreadyAwaitingOrExecuted($tool, $clientId, $contentHash)) {
-            $run = TechnicianRun::query()
-                ->where('ticket_id', $ticket->id)
-                ->where('action_type', $tool)
-                ->where('content_hash', $contentHash)
-                ->where('state', TechnicianRunState::AwaitingApproval->value)
-                ->first();
-
+        // The audit log is IMMUTABLE and stays authoritative ONLY for "was this exact
+        // content already executed" (bd psa-k4s0 Root B).
+        if ($this->alreadyExecuted($tool, $clientId, $contentHash)) {
             return [
                 'success' => true,
                 'idempotent' => true,
                 'ticket_id' => $ticket->id,
                 'ticket_display_id' => $ticket->display_id,
-                'run_id' => $run?->id,
+                'run_id' => $this->executedRunId($tool, $clientId, $contentHash),
+                'message' => 'Already executed identical action recently; no new proposal was staged.',
+            ];
+        }
+
+        // "Still awaiting approval" is decided by the LIVE runs table ONLY, never the
+        // audit log — a stale 'awaiting_approval' audit row survives an operator deny by
+        // design and can never be used to infer that a run is still live (bd psa-k4s0
+        // Root B). Checked before the cooldown so a legitimate identical re-send is
+        // reported idempotent rather than refused as a cooldown hit.
+        $liveAwaitingRun = $this->liveAwaitingRun($ticket->id, $tool, $contentHash);
+        if ($liveAwaitingRun !== null) {
+            return [
+                'success' => true,
+                'idempotent' => true,
+                'ticket_id' => $ticket->id,
+                'ticket_display_id' => $ticket->display_id,
+                'run_id' => $liveAwaitingRun->id,
                 'message' => 'Already staged; awaiting approval.',
             ];
         }
@@ -2439,31 +2498,62 @@ class StaffTacticalAdminToolExecutor
             return ['error' => 'tactical_stage_reset_patch_policies cooldown active for this client; no proposal was staged.'];
         }
 
-        $run = TechnicianRun::create([
-            'ticket_id' => $ticket->id,
-            'client_id' => $clientId,
-            'action_type' => $tool,
-            'content_hash' => $contentHash,
-            'state' => TechnicianRunState::AwaitingApproval,
-            'proposed_content' => 'Stage bulk reset Tactical patch policies for '.$scope['label'].".\nReason: ".$guard['reason'],
-            'proposed_meta' => [
-                'drafted_by' => $actorLabel,
-                'reasons' => [$guard['reason']],
+        $proposedContent = 'Stage bulk reset Tactical patch policies for '.$scope['label'].".\nReason: ".$guard['reason'];
+        $meta = [
+            'drafted_by' => $actorLabel,
+            'reasons' => [$guard['reason']],
+            'direct_tool' => self::STAGED_TO_DIRECT[$tool],
+            'redacted_params' => ['scope' => $scope['label']],
+            'encrypted_payload' => Crypt::encryptString(json_encode([
                 'direct_tool' => self::STAGED_TO_DIRECT[$tool],
-                'redacted_params' => ['scope' => $scope['label']],
-                'encrypted_payload' => Crypt::encryptString(json_encode([
-                    'direct_tool' => self::STAGED_TO_DIRECT[$tool],
-                    'client_id' => $clientId,
-                    'ticket_id' => $ticket->id,
-                    'arguments' => [
-                        'scope' => $scope['scope'],
-                        'reason' => $guard['reason'],
-                    ],
-                ], JSON_THROW_ON_ERROR)),
+                'client_id' => $clientId,
+                'ticket_id' => $ticket->id,
+                'arguments' => [
+                    'scope' => $scope['scope'],
+                    'reason' => $guard['reason'],
+                ],
+            ], JSON_THROW_ON_ERROR)),
+        ];
+
+        // Keyed on the DB's own idempotency invariant (technician_runs_idempotency:
+        // ticket_id + action_type + content_hash is UNIQUE) — see liveAwaitingRun() above
+        // for why "still awaiting" is never inferred from the audit log. firstOrCreate
+        // (rather than a bare create()) closes the TOCTOU gap against that check and
+        // revives a no-longer-live row (denied, etc.) instead of colliding with it.
+        $run = TechnicianRun::firstOrCreate(
+            [
+                'ticket_id' => $ticket->id,
+                'action_type' => $tool,
+                'content_hash' => $contentHash,
             ],
-            'confidence' => null,
-            'tokens_used' => 0,
-        ]);
+            [
+                'client_id' => $clientId,
+                'state' => TechnicianRunState::AwaitingApproval,
+                'proposed_content' => $proposedContent,
+                'proposed_meta' => $meta,
+                'confidence' => null,
+                'tokens_used' => 0,
+            ],
+        );
+
+        if (! $run->wasRecentlyCreated && $run->state !== TechnicianRunState::AwaitingApproval) {
+            $run->update([
+                'state' => TechnicianRunState::AwaitingApproval->value,
+                'proposed_content' => $proposedContent,
+                'proposed_meta' => $meta,
+                'confidence' => null,
+                'tokens_used' => 0,
+            ]);
+        } elseif (! $run->wasRecentlyCreated) {
+            return [
+                'success' => true,
+                'idempotent' => true,
+                'ticket_id' => $ticket->id,
+                'ticket_display_id' => $ticket->display_id,
+                'run_id' => $run->id,
+                'message' => 'Already staged; awaiting approval.',
+            ];
+        }
 
         $this->auditAttempt($tool, 'awaiting_approval', $clientId, $contentHash, 'MCP staged Tactical patch-policy reset for '.$scope['label'].'.', $actorLabel, $run->id);
 
@@ -4398,13 +4488,29 @@ class StaffTacticalAdminToolExecutor
             ->exists();
     }
 
-    private function alreadyAwaitingOrExecuted(string $tool, ?int $clientId, string $contentHash): bool
+    /** The run_id of the most recent matching EXECUTED audit row, if any (bd psa-k4s0: never surface idempotent:true with a null run_id). */
+    private function executedRunId(string $tool, ?int $clientId, string $contentHash): ?int
     {
         return $this->actionLogQuery($tool, $clientId)
             ->where('content_hash', $contentHash)
-            ->whereIn('result_status', ['awaiting_approval', 'executed'])
+            ->where('result_status', 'executed')
             ->where('created_at', '>=', now()->subHours(self::DIRECT_DEDUP_HOURS))
-            ->exists();
+            ->latest('id')
+            ->value('run_id');
+    }
+
+    /**
+     * The single source of truth for "is there a live staged run awaiting approval right
+     * now" — the runs table, NEVER the (immutable) audit log (bd psa-k4s0 Root B).
+     */
+    private function liveAwaitingRun(int $ticketId, string $tool, string $contentHash): ?TechnicianRun
+    {
+        return TechnicianRun::query()
+            ->where('ticket_id', $ticketId)
+            ->where('action_type', $tool)
+            ->where('content_hash', $contentHash)
+            ->where('state', TechnicianRunState::AwaitingApproval->value)
+            ->first();
     }
 
     private function cooldownActive(string $tool, ?int $clientId, int $cooldownSeconds): bool

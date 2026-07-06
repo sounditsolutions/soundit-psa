@@ -560,6 +560,55 @@ class PsaActionToolsTest extends TestCase
         $this->assertSame(TechnicianRunState::Superseded, $runs->firstWhere('proposed_content', 'Body A.')->state);
     }
 
+    /**
+     * bd psa-k4s0 sibling audit: StaffPsaActionToolExecutor::stageTicketAction has the
+     * same "post-create supersede" SHAPE as the CIPP/Tactical staged-action bug, but its
+     * "latest draft wins" content-blind supersede is INTENTIONAL here (only one held
+     * reply/note draft should ever be live per ticket — see the "latest draft wins" test
+     * above), not the Root A defect. It also never consults the audit log to decide
+     * "still awaiting" — firstOrCreate + a direct state check on the SAME idempotency-
+     * keyed row is what the CIPP/Tactical fix now does too — so it was never exposed to
+     * Root B either. This pins that a restage of SUPERSEDED content revives it (a real
+     * run_id, never a false idempotent hit), confirming this executor needed no fix.
+     */
+    public function test_staged_email_restage_of_superseded_content_revives_not_a_false_idempotent(): void
+    {
+        $token = $this->token(['stage_email']);
+        $ticket = $this->ticketWithContact();
+
+        $this->callTool($token, 'stage_email', [
+            'client_id' => $ticket->client_id,
+            'ticket_id' => $ticket->id,
+            'reason' => 'First draft.',
+            'body' => 'Body A.',
+        ]);
+        $this->callTool($token, 'stage_email', [
+            'client_id' => $ticket->client_id,
+            'ticket_id' => $ticket->id,
+            'reason' => 'Replacement draft supersedes Body A.',
+            'body' => 'Body B.',
+        ]);
+        $bodyARun = TechnicianRun::where('ticket_id', $ticket->id)->where('action_type', 'stage_email')->where('proposed_content', 'Body A.')->firstOrFail();
+        $this->assertSame(TechnicianRunState::Superseded, $bodyARun->state);
+
+        $restaged = $this->callTool($token, 'stage_email', [
+            'client_id' => $ticket->client_id,
+            'ticket_id' => $ticket->id,
+            'reason' => 'Chet needs to restage Body A after all.',
+            'body' => 'Body A.',
+        ]);
+        $restaged->assertOk();
+        $this->assertFalse((bool) $restaged->json('result.isError'), (string) $restaged->json('result.content.0.text'));
+        $result = $this->decodedResult($restaged);
+
+        $this->assertArrayNotHasKey('idempotent', $result);
+        $this->assertNotNull($result['run_id']);
+        $this->assertSame($bodyARun->id, $result['run_id'], 'restaging Body A revives the SAME idempotency-keyed row, not a null/false hit');
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $bodyARun->fresh()->state);
+
+        $this->assertSame(2, TechnicianRun::where('ticket_id', $ticket->id)->where('action_type', 'stage_email')->count());
+    }
+
     public function test_propose_merge_stages_without_mutating_and_validates_ticket_pair(): void
     {
         $token = $this->token(['propose_merge']);

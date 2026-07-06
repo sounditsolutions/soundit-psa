@@ -455,20 +455,33 @@ class StaffCippWriteToolExecutor
         $params = $this->hashParams($directTool, $license, $state, $mailbox);
         $contentHash = $this->contentHash($tool, $client->id, $person->person->id, $ticket->id, $params);
 
-        if ($this->alreadyAwaitingOrExecuted($tool, $client->id, $contentHash)) {
-            $run = TechnicianRun::query()
-                ->where('ticket_id', $ticket->id)
-                ->where('action_type', $tool)
-                ->where('content_hash', $contentHash)
-                ->where('state', TechnicianRunState::AwaitingApproval->value)
-                ->first();
-
+        // The audit log is IMMUTABLE and stays authoritative ONLY for "was this exact
+        // content already executed" — an 'executed' row can never go stale the way an
+        // 'awaiting_approval' row can (bd psa-k4s0 Root B).
+        if ($this->alreadyExecuted($tool, $client->id, $contentHash)) {
             return [
                 'success' => true,
                 'idempotent' => true,
                 'ticket_id' => $ticket->id,
                 'ticket_display_id' => $ticket->display_id,
-                'run_id' => $run?->id,
+                'run_id' => $this->executedRunId($tool, $client->id, $contentHash),
+                'message' => 'Already executed identical action recently; no new proposal was staged.',
+            ];
+        }
+
+        // "Still awaiting approval" is decided by the LIVE runs table ONLY, never the
+        // audit log — a stale 'awaiting_approval' audit row survives supersede/deny by
+        // design and can never be used to infer that a run is still live (bd psa-k4s0
+        // Root B). Checked before the cooldown so a legitimate identical re-send is
+        // reported idempotent rather than refused as a cooldown hit.
+        $liveAwaitingRun = $this->liveAwaitingRun($ticket->id, $tool, $contentHash);
+        if ($liveAwaitingRun !== null) {
+            return [
+                'success' => true,
+                'idempotent' => true,
+                'ticket_id' => $ticket->id,
+                'ticket_display_id' => $ticket->display_id,
+                'run_id' => $liveAwaitingRun->id,
                 'message' => 'Already staged; awaiting approval.',
             ];
         }
@@ -495,26 +508,55 @@ class StaffCippWriteToolExecutor
                 'params' => $params,
             ], JSON_THROW_ON_ERROR)),
         ];
+        $proposedContent = $this->stagedDisplay($directTool, $person, $license, $state, $mailbox)."\nReason: ".$reason;
 
-        $run = TechnicianRun::create([
-            'ticket_id' => $ticket->id,
-            'client_id' => $client->id,
-            'action_type' => $tool,
-            'content_hash' => $contentHash,
-            'state' => TechnicianRunState::AwaitingApproval,
-            'proposed_content' => $this->stagedDisplay($directTool, $person, $license, $state, $mailbox)."\nReason: ".$reason,
-            'proposed_meta' => $meta,
-            'confidence' => null,
-            'tokens_used' => 0,
-        ]);
+        // Keyed on the DB's own idempotency invariant (technician_runs_idempotency:
+        // ticket_id + action_type + content_hash is UNIQUE) — a run with this EXACT
+        // content either doesn't exist yet (create it) or exists but is no longer live
+        // (superseded/denied, per the liveAwaitingRun() check above finding nothing), in
+        // which case we revive THAT SAME row rather than attempt a second row with the
+        // same key, which the DB would reject outright. firstOrCreate (rather than a bare
+        // create()) also closes the TOCTOU gap against the liveAwaitingRun() check above.
+        // Distinct content (e.g. forwarding for a different person) always gets its own
+        // content_hash and therefore its own row — never colliding with, and never
+        // superseding, an unrelated sibling (bd psa-k4s0 Root A).
+        $run = TechnicianRun::firstOrCreate(
+            [
+                'ticket_id' => $ticket->id,
+                'action_type' => $tool,
+                'content_hash' => $contentHash,
+            ],
+            [
+                'client_id' => $client->id,
+                'state' => TechnicianRunState::AwaitingApproval,
+                'proposed_content' => $proposedContent,
+                'proposed_meta' => $meta,
+                'confidence' => null,
+                'tokens_used' => 0,
+            ],
+        );
 
-        TechnicianRun::where('ticket_id', $ticket->id)
-            ->where('action_type', $tool)
-            ->where('state', TechnicianRunState::AwaitingApproval->value)
-            ->where('id', '!=', $run->id)
-            ->get()
-            ->each
-            ->markSuperseded();
+        if (! $run->wasRecentlyCreated && $run->state !== TechnicianRunState::AwaitingApproval) {
+            // Race winner: another request staged this exact content between the
+            // liveAwaitingRun() check and this firstOrCreate() call. Never a false
+            // idempotent dead end (bd psa-k4s0 Root B) — revive it as a fresh proposal.
+            $run->update([
+                'state' => TechnicianRunState::AwaitingApproval->value,
+                'proposed_content' => $proposedContent,
+                'proposed_meta' => $meta,
+                'confidence' => null,
+                'tokens_used' => 0,
+            ]);
+        } elseif (! $run->wasRecentlyCreated) {
+            return [
+                'success' => true,
+                'idempotent' => true,
+                'ticket_id' => $ticket->id,
+                'ticket_display_id' => $ticket->display_id,
+                'run_id' => $run->id,
+                'message' => 'Already staged; awaiting approval.',
+            ];
+        }
 
         $this->auditAttempt($tool, 'awaiting_approval', $client->id, $ticket, $person, $license, $contentHash, "MCP staged {$tool}: {$reason}", $actorLabel, $run->id);
 
@@ -922,15 +964,31 @@ class StaffCippWriteToolExecutor
             ->exists();
     }
 
-    private function alreadyAwaitingOrExecuted(string $tool, int $clientId, string $contentHash): bool
+    /** The run_id of the most recent matching EXECUTED audit row, if any (bd psa-k4s0: never surface idempotent:true with a null run_id). */
+    private function executedRunId(string $tool, int $clientId, string $contentHash): ?int
     {
         return TechnicianActionLog::query()
             ->where('action_type', $tool)
             ->where('client_id', $clientId)
             ->where('content_hash', $contentHash)
-            ->whereIn('result_status', ['awaiting_approval', 'executed'])
+            ->where('result_status', 'executed')
             ->where('created_at', '>=', now()->subHours(self::DIRECT_DEDUP_HOURS))
-            ->exists();
+            ->latest('id')
+            ->value('run_id');
+    }
+
+    /**
+     * The single source of truth for "is there a live staged run awaiting approval right
+     * now" — the runs table, NEVER the (immutable) audit log (bd psa-k4s0 Root B).
+     */
+    private function liveAwaitingRun(int $ticketId, string $tool, string $contentHash): ?TechnicianRun
+    {
+        return TechnicianRun::query()
+            ->where('ticket_id', $ticketId)
+            ->where('action_type', $tool)
+            ->where('content_hash', $contentHash)
+            ->where('state', TechnicianRunState::AwaitingApproval->value)
+            ->first();
     }
 
     private function cooldownActive(string $tool, int $clientId, ResolvedCippPerson $person, ?ResolvedCippLicense $license, int $cooldownSeconds): bool
