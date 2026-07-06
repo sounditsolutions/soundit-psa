@@ -451,6 +451,7 @@ Route::middleware('auth')->group(function () {
     // Settings — AI Technician
     Route::post('/settings/integrations/technician', [IntegrationsController::class, 'updateTechnician'])->name('settings.integrations.technician.update');
     Route::post('/settings/integrations/teams-bot', [IntegrationsController::class, 'updateTeamsBot'])->name('settings.integrations.teams-bot.update');
+    Route::delete('/settings/integrations/personas/{persona}/conversation-binding', [IntegrationsController::class, 'unbindPersonaConversation'])->name('settings.integrations.persona.unbind-conversation');
 
     // Settings — T2T / HelpDesk Buttons
     Route::post('/settings/integrations/t2t', [IntegrationsController::class, 'updateT2t'])->name('settings.integrations.t2t.update');
