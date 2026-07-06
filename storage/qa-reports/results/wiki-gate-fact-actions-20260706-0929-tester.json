@@ -1,0 +1,37 @@
+{
+  "run_label": "tester wiki gate and fact actions 2026-07-06 09:29 UTC",
+  "results": [
+    {
+      "scenario": "wiki-gate: disabled the Client Wiki module from /settings/general, verified /wiki and /clients/3/wiki return 404, then restored the module and verified global + client wiki routes are reachable",
+      "status": "pass"
+    },
+    {
+      "scenario": "wiki-fact-actions: seeded three unverified Vandelay Network facts, then confirmed fact #41, corrected fact #42 into confirmed replacement #44, and retired fact #43 through the live UI; final UI and DB state matched",
+      "status": "pass"
+    }
+  ],
+  "findings": [],
+  "artifacts": {
+    "screenshots": [
+      "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/wiki-gate-disable-wiki-gate-20260706-disabled-global-wiki.png",
+      "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/wiki-gate-disable-wiki-gate-20260706-disabled-client-wiki.png",
+      "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/wiki-gate-enable-wiki-gate-20260706-enabled-client-wiki@mobile.png",
+      "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/wiki-gate-enable-wiki-gate-20260706-enabled-client-wiki@tablet.png",
+      "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/wiki-gate-enable-wiki-gate-20260706-enabled-client-wiki@desktop.png",
+      "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/wiki-gate-global-enabled-wiki-gate-20260706-enabled-global-wiki.png",
+      "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/wiki-fact-actions-network-probe-wiki-fact-actions-20260706-network-before-actions.png",
+      "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/wiki-fact-actions-confirm-wiki-fact-actions-20260706-after-confirm.png",
+      "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/wiki-fact-actions-correct-wiki-fact-actions-20260706-after-correct.png",
+      "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/wiki-fact-actions-retire-wiki-fact-actions-20260706-after-retire.png",
+      "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/wiki-fact-actions-design-wiki-fact-actions-20260706-network-final@mobile.png",
+      "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/wiki-fact-actions-design-wiki-fact-actions-20260706-network-final@tablet.png",
+      "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/wiki-fact-actions-design-wiki-fact-actions-20260706-network-final@desktop.png"
+    ],
+    "notes": [
+      "No open tester-assigned bead was present at run start; this was an autonomous focused QA run.",
+      "One intermediate wiki-gate runner job asserted /wiki should contain the text Client Wiki. The enabled global page actually uses heading Wiki; a follow-up snapshot verified the route is reachable, so this was not treated as a product defect.",
+      "Design pass: axe reported the known global color-contrast issue and the desktop screenshot reproduced the already-filed sidebar resize overlap (psa-vzk1). No duplicate design findings were filed.",
+      "The requested impeccable design-critique skill/tool was not available in this session, so screenshots and axe output were reviewed directly."
+    ]
+  }
+}
