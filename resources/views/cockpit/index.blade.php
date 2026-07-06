@@ -516,7 +516,7 @@
             <div class="cockpit-toast" :class="'cockpit-toast-' + toast.kind">
                 <i class="bi" :class="toast.kind === 'error' ? 'bi-exclamation-triangle' : (toast.kind === 'info' ? 'bi-arrow-repeat' : 'bi-check2-circle')"></i>
                 <span class="flex-grow-1" x-text="toast.message"></span>
-                <button x-show="toast.undo" type="button" class="btn btn-sm btn-light" @click="toast.undo()">Undo</button>
+                <button x-show="!!toast.undo" type="button" class="btn btn-sm btn-light" @click="toast.undo()">Undo</button>
                 <button type="button" class="btn btn-sm btn-link text-white p-0" @click="dismissToast(toast.id)" aria-label="Dismiss"><i class="bi bi-x-lg"></i></button>
             </div>
         </template>
