@@ -97,11 +97,35 @@ class ProposeCloseTool
         $reason = trim((string) ($input['reason'] ?? ''));
         $confidence = (float) ($input['confidence'] ?? 0.0);
 
+        // Already-closed rejection (psa-y4ft, part 1): a Closed ticket has nothing
+        // to propose. Return a clear failure so the caller (Chet) learns and moves
+        // on, instead of recording a redundant held proposal a human must later
+        // dismiss by hand. Confidence-agnostic — state, not a confidence number.
+        if ($ticket->status === TicketStatus::Closed) {
+            return "Ticket #{$ticket->id} is already closed — nothing to do.";
+        }
+
         // Leave-band (R2.2): a below-floor proposal is too weak to surface to the
         // operator. Discarding it here avoids cockpit noise and prevents filling the
         // global maxPendingProposals cap with low-signal proposals.
         if ($confidence < AgentConfig::proposeCloseApproveFloor()) {
             return "Left ticket #{$ticket->id} (below the close-confidence floor — no proposal created).";
+        }
+
+        // Ticket-level dedup (psa-y4ft, part 2): if a close is already PENDING for
+        // this ticket, do not stack a second one. The content-hash idempotency below
+        // only catches an IDENTICAL reason; a reworded re-proposal (ticket 22482)
+        // slipped through and created a duplicate a human then had to dismiss. Dedup
+        // on the TICKET, not the reason text. Only a pending (awaiting_approval) run
+        // blocks — a terminal outcome (denied/superseded/done) leaves Chet free to
+        // re-propose later with new evidence.
+        if (TechnicianRun::query()
+            ->where('ticket_id', $ticket->id)
+            ->where('action_type', 'propose_close')
+            ->where('state', TechnicianRunState::AwaitingApproval->value)
+            ->exists()
+        ) {
+            return "A close is already proposed for ticket #{$ticket->id}; awaiting approval.";
         }
 
         $hash = hash('sha256', 'propose_close:'.$ticket->id.':'.$reason);

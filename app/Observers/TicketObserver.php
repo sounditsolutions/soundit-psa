@@ -9,6 +9,7 @@ use App\Jobs\MineTicketKnowledge;
 use App\Jobs\RunTechnicianLoop;
 use App\Jobs\RunTriagePipeline;
 use App\Jobs\SendT2TCallback;
+use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Services\NotificationService;
 use App\Services\Signals\SignalHub;
@@ -95,6 +96,17 @@ class TicketObserver
             && WikiConfig::autoMineEnabled()
         ) {
             GenerateTicketResolution::dispatch($ticket->id);
+        }
+
+        // Auto-withdraw held close proposals when the ticket is Closed by anyone
+        // (psa-y4ft, part 3): a pending propose_close becomes moot the moment its
+        // ticket is Closed — withdraw it so no redundant proposal lingers for a
+        // human to dismiss by hand. Scoped to awaiting_approval, so an in-flight
+        // approval (which claims its run to Executing before closing) is never
+        // clobbered. Held-safe and always-on: it only ever removes a now-moot
+        // proposal, never closes anything.
+        if ($ticket->wasChanged('status') && $ticket->status === TicketStatus::Closed) {
+            TechnicianRun::withdrawHeldClosesForClosedTicket($ticket->id);
         }
     }
 }

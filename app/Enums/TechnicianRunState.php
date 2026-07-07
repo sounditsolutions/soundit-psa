@@ -18,6 +18,14 @@ enum TechnicianRunState: string
     case Superseded = 'superseded';
 
     /**
+     * A held close proposal auto-withdrawn because its ticket was Closed by someone
+     * else while it sat awaiting approval (psa-y4ft, part 3). Kept DISTINCT from
+     * Superseded (an operator correction) so calibration never miscounts an
+     * auto-withdrawal as a human veto. Terminal; no execution.
+     */
+    case Withdrawn = 'withdrawn';
+
+    /**
      * An approved staged action whose target device was OFFLINE at approval time
      * (bd psa-xr84). Instead of dead-ending, it parks here and auto-runs on the
      * device's next check-in. Terminal outcomes: Done (ran on reconnect), Expired
