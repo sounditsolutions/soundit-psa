@@ -1,0 +1,42 @@
+<?php
+
+namespace App\Console\Commands;
+
+use App\Services\AlertService;
+use App\Services\Huntress\HuntressClient;
+use App\Services\Huntress\HuntressIncidentReconcileService;
+use App\Services\TicketService;
+use App\Support\HuntressConfig;
+use Illuminate\Console\Command;
+
+class HuntressReconcileIncidents extends Command
+{
+    protected $signature = 'huntress:reconcile-incidents';
+
+    protected $description = 'Resolve bridged Huntress tickets whose incident was closed/dismissed upstream (auto-resolve status-sync gap)';
+
+    public function handle(TicketService $ticketService, AlertService $alertService): int
+    {
+        if (! HuntressConfig::isConfigured()) {
+            $this->error('Huntress is not configured. Add API credentials in Settings → Integrations.');
+
+            return self::FAILURE;
+        }
+
+        $client = new HuntressClient([
+            'api_key' => HuntressConfig::get('api_key'),
+            'api_secret' => HuntressConfig::get('api_secret'),
+        ]);
+
+        $service = new HuntressIncidentReconcileService($client, $ticketService, $alertService);
+
+        $this->info('Reconciling Huntress incident tickets...');
+
+        $result = $service->reconcile();
+
+        $summary = "{$result->updated} resolved".($result->errors > 0 ? ", {$result->errors} errors" : '');
+        $this->info("Done: {$summary}.");
+
+        return $result->errors > 0 ? self::FAILURE : self::SUCCESS;
+    }
+}

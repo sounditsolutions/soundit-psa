@@ -72,6 +72,20 @@ class HuntressClient
     }
 
     /**
+     * Get a single incident report by id.
+     *
+     * Response is wrapped: {"incident_report": {...}}. The report carries
+     * status ∈ {sent, dismissed, closed} — `closed`/`dismissed` mean the incident
+     * has been resolved/handled upstream.
+     */
+    public function getIncidentReport(int $id): array
+    {
+        $response = $this->get("incident_reports/{$id}");
+
+        return $response['incident_report'] ?? $response;
+    }
+
+    /**
      * Get account info.
      */
     public function getAccount(): array
