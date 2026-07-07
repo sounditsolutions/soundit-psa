@@ -87,4 +87,76 @@ class EmailRecipientResolverTest extends TestCase
         $this->assertEqualsCanonicalizing(['carl@acme.test', 'dana@acme.test'], $r['cc']); // rest − To − self
         $this->assertNotContains('support@msp.test', $r['cc']);
     }
+
+    public function test_resolve_defaults_to_contact_with_no_cc_when_nothing_supplied(): void
+    {
+        $ticket = $this->seedThreadTicket();
+        $r = app(\App\Services\Email\EmailRecipientResolver::class)->resolve(
+            $ticket, [], [], \App\Services\Email\RecipientContext::Direct, false, false,
+        );
+        $this->assertSame('ada@acme.test', $r->to);
+        $this->assertSame([], $r->cc);
+    }
+
+    public function test_resolve_accepts_thread_participant_cc_on_direct_path(): void
+    {
+        $ticket = $this->seedThreadTicket();
+        $r = app(\App\Services\Email\EmailRecipientResolver::class)->resolve(
+            $ticket, [], ['carl@acme.test'], \App\Services\Email\RecipientContext::Direct, false, false,
+        );
+        $this->assertSame(['carl@acme.test'], $r->cc);
+    }
+
+    public function test_resolve_rejects_arbitrary_address_when_knob_off(): void
+    {
+        $ticket = $this->seedThreadTicket();
+        $this->expectException(\App\Services\Email\RecipientValidationException::class);
+        app(\App\Services\Email\EmailRecipientResolver::class)->resolve(
+            $ticket, [], ['attacker@evil.test'], \App\Services\Email\RecipientContext::Staged, false, false,
+        );
+    }
+
+    public function test_resolve_allows_arbitrary_address_when_knob_on_but_requires_valid_email(): void
+    {
+        $ticket = $this->seedThreadTicket();
+        $resolver = app(\App\Services\Email\EmailRecipientResolver::class);
+        $r = $resolver->resolve($ticket, [], ['outsider@partner.test'], \App\Services\Email\RecipientContext::Staged, true, false);
+        $this->assertSame(['outsider@partner.test'], $r->cc);
+
+        $this->expectException(\App\Services\Email\RecipientValidationException::class);
+        $resolver->resolve($ticket, [], ['not-an-email'], \App\Services\Email\RecipientContext::Staged, true, false);
+    }
+
+    public function test_resolve_direct_refuses_offthread_client_contact_unless_knob_on(): void
+    {
+        $ticket = $this->seedThreadTicket();
+        $resolver = app(\App\Services\Email\EmailRecipientResolver::class);
+        // bob@acme.test is a client contact (source b) but NOT on the thread.
+        try {
+            $resolver->resolve($ticket, [], ['bob@acme.test'], \App\Services\Email\RecipientContext::Direct, false, false);
+            $this->fail('expected refusal');
+        } catch (\App\Services\Email\RecipientValidationException $e) {
+            $this->assertStringContainsString('stage_email', $e->getMessage());
+        }
+        // Staged path allows it.
+        $staged = $resolver->resolve($ticket, [], ['bob@acme.test'], \App\Services\Email\RecipientContext::Staged, false, false);
+        $this->assertSame(['bob@acme.test'], $staged->cc);
+        // Direct with the new-recipients knob on allows it.
+        $direct = $resolver->resolve($ticket, [], ['bob@acme.test'], \App\Services\Email\RecipientContext::Direct, false, true);
+        $this->assertSame(['bob@acme.test'], $direct->cc);
+    }
+
+    public function test_resolve_dedups_cc_against_to_and_our_mailbox_and_resolves_person_id(): void
+    {
+        $ticket = $this->seedThreadTicket();
+        $bob = \App\Models\Person::where('email', 'bob@acme.test')->firstOrFail();
+        $r = app(\App\Services\Email\EmailRecipientResolver::class)->resolve(
+            $ticket,
+            ['ada@acme.test'],
+            ['ada@acme.test', 'support@msp.test', $bob->id],   // To dup, our mailbox, + person_id
+            \App\Services\Email\RecipientContext::Staged, false, false,
+        );
+        $this->assertSame('ada@acme.test', $r->to);
+        $this->assertSame(['bob@acme.test'], $r->cc); // ada (==To) and support (ours) dropped; person_id resolved
+    }
 }

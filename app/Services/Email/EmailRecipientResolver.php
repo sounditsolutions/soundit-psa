@@ -70,6 +70,72 @@ class EmailRecipientResolver
         return ['to' => $to, 'to_name' => $candidates->nameFor($to), 'cc' => array_values(array_unique($cc))];
     }
 
+    /**
+     * @param  array<int,int|string>  $to  person_ids or emails (first is To; extras fold into CC)
+     * @param  array<int,int|string>  $cc
+     *
+     * @throws RecipientValidationException
+     */
+    public function resolve(Ticket $ticket, array $to, array $cc, RecipientContext $context, bool $allowArbitrary, bool $directAllowNew): ResolvedRecipients
+    {
+        $candidates = $this->candidates($ticket);
+
+        $toRefs = array_values($to);
+        $extraToAsCc = array_slice($toRefs, 1);
+        $toRef = $toRefs[0] ?? null;
+
+        $toAddress = $toRef !== null
+            ? $this->resolveRef($toRef, $candidates, $context, $allowArbitrary, $directAllowNew)
+            : $candidates->contactEmail;
+
+        if (! $toAddress) {
+            throw new RecipientValidationException('No recipient: ticket has no contact email and no valid To was supplied.');
+        }
+
+        $ccAddresses = [];
+        foreach ([...$extraToAsCc, ...array_values($cc)] as $ref) {
+            // Our own mailbox in CC is a self-send no-op — drop it silently, never error.
+            if (is_string($ref) && in_array(strtolower(trim($ref)), $candidates->ourAddresses, true)) {
+                continue;
+            }
+            $addr = $this->resolveRef($ref, $candidates, $context, $allowArbitrary, $directAllowNew);
+            if ($addr === $toAddress || in_array($addr, $ccAddresses, true)) {
+                continue;
+            }
+            $ccAddresses[] = $addr;
+        }
+
+        return new ResolvedRecipients($toAddress, $candidates->nameFor($toAddress), array_values($ccAddresses));
+    }
+
+    private function resolveRef(int|string $ref, RecipientCandidates $candidates, RecipientContext $context, bool $allowArbitrary, bool $directAllowNew): string
+    {
+        if (is_int($ref) || ctype_digit((string) $ref)) {
+            $email = $candidates->personEmail((int) $ref);
+            if (! $email) {
+                throw new RecipientValidationException("Recipient person #{$ref} is not a contact of this client.");
+            }
+        } else {
+            $email = strtolower(trim($ref));
+            if (! in_array($email, $candidates->allEmails(), true)) {
+                if (! $allowArbitrary) {
+                    throw new RecipientValidationException("Recipient '{$email}' is not a known contact or thread participant. Only ticket contacts, client contacts, or people already on the email thread are allowed.");
+                }
+                if (! filter_var($email, FILTER_VALIDATE_EMAIL)) {
+                    throw new RecipientValidationException("Recipient '{$email}' is not a valid email address.");
+                }
+
+                return $email; // arbitrary but knob-allowed + syntactically valid
+            }
+        }
+
+        if ($context === RecipientContext::Direct && ! $directAllowNew && ! $candidates->isThreadParticipant($email)) {
+            throw new RecipientValidationException("Recipient '{$email}' is not already on this email thread. Adding a new recipient needs review — use stage_email instead.");
+        }
+
+        return $email;
+    }
+
     /** @return array<int,array{0:string,1:?string}> */
     private function addressesOf(Email $email): array
     {
