@@ -28,6 +28,18 @@ class TechnicianConfigTest extends TestCase
         $this->assertTrue(TechnicianConfig::killSwitchEngaged());
     }
 
+    public function test_email_recipient_knobs_default_off_and_read_settings(): void
+    {
+        $this->assertFalse(TechnicianConfig::allowArbitraryEmailRecipients());
+        $this->assertFalse(TechnicianConfig::directEmailNewRecipients());
+
+        Setting::setValue('allow_arbitrary_email_recipients', '1');
+        Setting::setValue('direct_email_new_recipients', '1');
+
+        $this->assertTrue(TechnicianConfig::allowArbitraryEmailRecipients());
+        $this->assertTrue(TechnicianConfig::directEmailNewRecipients());
+    }
+
     public function test_ai_actor_falls_back_to_first_user_then_honours_setting(): void
     {
         $first = User::factory()->create();
