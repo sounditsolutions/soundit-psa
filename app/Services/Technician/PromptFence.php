@@ -33,9 +33,11 @@ class PromptFence
      *   • neutralize() role-defangs "System:"/"Assistant:" and stomps "ignore
      *     previous instructions" — both useful things for an operator to write.
      *   • The downstream TechnicianActionGate (+ TechnicianDisclosure, the
-     *     server-side tier classifier, and the recipient re-derivation at send)
-     *     enforces the policy structurally — no removing disclosure, no changing
-     *     recipient, no raising autonomy — regardless of what the directive says.
+     *     server-side tier classifier, and recipient re-resolution at approval)
+     *     enforces the policy structurally — no removing disclosure; recipients stay
+     *     confined to server-validated sources (ticket contact, client contacts,
+     *     thread participants), re-resolved at approval; no raising autonomy —
+     *     regardless of what the directive says.
      *     This method's only jobs are anti-homoglyph normalization, length-capping,
      *     and wrapping with a recognisably trusted marker.
      *

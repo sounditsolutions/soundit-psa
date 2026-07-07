@@ -136,9 +136,9 @@ class SendReplyToolTest extends TestCase
 
     public function test_the_recipient_comes_from_the_drafter_never_the_models_input(): void
     {
-        // The model has no 'to' field, and even a smuggled one is ignored — the recipient
-        // is the drafter's sanitized 'to' (and at SEND time approveAndSend re-derives from
-        // $ticket->contact). Never the model's address.
+        // The model has no 'to' field, and even a smuggled one is ignored — the send_reply
+        // tool never carries a model-supplied recipient. Recipients are resolved from
+        // server-validated sources (contact/client contacts/thread participants) at approval.
         $this->mockDrafter(new TechnicianDraft('Body.', 'c@example.com', 100));
         $ticket = $this->ticketAwaitingReply();
 

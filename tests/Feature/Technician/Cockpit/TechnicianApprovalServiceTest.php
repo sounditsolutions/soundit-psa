@@ -14,6 +14,7 @@ use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Models\TicketNote;
 use App\Models\User;
+use App\Services\Email\EmailRecipientResolver;
 use App\Services\EmailService;
 use App\Services\Technician\TechnicianActionGate;
 use App\Services\Technician\TechnicianApprovalService;
@@ -274,5 +275,90 @@ class TechnicianApprovalServiceTest extends TestCase
             ->where('run_id', $run->id)
             ->where('approver_user_id', $actor->id)
             ->count());
+    }
+
+    /** @return array{0: TechnicianRun, 1: Ticket} */
+    private function seedSendReplyRunWithThread(User $actor): array
+    {
+        Setting::setValue('triage_system_user_id', (string) $actor->id);
+        Setting::setValue('technician_action_tiers', json_encode([]));
+        $client = Client::factory()->create();
+        $contact = Person::create([
+            'client_id' => $client->id, 'person_type' => \App\Enums\PersonType::User,
+            'first_name' => 'Client', 'last_name' => 'Contact', 'email' => 'client@thread.test', 'is_active' => true,
+        ]);
+        $ticket = Ticket::factory()->create([
+            'client_id' => $client->id, 'contact_id' => $contact->id,
+            'status' => TicketStatus::InProgress, 'closed_at' => null,
+        ]);
+        // Set graph_mailbox AFTER the ticket create so TicketObserver::created
+        // (notifyTicketCreated) has no mailbox to send through in tests — we only need
+        // graph_mailbox for the resolver's own-address self-exclusion.
+        Setting::setValue('graph_mailbox', 'support@msp.test');
+        \App\Models\Email::create([
+            'graph_id' => 'thr-1', 'direction' => \App\Enums\EmailDirection::Inbound,
+            'from_address' => 'client@thread.test', 'from_name' => 'Client',
+            'to_recipients' => [['address' => 'support@msp.test', 'name' => 'Support'], ['address' => 'vendor@thread.test', 'name' => 'Vendor']],
+            'subject' => 'Re: Issue', 'body_preview' => 'x', 'body_text' => 'x', 'body_html' => '<p>x</p>',
+            'has_attachments' => false, 'importance' => 'normal', 'received_at' => now()->subMinutes(3),
+            'is_read' => true, 'client_id' => $client->id, 'person_id' => $contact->id, 'ticket_id' => $ticket->id,
+        ]);
+        $run = TechnicianRun::create([
+            'ticket_id' => $ticket->id, 'client_id' => $client->id, 'action_type' => 'send_reply',
+            'content_hash' => str_repeat('b', 64), 'state' => TechnicianRunState::AwaitingApproval,
+            'proposed_content' => 'Original draft.',
+        ]);
+
+        return [$run, $ticket];
+    }
+
+    public function test_approve_and_send_re_resolves_recipients_and_fails_closed_on_invalid(): void
+    {
+        $actor = User::factory()->create(['name' => 'Chet']);
+        [$run, $ticket] = $this->seedSendReplyRunWithThread($actor);
+
+        // GATE 3 — invalid: an off-thread arbitrary CC with the knob OFF must fail closed
+        // (run not consumed, no note written, no send).
+        $bad = app(TechnicianApprovalService::class)->approveAndSend($run->fresh(), 'Body.', $actor->id, [], ['stranger@evil.test']);
+        $this->assertSame('recipient_invalid', $bad->status);
+        $this->assertNotNull($bad->message);
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
+        $this->assertSame(0, TicketNote::where('ticket_id', $ticket->id)->where('ai_authored', true)->count());
+
+        // GATE 3 — valid: a thread-participant CC resolves and is sent (To defaults to contact).
+        $captured = null;
+        $this->mock(EmailService::class, function (MockInterface $m) use (&$captured) {
+            $m->shouldReceive('sendTicketReplyNote')->once()->andReturnUsing(
+                function ($t, $n, $to, $cc) use (&$captured) {
+                    $captured = [$to, $cc];
+
+                    return null;
+                });
+        });
+        $ok = app(TechnicianApprovalService::class)->approveAndSend($run->fresh(), 'Body.', $actor->id, [], ['vendor@thread.test']);
+        $this->assertSame('sent', $ok->status);
+        $this->assertSame(['client@thread.test', ['vendor@thread.test']], $captured);
+    }
+
+    public function test_approve_and_send_releases_the_claim_when_recipient_resolution_errors_unexpectedly(): void
+    {
+        // M1: a NON-validation throwable during resolve (e.g. a DB error inside candidates())
+        // must still release the CAS claim — otherwise the run is stranded in Executing with
+        // no reaper. It fails closed (no send) and stays retryable.
+        $actor = User::factory()->create(['name' => 'Chet']);
+        [$run] = $this->seedSendReplyRunWithThread($actor);
+
+        $this->mock(EmailRecipientResolver::class, function (MockInterface $m) {
+            $m->shouldReceive('resolve')->andThrow(new \RuntimeException('db exploded'));
+        });
+
+        try {
+            app(TechnicianApprovalService::class)->approveAndSend($run->fresh(), 'Body.', $actor->id, [], ['vendor@thread.test']);
+            $this->fail('expected the throwable to propagate');
+        } catch (\RuntimeException $e) {
+            $this->assertSame('db exploded', $e->getMessage());
+        }
+
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
     }
 }
