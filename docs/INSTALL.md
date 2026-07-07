@@ -336,6 +336,7 @@ These commands execute automatically based on their schedule:
 | `mesh:sync-licenses` | Daily at 04:30 | Sync license counts from Mesh Email Security |
 | `cipp:sync-licenses` | Daily at 04:45 | Sync M365 license counts from CIPP |
 | `huntress:sync-licenses` | Daily at 05:00 | Sync EDR/ITDR license counts from Huntress (only if configured) |
+| `huntress:reconcile-incidents` | Hourly | Resolve bridged Huntress tickets whose incident was closed/dismissed upstream without a status webhook (only if configured) |
 | `controld:sync-licenses` | Daily at 05:10 | Sync DNS security device counts from Control D (only if configured + clients mapped) |
 | `controld:sync-devices` | Daily at 05:12 | Sync DNS device data from Control D to local assets (only if configured + clients mapped) |
 | `zorus:sync-licenses` | Daily at 05:18 | Sync DNS endpoint counts from Zorus (only if configured + clients mapped) |

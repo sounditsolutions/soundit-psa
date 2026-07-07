@@ -43,6 +43,14 @@ Schedule::command('huntress:sync-licenses')
     ->runInBackground()
     ->when(fn () => \App\Support\HuntressConfig::isConfigured());
 
+// Huntress incident reconcile — hourly. Closes bridged tickets whose incident was
+// auto-resolved upstream without firing the CW-Manage status webhook (only if configured).
+Schedule::command('huntress:reconcile-incidents')
+    ->hourly()
+    ->withoutOverlapping()
+    ->runInBackground()
+    ->when(fn () => \App\Support\HuntressConfig::isConfigured());
+
 // Control D DNS security license sync — daily (only if configured + clients mapped)
 Schedule::command('controld:sync-licenses')
     ->dailyAt('05:10')
