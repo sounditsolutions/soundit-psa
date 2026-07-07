@@ -384,6 +384,93 @@ class PsaActionToolsTest extends TestCase
         $this->assertStringNotContainsString('vendor@thread.test', (string) json_encode($audit->arguments));
     }
 
+    public function test_direct_send_email_with_no_recipients_is_contact_only_and_length_only_audit(): void
+    {
+        // Regression (spec §6): omitting to/cc reproduces today's behavior exactly —
+        // To = ticket contact, empty CC, and the audit records only body_length.
+        $token = $this->token(['send_email']);
+        $ticket = $this->ticketWithContact();
+        $body = 'Just the contact, no CC.';
+        $this->mock(EmailService::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('sendTicketReplyNote')->once()
+                ->andReturnUsing(function (Ticket $ticket, TicketNote $note, ?string $toEmail, array $ccEmails) {
+                    $this->assertSame('client@example.test', $toEmail);
+                    $this->assertSame([], $ccEmails);
+
+                    return $this->outboundEmail($ticket, $note);
+                });
+        });
+
+        $this->callTool($token, 'send_email', [
+            'client_id' => $ticket->client_id,
+            'ticket_id' => $ticket->id,
+            'reason' => 'No recipients supplied.',
+            'body' => $body,
+        ])->assertOk();
+
+        $audit = McpAuditLog::where('tool_name', 'send_email')->firstOrFail();
+        $this->assertSame(mb_strlen($body), $audit->arguments['body_length']);
+        $this->assertStringNotContainsString($body, (string) json_encode($audit->arguments));
+    }
+
+    public function test_direct_send_email_redacts_addresses_in_the_audit_reason(): void
+    {
+        // I1: an address in `reason` must be redacted in McpAuditLog.arguments,
+        // matching the redaction already applied to the action-log summary.
+        $token = $this->token(['send_email']);
+        $ticket = $this->ticketWithContact();
+        $this->mock(EmailService::class, fn (MockInterface $mock) => $mock->shouldReceive('sendTicketReplyNote')
+            ->once()
+            ->andReturnUsing(fn (Ticket $ticket, TicketNote $note) => $this->outboundEmail($ticket, $note)));
+
+        $this->callTool($token, 'send_email', [
+            'client_id' => $ticket->client_id,
+            'ticket_id' => $ticket->id,
+            'reason' => 'Loop in escalations@vendor.test per the client.',
+            'body' => 'Update.',
+        ])->assertOk();
+
+        $audit = McpAuditLog::where('tool_name', 'send_email')->firstOrFail();
+        $this->assertArrayHasKey('reason', $audit->arguments);
+        $this->assertStringNotContainsString('escalations@vendor.test', (string) json_encode($audit->arguments));
+        $this->assertStringContainsString('[external address withheld]', $audit->arguments['reason']);
+    }
+
+    public function test_direct_send_email_idempotency_key_includes_recipients(): void
+    {
+        // M2: the same body sent to a DIFFERENT recipient set is not an idempotent
+        // replay — it falls through to the rate-limit guard rather than a silent dedup.
+        $token = $this->token(['send_email']);
+        $ticket = $this->ticketWithContact();
+        Email::create([
+            'graph_id' => 'in-m2', 'direction' => EmailDirection::Inbound,
+            'from_address' => 'client@example.test', 'from_name' => 'Client',
+            'to_recipients' => [['address' => 'vendor@thread.test', 'name' => 'Vendor']],
+            'subject' => 'Re: Printer', 'body_preview' => 'x', 'body_text' => 'x', 'body_html' => '<p>x</p>',
+            'has_attachments' => false, 'importance' => 'normal', 'received_at' => now()->subMinute(),
+            'is_read' => true, 'client_id' => $ticket->client_id, 'person_id' => $ticket->contact_id, 'ticket_id' => $ticket->id,
+        ]);
+        $this->mock(EmailService::class, fn (MockInterface $mock) => $mock->shouldReceive('sendTicketReplyNote')
+            ->once()
+            ->andReturnUsing(fn (Ticket $ticket, TicketNote $note) => $this->outboundEmail($ticket, $note)));
+
+        $first = $this->callTool($token, 'send_email', [
+            'client_id' => $ticket->client_id, 'ticket_id' => $ticket->id,
+            'reason' => 'First.', 'body' => 'Same body.',
+        ]);
+        $this->assertFalse((bool) $first->json('result.isError'), (string) $first->json('result.content.0.text'));
+
+        $second = $this->callTool($token, 'send_email', [
+            'client_id' => $ticket->client_id, 'ticket_id' => $ticket->id,
+            'reason' => 'Second, add the vendor already on thread.', 'body' => 'Same body.',
+            'cc' => ['vendor@thread.test'],
+        ]);
+        // Rate-limited (isError=true), NOT an idempotent replay — with body-only keying
+        // the second call would have returned idempotent success (isError=false) instead.
+        $this->assertTrue((bool) $second->json('result.isError'));
+        $this->assertStringContainsString('rate', (string) $second->json('result.content.0.text'));
+    }
+
     public function test_direct_send_email_kill_switch_and_flood_guard_fail_closed(): void
     {
         $token = $this->token(['send_email']);

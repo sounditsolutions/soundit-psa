@@ -1882,7 +1882,9 @@ class StaffPsaActionToolExecutor
             return ['error' => $e->getMessage()];
         }
 
-        $contentHash = $this->contentHash('send_email', $ticket->id, $body);
+        // psa-kt82: recipients are now variable, so the idempotency key includes the
+        // resolved To/CC set — the same body to a different audience is a new send.
+        $contentHash = $this->contentHash('send_email', $ticket->id, $body.'|to:'.$resolved->to.'|cc:'.implode(',', $resolved->cc));
         if ($this->alreadyExecuted('send_email', $ticket->id, $contentHash)) {
             return $this->idempotentResult('send_email', $ticket);
         }
@@ -1919,7 +1921,7 @@ class StaffPsaActionToolExecutor
             'ticket_display_id' => $ticket->display_id,
             'note_id' => $note->id,
             'email_id' => $email?->id,
-            'message' => 'Email sent to ticket contact.',
+            'message' => 'Email sent.',
         ];
     }
 

@@ -1142,8 +1142,14 @@ class McpStaffController extends Controller
         foreach ($arguments as $key => $value) {
             $normalized = mb_strtolower((string) $key);
 
-            if (in_array($normalized, ['client_id', 'ticket_id', 'reason'], true)) {
+            if (in_array($normalized, ['client_id', 'ticket_id'], true)) {
                 $safe[$normalized] = $value;
+            }
+
+            // psa-kt82: reason is free text and may name an address — redact before it
+            // is persisted, matching the redaction applied to the action-log summary.
+            if ($normalized === 'reason') {
+                $safe['reason'] = is_string($value) ? \App\Support\EmailRedactor::redact($value) : $value;
             }
 
             if ($normalized === 'body') {
