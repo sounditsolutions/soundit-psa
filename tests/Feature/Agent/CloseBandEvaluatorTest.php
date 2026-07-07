@@ -108,6 +108,22 @@ class CloseBandEvaluatorTest extends TestCase
         $this->assertSame(1.0, $band->approveRate(), 'corrected is not a clean decline; it stays out of the denominator');
     }
 
+    public function test_a_withdrawn_proposal_counts_as_other_not_corrected(): void
+    {
+        // psa-y4ft auto-withdraw: a proposal moot-ed by a ticket close is NOT a human
+        // veto, so it must land in "other" (excluded from the rate), never "corrected".
+        $this->closeRun(0.82, TechnicianRunState::Done);
+        $this->closeRun(0.83, TechnicianRunState::Withdrawn);
+
+        $band = $this->bandCovering(app(CloseBandEvaluator::class)->evaluate(), 0.82);
+
+        $this->assertSame(2, $band->total);
+        $this->assertSame(1, $band->approved);
+        $this->assertSame(1, $band->other, 'a withdrawn proposal is bucketed as other');
+        $this->assertSame(0, $band->corrected, 'a withdrawn proposal is NOT a correction');
+        $this->assertSame(1.0, $band->approveRate(), 'withdrawn is excluded from the rate');
+    }
+
     public function test_a_pending_proposal_is_counted_but_excluded_from_the_approve_rate(): void
     {
         $this->closeRun(0.72, TechnicianRunState::Done);

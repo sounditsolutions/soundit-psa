@@ -68,7 +68,11 @@ class CloseBandEvaluator
                     TechnicianRunState::AwaitingApproval,
                     TechnicianRunState::Executing,
                     TechnicianRunState::QueuedOffline => $stat->pending++,
-                    default => $stat->other++, // Expired, Cancelled, Flagged
+                    // Expired, Cancelled, Flagged, and Withdrawn (psa-y4ft auto-withdraw
+                    // on ticket-close). Withdrawn is deliberately NOT counted as corrected
+                    // — an auto-withdrawal is not a human veto — so it never distorts the
+                    // approve rate.
+                    default => $stat->other++,
                 };
             });
 

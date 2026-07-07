@@ -290,6 +290,21 @@ class TechnicianRun extends Model
         $this->advanceTo(TechnicianRunState::Superseded);
     }
 
+    /**
+     * Auto-withdraw held close proposals for a ticket that was Closed by someone
+     * else (psa-y4ft, part 3). Bulk CAS scoped to awaiting_approval ONLY, so an
+     * in-flight approval — which claims its run to Executing BEFORE closing the
+     * ticket — is never clobbered. Returns the number of proposals withdrawn.
+     */
+    public static function withdrawHeldClosesForClosedTicket(int $ticketId): int
+    {
+        return static::query()
+            ->where('ticket_id', $ticketId)
+            ->where('action_type', 'propose_close')
+            ->where('state', TechnicianRunState::AwaitingApproval->value)
+            ->update(['state' => TechnicianRunState::Withdrawn->value]);
+    }
+
     public function ticket(): BelongsTo
     {
         return $this->belongsTo(Ticket::class);
