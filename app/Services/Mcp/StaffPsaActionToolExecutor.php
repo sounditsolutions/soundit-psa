@@ -5,6 +5,7 @@ namespace App\Services\Mcp;
 use App\Enums\NoteType;
 use App\Enums\TechnicianRunState;
 use App\Enums\TechnicianTier;
+use App\Enums\TicketStatus;
 use App\Enums\WhoType;
 use App\Helpers\MarkdownRenderer;
 use App\Models\Asset;
@@ -18,6 +19,7 @@ use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Models\TicketNote;
 use App\Models\User;
+use App\Services\Agent\CloseAutoEligibility;
 use App\Services\AssetService;
 use App\Services\Assistant\AssistantTicketCreator;
 use App\Services\ClientService;
@@ -229,7 +231,26 @@ class StaffPsaActionToolExecutor
         $note = $this->optionalString($arguments, 'note');
         $resolution = $this->optionalString($arguments, 'resolution');
 
+        // psa-y4ft: auto-close safety envelope on the DIRECT close path. Chet closes
+        // via set_ticket_status, which bypasses the held propose_close review AND the
+        // #177 state/dedup gate. "Fold it in" (Charlie): extend the SAME envelope here
+        // so the direct path can't route around it. Only ->Closed is gated for
+        // eligibility (resolving an active ticket is a legitimate everyday action);
+        // the dedup / already-in-state guard covers BOTH terminal transitions; every
+        // non-terminal transition stays fully open.
+        if ($status === TicketStatus::Closed && ! CloseAutoEligibility::eligible($ticket)) {
+            return ['error' => $this->directCloseIneligibleReason($ticket)];
+        }
+
         if ($status->isTerminal()) {
+            if ($ticket->status === $status) {
+                return ['error' => "Ticket #{$ticket->id} is already {$status->label()} — leaving it as-is."];
+            }
+
+            if ($this->hasPendingProposedClose($ticket)) {
+                return ['error' => "A close is already proposed for ticket #{$ticket->id} and awaiting approval — not re-actioning it via the direct path."];
+            }
+
             if ($reason === null) {
                 return ['error' => 'reason is required'];
             }
@@ -274,6 +295,37 @@ class StaffPsaActionToolExecutor
             'status' => $updated->status->value,
             'message' => "Status changed to {$status->label()}.",
         ];
+    }
+
+    /**
+     * A specific, learnable reason a DIRECT ->Closed was refused, mirroring the
+     * facts CloseAutoEligibility fails closed on so Chet reads it and moves on
+     * (Charlie: "return a failure so the agent knows") instead of retrying blind.
+     */
+    private function directCloseIneligibleReason(Ticket $ticket): string
+    {
+        return match (true) {
+            $ticket->status === TicketStatus::Closed => "Ticket #{$ticket->id} is already closed — nothing to do.",
+            in_array($ticket->status, [TicketStatus::New, TicketStatus::InProgress], true) => "Cannot close ticket #{$ticket->id}: it is still awaiting us ({$ticket->status->label()}). Resolve it first, or leave it open.",
+            $ticket->status === TicketStatus::PendingThirdParty => "Cannot close ticket #{$ticket->id}: it is pending a third party (vendor-blocked, not abandoned). Leave it open.",
+            default => "Cannot close ticket #{$ticket->id}: there is recent client activity — leaving it open so we don't close over a live reply.",
+        };
+    }
+
+    /**
+     * True iff a close is already PENDING (awaiting_approval) for this ticket via the
+     * held propose_close path. The direct set_ticket_status close/resolve must defer
+     * to it rather than route around the review — the TICKET-level dedup mirror of the
+     * propose_close guard (psa-y4ft #177), keyed on the ticket, not the reason text.
+     * A terminal prior proposal (denied/superseded/done) does not block.
+     */
+    private function hasPendingProposedClose(Ticket $ticket): bool
+    {
+        return TechnicianRun::query()
+            ->where('ticket_id', $ticket->id)
+            ->where('action_type', 'propose_close')
+            ->where('state', TechnicianRunState::AwaitingApproval->value)
+            ->exists();
     }
 
     /** @return array<string, mixed> */
