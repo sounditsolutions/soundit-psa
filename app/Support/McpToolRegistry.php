@@ -717,7 +717,7 @@ class McpToolRegistry
     {
         return [
             'name' => 'send_email',
-            'description' => 'Send a client-facing ticket email immediately. The server derives the recipient and subject from the ticket contact and ticket metadata, appends the configured AI disclosure, records a public reply note, sends the email, and writes an action audit row. Requires an explicit token grant.',
+            'description' => 'Send a client-facing ticket email immediately. The server defaults the recipient to the ticket contact and derives the subject from ticket metadata, appends the configured AI disclosure, records a public reply note, sends the email, and writes an action audit row. Optional to/cc are validated server-side against the ticket contact, the client\'s known contacts, and addresses already on this ticket\'s email thread — arbitrary addresses are rejected. Requires an explicit token grant.',
             'input_schema' => [
                 'type' => 'object',
                 'properties' => [
@@ -732,6 +732,16 @@ class McpToolRegistry
                     'body' => [
                         'type' => 'string',
                         'description' => 'Client-facing message body to send after server-side disclosure is appended.',
+                    ],
+                    'to' => [
+                        'type' => 'array',
+                        'items' => ['type' => ['integer', 'string']],
+                        'description' => 'Optional To recipient — a PSA person_id or an address already on this ticket\'s email thread. Arbitrary addresses are rejected. Omit to use the ticket contact.',
+                    ],
+                    'cc' => [
+                        'type' => 'array',
+                        'items' => ['type' => ['integer', 'string']],
+                        'description' => 'Optional CC recipients — PSA person_ids or addresses already on this ticket\'s email thread (reply-all). Arbitrary addresses are rejected; adding someone not already on the thread requires stage_email.',
                     ],
                 ],
                 'required' => ['ticket_id', 'reason', 'body'],

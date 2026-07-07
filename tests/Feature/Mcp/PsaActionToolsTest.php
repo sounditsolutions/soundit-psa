@@ -172,8 +172,13 @@ class PsaActionToolsTest extends TestCase
         $schema = $scopedTools['send_email']['inputSchema'];
         $this->assertContains('client_id', $schema['required']);
         $this->assertContains('reason', $schema['required']);
-        $this->assertArrayNotHasKey('to', $schema['properties']);
-        $this->assertArrayNotHasKey('cc', $schema['properties']);
+        // psa-kt82: send_email now accepts optional validated to/cc (still no free-text subject).
+        $this->assertArrayHasKey('to', $schema['properties']);
+        $this->assertArrayHasKey('cc', $schema['properties']);
+        $this->assertSame('array', $schema['properties']['to']['type']);
+        $this->assertSame('array', $schema['properties']['cc']['type']);
+        $this->assertNotContains('to', $schema['required']);
+        $this->assertNotContains('cc', $schema['required']);
         $this->assertArrayNotHasKey('subject', $schema['properties']);
 
         foreach (['update_ticket', 'set_ticket_status', 'assign_ticket', 'assign_asset', 'unassign_asset', 'set_ticket_contact', 'move_ticket_to_client'] as $name) {

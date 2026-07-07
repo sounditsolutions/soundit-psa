@@ -1149,6 +1149,11 @@ class McpStaffController extends Controller
             if ($normalized === 'body') {
                 $safe['body_length'] = is_string($value) ? mb_strlen($value) : 0;
             }
+
+            // psa-kt82: record recipient counts only — never the raw to/cc addresses.
+            if (in_array($normalized, ['to', 'cc'], true) && is_array($value)) {
+                $safe[$normalized.'_count'] = count($value);
+            }
         }
 
         return $safe;
