@@ -3287,6 +3287,7 @@
                                     <th>Status</th>
                                     <th>Secret</th>
                                     <th>MCP token label</th>
+                                    <th>Operator lane</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -3312,6 +3313,27 @@
                                             @endif
                                         </td>
                                         <td class="small">{{ $persona['mcp_token_label'] ?? '—' }}</td>
+                                        <td class="small">
+                                            @if($persona['conversation_bound'])
+                                                <span class="badge bg-info-subtle text-info-emphasis">Bound</span>
+                                                <div class="text-muted font-monospace text-truncate" style="max-width: 14rem;" title="{{ $persona['conversation_id'] }}">{{ $persona['conversation_id'] }}</div>
+                                                {{-- Reset the write-once operator-lane binding (bd psa-3vr5): clears
+                                                     conversation_refs so the next allowlisted contact re-captures it.
+                                                     Confirm-gated + audited, mirroring the MCP-token revoke pattern. --}}
+                                                <form method="POST"
+                                                      action="{{ route('settings.integrations.persona.unbind-conversation', $persona['id']) }}"
+                                                      onsubmit="return confirm(@js('Reset '.$persona['display_name'].'’s operator conversation binding? This clears it so the next allowlisted contact re-establishes the lane.'))"
+                                                      class="mt-1">
+                                                    @csrf
+                                                    @method('DELETE')
+                                                    <button type="submit" class="btn btn-sm btn-outline-danger">
+                                                        <i class="bi bi-arrow-counterclockwise me-1"></i>Reset conversation binding
+                                                    </button>
+                                                </form>
+                                            @else
+                                                <span class="text-muted">Not bound</span>
+                                            @endif
+                                        </td>
                                     </tr>
                                 @endforeach
                             </tbody>

@@ -295,6 +295,7 @@ class IntegrationsController extends Controller
         // edit/delete) arrives in P2.
         $teamsPersonas = \App\Models\TeamsPersona::orderBy('display_name')->get()
             ->map(fn (\App\Models\TeamsPersona $p) => [
+                'id' => $p->id,
                 'persona_key' => $p->persona_key,
                 'display_name' => $p->display_name,
                 'role_blurb' => $p->role_blurb,
@@ -302,6 +303,11 @@ class IntegrationsController extends Controller
                 'has_secret' => $p->hasSecret(),
                 'mcp_token_label' => $p->mcp_token_label,
                 'bot_app_id' => $p->bot_app_id,
+                // Operator-lane binding (bd psa-3vr5). conversation_id is an opaque
+                // Bot Framework id, not a secret — safe to surface so the operator
+                // can confirm what a reset would clear.
+                'conversation_id' => ($p->conversation_refs ?? [])['conversation_id'] ?? null,
+                'conversation_bound' => filled(($p->conversation_refs ?? [])['conversation_id'] ?? null),
             ]);
 
         // Phase 2: emergency / escalation / availability / SMS view vars
@@ -1778,6 +1784,62 @@ class IntegrationsController extends Controller
         Setting::setValue('teams_ambient_cooldown_seconds', (string) $cooldown);
 
         return redirect()->route('settings.integrations')->with('success', 'Teams Bot settings saved.');
+    }
+
+    /**
+     * Reset a persona's operator-conversation binding (bd psa-3vr5).
+     *
+     * Clears the write-once `conversation_refs` so the next allowlist-gated
+     * inbound turn re-captures it — the ONLY sanctioned rebind path (there is
+     * deliberately no manual-ref-entry path; that would be a second write to a
+     * write-once column). Mutates via the query builder, the symmetric-inverse
+     * of the capture path's `whereNull` bind: race-safe, returns the affected
+     * count for a free idempotency guard, and it never re-runs the model
+     * `saving` validations on a change that only touches conversation_refs.
+     * Query-builder updates fire no model events, so the per-request
+     * TeamsPersonaConfig memo is flushed explicitly on a successful clear.
+     */
+    public function unbindPersonaConversation(Request $request, \App\Models\TeamsPersona $persona)
+    {
+        $old = $persona->conversation_refs;
+
+        $cleared = \App\Models\TeamsPersona::whereKey($persona->id)
+            ->whereNotNull('conversation_refs')
+            ->update(['conversation_refs' => null]);
+
+        if ($cleared === 1) {
+            \App\Support\TeamsPersonaConfig::flush();
+
+            // Audit who/when/old->new on the settings-surface audit sink (parity
+            // with McpTokensController::audit()). Fail-soft — an audit hiccup must
+            // never sink the operator's reset.
+            try {
+                \App\Models\McpAuditLog::create([
+                    'server_name' => 'staff',
+                    'method' => 'persona/unbind_conversation',
+                    'tool_name' => mb_substr($persona->persona_key, 0, 100),
+                    'arguments' => [
+                        'old_conversation_id' => $old['conversation_id'] ?? null,
+                        'old_service_url' => $old['service_url'] ?? null,
+                    ],
+                    'status' => 'success',
+                    'error_message' => null,
+                    'duration_ms' => 0,
+                    'actor_label' => mb_substr('web:'.((string) ($request->user()?->email ?? $request->user()?->id ?? 'unknown')), 0, 100),
+                    'source_ip' => $request->ip(),
+                ]);
+            } catch (\Throwable $e) {
+                Log::warning('[Settings/Integrations] Persona unbind audit write failed: '.$e->getMessage());
+            }
+
+            return redirect()->route('settings.integrations')
+                ->with('success', "Reset {$persona->display_name}'s operator conversation binding — the next allowlisted contact will re-establish it.");
+        }
+
+        // Nothing to clear (already unbound, or a stale/duplicate submit). Safe
+        // no-op — no flush, no audit; tell the operator the truth.
+        return redirect()->route('settings.integrations')
+            ->with('success', "{$persona->display_name} has no operator conversation binding to reset.");
     }
 
     // --- AI Technician ---
