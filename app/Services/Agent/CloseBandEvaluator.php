@@ -34,8 +34,14 @@ class CloseBandEvaluator
         [0.95, 1.01],
     ];
 
-    /** @return list<BandStat> ordered low → high */
-    public function evaluate(): array
+    /**
+     * @param  int|null  $sinceDays  When set, score only proposals created within the
+     *                               last N days — the calibration target is RECENT
+     *                               MCP-Chet judgment, not mixed all-time history that
+     *                               could span pre-quiesce eras and skew the band.
+     * @return list<BandStat> ordered low → high
+     */
+    public function evaluate(?int $sinceDays = null): array
     {
         $bands = [];
         foreach (self::BANDS as [$low, $high]) {
@@ -45,6 +51,7 @@ class CloseBandEvaluator
         TechnicianRun::query()
             ->where('action_type', 'propose_close')
             ->whereNotNull('confidence')
+            ->when($sinceDays !== null, fn ($q) => $q->where('created_at', '>=', now()->subDays($sinceDays)))
             ->get(['confidence', 'state'])
             ->each(function (TechnicianRun $run) use ($bands): void {
                 $stat = $this->bandFor($bands, (float) $run->confidence);
