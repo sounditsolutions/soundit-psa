@@ -2,6 +2,7 @@
 
 namespace App\Services\Chet;
 
+use App\Services\Huntress\HuntressReadOnlyToolset;
 use App\Services\Tactical\TacticalReadOnlyToolset;
 
 class ChetDataSurfaceToolExecutor
@@ -14,6 +15,10 @@ class ChetDataSurfaceToolExecutor
             }
 
             return app(TacticalReadOnlyToolset::class)->execute($toolName, $input, $clientId);
+        }
+
+        if (HuntressReadOnlyToolset::handles($toolName)) {
+            return app(HuntressReadOnlyToolset::class)->execute($toolName, $input, $clientId);
         }
 
         if (TeamsChatReadToolset::handles($toolName)) {

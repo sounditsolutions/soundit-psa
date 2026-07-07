@@ -120,6 +120,29 @@ class McpToolRegistryTest extends TestCase
         }
     }
 
+    public function test_huntress_p1_reads_are_registry_backed_and_mapped_to_a_huntress_card(): void
+    {
+        $huntressReads = [
+            'huntress_list_incident_reports',
+            'huntress_get_incident_report',
+            'huntress_list_escalations',
+            'huntress_get_escalation',
+            'huntress_list_organizations',
+            'huntress_get_organization',
+        ];
+
+        $integrationNames = array_column(McpToolRegistry::groups()['integration']['tools'], 'name');
+
+        foreach ($huntressReads as $tool) {
+            $this->assertContains($tool, $integrationNames, "{$tool} should be in the normal integration tier");
+            $this->assertContains($tool, McpToolRegistry::allToolNames(), "{$tool} should be token-grantable + MSP-appendix-able");
+            $this->assertSame('huntress', McpToolRegistry::integrationForToolName($tool), "{$tool} must route to the huntress integration");
+        }
+
+        $this->assertArrayHasKey('huntress', McpToolRegistry::integrationMeta(), 'a Huntress card must exist on the token page');
+        $this->assertArrayHasKey('huntress', McpToolRegistry::integrationGroups(), 'Huntress reads must render under their own card');
+    }
+
     public function test_all_tool_names_is_flat_deduped_superset(): void
     {
         $all = McpToolRegistry::allToolNames();

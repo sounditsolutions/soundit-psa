@@ -20,12 +20,14 @@ use App\Services\Cipp\CippClient;
 use App\Services\Cipp\CippMcpClient;
 use App\Services\Cipp\CippRestWriteClient;
 use App\Services\Graph\GraphClient;
+use App\Services\Huntress\HuntressClient;
 use App\Services\Level\LevelClient;
 use App\Services\Mesh\MeshClient;
 use App\Services\Ninja\NinjaClient;
 use App\Services\Tactical\TacticalClient;
 use App\Support\AppTimezone;
 use App\Support\CippConfig;
+use App\Support\HuntressConfig;
 use App\Support\MeshConfig;
 use Illuminate\Pagination\Paginator;
 use Illuminate\Support\Carbon;
@@ -103,6 +105,13 @@ class AppServiceProvider extends ServiceProvider
             return new MeshClient([
                 'api_key' => MeshConfig::get('api_key'),
                 'base_url' => MeshConfig::get('base_url'),
+            ]);
+        });
+
+        $this->app->singleton(HuntressClient::class, function () {
+            return new HuntressClient([
+                'api_key' => HuntressConfig::get('api_key'),
+                'api_secret' => HuntressConfig::get('api_secret'),
             ]);
         });
 
