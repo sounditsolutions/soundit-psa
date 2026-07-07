@@ -29,8 +29,9 @@ use Illuminate\Support\Facades\Log;
  * server-validated sources (the ticket contact, the ticket-client's contacts, and
  * addresses already on the ticket's email thread) via EmailRecipientResolver,
  * re-resolved at approval time (gate 3): the model/operator supply REFERENCES, never
- * free-text addresses; off-thread additions are rejected unless the operator knob is
- * on (default off). The email is sent AFTER the gate transaction, never inside it.
+ * free-text. Arbitrary addresses (not a known contact or thread participant) are
+ * rejected unless allow_arbitrary_email_recipients is on (default off). The email is
+ * sent AFTER the gate transaction, never inside it.
  */
 class TechnicianApprovalService
 {
@@ -79,6 +80,12 @@ class TechnicianApprovalService
             $run->releaseClaim();
 
             return new TechnicianApprovalResult('recipient_invalid', null, $e->getMessage());
+        } catch (\Throwable $e) {
+            // Unexpected error (e.g. a DB failure inside candidates()) — release the claim
+            // so the run is retryable, never stranded in Executing.
+            $run->releaseClaim();
+
+            throw $e;
         }
 
         try {
@@ -359,6 +366,11 @@ class TechnicianApprovalService
                 $run->releaseClaim();
 
                 return new TechnicianApprovalResult('recipient_invalid', null, $e->getMessage());
+            } catch (\Throwable $e) {
+                // Unexpected error — release the claim so the run is retryable, not stranded.
+                $run->releaseClaim();
+
+                throw $e;
             }
         }
 

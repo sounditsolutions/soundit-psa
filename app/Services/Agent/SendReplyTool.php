@@ -25,8 +25,10 @@ use LogicException;
  * — the ticket contact (the default To), the ticket-client's contacts, and addresses
  * already on the ticket's email thread — via EmailRecipientResolver, re-resolved at
  * approval time. The model never supplies an address here; the operator may edit To/CC
- * on the approval card (e.g. reply-all), but only from those validated sources, and
- * off-thread/free-text additions are rejected unless the operator knob is on (default off).
+ * on the approval card (e.g. reply-all), but only from those validated sources.
+ * Arbitrary/free-text addresses are rejected unless allow_arbitrary_email_recipients is
+ * on (default off). (The extra "must already be on the thread" rule applies only to the
+ * direct MCP send_email path, not this staged approval path.)
  *
  * NEVER AUTO-SENDS. send_reply is Approve-tier always (TechnicianTierClassifier
  * hard-codes it), so the gate records awaiting_approval WITHOUT executing. The

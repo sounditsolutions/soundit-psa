@@ -12,6 +12,7 @@ use App\Models\Person;
 use App\Models\Setting;
 use App\Models\TechnicianRun;
 use App\Models\Ticket;
+use App\Models\TicketNote;
 use App\Models\User;
 use App\Services\EmailService;
 use App\Services\Technician\Cockpit\CockpitRecipientView;
@@ -109,5 +110,21 @@ class CockpitRecipientCardTest extends TestCase
         ])->assertRedirect();
 
         $this->assertSame(['client@thread.test', ['vendor@thread.test']], $captured);
+    }
+
+    public function test_approve_route_rejects_a_tampered_arbitrary_recipient(): void
+    {
+        // Gate 3 at the route: the server re-validates the posted cc independent of the
+        // card JS — a tampered arbitrary address is refused, nothing sends, run untouched.
+        $actor = User::factory()->create();
+        [$run, $ticket] = $this->seedSendReplyRunWithThread($actor);
+        $this->mock(EmailService::class, fn (MockInterface $m) => $m->shouldReceive('sendTicketReplyNote')->never());
+
+        $this->actingAs($actor)->post(route('cockpit.approve', $run), [
+            'body' => 'Ok.', 'cc' => ['stranger@evil.test'],
+        ])->assertRedirect();
+
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
+        $this->assertSame(0, TicketNote::where('ticket_id', $ticket->id)->where('ai_authored', true)->count());
     }
 }

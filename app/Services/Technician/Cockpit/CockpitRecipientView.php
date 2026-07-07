@@ -37,7 +37,7 @@ class CockpitRecipientView
         }
 
         $candidates = $this->resolver->candidates($ticket);
-        $replyAll = $this->resolver->replyAll($ticket);
+        $replyAll = $this->resolver->replyAll($ticket, $candidates); // reuse candidates — no double query
 
         $rows = [];
         if ($candidates->contactEmail) {

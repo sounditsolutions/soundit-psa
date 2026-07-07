@@ -14,6 +14,7 @@ use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Models\TicketNote;
 use App\Models\User;
+use App\Services\Email\EmailRecipientResolver;
 use App\Services\EmailService;
 use App\Services\Technician\TechnicianActionGate;
 use App\Services\Technician\TechnicianApprovalService;
@@ -337,5 +338,27 @@ class TechnicianApprovalServiceTest extends TestCase
         $ok = app(TechnicianApprovalService::class)->approveAndSend($run->fresh(), 'Body.', $actor->id, [], ['vendor@thread.test']);
         $this->assertSame('sent', $ok->status);
         $this->assertSame(['client@thread.test', ['vendor@thread.test']], $captured);
+    }
+
+    public function test_approve_and_send_releases_the_claim_when_recipient_resolution_errors_unexpectedly(): void
+    {
+        // M1: a NON-validation throwable during resolve (e.g. a DB error inside candidates())
+        // must still release the CAS claim — otherwise the run is stranded in Executing with
+        // no reaper. It fails closed (no send) and stays retryable.
+        $actor = User::factory()->create(['name' => 'Chet']);
+        [$run] = $this->seedSendReplyRunWithThread($actor);
+
+        $this->mock(EmailRecipientResolver::class, function (MockInterface $m) {
+            $m->shouldReceive('resolve')->andThrow(new \RuntimeException('db exploded'));
+        });
+
+        try {
+            app(TechnicianApprovalService::class)->approveAndSend($run->fresh(), 'Body.', $actor->id, [], ['vendor@thread.test']);
+            $this->fail('expected the throwable to propagate');
+        } catch (\RuntimeException $e) {
+            $this->assertSame('db exploded', $e->getMessage());
+        }
+
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
     }
 }

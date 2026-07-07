@@ -46,9 +46,9 @@ class EmailRecipientResolver
     }
 
     /** @return array{to: ?string, to_name: ?string, cc: array<int,string>} */
-    public function replyAll(Ticket $ticket): array
+    public function replyAll(Ticket $ticket, ?RecipientCandidates $candidates = null): array
     {
-        $candidates = $this->candidates($ticket);
+        $candidates ??= $this->candidates($ticket);
         $inbound = Email::query()
             ->where('ticket_id', $ticket->id)
             ->where('direction', EmailDirection::Inbound)
