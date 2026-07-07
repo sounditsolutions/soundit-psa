@@ -148,6 +148,40 @@
                             <p class="text-muted small mb-2">Drafted by: {{ $run->proposed_meta['drafted_by'] }}</p>
                         @endif
 
+                        @php($rv = $recipientViews[$run->id] ?? null)
+                        @if($rv && in_array($run->action_type, ['send_reply', 'stage_email', 'propose_resolution'], true))
+                            <div class="border rounded p-2 mb-2 bg-body-tertiary" x-data="cockpitRecipients(@js($rv))">
+                                <div class="input-group input-group-sm mb-2">
+                                    <span class="input-group-text">To</span>
+                                    <input type="text" class="form-control" x-model="to" aria-label="To recipient">
+                                    <input type="hidden" name="to[]" :value="to" form="approve-{{ $run->id }}">
+                                </div>
+                                <div class="d-flex flex-wrap gap-1 align-items-center mb-2">
+                                    <span class="text-muted small me-1">Cc:</span>
+                                    <template x-for="(addr, i) in cc" :key="i">
+                                        <span class="badge text-bg-secondary d-inline-flex align-items-center gap-1">
+                                            <span x-text="addr"></span>
+                                            <input type="hidden" name="cc[]" :value="addr" form="approve-{{ $run->id }}">
+                                            <button type="button" class="btn-close btn-close-white" style="font-size:.5rem" @click="cc.splice(i, 1)" aria-label="Remove"></button>
+                                        </span>
+                                    </template>
+                                    <button type="button" class="btn btn-sm btn-outline-primary py-0" @click="cc = [...replyAll]">
+                                        <i class="bi bi-reply-all me-1"></i>Reply all
+                                    </button>
+                                </div>
+                                <div class="input-group input-group-sm">
+                                    <select class="form-select" x-ref="pick" aria-label="Add a recipient">
+                                        <option value="">Add a recipient…</option>
+                                        @foreach($rv['candidates'] as $cand)
+                                            <option value="{{ $cand['email'] }}">{{ $cand['email'] }}@if(!empty($cand['name'])) ({{ $cand['name'] }})@endif — {{ $cand['source'] }}</option>
+                                        @endforeach
+                                    </select>
+                                    <button type="button" class="btn btn-outline-secondary" @click="addCc($refs.pick.value); $refs.pick.value = ''">Add Cc</button>
+                                </div>
+                                <p class="text-muted mb-0 mt-1" style="font-size:.75rem"><i class="bi bi-shield-check me-1"></i>Only contacts and people already on this email thread can be added; recipients are re-checked when you approve.</p>
+                            </div>
+                        @endif
+
                         <div class="d-flex flex-wrap gap-2 align-items-center">
                             <form id="approve-{{ $run->id }}" method="POST" action="{{ route('cockpit.approve', $run) }}" data-cockpit-form data-mode="confirmed" data-keybind="approve">
                                 @csrf
@@ -585,6 +619,20 @@
 @push('scripts')
 <script>
 document.addEventListener('alpine:init', function () {
+    // psa-kt82 PR B: recipient block for send_reply/stage_email approval cards.
+    Alpine.data('cockpitRecipients', function (rv) {
+        return {
+            to: (rv && rv.to && rv.to.email) ? rv.to.email : '',
+            cc: [],
+            replyAll: (rv && rv.reply_all) ? rv.reply_all : [],
+            addCc(addr) {
+                addr = (addr || '').trim();
+                if (addr && addr !== this.to && !this.cc.includes(addr)) {
+                    this.cc.push(addr);
+                }
+            },
+        };
+    });
     Alpine.data('cockpitQueue', function (config) {
         return {
             counts: config.counts,

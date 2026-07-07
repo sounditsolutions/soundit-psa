@@ -13,8 +13,10 @@ use App\Models\Setting;
 use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Models\User;
+use App\Services\EmailService;
 use App\Services\Technician\Cockpit\CockpitRecipientView;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Mockery\MockInterface;
 use Tests\TestCase;
 
 class CockpitRecipientCardTest extends TestCase
@@ -74,5 +76,38 @@ class CockpitRecipientCardTest extends TestCase
             'proposed_content' => 'Close it.',
         ]);
         $this->assertNull(app(CockpitRecipientView::class)->for($closeRun));
+    }
+
+    public function test_cockpit_renders_resolved_recipient_block_for_reply_cards(): void
+    {
+        $actor = User::factory()->create();
+        $this->seedSendReplyRunWithThread($actor);
+
+        $this->actingAs($actor)->get(route('cockpit.index'))->assertOk()
+            ->assertSee('client@thread.test')     // resolved default To / contact candidate
+            ->assertSee('vendor@thread.test')     // resolvable reply-all / thread candidate
+            ->assertSee('Reply all');
+    }
+
+    public function test_approving_with_edited_cc_sends_to_that_resolved_set(): void
+    {
+        $actor = User::factory()->create();
+        [$run] = $this->seedSendReplyRunWithThread($actor);
+
+        $captured = null;
+        $this->mock(EmailService::class, function (MockInterface $m) use (&$captured) {
+            $m->shouldReceive('sendTicketReplyNote')->once()->andReturnUsing(
+                function ($t, $n, $to, $cc) use (&$captured) {
+                    $captured = [$to, $cc];
+
+                    return null;
+                });
+        });
+
+        $this->actingAs($actor)->post(route('cockpit.approve', $run), [
+            'body' => 'Ok.', 'to' => ['client@thread.test'], 'cc' => ['vendor@thread.test'],
+        ])->assertRedirect();
+
+        $this->assertSame(['client@thread.test', ['vendor@thread.test']], $captured);
     }
 }
