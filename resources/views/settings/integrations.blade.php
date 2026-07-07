@@ -3382,6 +3382,16 @@
                         <label class="form-check-label" for="technician_auto_ack"><strong>Auto-acknowledge new tickets</strong></label>
                     </div>
 
+                    <div class="form-check form-switch mb-2">
+                        <input class="form-check-input" type="checkbox" id="direct_email_new_recipients" name="direct_email_new_recipients" {{ $directEmailNewRecipients ? 'checked' : '' }}>
+                        <label class="form-check-label" for="direct_email_new_recipients">Allow the direct email path to add recipients not already on the thread <span class="text-muted">(default off — staged-only)</span></label>
+                    </div>
+
+                    <div class="form-check form-switch mb-3">
+                        <input class="form-check-input" type="checkbox" id="allow_arbitrary_email_recipients" name="allow_arbitrary_email_recipients" {{ $allowArbitraryEmailRecipients ? 'checked' : '' }}>
+                        <label class="form-check-label" for="allow_arbitrary_email_recipients">Allow arbitrary email recipients outside known contacts and thread participants <span class="text-muted">(default off — exfil guard)</span></label>
+                    </div>
+
                     <hr class="my-3">
                     <h6 class="text-muted text-uppercase small mb-2">Notify (Plan 1C)</h6>
                     <div class="mb-3">

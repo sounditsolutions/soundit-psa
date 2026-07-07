@@ -195,6 +195,35 @@ class TechnicianIntegrationToggleTest extends TestCase
             ->assertSessionHas('success', 'AI Technician settings saved.');
     }
 
+    // --- email recipient knobs (psa-kt82) ---
+
+    public function test_email_recipient_knobs_save_and_render_on_technician_card(): void
+    {
+        // Render: the card shows the two new toggles (default off).
+        $this->actingAs($this->user)
+            ->get(route('settings.integrations'))
+            ->assertOk()
+            ->assertSee('arbitrary email recipients')
+            ->assertSee('not already on the thread');
+
+        // Checked → on.
+        $this->actingAs($this->user)
+            ->post(route('settings.integrations.technician.update'), [
+                'allow_arbitrary_email_recipients' => '1',
+                'direct_email_new_recipients' => '1',
+            ])
+            ->assertRedirect(route('settings.integrations'));
+        $this->assertTrue(TechnicianConfig::allowArbitraryEmailRecipients());
+        $this->assertTrue(TechnicianConfig::directEmailNewRecipients());
+
+        // Absent (unchecked) → off.
+        $this->actingAs($this->user)
+            ->post(route('settings.integrations.technician.update'), [])
+            ->assertRedirect(route('settings.integrations'));
+        $this->assertFalse(TechnicianConfig::allowArbitraryEmailRecipients());
+        $this->assertFalse(TechnicianConfig::directEmailNewRecipients());
+    }
+
     // --- page renders the card ---
 
     public function test_integrations_page_renders_ai_technician_card(): void
