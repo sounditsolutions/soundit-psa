@@ -24,20 +24,22 @@ use Mockery;
 use Tests\TestCase;
 
 /**
- * HuntressIncidentReconcileService — the poll/reconcile resolve path (bd psa-kq1u).
+ * HuntressIncidentReconcileService — poll/reconcile resolve path (bd psa-kq1u).
  *
- * Huntress auto-resolves an incident (→ status `closed`/`dismissed` on the API) WITHOUT
- * firing the CW-Manage status webhook, so the bridged PSA ticket stays open. This service
- * polls the authoritative incident state and resolves the stranded ticket.
+ * Auto-resolved Huntress incidents (→ status closed/dismissed on the API) don't fire the
+ * CW-Manage status webhook, so the bridged PSA ticket strands open. This service resolves it.
  *
- * REAL DATA SHAPE: for most bridged tickets `source_alert_id` is a synth hash (not a URL),
- * so no incident id is recoverable from our records — those tickets (incl. the ones that
- * motivated the bead) MUST be resolved via LIST-AND-MATCH: list the org's incident reports
- * and match to the open ticket by organization_id→client + agent hostname + sent_at≈created.
- * The id-bearing minority (source_alert_id/description carries an incident URL) uses the
- * exact getIncidentReport(id) fast path.
+ * SAFETY (from real prod data):
+ *  - SCOPE: only INCIDENT-backed source=Huntress tickets are eligible. Escalations / ISPM /
+ *    ITDR / product-notices share the source but have no incident report — they must never
+ *    be touched. We detect an incident ticket by parsing "Incident on <host>" from its
+ *    subject (escalations/notices don't carry it).
+ *  - CORRESPONDENCE: resolve ONLY on positive ticket↔incident correspondence — an exact
+ *    incident id (minority), or the closed incident's body mentioning the ticket's host,
+ *    within the sent_at window. Bare time-window matching is a mis-close vector (a
+ *    coincidental sibling incident close) and is NOT a resolve trigger.
  *
- * Only the Huntress HTTP boundary is faked; the reconcile/match/guard logic is real.
+ * Only the Huntress HTTP boundary is faked; reconcile/scope/correspondence/guards are real.
  */
 class HuntressIncidentReconcileTest extends TestCase
 {
@@ -60,76 +62,87 @@ class HuntressIncidentReconcileTest extends TestCase
         return Client::factory()->create(['huntress_organization_id' => $orgId]);
     }
 
-    /**
-     * A bridged Huntress ticket. Defaults to the REAL majority shape: hash source_alert_id
-     * (no recoverable incident id), no description URL, agent hostname in alert metadata.
-     * Pass sourceAlertUrl to get the id-bearing minority shape. Also writes the standard
-     * system audit note (proves system notes are NOT counted as human touch).
-     */
-    private function bridgedTicket(
+    /** A real INCIDENT ticket: subject carries "Incident on <host> (<org>)". */
+    private function incidentTicket(
         Client $client,
+        string $host = 'DESKTOP-ARL0EQ1',
         TicketStatus $status = TicketStatus::InProgress,
-        string $hostname = 'DESKTOP-ARL0EQ1',
         ?string $sourceAlertUrl = null,
     ): Ticket {
+        return $this->makeTicket(
+            $client,
+            "Huntress EDR Critical Incident Report | Incident on {$host} (Blue Org)",
+            "Threat surfaced on host {$host}. Remediation pending.",
+            $status,
+            $sourceAlertUrl,
+        );
+    }
+
+    /** A NON-incident Huntress ticket (escalation / ISPM / ITDR / notice) — no "Incident on". */
+    private function escalationTicket(Client $client, string $subject = 'Huntress EDR High Escalation | Endpoints Missing Key EDR Functionality'): Ticket
+    {
+        return $this->makeTicket($client, $subject, 'Please review affected endpoints.', TicketStatus::InProgress, null);
+    }
+
+    private function makeTicket(Client $client, string $subject, string $description, TicketStatus $status, ?string $sourceAlertUrl): Ticket
+    {
         $ticket = Ticket::factory()->create([
             'source' => TicketSource::Huntress->value,
             'status' => $status->value,
             'client_id' => $client->id,
-            'description' => 'Huntress incident on '.$hostname.'.',
+            'subject' => $subject,
+            'description' => $description,
             'closed_at' => null,
         ]);
 
+        // Standard system audit note (system-generated — not a human touch).
         TicketNote::create([
             'ticket_id' => $ticket->id,
             'author_id' => $this->systemUser->id,
             'body' => 'Submitted via Huntress incident report.',
-            'note_type' => NoteType::StatusChange->value, // system-generated — not a human touch
+            'note_type' => NoteType::StatusChange->value,
             'is_private' => true,
             'noted_at' => now(),
         ]);
 
+        // Linked alert — source_alert_id is a synth hash for the majority (no recoverable id),
+        // or the incident URL for the minority. metadata['agent'] is intentionally absent
+        // (empty in real prod data), so correspondence must come from the incident body.
         Alert::create([
             'source' => AlertSource::Huntress->value,
-            'source_alert_id' => $sourceAlertUrl ?? md5('synth-'.$ticket->id), // hash by default
+            'source_alert_id' => $sourceAlertUrl ?? md5('synth-'.$ticket->id),
             'severity' => 'critical',
             'status' => AlertStatus::Ticketed->value,
-            'title' => 'Huntress incident',
+            'title' => $subject,
             'ticket_id' => $ticket->id,
             'client_id' => $client->id,
             'fired_at' => $ticket->created_at,
-            'metadata' => ['agent' => $hostname, 'organization' => 'Some Org'],
+            'metadata' => ['organization' => 'Blue Org'],
         ]);
 
         return $ticket;
     }
 
-    private function incident(int $id, int $agentId, int $orgId, string $status, \Carbon\CarbonInterface $sentAt): array
+    /** An incident report row as returned by getIncidentReports (host lives in body text). */
+    private function incidentRow(int $id, int $orgId, string $status, \Carbon\CarbonInterface $sentAt, string $body): array
     {
         return [
             'id' => $id,
-            'agent_id' => $agentId,
+            'agent_id' => 9000 + $id,
             'organization_id' => $orgId,
             'status' => $status,
             'sent_at' => $sentAt->toIso8601String(),
             'closed_at' => $status === 'closed' ? now()->toIso8601String() : null,
             'severity' => 'critical',
+            'body' => $body,
         ];
     }
 
-    /**
-     * Reconcile service with a fully-faked HuntressClient:
-     *   $incidentsByOrg[org]  → getIncidentReports(['organization_id'=>org])
-     *   $agentsByOrg[org]     → getAgents(['organization_id'=>org])
-     *   $reportsById[id]      → getIncidentReport(id)  (id-path minority)
-     */
-    private function service(array $incidentsByOrg = [], array $agentsByOrg = [], array $reportsById = []): HuntressIncidentReconcileService
+    private function service(array $incidentsByOrg = [], array $reportsById = []): HuntressIncidentReconcileService
     {
         $client = Mockery::mock(HuntressClient::class);
         $client->shouldReceive('getIncidentReports')
             ->andReturnUsing(fn (array $p) => $incidentsByOrg[$p['organization_id'] ?? 0] ?? []);
-        $client->shouldReceive('getAgents')
-            ->andReturnUsing(fn (array $p = []) => $agentsByOrg[$p['organization_id'] ?? 0] ?? []);
         $client->shouldReceive('getIncidentReport')
             ->andReturnUsing(fn (int $id) => $reportsById[$id] ?? ['id' => $id, 'status' => 'sent']);
 
@@ -152,103 +165,99 @@ class HuntressIncidentReconcileTest extends TestCase
         $this->assertStringContainsStringIgnoringCase('huntress', $note->body);
     }
 
-    // ── list-and-match: the REAL majority shape (hash source_alert_id, no URL) ──
+    // ── correspondence: host + window (the majority, hash source_alert_id) ──
 
-    public function test_resolves_majority_shape_ticket_via_list_and_match(): void
+    public function test_resolves_incident_ticket_on_host_and_window_correspondence(): void
     {
         $client = $this->mappedClient(42);
-        $ticket = $this->bridgedTicket($client, hostname: 'DESKTOP-ARL0EQ1'); // hash source_alert_id, no URL
+        $ticket = $this->incidentTicket($client, 'DESKTOP-ARL0EQ1');
 
-        $incidents = [42 => [$this->incident(777, 9001, 42, 'closed', $ticket->created_at)]];
-        $agents = [42 => [['id' => 9001, 'hostname' => 'DESKTOP-ARL0EQ1']]];
+        $incidents = [42 => [
+            $this->incidentRow(701, 42, 'closed', $ticket->created_at, 'Remediation complete on DESKTOP-ARL0EQ1.'),
+        ]];
 
-        $result = $this->service($incidents, $agents)->reconcile();
+        $result = $this->service($incidents)->reconcile();
 
         $this->assertResolved($ticket);
         $this->assertSame(1, $result->updated);
         $this->assertSame(AlertStatus::Resolved, Alert::where('ticket_id', $ticket->id)->first()->status);
     }
 
-    public function test_agent_hostname_disambiguates_two_incidents_in_the_same_window(): void
+    /** BLOCKER 1: escalation / ISPM / ITDR / notice tickets are never incident-backed. */
+    public function test_escalation_ticket_is_never_touched(): void
     {
         $client = $this->mappedClient(42);
-        $ticket = $this->bridgedTicket($client, hostname: 'HOST-B');
+        $escalation = $this->escalationTicket($client);
 
-        // Two closed incidents in the sent_at window; without agent matching this is ambiguous.
+        // A closed incident sits in the same org and window — must NOT match the escalation.
         $incidents = [42 => [
-            $this->incident(701, 9001, 42, 'closed', $ticket->created_at),
-            $this->incident(702, 9002, 42, 'closed', $ticket->created_at),
-        ]];
-        $agents = [42 => [
-            ['id' => 9001, 'hostname' => 'HOST-A'],
-            ['id' => 9002, 'hostname' => 'HOST-B'],
+            $this->incidentRow(710, 42, 'closed', $escalation->created_at, 'Remediation complete on SOME-HOST.'),
         ]];
 
-        $result = $this->service($incidents, $agents)->reconcile();
+        $result = $this->service($incidents)->reconcile();
 
-        // Agent hostname (HOST-B → agent 9002) picks a unique incident → resolved.
-        $this->assertResolved($ticket);
-        $this->assertSame(1, $result->updated);
+        $this->assertSame(TicketStatus::InProgress, $escalation->fresh()->status);
+        $this->assertSame(0, $result->updated);
     }
 
-    public function test_ambiguous_window_without_host_resolution_is_skipped_safely(): void
+    /** BLOCKER 2: a coincidental sibling close on a DIFFERENT host must not resolve the ticket. */
+    public function test_coincidental_sibling_close_on_different_host_does_not_resolve(): void
     {
         $client = $this->mappedClient(42);
-        // No hostname anywhere (no alert agent metadata, no linked asset) → can't agent-match.
-        $ticket = Ticket::factory()->create([
-            'source' => TicketSource::Huntress->value,
-            'status' => TicketStatus::InProgress->value,
-            'client_id' => $client->id,
-            'description' => 'Huntress incident.',
-            'closed_at' => null,
-        ]);
-        Alert::create([
-            'source' => AlertSource::Huntress->value,
-            'source_alert_id' => md5('synth-'.$ticket->id),
-            'severity' => 'critical',
-            'status' => AlertStatus::Ticketed->value,
-            'title' => 'Huntress incident',
-            'ticket_id' => $ticket->id,
-            'client_id' => $client->id,
-            'fired_at' => $ticket->created_at,
-            'metadata' => ['organization' => 'Some Org'], // no 'agent'
-        ]);
+        $ticket = $this->incidentTicket($client, 'HOST-A'); // its own incident is still open (sent)
 
+        // The only closed incident in the window is for HOST-B — body does not mention HOST-A.
         $incidents = [42 => [
-            $this->incident(701, 9001, 42, 'closed', $ticket->created_at),
-            $this->incident(702, 9002, 42, 'closed', $ticket->created_at),
+            $this->incidentRow(720, 42, 'closed', $ticket->created_at, 'Remediation complete on HOST-B.'),
         ]];
 
-        $result = $this->service($incidents, [])->reconcile();
+        $result = $this->service($incidents)->reconcile();
 
-        // Two window candidates, no way to disambiguate → skip (never mis-close).
         $this->assertSame(TicketStatus::InProgress, $ticket->fresh()->status);
         $this->assertSame(0, $result->updated);
     }
 
-    public function test_incident_sent_at_outside_the_window_is_not_matched(): void
+    public function test_two_closed_incidents_for_the_same_host_in_window_are_ambiguous_skip(): void
     {
         $client = $this->mappedClient(42);
-        $ticket = $this->bridgedTicket($client, hostname: 'HOST-X');
+        $ticket = $this->incidentTicket($client, 'HOST-A');
 
-        // Closed incident for the right host, but sent 3h from the ticket's creation.
-        $incidents = [42 => [$this->incident(710, 9001, 42, 'closed', $ticket->created_at->copy()->addHours(3))]];
-        $agents = [42 => [['id' => 9001, 'hostname' => 'HOST-X']]];
+        $incidents = [42 => [
+            $this->incidentRow(730, 42, 'closed', $ticket->created_at, 'Remediation complete on HOST-A.'),
+            $this->incidentRow(731, 42, 'dismissed', $ticket->created_at, 'Dismissed finding on HOST-A.'),
+        ]];
 
-        $this->service($incidents, $agents)->reconcile();
+        $result = $this->service($incidents)->reconcile();
+
+        $this->assertSame(TicketStatus::InProgress, $ticket->fresh()->status);
+        $this->assertSame(0, $result->updated);
+    }
+
+    public function test_host_match_outside_the_window_is_not_resolved(): void
+    {
+        $client = $this->mappedClient(42);
+        $ticket = $this->incidentTicket($client, 'HOST-A');
+
+        // Correct host, but sent 3h from the ticket's creation → a later re-infection, not this incident.
+        $incidents = [42 => [
+            $this->incidentRow(740, 42, 'closed', $ticket->created_at->copy()->addHours(3), 'Remediation complete on HOST-A.'),
+        ]];
+
+        $this->service($incidents)->reconcile();
 
         $this->assertSame(TicketStatus::InProgress, $ticket->fresh()->status);
     }
 
-    public function test_dismissed_incident_resolves(): void
+    public function test_dismissed_incident_resolves_on_correspondence(): void
     {
         $client = $this->mappedClient(42);
-        $ticket = $this->bridgedTicket($client, TicketStatus::New, 'HOST-D');
+        $ticket = $this->incidentTicket($client, 'HOST-D', TicketStatus::New);
 
-        $incidents = [42 => [$this->incident(720, 9003, 42, 'dismissed', $ticket->created_at)]];
-        $agents = [42 => [['id' => 9003, 'hostname' => 'HOST-D']]];
+        $incidents = [42 => [
+            $this->incidentRow(750, 42, 'dismissed', $ticket->created_at, 'Dismissed benign detection on HOST-D.'),
+        ]];
 
-        $this->service($incidents, $agents)->reconcile();
+        $this->service($incidents)->reconcile();
 
         $this->assertSame(TicketStatus::Resolved, $ticket->fresh()->status);
     }
@@ -256,46 +265,60 @@ class HuntressIncidentReconcileTest extends TestCase
     public function test_still_sent_incident_leaves_ticket_open(): void
     {
         $client = $this->mappedClient(42);
-        $ticket = $this->bridgedTicket($client, hostname: 'HOST-S');
+        $ticket = $this->incidentTicket($client, 'HOST-S');
 
-        $incidents = [42 => [$this->incident(730, 9004, 42, 'sent', $ticket->created_at)]];
-        $agents = [42 => [['id' => 9004, 'hostname' => 'HOST-S']]];
+        // The host's incident is present but still open upstream (sent) → excluded from candidates.
+        $incidents = [42 => [
+            $this->incidentRow(760, 42, 'sent', $ticket->created_at, 'Active investigation on HOST-S.'),
+        ]];
 
-        $result = $this->service($incidents, $agents)->reconcile();
+        $result = $this->service($incidents)->reconcile();
 
         $this->assertSame(TicketStatus::InProgress, $ticket->fresh()->status);
         $this->assertSame(0, $result->updated);
-        $this->assertSame(AlertStatus::Ticketed, Alert::where('ticket_id', $ticket->id)->first()->status);
     }
 
-    // ── id-path: the minority shape (source_alert_id carries an incident URL) ──
+    // ── exact-id fast path (the minority: source_alert_id carries an incident URL) ──
 
     public function test_id_bearing_ticket_resolves_via_exact_get_incident_report(): void
     {
         $client = $this->mappedClient(42);
-        $ticket = $this->bridgedTicket(
+        $ticket = $this->incidentTicket(
             $client,
+            'HOST-ID',
             sourceAlertUrl: 'https://dashboard.huntress.io/org/42/infection_reports/555',
         );
 
-        // No org list needed — exact id path.
-        $result = $this->service([], [], [555 => ['id' => 555, 'status' => 'closed']])->reconcile();
+        $result = $this->service([], [555 => ['id' => 555, 'status' => 'closed']])->reconcile();
 
         $this->assertResolved($ticket);
         $this->assertSame(1, $result->updated);
     }
 
-    // ── guards (approved; exercised on the real majority shape) ──
+    public function test_id_bearing_ticket_with_still_open_incident_stays_open(): void
+    {
+        $client = $this->mappedClient(42);
+        $ticket = $this->incidentTicket(
+            $client,
+            'HOST-ID2',
+            sourceAlertUrl: 'https://dashboard.huntress.io/org/42/infection_reports/556',
+        );
+
+        $this->service([], [556 => ['id' => 556, 'status' => 'sent']])->reconcile();
+
+        $this->assertSame(TicketStatus::InProgress, $ticket->fresh()->status);
+    }
+
+    // ── guards (approved; exercised on the real correspondence path) ──
 
     public function test_is_idempotent_across_runs(): void
     {
         $client = $this->mappedClient(42);
-        $ticket = $this->bridgedTicket($client, hostname: 'HOST-I');
-        $incidents = [42 => [$this->incident(740, 9005, 42, 'closed', $ticket->created_at)]];
-        $agents = [42 => [['id' => 9005, 'hostname' => 'HOST-I']]];
+        $ticket = $this->incidentTicket($client, 'HOST-I');
+        $incidents = [42 => [$this->incidentRow(770, 42, 'closed', $ticket->created_at, 'Done on HOST-I.')]];
 
-        $this->service($incidents, $agents)->reconcile();
-        $this->service($incidents, $agents)->reconcile();
+        $this->service($incidents)->reconcile();
+        $this->service($incidents)->reconcile();
 
         $resolveNotes = TicketNote::where('ticket_id', $ticket->id)
             ->where('status_to', TicketStatus::Resolved->value)
@@ -307,20 +330,18 @@ class HuntressIncidentReconcileTest extends TestCase
     public function test_skips_a_ticket_a_human_has_taken_over(): void
     {
         $client = $this->mappedClient(42);
-        $ticket = $this->bridgedTicket($client, hostname: 'HOST-H');
+        $ticket = $this->incidentTicket($client, 'HOST-H');
         TicketNote::create([
             'ticket_id' => $ticket->id,
             'author_id' => $this->systemUser->id,
-            'body' => 'I am handling this one manually.',
-            'note_type' => NoteType::Note->value, // human note
+            'body' => 'Handling this manually.',
+            'note_type' => NoteType::Note->value,
             'is_private' => true,
             'noted_at' => now(),
         ]);
 
-        $incidents = [42 => [$this->incident(750, 9006, 42, 'closed', $ticket->created_at)]];
-        $agents = [42 => [['id' => 9006, 'hostname' => 'HOST-H']]];
-
-        $result = $this->service($incidents, $agents)->reconcile();
+        $incidents = [42 => [$this->incidentRow(780, 42, 'closed', $ticket->created_at, 'Done on HOST-H.')]];
+        $result = $this->service($incidents)->reconcile();
 
         $this->assertSame(TicketStatus::InProgress, $ticket->fresh()->status);
         $this->assertSame(0, $result->updated);
@@ -329,7 +350,7 @@ class HuntressIncidentReconcileTest extends TestCase
     public function test_skips_a_ticket_with_an_end_user_reply(): void
     {
         $client = $this->mappedClient(42);
-        $ticket = $this->bridgedTicket($client, hostname: 'HOST-E');
+        $ticket = $this->incidentTicket($client, 'HOST-E');
         TicketNote::create([
             'ticket_id' => $ticket->id,
             'author_id' => null,
@@ -341,10 +362,8 @@ class HuntressIncidentReconcileTest extends TestCase
             'noted_at' => now(),
         ]);
 
-        $incidents = [42 => [$this->incident(760, 9007, 42, 'closed', $ticket->created_at)]];
-        $agents = [42 => [['id' => 9007, 'hostname' => 'HOST-E']]];
-
-        $this->service($incidents, $agents)->reconcile();
+        $incidents = [42 => [$this->incidentRow(790, 42, 'closed', $ticket->created_at, 'Done on HOST-E.')]];
+        $this->service($incidents)->reconcile();
 
         $this->assertSame(TicketStatus::InProgress, $ticket->fresh()->status);
     }
@@ -356,28 +375,26 @@ class HuntressIncidentReconcileTest extends TestCase
             'source' => TicketSource::Manual->value,
             'status' => TicketStatus::InProgress->value,
             'client_id' => $client->id,
+            'subject' => 'Incident on HOST-A (Blue Org)',
             'closed_at' => null,
         ]);
 
-        $incidents = [42 => [$this->incident(770, 9008, 42, 'closed', $ticket->created_at)]];
-        $this->service($incidents, [42 => [['id' => 9008, 'hostname' => 'X']]])->reconcile();
+        $incidents = [42 => [$this->incidentRow(800, 42, 'closed', $ticket->created_at, 'Done on HOST-A.')]];
+        $this->service($incidents)->reconcile();
 
         $this->assertSame(TicketStatus::InProgress, $ticket->fresh()->status);
     }
 
-    public function test_gracefully_skips_when_client_has_no_org_mapping_and_no_id(): void
+    public function test_gracefully_skips_when_client_has_no_org_mapping(): void
     {
-        // Unmapped client + hash source_alert_id → nothing to list against → skip.
         $unmapped = Client::factory()->create(['huntress_organization_id' => null]);
-        $stuck = $this->bridgedTicket($unmapped, hostname: 'HOST-U');
+        $stuck = $this->incidentTicket($unmapped, 'HOST-U');
 
-        // A second, resolvable ticket (mapped org) must still be processed.
         $client = $this->mappedClient(42);
-        $resolvable = $this->bridgedTicket($client, hostname: 'HOST-R');
-        $incidents = [42 => [$this->incident(780, 9009, 42, 'closed', $resolvable->created_at)]];
-        $agents = [42 => [['id' => 9009, 'hostname' => 'HOST-R']]];
+        $resolvable = $this->incidentTicket($client, 'HOST-R');
+        $incidents = [42 => [$this->incidentRow(810, 42, 'closed', $resolvable->created_at, 'Done on HOST-R.')]];
 
-        $result = $this->service($incidents, $agents)->reconcile();
+        $result = $this->service($incidents)->reconcile();
 
         $this->assertSame(TicketStatus::InProgress, $stuck->fresh()->status);
         $this->assertSame(TicketStatus::Resolved, $resolvable->fresh()->status);
@@ -386,8 +403,6 @@ class HuntressIncidentReconcileTest extends TestCase
 
     public function test_command_fails_cleanly_when_huntress_is_not_configured(): void
     {
-        // setUp sets no api_key/api_secret → HuntressConfig::isConfigured() is false, so the
-        // command must exit non-zero without constructing a client or touching the API.
         $this->artisan('huntress:reconcile-incidents')->assertExitCode(1);
     }
 
