@@ -20,12 +20,13 @@ use LogicException;
  * free-text. The draft is recorded as a held TechnicianRun in DraftPipeline's exact
  * shape (proposed_content = undisclosed body; proposed_meta = ['to', 'reasons'];
  * content_hash = sha256('send_reply:'.ticketId.':'.body)) so the existing
- * approveAndSend + cockpit approve arm work UNCHANGED. The disclosure is appended and
- * the recipient is re-derived from $ticket->contact at approval time — never model
- * free-text here. (Scope: this is the send_reply rule. Staff-directed To/CC control
- * lives in the separate MCP `send_email` tool, which validates any supplied recipients
- * against the ticket contact, the client's contacts, and the ticket's existing email
- * thread via EmailRecipientResolver — arbitrary addresses are rejected.)
+ * approveAndSend + cockpit approve arm work UNCHANGED. The disclosure is appended.
+ * RECIPIENT CONTRACT (psa-kt82): recipients resolve only from server-validated sources
+ * — the ticket contact (the default To), the ticket-client's contacts, and addresses
+ * already on the ticket's email thread — via EmailRecipientResolver, re-resolved at
+ * approval time. The model never supplies an address here; the operator may edit To/CC
+ * on the approval card (e.g. reply-all), but only from those validated sources, and
+ * off-thread/free-text additions are rejected unless the operator knob is on (default off).
  *
  * NEVER AUTO-SENDS. send_reply is Approve-tier always (TechnicianTierClassifier
  * hard-codes it), so the gate records awaiting_approval WITHOUT executing. The

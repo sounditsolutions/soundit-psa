@@ -25,9 +25,12 @@ use Illuminate\Support\Facades\Log;
  * Turns a held draft into a real, human-approved, single-use client send (Plan 1B).
  * The run-state CAS latch (claimForExecution) makes it exactly-once even on a
  * double-tap / replayed grant; the gate enforces the signed identity-bound grant;
- * disclosure is appended by this sending layer; the recipient is re-derived from
- * the ticket contact (never the model-suggested address). The email is sent AFTER
- * the gate transaction, never inside it.
+ * disclosure is appended by this sending layer. Recipients resolve only from
+ * server-validated sources (the ticket contact, the ticket-client's contacts, and
+ * addresses already on the ticket's email thread) via EmailRecipientResolver,
+ * re-resolved at approval time (gate 3): the model/operator supply REFERENCES, never
+ * free-text addresses; off-thread additions are rejected unless the operator knob is
+ * on (default off). The email is sent AFTER the gate transaction, never inside it.
  */
 class TechnicianApprovalService
 {
