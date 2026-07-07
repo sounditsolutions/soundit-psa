@@ -275,6 +275,8 @@ class IntegrationsController extends Controller
         $technicianDigestEnabled = \App\Support\TechnicianConfig::digestEnabled();
         $technicianDigestTime = \App\Support\TechnicianConfig::digestTimeLocal();
         $technicianHeartbeatInterval = \App\Support\TechnicianConfig::heartbeatIntervalMinutes();
+        $allowArbitraryEmailRecipients = \App\Support\TechnicianConfig::allowArbitraryEmailRecipients();
+        $directEmailNewRecipients = \App\Support\TechnicianConfig::directEmailNewRecipients();
 
         // Teams bot (Bot Framework) credentials — App ID + tenant are plain; the Entra
         // client secret is masked/write-only (only "is one stored?" reaches the view).
@@ -374,6 +376,7 @@ class IntegrationsController extends Controller
             'assistantEnabled', 'assistantMaxMessages', 'assistantDailyTokens',
             'technicianEnabled', 'technicianEmergencyEnabled', 'technicianAutoAck',
             'technicianTeamsWebhookSet', 'technicianNotifyEmail', 'technicianDigestEnabled', 'technicianDigestTime', 'technicianHeartbeatInterval',
+            'allowArbitraryEmailRecipients', 'directEmailNewRecipients',
             'technicianEscalationChain', 'technicianEscalationTimeout', 'technicianEmergencyReping', 'technicianStormWindow',
             'technicianMaxHoldMessage', 'technicianMaxHoldAuto', 'technicianEmergencyKeywords', 'technicianEmergencyAge',
             'technicianAvailability', 'technicianOperatorPhones', 'activeUsers',
@@ -1904,6 +1907,9 @@ class IntegrationsController extends Controller
         }
         Setting::setValue('technician_notify_email', trim((string) $request->input('technician_notify_email', '')));
         Setting::setValue('technician_digest_enabled', $request->has('technician_digest_enabled') ? '1' : '0');
+        // psa-kt82: email recipient policy knobs (default off).
+        Setting::setValue('allow_arbitrary_email_recipients', $request->has('allow_arbitrary_email_recipients') ? '1' : '0');
+        Setting::setValue('direct_email_new_recipients', $request->has('direct_email_new_recipients') ? '1' : '0');
         $time = (string) $request->input('technician_digest_time', '08:00');
         Setting::setValue('technician_digest_time', preg_match('/^\d{2}:\d{2}$/', $time) ? $time : '08:00');
         Setting::setValue('technician_heartbeat_interval', (string) max(10, (int) $request->input('technician_heartbeat_interval', 15)));

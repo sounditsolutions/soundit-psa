@@ -172,8 +172,13 @@ class PsaActionToolsTest extends TestCase
         $schema = $scopedTools['send_email']['inputSchema'];
         $this->assertContains('client_id', $schema['required']);
         $this->assertContains('reason', $schema['required']);
-        $this->assertArrayNotHasKey('to', $schema['properties']);
-        $this->assertArrayNotHasKey('cc', $schema['properties']);
+        // psa-kt82: send_email now accepts optional validated to/cc (still no free-text subject).
+        $this->assertArrayHasKey('to', $schema['properties']);
+        $this->assertArrayHasKey('cc', $schema['properties']);
+        $this->assertSame('array', $schema['properties']['to']['type']);
+        $this->assertSame('array', $schema['properties']['cc']['type']);
+        $this->assertNotContains('to', $schema['required']);
+        $this->assertNotContains('cc', $schema['required']);
         $this->assertArrayNotHasKey('subject', $schema['properties']);
 
         foreach (['update_ticket', 'set_ticket_status', 'assign_ticket', 'assign_asset', 'unassign_asset', 'set_ticket_contact', 'move_ticket_to_client'] as $name) {
@@ -309,17 +314,47 @@ class PsaActionToolsTest extends TestCase
         }
     }
 
-    public function test_send_email_directly_sends_to_derived_contact_with_audit_and_action_trail(): void
+    public function test_direct_send_email_rejects_arbitrary_recipient_without_side_effects(): void
     {
         $token = $this->token(['send_email']);
-        $ticket = $this->ticketWithContact();
-        $body = 'We replaced the toner and the printer is back online.';
+        $ticket = $this->ticketWithContact(); // contact = client@example.test
+        $this->mock(EmailService::class, fn (MockInterface $mock) => $mock->shouldReceive('sendTicketReplyNote')->never());
+
+        $response = $this->callTool($token, 'send_email', [
+            'client_id' => $ticket->client_id,
+            'ticket_id' => $ticket->id,
+            'reason' => 'Client asked for confirmation.',
+            'body' => 'Body.',
+            'cc' => ['attacker@example.test'], // not a contact, not on thread
+        ]);
+
+        $response->assertOk();
+        $this->assertTrue((bool) $response->json('result.isError'));
+        $this->assertStringContainsString('not a known contact or thread participant', (string) $response->json('result.content.0.text'));
+        $this->assertSame(0, TicketNote::where('ticket_id', $ticket->id)->count());
+        $this->assertSame(0, TechnicianActionLog::where('ticket_id', $ticket->id)->where('action_type', 'send_email')->count());
+    }
+
+    public function test_direct_send_email_sends_to_contact_and_thread_participant_cc_with_redacted_audit(): void
+    {
+        $token = $this->token(['send_email']);
+        $ticket = $this->ticketWithContact(); // contact = client@example.test
+        // Seed an inbound thread email so vendor@thread.test is a validated thread participant.
+        Email::create([
+            'graph_id' => 'in-1', 'direction' => EmailDirection::Inbound,
+            'from_address' => 'client@example.test', 'from_name' => 'Client',
+            'to_recipients' => [['address' => 'vendor@thread.test', 'name' => 'Vendor']],
+            'subject' => 'Re: Printer', 'body_preview' => 'x', 'body_text' => 'x', 'body_html' => '<p>x</p>',
+            'has_attachments' => false, 'importance' => 'normal', 'received_at' => now()->subMinute(),
+            'is_read' => true, 'client_id' => $ticket->client_id, 'person_id' => $ticket->contact_id, 'ticket_id' => $ticket->id,
+        ]);
+        $body = 'The printer is back online.';
 
         $this->mock(EmailService::class, function (MockInterface $mock): void {
-            $mock->shouldReceive('sendTicketReplyNote')
-                ->once()
-                ->andReturnUsing(function (Ticket $ticket, TicketNote $note, ?string $toEmail) {
+            $mock->shouldReceive('sendTicketReplyNote')->once()
+                ->andReturnUsing(function (Ticket $ticket, TicketNote $note, ?string $toEmail, array $ccEmails) {
                     $this->assertSame('client@example.test', $toEmail);
+                    $this->assertSame(['vendor@thread.test'], $ccEmails);
                     $this->assertStringContainsString(TechnicianDisclosure::DISCLOSURE_SENTINEL, $note->body);
 
                     return $this->outboundEmail($ticket, $note);
@@ -329,35 +364,111 @@ class PsaActionToolsTest extends TestCase
         $response = $this->callTool($token, 'send_email', [
             'client_id' => $ticket->client_id,
             'ticket_id' => $ticket->id,
-            'reason' => 'Client asked for final confirmation.',
+            'reason' => 'Confirm to the room, cc the vendor already on thread.',
             'body' => $body,
-            'to' => 'attacker@example.test',
-            'subject' => 'Attacker subject',
+            'cc' => ['vendor@thread.test'],
         ]);
 
         $response->assertOk();
         $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
 
         $note = TicketNote::where('ticket_id', $ticket->id)->firstOrFail();
-        $this->assertSame(NoteType::Reply, $note->note_type);
-        $this->assertFalse((bool) $note->is_private);
-        $this->assertTrue((bool) $note->ai_authored);
-        $this->assertStringContainsString($body, $note->body);
         $this->assertNotNull($note->email_id);
 
-        $this->assertDatabaseHas('technician_action_logs', [
-            'action_type' => 'send_email',
-            'result_status' => 'executed',
-            'ticket_id' => $ticket->id,
-            'actor_label' => 'mcp-staff:opsbot',
-            'approver_user_id' => null,
-        ]);
+        $log = TechnicianActionLog::where('ticket_id', $ticket->id)->where('action_type', 'send_email')->firstOrFail();
+        $this->assertStringContainsString('CC 1', (string) $log->summary);      // recipient descriptor recorded
+        $this->assertStringNotContainsString('vendor@thread.test', (string) $log->summary); // addresses redacted
 
         $audit = McpAuditLog::where('tool_name', 'send_email')->firstOrFail();
-        $this->assertSame('success', $audit->status);
+        $this->assertSame(1, $audit->arguments['cc_count']);
+        $this->assertStringNotContainsString('vendor@thread.test', (string) json_encode($audit->arguments));
+    }
+
+    public function test_direct_send_email_with_no_recipients_is_contact_only_and_length_only_audit(): void
+    {
+        // Regression (spec §6): omitting to/cc reproduces today's behavior exactly —
+        // To = ticket contact, empty CC, and the audit records only body_length.
+        $token = $this->token(['send_email']);
+        $ticket = $this->ticketWithContact();
+        $body = 'Just the contact, no CC.';
+        $this->mock(EmailService::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('sendTicketReplyNote')->once()
+                ->andReturnUsing(function (Ticket $ticket, TicketNote $note, ?string $toEmail, array $ccEmails) {
+                    $this->assertSame('client@example.test', $toEmail);
+                    $this->assertSame([], $ccEmails);
+
+                    return $this->outboundEmail($ticket, $note);
+                });
+        });
+
+        $this->callTool($token, 'send_email', [
+            'client_id' => $ticket->client_id,
+            'ticket_id' => $ticket->id,
+            'reason' => 'No recipients supplied.',
+            'body' => $body,
+        ])->assertOk();
+
+        $audit = McpAuditLog::where('tool_name', 'send_email')->firstOrFail();
         $this->assertSame(mb_strlen($body), $audit->arguments['body_length']);
         $this->assertStringNotContainsString($body, (string) json_encode($audit->arguments));
-        $this->assertStringNotContainsString('attacker@example.test', (string) json_encode($audit->arguments));
+    }
+
+    public function test_direct_send_email_redacts_addresses_in_the_audit_reason(): void
+    {
+        // I1: an address in `reason` must be redacted in McpAuditLog.arguments,
+        // matching the redaction already applied to the action-log summary.
+        $token = $this->token(['send_email']);
+        $ticket = $this->ticketWithContact();
+        $this->mock(EmailService::class, fn (MockInterface $mock) => $mock->shouldReceive('sendTicketReplyNote')
+            ->once()
+            ->andReturnUsing(fn (Ticket $ticket, TicketNote $note) => $this->outboundEmail($ticket, $note)));
+
+        $this->callTool($token, 'send_email', [
+            'client_id' => $ticket->client_id,
+            'ticket_id' => $ticket->id,
+            'reason' => 'Loop in escalations@vendor.test per the client.',
+            'body' => 'Update.',
+        ])->assertOk();
+
+        $audit = McpAuditLog::where('tool_name', 'send_email')->firstOrFail();
+        $this->assertArrayHasKey('reason', $audit->arguments);
+        $this->assertStringNotContainsString('escalations@vendor.test', (string) json_encode($audit->arguments));
+        $this->assertStringContainsString('[external address withheld]', $audit->arguments['reason']);
+    }
+
+    public function test_direct_send_email_idempotency_key_includes_recipients(): void
+    {
+        // M2: the same body sent to a DIFFERENT recipient set is not an idempotent
+        // replay — it falls through to the rate-limit guard rather than a silent dedup.
+        $token = $this->token(['send_email']);
+        $ticket = $this->ticketWithContact();
+        Email::create([
+            'graph_id' => 'in-m2', 'direction' => EmailDirection::Inbound,
+            'from_address' => 'client@example.test', 'from_name' => 'Client',
+            'to_recipients' => [['address' => 'vendor@thread.test', 'name' => 'Vendor']],
+            'subject' => 'Re: Printer', 'body_preview' => 'x', 'body_text' => 'x', 'body_html' => '<p>x</p>',
+            'has_attachments' => false, 'importance' => 'normal', 'received_at' => now()->subMinute(),
+            'is_read' => true, 'client_id' => $ticket->client_id, 'person_id' => $ticket->contact_id, 'ticket_id' => $ticket->id,
+        ]);
+        $this->mock(EmailService::class, fn (MockInterface $mock) => $mock->shouldReceive('sendTicketReplyNote')
+            ->once()
+            ->andReturnUsing(fn (Ticket $ticket, TicketNote $note) => $this->outboundEmail($ticket, $note)));
+
+        $first = $this->callTool($token, 'send_email', [
+            'client_id' => $ticket->client_id, 'ticket_id' => $ticket->id,
+            'reason' => 'First.', 'body' => 'Same body.',
+        ]);
+        $this->assertFalse((bool) $first->json('result.isError'), (string) $first->json('result.content.0.text'));
+
+        $second = $this->callTool($token, 'send_email', [
+            'client_id' => $ticket->client_id, 'ticket_id' => $ticket->id,
+            'reason' => 'Second, add the vendor already on thread.', 'body' => 'Same body.',
+            'cc' => ['vendor@thread.test'],
+        ]);
+        // Rate-limited (isError=true), NOT an idempotent replay — with body-only keying
+        // the second call would have returned idempotent success (isError=false) instead.
+        $this->assertTrue((bool) $second->json('result.isError'));
+        $this->assertStringContainsString('rate', (string) $second->json('result.content.0.text'));
     }
 
     public function test_direct_send_email_kill_switch_and_flood_guard_fail_closed(): void

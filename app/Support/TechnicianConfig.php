@@ -38,6 +38,18 @@ class TechnicianConfig
         return (bool) Setting::getValue('technician_kill_switch');
     }
 
+    /** When ON, email To/CC may include addresses outside sources a/b/c (default OFF — exfil guard). */
+    public static function allowArbitraryEmailRecipients(): bool
+    {
+        return (bool) Setting::getValue('allow_arbitrary_email_recipients');
+    }
+
+    /** When ON, the DIRECT send_email path may add recipients not already on the thread (default OFF — staged-only). */
+    public static function directEmailNewRecipients(): bool
+    {
+        return (bool) Setting::getValue('direct_email_new_recipients');
+    }
+
     /**
      * The reused "System User (AI Actor)" id (spec §3/§4.6). Same selection as
      * TriageConfig::systemUserId(): the configured setting, else the first user.

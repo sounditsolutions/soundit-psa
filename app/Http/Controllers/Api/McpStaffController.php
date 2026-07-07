@@ -1142,12 +1142,23 @@ class McpStaffController extends Controller
         foreach ($arguments as $key => $value) {
             $normalized = mb_strtolower((string) $key);
 
-            if (in_array($normalized, ['client_id', 'ticket_id', 'reason'], true)) {
+            if (in_array($normalized, ['client_id', 'ticket_id'], true)) {
                 $safe[$normalized] = $value;
+            }
+
+            // psa-kt82: reason is free text and may name an address — redact before it
+            // is persisted, matching the redaction applied to the action-log summary.
+            if ($normalized === 'reason') {
+                $safe['reason'] = is_string($value) ? \App\Support\EmailRedactor::redact($value) : $value;
             }
 
             if ($normalized === 'body') {
                 $safe['body_length'] = is_string($value) ? mb_strlen($value) : 0;
+            }
+
+            // psa-kt82: record recipient counts only — never the raw to/cc addresses.
+            if (in_array($normalized, ['to', 'cc'], true) && is_array($value)) {
+                $safe[$normalized.'_count'] = count($value);
             }
         }
 
@@ -1701,7 +1712,7 @@ class McpStaffController extends Controller
         }
 
         if (mb_strtolower((string) ($arguments['mode'] ?? '')) === 'external') {
-            $safe = preg_replace('/\b[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}\b/i', '[external address withheld]', $safe) ?? $safe;
+            $safe = \App\Support\EmailRedactor::redact($safe);
         }
 
         foreach (['internal_message', 'external_message'] as $key) {

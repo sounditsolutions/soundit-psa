@@ -844,7 +844,7 @@ class StaffCippWriteToolExecutor
             }
 
             if (mb_strtolower((string) ($arguments['mode'] ?? '')) === 'external') {
-                $safe = preg_replace('/\b[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}\b/i', '[external address withheld]', $safe) ?? $safe;
+                $safe = \App\Support\EmailRedactor::redact($safe);
             }
         }
 
