@@ -4,16 +4,22 @@ namespace App\Services\Huntress;
 
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\GuzzleException;
+use GuzzleHttp\Exception\RequestException;
 use Illuminate\Support\Facades\Log;
 
 class HuntressClient
 {
     private Client $http;
 
+    /**
+     * @param  Client|null  $http  Injectable transport (test seam). When null the
+     *                             default Basic-auth Guzzle client is built from config.
+     */
     public function __construct(
         private readonly array $config,
+        ?Client $http = null,
     ) {
-        $this->http = new Client([
+        $this->http = $http ?? new Client([
             'base_uri' => 'https://api.huntress.io/v1/',
             'timeout' => 30,
             'auth' => [
@@ -96,6 +102,22 @@ class HuntressClient
     }
 
     /**
+     * Get a single escalation by id.
+     *
+     * NOTE: GET /escalations/{id} returns the escalation object DIRECTLY — there is
+     * NO {"escalation": {...}} wrapper (unlike incident_reports / organizations,
+     * which do wrap). We defensively unwrap a wrapper key in case the API ever adds one.
+     * The object carries status + resolved_at (resolve state), subject, subtype, type,
+     * an organizations[] array, and (on the by-id view) entities.
+     */
+    public function getEscalation(int $id): array
+    {
+        $response = $this->get("escalations/{$id}");
+
+        return $response['escalation'] ?? $response;
+    }
+
+    /**
      * Get account info.
      */
     public function getAccount(): array
@@ -150,13 +172,47 @@ class HuntressClient
             'Accept' => 'application/json',
         ]);
 
-        try {
-            $response = $this->http->request($method, $endpoint, $options);
-        } catch (GuzzleException $e) {
-            Log::error("[HuntressClient] {$method} {$endpoint} failed: {$e->getMessage()}");
-            throw new HuntressClientException(
-                "Huntress API error: {$e->getMessage()}", $e->getCode(), $e
-            );
+        // The Huntress account is rate-limited (60 req/min). A 429 is transient —
+        // honor Retry-After (falling back to exponential backoff) and retry a bounded
+        // number of times rather than surfacing the first bump as an error.
+        $maxAttempts = 3;
+        $attempt = 0;
+
+        while (true) {
+            $attempt++;
+
+            try {
+                $response = $this->http->request($method, $endpoint, $options);
+                break;
+            } catch (GuzzleException $e) {
+                $status = $e instanceof RequestException && $e->getResponse() !== null
+                    ? $e->getResponse()->getStatusCode()
+                    : 0;
+
+                if ($status === 429 && $attempt < $maxAttempts) {
+                    $retryAfter = 2 ** $attempt;
+                    // Distinguish an absent Retry-After from a present "0" — PHP's ?:
+                    // treats the string "0" as falsy, which would wrongly ignore a
+                    // server asking us to retry immediately.
+                    if ($e instanceof RequestException && $e->getResponse() !== null) {
+                        $header = $e->getResponse()->getHeaderLine('Retry-After');
+                        if (is_numeric($header)) {
+                            $retryAfter = (int) $header;
+                        }
+                    }
+                    Log::info("[HuntressClient] Rate limited on {$endpoint}, retrying in {$retryAfter}s");
+                    if ($retryAfter > 0) {
+                        sleep($retryAfter);
+                    }
+
+                    continue;
+                }
+
+                Log::error("[HuntressClient] {$method} {$endpoint} failed: {$e->getMessage()}");
+                throw new HuntressClientException(
+                    "Huntress API error: {$e->getMessage()}", $e->getCode(), $e
+                );
+            }
         }
 
         $body = (string) $response->getBody();

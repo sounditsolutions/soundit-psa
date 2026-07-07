@@ -134,6 +134,7 @@ For deployments that want a different brand, swap the logo file, set `APP_NAME` 
 - **CwAuthHelper** (`app/Support/CwAuthHelper.php`) — shared CW Basic Auth parsing, used by both T2T and Huntress middleware.
 - **TicketSource::Huntress** — source enum value for Huntress-created tickets.
 - Requests logged with `[Huntress CW]` prefix. Full body at DEBUG level.
+- **MCP read tools** (`HuntressReadOnlyToolset`, epic psa-ppl9) — six P1 read tools on the staff MCP surface (`huntress_list/get_incident_reports`, `huntress_list/get_escalations`, `huntress_list/get_organizations`) for Chet. Wired via `ChetDataSurfaceTools` (live gated on `HuntressConfig::isConfigured()` — ships dormant; grant catalog ungated) + `ChetDataSurfaceToolExecutor`; `huntress_` prefix mapped in `McpToolRegistry`. Reads use `HuntressClient` (single-page + `next_page_token` cursor, 429 backoff). **Data boundary (shared account):** org metadata is account-wide (mapping helper, annotated with the mapped PSA client), but incident/escalation security data is **mapped-orgs-only** (`clients.huntress_organization_id`) — mirrors `HuntressIncidentReconcileService`. Per-sink redaction via `ChetDataSurfaceTextSanitizer` + a bounded recursive leaf-sanitizer for nested untrusted structures (entities, remediations).
 
 ## Servosity integration
 - **ServosityConfig** (`app/Support/ServosityConfig.php`) — static helper. Settings: `servosity_api_token` (encrypted), `servosity_base_url` (default `https://api.servosity.com`).
