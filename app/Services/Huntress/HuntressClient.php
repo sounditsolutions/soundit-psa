@@ -86,6 +86,16 @@ class HuntressClient
     }
 
     /**
+     * List incident reports (auto-paginates). Pass `organization_id` to scope to one org.
+     * Each row carries id, agent_id, organization_id, status {sent,dismissed,closed},
+     * sent_at, closed_at, severity.
+     */
+    public function getIncidentReports(array $params = []): array
+    {
+        return $this->getAllPages('incident_reports', $params);
+    }
+
+    /**
      * Get account info.
      */
     public function getAccount(): array
