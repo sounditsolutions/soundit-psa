@@ -159,4 +159,60 @@ class EmailRecipientResolverTest extends TestCase
         $this->assertSame('ada@acme.test', $r->to);
         $this->assertSame(['bob@acme.test'], $r->cc); // ada (==To) and support (ours) dropped; person_id resolved
     }
+
+    private function seedNoThreadTicket(): \App\Models\Ticket
+    {
+        \App\Models\Setting::setValue('graph_mailbox', 'support@msp.test');
+        $client = \App\Models\Client::factory()->create();
+        $contact = \App\Models\Person::create([
+            'client_id' => $client->id, 'person_type' => \App\Enums\PersonType::User,
+            'first_name' => 'Nora', 'last_name' => 'NoThread', 'email' => 'nora@acme.test', 'is_active' => true,
+        ]);
+
+        return \App\Models\Ticket::factory()->for($client)->create([
+            'contact_id' => $contact->id, 'status' => \App\Enums\TicketStatus::InProgress, 'closed_at' => null,
+        ])->fresh('contact');
+    }
+
+    public function test_resolve_direct_allows_the_ticket_contact_even_when_not_on_any_thread(): void
+    {
+        // M3: no inbound email, so the contact is NOT a thread participant. Naming the
+        // ticket's own contact explicitly on the direct path must NOT be refused.
+        $ticket = $this->seedNoThreadTicket();
+        $r = app(\App\Services\Email\EmailRecipientResolver::class)->resolve(
+            $ticket, ['nora@acme.test'], [], \App\Services\Email\RecipientContext::Direct, false, false,
+        );
+        $this->assertSame('nora@acme.test', $r->to);
+    }
+
+    public function test_resolve_direct_refuses_arbitrary_offthread_even_when_arbitrary_allowed(): void
+    {
+        // M4: allow_arbitrary=ON must not bypass the direct off-thread gate. An arbitrary
+        // address is off-thread, so the direct path refuses it unless direct_new is ON.
+        $ticket = $this->seedThreadTicket();
+        $resolver = app(\App\Services\Email\EmailRecipientResolver::class);
+
+        try {
+            $resolver->resolve($ticket, [], ['outsider@partner.test'], \App\Services\Email\RecipientContext::Direct, true, false);
+            $this->fail('expected off-thread refusal on the direct path');
+        } catch (\App\Services\Email\RecipientValidationException $e) {
+            $this->assertStringContainsString('stage_email', $e->getMessage());
+        }
+        // direct_new ON allows it; Staged allows it too.
+        $direct = $resolver->resolve($ticket, [], ['outsider@partner.test'], \App\Services\Email\RecipientContext::Direct, true, true);
+        $this->assertSame(['outsider@partner.test'], $direct->cc);
+        $staged = $resolver->resolve($ticket, [], ['outsider@partner.test'], \App\Services\Email\RecipientContext::Staged, true, false);
+        $this->assertSame(['outsider@partner.test'], $staged->cc);
+    }
+
+    public function test_resolve_rejects_non_scalar_recipient_ref_cleanly(): void
+    {
+        // M5: a nested/object element must raise a clean RecipientValidationException,
+        // never a TypeError.
+        $ticket = $this->seedThreadTicket();
+        $this->expectException(\App\Services\Email\RecipientValidationException::class);
+        app(\App\Services\Email\EmailRecipientResolver::class)->resolve(
+            $ticket, [], [['address' => 'x@evil.test']], \App\Services\Email\RecipientContext::Staged, false, false,
+        );
+    }
 }

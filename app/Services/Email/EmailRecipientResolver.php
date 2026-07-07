@@ -99,7 +99,7 @@ class EmailRecipientResolver
                 continue;
             }
             $addr = $this->resolveRef($ref, $candidates, $context, $allowArbitrary, $directAllowNew);
-            if ($addr === $toAddress || in_array($addr, $ccAddresses, true)) {
+            if ($addr === $toAddress || in_array($addr, $candidates->ourAddresses, true) || in_array($addr, $ccAddresses, true)) {
                 continue;
             }
             $ccAddresses[] = $addr;
@@ -108,15 +108,19 @@ class EmailRecipientResolver
         return new ResolvedRecipients($toAddress, $candidates->nameFor($toAddress), array_values($ccAddresses));
     }
 
-    private function resolveRef(int|string $ref, RecipientCandidates $candidates, RecipientContext $context, bool $allowArbitrary, bool $directAllowNew): string
+    private function resolveRef(mixed $ref, RecipientCandidates $candidates, RecipientContext $context, bool $allowArbitrary, bool $directAllowNew): string
     {
+        if (! is_scalar($ref)) {
+            throw new RecipientValidationException('Each recipient must be a person id or an email address.');
+        }
+
         if (is_int($ref) || ctype_digit((string) $ref)) {
             $email = $candidates->personEmail((int) $ref);
             if (! $email) {
                 throw new RecipientValidationException("Recipient person #{$ref} is not a contact of this client.");
             }
         } else {
-            $email = strtolower(trim($ref));
+            $email = strtolower(trim((string) $ref));
             if (! in_array($email, $candidates->allEmails(), true)) {
                 if (! $allowArbitrary) {
                     throw new RecipientValidationException("Recipient '{$email}' is not a known contact or thread participant. Only ticket contacts, client contacts, or people already on the email thread are allowed.");
@@ -124,12 +128,17 @@ class EmailRecipientResolver
                 if (! filter_var($email, FILTER_VALIDATE_EMAIL)) {
                     throw new RecipientValidationException("Recipient '{$email}' is not a valid email address.");
                 }
-
-                return $email; // arbitrary but knob-allowed + syntactically valid
+                // Arbitrary but knob-allowed + syntactically valid — still subject to the
+                // direct off-thread gate below (a new recipient on the direct path needs review).
             }
         }
 
-        if ($context === RecipientContext::Direct && ! $directAllowNew && ! $candidates->isThreadParticipant($email)) {
+        // Direct path: any recipient that is neither the ticket contact nor already on the
+        // thread is a NEW recipient and needs human review — unless direct_new is enabled.
+        if ($context === RecipientContext::Direct
+            && ! $directAllowNew
+            && $email !== $candidates->contactEmail
+            && ! $candidates->isThreadParticipant($email)) {
             throw new RecipientValidationException("Recipient '{$email}' is not already on this email thread. Adding a new recipient needs review — use stage_email instead.");
         }
 
