@@ -23,10 +23,14 @@ class TechnicianCockpitController extends Controller
 {
     private const UNDO_WINDOW_MINUTES = 5;
 
-    public function index(CockpitQuery $query)
+    public function index(CockpitQuery $query, \App\Services\Technician\Cockpit\CockpitRecipientView $recipients)
     {
+        $drafts = $query->pendingDrafts();
+
         return view('cockpit.index', [
-            'drafts' => $query->pendingDrafts(),
+            'drafts' => $drafts,
+            // psa-kt82 PR B (gate 4): resolved recipient block data keyed by run id.
+            'recipientViews' => $drafts->mapWithKeys(fn ($run) => [$run->id => $recipients->for($run)])->filter(),
             'flagged' => $query->flaggedForAttention(),
             'needs' => $query->needsAttention(),
             'intake' => $query->intakeReview(),
