@@ -48,6 +48,7 @@ class TechnicianCockpitController extends Controller
                 $run,
                 $request->validate(['body' => ['required', 'string']])['body'],
                 (int) auth()->id(),
+                ...$this->recipientInputs($request),
             ),
             'stage_public_note' => $service->approveStagedPublicNote(
                 $run,
@@ -85,6 +86,7 @@ class TechnicianCockpitController extends Controller
                 $run,
                 $request->validate(['body' => ['required', 'string']])['body'],
                 (int) auth()->id(),
+                ...$this->recipientInputs($request),
             ),
             default => abort(422, 'Unsupported action type for approval.'),
         };
@@ -99,6 +101,7 @@ class TechnicianCockpitController extends Controller
             // bd psa-xr84: approved but the device was offline — parked to auto-run on reconnect.
             'queued_offline' => 'Device offline — queued to run automatically when it comes back online.',
             'already_handled' => 'That draft was already handled.',
+            'recipient_invalid' => $result->message ?? 'One or more recipients are no longer valid — re-check the To/CC and try again.',
             default => 'Could not send — the Technician declined (it may be paused). Try again.',
         };
 
@@ -354,6 +357,24 @@ class TechnicianCockpitController extends Controller
         }
 
         return $rules === [] ? [] : $request->validate($rules);
+    }
+
+    /**
+     * Operator-edited recipient references from the approval form (gate 4 → gate 3).
+     * The service re-resolves these against the ticket's validated sources at execution.
+     *
+     * @return array{0: array<int,string>, 1: array<int,string>}
+     */
+    private function recipientInputs(Request $request): array
+    {
+        $v = $request->validate([
+            'to' => ['sometimes', 'array'],
+            'to.*' => ['string', 'max:320'],
+            'cc' => ['sometimes', 'array'],
+            'cc.*' => ['string', 'max:320'],
+        ]);
+
+        return [array_values($v['to'] ?? []), array_values($v['cc'] ?? [])];
     }
 
     private function actionResponse(

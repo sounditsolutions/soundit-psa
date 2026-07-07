@@ -9,6 +9,10 @@ use App\Enums\WhoType;
 use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Models\TicketNote;
+use App\Services\Email\EmailRecipientResolver;
+use App\Services\Email\RecipientContext;
+use App\Services\Email\RecipientValidationException;
+use App\Services\Email\ResolvedRecipients;
 use App\Services\EmailService;
 use App\Services\Mcp\StaffCippWriteToolExecutor;
 use App\Services\Mcp\StaffTacticalActionToolExecutor;
@@ -33,9 +37,19 @@ class TechnicianApprovalService
         private readonly TechnicianActionGate $gate,
         private readonly TechnicianDisclosure $disclosure,
         private readonly EmailService $email,
+        private readonly EmailRecipientResolver $recipients,
     ) {}
 
-    public function approveAndSend(TechnicianRun $run, string $body, int $approverId): TechnicianApprovalResult
+    private function resolveRecipients(Ticket $ticket, array $to, array $cc): ResolvedRecipients
+    {
+        return $this->recipients->resolve(
+            $ticket, $to, $cc, RecipientContext::Staged,
+            TechnicianConfig::allowArbitraryEmailRecipients(),
+            TechnicianConfig::directEmailNewRecipients(),
+        );
+    }
+
+    public function approveAndSend(TechnicianRun $run, string $body, int $approverId, array $to = [], array $cc = []): TechnicianApprovalResult
     {
         $body = trim($body);
 
@@ -47,6 +61,22 @@ class TechnicianApprovalService
         $ticket = $run->ticket;
         $actorId = TechnicianConfig::aiActorUserId();
         $actorName = TechnicianConfig::aiActorName();
+
+        // GATE 3: re-resolve the operator's recipients at execution time — a ref that no
+        // longer resolves (person deleted/re-parented, arbitrary knob off) fails closed
+        // BEFORE any note is written or email sent.
+        if (! $ticket) {
+            $run->releaseClaim();
+
+            return new TechnicianApprovalResult('gate_declined');
+        }
+        try {
+            $resolved = $this->resolveRecipients($ticket, $to, $cc);
+        } catch (RecipientValidationException $e) {
+            $run->releaseClaim();
+
+            return new TechnicianApprovalResult('recipient_invalid', null, $e->getMessage());
+        }
 
         try {
             // The grant binds the EXACT (possibly edited) body the operator approved.
@@ -95,8 +125,8 @@ class TechnicianApprovalService
             return new TechnicianApprovalResult('gate_declined');
         }
 
-        // Recipient is the ticket's own contact — NEVER the model-suggested address. Sent after the gate tx.
-        $this->sendEmail($ticket, $createdNote);
+        // Recipients are the operator-approved, server-validated set (resolved above). Sent after the gate tx.
+        $this->sendEmail($ticket, $createdNote, $resolved);
 
         return new TechnicianApprovalResult('sent', $createdNote->id);
     }
@@ -186,7 +216,7 @@ class TechnicianApprovalService
         return new TechnicianApprovalResult('closed', noteId: (int) $statusNoteId); // no client notification (CO-18)
     }
 
-    public function approveStagedEmail(TechnicianRun $run, string $body, int $approverId): TechnicianApprovalResult
+    public function approveStagedEmail(TechnicianRun $run, string $body, int $approverId, array $to = [], array $cc = []): TechnicianApprovalResult
     {
         return $this->approveStagedBodyAction(
             run: $run,
@@ -197,6 +227,8 @@ class TechnicianApprovalService
             summary: 'Operator-approved staged client email.',
             sendsEmail: true,
             successStatus: 'sent',
+            to: $to,
+            cc: $cc,
         );
     }
 
@@ -299,6 +331,8 @@ class TechnicianApprovalService
         string $summary,
         bool $sendsEmail,
         string $successStatus,
+        array $to = [],
+        array $cc = [],
     ): TechnicianApprovalResult {
         $body = trim($body);
 
@@ -311,6 +345,18 @@ class TechnicianApprovalService
             $run->releaseClaim();
 
             return new TechnicianApprovalResult('gate_declined');
+        }
+
+        // GATE 3: for the email-sending path, re-resolve recipients at execution — fail closed.
+        $resolved = null;
+        if ($sendsEmail) {
+            try {
+                $resolved = $this->resolveRecipients($ticket, $to, $cc);
+            } catch (RecipientValidationException $e) {
+                $run->releaseClaim();
+
+                return new TechnicianApprovalResult('recipient_invalid', null, $e->getMessage());
+            }
         }
 
         $actorId = TechnicianConfig::aiActorUserId();
@@ -362,7 +408,7 @@ class TechnicianApprovalService
         }
 
         if ($sendsEmail) {
-            $this->sendEmail($ticket, $createdNote);
+            $this->sendEmail($ticket, $createdNote, $resolved);
         }
 
         return new TechnicianApprovalResult($successStatus, $createdNote->id);
@@ -399,17 +445,12 @@ class TechnicianApprovalService
         return [$primary, $secondary];
     }
 
-    private function sendEmail(\App\Models\Ticket $ticket, TicketNote $note): void
+    private function sendEmail(\App\Models\Ticket $ticket, TicketNote $note, ResolvedRecipients $resolved): void
     {
-        $to = $ticket->contact?->email;
-        if (! $to) {
-            Log::info('[Technician] Approved reply note written but no contact email', ['ticket_id' => $ticket->id]);
-
-            return;
-        }
-
+        // Recipients were resolved + validated at approval time (gate 3). resolve() throws
+        // when there is no To and no contact, so $resolved->to is always a real address here.
         try {
-            $email = $this->email->sendTicketReplyNote($ticket, $note, $to, []);
+            $email = $this->email->sendTicketReplyNote($ticket, $note, $resolved->to, $resolved->cc);
             if ($email) {
                 $note->update(['email_id' => $email->id]);
             }
