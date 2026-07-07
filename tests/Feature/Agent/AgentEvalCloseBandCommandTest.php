@@ -21,13 +21,13 @@ class AgentEvalCloseBandCommandTest extends TestCase
 {
     use RefreshDatabase;
 
-    private function closeRun(float $confidence, TechnicianRunState $state): void
+    private function closeRun(float $confidence, TechnicianRunState $state): TechnicianRun
     {
         static $seq = 0;
         $seq++;
         $ticket = Ticket::factory()->create();
 
-        TechnicianRun::create([
+        return TechnicianRun::create([
             'ticket_id' => $ticket->id,
             'client_id' => $ticket->client_id,
             'action_type' => 'propose_close',
@@ -59,5 +59,37 @@ class AgentEvalCloseBandCommandTest extends TestCase
 
         $this->assertSame(0, $code);
         $this->assertStringContainsString('No held propose_close proposals', Artisan::output());
+    }
+
+    public function test_it_shows_an_other_column_for_edge_states(): void
+    {
+        $this->closeRun(0.97, TechnicianRunState::Done);
+        $this->closeRun(0.96, TechnicianRunState::Cancelled); // edge state → the Other bucket
+
+        $code = Artisan::call('agent:eval-close-band');
+
+        $this->assertSame(0, $code);
+        $this->assertStringContainsString('Other', Artisan::output(),
+            'the Other column is rendered so N reconciles when edge states occur');
+    }
+
+    public function test_since_option_scopes_the_report_to_the_window(): void
+    {
+        $old = $this->closeRun(0.97, TechnicianRunState::Denied);
+        TechnicianRun::where('id', $old->id)->update(['created_at' => now()->subDays(30)]);
+
+        $code = Artisan::call('agent:eval-close-band', ['--since' => 14]);
+
+        $this->assertSame(0, $code);
+        $this->assertStringContainsString('No held propose_close proposals', Artisan::output(),
+            'the only run is older than the 14-day window, so nothing is scored');
+    }
+
+    public function test_since_rejects_a_non_positive_value(): void
+    {
+        $code = Artisan::call('agent:eval-close-band', ['--since' => 0]);
+
+        $this->assertSame(1, $code, 'a non-positive --since is a usage error');
+        $this->assertStringContainsString('positive', Artisan::output());
     }
 }

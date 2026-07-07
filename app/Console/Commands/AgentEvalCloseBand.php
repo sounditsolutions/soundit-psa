@@ -15,30 +15,46 @@ use Illuminate\Console\Command;
  * threshold (psa-y4ft). The operator's approve/decline IS the label, so no
  * separate labelled set is needed. Run it against whatever database it points
  * at (a dev fixture, or a prod snapshot for the real numbers).
+ *
+ * --since=N scopes to proposals created within the last N days: the calibration
+ * target is RECENT MCP-Chet judgment, not all-time history that may span
+ * pre-quiesce eras and skew the auto-safe band.
  */
 class AgentEvalCloseBand extends Command
 {
-    protected $signature = 'agent:eval-close-band';
+    protected $signature = 'agent:eval-close-band {--since= : Score only proposals created within the last N days (default: all-time)}';
 
     protected $description = 'Calibration report: propose_close approval rate by Chet confidence band (read-only).';
 
     public function handle(CloseBandEvaluator $evaluator): int
     {
-        $bands = $evaluator->evaluate();
+        $sinceDays = null;
+        $sinceRaw = $this->option('since');
+        if ($sinceRaw !== null && $sinceRaw !== '') {
+            if (! ctype_digit((string) $sinceRaw) || (int) $sinceRaw < 1) {
+                $this->error('--since must be a positive integer number of days.');
+
+                return self::FAILURE;
+            }
+            $sinceDays = (int) $sinceRaw;
+        }
+
+        $bands = $evaluator->evaluate($sinceDays);
+        $window = $sinceDays !== null ? "last {$sinceDays} days" : 'all-time';
 
         $graded = array_sum(array_map(fn (BandStat $b) => $b->total, $bands));
         if ($graded === 0) {
-            $this->info('No held propose_close proposals with a confidence to score yet.');
+            $this->info("No held propose_close proposals with a confidence to score yet ({$window}).");
 
             return self::SUCCESS;
         }
 
-        $this->info('AI Technician — propose_close calibration by confidence band');
-        $this->line('Approve rate = approved / (approved + declined). Corrected & pending are shown but excluded from the rate.');
+        $this->info("AI Technician — propose_close calibration by confidence band ({$window})");
+        $this->line('Approve rate = approved / (approved + declined). Corrected, pending & other are shown but excluded from the rate.');
         $this->newLine();
 
         $this->table(
-            ['Band', 'N', 'Approved', 'Declined', 'Corrected', 'Pending', 'Approve rate'],
+            ['Band', 'N', 'Approved', 'Declined', 'Corrected', 'Pending', 'Other', 'Approve rate'],
             array_map(fn (BandStat $b) => [
                 $b->label,
                 $b->total,
@@ -46,6 +62,7 @@ class AgentEvalCloseBand extends Command
                 $b->declined,
                 $b->corrected,
                 $b->pending,
+                $b->other,
                 $this->formatRate($b),
             ], $bands),
         );

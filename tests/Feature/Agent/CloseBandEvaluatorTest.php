@@ -183,4 +183,22 @@ class CloseBandEvaluatorTest extends TestCase
 
         $this->assertSame(0, $this->totalAcross($bands), 'sub-floor confidence falls outside every band');
     }
+
+    // ── recency window (psa-91f2 fast-follow: --since scopes to recent judgment) ──
+
+    public function test_since_scopes_to_runs_created_within_the_window(): void
+    {
+        $this->closeRun(0.97, TechnicianRunState::Denied); // recent
+        $old = $this->closeRun(0.97, TechnicianRunState::Done);
+        // Backdate the old run beyond the window (raw update bypasses timestamp management).
+        TechnicianRun::where('id', $old->id)->update(['created_at' => now()->subDays(30)]);
+
+        $all = $this->bandCovering(app(CloseBandEvaluator::class)->evaluate(), 0.97);
+        $this->assertSame(2, $all->total, 'all-time scores both runs');
+
+        $recent = $this->bandCovering(app(CloseBandEvaluator::class)->evaluate(sinceDays: 14), 0.97);
+        $this->assertSame(1, $recent->total, 'only the run created within 14 days is scored');
+        $this->assertSame(1, $recent->declined, 'and it is the recent decline');
+        $this->assertSame(0, $recent->approved, 'the 30-day-old approve is excluded');
+    }
 }
