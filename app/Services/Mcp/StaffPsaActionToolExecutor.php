@@ -21,12 +21,16 @@ use App\Models\User;
 use App\Services\AssetService;
 use App\Services\Assistant\AssistantTicketCreator;
 use App\Services\ClientService;
+use App\Services\Email\EmailRecipientResolver;
+use App\Services\Email\RecipientContext;
+use App\Services\Email\RecipientValidationException;
 use App\Services\EmailService;
 use App\Services\PersonService;
 use App\Services\PhoneCallService;
 use App\Services\Technician\TechnicianActionGate;
 use App\Services\Technician\TechnicianDisclosure;
 use App\Services\TicketService;
+use App\Support\EmailRedactor;
 use App\Support\TechnicianConfig;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -48,6 +52,7 @@ class StaffPsaActionToolExecutor
         private readonly PersonService $personService,
         private readonly AssetService $assetService,
         private readonly PhoneCallService $phoneCallService,
+        private readonly EmailRecipientResolver $recipients,
     ) {}
 
     /** @return array<string, mixed> */
@@ -1864,9 +1869,17 @@ class StaffPsaActionToolExecutor
             return $ticket;
         }
 
-        $to = $ticket->contact?->email;
-        if (! is_string($to) || trim($to) === '') {
-            return ['error' => 'Ticket has no contact email'];
+        try {
+            $resolved = $this->recipients->resolve(
+                $ticket,
+                (array) ($arguments['to'] ?? []),
+                (array) ($arguments['cc'] ?? []),
+                RecipientContext::Direct,
+                TechnicianConfig::allowArbitraryEmailRecipients(),
+                TechnicianConfig::directEmailNewRecipients(),
+            );
+        } catch (RecipientValidationException $e) {
+            return ['error' => $e->getMessage()];
         }
 
         $contentHash = $this->contentHash('send_email', $ticket->id, $body);
@@ -1878,16 +1891,17 @@ class StaffPsaActionToolExecutor
             return ['error' => 'send_email rate limit: direct email already sent for this ticket recently'];
         }
 
-        $note = DB::transaction(function () use ($ticket, $body, $actorLabel, $contentHash, $reason): TicketNote {
+        $note = DB::transaction(function () use ($ticket, $body, $actorLabel, $contentHash, $reason, $resolved): TicketNote {
             $note = $this->createAiNote($ticket, $this->disclosedBody($body), NoteType::Reply);
             $ticket->forceFill(['responded_at' => $ticket->responded_at ?? now()])->save();
-            $this->auditDirectExecution('send_email', $ticket, $actorLabel, $contentHash, 'Direct MCP email sent: '.$reason);
+            $summary = 'Direct MCP email sent: '.EmailRedactor::redact($reason).' ['.$resolved->auditDescriptor().']';
+            $this->auditDirectExecution('send_email', $ticket, $actorLabel, $contentHash, $summary);
 
             return $note;
         });
 
         try {
-            $email = $this->email->sendTicketReplyNote($ticket, $note, $to, []);
+            $email = $this->email->sendTicketReplyNote($ticket, $note, $resolved->to, $resolved->cc);
             if ($email !== null) {
                 $note->update(['email_id' => $email->id]);
             }

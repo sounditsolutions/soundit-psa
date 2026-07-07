@@ -21,7 +21,11 @@ use LogicException;
  * shape (proposed_content = undisclosed body; proposed_meta = ['to', 'reasons'];
  * content_hash = sha256('send_reply:'.ticketId.':'.body)) so the existing
  * approveAndSend + cockpit approve arm work UNCHANGED. The disclosure is appended and
- * the recipient is re-derived from $ticket->contact at approval time — never here.
+ * the recipient is re-derived from $ticket->contact at approval time — never model
+ * free-text here. (Scope: this is the send_reply rule. Staff-directed To/CC control
+ * lives in the separate MCP `send_email` tool, which validates any supplied recipients
+ * against the ticket contact, the client's contacts, and the ticket's existing email
+ * thread via EmailRecipientResolver — arbitrary addresses are rejected.)
  *
  * NEVER AUTO-SENDS. send_reply is Approve-tier always (TechnicianTierClassifier
  * hard-codes it), so the gate records awaiting_approval WITHOUT executing. The
