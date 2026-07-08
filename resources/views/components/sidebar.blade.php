@@ -196,6 +196,13 @@
                     <i class="bi bi-clock-history sidebar-icon"></i>
                     <span class="sidebar-label">Time Report</span>
                 </a>
+                <a href="{{ route('qbo.financials.index') }}"
+                   class="sidebar-link {{ request()->routeIs('qbo.financials.*') ? 'active' : '' }}"
+                   @if(request()->routeIs('qbo.financials.*')) aria-current="page" @endif
+                   data-bs-toggle="tooltip" data-bs-placement="right" data-bs-title="Bank &amp; Expenses">
+                    <i class="bi bi-bank sidebar-icon"></i>
+                    <span class="sidebar-label">Bank &amp; Expenses</span>
+                </a>
             </div>
         </div>
 

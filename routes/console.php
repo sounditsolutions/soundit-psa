@@ -237,6 +237,13 @@ Schedule::command('qbo:sync-invoices --push-drafts')
     ->runInBackground()
     ->when(fn () => \App\Models\Setting::getValue('qbo_auto_push_invoices') === '1');
 
+// QBO — pull bank balances and recent expenses daily (only if connected)
+Schedule::command('qbo:sync-financials')
+    ->dailyAt('05:40')
+    ->withoutOverlapping(10)
+    ->runInBackground()
+    ->when(fn () => (bool) \App\Models\Setting::getValue('qbo_realm_id') && (bool) \App\Models\Setting::getValue('qbo_access_token'));
+
 // Stripe — pull payment status every 4 hours (always runs if configured)
 Schedule::command('stripe:sync-invoices --pull-status')
     ->everyFourHours()

@@ -5,6 +5,8 @@ namespace App\Services\Qbo;
 use App\Enums\InvoiceStatus;
 use App\Models\Client;
 use App\Models\Invoice;
+use App\Models\QboBankAccount;
+use App\Models\QboExpense;
 use App\Models\Setting;
 use App\Models\Sku;
 use Illuminate\Support\Facades\Cache;
@@ -604,6 +606,112 @@ class QboSyncService
         }
 
         return $results;
+    }
+
+    // ── Bank Balance Sync ──
+
+    /**
+     * Pull current balances for every Bank-type QBO account and upsert them
+     * into `qbo_bank_accounts`, keyed by the QBO account id. Bank accounts
+     * are few, so a single query page covers them. Each run overwrites the
+     * stored balance with QBO's latest — this is a current-snapshot sync,
+     * not a historical ledger.
+     *
+     * @return array{synced: int}
+     */
+    public function syncBankBalances(): array
+    {
+        $result = $this->qboClient->query(
+            "SELECT * FROM Account WHERE AccountType = 'Bank' ORDERBY Name MAXRESULTS 1000"
+        );
+        $accounts = $result['QueryResponse']['Account'] ?? [];
+
+        $synced = 0;
+
+        foreach ($accounts as $account) {
+            if (empty($account['Id'])) {
+                continue;
+            }
+
+            QboBankAccount::updateOrCreate(
+                ['qbo_account_id' => (string) $account['Id']],
+                [
+                    'name' => $account['Name'] ?? 'Unnamed Account',
+                    'account_sub_type' => $account['AccountSubType'] ?? null,
+                    'classification' => $account['Classification'] ?? null,
+                    'current_balance' => (float) ($account['CurrentBalance'] ?? 0),
+                    'currency' => $account['CurrencyRef']['value'] ?? null,
+                    'active' => (bool) ($account['Active'] ?? true),
+                    'qbo_synced_at' => now(),
+                ],
+            );
+            $synced++;
+        }
+
+        return compact('synced');
+    }
+
+    // ── Expense Sync ──
+
+    /**
+     * Pull expense (Purchase) transactions from QBO and upsert them into
+     * `qbo_expenses`, keyed by the QBO purchase id. Optionally bound to
+     * transactions on or after $since (a `Y-m-d` date). Paginated with
+     * STARTPOSITION so large expense volumes don't overflow a single
+     * request. Upsert-by-id means re-running over an overlapping window is
+     * idempotent.
+     *
+     * @return array{synced: int, pages: int}
+     */
+    public function syncExpenses(?string $since = null): array
+    {
+        $pageSize = 1000;
+        $startPosition = 1;
+        $pages = 0;
+        $synced = 0;
+
+        $where = '';
+        if ($since !== null && $since !== '') {
+            // TxnDate is a QBO date literal. Accept only a leading Y-m-d date
+            // and drop everything else, so the value can't break out of the
+            // quoted clause. Unparseable input simply omits the filter.
+            if (preg_match('/^\d{4}-\d{2}-\d{2}/', $since, $matches)) {
+                $where = " WHERE TxnDate >= '{$matches[0]}'";
+            }
+        }
+
+        do {
+            $sql = "SELECT * FROM Purchase{$where} ORDERBY TxnDate DESC STARTPOSITION {$startPosition} MAXRESULTS {$pageSize}";
+            $result = $this->qboClient->query($sql);
+            $purchases = $result['QueryResponse']['Purchase'] ?? [];
+            $pages++;
+
+            foreach ($purchases as $purchase) {
+                if (empty($purchase['Id'])) {
+                    continue;
+                }
+
+                QboExpense::updateOrCreate(
+                    ['qbo_purchase_id' => (string) $purchase['Id']],
+                    [
+                        'txn_date' => $purchase['TxnDate'] ?? null,
+                        'payment_type' => $purchase['PaymentType'] ?? null,
+                        'account_name' => $purchase['AccountRef']['name'] ?? null,
+                        'payee_name' => $purchase['EntityRef']['name'] ?? null,
+                        'total_amount' => (float) ($purchase['TotalAmt'] ?? 0),
+                        'currency' => $purchase['CurrencyRef']['value'] ?? null,
+                        'doc_number' => $purchase['DocNumber'] ?? null,
+                        'memo' => $purchase['PrivateNote'] ?? null,
+                        'qbo_synced_at' => now(),
+                    ],
+                );
+                $synced++;
+            }
+
+            $startPosition += $pageSize;
+        } while (count($purchases) === $pageSize);
+
+        return compact('synced', 'pages');
     }
 
     // ── Helpers ──
