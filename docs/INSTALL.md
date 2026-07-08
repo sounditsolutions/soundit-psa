@@ -1008,6 +1008,7 @@ A self-service portal where your clients can view tickets, invoices, devices, an
 4. Optionally set a **Logo URL** for portal branding
 5. Optionally set **Billing Portal URL** and **Label** (for MSPs using external billing like BenjiPays)
 6. Optionally set **Prepaid Order URL** (supports `{client_id}` placeholder, shown as "Purchase Prepaid Time" link)
+7. Optionally enable **Product Shop** to let clients order hardware/services from a catalog (see below)
 
 **Creating portal users:**
 
@@ -1027,7 +1028,18 @@ A self-service portal where your clients can view tickets, invoices, devices, an
 - **Invoices**: View posted/paid invoices with line items (no cost data). "Pay Online" button for Stripe invoices
 - **Devices**: View active devices (hostname, type, OS, online/offline status)
 - **Service Agreements**: View active contracts with prepaid balance and assigned devices/people
+- **Shop** (optional): Browse a product catalog and place an order for one or more items. Placing an order creates a Posted invoice and (if a billing backend is mapped) a payment link. See below
 - **Account**: Update name and phone. Change password
+
+**Product Shop (optional):**
+
+Lets portal contacts self-order hardware/services from a catalog of SKUs, beyond prepaid time.
+
+1. Settings > Integrations > Client Portal > enable **Product Shop**
+2. For each product you want to expose, open the SKU (Products/SKUs) and tick **Orderable in client portal shop**. Optionally add a client-friendly **Portal Description**
+3. Portal users see a **Shop** nav item, choose quantities, and place an order
+4. The order becomes a single Posted invoice (one line per product, `contract_id` null). If the client is mapped to Stripe or QBO, the invoice is pushed and a payment link is shown; staff are notified via the **Portal product orders** notification event
+5. Taxes are calculated by the billing backend on push (the local invoice carries subtotal == total until synced)
 
 **Portal notifications:**
 When enabled, portal-enabled contacts automatically receive email notifications when:

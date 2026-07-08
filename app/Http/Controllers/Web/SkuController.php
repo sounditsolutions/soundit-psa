@@ -140,6 +140,7 @@ class SkuController extends Controller
         $validated = $request->validate([
             'name' => ['required', 'string', 'max:255'],
             'description' => ['nullable', 'string'],
+            'portal_description' => ['nullable', 'string', 'max:500'],
             'sku_code' => ['required', 'string', 'max:50', 'unique:skus,sku_code'],
             'category' => ['nullable', 'string', 'max:50'],
             'unit_price' => ['required', 'numeric', 'min:0'],
@@ -153,11 +154,13 @@ class SkuController extends Controller
             'tiers' => ['nullable', 'array'],
             'tiers.*.up_to_gb' => ['nullable', 'integer', 'min:1'],
             'tiers.*.unit_price' => ['nullable', 'numeric', 'min:0'],
+            'portal_orderable' => ['boolean'],
         ]);
 
         $validated['is_taxable'] = $request->boolean('is_taxable');
         $validated['is_active'] = $request->boolean('is_active', true);
         unset($validated['tiers']);
+        $validated['portal_orderable'] = $request->boolean('portal_orderable');
 
         $sku = DB::transaction(function () use ($validated, $request) {
             $sku = $this->skuService->createSku($validated);
@@ -209,6 +212,7 @@ class SkuController extends Controller
         $validated = $request->validate([
             'name' => ['required', 'string', 'max:255'],
             'description' => ['nullable', 'string'],
+            'portal_description' => ['nullable', 'string', 'max:500'],
             'sku_code' => ['required', 'string', 'max:50', "unique:skus,sku_code,{$sku->id}"],
             'category' => ['nullable', 'string', 'max:50'],
             'unit_price' => ['required', 'numeric', 'min:0'],
@@ -219,6 +223,7 @@ class SkuController extends Controller
             'default_license_type_id' => ['nullable', 'integer', 'exists:license_types,id'],
             'is_taxable' => ['boolean'],
             'is_active' => ['boolean'],
+            'portal_orderable' => ['boolean'],
             'qbo_income_account_id' => ['nullable', 'string', 'max:50'],
             'qbo_expense_account_id' => ['nullable', 'string', 'max:50'],
             'tiers' => ['nullable', 'array'],
@@ -228,6 +233,7 @@ class SkuController extends Controller
 
         $validated['is_taxable'] = $request->boolean('is_taxable');
         $validated['is_active'] = $request->boolean('is_active');
+        $validated['portal_orderable'] = $request->boolean('portal_orderable');
         $validated['qbo_income_account_id'] = $request->input('qbo_income_account_id') ?: null;
         $validated['qbo_expense_account_id'] = $request->input('qbo_expense_account_id') ?: null;
         unset($validated['tiers']);
