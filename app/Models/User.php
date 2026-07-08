@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Enums\NotificationEventType;
+use App\Enums\UserRole;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -23,6 +24,7 @@ class User extends Authenticatable
         'notification_preferences',
         'is_active',
         'is_contractor',
+        'role',
         'email_signature',
         'avatar_path',
         'entra_avatar_fetched_at',
@@ -39,6 +41,7 @@ class User extends Authenticatable
             'notification_preferences' => 'array',
             'is_active' => 'boolean',
             'is_contractor' => 'boolean',
+            'role' => UserRole::class,
             'entra_avatar_fetched_at' => 'datetime',
         ];
     }
@@ -77,6 +80,41 @@ class User extends Authenticatable
     public function scopeContractor(Builder $query): Builder
     {
         return $query->where('is_contractor', true);
+    }
+
+    public function scopeRole(Builder $query, UserRole $role): Builder
+    {
+        return $query->where('role', $role->value);
+    }
+
+    public function isAdmin(): bool
+    {
+        return $this->role === UserRole::Admin;
+    }
+
+    public function isTech(): bool
+    {
+        return $this->role === UserRole::Tech;
+    }
+
+    public function isBilling(): bool
+    {
+        return $this->role === UserRole::Billing;
+    }
+
+    /**
+     * Whether this user's authorization role is Contractor. Distinct from the
+     * `is_contractor` boolean (time-pool billing); named explicitly to avoid
+     * confusing the two. Follow-up phases decide which drives enforcement.
+     */
+    public function isContractorRole(): bool
+    {
+        return $this->role === UserRole::Contractor;
+    }
+
+    public function hasRole(UserRole ...$roles): bool
+    {
+        return in_array($this->role, $roles, true);
     }
 
     public function sipEndpoints(): HasMany
