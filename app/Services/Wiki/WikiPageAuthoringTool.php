@@ -128,16 +128,20 @@ class WikiPageAuthoringTool
             return ['error' => $validationError];
         }
 
-        if ($this->hasSafetyViolation([$title, $body, $summary])) {
+        if ($this->hasHardBlockViolation([$title, $body, $summary])) {
             return ['error' => 'Submitted wiki page failed content safety scan.'];
         }
 
+        // psa-tk87: credential-shaped strings in otherwise-legitimate runbook/SOP
+        // prose are scrubbed to [REDACTED:credential] rather than hard-blocking the
+        // whole page. The secret value never reaches storage; the prose is preserved.
+        // Injection/marker violations are already refused above and never reach here.
         return [
             'actor' => $actor,
             'slug' => $slug,
-            'title' => $title,
-            'body_md' => $body,
-            'change_summary' => $summary,
+            'title' => $this->redactor->redact($title),
+            'body_md' => $this->redactor->redact($body),
+            'change_summary' => $this->redactor->redact($summary),
         ];
     }
 
@@ -166,12 +170,25 @@ class WikiPageAuthoringTool
         return null;
     }
 
-    /** @param  array<int, string>  $values */
-    private function hasSafetyViolation(array $values): bool
+    /**
+     * Injection- and marker-class violations on AI output are genuine prompt
+     * injection or fact-splice corruption and must never be stored — hard-block.
+     * Credential-class hits are NOT blocked here: the caller scrubs them via
+     * WikiRedactor::redact() so the value becomes [REDACTED:credential] and the
+     * page proceeds (psa-tk87). Mirrors the class partition in WikiFactController.
+     *
+     * @param  array<int, string>  $values
+     */
+    private function hasHardBlockViolation(array $values): bool
     {
         foreach ($values as $value) {
-            if ($value !== '' && $this->redactor->scan($value) !== []) {
-                return true;
+            if ($value === '') {
+                continue;
+            }
+            foreach ($this->redactor->scan($value) as $violation) {
+                if ($violation['class'] !== 'credential') {
+                    return true;
+                }
             }
         }
 
