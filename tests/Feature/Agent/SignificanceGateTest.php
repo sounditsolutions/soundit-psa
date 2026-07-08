@@ -1,0 +1,160 @@
+<?php
+
+namespace Tests\Feature\Agent;
+
+use App\Enums\TicketStatus;
+use App\Models\Client;
+use App\Models\Ticket;
+use App\Services\Agent\SignificanceGate;
+use App\Services\Ai\AiClient;
+use App\Services\Ai\AiResponse;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Tests\TestCase;
+
+/**
+ * SignificanceGate — cheap Haiku "worth a look?" filter (Task 6).
+ *
+ * All tests mock AiClient::complete — no real API calls made.
+ *
+ * 1. Model says YES → assess() returns true  (worth a look).
+ * 2. Model says NO  → assess() returns false (clearly active, skip).
+ * 3. Client throws  → assess() returns true  (escalate-when-unsure, never throws).
+ * 4. Offline guard  → gate constructed with injected mock; no real HTTP (confirms mockability).
+ */
+class SignificanceGateTest extends TestCase
+{
+    use RefreshDatabase;
+
+    // ── helpers ──────────────────────────────────────────────────────────────
+
+    /** Open ticket with a client (required by Ticket factory defaults). */
+    private function openTicket(): Ticket
+    {
+        $client = Client::factory()->create();
+
+        return Ticket::factory()->for($client)->create(['status' => TicketStatus::InProgress]);
+    }
+
+    private function yesResponse(): AiResponse
+    {
+        return new AiResponse(text: 'YES', inputTokens: 5, outputTokens: 1);
+    }
+
+    private function noResponse(): AiResponse
+    {
+        return new AiResponse(text: 'NO', inputTokens: 5, outputTokens: 1);
+    }
+
+    // ── 1. Worth a look → true ───────────────────────────────────────────────
+
+    public function test_worth_a_look_returns_true(): void
+    {
+        $ai = $this->mock(AiClient::class);
+        $ai->shouldReceive('complete')->once()->andReturn($this->yesResponse());
+
+        $gate = new SignificanceGate($ai);
+
+        $this->assertTrue($gate->assess($this->openTicket()));
+    }
+
+    // ── 2. Clearly active → false ─────────────────────────────────────────────
+
+    public function test_clearly_active_returns_false(): void
+    {
+        $ai = $this->mock(AiClient::class);
+        $ai->shouldReceive('complete')->once()->andReturn($this->noResponse());
+
+        $gate = new SignificanceGate($ai);
+
+        $this->assertFalse($gate->assess($this->openTicket()));
+    }
+
+    // ── 3. Error → escalate (true, does not throw) ───────────────────────────
+
+    public function test_error_escalates_to_true_and_does_not_throw(): void
+    {
+        $ai = $this->mock(AiClient::class);
+        $ai->shouldReceive('complete')->once()->andThrow(new \RuntimeException('API unavailable'));
+
+        $gate = new SignificanceGate($ai);
+
+        // Must not throw; must return true (escalate-when-unsure).
+        $this->assertTrue($gate->assess($this->openTicket()));
+    }
+
+    // ── 4. Mockable / offline ────────────────────────────────────────────────
+
+    public function test_gate_is_mockable_and_runs_fully_offline(): void
+    {
+        // Confirms: gate is constructed with an injected AiClient; no real HTTP is made.
+        $ai = $this->mock(AiClient::class);
+        $ai->shouldReceive('complete')->once()->andReturn($this->yesResponse());
+
+        $gate = new SignificanceGate($ai);
+        $result = $gate->assess($this->openTicket());
+
+        $this->assertIsBool($result);
+    }
+
+    // ── 5. "NOT SURE" must escalate (str_starts_with bug fix) ───────────────
+
+    /**
+     * Fix 3: str_starts_with($text, 'NO') incorrectly returns false (skip) for
+     * "NOT SURE", "NOBODY", etc. The fix uses exact match ($text === 'NO') so
+     * only an unambiguous "NO" skips — anything ambiguous escalates the agent.
+     */
+    public function test_not_sure_response_escalates_to_true(): void
+    {
+        $ai = $this->mock(AiClient::class);
+        $ai->shouldReceive('complete')->once()
+            ->andReturn(new AiResponse(text: 'NOT SURE', inputTokens: 5, outputTokens: 2));
+
+        $gate = new SignificanceGate($ai);
+
+        // "NOT SURE" is not an unambiguous NO — must escalate (true), not skip.
+        $this->assertTrue($gate->assess($this->openTicket()));
+    }
+
+    /** Guard: "NO" alone must still skip (exact match still works). */
+    public function test_exact_no_still_skips(): void
+    {
+        $ai = $this->mock(AiClient::class);
+        $ai->shouldReceive('complete')->once()->andReturn($this->noResponse());
+
+        $gate = new SignificanceGate($ai);
+
+        $this->assertFalse($gate->assess($this->openTicket()));
+    }
+
+    // ── A2: broadened beyond close-only to also wake for reply-worthy tickets ──
+
+    /**
+     * A2 needs the agent to wake for tickets where a client is awaiting a REPLY, not
+     * only for possible closing — else the held send_reply tool never gets a chance to
+     * fire. The YES/NO contract is unchanged (the logic tests above still hold); only
+     * the question the model is asked is broadened. Empirical calibration (it actually
+     * wakes on a reply-worthy ticket and stays quiet on an in-hand one) is verified in
+     * the agent soak; here we assert the prompt now poses the broader question.
+     */
+    public function test_prompt_also_wakes_for_a_client_awaiting_a_reply(): void
+    {
+        $captured = null;
+        $ai = $this->mock(AiClient::class);
+        $ai->shouldReceive('complete')->once()->andReturnUsing(function ($system, $context, $max) use (&$captured): AiResponse {
+            $captured = $system;
+
+            return $this->yesResponse();
+        });
+
+        (new SignificanceGate($ai))->assess($this->openTicket());
+
+        $this->assertNotNull($captured);
+        $lower = strtolower($captured);
+        $this->assertTrue(
+            str_contains($lower, 'await') || str_contains($lower, 'reply') || str_contains($lower, 'response'),
+            'the significance prompt must also consider a client awaiting a reply, not only closing',
+        );
+        // Still covers the close/junk case (not a regression to reply-only).
+        $this->assertStringContainsString('clos', $lower);
+    }
+}

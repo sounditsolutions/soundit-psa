@@ -1,0 +1,16 @@
+{
+    "event": "alert_resolved",
+    "alert_id": 84213,
+    "agent_id": "kJh3kd9sLqWmRtVxYz12AbCdEf34Gh56IjKlMnOp",
+    "hostname": "WS-FINANCE-04",
+    "client_name": "Acme Corp",
+    "site_name": "Head Office",
+    "alert_message": "Disk space on C: is below 10%",
+    "alert_type": "check",
+    "severity": "error",
+    "check_name": "Disk Space - C:",
+    "alert_time": "2026-06-15T15:10:55Z",
+    "action_stdout": "Cleared 18.4 GB of temp files.",
+    "action_stderr": "",
+    "action_retcode": 0
+}

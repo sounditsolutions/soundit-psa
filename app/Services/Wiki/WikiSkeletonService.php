@@ -1,0 +1,87 @@
+<?php
+
+namespace App\Services\Wiki;
+
+use App\Enums\WikiAuthorType;
+use App\Enums\WikiPageKind;
+use App\Enums\WikiScope;
+use App\Models\Client;
+use App\Models\WikiPage;
+
+class WikiSkeletonService
+{
+    /**
+     * Seed body for the `overview` page. The WikiOverviewComposer replaces this once
+     * facts exist; until then it is the sentinel that means "no hot summary yet" — the
+     * triage/Assistant injection point (§4.6) treats a body still equal to this as
+     * absent and falls back to site_notes.
+     */
+    public const OVERVIEW_PLACEHOLDER_BODY = "_Hot summary — maintained automatically once mining is enabled._\n";
+
+    public function __construct(private readonly WikiPageService $pages) {}
+
+    /** @return array<string, array{title: string, kind: WikiPageKind, body: string}> */
+    public static function blueprint(): array
+    {
+        $factsBlock = fn (string $anchor) => WikiSections::markerBlock($anchor, '_No facts recorded yet._');
+
+        return [
+            'overview' => ['title' => 'Overview', 'kind' => WikiPageKind::Overview,
+                'body' => self::OVERVIEW_PLACEHOLDER_BODY],
+            'network' => ['title' => 'Network', 'kind' => WikiPageKind::Environment,
+                'body' => "## Topology\n\n## Equipment\n\n"],
+            'infrastructure' => ['title' => 'Infrastructure', 'kind' => WikiPageKind::Environment,
+                'body' => "## Assets\n\n".$factsBlock('assets')."\n"],
+            'm365' => ['title' => 'Microsoft 365', 'kind' => WikiPageKind::Environment,
+                'body' => "## Security posture\n\n".$factsBlock('security-posture')."\n"],
+            'security' => ['title' => 'Security stack', 'kind' => WikiPageKind::Environment,
+                'body' => "## Tooling\n\n"],
+            'backup' => ['title' => 'Backup', 'kind' => WikiPageKind::Environment,
+                'body' => "## Coverage\n\n"],
+            'applications' => ['title' => 'Applications', 'kind' => WikiPageKind::Environment,
+                'body' => "## Line of business\n\n"],
+            'known-issues' => ['title' => 'Known issues', 'kind' => WikiPageKind::Environment,
+                'body' => "## Active\n\n## Resolved\n\n"],
+            'history' => ['title' => 'History', 'kind' => WikiPageKind::Environment,
+                'body' => "## Decisions\n\n"],
+            'notes' => ['title' => 'Notes', 'kind' => WikiPageKind::Note,
+                'body' => "_Free-form staff notes. The AI annotates but never rewrites this page._\n"],
+        ];
+    }
+
+    public function ensureForClient(Client $client): void
+    {
+        $blueprint = self::blueprint();
+
+        // Warm-path short-circuit: one indexed count replaces the pluck once seeding
+        // is complete. Exact — slugs are unique per (scope, client_id), so count of
+        // blueprint slugs === blueprint size means every skeleton page exists.
+        if (WikiPage::forClient($client->id)->whereIn('slug', array_keys($blueprint))->count() === count($blueprint)) {
+            return;
+        }
+
+        $existing = WikiPage::forClient($client->id)->pluck('slug')->all();
+
+        foreach ($blueprint as $slug => $def) {
+            if (in_array($slug, $existing, true)) {
+                continue;
+            }
+
+            try {
+                $this->pages->create([
+                    'scope' => WikiScope::Client,
+                    'client_id' => $client->id,
+                    'slug' => $slug,
+                    'title' => $def['title'],
+                    'kind' => $def['kind'],
+                    'body_md' => $def['body'],
+                ], WikiAuthorType::System, null, 'Skeleton seeded');
+            } catch (\RuntimeException|\Illuminate\Database\QueryException $e) {
+                // Concurrent seed: another request created this page between our pluck and create — skip.
+                // QueryException is thrown when the competing insert commits mid-transaction
+                // and the unique index rejects our insert at the database level.
+                continue;
+            }
+        }
+    }
+}

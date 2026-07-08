@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# pii-guard-sweep.sh — periodic client-PII/secret sweep of Chet's local note layer (hs-s8ny1).
+#
+# soundit-office has no vault sync yet, so there is no commit gate to hook; this order-driven
+# sweep is the write-time guard's office half: it scans ~/soundit-office/vault/ (Chet's
+# drafting layer) with soundit-pii-guard.sh and mails the mayor when a note carries a banned
+# client term or a secret shape. Detect-only: it never edits, moves, or blocks anything.
+#
+# DEFAULT OFF (house two-key pattern): the order tick no-ops until armed via
+#   touch /home/charlie/soundit-office/.gc/pii-guard-sweep.enabled
+# (reversible: rm the marker). Alerts are once-per-incident: the notified flag clears when
+# the tree scans clean again.
+set -uo pipefail
+
+CITY="$HOME/soundit-office"
+ENABLE_KEY="$CITY/.gc/pii-guard-sweep.enabled"
+GUARD="$CITY/scripts/soundit-pii-guard.sh"
+SCAN_ROOT="$CITY/vault"
+STATE_DIR="$HOME/.local/state/soundit-pii-guard"
+NOTIFIED="$STATE_DIR/sweep-mayor-notified"
+GC_BIN="${GC_BIN:-$HOME/go/bin/gc}"   # office gc lives in ~/go/bin (PATH gotcha)
+
+[ -f "$ENABLE_KEY" ] || exit 0        # unarmed: near-instant no-op
+[ -d "$SCAN_ROOT" ] || exit 0
+mkdir -p "$STATE_DIR" 2>/dev/null || true
+
+if [ ! -x "$GUARD" ]; then
+  echo "pii-guard-sweep: guard missing at $GUARD" >&2
+  exit 1
+fi
+
+if "$GUARD" tree "$SCAN_ROOT"; then
+  # clean (or advisory-only): clear the once-flag so a future incident alerts again
+  rm -f "$NOTIFIED" 2>/dev/null || true
+  exit 0
+fi
+
+echo "pii-guard-sweep: findings in $SCAN_ROOT (see $STATE_DIR/PII-BLOCK)" >&2
+[ -f "$NOTIFIED" ] && exit 0
+"$GC_BIN" --city "$CITY" mail send gastown.mayor \
+  -s "PII sweep: a local office note carries a client term or secret" \
+  -m "The pii-guard sweep found a banned client term or secret shape in $SCAN_ROOT (Chet's drafting layer). Details (file:line + matched term): $STATE_DIR/PII-BLOCK. Policy: client data lives in the PSA, never in notes that could flow to the vault — please fix the flagged note (client name -> role/ticket-anonymous phrasing; secrets -> Keeper + pointer). This alert repeats only after the tree scans clean again. Banned-terms list (0600, off-vault): ~/.config/soundit-pii-guard/banned-strings.txt (hs-s8ny1)." \
+  >/dev/null 2>&1 && touch "$NOTIFIED" || true
+exit 0

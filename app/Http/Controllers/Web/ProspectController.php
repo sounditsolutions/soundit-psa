@@ -1,0 +1,189 @@
+<?php
+
+namespace App\Http\Controllers\Web;
+
+use App\Http\Controllers\Controller;
+use App\Models\Client;
+use App\Models\PhoneCall;
+use App\Services\Prospect\ProspectIntakeService;
+use App\Services\Technician\Cockpit\CockpitQuery;
+use App\Services\Technician\Cockpit\CockpitUndoToken;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\RedirectResponse;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
+
+class ProspectController extends Controller
+{
+    public function __construct(
+        private readonly ProspectIntakeService $intake,
+    ) {}
+
+    /**
+     * Convert a Prospect to an Active client (agreement threshold).
+     *
+     * Flips `stage` → Active. All history (tickets, notes, calls) stays
+     * attached via the unchanged `client_id`. Future tickets on this client
+     * will now run triage automatically.
+     *
+     * Convert = agreement, NOT payment. The seed-block/deposit invoice is
+     * the new client's FIRST invoice — created post-convert during onboarding,
+     * not as a pre-convert gate.
+     *
+     * Lands on a success screen that echoes the prospect's open tickets and
+     * captured request notes, and prompts (does not auto-run) onboarding steps.
+     */
+    public function convert(Client $prospect): RedirectResponse
+    {
+        $client = $this->intake->convert($prospect);
+
+        Log::info('[Prospect] Converted to active client', [
+            'client_id' => $client->id,
+            'client_name' => $client->name,
+            'converted_by' => auth()->id(),
+            'converted_at' => now()->toIso8601String(),
+        ]);
+
+        return redirect()
+            ->route('prospects.converted', $client)
+            ->with('success', "\"{$client->name}\" is now an active client.");
+    }
+
+    /**
+     * Success screen shown immediately after convert — echoes open tickets
+     * and the original captured request/notes, and prompts onboarding steps.
+     */
+    public function converted(Client $client)
+    {
+        $openTickets = $client->tickets()
+            ->with('notes')
+            ->orderByDesc('opened_at')
+            ->get()
+            ->filter(fn ($t) => $t->status->isOpen());
+
+        return view('prospects.converted', compact('client', 'openTickets'));
+    }
+
+    /**
+     * Dismiss an unknown caller — stamps followed_up_at so it leaves the
+     * "Unknown caller" facet (client_id IS NULL AND followed_up_at IS NULL).
+     * Creates NO Client, Person, or Ticket. The call remains in the full
+     * Call Log.
+     */
+    public function dismiss(Request $request, PhoneCall $call): RedirectResponse|JsonResponse
+    {
+        $query = PhoneCall::query()
+            ->whereKey($call->id)
+            ->whereNull('followed_up_at');
+
+        if ($request->expectsJson()) {
+            $query
+                ->whereNull('ticket_id')
+                ->whereNull('client_id');
+        }
+
+        $handled = $query->update([
+            'followed_up_at' => now(),
+            'followed_up_by' => (int) auth()->id(),
+        ]) === 1;
+
+        $call->refresh();
+
+        if ($request->expectsJson()) {
+            $payload = [
+                'ok' => $handled,
+                'status' => $handled ? 'done' : 'already_handled',
+                'message' => $handled ? 'Call dismissed — removed from Unknown callers.' : 'That call was already handled.',
+                'counts' => app(CockpitQuery::class)->counts(),
+            ];
+
+            if ($handled) {
+                $payload['undo'] = app(CockpitUndoToken::class)->issue(
+                    'call',
+                    $call->id,
+                    'not-spam',
+                    (int) auth()->id(),
+                    ['call_followed_up_at' => $call->getRawOriginal('followed_up_at')],
+                );
+            }
+
+            return response()->json($payload);
+        }
+
+        return redirect()
+            ->route('calls.show', $call)
+            ->with($handled ? 'success' : 'error', $handled ? 'Call dismissed — removed from Unknown callers.' : 'That call was already handled.');
+    }
+
+    /**
+     * JSON search over all active clients (including prospects) for the
+     * search-first capture control on call pages.
+     *
+     * GET /api/clients/search-all?q=...  →  [{id, name, stage}, ...]
+     */
+    public function search(Request $request): JsonResponse
+    {
+        $term = (string) $request->query('q', '');
+
+        if (strlen($term) < 2) {
+            return response()->json([]);
+        }
+
+        $clients = Client::active()
+            ->search($term)
+            ->orderBy('name')
+            ->limit(20)
+            ->get(['id', 'name', 'stage']);
+
+        return response()->json($clients);
+    }
+
+    /**
+     * Provision a new prospect client+person+ticket from a phone call.
+     *
+     * Confirm-dedup flow: if `matchByNumber` finds an existing client and
+     * `confirm_new` is NOT set, redirect back with a warning surfacing the
+     * existing match rather than blindly creating a duplicate.
+     */
+    public function store(Request $request): RedirectResponse
+    {
+        $validated = $request->validate([
+            'phone_call_id' => ['required', 'exists:phone_calls,id'],
+            'name' => ['required', 'string', 'max:255'],
+            'confirm_new' => ['nullable', 'string'],
+        ]);
+
+        /** @var PhoneCall $call */
+        $call = PhoneCall::findOrFail($validated['phone_call_id']);
+
+        // Confirm-dedup: if a client already owns this phone number, surface it
+        // instead of creating a duplicate — unless staff explicitly confirmed.
+        if (! ($validated['confirm_new'] ?? null)) {
+            $existing = $this->intake->matchByNumber((string) $call->from_number);
+
+            if ($existing !== null) {
+                return redirect()
+                    ->route('calls.show', $call)
+                    ->withInput()
+                    ->with('dedup_client_id', $existing->id)
+                    ->with('dedup_client_name', $existing->name)
+                    ->with('error', "This number is already on {$existing->name} — attach to that client instead?");
+            }
+        }
+
+        $result = $this->intake->provisionFromCall($call, $validated['name']);
+
+        $client = $result['client'];
+        $ticket = $result['ticket'];
+
+        // Link the call to the new prospect client + ticket
+        $call->client_id = $client->id;
+        $call->person_id = $result['person']->id;
+        $call->ticket_id = $ticket->id;
+        $call->save();
+
+        return redirect()
+            ->route('tickets.show', $ticket)
+            ->with('success', "Prospect \"{$client->name}\" created and ticket {$ticket->display_id} opened.");
+    }
+}

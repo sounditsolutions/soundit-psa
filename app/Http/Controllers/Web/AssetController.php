@@ -1,0 +1,1403 @@
+<?php
+
+namespace App\Http\Controllers\Web;
+
+use App\Enums\TicketPriority;
+use App\Enums\TicketSource;
+use App\Enums\TicketStatus;
+use App\Enums\TicketType;
+use App\Http\Controllers\Controller;
+use App\Http\Requests\AssetStoreRequest;
+use App\Http\Requests\AssetUpdateRequest;
+use App\Models\Asset;
+use App\Models\Client;
+use App\Models\Person;
+use App\Models\Ticket;
+use App\Models\User;
+use App\Services\AssetService;
+use App\Services\ControlD\ControlDAnalyticsClient;
+use App\Services\ControlD\ControlDClient;
+use App\Services\ControlD\ControlDClientException;
+use App\Services\ControlD\ControlDDeviceSyncService;
+use App\Services\Level\LevelClient;
+use App\Services\Level\LevelClientException;
+use App\Services\Level\LevelSyncService;
+use App\Services\Ninja\NinjaClient;
+use App\Services\Ninja\NinjaClientException;
+use App\Services\Ninja\NinjaSyncService;
+use App\Services\Servosity\ServosityDeploymentService;
+use App\Services\TicketService;
+use App\Services\Zorus\ZorusClient;
+use App\Services\Zorus\ZorusClientException;
+use App\Support\ControlDConfig;
+use App\Support\ZorusConfig;
+use Carbon\Carbon;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+
+class AssetController extends Controller
+{
+    public function __construct(
+        private readonly AssetService $assetService,
+    ) {}
+
+    public function indexAll(Request $request)
+    {
+        $filters = [
+            'search' => $request->query('search'),
+            'client_id' => $request->query('client_id'),
+            'asset_type' => $request->query('asset_type'),
+            'status' => $request->query('status'),
+            'rmm' => $request->query('rmm'),
+            'user_assignment' => $request->query('user_assignment'),
+            'show_inactive' => $request->boolean('show_inactive'),
+            'show_deleted' => $request->boolean('show_deleted'),
+            'sort' => $request->query('sort', 'hostname'),
+            'direction' => $request->query('direction', 'asc'),
+        ];
+
+        $assets = $this->assetService->getAssetList($filters);
+        $clients = Client::operational()->orderBy('name')->get(['id', 'name']);
+        $assetTypes = Asset::active()->whereNotNull('asset_type')
+            ->where('asset_type', '!=', '')
+            ->distinct()->pluck('asset_type')->sort()->values();
+
+        return view('assets.index-all', [
+            'assets' => $assets,
+            'filters' => $filters,
+            'clients' => $clients,
+            'assetTypes' => $assetTypes,
+        ]);
+    }
+
+    public function index(Client $client)
+    {
+        $assets = $client->assets()
+            ->active()
+            ->orderBy('hostname')
+            ->orderBy('name')
+            ->paginate(50);
+
+        return view('assets.index', [
+            'client' => $client,
+            'assets' => $assets,
+        ]);
+    }
+
+    public function create(Request $request)
+    {
+        $clients = Client::operational()->orderBy('name')->get(['id', 'name']);
+
+        return view('assets.create', [
+            'clients' => $clients,
+            'selectedClientId' => $request->query('client_id'),
+        ]);
+    }
+
+    public function store(AssetStoreRequest $request)
+    {
+        $asset = $this->assetService->createAsset($request->validated());
+
+        return redirect()->route('assets.show', $asset)
+            ->with('success', 'Asset created successfully.');
+    }
+
+    public function show(int $asset, NinjaSyncService $ninjaSync)
+    {
+        $asset = Asset::withTrashed()->findOrFail($asset);
+        $asset->load(['client', 'contracts', 'activeAlerts', 'users', 'tacticalAsset']);
+
+        // On-access full enrichment for Ninja-linked assets
+        $backupJobs = null;
+        if ($asset->ninja_id) {
+            try {
+                $ninjaSync->syncDeviceDetail($asset);
+            } catch (\Throwable) {
+                // Non-fatal — page renders with existing data
+            }
+            $backupJobs = $ninjaSync->getBackupJobData($asset);
+        }
+
+        // Fetch Control D devices for unlinked assets (for manual linking dropdown)
+        $controldDevices = null;
+        if (! $asset->controld_device_id
+            && $asset->client
+            && $asset->client->controld_org_id
+            && ControlDConfig::isConfigured()
+        ) {
+            try {
+                $cdClient = new ControlDClient(['api_key' => ControlDConfig::get('api_key')]);
+                $allDevices = $cdClient->getDevices($asset->client->controld_org_id);
+
+                // Filter out devices already linked to any asset
+                $linkedIds = Asset::whereNotNull('controld_device_id')->pluck('controld_device_id')->all();
+                $controldDevices = array_values(array_filter($allDevices, fn ($d) => ! in_array($d['PK'] ?? '', $linkedIds)));
+            } catch (ControlDClientException $e) {
+                Log::debug("[AssetController] Could not fetch Control D devices: {$e->getMessage()}");
+            }
+        }
+
+        // Fetch Zorus endpoints for unlinked assets (for manual linking dropdown)
+        $zorusEndpoints = null;
+        if (! $asset->zorus_endpoint_id
+            && $asset->client
+            && $asset->client->zorus_customer_id
+            && ZorusConfig::isConfigured()
+        ) {
+            try {
+                $zorusClient = new ZorusClient(['api_key' => ZorusConfig::get('api_key')]);
+
+                // Fetch all endpoints (customer filter is unreliable)
+                $allEndpoints = [];
+                $page = 1;
+                do {
+                    $batch = $zorusClient->searchEndpoints([], $page, 500);
+                    $allEndpoints = array_merge($allEndpoints, $batch);
+                    $page++;
+                } while (count($batch) === 500);
+
+                // Filter to this client's customer + exclude already-linked endpoints
+                $linkedIds = Asset::whereNotNull('zorus_endpoint_id')->pluck('zorus_endpoint_id')->all();
+                $zorusEndpoints = array_values(array_filter($allEndpoints, function ($ep) use ($asset, $linkedIds) {
+                    return ($ep['customerUuid'] ?? '') === $asset->client->zorus_customer_id
+                        && ! in_array($ep['uuid'] ?? '', $linkedIds);
+                }));
+            } catch (ZorusClientException $e) {
+                Log::debug("[AssetController] Could not fetch Zorus endpoints: {$e->getMessage()}");
+            }
+        }
+
+        // Comet backup jobs
+        $cometJobData = null;
+        if ($asset->comet_device_id) {
+            try {
+                $cometJobService = new \App\Services\Comet\CometJobService(new \App\Services\Comet\CometClient);
+                $cometJobData = $cometJobService->getRecentJobs($asset);
+            } catch (\Exception $e) {
+                // Silently fail — job data is optional
+            }
+        }
+
+        \App\Support\RecentItems::track(auth()->id(), 'asset', $asset->id, $asset->hostname ?: $asset->name, route('assets.show', $asset));
+
+        $lastUserPerson = $asset->resolveLastUserPerson();
+
+        $clientPeople = $asset->client_id
+            ? Person::where('client_id', $asset->client_id)
+                ->where('is_active', true)
+                ->orderBy('last_name')
+                ->orderBy('first_name')
+                ->get(['id', 'first_name', 'last_name'])
+            : collect();
+
+        return view('assets.show', [
+            'asset' => $asset,
+            'backupJobs' => $backupJobs,
+            'cometJobData' => $cometJobData,
+            'controldDevices' => $controldDevices,
+            'zorusEndpoints' => $zorusEndpoints,
+            'lastUserPerson' => $lastUserPerson,
+            'clientPeople' => $clientPeople,
+            'tacticalInsight' => $this->tacticalInsight($asset),
+            'tacticalActionTotal' => $this->tacticalActionTotal($asset),
+        ]);
+    }
+
+    /**
+     * The snapshot-only EndpointInsight for the eager card health line + freshness
+     * (P4 amendments B/H). forAsset() (no $live) makes ZERO outbound Tactical
+     * calls — the page renders instantly from the snapshot + local DB. Null when
+     * not Tactical-linked so the view skips the block.
+     */
+    private function tacticalInsight(Asset $asset): ?\App\Services\Tactical\EndpointInsight
+    {
+        if (! $asset->tacticalAsset) {
+            return null;
+        }
+
+        return app(\App\Services\Tactical\TacticalInsightService::class)->forAsset($asset);
+    }
+
+    /**
+     * Total Tactical action-log rows for the asset (the insight caps its list at
+     * 10 newest-first; this total drives the "showing the N most recent of M"
+     * overflow affordance on the change-history panel — amendment K). Zero when
+     * not linked / no actions.
+     */
+    private function tacticalActionTotal(Asset $asset): int
+    {
+        if (! $asset->tacticalAsset) {
+            return 0;
+        }
+
+        return \App\Models\TacticalActionLog::where('asset_id', $asset->id)->count();
+    }
+
+    public function tickets(Request $request, Asset $asset)
+    {
+        $filters = [
+            'status' => $request->query('status'),
+            'priority' => $request->query('priority'),
+            'type' => $request->query('type'),
+            'source' => $request->query('source'),
+            'asset_id' => (string) $asset->id,
+            'assignee_id' => $request->query('assignee_id', 'all'),
+            'search' => $request->query('search'),
+            'show_closed' => $request->boolean('show_closed'),
+            'overdue' => $request->boolean('overdue'),
+            'sort' => $request->query('sort', 'priority'),
+            'direction' => $request->query('direction', 'asc'),
+        ];
+
+        $ticketService = app(TicketService::class);
+        $tickets = $ticketService->getTicketList($filters);
+        $unassignedCount = Ticket::open()->whereHas('assets', fn ($q) => $q->where('assets.id', $asset->id))->whereNull('assignee_id')->count();
+
+        // Count closed/resolved tickets even when not showing them so the view can
+        // surface a "Show closed (N)" affordance and avoid a misleading empty state.
+        $closedTicketCount = Ticket::closed()->whereHas('assets', fn ($q) => $q->where('assets.id', $asset->id))->count();
+
+        // Load same data as show()
+        $asset->load(['client', 'contracts', 'activeAlerts', 'users', 'tacticalAsset']);
+
+        $lastUserPerson = $asset->resolveLastUserPerson();
+
+        $clientPeople = $asset->client_id
+            ? Person::where('client_id', $asset->client_id)
+                ->where('is_active', true)
+                ->orderBy('last_name')
+                ->orderBy('first_name')
+                ->get(['id', 'first_name', 'last_name'])
+            : collect();
+
+        return view('assets.show', [
+            'asset' => $asset,
+            'backupJobs' => null,
+            'controldDevices' => collect(),
+            'zorusEndpoints' => collect(),
+            'lastUserPerson' => $lastUserPerson,
+            'clientPeople' => $clientPeople,
+            'tacticalInsight' => $this->tacticalInsight($asset),
+            'tacticalActionTotal' => $this->tacticalActionTotal($asset),
+            'activeTab' => 'tickets',
+            'tickets' => $tickets,
+            'ticketFilters' => $filters,
+            'ticketUsers' => User::active()->orderBy('name')->get(['id', 'name']),
+            'ticketClients' => Client::operational()->orderBy('name')->get(['id', 'name']),
+            'ticketStatuses' => TicketStatus::cases(),
+            'ticketPriorities' => TicketPriority::cases(),
+            'ticketTypes' => TicketType::cases(),
+            'ticketSources' => TicketSource::cases(),
+            'unassignedCount' => $unassignedCount,
+            'closedTicketCount' => $closedTicketCount,
+        ]);
+    }
+
+    public function edit(Asset $asset)
+    {
+        $clients = Client::operational()->orderBy('name')->get(['id', 'name']);
+
+        return view('assets.edit', [
+            'asset' => $asset,
+            'clients' => $clients,
+        ]);
+    }
+
+    public function update(AssetUpdateRequest $request, Asset $asset)
+    {
+        $this->assetService->updateAsset($asset, $request->validated());
+
+        return redirect()->route('assets.show', $asset)
+            ->with('success', 'Asset updated successfully.');
+    }
+
+    public function restore(int $id)
+    {
+        $asset = Asset::withTrashed()->findOrFail($id);
+        $asset->restore();
+        $asset->is_active = true;
+        $asset->save();
+
+        return redirect()->route('assets.show', $asset)
+            ->with('success', 'Asset restored successfully.');
+    }
+
+    public function destroy(Asset $asset)
+    {
+        try {
+            $this->assetService->deleteAsset($asset);
+        } catch (\RuntimeException $e) {
+            return redirect()->route('assets.show', $asset)
+                ->with('error', $e->getMessage());
+        }
+
+        return redirect()->route('assets.index')
+            ->with('success', 'Asset deleted successfully.');
+    }
+
+    public function refresh(Asset $asset, NinjaSyncService $ninjaSync, LevelSyncService $levelSync)
+    {
+        if (! $asset->ninja_id && ! $asset->level_id) {
+            return redirect()->route('assets.show', $asset)
+                ->with('error', 'This asset is not linked to any RMM.');
+        }
+
+        $sources = [];
+
+        if ($asset->ninja_id) {
+            try {
+                $ninjaSync->syncDeviceDetail($asset);
+                $sources[] = 'NinjaRMM';
+            } catch (NinjaClientException $e) {
+                return redirect()->route('assets.show', $asset)
+                    ->with('error', 'Could not refresh from NinjaRMM: '.$e->getMessage());
+            }
+        }
+
+        if ($asset->level_id) {
+            try {
+                $levelSync->syncDeviceDetail($asset);
+                $sources[] = 'Level';
+            } catch (LevelClientException $e) {
+                return redirect()->route('assets.show', $asset)
+                    ->with('error', 'Could not refresh from Level: '.$e->getMessage());
+            }
+        }
+
+        return redirect()->route('assets.show', $asset)
+            ->with('success', 'Device data refreshed from '.implode(' and ', $sources).'.');
+    }
+
+    public function linkControlD(Request $request, Asset $asset)
+    {
+        $request->validate([
+            'controld_device_id' => 'required|string|max:20',
+        ]);
+
+        $deviceId = $request->input('controld_device_id');
+
+        // Verify the asset's client has a Control D org mapping
+        if (! $asset->client || ! $asset->client->controld_org_id) {
+            return redirect()->route('assets.show', $asset)
+                ->with('error', 'This client is not mapped to a Control D organization.');
+        }
+
+        // Verify the device exists in the client's sub-org
+        try {
+            $cdClient = new ControlDClient(['api_key' => ControlDConfig::get('api_key')]);
+            $devices = $cdClient->getDevices($asset->client->controld_org_id);
+        } catch (ControlDClientException $e) {
+            return redirect()->route('assets.show', $asset)
+                ->with('error', 'Could not verify device with Control D API.');
+        }
+
+        $device = collect($devices)->firstWhere('PK', $deviceId);
+
+        if (! $device) {
+            return redirect()->route('assets.show', $asset)
+                ->with('error', 'Device not found in this client\'s Control D organization.');
+        }
+
+        // Link and sync the device data
+        $syncService = new ControlDDeviceSyncService($cdClient);
+        $syncService->updateAssetFromDevice($asset, $device);
+
+        return redirect()->route('assets.show', $asset)
+            ->with('success', 'Linked to Control D device: '.($device['name'] ?? $deviceId));
+    }
+
+    public function unlinkControlD(Asset $asset)
+    {
+        if (! $asset->controld_device_id) {
+            return redirect()->route('assets.show', $asset)
+                ->with('error', 'This asset is not linked to Control D.');
+        }
+
+        $asset->update([
+            'controld_device_id' => null,
+            'controld_profile_name' => null,
+            'controld_status' => null,
+            'controld_agent_status' => null,
+            'controld_agent_version' => null,
+            'controld_last_seen_at' => null,
+            'controld_synced_at' => null,
+        ]);
+
+        return redirect()->route('assets.show', $asset)
+            ->with('success', 'Control D link removed.');
+    }
+
+    public function controldActivity(Request $request, Asset $asset)
+    {
+        if (! $asset->controld_device_id) {
+            return response()->json(['error' => 'Asset not linked to Control D'], 422);
+        }
+
+        if (! $asset->client || ! $asset->client->controld_org_id) {
+            return response()->json(['error' => 'Client has no Control D organization'], 422);
+        }
+
+        if (! ControlDConfig::isAnalyticsConfigured()) {
+            return response()->json(['error' => 'Control D analytics not configured'], 422);
+        }
+
+        $hours = min(max((int) $request->query('hours', 1), 1), 168);
+        $endTime = now();
+        $startTime = $endTime->copy()->subHours($hours);
+
+        try {
+            $client = new ControlDAnalyticsClient(
+                ControlDConfig::get('api_key'),
+                ControlDConfig::get('stats_endpoint'),
+            );
+
+            $queries = $client->getActivityLog(
+                $asset->client->controld_org_id,
+                $startTime->toIso8601ZuluString(),
+                $endTime->toIso8601ZuluString(),
+                $asset->controld_device_id,
+            );
+        } catch (\Throwable $e) {
+            Log::warning("[AssetController] Control D activity query failed: {$e->getMessage()}");
+
+            return response()->json(['error' => 'Failed to fetch DNS activity'], 500);
+        }
+
+        $results = array_map(fn ($q) => [
+            'domain' => $q['question'] ?? null,
+            'action' => match ($q['action'] ?? null) {
+                1 => 'allowed',
+                0 => 'blocked',
+                -1 => 'nxdomain',
+                default => 'unknown',
+            },
+            'trigger' => $q['trigger'] ?? null,
+            'timestamp' => $q['timestamp'] ?? null,
+            'type' => $q['rrType'] ?? null,
+        ], array_slice($queries, 0, 100));
+
+        return response()->json($results);
+    }
+
+    public function linkZorus(Request $request, Asset $asset)
+    {
+        $request->validate([
+            'zorus_endpoint_id' => 'required|string|max:36',
+        ]);
+
+        $endpointId = $request->input('zorus_endpoint_id');
+
+        // Verify the asset's client has a Zorus customer mapping
+        if (! $asset->client || ! $asset->client->zorus_customer_id) {
+            return redirect()->route('assets.show', $asset)
+                ->with('error', 'This client is not mapped to a Zorus customer.');
+        }
+
+        // Verify the endpoint belongs to this client's Zorus customer (server-side ownership validation)
+        try {
+            $zorusClient = new ZorusClient(['api_key' => ZorusConfig::get('api_key')]);
+
+            // Fetch all endpoints (customer filter is unreliable)
+            $allEndpoints = [];
+            $page = 1;
+            do {
+                $batch = $zorusClient->searchEndpoints([], $page, 500);
+                $allEndpoints = array_merge($allEndpoints, $batch);
+                $page++;
+            } while (count($batch) === 500);
+        } catch (ZorusClientException $e) {
+            return redirect()->route('assets.show', $asset)
+                ->with('error', 'Could not verify endpoint with Zorus API.');
+        }
+
+        $endpoint = collect($allEndpoints)->firstWhere('uuid', $endpointId);
+
+        if (! $endpoint) {
+            return redirect()->route('assets.show', $asset)
+                ->with('error', 'Endpoint not found in Zorus.');
+        }
+
+        // Verify endpoint belongs to the client's customer
+        if (($endpoint['customerUuid'] ?? '') !== $asset->client->zorus_customer_id) {
+            return redirect()->route('assets.show', $asset)
+                ->with('error', 'Endpoint does not belong to this client\'s Zorus customer.');
+        }
+
+        // Link and sync the endpoint data
+        $syncService = new \App\Services\Zorus\ZorusDeviceSyncService($zorusClient);
+        $syncService->updateAssetFromEndpoint($asset, $endpoint);
+
+        return redirect()->route('assets.show', $asset)
+            ->with('success', 'Linked to Zorus endpoint: '.($endpoint['name'] ?? $endpointId));
+    }
+
+    public function unlinkZorus(Asset $asset)
+    {
+        if (! $asset->zorus_endpoint_id) {
+            return redirect()->route('assets.show', $asset)
+                ->with('error', 'This asset is not linked to Zorus.');
+        }
+
+        $asset->update([
+            'zorus_endpoint_id' => null,
+            'zorus_group_name' => null,
+            'zorus_filtering_enabled' => null,
+            'zorus_cybersight_enabled' => null,
+            'zorus_agent_version' => null,
+            'zorus_agent_state' => null,
+            'zorus_last_seen_at' => null,
+            'zorus_synced_at' => null,
+        ]);
+
+        return redirect()->route('assets.show', $asset)
+            ->with('success', 'Zorus link removed.');
+    }
+
+    public function toggleCometBackup(Request $request, Asset $asset)
+    {
+        $enabling = ! $asset->comet_backup_enabled;
+        $asset->update(['comet_backup_enabled' => $enabling]);
+
+        // Redirect back to whichever page the toggle was on (client or asset detail)
+        $redirectTo = url()->previous(route('clients.show', $asset->client_id));
+
+        // Push device-level flag to Tactical agent custom field
+        $tacticalAsset = $asset->tacticalAsset;
+
+        // If no Tactical link, try to find and link the agent by hostname
+        if (! $tacticalAsset && \App\Support\TacticalConfig::isConfigured() && $asset->hostname) {
+            try {
+                $tacticalClient = app(\App\Services\Tactical\TacticalClient::class);
+                $agents = $tacticalClient->getAgents();
+                foreach ($agents as $agent) {
+                    if (strcasecmp($agent['hostname'] ?? '', $asset->hostname) === 0) {
+                        // Found matching agent — create TacticalAsset and link
+                        $ta = \App\Models\TacticalAsset::updateOrCreate(
+                            ['agent_id' => $agent['agent_id']],
+                            [
+                                'hostname' => $agent['hostname'],
+                                'asset_id' => $asset->id,
+                            ]
+                        );
+                        $asset->update(['tactical_asset_id' => $ta->id]);
+                        $tacticalAsset = $ta;
+                        Log::info("[Comet] Auto-linked Tactical agent for {$asset->hostname}");
+                        break;
+                    }
+                }
+            } catch (\Exception $e) {
+                Log::warning("[Comet] Failed to auto-link Tactical agent for {$asset->hostname}: ".$e->getMessage());
+            }
+        }
+
+        if ($tacticalAsset && \App\Support\TacticalConfig::isConfigured()) {
+            try {
+                $tacticalClient = app(\App\Services\Tactical\TacticalClient::class);
+                $tacticalClient->setAgentCustomField(
+                    $tacticalAsset->agent_id,
+                    \App\Support\CometConfig::TACTICAL_TOKEN_FIELD_ID,
+                    $enabling ? 'yes' : ''
+                );
+            } catch (\Exception $e) {
+                Log::warning("[Comet] Failed to update Tactical flag for {$asset->hostname}: ".$e->getMessage());
+            }
+        }
+
+        $status = $asset->comet_backup_enabled ? 'enabled' : 'disabled';
+
+        return redirect($redirectTo)->with('success', "Comet backup {$status} for {$asset->hostname}.");
+    }
+
+    public function toggleServosityBackup(Request $request, Asset $asset)
+    {
+        $redirectTo = url()->previous(route('clients.show', $asset->client_id));
+
+        // Disabling — simple path
+        if ($asset->servosity_backup_enabled) {
+            try {
+                $service = new ServosityDeploymentService;
+                $service->disableBackup($asset);
+            } catch (\Exception $e) {
+                Log::warning("[Servosity] Failed to disable backup for {$asset->hostname}: ".$e->getMessage());
+                $asset->update(['servosity_backup_enabled' => false]);
+            }
+
+            return redirect($redirectTo)->with('success', "Servosity backup disabled for {$asset->hostname}.");
+        }
+
+        // Enabling — requires client mapping and Tactical agent
+        if (! $asset->client?->servosity_company_id) {
+            return redirect($redirectTo)->with('error', 'Client does not have a Servosity company mapping.');
+        }
+
+        // Auto-link Tactical agent by hostname if needed
+        $tacticalAsset = $asset->tacticalAsset;
+        if (! $tacticalAsset && \App\Support\TacticalConfig::isConfigured() && $asset->hostname) {
+            try {
+                $tacticalClient = app(\App\Services\Tactical\TacticalClient::class);
+                $agents = $tacticalClient->getAgents();
+                foreach ($agents as $agent) {
+                    if (strcasecmp($agent['hostname'] ?? '', $asset->hostname) === 0) {
+                        $ta = \App\Models\TacticalAsset::updateOrCreate(
+                            ['agent_id' => $agent['agent_id']],
+                            ['hostname' => $agent['hostname'], 'asset_id' => $asset->id]
+                        );
+                        $asset->update(['tactical_asset_id' => $ta->id]);
+                        $asset->refresh();
+                        Log::info("[Servosity] Auto-linked Tactical agent for {$asset->hostname}");
+                        break;
+                    }
+                }
+            } catch (\Exception $e) {
+                Log::warning('[Servosity] Failed to auto-link Tactical agent: '.$e->getMessage());
+            }
+        }
+
+        if (! $asset->tacticalAsset) {
+            return redirect($redirectTo)->with('error', "No Tactical RMM agent found for {$asset->hostname}. Link the device first.");
+        }
+
+        try {
+            $service = new ServosityDeploymentService;
+            $service->enableBackup($asset);
+
+            // Trigger Tactical deploy script immediately (fire-and-forget).
+            //
+            // P2 SCOPE-OUT (amendment M7): this async runScriptAsync deploy
+            // deliberately does NOT route through the synchronous action bus.
+            // The bus's execute() is synchronous (single-target sync NATS call);
+            // the queued/async action path is P3's RunTacticalActionJob. Folding
+            // this onto the bus is tracked as a P3 follow-up (the Servosity creds
+            // here are Tactical-side {{agent.*}} template placeholders, so the
+            // literal secret is not in THIS request body — but setAgentCustomField
+            // pushes the real cred via a separate path; both migrate in P3).
+            try {
+                $tactical = app(\App\Services\Tactical\TacticalClient::class);
+                $tactical->runScriptAsync(
+                    $asset->tacticalAsset->agent_id,
+                    218,  // Deploy: Servosity Backup
+                    [
+                        '-ServosityOneUrl', '{{agent.ServosityOneUrl}}',
+                        '-ServosityScreenConnectUrl', '{{agent.ServosityScreenConnectUrl}}',
+                        '-ServosityCredUser', '{{agent.ServosityCredUser}}',
+                        '-ServosityCredPass', '{{agent.ServosityCredPass}}',
+                    ],
+                    600,
+                );
+            } catch (\Exception $e) {
+                Log::warning('[Servosity] Failed to trigger immediate deploy: '.$e->getMessage());
+            }
+
+            // Dispatch retry job: checks every 30s for 30 min until provisioned
+            \App\Jobs\ServosityProvisionAsset::dispatch($asset->id)
+                ->delay(now()->addSeconds(60));  // First check 60s after deploy starts
+
+            return redirect($redirectTo)->with('success', "Servosity backup enabled for {$asset->hostname}. Installing now — DR account will be provisioned automatically.");
+        } catch (\Exception $e) {
+            Log::error("[Servosity] Failed to enable backup for {$asset->hostname}: ".$e->getMessage());
+
+            return redirect($redirectTo)->with('error', 'Failed to enable Servosity backup: '.$e->getMessage());
+        }
+    }
+
+    public function addUser(Request $request, Asset $asset)
+    {
+        $request->validate([
+            'person_id' => ['required', 'exists:people,id'],
+        ]);
+
+        $personId = $request->input('person_id');
+        $person = Person::where('id', $personId)->where('client_id', $asset->client_id)->firstOrFail();
+
+        if ($asset->users()->where('person_id', $personId)->exists()) {
+            return redirect()->route('assets.show', $asset)
+                ->with('warning', "{$person->full_name} is already linked to this device.");
+        }
+
+        $asset->users()->attach($personId, [
+            'is_primary' => false,
+            'assignment_source' => 'manual',
+            'last_seen_at' => null,
+        ]);
+
+        return redirect()->route('assets.show', $asset)
+            ->with('success', "{$person->full_name} linked to this device.");
+    }
+
+    public function removeUser(Asset $asset, Person $person)
+    {
+        $asset->users()->detach($person->id);
+
+        return redirect()->route('assets.show', $asset)
+            ->with('success', "{$person->full_name} removed from this device.");
+    }
+
+    public function setPrimaryUser(Asset $asset, Person $person)
+    {
+        DB::table('asset_person')
+            ->where('asset_id', $asset->id)
+            ->where('is_primary', true)
+            ->update(['is_primary' => false]);
+
+        DB::table('asset_person')
+            ->where('asset_id', $asset->id)
+            ->where('person_id', $person->id)
+            ->update(['is_primary' => true]);
+
+        return redirect()->route('assets.show', $asset)
+            ->with('success', "{$person->full_name} set as primary user.");
+    }
+
+    public function runTacticalScript(Request $request, Asset $asset)
+    {
+        $request->validate([
+            'script_id' => ['required', 'exists:tactical_scripts,id'],
+            'args' => ['nullable', 'string', 'max:1000'],
+            'timeout' => ['required', 'integer', 'min:10', 'max:600'],
+        ]);
+
+        $asset->load('tacticalAsset');
+
+        // Only the not-linked case is a hard pre-check. M4: do NOT gate on the
+        // daily-stale snapshot status — let the bus attempt and report `offline`
+        // as the source of truth (a device the snapshot calls offline may have
+        // come back online, and vice versa).
+        if (! $asset->tacticalAsset || empty($asset->tacticalAsset->agent_id)) {
+            return response()->json(['error' => 'Device has no Tactical agent.'], 422);
+        }
+
+        $script = \App\Models\TacticalScript::findOrFail($request->input('script_id'));
+
+        // Route execution through the audited action bus. Args are tokenized
+        // argv-safely inside RunScriptAction (no more explode(' ')).
+        $result = app(\App\Services\Tactical\TacticalActionService::class)->dispatch(
+            new \App\Services\Tactical\Actions\RunScriptAction,
+            $asset,
+            $request->user(),
+            [
+                'tactical_script_id' => $script->tactical_script_id,
+                'args' => (string) $request->input('args', ''),
+                'timeout' => (int) $request->input('timeout'),
+            ],
+        );
+
+        return $this->tacticalScriptResponse($result, $script->name);
+    }
+
+    /**
+     * Map the bus's normalized result back to the JSON contract the Script
+     * Runner JS parses (M3): ok -> 200 {success,...}; anything else ->
+     * {error} with a status the front-end renders as the red error box.
+     */
+    private function tacticalScriptResponse(
+        \App\Services\Tactical\Actions\TacticalActionResult $result,
+        string $scriptName,
+    ): \Illuminate\Http\JsonResponse {
+        if ($result->isOk()) {
+            return response()->json([
+                'success' => true,
+                'script_name' => $scriptName,
+                'stdout' => $result->stdout ?? '',
+                'stderr' => $result->stderr ?? '',
+                'retcode' => $result->retcode,
+                'execution_time' => null,
+            ]);
+        }
+
+        $status = $result->isOffline() ? 422 : 500;
+
+        return response()->json([
+            'error' => $result->message ?? 'Script execution failed.',
+        ], $status);
+    }
+
+    /**
+     * Reboot a Tactical-linked agent (destructive). CSRF-protected (web group).
+     * The human confirmation gate is a typed-hostname match (case-insensitive,
+     * trimmed — m3); on match we mint a confirm token bound to
+     * {reboot, agent, actor} and dispatch through the bus, which enforces the
+     * destructive-confirm stage and audits the outcome. Offline is a surfaced
+     * 422 {error}, never a 500.
+     */
+    public function rebootTacticalAgent(Request $request, Asset $asset)
+    {
+        $request->validate([
+            'hostname' => ['required', 'string', 'max:255'],
+        ]);
+
+        $asset->load('tacticalAsset');
+
+        if (! $asset->tacticalAsset || empty($asset->tacticalAsset->agent_id)) {
+            return response()->json(['error' => 'This device is not linked to a Tactical agent.'], 422);
+        }
+
+        // m3: the typed hostname must match the device's Tactical hostname,
+        // case-insensitively and trimmed.
+        $expected = trim((string) ($asset->tacticalAsset->hostname ?? $asset->hostname ?? ''));
+        $typed = trim((string) $request->input('hostname'));
+        if ($expected === '' || strcasecmp($expected, $typed) !== 0) {
+            return response()->json([
+                'error' => 'The typed hostname does not match this device. Reboot cancelled.',
+            ], 422);
+        }
+
+        $action = new \App\Services\Tactical\Actions\RebootAction;
+        $actor = $request->user();
+
+        // Mint a short-TTL token bound to {action, agent, actor}; the bus
+        // verifies it at the destructive-confirm stage (payloadHash null for
+        // reboot — it has no free-text payload).
+        $token = \App\Services\Tactical\TacticalActionConfirmToken::issue(
+            $action->key(),
+            $asset->tacticalAsset->agent_id,
+            $actor?->id,
+        );
+
+        $result = app(\App\Services\Tactical\TacticalActionService::class)->dispatch(
+            $action,
+            $asset,
+            $actor,
+            [],
+            $token,
+        );
+
+        if ($result->isOk()) {
+            return response()->json([
+                'success' => true,
+                'message' => $result->stdout ?? 'Reboot command sent.',
+            ]);
+        }
+
+        $status = $result->isOffline() ? 422 : 500;
+
+        return response()->json([
+            'error' => $result->message ?? 'Reboot failed.',
+        ], $status);
+    }
+
+    /**
+     * Recover a Tactical agent's services (non-destructive → single-click, no
+     * confirm token). P3 ships mode=mesh only (sync; reports the real outcome —
+     * amendment D4); RecoverAction rejects tacagent. CSRF-protected (web group).
+     * Returns the P2 JSON contract: ok→200 {success}, not-linked/offline→422
+     * {error}, error→500 {error}.
+     */
+    public function recoverTacticalAgent(Request $request, Asset $asset)
+    {
+        $asset->load('tacticalAsset');
+
+        if (! $asset->tacticalAsset || empty($asset->tacticalAsset->agent_id)) {
+            return response()->json(['error' => 'This device is not linked to a Tactical agent.'], 422);
+        }
+
+        $result = app(\App\Services\Tactical\TacticalActionService::class)->dispatch(
+            new \App\Services\Tactical\Actions\RecoverAction,
+            $asset,
+            $request->user(),
+            ['mode' => 'mesh'],
+        );
+
+        if ($result->isOk()) {
+            return response()->json([
+                'success' => true,
+                'message' => $result->stdout ?: 'Recovery initiated.',
+            ]);
+        }
+
+        return response()->json([
+            'error' => $result->message ?? 'Recover failed.',
+        ], $result->isOffline() ? 422 : 500);
+    }
+
+    /**
+     * Toggle a Tactical agent's maintenance mode / alert suppression (non-
+     * destructive → single-click, no confirm token). CSRF-protected (web group).
+     * Drives the D3 partial-PUT via the bus. Returns the P2 JSON contract plus
+     * the resolved `enabled` flag so the UI can reflect the new state.
+     */
+    public function setTacticalMaintenance(Request $request, Asset $asset)
+    {
+        $request->validate([
+            'enabled' => ['required', 'boolean'],
+        ]);
+
+        $asset->load('tacticalAsset');
+
+        if (! $asset->tacticalAsset || empty($asset->tacticalAsset->agent_id)) {
+            return response()->json(['error' => 'This device is not linked to a Tactical agent.'], 422);
+        }
+
+        $enabled = $request->boolean('enabled');
+
+        $result = app(\App\Services\Tactical\TacticalActionService::class)->dispatch(
+            new \App\Services\Tactical\Actions\SetMaintenanceAction,
+            $asset,
+            $request->user(),
+            ['enabled' => $enabled],
+        );
+
+        if ($result->isOk()) {
+            return response()->json([
+                'success' => true,
+                'enabled' => $enabled,
+                'message' => $result->stdout ?: ($enabled ? 'Maintenance mode enabled.' : 'Maintenance mode disabled.'),
+            ]);
+        }
+
+        return response()->json([
+            'error' => $result->message ?? 'Could not change maintenance mode.',
+        ], $result->isOffline() ? 422 : 500);
+    }
+
+    /**
+     * Refresh-now: an in-place AJAX refresh of the Tactical device status +
+     * freshness (P4 amendment J). It calls TacticalDeviceSyncService::syncDeviceDetail
+     * (getAgent → status/last_seen/ram_gb/os_version + checks summary), NOT the
+     * action bus — it is a READ that mutates only the local snapshot, so it is
+     * NOT audited and NOT confirm-gated. It does NOT reuse refresh()'s redirect
+     * path or quickLook()'s 60s cache (a cached refresh-now would serve stale data).
+     *
+     * Returns {status, freshAsOf, degraded, message} for the in-place JS update.
+     * A live failure (offline agent / Tactical unreachable) is a NORMAL outcome:
+     * 200 with degraded:true and the prior snapshot left intact — never a 500.
+     * POST + CSRF + the same auth as the page (the web group).
+     */
+    public function refreshTactical(Asset $asset, \App\Services\Tactical\TacticalDeviceSyncService $sync)
+    {
+        $asset->load('tacticalAsset');
+
+        if (! $asset->tacticalAsset || empty($asset->tacticalAsset->agent_id)) {
+            return response()->json(['error' => 'This device is not linked to a Tactical agent.'], 422);
+        }
+
+        $result = $sync->syncDeviceDetail($asset);
+
+        return response()->json([
+            'status' => $result->status,
+            'status_label' => $result->status ? ucfirst($result->status) : null,
+            'freshAsOf' => $result->freshAsOf?->diffForHumans(),
+            'degraded' => ! $result->ok,
+            'message' => $result->ok
+                ? 'Refreshed just now.'
+                : ($result->message ?? 'Could not reach the agent — showing last sync.'),
+        ]);
+    }
+
+    /**
+     * Open a MeshCentral remote-control session for a Tactical-linked device (P6).
+     *
+     * Mints a fresh deep-link URL at click-time (tokens are short-lived; NEVER
+     * cached or logged). Returns {url} with Cache-Control: no-store so the browser
+     * discards it immediately and never serves it from cache.
+     *
+     * Security gates:
+     *   G1/G2  — audit every outcome (ok AND every failure) via TacticalActionLog;
+     *            params stores only {link_type} — NEVER the URL or token.
+     *   G4     — TacticalClientException → generic 502; no report()/rethrow
+     *            (responseBody may carry a token).
+     *   G5     — auth (web middleware) + linked tacticalAsset.agent_id (422);
+     *            throttle:30,1 on the route; ticket_id nullable|exists.
+     *   G6     — returned URL validated via SafeTacticalWebUrl (https + host);
+     *            no-usable-link → 422 (not 502 — a transport failure it is not).
+     *   G7     — Cache-Control: no-store on the success JSON response.
+     *   G8     — action_key is a fixed enum; free-text would need ActionRedactor.
+     */
+    public function openTacticalMeshCentral(Request $request, Asset $asset)
+    {
+        $data = $request->validate([
+            'type' => 'required|in:control,terminal,file',
+            'ticket_id' => 'nullable|integer|exists:tickets,id',
+        ]);
+
+        $asset->load('tacticalAsset');
+        $agentId = $asset->tacticalAsset->agent_id ?? null;
+
+        if (! $agentId) {
+            return response()->json(['error' => 'This device is not linked to a Tactical agent.'], 422);
+        }
+
+        // G2 helper: one URL-free audit row for any outcome.
+        $audit = function (string $status) use ($request, $asset, $agentId, $data) {
+            \App\Models\TacticalActionLog::create([
+                'actor_id' => $request->user()?->id,
+                'actor_label' => $request->user()?->email ?? 'unknown',
+                'action_key' => 'tactical.remote_control',          // G8: fixed enum — if you add free-text, route via ActionRedactor
+                'agent_id' => $agentId,
+                'asset_id' => $asset->id,
+                'ticket_id' => $data['ticket_id'] ?? null,
+                'target_label' => $asset->tacticalAsset->hostname ?? $asset->hostname ?? 'unknown',
+                'params' => ['link_type' => $data['type']],     // G1/G2: never the URL
+                'result_status' => $status,
+                'message' => $status === 'ok' ? 'Remote session opened.' : 'Remote session open failed.',
+                'correlation_id' => (string) \Illuminate\Support\Str::uuid(),
+            ]);
+        };
+
+        try {
+            $links = app(\App\Services\Tactical\TacticalClient::class)->getMeshCentralLinks($agentId);
+        } catch (\App\Services\Tactical\TacticalClientException $e) {
+            $audit('error');   // G4: do NOT report()/rethrow — $e->responseBody may carry a token
+
+            return response()->json(['error' => 'Could not reach Tactical to open a remote session. Check that Tactical RMM is reachable and try again.'], 502);
+        }
+
+        $url = $links[$data['type']] ?? null;
+        $valid = $url !== null && \Illuminate\Support\Facades\Validator::make(
+            ['u' => $url],
+            ['u' => [new \App\Rules\SafeTacticalWebUrl]]
+        )->passes();
+
+        if (! $valid) {
+            $audit('error');
+
+            // The realistic cause is MeshCentral not configured for this device, not a transport failure.
+            return response()->json(['error' => "MeshCentral isn't available for this device. Confirm the RMM server's MeshCentral integration is configured and this agent has a mesh connection."], 422);
+        }
+
+        $audit('ok');
+
+        return response()->json(['url' => $url])->header('Cache-Control', 'no-store');   // G1 verbatim, G7 no-store
+    }
+
+    /**
+     * Run an ad-hoc command on a Tactical agent — the most dangerous capability
+     * in the integration (arbitrary RCE). DESTRUCTIVE: confirm-gated by a
+     * typed-hostname match (the human gate) PLUS a payloadHash-bound confirm
+     * token verified at the bus's destructive-confirm stage. CSRF-protected
+     * (web group). Returns the P2 JSON contract.
+     *
+     * Amendment A1 — the cmd security spine (the single most security-critical
+     * wiring in the phase):
+     *   1. validateParams($request->only(shell,cmd,timeout)) -> ONE canonical
+     *      {shell,cmd,timeout} array;
+     *   2. payloadHash() over THAT canonical array;
+     *   3. server-side typed-hostname match (strcasecmp, like reboot);
+     *   4. mint a token bound to {action, agent, actor, payloadHash} and
+     *      immediately dispatch THAT SAME canonical array.
+     * The controller MUST NEVER re-read cmd/shell/timeout from the request for
+     * execution — issue-side and verify-side hashes match identical bytes only
+     * because the dispatched params ARE the hashed params.
+     *
+     * Invalid params (bad shell/timeout/empty cmd) are dispatched raw with NO
+     * token so the bus validates + audits a `rejected` row (the bus rejects at
+     * the validate stage, before the confirm stage, so no token is needed) —
+     * preserving audit-all without minting a token over invalid input.
+     */
+    public function runTacticalCommand(Request $request, Asset $asset)
+    {
+        $request->validate([
+            'hostname' => ['required', 'string', 'max:255'],
+            'ticket_id' => ['nullable', 'integer', 'exists:tickets,id'],
+        ]);
+
+        $asset->load('tacticalAsset');
+
+        if (! $asset->tacticalAsset || empty($asset->tacticalAsset->agent_id)) {
+            return response()->json(['error' => 'This device is not linked to a Tactical agent.'], 422);
+        }
+
+        $agentId = $asset->tacticalAsset->agent_id;
+        $actor = $request->user();
+        $ticketId = $request->filled('ticket_id') ? (int) $request->input('ticket_id') : null;
+        $action = new \App\Services\Tactical\Actions\RunCommandAction;
+        $bus = app(\App\Services\Tactical\TacticalActionService::class);
+
+        // A1 step 1: ONE canonical params source. On invalid input, route the RAW
+        // params through the bus (no token) so it audits a `rejected` row.
+        try {
+            $params = $action->validateParams($request->only('shell', 'cmd', 'timeout'));
+        } catch (\App\Services\Tactical\Actions\InvalidActionParams $e) {
+            $result = $bus->dispatch($action, $asset, $actor, $request->only('shell', 'cmd', 'timeout'), null, null, $ticketId);
+
+            return $this->tacticalActionResponse($result, 'Command rejected.');
+        }
+
+        // Typed-hostname gate (server-side, case-insensitive + trimmed — like reboot).
+        $expected = trim((string) ($asset->tacticalAsset->hostname ?? $asset->hostname ?? ''));
+        $typed = trim((string) $request->input('hostname'));
+        if ($expected === '' || strcasecmp($expected, $typed) !== 0) {
+            return response()->json([
+                'error' => 'The typed hostname does not match this device. Command cancelled.',
+            ], 422);
+        }
+
+        // A1 steps 2 + 4: hash the canonical array, mint a token bound to it, and
+        // dispatch THAT SAME array (never re-reading cmd/shell/timeout).
+        $token = \App\Services\Tactical\TacticalActionConfirmToken::issue(
+            $action->key(),
+            $agentId,
+            $actor?->id,
+            $action->payloadHash($params),
+        );
+
+        $result = $bus->dispatch($action, $asset, $actor, $params, $token, null, $ticketId);
+
+        return $this->tacticalActionResponse($result, 'Command sent.');
+    }
+
+    /**
+     * Shut down a Tactical agent (DESTRUCTIVE — the box stays OFF, no remote
+     * power-on; ShutdownAction::summary carries the D2 consequence copy). Mirrors
+     * reboot: typed-hostname match + a confirm token bound to {action, agent,
+     * actor} (no payload — payloadHash null). CSRF-protected (web group).
+     */
+    public function shutdownTacticalAgent(Request $request, Asset $asset)
+    {
+        $request->validate([
+            'hostname' => ['required', 'string', 'max:255'],
+            'ticket_id' => ['nullable', 'integer', 'exists:tickets,id'],
+        ]);
+
+        $asset->load('tacticalAsset');
+
+        if (! $asset->tacticalAsset || empty($asset->tacticalAsset->agent_id)) {
+            return response()->json(['error' => 'This device is not linked to a Tactical agent.'], 422);
+        }
+
+        $expected = trim((string) ($asset->tacticalAsset->hostname ?? $asset->hostname ?? ''));
+        $typed = trim((string) $request->input('hostname'));
+        if ($expected === '' || strcasecmp($expected, $typed) !== 0) {
+            return response()->json([
+                'error' => 'The typed hostname does not match this device. Shutdown cancelled.',
+            ], 422);
+        }
+
+        $action = new \App\Services\Tactical\Actions\ShutdownAction;
+        $actor = $request->user();
+        $ticketId = $request->filled('ticket_id') ? (int) $request->input('ticket_id') : null;
+
+        $token = \App\Services\Tactical\TacticalActionConfirmToken::issue(
+            $action->key(),
+            $asset->tacticalAsset->agent_id,
+            $actor?->id,
+        );
+
+        $result = app(\App\Services\Tactical\TacticalActionService::class)->dispatch(
+            $action,
+            $asset,
+            $actor,
+            [],
+            $token,
+            null,
+            $ticketId,
+        );
+
+        return $this->tacticalActionResponse($result, 'Shutdown command sent.');
+    }
+
+    /**
+     * Map a bus result to the destructive-action JSON contract (mirrors
+     * rebootTacticalAgent): ok -> 200 {success, message}; offline -> 422
+     * {error}; any other non-ok (rejected/blocked/error/denied) -> 500 {error}.
+     * No `success` key on failure.
+     */
+    private function tacticalActionResponse(
+        \App\Services\Tactical\Actions\TacticalActionResult $result,
+        string $okMessage,
+    ): \Illuminate\Http\JsonResponse {
+        if ($result->isOk()) {
+            return response()->json([
+                'success' => true,
+                'message' => $result->stdout ?: $okMessage,
+            ]);
+        }
+
+        return response()->json([
+            'error' => $result->message ?? 'Action failed.',
+        ], $result->isOffline() ? 422 : 500);
+    }
+
+    public function quickLook(Asset $asset)
+    {
+        $cacheKey = "asset_quick_look:{$asset->id}";
+        $cached = Cache::get($cacheKey);
+        if ($cached) {
+            return response()->json($cached);
+        }
+
+        // Live RMM fetch with short timeout (updates DB as side effect)
+        $this->fetchLiveRmmData($asset);
+
+        // Refresh model from DB after live update
+        $asset->refresh();
+
+        $contract = $asset->contracts()->first();
+        $statusLabel = $asset->statusBadge;
+        $statusColor = match ($statusLabel) {
+            'Online' => '#198754',
+            'Offline' => '#dc3545',
+            default => '#6c757d',
+        };
+
+        // Compute uptime from last_boot_at
+        $uptime = null;
+        if ($asset->last_boot_at) {
+            $diff = $asset->last_boot_at->diff(now());
+            $parts = [];
+            if ($diff->days > 0) {
+                $parts[] = $diff->days.'d';
+            }
+            if ($diff->h > 0) {
+                $parts[] = $diff->h.'h';
+            }
+            if (empty($parts)) {
+                $parts[] = $diff->i.'m';
+            }
+            $uptime = implode(' ', $parts);
+        }
+
+        // Determine RMM source and URL
+        $rmm = null;
+        $rmmUrl = null;
+        if ($asset->ninja_id) {
+            $rmm = 'ninja';
+            $rmmUrl = $asset->ninja_url;
+        } elseif ($asset->level_id) {
+            $rmm = 'level';
+            $rmmUrl = $asset->level_url;
+        }
+
+        $result = [
+            'name' => $asset->name,
+            'hostname' => $asset->hostname,
+            'asset_type' => $asset->asset_type,
+            'os' => $asset->os,
+            'serial' => $asset->serial_number,
+            'status' => $statusLabel,
+            'status_color' => $statusColor,
+            'last_seen' => $asset->last_seen_at?->diffForHumans(),
+            'uptime' => $uptime,
+            'needs_reboot' => $asset->needs_reboot,
+            'contract' => $contract
+                ? ($contract->contract_number.' - '.$contract->name)
+                : null,
+            'warranty_start' => $asset->warranty_start?->format('Y-m-d'),
+            'warranty_end' => $asset->warranty_end?->format('Y-m-d'),
+            'rmm' => $rmm,
+            'rmm_url' => $rmmUrl,
+        ];
+
+        Cache::put($cacheKey, $result, 60);
+
+        return response()->json($result);
+    }
+
+    /**
+     * Fetch live status from RMM with short timeout. Updates DB as side effect.
+     */
+    private function fetchLiveRmmData(Asset $asset): void
+    {
+        if ($asset->ninja_id) {
+            try {
+                $device = app(NinjaClient::class)->getDevice($asset->ninja_id, timeout: 5);
+                $lastContact = isset($device['lastContact'])
+                    ? Carbon::createFromTimestamp($device['lastContact'])
+                    : null;
+
+                $asset->update([
+                    'last_seen_at' => $lastContact ?? $asset->last_seen_at,
+                    'rmm_online' => $lastContact && $lastContact->diffInMinutes(now()) <= 10,
+                ]);
+            } catch (\Throwable $e) {
+                Log::debug("[AssetController] Quick-look Ninja fetch failed: {$e->getMessage()}");
+            }
+        } elseif ($asset->level_id) {
+            try {
+                $device = app(LevelClient::class)->getDevice($asset->level_id);
+
+                $asset->update([
+                    'rmm_online' => ! empty($device['online']),
+                    'last_seen_at' => ! empty($device['online']) ? now() : $asset->last_seen_at,
+                    'last_boot_at' => ! empty($device['last_reboot_time'])
+                        ? Carbon::parse($device['last_reboot_time'])
+                        : $asset->last_boot_at,
+                ]);
+            } catch (\Throwable $e) {
+                Log::debug("[AssetController] Quick-look Level fetch failed: {$e->getMessage()}");
+            }
+        }
+    }
+
+    /**
+     * AJAX endpoint: fetch live device sub-resource data from RMM.
+     */
+    public function deviceData(Asset $asset, string $section, Request $request)
+    {
+        // 'checks' is Tactical-only (no Ninja/Level analog); the others are shared.
+        $allowedSections = ['network', 'storage', 'software', 'patches', 'checks'];
+        if (! in_array($section, $allowedSections)) {
+            return response()->json(['error' => 'Invalid section'], 422);
+        }
+
+        // fix #4 (dual-link): the Tactical card's panel JS requests ?source=tactical
+        // so its software/patches/checks panels resolve to the TACTICAL branch even
+        // when the asset is ALSO Ninja-linked. Without this, a dual-linked asset fell
+        // through the Ninja-first branch and `checks` hit fetchNinjaDeviceData's
+        // match() (no `checks` arm) -> UnhandledMatchError -> {error}. The page-top
+        // Ninja/Level tabs send no source param and keep their existing behavior.
+        $asset->loadMissing('tacticalAsset');
+        if ($request->query('source') === 'tactical'
+            && $asset->tacticalAsset
+            && \App\Support\TacticalConfig::isConfigured()) {
+            $panel = app(\App\Services\Tactical\TacticalPanelData::class);
+
+            return response()->json($panel->section($asset->tacticalAsset, $section));
+        }
+
+        if ($asset->ninja_id) {
+            return response()->json($this->fetchNinjaDeviceData($asset, $section));
+        }
+
+        if ($asset->level_id) {
+            return response()->json($this->getLevelFallbackData($asset, $section));
+        }
+
+        // Tactical branch (amendment I): the same deviceData endpoint serves the
+        // Tactical software/patches/checks panels, but they render in the Tactical
+        // card region, not the page-top Ninja/Level tabs. Each section is a bounded
+        // live read that degrades to the {error:…} payload the JS already renders.
+        // (Tactical-only assets reach here without needing the source param.)
+        if ($asset->tacticalAsset && \App\Support\TacticalConfig::isConfigured()) {
+            $panel = app(\App\Services\Tactical\TacticalPanelData::class);
+
+            return response()->json($panel->section($asset->tacticalAsset, $section));
+        }
+
+        return response()->json(['error' => 'Asset not linked to any RMM'], 422);
+    }
+
+    private function fetchNinjaDeviceData(Asset $asset, string $section): array
+    {
+        $ninjaId = $asset->ninja_id;
+        $ninja = app(NinjaClient::class);
+
+        try {
+            return match ($section) {
+                'network' => ['interfaces' => collect($ninja->get("/v2/device/{$ninjaId}/network-interfaces"))
+                    ->unique('interfaceIndex')->values()->all()],
+                'storage' => [
+                    'disks' => $ninja->get("/v2/device/{$ninjaId}/disks"),
+                    'volumes' => $ninja->get("/v2/device/{$ninjaId}/volumes"),
+                ],
+                'software' => ['software' => $ninja->get("/v2/device/{$ninjaId}/software")],
+                'patches' => ['patches' => $ninja->get("/v2/device/{$ninjaId}/os-patches")],
+            };
+        } catch (\Throwable $e) {
+            Log::debug("[AssetController] Device data fetch failed: {$e->getMessage()}");
+
+            return ['error' => 'Could not fetch data from RMM. Try again in a moment.'];
+        }
+    }
+
+    private function getLevelFallbackData(Asset $asset, string $section): array
+    {
+        return match ($section) {
+            'network' => ['level_fallback' => true, 'ip_address' => $asset->ip_address],
+            'storage' => ['level_fallback' => true, 'disk_summary' => $asset->disk_summary],
+            'software' => ['level_fallback' => true, 'message' => 'Software inventory not available for Level devices.'],
+            'patches' => ['level_fallback' => true, 'message' => 'Patch data not available for Level devices.'],
+        };
+    }
+}

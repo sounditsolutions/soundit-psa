@@ -1,0 +1,332 @@
+/* PSA PSA — Brand Overrides
+   Loaded after Bootstrap 5.3 CDN to override defaults.
+   Canonical source: ~/GitHub/soundit-platform/public/css/style.css */
+
+/* ── Variables ── */
+:root {
+    --primary: #1a365d;
+    --primary-light: #234179;
+    --primary-dark: #0f2440;
+    --accent: #fed136;
+    --accent-hover: #fdc50c;
+    --dark-bg: #0f172a;
+    --dark-bg-lighter: #1e293b;
+    --text-body: #374151;
+    --text-muted: #6b7280;
+    --topbar-height: 56px;
+}
+
+/* ── Typography ── */
+body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    color: var(--text-body);
+}
+
+h1, h2, h3, h4, h5, h6 {
+    font-family: 'Montserrat', sans-serif;
+    font-weight: 700;
+    color: var(--primary);
+}
+
+.section-title {
+    font-size: 1.5rem;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    position: relative;
+    display: inline-block;
+}
+
+.section-title::after {
+    content: '';
+    display: block;
+    width: 60px;
+    height: 3px;
+    background: var(--accent);
+    margin-top: 0.4rem;
+    border-radius: 2px;
+}
+
+/* ── Buttons ── */
+.btn-primary {
+    background-color: var(--primary);
+    border-color: var(--primary);
+}
+.btn-primary:hover,
+.btn-primary:focus {
+    background-color: var(--primary-light);
+    border-color: var(--primary-light);
+}
+
+.btn-outline-primary {
+    color: var(--primary);
+    border-color: var(--primary);
+}
+.btn-outline-primary:hover,
+.btn-outline-primary:focus {
+    background-color: var(--primary);
+    border-color: var(--primary);
+    color: #fff;
+}
+
+.btn-accent {
+    background-color: var(--accent);
+    border-color: var(--accent);
+    color: var(--primary-dark);
+    font-weight: 600;
+}
+.btn-accent:hover,
+.btn-accent:focus {
+    background-color: var(--accent-hover);
+    border-color: var(--accent-hover);
+    color: var(--primary-dark);
+}
+
+/* ── Cards ──
+   The Flat Rule (DESIGN.md §4): content surfaces are flat at rest and on
+   hover. Depth comes from the 1px border and the canvas/surface tonal step,
+   never from a hover lift, shadow bloom, or accent-border swap. Shadow is
+   reserved for true overlays (modal, dropdown, popover, command palette). */
+.card {
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 12px;
+}
+
+/* Neutralize Bootstrap shadow utilities on content cards. Much of the markup
+   carries `.shadow-sm`; flat-at-rest means depth comes from the border and the
+   canvas/surface tonal step, not a resting shadow. The `.card.shadow-*`
+   selectors outrank the utilities' own `!important` by specificity, so no Blade
+   edits are needed. True overlays (.modal-content, .dropdown-menu, .popover,
+   .toast) are not `.card` and keep their shadows. */
+.card,
+.card.shadow-sm,
+.card.shadow,
+.card.shadow-lg {
+    box-shadow: none !important;
+}
+
+/* `.card-static` is kept as a no-op for existing markup: cards no longer lift
+   on hover, so there is nothing left to opt out of. */
+
+.card-header {
+    background: var(--primary);
+    color: #fff;
+    font-family: 'Montserrat', sans-serif;
+    font-weight: 600;
+    font-size: 0.9rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    border-radius: 12px 12px 0 0 !important;
+    border-bottom: none;
+}
+
+.card-header i {
+    color: var(--accent);
+}
+
+/* ── Tables ── */
+.thead-brand th {
+    background: var(--primary);
+    color: #fff;
+    font-family: 'Montserrat', sans-serif;
+    font-weight: 600;
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    border: none;
+}
+
+.table tbody a {
+    color: var(--primary);
+    font-weight: 500;
+    text-decoration: none;
+}
+
+.table tbody a:hover {
+    color: var(--accent-hover);
+}
+
+/* ── Responsive table cards (mobile) ──
+   Wide console tables (the tickets queue and the client People/Contracts lists)
+   keep the full table at md+ and fall back to a stacked layout below md, so the
+   triage signal (priority, status, assignee, due) stays visible without a
+   horizontal scroll. Flat by doctrine (DESIGN.md §4): depth is the hairline
+   border and the canvas/surface tonal step, never a shadow. Priority reads as a
+   badge here, not the color-only row stripe (DESIGN.md §5: state is never color
+   alone). */
+.ticket-card {
+    display: block;
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 12px;
+    padding: 0.75rem 0.875rem;
+    color: var(--text-body);
+    cursor: pointer;
+}
+.ticket-card + .ticket-card {
+    margin-top: 0.5rem;
+}
+.ticket-card-subject {
+    color: var(--primary);
+}
+.ticket-card-subject:hover {
+    color: var(--accent-hover);
+}
+
+/* In-card stacked rows for the secondary tables (client People / Contracts).
+   The parent .card keeps its navy header and actions; only the tabular body
+   swaps to label/value rows separated by the hairline, so there is no
+   card-in-card nesting. */
+.data-row {
+    padding: 0.625rem 1rem;
+}
+.data-row + .data-row {
+    border-top: 1px solid #e5e7eb;
+}
+.data-label {
+    color: var(--text-muted);
+    font-weight: 600;
+    font-size: 0.8rem;
+}
+
+/* ── Forms ── */
+.form-control,
+.form-select {
+    border-radius: 8px;
+    border: 1px solid #d1d5db;
+    transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.form-control:focus,
+.form-select:focus {
+    border-color: var(--primary-light);
+    box-shadow: 0 0 0 3px rgba(26, 54, 93, 0.12);
+}
+
+.form-label {
+    font-weight: 600;
+    font-size: 0.9rem;
+    color: var(--primary);
+}
+
+.form-check-input:checked {
+    background-color: var(--primary);
+    border-color: var(--primary);
+}
+
+/* ── Login page ── */
+.login-page {
+    min-height: 100vh;
+    background: linear-gradient(135deg, var(--dark-bg) 0%, var(--primary-dark) 50%, var(--primary) 100%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2rem 1rem;
+}
+
+.login-page .container-fluid {
+    padding: 0;
+    width: 100%;
+    display: contents;
+}
+
+.login-card {
+    background: #fff;
+    border-radius: 12px;
+    border: 1px solid #e5e7eb;
+    max-width: 420px;
+    width: 100%;
+    box-shadow: 0 4px 40px rgba(0, 0, 0, 0.2);
+}
+
+.login-card:hover {
+    transform: none;
+    border-color: #e5e7eb;
+}
+
+.login-logo {
+    display: block;
+    margin: 0 auto 1.5rem;
+    height: 48px;
+}
+
+/* ── Footer ── */
+.site-footer {
+    background: var(--dark-bg);
+    border-top: 3px solid var(--accent);
+    color: rgba(255, 255, 255, 0.5);
+}
+
+.site-footer a {
+    color: rgba(255, 255, 255, 0.5);
+    text-decoration: none;
+    transition: color 0.2s;
+}
+
+.site-footer a:hover {
+    color: var(--accent);
+}
+
+/* ── Alerts ── */
+.alert-success {
+    background-color: rgba(254, 209, 54, 0.1);
+    border-color: var(--accent);
+    color: var(--primary);
+}
+
+/* ── Utilities ── */
+.text-accent {
+    color: var(--accent) !important;
+}
+
+.bg-brand-light {
+    background-color: #f8fafc;
+}
+
+.border-dashed {
+    border-style: dashed !important;
+}
+
+/* ── Click-to-call links ── */
+a[data-phone] {
+    cursor: pointer;
+}
+
+a[data-phone]:hover {
+    text-decoration: underline !important;
+}
+
+/* ── Entity badge popovers ── */
+.popover {
+    max-width: 320px;
+    font-size: 0.85rem;
+}
+
+/* ── Detail page layout ── */
+.detail-sidebar {
+    position: sticky;
+    top: calc(var(--topbar-height) + 1rem);
+    align-self: flex-start;
+}
+@media (max-width: 767.98px) {
+    .detail-sidebar { position: static; }
+}
+
+.detail-tabs .nav-link {
+    font-weight: 600;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-muted);
+    padding: 0.5rem 1rem;
+}
+.detail-tabs .nav-link.active {
+    color: var(--primary);
+    border-bottom-color: var(--accent);
+    border-bottom-width: 3px;
+}
+.detail-tabs .nav-link:hover:not(.active) {
+    color: var(--primary-light);
+    border-color: transparent;
+}

@@ -1,0 +1,7 @@
+{
+  "database": "doltlite",
+  "backend": "doltlite",
+  "dolt_mode": "embedded",
+  "dolt_database": "psa",
+  "project_id": "a3f9927c-86e9-4bf1-92ee-d8ff6e988576"
+}

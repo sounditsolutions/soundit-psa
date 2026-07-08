@@ -1,0 +1,60 @@
+<?php
+
+namespace App\Support;
+
+use App\Models\Setting;
+
+class WikiConfig
+{
+    // Spec §9: wiki_enabled defaults OFF. Further keys (wiki_auto_mine, budgets,
+    // staleness windows) arrive with the phases that consume them — YAGNI here.
+    public static function isEnabled(): bool
+    {
+        return (bool) Setting::getValue('wiki_enabled');
+    }
+
+    /** Spec §9: mining is explicit opt-in and requires the master switch. */
+    public static function autoMineEnabled(): bool
+    {
+        return self::isEnabled() && (bool) Setting::getValue('wiki_auto_mine');
+    }
+
+    public static function model(): string
+    {
+        $override = Setting::getValue('wiki_model');
+
+        return $override ?: AiConfig::model();
+    }
+
+    public static function maxTokensPerRun(): int
+    {
+        return (int) (Setting::getValue('wiki_max_tokens_per_run') ?: 50_000);
+    }
+
+    public static function dailyTokenLimit(): int
+    {
+        return (int) (Setting::getValue('wiki_daily_token_limit') ?: 500_000);
+    }
+
+    public static function stalenessDaysVolatile(): int
+    {
+        return (int) (Setting::getValue('wiki_staleness_days_volatile') ?: 90);
+    }
+
+    /** Nightly maintenance defaults ON once the wiki is enabled (spec §9). */
+    public static function maintenanceEnabled(): bool
+    {
+        return self::isEnabled() && (bool) (Setting::getValue('wiki_maintenance_enabled') ?? true);
+    }
+
+    public static function backfillBatchSize(): int
+    {
+        return (int) (Setting::getValue('wiki_backfill_batch_size') ?: 25);
+    }
+
+    /** Open tickets idle longer than this are candidates for the stale-open-ticket sweep. */
+    public static function staleOpenTicketDays(): int
+    {
+        return (int) (Setting::getValue('wiki_stale_open_ticket_days') ?: 30);
+    }
+}

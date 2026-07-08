@@ -1,0 +1,122 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-05-29T16:37:53Z",
+  "title": "Design System: Sound PSA",
+  "extensions": {
+    "colorMeta": {
+      "navy": { "role": "primary", "displayName": "Brand Navy", "canonical": "oklch(0.32 0.07 252)", "tonalRamp": ["oklch(0.15 0.05 252)", "oklch(0.22 0.06 252)", "oklch(0.30 0.07 252)", "oklch(0.40 0.08 252)", "oklch(0.52 0.08 252)", "oklch(0.66 0.06 252)", "oklch(0.80 0.04 252)", "oklch(0.94 0.02 252)"] },
+      "signal-gold": { "role": "secondary", "displayName": "Signal Gold", "canonical": "oklch(0.86 0.16 95)", "tonalRamp": ["oklch(0.20 0.04 95)", "oklch(0.32 0.07 95)", "oklch(0.44 0.10 95)", "oklch(0.56 0.13 95)", "oklch(0.68 0.15 95)", "oklch(0.80 0.16 95)", "oklch(0.88 0.14 95)", "oklch(0.95 0.06 95)"] },
+      "ink": { "role": "neutral", "displayName": "Ink", "canonical": "oklch(0.37 0.03 256)", "tonalRamp": ["oklch(0.15 0.02 256)", "oklch(0.25 0.025 256)", "oklch(0.37 0.03 256)", "oklch(0.50 0.03 256)", "oklch(0.63 0.025 256)", "oklch(0.76 0.02 256)", "oklch(0.87 0.015 256)", "oklch(0.96 0.005 256)"] },
+      "canvas": { "role": "neutral", "displayName": "Canvas", "canonical": "oklch(0.98 0.004 247)", "tonalRamp": ["oklch(0.96 0.006 247)", "oklch(0.98 0.004 247)", "oklch(1 0 0)"] }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Section Title", "purpose": "Labeled page and panel headers, with a short gold rule beneath. Montserrat 800, uppercase. Used sparingly." },
+      "headline": { "displayName": "Headline", "purpose": "Page and major section headings. Montserrat 700, navy." },
+      "title": { "displayName": "Chrome Title", "purpose": "Card headers and detail-tab labels. Montserrat 600, uppercase, on navy." },
+      "body": { "displayName": "Body", "purpose": "Default reading and form text. Inter 400/500, ink. Prose capped 65-75ch." },
+      "label": { "displayName": "Label", "purpose": "Form and field labels. Inter 600, navy." }
+    },
+    "shadows": [
+      { "name": "overlay", "value": "0 12px 40px rgba(0,0,0,0.08)", "purpose": "Floating layers only: modal, dropdown, popover, command palette. Never on cards or panels in document flow." }
+    ],
+    "motion": [
+      { "name": "ease-standard", "value": "cubic-bezier(0.4, 0, 0.2, 1)", "purpose": "Default easing for color/state transitions." },
+      { "name": "duration-fast", "value": "150ms", "purpose": "Nav links, inputs, small state changes." },
+      { "name": "duration-base", "value": "200ms", "purpose": "Sidebar width, most transitions." }
+    ],
+    "breakpoints": [
+      { "name": "sm", "value": "576px" },
+      { "name": "md", "value": "768px" },
+      { "name": "lg", "value": "992px" },
+      { "name": "xl", "value": "1200px" },
+      { "name": "xxl", "value": "1400px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The default commit action. Navy fill, deepens on hover via color, never motion.",
+      "html": "<button class=\"ds-btn-primary\">Save changes</button>",
+      "css": ".ds-btn-primary { background: #1a365d; color: #fff; font-family: Inter, sans-serif; font-weight: 500; font-size: 0.95rem; padding: 0.5rem 1rem; border: 1px solid #1a365d; border-radius: 6px; cursor: pointer; transition: background 0.15s, border-color 0.15s; } .ds-btn-primary:hover { background: #234179; border-color: #234179; } .ds-btn-primary:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(26,54,93,0.35); } .ds-btn-primary:active { background: #0f2440; } .ds-btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }"
+    },
+    {
+      "name": "Accent Button",
+      "kind": "button",
+      "refersTo": "button-accent",
+      "description": "The single high-emphasis call to action per view. Gold fill under the Signal Gold Rule.",
+      "html": "<button class=\"ds-btn-accent\">Purchase prepaid time</button>",
+      "css": ".ds-btn-accent { background: #fed136; color: #0f2440; font-family: Inter, sans-serif; font-weight: 600; font-size: 0.95rem; padding: 0.5rem 1rem; border: 1px solid #fed136; border-radius: 6px; cursor: pointer; transition: background 0.15s, border-color 0.15s; } .ds-btn-accent:hover { background: #fdc50c; border-color: #fdc50c; } .ds-btn-accent:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(254,209,54,0.45); } .ds-btn-accent:disabled { opacity: 0.5; cursor: not-allowed; }"
+    },
+    {
+      "name": "Text Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "White field with a slightly stronger stroke than card borders; calm navy focus glow.",
+      "html": "<input class=\"ds-input\" type=\"text\" placeholder=\"Search tickets\" />",
+      "css": ".ds-input { background: #fff; color: #374151; font-family: Inter, sans-serif; font-size: 0.95rem; padding: 0.5rem 0.75rem; border: 1px solid #d1d5db; border-radius: 8px; transition: border-color 0.2s, box-shadow 0.2s; } .ds-input::placeholder { color: #6b7280; } .ds-input:focus { outline: none; border-color: #234179; box-shadow: 0 0 0 3px rgba(26,54,93,0.12); } .ds-input:disabled { background: #f8fafc; color: #6b7280; }"
+    },
+    {
+      "name": "Card",
+      "kind": "card",
+      "refersTo": "card",
+      "description": "Flat content surface. Hairline border and tonal step, no shadow, no hover lift.",
+      "html": "<section class=\"ds-card\"><header class=\"ds-card-header\"><i class=\"ds-card-icon\">◈</i> Open Tickets</header><div class=\"ds-card-body\">12 awaiting triage</div></section>",
+      "css": ".ds-card { background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; overflow: hidden; } .ds-card-header { background: #1a365d; color: #fff; font-family: Montserrat, sans-serif; font-weight: 600; font-size: 0.9rem; text-transform: uppercase; letter-spacing: 0.5px; padding: 0.6rem 1rem; display: flex; align-items: center; gap: 0.5rem; } .ds-card-icon { color: #fed136; } .ds-card-body { color: #374151; font-family: Inter, sans-serif; padding: 1rem; }"
+    },
+    {
+      "name": "Active Nav Link",
+      "kind": "nav",
+      "refersTo": "sidebar-link-active",
+      "description": "Sidebar position indicator. Gold text, gold left-border marker, faint gold-tint wash on navy-deep.",
+      "html": "<nav class=\"ds-nav\"><a class=\"ds-nav-link\">Clients</a><a class=\"ds-nav-link ds-nav-link--active\">Tickets</a><a class=\"ds-nav-link\">Invoices</a></nav>",
+      "css": ".ds-nav { background: #0f2440; padding: 8px 0; width: 220px; } .ds-nav-link { display: block; color: rgba(255,255,255,0.75); font-family: Inter, sans-serif; font-size: 0.85rem; font-weight: 500; padding: 9px 20px; text-decoration: none; border-left: 3px solid transparent; transition: background 0.15s, color 0.15s, border-color 0.15s; } .ds-nav-link:hover { background: rgba(255,255,255,0.08); color: #fff; } .ds-nav-link--active { background: rgba(254,209,54,0.12); color: #fed136; border-left-color: #fed136; }"
+    },
+    {
+      "name": "Status Badge",
+      "kind": "chip",
+      "refersTo": "badge",
+      "description": "Semantic state pill. Color plus text label, never color alone. Shown: P1 priority.",
+      "html": "<span class=\"ds-badge ds-badge--danger\">P1</span> <span class=\"ds-badge ds-badge--success\">Resolved</span>",
+      "css": ".ds-badge { display: inline-block; font-family: Inter, sans-serif; font-size: 0.75rem; font-weight: 600; padding: 0.25em 0.6em; border-radius: 50rem; line-height: 1; } .ds-badge--danger { background: #dc3545; color: #fff; } .ds-badge--success { background: #198754; color: #fff; } .ds-badge--warning { background: #ffc107; color: #212529; } .ds-badge--info { background: #0dcaf0; color: #212529; } .ds-badge--neutral { background: #6c757d; color: #fff; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Operations Desk",
+    "overview": "Sound PSA is the desk a small MSP runs its whole business from. The user is usually one person, an owner or a tech in a shop of a few, who in a single sitting triages a ticket, checks the client's contract and prepay balance, looks at an asset's backup status, and sends an invoice. The interface behaves like a well-organized physical desk: everything relevant is within reach on the surface where the decision happens, laid out so the eye finds the one thing that matters without rummaging. The system reads calm, trustworthy, and professional. Navy carries the structural chrome and gold is a rare signal, not a finish. The plane is flat: surfaces sit at one level, separated by hairline borders and a quiet tonal step, never by drop shadows or hover animation.",
+    "keyCharacteristics": [
+      "One operator, full picture: cross-domain context surfaced where decisions are made.",
+      "Flat plane: borders and tonal layering convey structure, not shadows.",
+      "Navy structure, gold signal: gold marks the one thing that matters, never decoration.",
+      "Earned density: dense where the expert workflow rewards it, calm everywhere else.",
+      "Crisp and confident components: clean edges, clear states, no showing off."
+    ],
+    "rules": [
+      { "name": "The Signal Gold Rule", "body": "Gold is a signal, not a finish. It marks the single most important element on a screen and appears on a small fraction of any view. The moment gold becomes decoration, the signal is gone. Never use it for large fills, gradients, or backgrounds behind content.", "section": "colors" },
+      { "name": "The Navy-and-Gold Defense", "body": "Navy-and-gold is the deliberate brand identity and a well-worn finance reflex. The defense is restraint: navy is structural chrome that recedes, gold obeys the Signal Gold Rule. No navy gradients drenching content, no gold-on-navy premium hero treatments.", "section": "colors" },
+      { "name": "The Fixed Scale Rule", "body": "This is product UI, not a landing page. Type uses a fixed rem scale, never clamp() fluid sizing. A heading that shrinks inside a sidebar or detail panel reads worse, not better.", "section": "typography" },
+      { "name": "The Uppercase-for-Chrome Rule", "body": "Uppercase belongs to short structural labels only: section titles, card headers, tab labels, sidebar groups, badges. Never set body sentences or multi-word content in all caps.", "section": "typography" },
+      { "name": "The Flat Rule", "body": "Content surfaces are flat at rest and flat on hover. No translateY lift, no shadow bloom, no accent-border swap on hover for cards or panels. If an element needs to read as raised, use a border and a tonal step, not elevation.", "section": "elevation" }
+    ],
+    "dos": [
+      "Do keep surfaces flat. Convey depth with the 1px border (#e5e7eb) and the canvas-to-white tonal step, and reserve shadow for true overlays (modal, dropdown, popover, command palette).",
+      "Do treat gold as a signal under the Signal Gold Rule: active nav, primary action, attention, focus. A small fraction of any screen.",
+      "Do surface cross-domain context (client, contract, prepay, assets, environment) on the screen where the decision is made. The user is one generalist, not a specialist in a silo.",
+      "Do keep ink (#374151) for body text and hold muted-ink (#6b7280) at AA. Bump toward ink if contrast is even close; never lighten text for elegance.",
+      "Do pair the Montserrat (geometric) and Inter (humanist) families on their contrast axis, and use a fixed rem type scale.",
+      "Do give every interactive component the full state set (default, hover, focus-visible, active, disabled) and a visible focus ring, to hold WCAG 2.1 AA.",
+      "Do convey status with color plus a text or icon label, never color alone."
+    ],
+    "donts": [
+      "Don't build a cluttered legacy PSA (ConnectWise, Halo, Autotask): no grey-on-grey cramming where every pixel is a control. Earn density; do not default to it.",
+      "Don't ship a generic SaaS template: no Inter-for-everything (the Montserrat pairing is the defense), no purple-blue gradients, no identical icon-card grids, no eyebrow kicker above every section.",
+      "Don't go playful or consumer: no mascots, candy colors, emoji, or bouncy/elastic motion on a tool that handles real money and real incidents.",
+      "Don't over-design or get flashy: no gradient-drenched content, no decorative glassmorphism, no animation everywhere. Decoration that slows the work is a defect.",
+      "Don't lift cards on hover (no translateY, no shadow bloom, no accent-border swap). The Flat Rule governs content surfaces.",
+      "Don't use gold for large fills, backgrounds, or gradients, and don't drench content areas in navy gradients. Identity through restraint, not saturation.",
+      "Don't use a colored left/right border stripe wider than 1px as decoration on cards, callouts, or alerts. The only legitimate left-border is the sidebar's active-position marker.",
+      "Don't set body sentences in all caps or introduce a third type family."
+    ]
+  }
+}
