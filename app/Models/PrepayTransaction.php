@@ -79,10 +79,13 @@ class PrepayTransaction extends Model
     // ── Scopes ──
 
     /**
-     * Consumption transactions only — excludes deposits, credits, and
-     * expirations. Used for burn rate calculation and usage reporting:
-     * forfeited (expired) hours are not work consumed, so they must not
-     * skew the burn rate or days-until-depleted estimate.
+     * Consumption transactions only — excludes deposits, credits, expirations,
+     * and inter-contract transfers. Used for burn rate calculation and usage
+     * reporting: forfeited (expired) hours are not work consumed, and a transfer
+     * is a one-time balance movement between contracts (not ongoing work), so
+     * neither must skew the burn rate or days-until-depleted estimate. Note this
+     * scope is distinct from the raw-sign replay in PrepayExpirationService,
+     * which intentionally treats a transfer-out as a lot-drawing debit.
      */
     public function scopeConsumption(Builder $query): Builder
     {
@@ -92,6 +95,8 @@ class PrepayTransaction extends Model
                 PrepayTransactionSource::InvoiceReversal->value,
                 PrepayTransactionSource::ManualCredit->value,
                 PrepayTransactionSource::Expiration->value,
+                PrepayTransactionSource::TransferOut->value,
+                PrepayTransactionSource::TransferIn->value,
             ])->orWhereNull('source');
         });
     }

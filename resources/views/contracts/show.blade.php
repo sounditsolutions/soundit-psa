@@ -593,9 +593,16 @@
             <div class="card shadow-sm mt-3">
                 <div class="card-header d-flex justify-content-between align-items-center">
                     <div><i class="bi bi-wallet2 me-2"></i>Prepay Balance</div>
-                    <button type="button" class="btn btn-outline-primary btn-sm" data-bs-toggle="modal" data-bs-target="#prepayAdjustModal">
-                        <i class="bi bi-plus-slash-minus me-1"></i>Adjust
-                    </button>
+                    <div class="btn-group">
+                        @if($prepayTransferTargets->isNotEmpty())
+                            <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-toggle="modal" data-bs-target="#prepayTransferModal">
+                                <i class="bi bi-arrow-left-right me-1"></i>Transfer
+                            </button>
+                        @endif
+                        <button type="button" class="btn btn-outline-primary btn-sm" data-bs-toggle="modal" data-bs-target="#prepayAdjustModal">
+                            <i class="bi bi-plus-slash-minus me-1"></i>Adjust
+                        </button>
+                    </div>
                 </div>
                 <div class="card-body text-center">
                     @php
@@ -1030,6 +1037,56 @@
         </form>
     </div>
 </div>
+
+@if($prepayTransferTargets->isNotEmpty())
+<div class="modal fade" id="prepayTransferModal" tabindex="-1">
+    <div class="modal-dialog">
+        <form method="POST" action="{{ route('contracts.prepay-transfer', $contract) }}">
+            @csrf
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Transfer Prepay Balance</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <p class="small text-muted">
+                        Move balance from this contract to another {{ $contract->prepay_as_amount ? 'dollar-based' : 'hours-based' }}
+                        prepay contract for {{ $contract->client->name }}. Available:
+                        <span class="fw-semibold">{{ $contract->prepay_balance_formatted }}</span>.
+                    </p>
+                    <div class="mb-3">
+                        <label for="transferTarget" class="form-label">Transfer to</label>
+                        <select class="form-select" id="transferTarget" name="to_contract_id" required>
+                            <option value="" disabled selected>Select a contract…</option>
+                            @foreach($prepayTransferTargets as $target)
+                                <option value="{{ $target->id }}">
+                                    {{ $target->name }} ({{ $target->prepay_balance_formatted }})
+                                </option>
+                            @endforeach
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label for="transferValue" class="form-label">
+                            {{ $contract->prepay_as_amount ? 'Amount ($)' : 'Hours' }}
+                        </label>
+                        <input type="number" class="form-control" id="transferValue" name="value"
+                               step="any" min="0" max="{{ (float) $contract->prepay_balance }}" required>
+                    </div>
+                    <div class="mb-3">
+                        <label for="transferNote" class="form-label">Note</label>
+                        <input type="text" class="form-control" id="transferNote" name="note"
+                               maxlength="500" required placeholder="Reason for transfer">
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Transfer</button>
+                </div>
+            </div>
+        </form>
+    </div>
+</div>
+@endif
 @endif
 
 @endsection
