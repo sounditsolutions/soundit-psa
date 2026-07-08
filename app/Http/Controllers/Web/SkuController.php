@@ -15,6 +15,7 @@ use App\Services\Stripe\StripeSyncService;
 use App\Support\StripeConfig;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\Rules\Enum;
 
@@ -149,12 +150,21 @@ class SkuController extends Controller
             'default_license_type_id' => ['nullable', 'integer', 'exists:license_types,id'],
             'is_taxable' => ['boolean'],
             'is_active' => ['boolean'],
+            'tiers' => ['nullable', 'array'],
+            'tiers.*.up_to_gb' => ['nullable', 'integer', 'min:1'],
+            'tiers.*.unit_price' => ['nullable', 'numeric', 'min:0'],
         ]);
 
         $validated['is_taxable'] = $request->boolean('is_taxable');
         $validated['is_active'] = $request->boolean('is_active', true);
+        unset($validated['tiers']);
 
-        $sku = $this->skuService->createSku($validated);
+        $sku = DB::transaction(function () use ($validated, $request) {
+            $sku = $this->skuService->createSku($validated);
+            $this->syncBackupStorageTiers($sku, $request->input('tiers', []));
+
+            return $sku;
+        });
 
         return redirect()->route('skus.edit', $sku)
             ->with('success', "SKU \"{$sku->name}\" created.");
@@ -211,17 +221,54 @@ class SkuController extends Controller
             'is_active' => ['boolean'],
             'qbo_income_account_id' => ['nullable', 'string', 'max:50'],
             'qbo_expense_account_id' => ['nullable', 'string', 'max:50'],
+            'tiers' => ['nullable', 'array'],
+            'tiers.*.up_to_gb' => ['nullable', 'integer', 'min:1'],
+            'tiers.*.unit_price' => ['nullable', 'numeric', 'min:0'],
         ]);
 
         $validated['is_taxable'] = $request->boolean('is_taxable');
         $validated['is_active'] = $request->boolean('is_active');
         $validated['qbo_income_account_id'] = $request->input('qbo_income_account_id') ?: null;
         $validated['qbo_expense_account_id'] = $request->input('qbo_expense_account_id') ?: null;
+        unset($validated['tiers']);
 
-        $this->skuService->updateSku($sku, $validated);
+        DB::transaction(function () use ($sku, $validated, $request) {
+            $this->skuService->updateSku($sku, $validated);
+            $this->syncBackupStorageTiers($sku, $request->input('tiers', []));
+        });
 
         return redirect()->route('skus.edit', $sku)
             ->with('success', 'SKU updated.');
+    }
+
+    /**
+     * Replace a SKU's backup-storage tier rate card from submitted rows.
+     * Fully-empty template rows are ignored; a blank `up_to_gb` marks the
+     * unbounded catch-all tier.
+     */
+    private function syncBackupStorageTiers(Sku $sku, array $tiers): void
+    {
+        $sku->backupStorageTiers()->delete();
+
+        $order = 0;
+        foreach ($tiers as $tier) {
+            $upTo = $tier['up_to_gb'] ?? null;
+            $price = $tier['unit_price'] ?? null;
+
+            $upTo = ($upTo === '' || $upTo === null) ? null : (int) $upTo;
+            $priceBlank = ($price === '' || $price === null);
+
+            // Skip rows with no data at all (leftover add-row templates).
+            if ($upTo === null && $priceBlank) {
+                continue;
+            }
+
+            $sku->backupStorageTiers()->create([
+                'up_to_gb' => $upTo,
+                'unit_price' => $priceBlank ? 0 : $price,
+                'sort_order' => $order++,
+            ]);
+        }
     }
 
     public function destroy(Sku $sku)
