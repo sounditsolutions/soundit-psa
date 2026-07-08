@@ -68,6 +68,8 @@ class BillingService
                 $includedPerBaseUnit, $overageDivisor,
             ),
 
+            QuantityType::PerBackupStorageGb => $this->countBackupStorageGb($client, $contract),
+
             default => 1,
         };
     }
@@ -203,6 +205,48 @@ class BillingService
         return (int) ceil($overageRaw / $divisor);
     }
 
+    /**
+     * Total backup cloud storage in whole GB — contract-scoped if the contract
+     * has asset assignments, client-wide otherwise. Summed from the
+     * `backup_cloud_bytes` populated on assets by backup vendor syncs, then
+     * converted bytes → GB with the same binary rounding the vendor sync uses
+     * for the `cloud_usage_gb` license type, so the two stay consistent.
+     */
+    private function countBackupStorageGb(Client $client, ?Contract $contract): int
+    {
+        $bytes = ($contract && $contract->assets()->exists())
+            ? (int) $contract->assets()
+                ->whereNull('assets.deleted_at')
+                ->where('assets.is_active', true)
+                ->sum('assets.backup_cloud_bytes')
+            : (int) $client->assets()
+                ->whereNull('deleted_at')
+                ->where('is_active', true)
+                ->sum('backup_cloud_bytes');
+
+        return (int) round($bytes / (1024 ** 3));
+    }
+
+    /**
+     * Resolve the unit price to bill for a line at the resolved quantity.
+     *
+     * Backup-storage lines whose SKU carries a tier rate card use volume
+     * pricing — the whole quantity is billed at the tier rate that covers the
+     * measured GB. Everything else (and backup lines without tiers) bills at
+     * the flat line unit price.
+     */
+    private function resolveUnitPrice(RecurringInvoiceProfileLine $line, int $quantity): float
+    {
+        if ($line->quantity_type === QuantityType::PerBackupStorageGb && $line->sku) {
+            $tierPrice = $line->sku->priceForStorageGb($quantity);
+            if ($tierPrice !== null) {
+                return $tierPrice;
+            }
+        }
+
+        return (float) $line->unit_price;
+    }
+
     public function generateInvoicesForDueProfiles(): array
     {
         $profiles = RecurringInvoiceProfile::due()->with(['contract.client', 'lines'])->get();
@@ -245,7 +289,7 @@ class BillingService
      */
     public function generateInvoice(RecurringInvoiceProfile $profile): array
     {
-        $profile->loadMissing(['contract.client', 'lines.sku']);
+        $profile->loadMissing(['contract.client', 'lines.sku.backupStorageTiers']);
         $contract = $profile->contract;
         $client = $contract->client;
         $invoiceDate = $profile->next_run_date;
@@ -279,7 +323,8 @@ class BillingService
                     $hasNonZeroQty = true;
                 }
 
-                $amount = round($quantity * (float) $line->unit_price, 2);
+                $unitPrice = $this->resolveUnitPrice($line, $quantity);
+                $amount = round($quantity * $unitPrice, 2);
                 $subtotal += $amount;
 
                 $unitCost = (float) ($line->unit_cost_override ?? $line->sku?->unit_cost ?? 0);
@@ -298,7 +343,7 @@ class BillingService
                     'sku_id' => $line->sku_id,
                     'description' => $line->description,
                     'quantity' => $quantity,
-                    'unit_price' => $line->unit_price,
+                    'unit_price' => $unitPrice,
                     'unit_cost' => $unitCost,
                     'amount' => $amount,
                     'cost_amount' => $costAmount,
@@ -383,7 +428,7 @@ class BillingService
 
     public function previewInvoice(RecurringInvoiceProfile $profile): array
     {
-        $profile->loadMissing(['contract.client', 'lines.sku']);
+        $profile->loadMissing(['contract.client', 'lines.sku.backupStorageTiers']);
         $contract = $profile->contract;
         $client = $contract->client;
         $invoiceDate = $profile->next_run_date ?? today();
@@ -405,7 +450,8 @@ class BillingService
                 $hasNonZeroQty = true;
             }
 
-            $amount = round($quantity * (float) $line->unit_price, 2);
+            $unitPrice = $this->resolveUnitPrice($line, $quantity);
+            $amount = round($quantity * $unitPrice, 2);
             $subtotal += $amount;
 
             $prepaidMinutesPerUnit = $line->prepaid_time_override ?? $line->sku?->prepaid_time_minutes;
@@ -417,7 +463,7 @@ class BillingService
             $lines[] = [
                 'description' => $line->description,
                 'quantity' => $quantity,
-                'unit_price' => (float) $line->unit_price,
+                'unit_price' => $unitPrice,
                 'amount' => $amount,
                 'prepaid_time_minutes' => $prepaidTimeMinutes,
                 'quantity_type' => $line->quantity_type->label(),
@@ -525,6 +571,18 @@ class BillingService
                     'license_type_id' => $licenseTypeId,
                     'quantity' => $quantity,
                 ]);
+            }
+
+            return $source;
+        }
+
+        // Backup storage records the measured GB plus the tier rate applied.
+        if ($type === QuantityType::PerBackupStorageGb) {
+            $source = "{$quantity} GB backup storage ({$scope}-scoped) as of {$dateStr}";
+
+            $tierPrice = $line?->sku?->priceForStorageGb($quantity);
+            if ($tierPrice !== null) {
+                $source .= sprintf(' [tier rate $%.2f/GB]', $tierPrice);
             }
 
             return $source;
