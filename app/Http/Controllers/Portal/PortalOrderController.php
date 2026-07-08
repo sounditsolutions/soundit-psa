@@ -93,7 +93,7 @@ class PortalOrderController extends Controller
         // Duplicate-order guard: same person, same client, within a 2-minute window.
         $recentDuplicate = Invoice::where('client_id', $clientId)
             ->whereNull('profile_id')
-            ->where('notes', 'like', "Product order via client portal by {$person->full_name}")
+            ->where('notes', "Product order via client portal by {$person->full_name}")
             ->where('created_at', '>=', now()->subMinutes(2))
             ->first();
 

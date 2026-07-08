@@ -147,6 +147,26 @@ class PortalShopTest extends TestCase
         Bus::assertDispatched(SendTicketNotification::class);
     }
 
+    public function test_duplicate_order_within_window_reuses_invoice(): void
+    {
+        Bus::fake();
+        $person = $this->portalPerson($this->client());
+        $sku = $this->sku();
+        $payload = [
+            'quantities' => [$sku->id => 1],
+            'expected_prices' => [$sku->id => (string) $sku->unit_price],
+        ];
+
+        $this->actingAs($person, 'portal')->post(route('portal.shop.store'), $payload);
+        $first = Invoice::firstOrFail();
+
+        // Immediate re-submit should route to the existing order, not create a second.
+        $this->actingAs($person, 'portal')->post(route('portal.shop.store'), $payload)
+            ->assertRedirect(route('portal.shop.confirmation', $first));
+
+        $this->assertSame(1, Invoice::count());
+    }
+
     public function test_order_rejects_non_orderable_sku(): void
     {
         $person = $this->portalPerson($this->client());
