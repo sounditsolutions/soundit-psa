@@ -45,6 +45,12 @@
             <a href="{{ route('clients.edit', $client) }}" class="btn btn-outline-primary btn-sm">
                 <i class="bi bi-pencil me-1"></i>Edit
             </a>
+            @if(($mergeCandidates ?? collect())->isNotEmpty())
+            <button type="button" class="btn btn-outline-secondary btn-sm" title="Merge a duplicate client into this one"
+                    data-bs-toggle="modal" data-bs-target="#mergeClientModal">
+                <i class="bi bi-box-arrow-in-down-left me-1"></i>Merge
+            </button>
+            @endif
             <button type="button" class="btn btn-outline-danger btn-sm" title="Delete client"
                     data-bs-toggle="modal" data-bs-target="#deleteClientModal">
                 <i class="bi bi-trash"></i>
@@ -1280,6 +1286,86 @@
         </div>
     </div>{{-- /col-md-4 --}}
 </div>{{-- /row --}}
+
+{{-- Merge Modal --}}
+@if(($mergeCandidates ?? collect())->isNotEmpty())
+<div class="modal fade" id="mergeClientModal" tabindex="-1" aria-labelledby="mergeClientModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <form method="POST" action="{{ route('clients.merge', $client) }}">
+                @csrf
+                <div class="modal-header">
+                    <h5 class="modal-title" id="mergeClientModalLabel"><i class="bi bi-box-arrow-in-down-left me-2"></i>Merge Duplicate Client</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label for="mergeDuplicateSelect" class="form-label">Client to merge into this one</label>
+                        <select class="form-select" id="mergeDuplicateSelect" name="duplicate_id" required>
+                            <option value="" selected disabled>Choose a client…</option>
+                            @foreach($mergeCandidates as $candidate)
+                                @php
+                                    $candidateLabel = $candidate->name;
+                                    if (! $candidate->is_active) {
+                                        $candidateLabel .= ' (inactive)';
+                                    }
+                                    if ($candidate->stage === \App\Enums\ClientStage::Prospect) {
+                                        $candidateLabel .= ' (prospect)';
+                                    }
+                                @endphp
+                                <option value="{{ $candidate->id }}" data-name="{{ $candidate->name }}">{{ $candidateLabel }}</option>
+                            @endforeach
+                        </select>
+                    </div>
+                    <div class="alert alert-warning small py-2 mb-2">
+                        <i class="bi bi-exclamation-triangle me-1"></i><strong>This cannot be undone.</strong>
+                        All tickets, devices, contacts, calls, emails, contracts, invoices and licenses from the
+                        selected client move to <strong>{{ $client->name }}</strong>, and any clients it resells
+                        transfer here too. The selected client is then removed (soft-deleted). Integration mappings
+                        (Stripe, QBO, RMM, …) are not carried over — re-map them in Settings if needed.
+                    </div>
+                    <p class="mb-0" id="mergeDirection" style="display: none;">
+                        Merge <strong id="mergeDuplicateName"></strong> into
+                        <strong>{{ $client->name }}</strong> <span class="text-muted">(kept)</span>.
+                    </p>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-danger" id="mergeClientBtn" disabled>
+                        <i class="bi bi-box-arrow-in-down-left me-1"></i>Merge clients
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+<script>
+(function() {
+    var select = document.getElementById('mergeDuplicateSelect');
+    var btn = document.getElementById('mergeClientBtn');
+    var direction = document.getElementById('mergeDirection');
+    var nameEl = document.getElementById('mergeDuplicateName');
+    var modal = document.getElementById('mergeClientModal');
+    if (!select || !btn) return;
+    select.addEventListener('change', function() {
+        var opt = select.options[select.selectedIndex];
+        if (select.value) {
+            btn.disabled = false;
+            if (nameEl) nameEl.textContent = (opt && opt.getAttribute('data-name')) || 'this client';
+            if (direction) direction.style.display = '';
+        } else {
+            btn.disabled = true;
+            if (direction) direction.style.display = 'none';
+        }
+    });
+    modal?.addEventListener('hidden.bs.modal', function() {
+        select.value = '';
+        btn.disabled = true;
+        if (direction) direction.style.display = 'none';
+    });
+})();
+</script>
+@endif
 
 {{-- Delete Modal --}}
 <div class="modal fade" id="deleteClientModal" tabindex="-1">
