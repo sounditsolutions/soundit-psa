@@ -246,6 +246,133 @@ class PrepayService
     }
 
     /**
+     * Transfer prepay balance from one contract to another. Creates a matched
+     * pair of ledger rows — a TransferOut debit on $from and a TransferIn credit
+     * on $to — atomically, and logs a ContractActivity on each side.
+     *
+     * The pair mirrors manual debit/credit mechanics so the denormalized balance
+     * columns stay consistent with recalculateBalanceLocked(): the transfer-out
+     * counts toward $from's prepay_used, the transfer-in toward $to's
+     * prepay_total. Transfers move balance between contracts of the SAME client
+     * with the SAME tracking unit; the destination applies its own expiry policy
+     * to the incoming credit.
+     *
+     * @return array{out: PrepayTransaction, in: PrepayTransaction}
+     *
+     * @throws \InvalidArgumentException when the transfer is not permitted
+     */
+    public function transfer(
+        Contract $from,
+        Contract $to,
+        float $value,
+        string $note,
+        ?User $user = null,
+    ): array {
+        if ($from->id === $to->id) {
+            throw new \InvalidArgumentException('Cannot transfer prepay to the same contract.');
+        }
+
+        if ($from->client_id !== $to->client_id) {
+            throw new \InvalidArgumentException('Prepay can only be transferred between contracts of the same client.');
+        }
+
+        if (! $from->has_prepay || ! $to->has_prepay) {
+            throw new \InvalidArgumentException('Both contracts must have prepay enabled to transfer.');
+        }
+
+        if ($from->prepay_as_amount !== $to->prepay_as_amount) {
+            throw new \InvalidArgumentException('Prepay tracking units must match (hours vs dollars) to transfer.');
+        }
+
+        if ($value <= 0) {
+            throw new \InvalidArgumentException('Transfer amount must be greater than zero.');
+        }
+
+        if (round($value, 4) > round((float) $from->prepay_balance, 4)) {
+            throw new \InvalidArgumentException('Insufficient prepay balance to transfer.');
+        }
+
+        $isAmount = $from->prepay_as_amount;
+        $userId = $user?->id ?? Auth::id();
+        $unit = $isAmount ? 'dollars' : 'hours';
+
+        return DB::transaction(function () use ($from, $to, $value, $note, $isAmount, $userId, $unit) {
+            $out = PrepayTransaction::create([
+                'contract_id' => $from->id,
+                'source' => PrepayTransactionSource::TransferOut,
+                'user_id' => $userId,
+                'date' => now(),
+                'hours' => $isAmount ? null : -abs($value),
+                'amount' => $isAmount ? -abs($value) : null,
+                'description' => "Transfer to {$to->name} (#{$to->id})",
+                'note' => $note,
+            ]);
+
+            // Transfer-out draws down the source like a debit: it reduces balance
+            // and (matching recalculateBalanceLocked, which lumps every
+            // non-expiration debit into "used") counts toward prepay_used.
+            $from->increment('prepay_used', abs($value));
+            $from->decrement('prepay_balance', abs($value));
+
+            $in = PrepayTransaction::create([
+                'contract_id' => $to->id,
+                'source' => PrepayTransactionSource::TransferIn,
+                'user_id' => $userId,
+                'date' => now(),
+                'hours' => $isAmount ? null : abs($value),
+                'amount' => $isAmount ? abs($value) : null,
+                'description' => "Transfer from {$from->name} (#{$from->id})",
+                'note' => $note,
+                // The destination applies its own forfeiture policy to the credit.
+                'expiry_date' => $this->expiryForCredit($to, now()),
+            ]);
+
+            $to->increment('prepay_total', abs($value));
+            $to->increment('prepay_balance', abs($value));
+
+            ContractActivity::create([
+                'contract_id' => $from->id,
+                'user_id' => $userId,
+                'action' => 'prepay_transfer_out',
+                'changes' => [
+                    'value' => $value,
+                    'unit' => $unit,
+                    'to_contract_id' => $to->id,
+                    'to_contract' => $to->name,
+                    'note' => $note,
+                    'new_balance' => (float) $from->fresh()->prepay_balance,
+                ],
+                'created_at' => now(),
+            ]);
+
+            ContractActivity::create([
+                'contract_id' => $to->id,
+                'user_id' => $userId,
+                'action' => 'prepay_transfer_in',
+                'changes' => [
+                    'value' => $value,
+                    'unit' => $unit,
+                    'from_contract_id' => $from->id,
+                    'from_contract' => $from->name,
+                    'note' => $note,
+                    'new_balance' => (float) $to->fresh()->prepay_balance,
+                ],
+                'created_at' => now(),
+            ]);
+
+            Log::info('[Prepay] Balance transferred between contracts', [
+                'from_contract_id' => $from->id,
+                'to_contract_id' => $to->id,
+                'value' => $value,
+                'unit' => $unit,
+                'user_id' => $userId,
+            ]);
+
+            return ['out' => $out, 'in' => $in];
+        });
+    }
+
+    /**
      * Create or update a prepay debit from a ticket note's billable time.
      */
     public function debitFromTicketNote(TicketNote $note): ?PrepayTransaction
