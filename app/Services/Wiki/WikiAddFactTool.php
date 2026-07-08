@@ -50,9 +50,16 @@ class WikiAddFactTool
             return ['error' => $validationError];
         }
 
-        if ($this->hasSafetyViolation([$pageSlug, $anchor, $subjectKey, $statement])) {
+        if ($this->hasHardBlockViolation([$pageSlug, $anchor, $subjectKey, $statement])) {
             return ['error' => 'Submitted wiki fact failed content safety scan.'];
         }
+
+        // psa-tk87: scrub credential-shaped values from the free-text fact fields
+        // (subject_key/statement) rather than hard-blocking the whole fact. slug and
+        // anchor carry structural charsets (redact is a no-op there, and they are used
+        // as lookup keys). Injection/marker violations still hard-block above.
+        $subjectKey = $this->redactor->redact($subjectKey);
+        $statement = $this->redactor->redact($statement);
 
         if ($scope === WikiScope::Client->value && ! $this->isClientTarget($pageSlug, $anchor)) {
             return ['error' => 'page_slug and section_anchor are not a valid client wiki fact target.'];
@@ -139,12 +146,25 @@ class WikiAddFactTool
         return null;
     }
 
-    /** @param  array<int, string>  $values */
-    private function hasSafetyViolation(array $values): bool
+    /**
+     * Injection- and marker-class violations on AI output are genuine prompt
+     * injection or fact-splice corruption and must never be stored — hard-block.
+     * Credential-class hits are NOT blocked here: the caller scrubs them via
+     * WikiRedactor::redact() so the value becomes [REDACTED:credential] and the
+     * fact proceeds (psa-tk87). Mirrors the class partition in WikiFactController.
+     *
+     * @param  array<int, string>  $values
+     */
+    private function hasHardBlockViolation(array $values): bool
     {
         foreach ($values as $value) {
-            if ($this->redactor->scan($value) !== []) {
-                return true;
+            if ($value === '') {
+                continue;
+            }
+            foreach ($this->redactor->scan($value) as $violation) {
+                if ($violation['class'] !== 'credential') {
+                    return true;
+                }
             }
         }
 
