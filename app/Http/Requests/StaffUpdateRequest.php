@@ -2,7 +2,9 @@
 
 namespace App\Http\Requests;
 
+use App\Enums\UserRole;
 use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Validation\Rule;
 
 class StaffUpdateRequest extends FormRequest
 {
@@ -19,6 +21,7 @@ class StaffUpdateRequest extends FormRequest
             'name' => ['required', 'string', 'max:255'],
             'email' => ['required', 'email', 'max:255', "unique:users,email,{$userId}"],
             'is_active' => ['boolean'],
+            'role' => ['required', Rule::enum(UserRole::class)],
         ];
     }
 }
