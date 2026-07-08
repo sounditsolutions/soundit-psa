@@ -33,6 +33,7 @@ use App\Http\Controllers\Web\PrepayController;
 use App\Http\Controllers\Web\ProfitabilityController;
 use App\Http\Controllers\Web\QboClientMatchController;
 use App\Http\Controllers\Web\QboController;
+use App\Http\Controllers\Web\QboFinancialsController;
 use App\Http\Controllers\Web\QuickSearchController;
 use App\Http\Controllers\Web\RecurringProfileController;
 use App\Http\Controllers\Web\ResellerReportController;
@@ -588,6 +589,10 @@ Route::middleware('auth')->group(function () {
     Route::get('/profitability', [ProfitabilityController::class, 'index'])->name('profitability.index');
     Route::get('/profitability/clients/{client}', [ProfitabilityController::class, 'client'])->name('profitability.client');
     Route::get('/profitability/contracts/{contract}', [ProfitabilityController::class, 'contract'])->name('profitability.contract');
+
+    // QBO Financials (bank balances + expenses)
+    Route::get('/qbo/financials', [QboFinancialsController::class, 'index'])->name('qbo.financials.index');
+    Route::post('/qbo/financials/sync', [QboFinancialsController::class, 'sync'])->name('qbo.financials.sync');
 
     // Reports
     Route::get('/reseller-report', [ResellerReportController::class, 'index'])->name('reseller-report.index');

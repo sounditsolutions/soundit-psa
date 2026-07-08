@@ -353,6 +353,7 @@ These commands execute automatically based on their schedule:
 | `tickets:close-resolved` | Daily at 06:00 | Auto-close resolved tickets after configured number of days |
 | `qbo:sync-invoices --pull-status` | Every 4 hours | Pull payment status from QuickBooks |
 | `qbo:sync-invoices --push-drafts` | Every 4 hours | Auto-push draft invoices to QuickBooks (only if enabled in Settings) |
+| `qbo:sync-financials` | Daily at 05:40 | Pull bank account balances and recent expenses from QuickBooks (only if connected). Flags: `--balances`, `--expenses`, `--since=YYYY-MM-DD` |
 | `stripe:sync-invoices` | Every 4 hours | Push/pull invoices to/from Stripe (if configured). Add `--import` for one-time historical import. `--full` resets incremental marker. `--since=YYYY-MM-DD` overrides start date. |
 | `email:subscription-renew` | Every 2 hours | Renew Microsoft Graph webhook subscription |
 | `email:poll` | Hourly | Fallback email poll (catches anything webhooks missed) |
