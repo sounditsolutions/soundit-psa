@@ -6,6 +6,7 @@ use App\Http\Controllers\Portal\PortalAuthController;
 use App\Http\Controllers\Portal\PortalContractController;
 use App\Http\Controllers\Portal\PortalDashboardController;
 use App\Http\Controllers\Portal\PortalInvoiceController;
+use App\Http\Controllers\Portal\PortalOrderController;
 use App\Http\Controllers\Portal\PortalPrepayController;
 use App\Http\Controllers\Portal\PortalTicketController;
 use Illuminate\Support\Facades\Route;
@@ -120,6 +121,12 @@ Route::middleware(['portal.enabled', 'portal.auth', 'portal.scope'])->group(func
     Route::get('/prepaid/confirmation/{invoice}', [PortalPrepayController::class, 'confirmation'])->name('portal.prepaid.confirmation');
     Route::get('/prepaid/payment-status/{invoice}', [PortalPrepayController::class, 'paymentStatus'])->name('portal.prepaid.payment-status');
     Route::put('/prepaid/{contract}/alert-settings', [PortalPrepayController::class, 'updateAlertSettings'])->name('portal.prepaid.update-alert-settings');
+
+    // Product catalog / shop
+    Route::get('/shop', [PortalOrderController::class, 'index'])->name('portal.shop.index');
+    Route::post('/shop', [PortalOrderController::class, 'store'])->name('portal.shop.store')->middleware('throttle:3,5');
+    Route::get('/shop/confirmation/{invoice}', [PortalOrderController::class, 'confirmation'])->name('portal.shop.confirmation');
+    Route::get('/shop/payment-status/{invoice}', [PortalOrderController::class, 'paymentStatus'])->name('portal.shop.payment-status');
 
     // Impersonation
     Route::post('/stop-impersonating', [PortalAuthController::class, 'stopImpersonating'])->name('portal.stop-impersonating');

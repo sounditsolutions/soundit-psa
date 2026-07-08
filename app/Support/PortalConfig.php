@@ -11,6 +11,16 @@ class PortalConfig
         return Setting::getValue('portal_enabled', '0') === '1';
     }
 
+    /**
+     * Whether the self-service product catalog ("Shop") is enabled in the
+     * portal. Opt-in per deployment; defaults off. Even when enabled, the
+     * shop only appears if the operator has published orderable SKUs.
+     */
+    public static function shopEnabled(): bool
+    {
+        return Setting::getValue('portal_shop_enabled', '0') === '1';
+    }
+
     public static function companyName(): string
     {
         return Setting::getValue('portal_company_name', config('app.name', 'Sound PSA'));

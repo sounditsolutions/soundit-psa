@@ -71,6 +71,29 @@
     </div>
 </div>
 
+<div class="card bg-light border-0 mb-3">
+    <div class="card-body py-3">
+        <div class="form-check mb-2">
+            <input type="hidden" name="portal_orderable" value="0">
+            <input type="checkbox" class="form-check-input" id="portal_orderable" name="portal_orderable" value="1"
+                   {{ old('portal_orderable', $sku?->portal_orderable ?? false) ? 'checked' : '' }}>
+            <label class="form-check-label" for="portal_orderable">
+                <strong>Orderable in client portal shop</strong>
+            </label>
+            <div class="form-text">Publishes this SKU to the client portal product catalog. The shop must also be enabled in Settings &rarr; Integrations &rarr; Client Portal.</div>
+        </div>
+        <div>
+            <label for="portal_description" class="form-label">Portal Description</label>
+            <textarea class="form-control @error('portal_description') is-invalid @enderror"
+                      id="portal_description" name="portal_description" rows="2" maxlength="500"
+                      placeholder="Client-friendly blurb shown in the portal shop (optional)">{{ old('portal_description', $sku?->portal_description) }}</textarea>
+            @error('portal_description')
+                <div class="invalid-feedback">{{ $message }}</div>
+            @enderror
+        </div>
+    </div>
+</div>
+
 <div class="row g-3 mb-3">
     <div class="col-md-3">
         <label for="prepaid_time_minutes" class="form-label">

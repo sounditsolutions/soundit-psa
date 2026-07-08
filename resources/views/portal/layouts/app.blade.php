@@ -58,6 +58,13 @@
                             <i class="bi bi-file-earmark-text me-1"></i>Service Agreements
                         </a>
                     </li>
+                    @if(App\Support\PortalConfig::shopEnabled())
+                        <li class="nav-item">
+                            <a class="nav-link {{ request()->routeIs('portal.shop.*') ? 'active' : '' }}" href="{{ route('portal.shop.index') }}">
+                                <i class="bi bi-bag me-1"></i>Shop
+                            </a>
+                        </li>
+                    @endif
                     @if(App\Support\PortalConfig::billingUrl())
                         <li class="nav-item">
                             <a class="nav-link" href="{{ App\Support\PortalConfig::billingUrl() }}" target="_blank">

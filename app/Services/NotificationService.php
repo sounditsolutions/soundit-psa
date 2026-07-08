@@ -238,6 +238,35 @@ class NotificationService
     }
 
     /**
+     * Notify opted-in staff about a self-service product order placed via the portal shop.
+     */
+    public function notifyProductOrder(\App\Models\Client $client, \App\Models\Invoice $invoice, \App\Models\Person $person, int $itemCount): void
+    {
+        $context = json_encode([
+            'person' => $person->full_name,
+            'client' => $client->name,
+            'item_count' => $itemCount,
+            'invoice_number' => $invoice->invoice_number,
+            'amount' => (float) $invoice->total,
+            'invoice_id' => $invoice->id,
+        ]);
+
+        $users = User::where('is_active', true)->whereNotNull('email')->get();
+
+        foreach ($users as $user) {
+            if ($user->wantsNotification(NotificationEventType::PortalProductOrder)) {
+                SendTicketNotification::dispatch(
+                    $user->id,
+                    NotificationEventType::PortalProductOrder->value,
+                    null,
+                    null,
+                    $context,
+                );
+            }
+        }
+    }
+
+    /**
      * Notify company-wide portal users and opted-in staff about low prepay balance.
      */
     public function notifyPrepayLowBalance(Contract $contract): void

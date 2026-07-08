@@ -16,6 +16,7 @@ class Sku extends Model
     protected $fillable = [
         'name',
         'description',
+        'portal_description',
         'sku_code',
         'category',
         'unit_price',
@@ -26,6 +27,7 @@ class Sku extends Model
         'default_license_type_id',
         'is_taxable',
         'is_active',
+        'portal_orderable',
         'qbo_item_id',
         'qbo_income_account_id',
         'qbo_expense_account_id',
@@ -47,6 +49,7 @@ class Sku extends Model
             'default_quantity_type' => QuantityType::class,
             'is_taxable' => 'boolean',
             'is_active' => 'boolean',
+            'portal_orderable' => 'boolean',
             'qbo_synced_at' => 'datetime',
             'stripe_synced_at' => 'datetime',
         ];
@@ -84,6 +87,15 @@ class Sku extends Model
     public function scopeActive(Builder $query): Builder
     {
         return $query->where('is_active', true);
+    }
+
+    /**
+     * Active SKUs the operator has published to the client portal shop.
+     */
+    public function scopePortalOrderable(Builder $query): Builder
+    {
+        return $query->where('is_active', true)
+            ->where('portal_orderable', true);
     }
 
     public function scopeSearch(Builder $query, ?string $term): Builder

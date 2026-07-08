@@ -98,6 +98,14 @@ class SendTicketNotification implements ShouldQueue
             return "Portal purchase: {$hours}h prepaid time — Invoice #{$invoiceNumber}";
         }
 
+        if ($event === NotificationEventType::PortalProductOrder) {
+            $ctx = json_decode($this->extraContext ?? '{}', true);
+            $client = $ctx['client'] ?? 'A client';
+            $invoiceNumber = $ctx['invoice_number'] ?? '?';
+
+            return "Portal order: {$client} — Invoice #{$invoiceNumber}";
+        }
+
         if ($event === NotificationEventType::NewVoicemail) {
             $ctx = json_decode($this->extraContext ?? '{}', true);
             $caller = $ctx['caller'] ?? 'Unknown';
@@ -160,6 +168,23 @@ class SendTicketNotification implements ShouldQueue
             $lines[] = '';
             $lines[] = 'Contract: '.($ctx['contract'] ?? 'Unknown');
             $lines[] = 'Hours: '.($ctx['hours'] ?? '?').'h';
+            $lines[] = 'Amount: $'.number_format($ctx['amount'] ?? 0, 2);
+            $lines[] = 'Invoice: #'.($ctx['invoice_number'] ?? '?');
+            $lines[] = '';
+            if ($invoiceId = $ctx['invoice_id'] ?? null) {
+                $lines[] = 'View invoice:';
+                $lines[] = route('invoices.show', $invoiceId);
+            }
+
+            return implode("\n", $lines);
+        }
+
+        if ($event === NotificationEventType::PortalProductOrder) {
+            $ctx = json_decode($this->extraContext ?? '{}', true);
+            $lines[] = ($ctx['person'] ?? 'A client').' placed a product order via the portal shop.';
+            $lines[] = '';
+            $lines[] = 'Client: '.($ctx['client'] ?? 'Unknown');
+            $lines[] = 'Items: '.($ctx['item_count'] ?? '?');
             $lines[] = 'Amount: $'.number_format($ctx['amount'] ?? 0, 2);
             $lines[] = 'Invoice: #'.($ctx['invoice_number'] ?? '?');
             $lines[] = '';
