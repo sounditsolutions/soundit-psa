@@ -36,6 +36,7 @@
                     <tr>
                         <th>Name</th>
                         <th>Email</th>
+                        <th class="d-none d-md-table-cell">Role</th>
                         <th class="text-center d-none d-md-table-cell">SSO</th>
                         <th class="text-center" style="width: 80px;">Status</th>
                         <th class="text-end" style="width: 160px;">Actions</th>
@@ -54,6 +55,13 @@
                                 </a>
                             </td>
                             <td class="{{ !$user->is_active ? 'text-muted' : '' }}">{{ $user->email }}</td>
+                            <td class="d-none d-md-table-cell">
+                                @if($user->role)
+                                    <span class="badge {{ $user->role->badgeClass() }}">{{ $user->role->label() }}</span>
+                                @else
+                                    <span class="text-muted">&mdash;</span>
+                                @endif
+                            </td>
                             <td class="text-center d-none d-md-table-cell">
                                 @if($user->microsoft_id)
                                     <i class="bi bi-check-circle text-success" title="Linked to Entra ID"></i>
