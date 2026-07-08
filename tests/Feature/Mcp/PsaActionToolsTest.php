@@ -10,6 +10,7 @@ use App\Enums\TicketPriority;
 use App\Enums\TicketSource;
 use App\Enums\TicketStatus;
 use App\Enums\TicketType;
+use App\Enums\WhoType;
 use App\Models\Asset;
 use App\Models\Client;
 use App\Models\Email;
@@ -117,6 +118,46 @@ class PsaActionToolsTest extends TestCase
         $ticket->assets()->attach($asset->id, ['is_primary' => true]);
 
         return [$ticket->fresh(['assets', 'contact']), $asset->fresh()];
+    }
+
+    /**
+     * A pending (or terminal) propose_close held run for the ticket, matching what
+     * the propose_close path stages. Used to exercise the direct-path dedup guard
+     * (psa-y4ft): the direct set_ticket_status close/resolve must defer to an
+     * already-pending held close rather than route around it.
+     */
+    private function pendingCloseProposal(Ticket $ticket, TechnicianRunState $state = TechnicianRunState::AwaitingApproval): TechnicianRun
+    {
+        return TechnicianRun::create([
+            'ticket_id' => $ticket->id,
+            'client_id' => $ticket->client_id,
+            'action_type' => 'propose_close',
+            'content_hash' => hash('sha256', 'propose_close:'.$ticket->id.':'.$state->value),
+            'state' => $state,
+            'proposed_content' => 'Looks resolved; proposing close.',
+            'proposed_meta' => ['confidence' => 0.8],
+            'confidence' => 0.8,
+            'tokens_used' => 0,
+        ]);
+    }
+
+    /**
+     * A recent inbound end-user note — the fail-closed signal CloseAutoEligibility
+     * reads (a client who just wrote in is, by definition, not done). created_at
+     * defaults to now(), inside the default 14-day quiet window.
+     */
+    private function recentClientReply(Ticket $ticket): TicketNote
+    {
+        return TicketNote::create([
+            'ticket_id' => $ticket->id,
+            'author_id' => null,
+            'author_name' => 'Client Contact',
+            'who_type' => WhoType::EndUser,
+            'body' => 'Still not working — please keep this open.',
+            'note_type' => NoteType::Reply,
+            'is_private' => false,
+            'noted_at' => now(),
+        ]);
     }
 
     private function outboundEmail(Ticket $ticket, TicketNote $note): Email
@@ -893,6 +934,19 @@ class PsaActionToolsTest extends TestCase
         $token = $this->token(['set_ticket_status'], 'chet');
         $ticket = $this->ticketWithContact();
 
+        // Move to an auto-close-ELIGIBLE state first. PendingClient is non-terminal
+        // (never gated) and is an AUTO_SAFE status, so the ticket is close-eligible
+        // afterward. psa-y4ft: the ->Closed eligibility gate now runs before the
+        // confirm_status ceremony, so the ticket must be eligible for this test to
+        // exercise the typed-confirm requirement rather than the eligibility gate.
+        $direct = $this->callTool($token, 'set_ticket_status', [
+            'ticket_id' => $ticket->id,
+            'status' => TicketStatus::PendingClient->value,
+        ]);
+        $direct->assertOk();
+        $this->assertFalse((bool) $direct->json('result.isError'), (string) $direct->json('result.content.0.text'));
+        $this->assertSame(TicketStatus::PendingClient, $ticket->fresh()->status);
+
         $missingConfirm = $this->callTool($token, 'set_ticket_status', [
             'ticket_id' => $ticket->id,
             'status' => TicketStatus::Closed->value,
@@ -901,14 +955,6 @@ class PsaActionToolsTest extends TestCase
         $missingConfirm->assertOk();
         $this->assertTrue((bool) $missingConfirm->json('result.isError'));
         $this->assertStringContainsString('confirm_status', (string) $missingConfirm->json('result.content.0.text'));
-
-        $direct = $this->callTool($token, 'set_ticket_status', [
-            'ticket_id' => $ticket->id,
-            'status' => TicketStatus::PendingClient->value,
-        ]);
-        $direct->assertOk();
-        $this->assertFalse((bool) $direct->json('result.isError'), (string) $direct->json('result.content.0.text'));
-        $this->assertSame(TicketStatus::PendingClient, $ticket->fresh()->status);
 
         $confirmed = $this->callTool($token, 'set_ticket_status', [
             'ticket_id' => $ticket->id,
@@ -930,6 +976,232 @@ class PsaActionToolsTest extends TestCase
             'ticket_id' => $ticket->id,
             'actor_label' => 'mcp-staff:chet',
         ]);
+    }
+
+    // ── psa-y4ft: auto-close safety envelope on the DIRECT set_ticket_status path ──
+    //
+    // Charlie enabled set_ticket_status on Chet's token — a live autonomous CLOSE
+    // path that bypasses the held propose_close review + the #177 state/dedup gate.
+    // "Fold it in": extend the SAME envelope to the direct path. Confirmed scope (a):
+    // CloseAutoEligibility::eligible() gates ->Closed ONLY; the dedup / already-in-
+    // state helper applies to BOTH terminal transitions; ->Resolved and every
+    // non-terminal transition stay fully open.
+
+    public function test_direct_close_of_an_awaiting_us_ticket_is_blocked_by_eligibility(): void
+    {
+        $this->configureAiActor();
+        $token = $this->token(['set_ticket_status'], 'chet');
+        $ticket = $this->ticketWithContact(); // InProgress = awaiting us
+
+        $response = $this->callTool($token, 'set_ticket_status', [
+            'ticket_id' => $ticket->id,
+            'status' => TicketStatus::Closed->value,
+            'confirm_status' => 'closed',
+            'reason' => 'Looks done to me.',
+        ]);
+
+        $response->assertOk();
+        $this->assertTrue((bool) $response->json('result.isError'));
+        $this->assertStringContainsString('awaiting us', strtolower((string) $response->json('result.content.0.text')));
+        $this->assertSame(TicketStatus::InProgress, $ticket->fresh()->status, 'an awaiting-us ticket must not be direct-closed');
+        $this->assertDatabaseMissing('technician_action_logs', [
+            'action_type' => 'set_ticket_status',
+            'result_status' => 'executed',
+            'ticket_id' => $ticket->id,
+        ]);
+    }
+
+    public function test_direct_close_of_a_ticket_with_a_recent_client_reply_is_blocked(): void
+    {
+        $this->configureAiActor();
+        $token = $this->token(['set_ticket_status'], 'chet');
+        $ticket = $this->ticketWithContact();
+        $ticket->update(['status' => TicketStatus::PendingClient]); // AUTO_SAFE status...
+        $this->recentClientReply($ticket);                          // ...but the client just wrote in
+
+        $response = $this->callTool($token, 'set_ticket_status', [
+            'ticket_id' => $ticket->id,
+            'status' => TicketStatus::Closed->value,
+            'confirm_status' => 'closed',
+            'reason' => 'Closing the stale ticket.',
+        ]);
+
+        $response->assertOk();
+        $this->assertTrue((bool) $response->json('result.isError'));
+        $this->assertStringContainsString('recent client activity', strtolower((string) $response->json('result.content.0.text')));
+        $this->assertSame(TicketStatus::PendingClient, $ticket->fresh()->status, 'a ticket with a live client reply must not be direct-closed');
+    }
+
+    public function test_direct_close_of_an_eligible_quiet_ticket_succeeds(): void
+    {
+        $this->configureAiActor();
+        $token = $this->token(['set_ticket_status'], 'chet');
+        $ticket = $this->ticketWithContact();
+        $ticket->update(['status' => TicketStatus::PendingClient]); // eligible, no client note
+
+        $response = $this->callTool($token, 'set_ticket_status', [
+            'ticket_id' => $ticket->id,
+            'status' => TicketStatus::Closed->value,
+            'confirm_status' => 'closed',
+            'reason' => 'No client reply in weeks; closing.',
+            'resolution' => 'Auto-resolved; no response.',
+        ]);
+
+        $response->assertOk();
+        $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
+        $this->assertSame(TicketStatus::Closed, $ticket->fresh()->status);
+        $this->assertDatabaseHas('technician_action_logs', [
+            'action_type' => 'set_ticket_status',
+            'result_status' => 'executed',
+            'ticket_id' => $ticket->id,
+        ]);
+    }
+
+    public function test_direct_close_of_an_already_closed_ticket_is_blocked_with_a_specific_message(): void
+    {
+        $this->configureAiActor();
+        $token = $this->token(['set_ticket_status'], 'chet');
+        $ticket = $this->ticketWithContact();
+        $ticket->update(['status' => TicketStatus::Closed]);
+
+        $response = $this->callTool($token, 'set_ticket_status', [
+            'ticket_id' => $ticket->id,
+            'status' => TicketStatus::Closed->value,
+            'confirm_status' => 'closed',
+            'reason' => 'Closing again.',
+        ]);
+
+        $response->assertOk();
+        $this->assertTrue((bool) $response->json('result.isError'));
+        $this->assertStringContainsString('already closed', strtolower((string) $response->json('result.content.0.text')));
+    }
+
+    public function test_direct_resolve_of_an_awaiting_us_ticket_is_allowed_resolve_is_not_gated(): void
+    {
+        // The safety target is autonomous CLOSING, not resolving. Resolving an active
+        // (awaiting-us) ticket is a legitimate everyday action and MUST stay open —
+        // eligible() would wrongly block it (its allow-list requires an already-safe
+        // current status). This is the crux of the confirmed scope-(a) correction.
+        $this->configureAiActor();
+        $token = $this->token(['set_ticket_status'], 'chet');
+        $ticket = $this->ticketWithContact(); // InProgress
+        $this->recentClientReply($ticket);    // even with a live client note, resolve stays open
+
+        $response = $this->callTool($token, 'set_ticket_status', [
+            'ticket_id' => $ticket->id,
+            'status' => TicketStatus::Resolved->value,
+            'confirm_status' => 'resolved',
+            'reason' => 'Fixed the printer driver; resolving.',
+        ]);
+
+        $response->assertOk();
+        $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
+        $this->assertSame(TicketStatus::Resolved, $ticket->fresh()->status);
+    }
+
+    public function test_direct_resolve_of_an_already_resolved_ticket_is_blocked(): void
+    {
+        $this->configureAiActor();
+        $token = $this->token(['set_ticket_status'], 'chet');
+        $ticket = $this->ticketWithContact();
+        $ticket->update(['status' => TicketStatus::Resolved]);
+
+        $response = $this->callTool($token, 'set_ticket_status', [
+            'ticket_id' => $ticket->id,
+            'status' => TicketStatus::Resolved->value,
+            'confirm_status' => 'resolved',
+            'reason' => 'Resolving again.',
+        ]);
+
+        $response->assertOk();
+        $this->assertTrue((bool) $response->json('result.isError'));
+        $this->assertStringContainsString('already resolved', strtolower((string) $response->json('result.content.0.text')));
+    }
+
+    public function test_direct_close_is_blocked_when_a_held_close_proposal_is_pending(): void
+    {
+        $this->configureAiActor();
+        $token = $this->token(['set_ticket_status'], 'chet');
+        $ticket = $this->ticketWithContact();
+        $ticket->update(['status' => TicketStatus::PendingClient]); // eligible + quiet
+        $this->pendingCloseProposal($ticket);                       // ...but a close is already staged
+
+        $response = $this->callTool($token, 'set_ticket_status', [
+            'ticket_id' => $ticket->id,
+            'status' => TicketStatus::Closed->value,
+            'confirm_status' => 'closed',
+            'reason' => 'Closing directly.',
+        ]);
+
+        $response->assertOk();
+        $this->assertTrue((bool) $response->json('result.isError'));
+        $this->assertStringContainsString('awaiting approval', strtolower((string) $response->json('result.content.0.text')));
+        $this->assertSame(TicketStatus::PendingClient, $ticket->fresh()->status, 'the direct path must defer to the pending held close, not preempt it');
+    }
+
+    public function test_direct_resolve_is_blocked_when_a_held_close_proposal_is_pending(): void
+    {
+        // The dedup applies to BOTH terminal transitions: with a close already staged
+        // and awaiting a human, a direct resolve is redundant churn on the same ticket.
+        $this->configureAiActor();
+        $token = $this->token(['set_ticket_status'], 'chet');
+        $ticket = $this->ticketWithContact(); // InProgress
+        $this->pendingCloseProposal($ticket);
+
+        $response = $this->callTool($token, 'set_ticket_status', [
+            'ticket_id' => $ticket->id,
+            'status' => TicketStatus::Resolved->value,
+            'confirm_status' => 'resolved',
+            'reason' => 'Resolving directly.',
+        ]);
+
+        $response->assertOk();
+        $this->assertTrue((bool) $response->json('result.isError'));
+        $this->assertStringContainsString('awaiting approval', strtolower((string) $response->json('result.content.0.text')));
+        $this->assertSame(TicketStatus::InProgress, $ticket->fresh()->status);
+    }
+
+    public function test_direct_close_is_allowed_when_the_only_prior_proposal_is_terminal(): void
+    {
+        // Dedup blocks only a PENDING (awaiting_approval) proposal. A terminal outcome
+        // (denied/superseded/done) must not permanently bar the direct path — mirrors
+        // the propose_close "allowed after denied" rule.
+        $this->configureAiActor();
+        $token = $this->token(['set_ticket_status'], 'chet');
+        $ticket = $this->ticketWithContact();
+        $ticket->update(['status' => TicketStatus::PendingClient]);
+        $this->pendingCloseProposal($ticket, TechnicianRunState::Denied);
+
+        $response = $this->callTool($token, 'set_ticket_status', [
+            'ticket_id' => $ticket->id,
+            'status' => TicketStatus::Closed->value,
+            'confirm_status' => 'closed',
+            'reason' => 'Prior proposal denied; closing on fresh evidence.',
+        ]);
+
+        $response->assertOk();
+        $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
+        $this->assertSame(TicketStatus::Closed, $ticket->fresh()->status);
+    }
+
+    public function test_non_terminal_transition_is_never_gated_even_with_client_activity_and_a_pending_proposal(): void
+    {
+        // Non-terminal transitions carry NO new gate (Charlie): a live client note and
+        // a pending held close must not block moving the ticket to a non-terminal state.
+        $this->configureAiActor();
+        $token = $this->token(['set_ticket_status'], 'chet');
+        $ticket = $this->ticketWithContact(); // InProgress
+        $this->recentClientReply($ticket);
+        $this->pendingCloseProposal($ticket);
+
+        $response = $this->callTool($token, 'set_ticket_status', [
+            'ticket_id' => $ticket->id,
+            'status' => TicketStatus::PendingClient->value,
+        ]);
+
+        $response->assertOk();
+        $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
+        $this->assertSame(TicketStatus::PendingClient, $ticket->fresh()->status);
     }
 
     public function test_move_ticket_to_client_requires_typed_confirm_and_rehomes_assets(): void

@@ -1,6 +1,6 @@
 # Auto-close eligibility: the state/dedup gate (psa-y4ft)
 
-**Status:** built 2026-07-07. Ships **dormant** (auto-close execution does not fire; these are held-safe eligibility guards). Bead: psa-y4ft.
+**Status:** built 2026-07-07. Ships **dormant** (auto-close execution does not fire; these are held-safe eligibility guards). Bead: psa-y4ft. The held-path guards (parts 1–3) merged in **#177**; the direct-path (`set_ticket_status`) extension is the follow-up documented at the end.
 
 ## Why this shape (the pivot)
 
@@ -28,3 +28,20 @@ Conclusion: Chet's close **judgment is essentially flawless and operator-confirm
 - `app/Observers/TicketObserver.php` + `app/Models/TechnicianRun.php` + `app/Enums/TechnicianRunState.php` — part 3
 - `app/Services/Agent/CloseBandEvaluator.php` — `Withdrawn` → other
 - `tests/Feature/Agent/CloseStateDedupGuardTest.php` (+ `CloseBandEvaluatorTest.php`)
+
+## Follow-up: the direct-path (`set_ticket_status`) extension
+
+**Added 2026-07-07** (Charlie's *"fold it in"* ruling, 17:56Z). Bead: psa-y4ft.
+
+Parts 1–3 sit on the **held** `propose_close` path. But Charlie also enabled `set_ticket_status` on Chet's production token — a **direct** autonomous close/resolve path (MCP `StaffPsaActionToolExecutor::setTicketStatus`) that bypasses the held review **and** those guards. This extends the *same* envelope to the direct path so it cannot route around it. Confirmed scope (a):
+
+- **Eligibility gate — `->Closed` ONLY.** Before a direct transition to `Closed`, run `CloseAutoEligibility::eligible($ticket)` (the same confidence-agnostic backstop). If not eligible, refuse with a **specific, learnable** reason (already closed / still awaiting us / pending a third party / recent client activity) so Chet adapts instead of retrying blind. Deliberately **not** applied to `->Resolved`: `eligible()`'s allow-list requires an already-safe *current* status, so gating a resolve would wrongly block Chet from resolving an active `New`/`InProgress` ticket — a legitimate everyday action. The safety target is autonomous **closing**, not resolving.
+- **Dedup / already-in-state — BOTH terminal transitions.** A terminal `set_ticket_status` is refused when (i) the ticket is already in that terminal state (`"already {status}"`, replacing the raw transition exception), or (ii) a `propose_close` run is already **pending** for the ticket (`hasPendingProposedClose`) — the direct path must **defer** to the held review, not preempt it. Mirrors part 2's ticket-level dedup (a terminal prior proposal does not block).
+- **Non-terminal transitions stay fully open** — no new gate on `New`/`InProgress`/`PendingClient`/`PendingThirdParty` targets, even with a live client note or a pending proposal present.
+
+**Held-safe / dormant:** these are purely **restrictive** — they only ever turn a previously-successful direct close into an informative refusal; they never enable an autonomous close. Kill-switch, client-scope, and audit already applied to the path and are unchanged. Deploy is batched with #177 so both close paths land guarded together (no half-envelope window).
+
+### Files (follow-up)
+
+- `app/Services/Mcp/StaffPsaActionToolExecutor.php` — `setTicketStatus` guards + `directCloseIneligibleReason()` + `hasPendingProposedClose()`
+- `tests/Feature/Mcp/PsaActionToolsTest.php` — direct-path guard tests (+ the reordered terminal-confirm test)
