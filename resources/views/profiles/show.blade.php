@@ -98,10 +98,9 @@
                                value="{{ old('next_run_date', $profile->next_run_date->format('Y-m-d')) }}" required>
                         @if($profile->next_run_date->isPast())
                             @php
-                                $months = $profile->billing_period->months();
                                 $cyclesBehind = 0;
                                 $d = $profile->next_run_date->copy();
-                                while ($d->isPast()) { $d->addMonths($months); $cyclesBehind++; }
+                                while ($d->isPast()) { $d = $profile->billing_period->advance($d); $cyclesBehind++; }
                             @endphp
                             <div class="form-text text-danger">
                                 <i class="bi bi-exclamation-triangle me-1"></i>{{ $cyclesBehind }} billing cycle{{ $cyclesBehind > 1 ? 's' : '' }} behind

@@ -76,7 +76,7 @@ class DashboardController extends Controller
             foreach ($profiles as $profile) {
                 try {
                     $preview = $billingService->previewInvoice($profile);
-                    $periodMonths = $profile->billing_period->months();
+                    $periodMonths = $profile->billing_period->monthsPerCycle();
                     $mrr += $preview['subtotal'] / $periodMonths;
                 } catch (\Throwable $e) {
                     // Skip profiles that fail to preview
