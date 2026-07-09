@@ -316,6 +316,28 @@ class McpTokensPageTest extends TestCase
             ->assertSee('tools/call');
     }
 
+    public function test_detail_page_renders_flash_banners_only_once(): void
+    {
+        McpConfig::rotateStaffToken(allowedTools: ['find_staff'], label: 'chet');
+        $token = McpToken::where('label', 'chet')->firstOrFail();
+
+        // Distinctive markers that won't collide with any static page copy.
+        $success = 'psa-8ygv-success-probe';
+        $error = 'psa-8ygv-error-probe';
+
+        $response = $this->actingAs($this->user)
+            ->withSession(['success' => $success, 'error' => $error])
+            ->get(route('settings.mcp-tokens.show', $token));
+
+        $response->assertOk()->assertSee($success)->assertSee($error);
+
+        // The app layout renders flash banners globally; the detail view must not
+        // render its own copies or every redirect-with-flash action (tool grants,
+        // destination link/unlink, …) shows the banner twice (regression: psa-8ygv).
+        $this->assertSame(1, substr_count($response->getContent(), $success));
+        $this->assertSame(1, substr_count($response->getContent(), $error));
+    }
+
     public function test_revoke_stamps_revoked_at_and_blocks_resolution(): void
     {
         $plain = McpConfig::rotateStaffToken(allowedTools: ['find_staff'], label: 'chet');
