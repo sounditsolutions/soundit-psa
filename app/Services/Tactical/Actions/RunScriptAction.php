@@ -15,6 +15,16 @@ use App\Services\Tactical\TacticalClient;
  *   - tactical_script_id (int, required) — the TRMM script id
  *   - args (string, optional)           — raw arg string, argv-tokenized here
  *   - timeout (int, optional 10..600)   — seconds
+ *
+ * Fire-and-forget mode ($fireAndForget, spec §5.1 amendment M7 / bd psa-nfqd):
+ * the default synchronous path waits for the agent's output (output=wait). A
+ * long deploy — e.g. the ~10-minute Servosity backup installer — cannot run
+ * that way: the TacticalClient holds a 30s HTTP timeout, so a still-running
+ * install would abort the request and the bus would mis-audit it `offline`.
+ * In fire-and-forget mode the agent runs the script detached (output=forget)
+ * and execute() returns `ok` with no captured output, so the bus authorizes +
+ * audits the single dispatch without blocking on the run. Dispatched via the
+ * queued RunTacticalScriptJob (the async run-script path).
  */
 class RunScriptAction implements TacticalAction
 {
@@ -26,6 +36,7 @@ class RunScriptAction implements TacticalAction
 
     public function __construct(
         private readonly ActionRedactor $redactor = new ActionRedactor,
+        private readonly bool $fireAndForget = false,
     ) {}
 
     public function key(): string
@@ -82,6 +93,21 @@ class RunScriptAction implements TacticalAction
 
     public function execute(TacticalClient $client, string $agentId, array $params): TacticalActionResult
     {
+        // Fire-and-forget: the agent runs the script detached (output=forget)
+        // and we do not wait for output. Used for long deploys that would
+        // otherwise trip the client's 30s HTTP timeout in wait mode. The bus
+        // still audits this one dispatch (result `ok`, no stdout/retcode).
+        if ($this->fireAndForget) {
+            $client->runScriptAsync(
+                $agentId,
+                (int) $params['tactical_script_id'],
+                $params['args'] ?? [],
+                (int) ($params['timeout'] ?? self::TIMEOUT_DEFAULT),
+            );
+
+            return TacticalActionResult::ok();
+        }
+
         $raw = $client->runScript(
             $agentId,
             (int) $params['tactical_script_id'],

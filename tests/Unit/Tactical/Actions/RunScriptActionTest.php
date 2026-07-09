@@ -245,4 +245,41 @@ class RunScriptActionTest extends TestCase
         $this->assertSame('ok', $result->stdout);
         $this->assertNull($result->retcode);
     }
+
+    public function test_fire_and_forget_puts_output_forget_and_returns_ok_without_output(): void
+    {
+        // Async deploy path (bd psa-nfqd): in fire-and-forget mode the action
+        // PUTs output=forget (the agent runs the script detached) and returns a
+        // bare `ok` with NO captured output — a single, non-blocking request
+        // with no history polling. This is what keeps a ~10-min installer off
+        // the client's 30s HTTP timeout while still flowing through the bus.
+        $history = [];
+        $stack = HandlerStack::create(new MockHandler([new Response(200, [], json_encode('ok'))]));
+        $stack->push(Middleware::history($history));
+        $client = new TacticalClient(new GuzzleClient(['base_uri' => 'https://t.example.com/', 'handler' => $stack]));
+
+        $action = new RunScriptAction(fireAndForget: true);
+        $params = $action->validateParams([
+            'tactical_script_id' => 218,
+            'args' => '-Foo {{agent.Bar}}',
+            'timeout' => 600,
+        ]);
+
+        $result = $action->execute($client, 'AGENT-1', $params);
+
+        $this->assertTrue($result->isOk());
+        $this->assertNull($result->stdout, 'fire-and-forget captures no output');
+        $this->assertNull($result->retcode);
+
+        $this->assertCount(1, $history, 'fire-and-forget must be one request — no wait, no history polling');
+        $req = $history[0]['request'];
+        $this->assertSame('PUT', $req->getMethod());
+        $this->assertSame('/agents/AGENT-1/runscript/', $req->getUri()->getPath());
+        $body = json_decode((string) $req->getBody(), true);
+        $this->assertSame('forget', $body['output']);
+        $this->assertSame(218, $body['script']);
+        $this->assertSame(['-Foo', '{{agent.Bar}}'], $body['args']);
+        $this->assertSame(600, $body['timeout']);
+        $this->assertFalse($body['run_as_user']);
+    }
 }

@@ -660,35 +660,27 @@ class AssetController extends Controller
         }
 
         try {
-            $service = new ServosityDeploymentService;
+            $service = app(ServosityDeploymentService::class);
             $service->enableBackup($asset);
 
-            // Trigger Tactical deploy script immediately (fire-and-forget).
-            //
-            // P2 SCOPE-OUT (amendment M7): this async runScriptAsync deploy
-            // deliberately does NOT route through the synchronous action bus.
-            // The bus's execute() is synchronous (single-target sync NATS call);
-            // the queued/async action path is P3's RunTacticalActionJob. Folding
-            // this onto the bus is tracked as a P3 follow-up (the Servosity creds
-            // here are Tactical-side {{agent.*}} template placeholders, so the
-            // literal secret is not in THIS request body — but setAgentCustomField
-            // pushes the real cred via a separate path; both migrate in P3).
-            try {
-                $tactical = app(\App\Services\Tactical\TacticalClient::class);
-                $tactical->runScriptAsync(
-                    $asset->tacticalAsset->agent_id,
-                    218,  // Deploy: Servosity Backup
-                    [
-                        '-ServosityOneUrl', '{{agent.ServosityOneUrl}}',
-                        '-ServosityScreenConnectUrl', '{{agent.ServosityScreenConnectUrl}}',
-                        '-ServosityCredUser', '{{agent.ServosityCredUser}}',
-                        '-ServosityCredPass', '{{agent.ServosityCredPass}}',
-                    ],
-                    600,
-                );
-            } catch (\Exception $e) {
-                Log::warning('[Servosity] Failed to trigger immediate deploy: '.$e->getMessage());
-            }
+            // Trigger the Tactical deploy script asynchronously, THROUGH the
+            // audited action bus (bd psa-nfqd — resolves the amendment M7 P2
+            // scope-out). RunTacticalScriptJob wraps a fire-and-forget bus
+            // dispatch in a queued job: the ~10-minute installer runs detached
+            // on the agent so the request never blocks, while the run is
+            // capability-gated and lands one immutable tactical_action_logs row
+            // like every other endpoint-affecting action. The Servosity creds
+            // are Tactical-side {{agent.*}} template placeholders (pushed to the
+            // agent's custom fields by enableBackup above), so no literal secret
+            // travels in the script args here.
+            \App\Jobs\RunTacticalScriptJob::dispatch(
+                $asset->id,
+                218,  // Deploy: Servosity Backup
+                '-ServosityOneUrl {{agent.ServosityOneUrl}} -ServosityScreenConnectUrl {{agent.ServosityScreenConnectUrl}} -ServosityCredUser {{agent.ServosityCredUser}} -ServosityCredPass {{agent.ServosityCredPass}}',
+                600,
+                $request->user()?->id,
+                'servosity-deploy',
+            );
 
             // Dispatch retry job: checks every 30s for 30 min until provisioned
             \App\Jobs\ServosityProvisionAsset::dispatch($asset->id)
