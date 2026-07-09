@@ -1,0 +1,75 @@
+{
+  "scenario": "client-search-create-20260709-2209",
+  "ok": true,
+  "steps": [
+    {
+      "i": 0,
+      "type": "goto",
+      "ok": true,
+      "detail": "status=loaded url=https://soundit-dev/clients/create"
+    },
+    {
+      "i": 1,
+      "type": "snapshot",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 2,
+      "type": "screenshot",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 3,
+      "type": "axe",
+      "ok": true,
+      "detail": "axe @ https://soundit-dev/clients/create: 3 violation(s)"
+    }
+  ],
+  "screenshots": [
+    "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/client-search-create-20260709-2209-client-create-form@mobile.png",
+    "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/client-search-create-20260709-2209-client-create-form@tablet.png",
+    "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/client-search-create-20260709-2209-client-create-form@desktop.png"
+  ],
+  "finalUrl": "https://soundit-dev/clients/create",
+  "snapshot": "- complementary \"Main navigation\":\n  - link \"Sound IT PSA\":\n    - /url: https://soundit-dev\n    - img \"Sound IT PSA\"\n  - navigation:\n    - link \" Dashboard\":\n      - /url: https://soundit-dev\n    - text: Manage\n    - link \" Clients\":\n      - /url: https://soundit-dev/clients\n    - link \" People\":\n      - /url: https://soundit-dev/people\n    - link \" Assets\":\n      - /url: https://soundit-dev/assets\n    - text: Service\n    - link \" Tickets\":\n      - /url: https://soundit-dev/tickets\n    - link \" Cockpit 4\":\n      - /url: https://soundit-dev/cockpit\n    - link \" Calls 3\":\n      - /url: https://soundit-dev/calls\n    - link \" Phone Directory\":\n      - /url: https://soundit-dev/phone-directory\n    - link \" Emails\":\n      - /url: https://soundit-dev/emails\n    - link \" Alerts 5\":\n      - /url: https://soundit-dev/alerts\n    - text: Billing\n    - link \" Billing \":\n      - /url: \"#sidebarBilling\"\n    - text: Settings\n    - link \" General\":\n      - /url: https://soundit-dev/settings/general\n    - link \" Staff\":\n      - /url: https://soundit-dev/settings/staff\n    - link \" Integrations\":\n      - /url: https://soundit-dev/settings/integrations\n    - link \" Alerts Hub\":\n      - /url: https://soundit-dev/settings/alerts\n    - link \" MCP Tokens\":\n      - /url: https://soundit-dev/settings/mcp-tokens\n    - text: Recent\n    - link \" Anjali Patel\":\n      - /url: https://soundit-dev/people/1\n    - link \" Acme Dental Practice\":\n      - /url: https://soundit-dev/clients/1\n    - link \" Managed Services Agreemen...\":\n      - /url: https://soundit-dev/contracts/4\n    - link \" T-178 QA tester retry man...\":\n      - /url: https://soundit-dev/tickets/178\n    - link \" Vandelay Industries\":\n      - /url: https://127.0.0.1/clients/3\n    - link \" VAN-APP01\":\n      - /url: https://127.0.0.1/assets/8\n    - link \" T-1 [ALERT] VAN-APP01 - S...\":\n      - /url: https://127.0.0.1/tickets/1\n    - link \" George Costanza\":\n      - /url: https://soundit-dev/people/6\n  - button \"Toggle sidebar\" [expanded]: \n- banner:\n  - text: New Client\n  - button \" Search Ctrl+K\"\n  - button \"AM Alex Morgan\"\n- main:\n  - link \" Back to Clients\":\n    - /url: https://soundit-dev/clients\n  - heading \"New Client\" [level=4]\n  - text: Company Name\n  - textbox \"Company Name\"\n  - text: Notes\n  - textbox \"Notes\"\n  - text: Free-form notes about this client. Visible to technicians and the AI assistant. Phone\n  - textbox \"Phone\"\n  - text: Email\n  - textbox \"Email\"\n  - text: Website\n  - textbox \"Website\":\n    - /placeholder: https://\n  - text: Primary Tech\n  - combobox \"Primary Tech\":\n    - option \"-- None --\" [selected]\n    - option \"Alex Morgan\"\n    - option \"Devon Carter\"\n    - option \"Priya Shah\"\n    - option \"Riley Okafor\"\n    - option \"Sam Whitaker\"\n  - text: Default technician for AI triage auto-assignment Reseller\n  - combobox \"Reseller\":\n    - option \"-- None (direct client) --\" [selected]\n    - option \"Acme Dental Practice\"\n    - option \"Apex Trading Co.\"\n    - option \"Brightside Marketing Agency\"\n    - option \"Cascade Wellness Center\"\n    - option \"Crestmont Architects\"\n    - option \"HarborView Law Partners\"\n    - option \"Pinnacle Insurance Group\"\n    - option \"Pollich-Hagenes\"\n    - option \"QA Autotest Client 20260704 0908\"\n    - option \"QA Client 2026-07-02 1958\"\n    - option \"QA Client 2026-07-02 2041\"\n    - option \"QA Client 2026-07-02 2130\"\n    - option \"QA Client 2026-07-02 2208\"\n    - option \"QA Client 2026-07-02 2301\"\n    - option \"QA Client 2026-07-03 0905\"\n    - option \"QA Client 20260703094453\"\n    - option \"QA Client 20260703110859\"\n    - option \"QA Client 20260703134504\"\n    - option \"QA Client 20260705 1858\"\n    - option \"QA Client Create 20260708053410\"\n    - option \"QA Client Retry 20260703143018\"\n    - option \"QA Client Search Create 20260705 1949\"\n    - option \"QA Client Search Create 20260707161130\"\n    - option \"QA Client Search Create 20260709092959\"\n    - option \"QA Client Search Create 20260709093050\"\n    - option \"QA Codex Client 20260705 1752\"\n    - option \"QA Default Run Client 20260705200949\"\n    - option \"QA Focused Client 20260705123117\"\n    - option \"QA Full Sweep Client 202607061020\"\n    - option \"QA Library Client 20260705143913\"\n    - option \"QA Library Sweep Client 20260706 0812\"\n    - option \"QA Nightly Client 20260703123301\"\n    - option \"QA Nightly Client 20260703151421\"\n    - option \"QA Nightly Client 20260704103445\"\n    - option \"QA Nightly Client 20260706022758\"\n    - option \"QA Nightly Client 20260707022030\"\n    - option \"QA Nightly Codex Client 20260705 1840Z\"\n    - option \"QA Nightly Full Client 20260706 1501\"\n    - option \"QA Nightly Search Client 20260706095456\"\n    - option \"QA Nightly Sweep Client 20260705193838\"\n    - option \"QA Recipient Card 20260707020026\"\n    - option \"QA Run 20260707 0150 Client\"\n    - option \"QA Run 20260707 0152 Client\"\n    - option \"QA Run Client 20260705131834\"\n    - option \"QA Sample Client 2026-07-02 1908\"\n    - option \"QA Search Create 20260705213552\"\n    - option \"QA Search Create 20260707 0918\"\n    - option \"QA Search Create 20260707 1027\"\n    - option \"QA Search Create 202607070623\"\n    - option \"QA Search Create Client 20260706140042\"\n    - option \"QA Smoke Client 20260706135317\"\n    - option \"QA Sweep Client 20260706002359\"\n    - option \"QA Tester Client 20260705 1531Z\"\n    - option \"QA Tester Client 20260705 160006\"\n    - option \"QA Tester Client 20260705 20260705151818\"\n    - option \"QA Tester Client 20260705140729\"\n    - option \"QA Tester Client 20260705154608\"\n    - option \"QA Tester Client 20260707040225\"\n    - option \"QA Tester Client 20260709103738\"\n    - option \"QA Tester Client Retry 20260705090834\"\n    - option \"QA Tester Client undefined\"\n    - option \"QA Tester Current Client 20260708022111\"\n    - option \"QA Tester Fresh Client 20260705195858\"\n    - option \"QA y4ft Client 20260707215056\"\n    - option \"QA y4ft Dedup Client 20260707215211\"\n    - option \"QA-SC-20260705220243\"\n    - option \"Sterling Realty Group\"\n    - option \"TechFlow Distribution\"\n    - option \"Vandelay Industries\"\n  - text: If this client is serviced through a reseller/partner MSP, select the reseller here\n  - separator\n  - heading \"Address\" [level=6]\n  - text: Address Line 1\n  - textbox \"Address Line 1\"\n  - text: Address Line 2\n  - textbox \"Address Line 2\"\n  - text: City\n  - textbox \"City\"\n  - text: State\n  - textbox \"State\"\n  - text: Zip Code\n  - textbox \"Zip Code\"\n  - button \"Create Client\"\n  - link \"Cancel\":\n    - /url: https://soundit-dev/clients\n- contentinfo: © 2026 Sound IT PSA",
+  "axe": [
+    {
+      "url": "https://soundit-dev/clients/create",
+      "label": "client-create-form",
+      "violations": [
+        {
+          "id": "color-contrast",
+          "impact": "serious",
+          "help": "Elements must meet minimum color contrast ratio thresholds",
+          "nodes": [
+            ".sidebar-group:nth-child(2) > .sidebar-group-label",
+            ".sidebar-group:nth-child(3) > .sidebar-group-label",
+            ".sidebar-group:nth-child(4) > .sidebar-group-label",
+            ".sidebar-group:nth-child(5) > .sidebar-group-label",
+            ".d-lg-inline"
+          ]
+        },
+        {
+          "id": "heading-order",
+          "impact": "moderate",
+          "help": "Heading levels should only increase by one",
+          "nodes": [
+            "h6"
+          ]
+        },
+        {
+          "id": "page-has-heading-one",
+          "impact": "moderate",
+          "help": "Page should contain a level-one heading",
+          "nodes": [
+            "html"
+          ]
+        }
+      ]
+    }
+  ],
+  "error": null,
+  "pageErrors": []
+}

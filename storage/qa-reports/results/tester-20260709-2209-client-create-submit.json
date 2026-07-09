@@ -1,0 +1,104 @@
+{
+  "scenario": "client-search-create-20260709-2209",
+  "ok": true,
+  "steps": [
+    {
+      "i": 0,
+      "type": "goto",
+      "ok": true,
+      "detail": "status=loaded url=https://soundit-dev/clients/create"
+    },
+    {
+      "i": 1,
+      "type": "fill",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 2,
+      "type": "fill",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 3,
+      "type": "fill",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 4,
+      "type": "fill",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 5,
+      "type": "fill",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 6,
+      "type": "fill",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 7,
+      "type": "fill",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 8,
+      "type": "fill",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 9,
+      "type": "click",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 10,
+      "type": "expectText",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 11,
+      "type": "expectText",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 12,
+      "type": "expectText",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 13,
+      "type": "snapshot",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 14,
+      "type": "screenshot",
+      "ok": true,
+      "detail": ""
+    }
+  ],
+  "screenshots": [
+    "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/client-search-create-20260709-2209-client-created-detail.png"
+  ],
+  "finalUrl": "https://soundit-dev/clients/88",
+  "snapshot": "- complementary \"Main navigation\":\n  - link \"Sound IT PSA\":\n    - /url: https://soundit-dev\n    - img \"Sound IT PSA\"\n  - navigation:\n    - link \" Dashboard\":\n      - /url: https://soundit-dev\n    - text: Manage\n    - link \" Clients\":\n      - /url: https://soundit-dev/clients\n    - link \" People\":\n      - /url: https://soundit-dev/people\n    - link \" Assets\":\n      - /url: https://soundit-dev/assets\n    - text: Service\n    - link \" Tickets\":\n      - /url: https://soundit-dev/tickets\n    - link \" Cockpit 4\":\n      - /url: https://soundit-dev/cockpit\n    - link \" Calls 3\":\n      - /url: https://soundit-dev/calls\n    - link \" Phone Directory\":\n      - /url: https://soundit-dev/phone-directory\n    - link \" Emails\":\n      - /url: https://soundit-dev/emails\n    - link \" Alerts 5\":\n      - /url: https://soundit-dev/alerts\n    - text: Billing\n    - link \" Billing \":\n      - /url: \"#sidebarBilling\"\n    - text: Settings\n    - link \" General\":\n      - /url: https://soundit-dev/settings/general\n    - link \" Staff\":\n      - /url: https://soundit-dev/settings/staff\n    - link \" Integrations\":\n      - /url: https://soundit-dev/settings/integrations\n    - link \" Alerts Hub\":\n      - /url: https://soundit-dev/settings/alerts\n    - link \" MCP Tokens\":\n      - /url: https://soundit-dev/settings/mcp-tokens\n    - text: Recent\n    - link \" QA Search Create 20260709...\":\n      - /url: https://soundit-dev/clients/88\n    - link \" Anjali Patel\":\n      - /url: https://soundit-dev/people/1\n    - link \" Acme Dental Practice\":\n      - /url: https://soundit-dev/clients/1\n    - link \" Managed Services Agreemen...\":\n      - /url: https://soundit-dev/contracts/4\n    - link \" T-178 QA tester retry man...\":\n      - /url: https://soundit-dev/tickets/178\n    - link \" Vandelay Industries\":\n      - /url: https://127.0.0.1/clients/3\n    - link \" VAN-APP01\":\n      - /url: https://127.0.0.1/assets/8\n    - link \" T-1 [ALERT] VAN-APP01 - S...\":\n      - /url: https://127.0.0.1/tickets/1\n  - button \"Toggle sidebar\" [expanded]: \n- banner:\n  - text: QA Search Create 202607092209\n  - button \" Search Ctrl+K\"\n  - button \"AM Alex Morgan\"\n- main:\n  - alert:\n    - text: Client created successfully.\n    - button\n  - link \" Back to Clients\":\n    - /url: https://soundit-dev/clients\n  - img \"QA Search Create 202607092209\"\n  - heading \"QA Search Create 202607092209\" [level=4]\n  - link \" Portal\":\n    - /url: https://soundit-dev/clients/88/portal\n  - link \" Wiki\":\n    - /url: https://soundit-dev/clients/88/wiki\n  - link \" Edit\":\n    - /url: https://soundit-dev/clients/88/edit\n  - button \"\"\n  - tablist:\n    - tab \"Overview\" [selected]\n    - tab \"Activity\"\n    - tab \"Tickets\"\n    - tab \"People (0)\"\n    - tab \"Assets\"\n    - tab \"Contracts\"\n    - tab \"Notes & Creds\"\n    - tab \"Licenses\"\n  - tabpanel \"Overview\":\n    - text:  People\n    - link \"View all\":\n      - /url: https://soundit-dev/clients/88/people\n    - link \" New\":\n      - /url: https://soundit-dev/people/create?client_id=88\n    - text: No people synced for this client.  Contracts\n    - link \" New Invoice\":\n      - /url: https://soundit-dev/invoices/create?client_id=88\n    - link \"View all\":\n      - /url: https://soundit-dev/clients/88/contracts\n    - link \" New\":\n      - /url: https://soundit-dev/clients/88/contracts/create\n    - text: No active contracts.\n  - text:  Details\n  - table:\n    - rowgroup:\n      - row \"Phone (503) 555-2209\":\n        - rowheader \"Phone\"\n        - cell \"(503) 555-2209\":\n          - link \"(503) 555-2209\":\n            - /url: \"#\"\n      - row \"Email qa-search-create-202607092209@example.test\":\n        - rowheader \"Email\"\n        - cell \"qa-search-create-202607092209@example.test\":\n          - link \"qa-search-create-202607092209@example.test\":\n            - /url: mailto:qa-search-create-202607092209@example.test\n      - row \"Website https://qa-search-create-202607092209.example.test\":\n        - rowheader \"Website\"\n        - cell \"https://qa-search-create-202607092209.example.test\":\n          - link \"https://qa-search-create-202607092209.example.test\":\n            - /url: https://qa-search-create-202607092209.example.test\n      - row \"Primary Tech —\":\n        - rowheader \"Primary Tech\"\n        - cell \"—\"\n  - text:  Address\n  - paragraph: 2209 QA Way, Portland, OR 97209\n- contentinfo: © 2026 Sound IT PSA",
+  "axe": [],
+  "error": null,
+  "pageErrors": []
+}

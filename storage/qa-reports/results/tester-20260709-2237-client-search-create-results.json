@@ -1,0 +1,41 @@
+{
+  "run_label": "tester-client-search-create-2026-07-09-2237",
+  "results": [
+    {
+      "scenario": "client-search-create",
+      "status": "fail",
+      "notes": "Client creation succeeded for client 88 (QA Search Create 202607092209), and the filtered client table returned only the created client. A broad expectMissing assertion saw Acme Dental Practice in the sidebar Recent list, not in the filtered results, so that assertion was treated as harness overreach. The flow still produced a UX finding: phone numbers in the client list are styled as clickable links but are href '#' dead anchors."
+    }
+  ],
+  "findings": [
+    {
+      "id": "psa-ojgz",
+      "kind": "ux",
+      "title": "Client phone numbers look clickable but do not start a call or show details"
+    }
+  ],
+  "artifacts": [
+    "storage/qa-reports/results/tester-20260709-2209-client-search-create-list.json",
+    "storage/qa-reports/results/tester-20260709-2209-client-create-form.json",
+    "storage/qa-reports/results/tester-20260709-2209-client-create-submit.json",
+    "storage/qa-reports/results/tester-20260709-2209-client-search-created.json",
+    "storage/qa-reports/results/tester-20260709-2209-client-phone-link.json",
+    "storage/qa-reports/screens/client-search-create-20260709-2209-client-created-detail.png",
+    "storage/qa-reports/screens/client-search-create-20260709-2209-client-search-created.png",
+    "storage/qa-reports/screens/client-search-create-20260709-2209-client-phone-before-click.png",
+    "storage/qa-reports/screens/client-search-create-20260709-2209-client-phone-after-click.png",
+    "storage/qa-reports/screens/client-search-create-20260709-2209-clients-list@desktop.png",
+    "storage/qa-reports/screens/client-search-create-20260709-2209-clients-list@mobile.png",
+    "storage/qa-reports/screens/client-search-create-20260709-2209-clients-list@tablet.png",
+    "storage/qa-reports/screens/client-search-create-20260709-2209-client-create-form@desktop.png",
+    "storage/qa-reports/screens/client-search-create-20260709-2209-client-create-form@mobile.png",
+    "storage/qa-reports/screens/client-search-create-20260709-2209-client-create-form@tablet.png"
+  ],
+  "dedup_observed": [
+    "client-search-create|[responsive] Client search results hide phone/email/actions off-screen on mobile",
+    "client-contacts|Primary contact phone and mobile render blank despite stored numbers",
+    "asset-ticket-link|Asset alert titles look clickable but do not open anything",
+    "design-audit|[a11y] No H1 on primary console screens + unlabeled icon-buttons/selects",
+    "design-audit|[color] Pervasive muted-text contrast below WCAG AA across console"
+  ]
+}
