@@ -268,6 +268,7 @@
                                 </thead>
                                 <tbody>
                                     @foreach($contract->profiles as $profile)
+                                        @php $cyclesBehind = $profile->cyclesBehind(); @endphp
                                         <tr class="cursor-pointer" onclick="window.location='{{ route('profiles.show', $profile) }}'">
                                             <td onclick="event.stopPropagation()">
                                                 @if($profile->lines->isNotEmpty())
@@ -292,7 +293,29 @@
                                                 @endif
                                                 <span class="badge bg-light text-dark">PSA</span>
                                             </td>
-                                            <td class="small">{{ $profile->next_run_date->format('M j, Y') }}</td>
+                                            <td class="small">
+                                                <div class="d-flex flex-column align-items-start gap-1">
+                                                    <span>
+                                                        <span class="{{ $cyclesBehind > 0 ? 'text-danger fw-semibold' : '' }}">{{ $profile->next_run_date->format('M j, Y') }}</span>
+                                                        @if($cyclesBehind > 0)
+                                                            <span class="badge bg-danger-subtle text-danger-emphasis border border-danger-subtle ms-1"
+                                                                  title="Invoice generation is overdue — the next run date has passed">
+                                                                <i class="bi bi-exclamation-triangle me-1"></i>{{ $cyclesBehind }} cycle{{ $cyclesBehind > 1 ? 's' : '' }} behind
+                                                            </span>
+                                                        @endif
+                                                    </span>
+                                                    @if($cyclesBehind > 0)
+                                                        <form method="POST" action="{{ route('profiles.generate', $profile) }}"
+                                                              onclick="event.stopPropagation()"
+                                                              onsubmit="return confirm('Generate an invoice dated {{ $profile->next_run_date->format('M j, Y') }}?')">
+                                                            @csrf
+                                                            <button type="submit" class="btn btn-primary btn-sm py-0">
+                                                                <i class="bi bi-lightning me-1"></i>Generate Now
+                                                            </button>
+                                                        </form>
+                                                    @endif
+                                                </div>
+                                            </td>
                                             <td class="small">{{ $profile->last_run_date?->format('M j, Y') ?? '-' }}</td>
                                             <td class="small">{{ $profile->lines->count() }}</td>
                                         </tr>

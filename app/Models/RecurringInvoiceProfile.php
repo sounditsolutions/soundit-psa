@@ -69,6 +69,42 @@ class RecurringInvoiceProfile extends Model
         return (bool) Setting::getValue('billing_skip_zero_invoices', false);
     }
 
+    /**
+     * True when this active profile's next run date has already passed, so an
+     * invoice is overdue to be generated. Mirrors the guard on
+     * RecurringProfileController@generate and the profile-detail "Generate Now"
+     * affordance, so the contract detail page can flag the same profiles the
+     * profile detail page does.
+     */
+    public function isBehind(): bool
+    {
+        return $this->is_active
+            && $this->next_run_date !== null
+            && $this->next_run_date->isPast();
+    }
+
+    /**
+     * Number of billing cycles this profile is behind (0 when not behind) —
+     * how many billing periods have elapsed since the past next run date,
+     * counting the one currently due. Steps by the profile's billing period.
+     */
+    public function cyclesBehind(): int
+    {
+        if (! $this->isBehind()) {
+            return 0;
+        }
+
+        $months = max(1, $this->billing_period->months());
+        $cycles = 0;
+        $cursor = $this->next_run_date->copy();
+        while ($cursor->isPast()) {
+            $cursor->addMonths($months);
+            $cycles++;
+        }
+
+        return $cycles;
+    }
+
     // ── Scopes ──
 
     public function scopeDue(Builder $query): Builder
