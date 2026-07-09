@@ -2713,6 +2713,41 @@
         {{-- ============================================================ --}}
         <div class="tab-pane fade" id="ai" role="tabpanel">
 
+        {{-- ================================================================ --}}
+        {{-- AI orientation banner + grouping (psa-bv2j).                     --}}
+        {{-- Presentation only — every card below keeps its own form/route/  --}}
+        {{-- setting keys. This groups the panels and explains which         --}}
+        {{-- PSA-native features GC Chet supersedes so they can be cleanly    --}}
+        {{-- turned off.                                                      --}}
+        {{-- ================================================================ --}}
+        <div class="alert alert-light border mb-4">
+            <div class="d-flex gap-3">
+                <i class="bi bi-robot fs-4 text-primary"></i>
+                <div>
+                    <h5 class="mb-1">AI &amp; Automation</h5>
+                    <p class="small mb-2">
+                        Everything here runs on the <strong>AI Provider</strong> key in the Foundation group below.
+                        These features are <strong>PSA-native</strong> — they work on their own, with no Gas City required,
+                        so you can run Sound PSA standalone.
+                    </p>
+                    <p class="small mb-0">
+                        <i class="bi bi-arrow-left-right me-1 text-warning"></i>
+                        <strong>Running GC Chet?</strong> GC Chet is the external Gas City AI agent that connects through the
+                        <a href="{{ route('settings.mcp-tokens.index') }}">MCP token surface</a> and works tickets and Teams
+                        chat as an autonomous junior technician. When Chet is your primary AI, the PSA-native features it
+                        <strong>supersedes</strong> (group 3, flagged below) become redundant — turn them off so two
+                        assistants don't act on the same ticket.
+                    </p>
+                </div>
+            </div>
+        </div>
+
+        {{-- Group 1 · Foundation ------------------------------------------- --}}
+        <div class="d-flex flex-wrap align-items-baseline gap-2 mb-3">
+            <h6 class="text-uppercase small fw-bold text-muted mb-0">1 &middot; Foundation</h6>
+            <span class="text-muted small">The provider key and speech-to-text every other AI feature builds on.</span>
+        </div>
+
         {{-- AI Provider Card --}}
         <div class="card card-static shadow-sm mb-4">
             <div class="card-header d-flex justify-content-between align-items-center">
@@ -2917,6 +2952,13 @@
 
                 <div id="test-result-transcription" class="mt-3" style="display: none;"></div>
             </div>
+        </div>
+
+        {{-- Group 2 · Ticket intelligence (PSA-native) -------------------- --}}
+        <div class="d-flex flex-wrap align-items-baseline gap-2 mb-3 mt-4">
+            <h6 class="text-uppercase small fw-bold text-muted mb-0">2 &middot; Ticket intelligence</h6>
+            <span class="badge bg-primary-subtle text-primary-emphasis border border-primary-subtle">PSA-native</span>
+            <span class="text-muted small">Enriches and assists on tickets. Works standalone and complements GC Chet — not superseded by it.</span>
         </div>
 
         {{-- AI Ticket Triage Card --}}
@@ -3173,6 +3215,39 @@
             </div>
         </div>
 
+        {{-- Group 3 · Autonomous & conversational AI (superseded by GC Chet) --}}
+        <div class="d-flex flex-wrap align-items-baseline gap-2 mb-2 mt-4">
+            <h6 class="text-uppercase small fw-bold text-muted mb-0">3 &middot; Autonomous &amp; conversational AI</h6>
+            <span class="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle">
+                <i class="bi bi-arrow-left-right me-1"></i>Superseded by GC Chet
+            </span>
+        </div>
+        <p class="text-muted small mb-3">PSA-native automation that GC Chet replaces — a conversational Teams teammate and an autonomous ticket handler. Kept for deployments that don't run Gas City.</p>
+
+        @php
+            // Live "what's still on" summary, computed from the same view vars the
+            // cards below render. Lets the operator SEE, at a glance, which
+            // Chet-superseded PSA-native features are still active.
+            $supersededOn = [];
+            if (($technicianEnabled ?? false) || ($technicianEmergencyEnabled ?? false)) { $supersededOn[] = 'AI Technician'; }
+            if ($teamsBotEnabled ?? false) { $supersededOn[] = 'Teams Bot'; }
+            if (collect($teamsPersonas ?? [])->contains(fn ($p) => $p['enabled'] ?? false)) { $supersededOn[] = 'AI Staff personas'; }
+        @endphp
+        @if(count($supersededOn) > 0)
+            <div class="alert alert-warning small d-flex gap-2">
+                <i class="bi bi-exclamation-triangle mt-1"></i>
+                <div>
+                    <strong>Still enabled:</strong> {{ implode(', ', $supersededOn) }}.
+                    If GC Chet is your primary AI, turn {{ count($supersededOn) === 1 ? 'it' : 'them' }} off below so two assistants don't act on the same ticket.
+                </div>
+            </div>
+        @else
+            <div class="alert alert-light border small d-flex gap-2">
+                <i class="bi bi-check-circle text-success mt-1"></i>
+                <div>All Chet-superseded PSA-native features are off — GC Chet has the floor.</div>
+            </div>
+        @endif
+
         {{-- Teams Bot Credentials Card (Teams bridge E1) --}}
         <div class="card shadow-sm mb-4">
             <div class="card-header d-flex align-items-center">
@@ -3186,8 +3261,15 @@
                         <span class="badge bg-secondary ms-2">Not configured</span>
                     @endif
                 </span>
+                <span class="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle ms-auto">
+                    <i class="bi bi-arrow-left-right me-1"></i>Superseded by GC Chet
+                </span>
             </div>
             <div class="card-body">
+                <div class="alert alert-warning small d-flex gap-2 mb-3">
+                    <i class="bi bi-arrow-left-right mt-1"></i>
+                    <div><strong>Superseded by GC Chet.</strong> Chet's Teams bridge is the conversational teammate now. If Gas City is running, leave this PSA-native Teams bot <strong>off</strong> to avoid two assistants in the same chat. Kept for Sound PSA deployments without Gas City.</div>
+                </div>
                 <p class="text-muted small">
                     Credentials for the PSA-native Teams assistant (Azure Bot / Bot Framework). The inbound endpoint <code>/api/teams/messages</code> verifies every message fail-closed against these credentials and maps it to the real staff member who sent it. Off by default — the conversational loop arrives in a later increment.
                 </p>
@@ -3266,8 +3348,15 @@
                     <i class="bi bi-person-badge me-2"></i>AI Staff
                     <span class="badge bg-secondary ms-2">{{ count($teamsPersonas) }}</span>
                 </span>
+                <span class="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle ms-auto">
+                    <i class="bi bi-arrow-left-right me-1"></i>Superseded by GC Chet
+                </span>
             </div>
             <div class="card-body">
+                <div class="alert alert-warning small d-flex gap-2 mb-3">
+                    <i class="bi bi-arrow-left-right mt-1"></i>
+                    <div><strong>Superseded by GC Chet.</strong> These PSA-native Teams personas cover the same ground as GC Chet. Disable any you no longer need once Chet is your primary AI. Kept for deployments without Gas City.</div>
+                </div>
                 <p class="text-muted small">
                     Hand-registered scaffolds for this P1 release — the provisioning wizard arrives in P2.
                 </p>
@@ -3356,8 +3445,15 @@
                         <span class="badge bg-secondary ms-2">Disabled</span>
                     @endif
                 </span>
+                <span class="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle ms-auto">
+                    <i class="bi bi-arrow-left-right me-1"></i>Superseded by GC Chet
+                </span>
             </div>
             <div class="card-body">
+                <div class="alert alert-warning small d-flex gap-2 mb-3">
+                    <i class="bi bi-arrow-left-right mt-1"></i>
+                    <div><strong>Superseded by GC Chet.</strong> GC Chet is the autonomous ticket handler now — acknowledging, working, and escalating tickets through the MCP surface. If Gas City is running, leave the PSA-native Technician <strong>off</strong> so the two don't both act on a ticket. Kept for Sound PSA deployments without Gas City.</div>
+                </div>
                 <p class="text-muted small">
                     Supervised foundation (Phase 0). When enabled, the AI Technician acknowledges new tickets with a clearly-disclosed AI message, authored by your configured AI actor (set in AI Triage). All other actions require approval — coming in a later phase. Off by default.
                 </p>
