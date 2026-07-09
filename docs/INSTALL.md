@@ -362,6 +362,7 @@ These commands execute automatically based on their schedule:
 | `prepay:expire` | Daily at 04:10 | Forfeit the unconsumed remainder of expired prepaid-time credits (no-op until a contract sets an expiration policy). Use `--dry-run` to preview, `--contract=ID` to scope. |
 | `prepay:check-balances` | Hourly | Check prepay contracts for low balances; trigger alerts / auto-top-ups |
 | `integrations:prune-webhooks` | Daily at 04:05 | Delete processed/terminal webhook rows older than 30 days from `tactical_webhooks` and `ninja_webhooks`. Pending rows are never pruned regardless of age. Use `--dry-run` to preview counts without deleting; `--days=N` to override the retention window. |
+| `briefing:send-daily` | Every minute; fires once per local day at `briefing_time` (default 07:00) | Email each active technician their personalized daily briefing — open tickets, SLA risks, overnight alerts, voicemails, and AI-suggested next actions. Ships dormant; only runs when `briefing_enabled=1`. Per-technician idempotency via the `daily_briefings` table. Use `--dry-run` to preview recipients, `--user=ID` to target one technician. |
 
 **Ad-hoc maintenance commands** (not scheduled — run manually when needed):
 
@@ -826,6 +827,34 @@ php artisan tickets:recalculate-sla --clear-missing
 ```
 
 Tickets without a contract, or whose contract carries no `sla_terms`, are skipped. The command is idempotent — re-running it without changing terms reports `updated=0`.
+
+### Daily Technician Briefing
+
+Emails each active technician a personalized start-of-day digest: their open tickets (with age + priority), tickets at risk of an SLA breach today, alerts on their clients that broke overnight, voicemails still awaiting a callback, and one or two AI-suggested next actions. The `briefing:send-daily` command runs every minute and self-gates to fire once per operator-local day; per-technician idempotency is enforced by the `daily_briefings` table (unique per user + date), so a re-run never double-sends.
+
+**Ships dormant** — nothing is emailed until you enable it. The feature is configured through the `settings` table (no dedicated Settings UI card yet):
+
+| Setting key | Default | Purpose |
+|-------------|---------|---------|
+| `briefing_enabled` | `0` (off) | Master toggle. Set to `1` to start sending. |
+| `briefing_time` | `07:00` | Operator-local time (HH:MM) the briefing fires. |
+| `briefing_overnight_hours` | `16` | How far back "overnight" reaches when collecting alerts. |
+| `briefing_max_tickets` | `15` | Max open tickets listed in full before collapsing to "…and N more". |
+| `briefing_ai_suggestions` | `1` (on) | Whether to include AI-suggested next actions (degrades gracefully to none when AI is unconfigured). |
+
+**Requirements / behavior:**
+- **Outbound email** must be configured (the Microsoft Graph shared mailbox — see the Microsoft Graph section). Without it the command logs a warning and no-ops.
+- **AI suggestions** use the configured AI provider (cheap Haiku tier). If AI is not configured the briefing still sends, just without the suggestions section.
+- **Recipients** are active internal users whose role is Technician or Administrator (Billing and Contractor roles, and contractor-flagged users, are excluded). Technicians with an empty briefing (nothing to report) are skipped.
+- **Opt-out** is per technician via **Settings > Notification Preferences → "Daily briefing"** (on by default).
+- **"Their clients"** for the alerts/voicemails sections is resolved from each client's assigned **primary technician**; a deployment that does not set primary techs still receives the ticket-based sections.
+
+Preview or target manually:
+
+```bash
+php artisan briefing:send-daily --dry-run          # list who would be briefed, no send
+php artisan briefing:send-daily --user=42          # send only to user 42 (respects idempotency)
+```
 
 ### Teams Bot (PSA-native assistant)
 
