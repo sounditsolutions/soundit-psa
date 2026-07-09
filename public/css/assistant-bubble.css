@@ -15,7 +15,7 @@
     cursor: pointer;
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
     z-index: 1050;
-    transition: transform 0.15s, box-shadow 0.15s;
+    transition: transform 0.2s ease, box-shadow 0.15s, opacity 0.2s ease;
     font-size: 1.2rem;
 }
 
@@ -26,6 +26,17 @@
 
 #assistantBubble.active {
     background: var(--primary-light, #234179);
+}
+
+/* Tucked out of the way while the page is scrolling on small screens so the
+   bubble never covers content beneath it — e.g. the wiki fact text a tech is
+   actively reading on a client Network page, or the right-aligned amount
+   column on the invoice detail Line Items table. Toggled by
+   assistant-bubble.js; on desktop the bubble stays put. */
+#assistantBubble.ab-hidden {
+    transform: translateY(150%);
+    opacity: 0;
+    pointer-events: none;
 }
 
 /* Flyout panel */
@@ -234,6 +245,18 @@
         width: calc(100vw - 32px);
         right: 16px;
         bottom: 76px;
+    }
+}
+
+/* Reserve a bottom safe-area on small screens so the fixed bubble, when at
+   rest, never sits on top of the tail of the page content — the last wiki
+   provenance fact card, the invoice totals row, the footer, or a right-aligned
+   amount scrolled to the bottom. Only applied when the bubble is actually
+   rendered (`.has-assistant-bubble` is set on the content wrapper by the
+   layout). 88px = bubble offset (24) + height (48) + a 16px gap. */
+@media (max-width: 991.98px) {
+    .psa-content-wrapper.has-assistant-bubble {
+        padding-bottom: 88px;
     }
 }
 
