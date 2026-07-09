@@ -148,15 +148,17 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 /* ── Responsive table cards (mobile) ──
-   Wide console tables (the tickets queue, the invoice list, and the client
-   People/Contracts lists) keep the full table at md+ and fall back to a stacked
-   layout below md, so the key signal (priority/status/assignee/due for tickets;
-   status/dates/total for invoices) stays visible without a horizontal scroll.
-   Flat by doctrine (DESIGN.md §4): depth is the hairline border and the
-   canvas/surface tonal step, never a shadow. State reads as a badge here, not a
-   color-only row stripe (DESIGN.md §5: state is never color alone). */
+   Wide console tables (the tickets queue, the invoice list, the asset inventory,
+   and the client People/Contracts lists) keep the full table at md+ and fall back
+   to a stacked layout below md, so the key signal (priority/status/assignee/due
+   for tickets; status/dates/total for invoices; client/status/health for assets)
+   stays visible without a horizontal scroll. Flat by doctrine (DESIGN.md §4):
+   depth is the hairline border and the canvas/surface tonal step, never a shadow.
+   State reads as a badge here, not a color-only row stripe (DESIGN.md §5: state is
+   never color alone). */
 .ticket-card,
-.invoice-card {
+.invoice-card,
+.asset-card {
     display: block;
     background: #fff;
     border: 1px solid #e5e7eb;
@@ -166,15 +168,18 @@ h1, h2, h3, h4, h5, h6 {
     cursor: pointer;
 }
 .ticket-card + .ticket-card,
-.invoice-card + .invoice-card {
+.invoice-card + .invoice-card,
+.asset-card + .asset-card {
     margin-top: 0.5rem;
 }
 .ticket-card-subject,
-.invoice-card-subject {
+.invoice-card-subject,
+.asset-card-title {
     color: var(--primary);
 }
 .ticket-card-subject:hover,
-.invoice-card-subject:hover {
+.invoice-card-subject:hover,
+.asset-card-title:hover {
     color: var(--accent-hover);
 }
 

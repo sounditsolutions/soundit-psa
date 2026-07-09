@@ -202,7 +202,10 @@
         ];
     @endphp
 
-    <div class="card shadow-sm card-static">
+    {{-- Desktop: the full table (md+). Below md it is replaced by the stacked
+         cards beneath this block so the inventory signal stays visible without a
+         horizontal scroll (psa-2lw3; mirrors psa-6zs7, psa-sasp). --}}
+    <div class="card shadow-sm card-static d-none d-md-block">
         <div class="table-responsive">
             <table class="table table-hover mb-0">
                 <thead class="thead-brand">
@@ -312,6 +315,58 @@
                 </tbody>
             </table>
         </div>
+    </div>
+
+    {{-- Mobile: stacked cards (below md). The desktop table is hidden below md;
+         here the signal a technician scans under load — client, online/offline
+         status, health, and last-seen — is promoted into a card so it stays
+         visible without a horizontal scroll. Status reads as a labelled badge,
+         matching the tickets and invoices fallbacks (psa-2lw3; mirrors
+         psa-6zs7, psa-sasp). --}}
+    <div class="d-md-none asset-cards">
+        @foreach($assets as $asset)
+            @php $status = $asset->statusBadge; @endphp
+            <div class="asset-card" onclick="window.location='{{ route('assets.show', $asset) }}'">
+                <div class="d-flex justify-content-between align-items-center gap-2 mb-1">
+                    <a href="{{ route('assets.show', $asset) }}" class="asset-card-title fw-semibold text-decoration-none text-truncate" style="min-width:0;" onclick="event.stopPropagation()">
+                        {{ $asset->hostname ?: $asset->name }}
+                    </a>
+                    @if($status === 'Online')
+                        <span class="badge bg-success flex-shrink-0" title="Online per RMM">Online</span>
+                    @elseif($status === 'Offline')
+                        <span class="badge bg-danger flex-shrink-0" title="Offline per RMM">Offline</span>
+                    @else
+                        <span class="badge bg-secondary flex-shrink-0" title="No RMM status available">Unknown</span>
+                    @endif
+                </div>
+                @if(($asset->hostname && $asset->hostname !== $asset->name) || $asset->trashed() || ! $asset->is_active)
+                    <div class="small text-muted mb-1 text-truncate">
+                        @if($asset->hostname && $asset->hostname !== $asset->name){{ $asset->name }}@endif
+                        @if($asset->trashed())
+                            <span class="badge bg-danger ms-1" style="font-size: 0.6rem;">Deleted</span>
+                        @elseif(! $asset->is_active)
+                            <span class="badge bg-secondary ms-1" style="font-size: 0.6rem;">Inactive</span>
+                        @endif
+                    </div>
+                @endif
+                @unless(isset($prefilter['client_id']))
+                    <div class="small mb-2" onclick="event.stopPropagation()">
+                        <x-client-badge :client="$asset->client" fallback="-" />
+                    </div>
+                @endunless
+                <div class="d-flex flex-wrap align-items-center gap-2 small">
+                    @if($asset->asset_type)
+                        <span class="text-muted"><i class="bi bi-pc-display me-1"></i>{{ $asset->asset_type }}</span>
+                    @endif
+                    <x-asset-health-badge :asset="$asset" />
+                    @if($asset->last_seen_at)
+                        <span class="text-muted ms-auto" title="{{ $asset->last_seen_at->toAppTz()->format('Y-m-d H:i T') }}">
+                            <i class="bi bi-clock-history me-1"></i>{{ $asset->last_seen_at->diffForHumans() }}
+                        </span>
+                    @endif
+                </div>
+            </div>
+        @endforeach
     </div>
 
     <div class="mt-3">
