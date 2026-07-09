@@ -66,32 +66,34 @@
             });
         }
 
-        // Note panel: show resolution when Resolved selected
-        var noteStatusSelect = document.getElementById('noteStatusSelect');
-        if (noteStatusSelect) {
-            noteStatusSelect.addEventListener('change', function() {
-                var group = document.getElementById('noteResolutionGroup');
-                if (group) group.classList.toggle('d-none', this.value !== 'resolved');
-            });
+        // Show the resolution input only when "Resolved" is selected, and make it
+        // required in that case — a resolved ticket must record what was done.
+        // The required attribute is cleared while hidden so it never blocks other
+        // actions (a required, display:none control is unfocusable and would stall
+        // form submission).
+        function bindResolutionToggle(selectId, groupId) {
+            var select = document.getElementById(selectId);
+            if (!select) return;
+            var group = document.getElementById(groupId);
+            var input = group ? group.querySelector('input, textarea') : null;
+            function sync() {
+                var resolving = select.value === 'resolved';
+                if (group) group.classList.toggle('d-none', !resolving);
+                if (input) {
+                    if (resolving) {
+                        input.setAttribute('required', 'required');
+                    } else {
+                        input.removeAttribute('required');
+                    }
+                }
+            }
+            select.addEventListener('change', sync);
+            sync();
         }
 
-        // Reply panel: show resolution when Resolved selected
-        var replyStatusSelect = document.getElementById('replyStatusSelect');
-        if (replyStatusSelect) {
-            replyStatusSelect.addEventListener('change', function() {
-                var group = document.getElementById('replyResolutionGroup');
-                if (group) group.classList.toggle('d-none', this.value !== 'resolved');
-            });
-        }
-
-        // Status-only panel: show resolution when Resolved selected
-        var statusOnlySelect = document.getElementById('statusOnlySelect');
-        if (statusOnlySelect) {
-            statusOnlySelect.addEventListener('change', function() {
-                var group = document.getElementById('statusResolutionGroup');
-                if (group) group.classList.toggle('d-none', this.value !== 'resolved');
-            });
-        }
+        bindResolutionToggle('noteStatusSelect', 'noteResolutionGroup');   // Note panel
+        bindResolutionToggle('replyStatusSelect', 'replyResolutionGroup'); // Reply panel
+        bindResolutionToggle('statusOnlySelect', 'statusResolutionGroup'); // Status-only panel
 
         // Populate contact email datalist
         var ticketClientId = document.body.dataset.clientId;

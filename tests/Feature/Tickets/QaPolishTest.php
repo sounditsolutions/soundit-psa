@@ -13,7 +13,8 @@ use Illuminate\Support\Facades\Bus;
 use Tests\TestCase;
 
 /**
- * Locks in QA-sourced ticket-detail UI polish fixes (psa-grjd soft hint,
+ * Locks in QA-sourced ticket-detail UI polish fixes (psa-grjd soft hint —
+ * superseded for the Resolve modal by the required-resolution guard in psa-5d8f,
  * psa-4638 a11y labels, psa-uq6l system-note toggle consistency).
  */
 class QaPolishTest extends TestCase
@@ -26,15 +27,18 @@ class QaPolishTest extends TestCase
         Bus::fake();
     }
 
-    public function test_resolve_modal_hints_blank_resolution_is_drafted_when_ai_configured(): void
+    public function test_resolve_modal_points_to_ai_draft_when_ai_configured(): void
     {
+        // The resolution is now required (psa-5d8f). When AI is configured the
+        // Resolve modal points at the "Draft with AI" assist rather than inviting a
+        // blank submit — the tech generates a draft and reviews it before resolving.
         config(['services.ai.api_key' => 'test-key']);
         $user = User::factory()->create();
         $ticket = Ticket::factory()->create(['status' => TicketStatus::InProgress]);
 
         $this->actingAs($user)->get(route('tickets.show', $ticket))
             ->assertOk()
-            ->assertSee("Leave it blank and we'll draft one from the ticket's notes", false);
+            ->assertSee("to generate one from the ticket's notes, then review it before resolving", false);
     }
 
     public function test_resolve_modal_omits_draft_hint_when_ai_not_configured(): void
@@ -45,7 +49,7 @@ class QaPolishTest extends TestCase
 
         $this->actingAs($user)->get(route('tickets.show', $ticket))
             ->assertOk()
-            ->assertDontSee("we'll draft one from the ticket's notes", false);
+            ->assertDontSee("to generate one from the ticket's notes", false);
     }
 
     public function test_note_action_buttons_have_accessible_names(): void

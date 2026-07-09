@@ -104,17 +104,28 @@ class TicketNoteController extends Controller
         if ($newStatusValue = $request->input('new_status')) {
             $newStatus = TicketStatus::tryFrom($newStatusValue);
             if ($newStatus && in_array($newStatus, $ticket->status->allowedTransitions(), true)) {
-                try {
-                    $this->ticketService->changeStatus(
-                        $ticket,
-                        $newStatus,
-                        auth()->id(),
-                        resolution: $request->input('resolution'),
-                    );
-                    $flashMessage .= " Status changed to {$newStatus->label()}.";
-                } catch (\InvalidArgumentException $e) {
+                // Resolving must record what was done — the resolution feeds future
+                // tickets and the client wiki. A whitespace-only summary counts as
+                // empty. Keep the note and skip the resolve with a warning, mirroring
+                // the status-change failure path below.
+                $resolution = trim((string) $request->input('resolution', ''));
+
+                if ($newStatus === TicketStatus::Resolved && $resolution === '') {
                     $flashType = 'warning';
-                    $flashMessage .= ' Status change failed: '.$e->getMessage();
+                    $flashMessage .= ' Not resolved — add a brief resolution summary to resolve this ticket.';
+                } else {
+                    try {
+                        $this->ticketService->changeStatus(
+                            $ticket,
+                            $newStatus,
+                            auth()->id(),
+                            resolution: $resolution !== '' ? $resolution : null,
+                        );
+                        $flashMessage .= " Status changed to {$newStatus->label()}.";
+                    } catch (\InvalidArgumentException $e) {
+                        $flashType = 'warning';
+                        $flashMessage .= ' Status change failed: '.$e->getMessage();
+                    }
                 }
             }
         }
