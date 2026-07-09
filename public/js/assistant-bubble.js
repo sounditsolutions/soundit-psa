@@ -40,6 +40,8 @@
                 closeFlyout();
             }
         });
+
+        setupScrollHide();
     });
 
     function toggleFlyout() {
@@ -62,6 +64,49 @@
     function closeFlyout() {
         flyout.classList.remove('open');
         bubble.classList.remove('active');
+    }
+
+    // On small screens the fixed bubble sits over the bottom-right of the
+    // viewport, where it can cover right-aligned data such as invoice
+    // line-item amounts. Hide it while the user scrolls down through the page
+    // and bring it back on scroll-up or near the top, so content is never
+    // obscured while it's being read. Desktop keeps the bubble always visible.
+    function setupScrollHide() {
+        var mobile = window.matchMedia('(max-width: 991.98px)');
+        var lastY = window.scrollY || window.pageYOffset || 0;
+        var ticking = false;
+
+        function update() {
+            ticking = false;
+            // Never hide on desktop, or while the chat flyout is open.
+            if (!mobile.matches || flyout.classList.contains('open')) {
+                bubble.classList.remove('ab-hidden');
+                lastY = window.scrollY || window.pageYOffset || 0;
+                return;
+            }
+            var y = window.scrollY || window.pageYOffset || 0;
+            if (y > lastY && y > 120) {
+                bubble.classList.add('ab-hidden');    // scrolling down, away from the top
+            } else {
+                bubble.classList.remove('ab-hidden'); // scrolling up or near the top
+            }
+            lastY = y;
+        }
+
+        window.addEventListener('scroll', function() {
+            if (!ticking) {
+                ticking = true;
+                window.requestAnimationFrame(update);
+            }
+        }, { passive: true });
+
+        // If the viewport grows past the mobile breakpoint, make sure it's shown.
+        var onChange = function() { if (!mobile.matches) bubble.classList.remove('ab-hidden'); };
+        if (mobile.addEventListener) {
+            mobile.addEventListener('change', onChange);
+        } else if (mobile.addListener) {
+            mobile.addListener(onChange); // Safari < 14
+        }
     }
 
     function loadConversation() {
