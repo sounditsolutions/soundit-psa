@@ -1693,6 +1693,9 @@
             </div>
             <div class="card-body p-0">
                 @if($activeAlerts->isNotEmpty())
+                {{-- Desktop table (md+); below md the stacked cards beneath keep the
+                     alert status and actions readable without a horizontal scroll (psa-cmte). --}}
+                <div class="table-responsive d-none d-md-block">
                 <table class="table table-sm mb-0">
                     <thead>
                         <tr>
@@ -1772,6 +1775,73 @@
                         @endforeach
                     </tbody>
                 </table>
+                </div>
+                {{-- Mobile: stacked rows below md so the alert status and actions do not clip (psa-cmte) --}}
+                <div class="d-md-none">
+                    @foreach($activeAlerts as $alert)
+                    <div class="data-row">
+                        <div class="d-flex justify-content-between align-items-start gap-2 mb-1">
+                            <a href="#" class="fw-semibold text-decoration-none alert-detail-link"
+                               data-alert-title="{{ e($alert->title) }}"
+                               data-alert-message="{{ e($alert->message) }}"
+                               data-alert-severity="{{ $alert->severity->label() }}"
+                               data-alert-source="{{ $alert->source->label() }}"
+                               data-alert-hostname="{{ $alert->hostname ?? $asset->hostname ?? '-' }}"
+                               data-alert-client="{{ $asset->client?->name ?? '-' }}"
+                               data-alert-status="{{ $alert->status->label() }}"
+                               data-alert-fired="{{ $alert->fired_at?->toAppTz()->format('M j, Y g:ia T') ?? '-' }}"
+                               data-alert-refired="{{ $alert->refired_count }}"
+                               data-alert-acknowledged="{{ $alert->acknowledged_at?->toAppTz()->format('M j, Y g:ia T') ?? '' }}"
+                               data-alert-acknowledged-by="{{ $alert->acknowledgedByUser?->name ?? '' }}"
+                               data-alert-resolved="{{ $alert->resolved_at?->toAppTz()->format('M j, Y g:ia T') ?? '' }}"
+                               data-alert-source-url="{{ $alert->sourceUrl() ?? '' }}"
+                               data-alert-metadata="{{ e(json_encode($alert->metadata)) }}"
+                               title="Click for details">{{ $alert->title }}</a>
+                            <span class="badge {{ $alert->severity->badgeClass() }}">{{ $alert->severity->label() }}</span>
+                        </div>
+                        <div class="small text-muted mb-2">
+                            <i class="bi {{ $alert->source->icon() }} me-1"></i>{{ $alert->source->label() }}
+                            @if($alert->fired_at)&middot; {{ $alert->fired_at->toAppTz()->format('M j, g:i A') }}@endif
+                        </div>
+                        @if($alert->message)
+                            <div class="small mb-2">{{ Str::limit($alert->message, 120) }}</div>
+                        @endif
+                        <div class="d-flex flex-wrap align-items-center gap-2">
+                            <span class="badge {{ $alert->status->badgeClass() }}">{{ $alert->status->label() }}</span>
+                            @if($alert->ticket_id)
+                                <a href="{{ route('tickets.show', $alert->ticket_id) }}" class="badge bg-primary text-decoration-none">
+                                    #{{ $alert->ticket?->display_id }}
+                                </a>
+                            @endif
+                            <span class="ms-auto d-flex gap-1">
+                                @if($alert->status->value === 'active')
+                                    <form method="POST" action="{{ route('alerts.acknowledge', $alert) }}" class="d-inline">
+                                        @csrf
+                                        <button type="submit" class="btn btn-xs btn-outline-info" title="Acknowledge">
+                                            <i class="bi bi-check"></i>
+                                        </button>
+                                    </form>
+                                @endif
+                                @if(!$alert->ticket_id)
+                                    <form method="POST" action="{{ route('alerts.create-ticket', $alert) }}" class="d-inline">
+                                        @csrf
+                                        <button type="submit" class="btn btn-xs btn-outline-primary" title="Create Ticket">
+                                            <i class="bi bi-ticket-perforated"></i>
+                                        </button>
+                                    </form>
+                                @endif
+                                <form method="POST" action="{{ route('alerts.resolve', $alert) }}" class="d-inline">
+                                    @csrf
+                                    <button type="submit" class="btn btn-xs btn-outline-secondary" title="Resolve"
+                                        onclick="return confirm('Resolve this alert?')">
+                                        <i class="bi bi-x-lg"></i>
+                                    </button>
+                                </form>
+                            </span>
+                        </div>
+                    </div>
+                    @endforeach
+                </div>
                 @else
                     <p class="text-muted small p-3 mb-0">No active alerts.</p>
                 @endif
@@ -1779,6 +1849,8 @@
                 @if($resolvedAlerts->isNotEmpty())
                 <div class="collapse" id="resolvedAlerts">
                     <hr class="my-0">
+                    {{-- Desktop table (md+); the stacked cards beneath serve below md (psa-cmte). --}}
+                    <div class="table-responsive d-none d-md-block">
                     <table class="table table-sm mb-0 table-light">
                         <thead>
                             <tr>
@@ -1833,6 +1905,50 @@
                             @endforeach
                         </tbody>
                     </table>
+                    </div>
+                    {{-- Mobile: stacked rows below md (psa-cmte) --}}
+                    <div class="d-md-none">
+                        @foreach($resolvedAlerts as $alert)
+                        <div class="data-row">
+                            <div class="d-flex justify-content-between align-items-start gap-2 mb-1">
+                                <a href="#" class="fw-semibold text-decoration-none text-muted alert-detail-link"
+                                   data-alert-title="{{ e($alert->title) }}"
+                                   data-alert-message="{{ e($alert->message) }}"
+                                   data-alert-severity="{{ $alert->severity->label() }}"
+                                   data-alert-source="{{ $alert->source->label() }}"
+                                   data-alert-hostname="{{ $alert->hostname ?? $asset->hostname ?? '-' }}"
+                                   data-alert-client="{{ $asset->client?->name ?? '-' }}"
+                                   data-alert-status="{{ $alert->status->label() }}"
+                                   data-alert-fired="{{ $alert->fired_at?->toAppTz()->format('M j, Y g:ia T') ?? '-' }}"
+                                   data-alert-refired="{{ $alert->refired_count }}"
+                                   data-alert-acknowledged="{{ $alert->acknowledged_at?->toAppTz()->format('M j, Y g:ia T') ?? '' }}"
+                                   data-alert-acknowledged-by="{{ $alert->acknowledgedByUser?->name ?? '' }}"
+                                   data-alert-resolved="{{ $alert->resolved_at?->toAppTz()->format('M j, Y g:ia T') ?? '' }}"
+                                   data-alert-source-url="{{ $alert->sourceUrl() ?? '' }}"
+                                   data-alert-metadata="{{ e(json_encode($alert->metadata)) }}"
+                                   title="Click for details">{{ $alert->title }}</a>
+                                <span class="badge {{ $alert->severity->badgeClass() }}">{{ $alert->severity->label() }}</span>
+                            </div>
+                            <div class="small text-muted mb-1">
+                                <i class="bi {{ $alert->source->icon() }} me-1"></i>{{ $alert->source->label() }}
+                            </div>
+                            <div class="d-flex justify-content-between gap-3 small py-1">
+                                <span class="data-label">Fired</span>
+                                <span class="text-muted">{{ $alert->fired_at?->toAppTz()->format('M j, g:i A') }}</span>
+                            </div>
+                            <div class="d-flex justify-content-between gap-3 small py-1">
+                                <span class="data-label">Resolved</span>
+                                <span class="text-muted">{{ $alert->resolved_at?->toAppTz()->format('M j, g:i A') }}</span>
+                            </div>
+                            @if($alert->ticket_id)
+                                <div class="d-flex justify-content-between gap-3 small py-1">
+                                    <span class="data-label">Ticket</span>
+                                    <a href="{{ route('tickets.show', $alert->ticket_id) }}">#{{ $alert->ticket?->display_id }}</a>
+                                </div>
+                            @endif
+                        </div>
+                        @endforeach
+                    </div>
                 </div>
                 @endif
             </div>
@@ -1852,7 +1968,7 @@
                 </div>
                 <a href="{{ route('assets.tickets', $asset) }}" class="btn btn-outline-primary btn-sm">View all tickets</a>
             </div>
-            <div class="table-responsive">
+            <div class="table-responsive d-none d-md-block">
                 <table class="table table-hover mb-0">
                     <thead>
                         <tr>
@@ -1887,6 +2003,29 @@
                         @endforeach
                     </tbody>
                 </table>
+            </div>
+            {{-- Mobile: stacked rows below md so status/assignee/updated do not clip (psa-cmte) --}}
+            <div class="d-md-none">
+                @foreach($recentTickets as $ticket)
+                    <div class="data-row" style="cursor:pointer;" onclick="window.location='{{ route('tickets.show', $ticket) }}'">
+                        <div class="d-flex justify-content-between align-items-start gap-2 mb-1">
+                            <a href="{{ route('tickets.show', $ticket) }}" class="fw-semibold text-decoration-none" onclick="event.stopPropagation()">
+                                {{ Str::limit($ticket->subject, 60) }}
+                            </a>
+                            @if($ticket->priority)
+                                <span class="badge {{ $ticket->priority->badgeClass() }}">{{ $ticket->priority->label() }}</span>
+                            @endif
+                        </div>
+                        <div class="small text-muted mb-2">{{ $ticket->display_id }}</div>
+                        <div class="d-flex flex-wrap align-items-center gap-2 small">
+                            <span class="badge {{ $ticket->status->badgeClass() }}">{{ $ticket->status->label() }}</span>
+                            <span class="text-muted d-inline-flex align-items-center gap-1">
+                                <i class="bi bi-person"></i>{{ $ticket->assignee?->name ?? 'Unassigned' }}
+                            </span>
+                            <span class="ms-auto text-muted">{{ $ticket->updated_at?->diffForHumans() }}</span>
+                        </div>
+                    </div>
+                @endforeach
             </div>
         </div>
         @else
