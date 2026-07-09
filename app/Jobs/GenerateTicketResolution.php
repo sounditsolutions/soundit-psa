@@ -5,10 +5,12 @@ namespace App\Jobs;
 use App\Enums\TicketStatus;
 use App\Models\Ticket;
 use App\Services\TicketResolutionDrafter;
+use App\Support\AiConfig;
 use App\Support\WikiConfig;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Queue\Middleware\WithoutOverlapping;
+use Illuminate\Support\Facades\Log;
 
 class GenerateTicketResolution implements ShouldQueue
 {
@@ -36,6 +38,17 @@ class GenerateTicketResolution implements ShouldQueue
         $isTerminal = in_array($ticket->status, [TicketStatus::Resolved, TicketStatus::Closed], true);
 
         if (! $isTerminal || filled($ticket->resolution) || ! WikiConfig::autoMineEnabled()) {
+            return;
+        }
+
+        // AI-drafting a resolution is entirely AI-driven; without a configured provider the
+        // drafter throws deep inside AiClient (a TypeError on the null key). Skip cleanly —
+        // the Client Wiki settings card warns the operator to configure an AI provider.
+        if (! AiConfig::isConfigured()) {
+            Log::info('[GenerateTicketResolution] Skipping — no AI provider configured', [
+                'ticket_id' => $this->ticketId,
+            ]);
+
             return;
         }
 
