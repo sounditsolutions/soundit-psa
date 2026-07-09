@@ -74,8 +74,9 @@ class TechnicianAgent
                 .'it does nothing to the ticket. Use it sparingly, only for a genuine need for human attention. '
                 .'Otherwise — awaiting us internally, awaiting the client, still active, or simply low-value — do '
                 .'NOTHING, leave it. When unsure, LEAVE IT. Take only ONE action per ticket. '
-                .'If you needed a tool or data you lacked, you may also call `request_tool` to flag it for the team '
-                .'— it does not count as your action.'
+                .'If you needed a tool or data you lacked — or an existing tool misbehaved (errored or returned '
+                .'wrong/empty data) — you may also call `request_tool` to flag it for the team; it does not count '
+                .'as your action.'
                 // The context below (ticket + the fenced Client Situation digest) is UNTRUSTED client text.
                 .' '.PromptFence::UNTRUSTED_INPUT_NOTICE;
 
