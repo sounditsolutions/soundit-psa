@@ -266,7 +266,19 @@
                         </tr>
                         <tr>
                             <th class="text-muted">OS</th>
-                            <td>{{ $asset->os ?: '-' }}</td>
+                            <td>
+                                {{ $asset->os ?: '-' }}
+                                @if($asset->hasTacticalOsConflict())
+                                    {{-- psa-sp30: Device Identity OS and the Tactical RMM
+                                         agent disagree. Flag it inline (with the competing
+                                         value) so a technician isn't misled into trusting a
+                                         single OS reading. --}}
+                                    <span class="text-warning-emphasis small d-inline-flex align-items-center ms-1"
+                                          title="Device Identity OS disagrees with the Tactical RMM agent. Verify which source is current before trusting either value.">
+                                        <i class="bi bi-exclamation-triangle-fill me-1"></i>Tactical: {{ $asset->tacticalAsset->os }}
+                                    </span>
+                                @endif
+                            </td>
                         </tr>
                         <tr>
                             <th class="text-muted">IP Address</th>
@@ -603,7 +615,17 @@
                         @if($ta->os)
                         <tr>
                             <td class="text-muted">OS</td>
-                            <td>{{ $ta->os }}</td>
+                            <td>
+                                {{ $ta->os }}
+                                @if($asset->hasTacticalOsConflict())
+                                    {{-- psa-sp30: mirror the Device Identity conflict flag
+                                         so the disagreement is visible from either card. --}}
+                                    <span class="text-warning-emphasis small d-inline-flex align-items-center ms-1"
+                                          title="Differs from the Device Identity OS. Verify which source is current before trusting either value.">
+                                        <i class="bi bi-exclamation-triangle-fill me-1"></i>Device record: {{ $asset->os }}
+                                    </span>
+                                @endif
+                            </td>
                         </tr>
                         @endif
                         @if($ta->public_ip)

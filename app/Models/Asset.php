@@ -305,4 +305,56 @@ class Asset extends Model
 
         return null;
     }
+
+    /**
+     * Whether the asset's own OS (Device Identity — synced from Ninja/Level or
+     * entered manually) meaningfully disagrees with the OS its linked Tactical
+     * RMM agent reports. Both surface on the asset detail page as if they were
+     * one authoritative fact, so a real mismatch (e.g. Windows Server 2019 vs
+     * 2022) must be flagged for the technician. RMM vendors format OS strings
+     * differently, so the comparison runs on a normalized form — cosmetic
+     * differences (vendor prefix, build number, bitness, punctuation) do not
+     * count. Returns false when either value is blank or no Tactical agent is
+     * linked. psa-sp30.
+     */
+    public function hasTacticalOsConflict(): bool
+    {
+        $tacticalOs = $this->tacticalAsset?->os;
+
+        if (blank($this->os) || blank($tacticalOs)) {
+            return false;
+        }
+
+        return self::normalizeOsForComparison($this->os)
+            !== self::normalizeOsForComparison($tacticalOs);
+    }
+
+    /**
+     * Collapse an OS string to a comparable token so cosmetic differences
+     * between RMM vendors don't read as a conflict. Strips the "Microsoft"
+     * vendor prefix, build numbers, bitness markers, and punctuation, then
+     * lowercases and squeezes whitespace. Genuine version/edition differences
+     * survive; formatting noise does not. psa-sp30.
+     */
+    public static function normalizeOsForComparison(?string $os): string
+    {
+        $normalized = mb_strtolower(trim((string) $os));
+
+        if ($normalized === '') {
+            return '';
+        }
+
+        // Separators/punctuation → spaces (e.g. "2019 Standard, 64bit").
+        $normalized = preg_replace('/[^\p{L}\p{N}]+/u', ' ', $normalized);
+
+        // Drop cosmetic tokens that vary by vendor but don't change the OS.
+        $normalized = preg_replace([
+            '/\bmicrosoft\b/',        // vendor prefix
+            '/\bbuild\s+\d+\b/',      // "build 20348"
+            '/\b(?:64|32)\s?bit\b/',  // "64bit", "64 bit"
+            '/\bx(?:64|86)\b/',       // "x64", "x86"
+        ], ' ', $normalized);
+
+        return trim(preg_replace('/\s+/', ' ', $normalized));
+    }
 }
