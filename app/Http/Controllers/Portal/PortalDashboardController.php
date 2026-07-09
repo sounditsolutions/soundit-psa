@@ -46,7 +46,7 @@ class PortalDashboardController extends Controller
             ->where(function ($q) {
                 $q->where('prepay_as_amount', false)->orWhereNull('prepay_as_amount');
             })
-            ->get(['id', 'name', 'prepay_balance']);
+            ->get(['id', 'name', 'prepay_balance', 'prepay_as_amount']);
 
         $totalPrepayHours = $prepayContracts->sum('prepay_balance');
 

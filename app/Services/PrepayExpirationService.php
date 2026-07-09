@@ -153,6 +153,67 @@ class PrepayExpirationService
             return [];
         }
 
+        return $this->replayLedger($contract, $asOf)['forfeitures'];
+    }
+
+    /**
+     * Forward-looking projection for the portal balance widget: the soonest
+     * FUTURE lot expiry that still holds an unconsumed remainder as of $asOf —
+     * i.e. when the current balance next begins to lapse. Hours are summed across
+     * lots sharing that soonest expiry instant. Returns null when nothing is
+     * scheduled to lapse: dollar-based prepay, no expiry dates set, legacy/Halo
+     * lots only, or every future lot already drawn down. Read-only; the same FIFO
+     * replay that drives forfeiture, so the figure matches what will forfeit.
+     *
+     * @return array{expiry_date: CarbonInterface, hours: float}|null
+     */
+    public function nextExpiration(Contract $contract, ?CarbonInterface $asOf = null): ?array
+    {
+        $asOf ??= now();
+
+        if (! $contract->has_prepay || $contract->prepay_as_amount) {
+            return null;
+        }
+
+        $soonest = null;
+        $hours = 0.0;
+
+        foreach ($this->replayLedger($contract, $asOf)['lots'] as $lot) {
+            // Only PSA-native lots with a future expiry can lapse next; legacy/Halo
+            // lots never forfeit, and already-expired lots have been zeroed.
+            if (! $lot['eligible'] || $lot['expiry']->lte($asOf)) {
+                continue;
+            }
+
+            $remaining = round($lot['remaining'], 4);
+            if ($remaining <= 0) {
+                continue;
+            }
+
+            if ($soonest === null || $lot['expiry']->lt($soonest)) {
+                $soonest = $lot['expiry'];
+                $hours = $remaining;
+            } elseif ($lot['expiry']->eq($soonest)) {
+                $hours += $remaining;
+            }
+        }
+
+        return $soonest === null ? null : ['expiry_date' => $soonest, 'hours' => round($hours, 4)];
+    }
+
+    /**
+     * Chronological FIFO replay of the ledger up to $asOf. Shared by
+     * computeExpirations() (which consumes the 'forfeitures') and nextExpiration()
+     * (which reads the post-replay lot remainders). Callers pre-check
+     * has_prepay / prepay_as_amount.
+     *
+     * @return array{
+     *     lots: list<array{id:int, remaining:float, date:CarbonInterface, expiry:?CarbonInterface, eligible:bool}>,
+     *     forfeitures: list<array{lot_id:int, expiry_date:CarbonInterface, hours:float}>
+     * }
+     */
+    private function replayLedger(Contract $contract, CarbonInterface $asOf): array
+    {
         $txns = $contract->prepayTransactions()
             ->orderByRaw('COALESCE(date, created_at) asc')
             ->orderBy('id')
@@ -177,7 +238,7 @@ class PrepayExpirationService
         }
 
         if ($lots === []) {
-            return [];
+            return ['lots' => [], 'forfeitures' => []];
         }
 
         // Events: consumption debits (excluding our own Expiration output) and an
@@ -205,7 +266,7 @@ class PrepayExpirationService
             return $cmp !== 0 ? $cmp : ($a['rank'] <=> $b['rank']);
         });
 
-        $expirations = [];
+        $forfeitures = [];
         foreach ($events as $event) {
             if ($event['kind'] === 'debit') {
                 $amount = $event['amount'];
@@ -229,7 +290,7 @@ class PrepayExpirationService
             $i = $event['lot'];
             $remaining = round($lots[$i]['remaining'], 4);
             if ($remaining > 0) {
-                $expirations[] = [
+                $forfeitures[] = [
                     'lot_id' => $lots[$i]['id'],
                     'expiry_date' => $lots[$i]['expiry'],
                     'hours' => $remaining,
@@ -238,7 +299,7 @@ class PrepayExpirationService
             $lots[$i]['remaining'] = 0.0;
         }
 
-        return $expirations;
+        return ['lots' => $lots, 'forfeitures' => $forfeitures];
     }
 
     /**

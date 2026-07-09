@@ -53,6 +53,7 @@
                 <div class="stat-value">{{ number_format($contract->prepay_balance, 1) }}h</div>
                 <div class="stat-label">Prepaid Balance</div>
             </div>
+            @include('portal.prepaid._expiry-note', ['contract' => $contract])
             @if($contract->is_portal_purchasable)
                 <div class="mt-2">
                     <a href="{{ route('portal.prepaid.form', $contract) }}" class="btn btn-sm btn-accent">

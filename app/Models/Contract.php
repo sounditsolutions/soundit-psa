@@ -232,6 +232,30 @@ class Contract extends Model
     }
 
     /**
+     * The soonest upcoming prepaid-time expiry for the current balance —
+     * ['expiry_date' => CarbonInterface, 'hours' => float], or null when nothing
+     * is scheduled to lapse. Delegates to the FIFO replay that drives forfeiture
+     * so the figure matches what will actually forfeit. Memoized (dashboard reads
+     * it per contract). Hours-based PSA prepay only; mirrors the staff "Expires"
+     * surfacing on the portal balance widget.
+     */
+    private mixed $cachedNextPrepayExpiry = false;
+
+    public function getNextPrepayExpiryAttribute(): ?array
+    {
+        if ($this->cachedNextPrepayExpiry !== false) {
+            return $this->cachedNextPrepayExpiry;
+        }
+
+        if (! $this->has_prepay || $this->prepay_as_amount) {
+            return $this->cachedNextPrepayExpiry = null;
+        }
+
+        return $this->cachedNextPrepayExpiry = app(\App\Services\PrepayExpirationService::class)
+            ->nextExpiration($this);
+    }
+
+    /**
      * Average consumption per week over the last 30 days.
      * Memoized to avoid N+1 on list views (dashboard).
      */

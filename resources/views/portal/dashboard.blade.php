@@ -46,6 +46,7 @@
                     <span class="text-muted ms-1" style="font-size: 1.1rem;">hours remaining</span>
                 </div>
                 <div class="text-muted small mt-1">{{ $c->name }}</div>
+                @include('portal.prepaid._expiry-note', ['contract' => $c])
             @else
                 <div class="d-flex align-items-baseline mb-3">
                     <span style="font-size: 2.5rem; font-weight: 700; line-height: 1;">{{ number_format($totalPrepayHours, 1) }}</span>
@@ -57,6 +58,7 @@
                             <div class="bg-light rounded p-2 px-3">
                                 <div class="fw-semibold">{{ number_format($c->prepay_balance, 1) }}h</div>
                                 <div class="text-muted small">{{ $c->name }}</div>
+                                @include('portal.prepaid._expiry-note', ['contract' => $c])
                             </div>
                         </div>
                     @endforeach
