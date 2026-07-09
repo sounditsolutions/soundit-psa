@@ -4,12 +4,14 @@ namespace Tests\Feature\Signals;
 
 use App\Jobs\DeliverSignal;
 use App\Jobs\RouteSignalEvent;
+use App\Models\McpToken;
 use App\Models\SignalDelivery;
 use App\Models\SignalDestination;
 use App\Models\SignalEvent;
 use App\Models\SignalRoute;
 use App\Models\SignalRouteStep;
 use App\Services\Signals\SignalRouter;
+use App\Support\McpConfig;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Bus;
 use Tests\TestCase;
@@ -169,6 +171,69 @@ class SignalRouterTest extends TestCase
         $this->assertSame('suppressed', $delivery->status);
         $this->assertSame('rate-limit', $delivery->error);
         Bus::assertNotDispatched(DeliverSignal::class);
+    }
+
+    public function test_mcp_destination_with_revoked_token_is_suppressed(): void
+    {
+        McpConfig::rotateStaffToken(allowedTools: ['find_staff'], label: 'chet');
+        McpToken::where('label', 'chet')->update(['revoked_at' => now()]);
+        $route = $this->mcpRoute('chet');
+
+        app(SignalRouter::class)->route($this->event('ticket.created'));
+
+        $delivery = SignalDelivery::where('route_id', $route->id)->sole();
+        $this->assertSame('suppressed', $delivery->status);
+        $this->assertSame('mcp-token-revoked', $delivery->error);
+        Bus::assertNotDispatched(DeliverSignal::class);
+    }
+
+    public function test_mcp_destination_without_a_token_label_is_suppressed(): void
+    {
+        $route = $this->mcpRoute(null);
+
+        app(SignalRouter::class)->route($this->event('ticket.created'));
+
+        $delivery = SignalDelivery::where('route_id', $route->id)->sole();
+        $this->assertSame('suppressed', $delivery->status);
+        $this->assertSame('mcp-token-missing', $delivery->error);
+        Bus::assertNotDispatched(DeliverSignal::class);
+    }
+
+    public function test_mcp_destination_with_live_token_dispatches_delivery(): void
+    {
+        McpConfig::rotateStaffToken(allowedTools: ['find_staff'], label: 'chet');
+        $route = $this->mcpRoute('chet');
+
+        app(SignalRouter::class)->route($this->event('ticket.created'));
+
+        $delivery = SignalDelivery::where('route_id', $route->id)->sole();
+        $this->assertSame('pending', $delivery->status);
+        Bus::assertDispatched(DeliverSignal::class);
+    }
+
+    private function mcpRoute(?string $tokenLabel): SignalRoute
+    {
+        $route = SignalRoute::create([
+            'label' => 'MCP Route '.SignalRoute::count(),
+            'event_filter' => ['types' => ['ticket.created']],
+            'enabled' => true,
+            'cooldown_seconds' => 300,
+        ]);
+
+        $destination = SignalDestination::create([
+            'label' => "MCP dest {$route->id}",
+            'type' => 'mcp',
+            'mcp_token_label' => $tokenLabel,
+            'enabled' => true,
+        ]);
+
+        SignalRouteStep::create([
+            'route_id' => $route->id,
+            'step_order' => 1,
+            'destination_id' => $destination->id,
+        ]);
+
+        return $route->fresh('steps');
     }
 
     private function route(

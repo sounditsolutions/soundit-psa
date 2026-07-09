@@ -70,6 +70,15 @@
                         </td>
                         <td>
                             @include('settings.alerts._status_badge', ['enabled' => $destination->enabled])
+                            @if($destination->type === 'mcp' && ($destination->mcp_token_broken ?? false))
+                                {{-- The linked MCP token is revoked or gone, so no agent can poll this
+                                     destination. Flag it as orphaned regardless of the enabled toggle. --}}
+                                <div class="mt-1">
+                                    <span class="badge bg-danger-subtle text-danger-emphasis alerts-destination-token-broken">
+                                        <i class="bi bi-plug me-1"></i>Token revoked
+                                    </span>
+                                </div>
+                            @endif
                             @if($destination->last_delivery_status === 'failed')
                                 {{-- At-a-glance broken-destination indicator. last_error can carry
                                      remote-server response text, so it is HTML-escaped ({{ }}) in both
