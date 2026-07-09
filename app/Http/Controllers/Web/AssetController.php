@@ -275,6 +275,7 @@ class AssetController extends Controller
         return view('assets.show', [
             'asset' => $asset,
             'backupJobs' => null,
+            'cometJobData' => null,
             'controldDevices' => collect(),
             'zorusEndpoints' => collect(),
             'lastUserPerson' => $lastUserPerson,
