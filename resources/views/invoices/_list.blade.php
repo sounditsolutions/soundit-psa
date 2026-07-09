@@ -62,7 +62,10 @@
         <p class="mt-3">No invoices found.</p>
     </div>
 @else
-    <div class="card shadow-sm card-static">
+    {{-- Desktop: the full table (md+). Below md it is replaced by the stacked
+         cards beneath this block so status and total stay visible without a
+         horizontal scroll (psa-5ngn). --}}
+    <div class="card shadow-sm card-static d-none d-md-block">
         <div class="table-responsive">
             <table class="table table-hover mb-0">
                 <thead class="thead-brand">
@@ -141,6 +144,39 @@
                 </tbody>
             </table>
         </div>
+    </div>
+
+    {{-- Mobile: stacked cards (below md). Promotes the at-a-glance signal —
+         invoice number, status, total, client, dates — into a card so status
+         and amount are visible without a horizontal scroll (psa-5ngn). Mirrors
+         the tickets queue card pattern; checkboxes/bulk actions stay desktop-only. --}}
+    <div class="d-md-none invoice-cards">
+        @foreach($invoices as $invoice)
+            <div class="invoice-card" onclick="window.location='{{ route('invoices.show', $invoice) }}'">
+                <div class="d-flex justify-content-between align-items-center gap-2 mb-1">
+                    <a href="{{ route('invoices.show', $invoice) }}" class="fw-semibold text-decoration-none" onclick="event.stopPropagation()">
+                        {{ $invoice->invoice_number }}
+                    </a>
+                    @if($invoice->isOverdue())
+                        <span class="badge bg-danger">Overdue</span>
+                    @else
+                        <span class="badge {{ $invoice->status->badgeClass() }}">{{ $invoice->status->label() }}</span>
+                    @endif
+                </div>
+                @unless(isset($prefilter['contract_id']))
+                <div class="small mb-2" onclick="event.stopPropagation()">
+                    <x-client-badge :client="$invoice->client" fallback="-" />
+                </div>
+                @endunless
+                <div class="d-flex flex-wrap align-items-center gap-2 small">
+                    <span class="fw-semibold">${{ number_format($invoice->total, 2) }}</span>
+                    <span class="text-muted">{{ $invoice->invoice_date->format('M j, Y') }}</span>
+                    <span class="ms-auto {{ $invoice->isOverdue() ? 'text-danger fw-bold' : 'text-muted' }}">
+                        Due {{ $invoice->due_date->format('M j, Y') }}
+                    </span>
+                </div>
+            </div>
+        @endforeach
     </div>
 
     <div class="mt-3">
