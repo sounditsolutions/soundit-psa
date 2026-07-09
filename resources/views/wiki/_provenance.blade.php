@@ -1,10 +1,22 @@
 {{-- §8.1 item 1: provenance on demand. item 3: right-sized actions. item 5: addendum blocks. --}}
 @if ($facts->isNotEmpty())
+{{-- psa-za3g: facts still needing a technician decision — Unverified (Confirm/
+     Correct/Retire) or Disputed (AI-challenge decision). Surfaced on the collapsed
+     summary so the actionable load is visible without expanding; these facts are
+     also ordered first inside the panel (controller sorts by reviewSortOrder). --}}
+@php($needsReview = $facts->filter(fn ($f) => in_array(
+    $f->status,
+    [\App\Enums\WikiFactStatus::Unverified, \App\Enums\WikiFactStatus::Disputed],
+    true,
+))->count())
 <details class="card mt-3">
     {{-- UX review (WCAG AA): text-muted (#6b7280) on the navy .card-header is 2.76:1 — fails 4.5:1.
          Drop text-muted; the card-header's own color meets contrast. --}}
     <summary class="card-header small text-uppercase" style="cursor: pointer;">
         Show provenance ({{ $facts->count() }})
+        @if ($needsReview)
+            <span class="badge bg-warning text-dark ms-1">{{ $needsReview }} to review</span>
+        @endif
     </summary>
     <div class="card-body p-2">
         {{-- Architecture review: BOTH sides of a dispute have status=Disputed and a non-null
