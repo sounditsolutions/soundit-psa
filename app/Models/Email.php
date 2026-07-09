@@ -166,16 +166,34 @@ class Email extends Model
     public function primaryRecipientDisplay(): string
     {
         $first = $this->to_recipients[0] ?? null;
-        if (! $first) {
-            return '—';
+
+        // Recipients may be stored either as ['name' => ..., 'address' => ...]
+        // maps (Graph ingestion) or as plain address strings (seeded/legacy
+        // data). Tolerate both — mirrors the guard in emails/show.blade.php.
+        if (is_string($first)) {
+            return $first !== '' ? $first : '—';
         }
 
-        return $first['name'] ?: $first['address'] ?? '—';
+        if (is_array($first)) {
+            return ($first['name'] ?? null) ?: ($first['address'] ?? '—');
+        }
+
+        return '—';
     }
 
     public function primaryRecipientAddress(): ?string
     {
-        return $this->to_recipients[0]['address'] ?? null;
+        $first = $this->to_recipients[0] ?? null;
+
+        if (is_string($first)) {
+            return $first !== '' ? $first : null;
+        }
+
+        if (is_array($first)) {
+            return $first['address'] ?? null;
+        }
+
+        return null;
     }
 
     public function fromDomain(): ?string
