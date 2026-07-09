@@ -3593,6 +3593,18 @@
                         <div class="form-text">Lets portal contacts browse orderable SKUs and place product orders. Mark individual SKUs as "Orderable in client portal shop" on each product.</div>
                     </div>
 
+                    <div class="mb-3 form-check form-switch">
+                        <input type="hidden" name="portal_chatbot_enabled" value="0">
+                        <input type="checkbox" class="form-check-input" name="portal_chatbot_enabled" id="portal_chatbot_enabled" value="1"
+                               {{ App\Models\Setting::getValue('portal_chatbot_enabled', '0') === '1' ? 'checked' : '' }}>
+                        <label class="form-check-label" for="portal_chatbot_enabled"><strong>Enable AI Chatbot</strong></label>
+                        <div class="form-text">
+                            Adds an "Ask AI" assistant to the portal that answers clients' questions about their own
+                            tickets, invoices, devices, and agreements (read-only). Requires the AI provider to be
+                            configured for Anthropic on the <strong>AI Assistant</strong> tab.
+                        </div>
+                    </div>
+
                     <div class="mb-3">
                         <label class="form-label">Company Name</label>
                         <input type="text" name="portal_company_name" class="form-control" placeholder="Your Company"
