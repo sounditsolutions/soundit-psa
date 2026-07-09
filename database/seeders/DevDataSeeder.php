@@ -726,11 +726,19 @@ class DevDataSeeder extends Seeder
                 'last_run_date' => $cfg['next_run']->copy()->subMonth()->toDateString(),
             ]);
             foreach ($cfg['lines'] as $i => $l) {
+                // Pull description/price/cost from the SKU catalog so the profile
+                // computes a real invoice. Staff-created profiles always carry
+                // these (the create/update forms require them); seeding blanks
+                // made the preview render $0.00 with empty line descriptions
+                // despite the same contract's historical invoices billing in
+                // full (psa-sg3l).
+                $sku = Sku::find($this->ctx['skus'][$l['sku']]);
                 RecurringInvoiceProfileLine::create([
                     'profile_id' => $profile->id,
-                    'sku_id' => $this->ctx['skus'][$l['sku']],
-                    'description' => '',
-                    'unit_price' => 0,
+                    'sku_id' => $sku->id,
+                    'description' => $sku->name,
+                    'unit_price' => $sku->unit_price,
+                    'unit_cost_override' => $sku->unit_cost,
                     'license_type_id' => isset($l['license_type']) ? $this->ctx['license_types'][$l['license_type']] : null,
                     'usage_license_type_id' => isset($l['usage_license_type']) ? $this->ctx['license_types'][$l['usage_license_type']] : null,
                     'base_license_type_id' => isset($l['base_license_type']) ? $this->ctx['license_types'][$l['base_license_type']] : null,
