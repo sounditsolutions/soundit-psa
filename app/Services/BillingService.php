@@ -12,6 +12,7 @@ use App\Models\InvoiceLine;
 use App\Models\RecurringInvoiceProfile;
 use App\Models\RecurringInvoiceProfileLine;
 use App\Models\Setting;
+use App\Support\TieredPricing;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -228,12 +229,15 @@ class BillingService
     }
 
     /**
-     * Resolve the unit price to bill for a line at the resolved quantity.
+     * Resolve the single unit price for a line that is NOT graduated.
      *
-     * Backup-storage lines whose SKU carries a tier rate card use volume
-     * pricing — the whole quantity is billed at the tier rate that covers the
-     * measured GB. Everything else (and backup lines without tiers) bills at
-     * the flat line unit price.
+     * Backup-storage lines whose SKU carries a tier rate card use VOLUME
+     * pricing — the whole quantity is billed at the one tier rate that covers
+     * the measured GB ({@see \App\Models\Sku::priceForStorageGb()}). Everything
+     * else (and backup lines without tiers) bills at the flat line unit price.
+     *
+     * Only ever reached from priceLineSegments(), and only when the line has no
+     * graduated bands of its own — see the precedence rule there.
      */
     private function resolveUnitPrice(RecurringInvoiceProfileLine $line, int $quantity): float
     {
@@ -245,6 +249,99 @@ class BillingService
         }
 
         return (float) $line->unit_price;
+    }
+
+    /**
+     * Break a profile line into one or more priced segments — the single seam
+     * where a (line, quantity) turns into money.
+     *
+     * Two *different* pricing models can apply to a line, and both are
+     * legitimate. They are resolved here, in this order:
+     *
+     *   1. GRADUATED — `pricing_tiers` on the profile line, valid with any
+     *      quantity type. Tax-bracket pricing: the quantity is split into bands
+     *      and each band bills at its own rate. Yields one segment per consumed
+     *      band. {@see \App\Support\TieredPricing}
+     *   2. VOLUME — `backup_storage_tiers` on the line's SKU, backup-storage
+     *      lines only. The whole quantity bills at the single rate whose bound
+     *      covers it. Yields one segment. {@see \App\Models\Sku::priceForStorageGb()}
+     *   3. FLAT — the line's `unit_price`. Yields one segment.
+     *
+     * Graduated wins over volume because it is the more specific configuration:
+     * it is set on *this line*, while the volume card is inherited from the
+     * product. That is already the precedence every other override on the
+     * line-generation path follows (`unit_cost_override ?? sku->unit_cost`,
+     * `prepaid_time_override ?? sku->prepaid_time_minutes`). The alternative
+     * fails worse: a SKU rate card silently overriding bands the operator
+     * explicitly put on the line would bill a pricing model nobody configured.
+     * The combination is unusual enough to log, though — see below.
+     *
+     * Every segment carries `amount = round(quantity × unit_price, 2)`,
+     * whichever model priced it, so that invariant holds for every invoice line
+     * we emit. Both push paths depend on it: Stripe derives a taxable line's
+     * charge from quantity × unit_amount and ignores our `amount` entirely,
+     * and QBO reconciles `Amount` against `Qty × UnitPrice`. Splitting a line
+     * into bands cannot lose a cent, because resolveQuantity() only ever
+     * returns whole units and an integer times a 2-dp price is already exact to
+     * the cent (TieredPricing::normalize() guarantees the 2 dp).
+     *
+     * A zero quantity yields a single zero-unit segment (record of coverage).
+     *
+     * @return array<int, array{quantity: int, unit_price: float, amount: float, label: ?string}>
+     */
+    private function priceLineSegments(RecurringInvoiceProfileLine $line, int $quantity): array
+    {
+        $tiers = $line->pricingTiers();
+
+        // Not graduated: one segment, priced by the volume rate card or flat.
+        if ($tiers === []) {
+            $unitPrice = $this->resolveUnitPrice($line, $quantity);
+
+            return [[
+                'quantity' => $quantity,
+                'unit_price' => $unitPrice,
+                'amount' => round($quantity * $unitPrice, 2),
+                'label' => null,
+            ]];
+        }
+
+        if ($this->hasVolumeRateCard($line)) {
+            Log::warning('[Billing] Profile line {line} carries graduated tiers and its SKU carries a volume rate card; the line\'s graduated tiers win.', [
+                'line' => $line->id,
+                'profile_id' => $line->profile_id,
+                'sku_id' => $line->sku_id,
+            ]);
+        }
+
+        $rows = [];
+
+        foreach (TieredPricing::breakdown($tiers, $quantity) as $segment) {
+            $rows[] = [
+                'quantity' => $segment['quantity'],
+                'unit_price' => $segment['unit_price'],
+                'amount' => round($segment['quantity'] * $segment['unit_price'], 2),
+                // Annotate the band range onto the invoice line description.
+                // Skipped for the zero-quantity placeholder segment.
+                'label' => $quantity > 0
+                    ? "units {$segment['from']}\u{2013}{$segment['to']} @ \$".number_format($segment['unit_price'], 2)
+                    : null,
+            ];
+        }
+
+        return $rows;
+    }
+
+    /**
+     * Whether the line's SKU carries a volume rate card — i.e. whether the
+     * line's own graduated tiers, if any, are overriding one.
+     */
+    private function hasVolumeRateCard(RecurringInvoiceProfileLine $line): bool
+    {
+        if ($line->quantity_type !== QuantityType::PerBackupStorageGb || ! $line->sku) {
+            return false;
+        }
+
+        return $line->sku->backupStorageTiers->isNotEmpty();
     }
 
     public function generateInvoicesForDueProfiles(): array
@@ -310,6 +407,7 @@ class BillingService
             $subtotal = 0;
             $totalCost = 0;
             $hasNonZeroQty = false;
+            $sortOrder = 0;
 
             foreach ($profile->lines as $line) {
                 $quantity = $this->resolveQuantity(
@@ -323,36 +421,54 @@ class BillingService
                     $hasNonZeroQty = true;
                 }
 
-                $unitPrice = $this->resolveUnitPrice($line, $quantity);
-                $amount = round($quantity * $unitPrice, 2);
-                $subtotal += $amount;
-
                 $unitCost = (float) ($line->unit_cost_override ?? $line->sku?->unit_cost ?? 0);
-                $costAmount = round($quantity * $unitCost, 2);
-                $totalCost += $costAmount;
+                $prepaidMinutesPerUnit = $line->prepaid_time_override ?? $line->sku?->prepaid_time_minutes;
 
                 $quantitySource = $this->buildQuantitySource(
                     $line->quantity_type, $quantity, $invoiceDate, $contract,
                     $line->license_type_id, $line,
                 );
 
-                $prepaidMinutesPerUnit = $line->prepaid_time_override ?? $line->sku?->prepaid_time_minutes;
-                $prepaidTimeMinutes = $prepaidMinutesPerUnit ? (int) ($quantity * $prepaidMinutesPerUnit) : null;
+                // Flat and volume-priced lines yield one segment; graduated
+                // lines expand into one invoice line per consumed band.
+                foreach ($this->priceLineSegments($line, $quantity) as $segment) {
+                    $segQty = $segment['quantity'];
+                    $amount = $segment['amount'];
+                    $subtotal += $amount;
 
-                $lineData[] = [
-                    'sku_id' => $line->sku_id,
-                    'description' => $line->description,
-                    'quantity' => $quantity,
-                    'unit_price' => $unitPrice,
-                    'unit_cost' => $unitCost,
-                    'amount' => $amount,
-                    'cost_amount' => $costAmount,
-                    'prepaid_time_minutes' => $prepaidTimeMinutes,
-                    'quantity_source' => $quantitySource,
-                    'is_taxable' => $line->is_taxable,
-                    'qbo_item_ref' => $line->sku?->qbo_item_id,
-                    'sort_order' => $line->sort_order,
-                ];
+                    $costAmount = round($segQty * $unitCost, 2);
+                    $totalCost += $costAmount;
+
+                    $prepaidTimeMinutes = $prepaidMinutesPerUnit ? (int) ($segQty * $prepaidMinutesPerUnit) : null;
+
+                    $description = $segment['label'] !== null
+                        ? $line->description." ({$segment['label']})"
+                        : $line->description;
+
+                    $lineData[] = [
+                        'sku_id' => $line->sku_id,
+                        'description' => $description,
+                        'quantity' => $segQty,
+                        'unit_price' => $segment['unit_price'],
+                        'unit_cost' => $unitCost,
+                        'amount' => $amount,
+                        'cost_amount' => $costAmount,
+                        'prepaid_time_minutes' => $prepaidTimeMinutes,
+                        'quantity_source' => $quantitySource,
+                        'is_taxable' => $line->is_taxable,
+                        'qbo_item_ref' => $line->sku?->qbo_item_id,
+                        // A running counter, NOT $line->sort_order: expanding one
+                        // profile line into several bands would otherwise emit
+                        // invoice lines that tie on sort_order, and both QBO push
+                        // (buildQboInvoice) and QBO readback (syncLineItemsFromQbo)
+                        // pair lines up by their sort_order *position*. A tie makes
+                        // that order DB-dependent, so a readback could write one
+                        // band's amounts onto another band's row. Profile lines are
+                        // already iterated in sort_order (see the lines() relation),
+                        // so this preserves their order and breaks ties by band.
+                        'sort_order' => $sortOrder++,
+                    ];
+                }
             }
 
             // Phase 2: Check if invoice should be skipped (nothing to bill)
@@ -447,28 +563,38 @@ class BillingService
                 $hasNonZeroQty = true;
             }
 
-            $unitPrice = $this->resolveUnitPrice($line, $quantity);
-            $amount = round($quantity * $unitPrice, 2);
-            $subtotal += $amount;
-
             $prepaidMinutesPerUnit = $line->prepaid_time_override ?? $line->sku?->prepaid_time_minutes;
-            $prepaidTimeMinutes = $prepaidMinutesPerUnit ? (int) ($quantity * $prepaidMinutesPerUnit) : null;
-            if ($prepaidTimeMinutes) {
-                $totalPrepaidMinutes += $prepaidTimeMinutes;
-            }
+            $quantityTypeLabel = $line->quantity_type->label();
+            $quantitySource = $this->buildQuantitySource(
+                $line->quantity_type, $quantity, $invoiceDate, $contract,
+                $line->license_type_id, $line,
+            );
 
-            $lines[] = [
-                'description' => $line->description,
-                'quantity' => $quantity,
-                'unit_price' => $unitPrice,
-                'amount' => $amount,
-                'prepaid_time_minutes' => $prepaidTimeMinutes,
-                'quantity_type' => $line->quantity_type->label(),
-                'quantity_source' => $this->buildQuantitySource(
-                    $line->quantity_type, $quantity, $invoiceDate, $contract,
-                    $line->license_type_id, $line,
-                ),
-            ];
+            // Mirror generateInvoice(): graduated lines preview as one row per band.
+            foreach ($this->priceLineSegments($line, $quantity) as $segment) {
+                $segQty = $segment['quantity'];
+                $amount = $segment['amount'];
+                $subtotal += $amount;
+
+                $prepaidTimeMinutes = $prepaidMinutesPerUnit ? (int) ($segQty * $prepaidMinutesPerUnit) : null;
+                if ($prepaidTimeMinutes) {
+                    $totalPrepaidMinutes += $prepaidTimeMinutes;
+                }
+
+                $description = $segment['label'] !== null
+                    ? $line->description." ({$segment['label']})"
+                    : $line->description;
+
+                $lines[] = [
+                    'description' => $description,
+                    'quantity' => $segQty,
+                    'unit_price' => $segment['unit_price'],
+                    'amount' => $amount,
+                    'prepaid_time_minutes' => $prepaidTimeMinutes,
+                    'quantity_type' => $quantityTypeLabel,
+                    'quantity_source' => $quantitySource,
+                ];
+            }
         }
 
         $wouldSkip = $profile->shouldSkipZeroInvoices() && (empty($lines) || ! $hasNonZeroQty);
@@ -507,7 +633,57 @@ class BillingService
         return sprintf('%s-%05d', $prefix, $next);
     }
 
+    /**
+     * The audit snapshot stored on each generated invoice line: how the
+     * quantity was measured, plus which rate card actually priced it.
+     *
+     * Null for Fixed quantities — the operator typed the number, there is
+     * nothing to audit. (A Fixed line can still be graduated; its bands are
+     * recorded in the invoice line description, which is where every graduated
+     * line records them.)
+     */
     private function buildQuantitySource(
+        QuantityType $type,
+        int $quantity,
+        $date,
+        ?Contract $contract = null,
+        ?int $licenseTypeId = null,
+        ?RecurringInvoiceProfileLine $line = null,
+    ): ?string {
+        $source = $this->describeQuantity($type, $quantity, $date, $contract, $licenseTypeId, $line);
+
+        return $source === null ? null : $source.$this->describePricing($line, $quantity);
+    }
+
+    /**
+     * Name the rate card that actually priced the line, so the stored audit
+     * record can never claim a rate that was not applied. Empty for plain flat
+     * pricing. Mirrors the precedence in priceLineSegments() — if it did not,
+     * a graduated backup-storage line would be annotated with the volume tier
+     * rate its own bands overrode.
+     */
+    private function describePricing(?RecurringInvoiceProfileLine $line, int $quantity): string
+    {
+        if (! $line) {
+            return '';
+        }
+
+        $tiers = $line->pricingTiers();
+        if ($tiers !== []) {
+            return ' [graduated: '.count($tiers).' bands]';
+        }
+
+        if ($line->quantity_type === QuantityType::PerBackupStorageGb) {
+            $tierPrice = $line->sku?->priceForStorageGb($quantity);
+            if ($tierPrice !== null) {
+                return sprintf(' [volume tier rate $%.2f/GB]', $tierPrice);
+            }
+        }
+
+        return '';
+    }
+
+    private function describeQuantity(
         QuantityType $type,
         int $quantity,
         $date,
@@ -573,16 +749,11 @@ class BillingService
             return $source;
         }
 
-        // Backup storage records the measured GB plus the tier rate applied.
+        // Backup storage records the measured GB. The rate that priced it is
+        // appended by describePricing() — volume tiers only apply when the line
+        // has no graduated bands of its own.
         if ($type === QuantityType::PerBackupStorageGb) {
-            $source = "{$quantity} GB backup storage ({$scope}-scoped) as of {$dateStr}";
-
-            $tierPrice = $line?->sku?->priceForStorageGb($quantity);
-            if ($tierPrice !== null) {
-                $source .= sprintf(' [tier rate $%.2f/GB]', $tierPrice);
-            }
-
-            return $source;
+            return "{$quantity} GB backup storage ({$scope}-scoped) as of {$dateStr}";
         }
 
         $label = strtolower($type->label());

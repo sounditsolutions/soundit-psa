@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Enums\QuantityType;
+use App\Support\TieredPricing;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
@@ -19,6 +20,7 @@ class RecurringInvoiceProfileLine extends Model
         'overage_divisor',
         'description',
         'unit_price',
+        'pricing_tiers',
         'unit_cost_override',
         'prepaid_time_override',
         'quantity_type',
@@ -32,6 +34,7 @@ class RecurringInvoiceProfileLine extends Model
         return [
             'quantity_type' => QuantityType::class,
             'unit_price' => 'decimal:2',
+            'pricing_tiers' => 'array',
             'unit_cost_override' => 'decimal:2',
             'prepaid_time_override' => 'integer',
             'included_per_base_unit' => 'integer',
@@ -40,6 +43,28 @@ class RecurringInvoiceProfileLine extends Model
             'is_taxable' => 'boolean',
             'sort_order' => 'integer',
         ];
+    }
+
+    // ── Tiered pricing ──
+
+    /**
+     * The normalized graduated pricing tiers for this line, or an empty array
+     * when the line uses flat unit pricing.
+     *
+     * @return array<int, array{up_to: int|null, unit_price: float}>
+     */
+    public function pricingTiers(): array
+    {
+        return TieredPricing::normalize($this->pricing_tiers ?? []);
+    }
+
+    /**
+     * Whether this line prices its quantity across graduated tiers rather than
+     * a single flat unit price.
+     */
+    public function isTiered(): bool
+    {
+        return $this->pricingTiers() !== [];
     }
 
     // ── Relations ──
