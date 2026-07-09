@@ -1,0 +1,74 @@
+{
+  "scenario": "client-contacts-20260709-2320",
+  "ok": false,
+  "steps": [
+    {
+      "i": 0,
+      "type": "goto",
+      "ok": true,
+      "detail": "status=loaded url=https://soundit-dev/clients/3/people"
+    },
+    {
+      "i": 1,
+      "type": "expectText",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 2,
+      "type": "expectText",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 3,
+      "type": "expectText",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 4,
+      "type": "expectText",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 5,
+      "type": "click",
+      "ok": false,
+      "detail": "page.click: Timeout 10000ms exceeded."
+    },
+    {
+      "i": 6,
+      "type": "expectText",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 7,
+      "type": "expectText",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 8,
+      "type": "snapshot",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 9,
+      "type": "screenshot",
+      "ok": true,
+      "detail": ""
+    }
+  ],
+  "screenshots": [
+    "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/client-contacts-20260709-2320-contact-detail.png"
+  ],
+  "finalUrl": "https://soundit-dev/clients/3/people",
+  "snapshot": "- complementary \"Main navigation\":\n  - link \"Sound IT PSA\":\n    - /url: https://soundit-dev\n    - img \"Sound IT PSA\"\n  - navigation:\n    - link \" Dashboard\":\n      - /url: https://soundit-dev\n    - text: Manage\n    - link \" Clients\":\n      - /url: https://soundit-dev/clients\n    - link \" People\":\n      - /url: https://soundit-dev/people\n    - link \" Assets\":\n      - /url: https://soundit-dev/assets\n    - text: Service\n    - link \" Tickets\":\n      - /url: https://soundit-dev/tickets\n    - link \" Cockpit 4\":\n      - /url: https://soundit-dev/cockpit\n    - link \" Calls 3\":\n      - /url: https://soundit-dev/calls\n    - link \" Phone Directory\":\n      - /url: https://soundit-dev/phone-directory\n    - link \" Emails\":\n      - /url: https://soundit-dev/emails\n    - link \" Alerts 5\":\n      - /url: https://soundit-dev/alerts\n    - text: Billing\n    - link \" Billing \":\n      - /url: \"#sidebarBilling\"\n    - text: Settings\n    - link \" General\":\n      - /url: https://soundit-dev/settings/general\n    - link \" Staff\":\n      - /url: https://soundit-dev/settings/staff\n    - link \" Integrations\":\n      - /url: https://soundit-dev/settings/integrations\n    - link \" Alerts Hub\":\n      - /url: https://soundit-dev/settings/alerts\n    - link \" MCP Tokens\":\n      - /url: https://soundit-dev/settings/mcp-tokens\n    - text: Recent\n    - link \" Vandelay Industries\":\n      - /url: https://soundit-dev/clients/3\n    - link \" VAN-DC01\":\n      - /url: https://soundit-dev/assets/7\n    - link \" T-180 QA smoke 20260709 2...\":\n      - /url: https://soundit-dev/tickets/180\n    - link \" T-179 QA smoke 20260709 2...\":\n      - /url: https://soundit-dev/tickets/179\n    - link \" T-26 QA nightly manual ti...\":\n      - /url: https://soundit-dev/tickets/26\n    - link \" QA Search Create 20260709...\":\n      - /url: https://soundit-dev/clients/88\n    - link \" Anjali Patel\":\n      - /url: https://soundit-dev/people/1\n    - link \" Acme Dental Practice\":\n      - /url: https://soundit-dev/clients/1\n  - button \"Toggle sidebar\" [expanded]: \n- banner:\n  - text: Vandelay Industries\n  - button \" Search Ctrl+K\"\n  - button \"AM Alex Morgan\"\n- main:\n  - link \" Back to Clients\":\n    - /url: https://soundit-dev/clients\n  - img \"Vandelay Industries\"\n  - heading \"Vandelay Industries\" [level=4]\n  - link \" Portal\":\n    - /url: https://soundit-dev/clients/3/portal\n  - link \" Wiki\":\n    - /url: https://soundit-dev/clients/3/wiki\n  - link \" Edit\":\n    - /url: https://soundit-dev/clients/3/edit\n  - button \"\"\n  - tablist:\n    - link \"Overview\":\n      - /url: https://soundit-dev/clients/3\n    - link \"Activity\":\n      - /url: https://soundit-dev/clients/3#activity\n    - link \"Tickets\":\n      - /url: https://soundit-dev/clients/3/tickets\n    - button \"People (4)\"\n    - link \"Assets (5)\":\n      - /url: https://soundit-dev/clients/3/assets\n    - link \"Contracts\":\n      - /url: https://soundit-dev/clients/3/contracts\n    - link \"Notes & Creds\":\n      - /url: https://soundit-dev/clients/3#notes\n    - link \"Licenses\":\n      - /url: https://soundit-dev/clients/3/licenses\n  - tabpanel:\n    - textbox \"Search by name, email, or phone...\"\n    - button \"\"\n    - combobox:\n      - option \"All types\" [selected]\n      - option \"User\"\n      - option \"Service Account\"\n      - option \"Shared Mailbox\"\n      - option \"Room/Resource\"\n    - table:\n      - rowgroup:\n        - row \"Select all Name Email Phone Mobile\":\n          - columnheader \"Select all\":\n            - checkbox \"Select all\"\n          - columnheader \"Name\"\n          - columnheader \"Email\"\n          - columnheader \"Phone\"\n          - columnheader \"Mobile\"\n      - rowgroup:\n        - row \"GC George Costanza Primary george.costanza@vandelay.example.com - -\":\n          - cell:\n            - checkbox\n          - cell \"GC George Costanza Primary\":\n            - text: GC\n            - link \"George Costanza\":\n              - /url: https://soundit-dev/people/6\n            - text: Primary\n          - cell \"george.costanza@vandelay.example.com\":\n            - link \"george.costanza@vandelay.example.com\":\n              - /url: mailto:george.costanza@vandelay.example.com\n          - cell \"-\"\n          - cell \"-\"\n        - row \"RH Russ Hammond russ.hammond@vandelay.example.com - -\":\n          - cell:\n            - checkbox\n          - cell \"RH Russ Hammond\":\n            - text: RH\n            - link \"Russ Hammond\":\n              - /url: https://soundit-dev/people/8\n          - cell \"russ.hammond@vandelay.example.com\":\n            - link \"russ.hammond@vandelay.example.com\":\n              - /url: mailto:russ.hammond@vandelay.example.com\n          - cell \"-\"\n          - cell \"-\"\n        - row \"EP Eileen Park eileen.park@vandelay.example.com - -\":\n          - cell:\n            - checkbox\n          - cell \"EP Eileen Park\":\n            - text: EP\n            - link \"Eileen Park\":\n              - /url: https://soundit-dev/people/7\n          - cell \"eileen.park@vandelay.example.com\":\n            - link \"eileen.park@vandelay.example.com\":\n              - /url: mailto:eileen.park@vandelay.example.com\n          - cell \"-\"\n          - cell \"-\"\n        - row \"MW Maya Whitfield maya.whitfield@vandelay.example.com - -\":\n          - cell:\n            - checkbox\n          - cell \"MW Maya Whitfield\":\n            - text: MW\n            - link \"Maya Whitfield\":\n              - /url: https://soundit-dev/people/9\n          - cell \"maya.whitfield@vandelay.example.com\":\n            - link \"maya.whitfield@vandelay.example.com\":\n              - /url: mailto:maya.whitfield@vandelay.example.com\n          - cell \"-\"\n          - cell \"-\"\n  - text:  Details\n  - table:\n    - rowgroup:\n      - row \"Phone -\":\n        - rowheader \"Phone\"\n        - cell \"-\"\n      - row \"Email office@vandelay.example.com\":\n        - rowheader \"Email\"\n        - cell \"office@vandelay.example.com\":\n          - link \"office@vandelay.example.com\":\n            - /url: mailto:office@vandelay.example.com\n      - row \"Website https://www.vandelay.example.com\":\n        - rowheader \"Website\"\n        - cell \"https://www.vandelay.example.com\":\n          - link \"https://www.vandelay.example.com\":\n            - /url: https://www.vandelay.example.com\n      - row \"Primary Tech Priya Shah\":\n        - rowheader \"Primary Tech\"\n        - cell \"Priya Shah\"\n  - text:  Address\n  - paragraph: 150 Main Street, Tacoma, WA 97026\n- contentinfo: © 2026 Sound IT PSA",
+  "axe": [],
+  "error": null,
+  "pageErrors": []
+}

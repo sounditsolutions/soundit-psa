@@ -1,0 +1,48 @@
+{
+  "run_label": "tester-core-smoke-2026-07-09-2310",
+  "results": [
+    {
+      "scenario": "tix-create-manual",
+      "status": "pass",
+      "notes": "Created T-180 for Vandelay Industries with subject 'QA smoke 20260709 2312 description path' and a visible description. The ticket appeared in the filtered ticket list. An earlier editor fill probe on T-179 timed out, but the retry through the visible editor path passed."
+    },
+    {
+      "scenario": "asset-ticket-link",
+      "status": "fail",
+      "notes": "Ticket T-180 showed linked asset VAN-DC01, and the VAN-DC01 in-page Alerts & Tickets tab showed T-180 with a link back to the ticket. The asset-side 'View all tickets' route /assets/7/tickets returned a Laravel 500: Undefined variable $cometJobData. This matches existing open finding psa-9s3r / dedup-key asset-ticket-link|Asset Alerts & Tickets tab crashes with undefined cometJobData, so no duplicate was filed."
+    },
+    {
+      "scenario": "client-overview",
+      "status": "pass",
+      "notes": "Vandelay Industries client detail surfaced contacts, assets, tickets, and contract/billing navigation from the client page."
+    },
+    {
+      "scenario": "client-contacts",
+      "status": "pass",
+      "notes": "The Vandelay People tab identified George Costanza as Primary, and /people/6 rendered the contact detail with email and client context. One exploratory click selector timed out, but the actual list link is present in the accessibility tree and the direct detail route passed."
+    },
+    {
+      "scenario": "tix-resolve",
+      "status": "pass",
+      "notes": "Resolved T-180 with a resolution and confirmed the resolved ticket page rendered. The run saw the known asset-badge console TypeError, matching existing open finding psa-txh4 / dedup-key cross-screen|asset-badge onEnter e.target.closest TypeError."
+    }
+  ],
+  "findings": [],
+  "artifacts": [
+    "storage/qa-reports/screens/tix-create-manual-20260709-2310-create-form.png",
+    "storage/qa-reports/screens/tix-create-manual-20260709-2310-created-ticket.png",
+    "storage/qa-reports/screens/tix-create-manual-20260709-2312-created-ticket-described.png",
+    "storage/qa-reports/screens/tix-create-manual-20260709-2313-list-ticket-list-search.png",
+    "storage/qa-reports/screens/asset-ticket-link-20260709-2315-from-ticket-asset-after-ticket-link.png",
+    "storage/qa-reports/screens/asset-ticket-link-20260709-2316-from-asset-asset-ticket-tab.png",
+    "storage/qa-reports/screens/asset-ticket-link-20260709-2318-inpage-tab-asset-inpage-alerts-tab.png",
+    "storage/qa-reports/screens/client-overview-20260709-2319-client-overview.png",
+    "storage/qa-reports/screens/client-contacts-20260709-2320-contact-detail.png",
+    "storage/qa-reports/screens/client-contacts-20260709-2321-detail-person-detail.png",
+    "storage/qa-reports/screens/tix-resolve-20260709-2322-resolved-ticket.png"
+  ],
+  "dedup_observed": [
+    "asset-ticket-link|Asset Alerts & Tickets tab crashes with undefined cometJobData",
+    "cross-screen|asset-badge onEnter e.target.closest TypeError"
+  ]
+}

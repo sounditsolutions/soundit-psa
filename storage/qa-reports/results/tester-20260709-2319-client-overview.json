@@ -1,0 +1,68 @@
+{
+  "scenario": "client-overview-20260709-2319",
+  "ok": true,
+  "steps": [
+    {
+      "i": 0,
+      "type": "goto",
+      "ok": true,
+      "detail": "status=loaded url=https://soundit-dev/clients/3"
+    },
+    {
+      "i": 1,
+      "type": "expectText",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 2,
+      "type": "expectText",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 3,
+      "type": "expectText",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 4,
+      "type": "expectText",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 5,
+      "type": "expectText",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 6,
+      "type": "expectText",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 7,
+      "type": "snapshot",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 8,
+      "type": "screenshot",
+      "ok": true,
+      "detail": ""
+    }
+  ],
+  "screenshots": [
+    "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/client-overview-20260709-2319-client-overview.png"
+  ],
+  "finalUrl": "https://soundit-dev/clients/3",
+  "snapshot": "- complementary \"Main navigation\":\n  - link \"Sound IT PSA\":\n    - /url: https://soundit-dev\n    - img \"Sound IT PSA\"\n  - navigation:\n    - link \" Dashboard\":\n      - /url: https://soundit-dev\n    - text: Manage\n    - link \" Clients\":\n      - /url: https://soundit-dev/clients\n    - link \" People\":\n      - /url: https://soundit-dev/people\n    - link \" Assets\":\n      - /url: https://soundit-dev/assets\n    - text: Service\n    - link \" Tickets\":\n      - /url: https://soundit-dev/tickets\n    - link \" Cockpit 4\":\n      - /url: https://soundit-dev/cockpit\n    - link \" Calls 3\":\n      - /url: https://soundit-dev/calls\n    - link \" Phone Directory\":\n      - /url: https://soundit-dev/phone-directory\n    - link \" Emails\":\n      - /url: https://soundit-dev/emails\n    - link \" Alerts 5\":\n      - /url: https://soundit-dev/alerts\n    - text: Billing\n    - link \" Billing \":\n      - /url: \"#sidebarBilling\"\n    - text: Settings\n    - link \" General\":\n      - /url: https://soundit-dev/settings/general\n    - link \" Staff\":\n      - /url: https://soundit-dev/settings/staff\n    - link \" Integrations\":\n      - /url: https://soundit-dev/settings/integrations\n    - link \" Alerts Hub\":\n      - /url: https://soundit-dev/settings/alerts\n    - link \" MCP Tokens\":\n      - /url: https://soundit-dev/settings/mcp-tokens\n    - text: Recent\n    - link \" Vandelay Industries\":\n      - /url: https://soundit-dev/clients/3\n    - link \" VAN-DC01\":\n      - /url: https://soundit-dev/assets/7\n    - link \" T-180 QA smoke 20260709 2...\":\n      - /url: https://soundit-dev/tickets/180\n    - link \" T-179 QA smoke 20260709 2...\":\n      - /url: https://soundit-dev/tickets/179\n    - link \" T-26 QA nightly manual ti...\":\n      - /url: https://soundit-dev/tickets/26\n    - link \" QA Search Create 20260709...\":\n      - /url: https://soundit-dev/clients/88\n    - link \" Anjali Patel\":\n      - /url: https://soundit-dev/people/1\n    - link \" Acme Dental Practice\":\n      - /url: https://soundit-dev/clients/1\n  - button \"Toggle sidebar\" [expanded]: \n- banner:\n  - text: Vandelay Industries\n  - button \" Search Ctrl+K\"\n  - button \"AM Alex Morgan\"\n- main:\n  - link \" Back to Clients\":\n    - /url: https://soundit-dev/clients\n  - img \"Vandelay Industries\"\n  - heading \"Vandelay Industries\" [level=4]\n  - link \" Portal\":\n    - /url: https://soundit-dev/clients/3/portal\n  - link \" Wiki\":\n    - /url: https://soundit-dev/clients/3/wiki\n  - link \" Edit\":\n    - /url: https://soundit-dev/clients/3/edit\n  - button \"\"\n  - tablist:\n    - tab \"Overview\" [selected]\n    - tab \"Activity\"\n    - tab \"Tickets (5)\"\n    - tab \"People (4)\"\n    - tab \"Assets (5)\"\n    - tab \"Contracts (2)\"\n    - tab \"Notes & Creds\"\n    - tab \"Licenses (6)\"\n  - tabpanel \"Overview\":\n    - text: \" Notes Three sites: HQ (Tacoma), warehouse, and remote sales reps. Always CC accounting@vandelay.example.com on invoices. No unscheduled after-hours work without approval.  People 4\"\n    - link \"View all\":\n      - /url: https://soundit-dev/clients/3/people\n    - link \" New\":\n      - /url: https://soundit-dev/people/create?client_id=3\n    - table:\n      - rowgroup:\n        - row \"Name Email Phone Mobile\":\n          - columnheader \"Name\"\n          - columnheader \"Email\"\n          - columnheader \"Phone\"\n          - columnheader \"Mobile\"\n      - rowgroup:\n        - row \"GC George Costanza Primary george.costanza@vandelay.example.com - -\":\n          - cell \"GC George Costanza Primary\":\n            - text: GC\n            - link \"George Costanza\":\n              - /url: https://soundit-dev/people/6\n            - text: Primary\n          - cell \"george.costanza@vandelay.example.com\":\n            - link \"george.costanza@vandelay.example.com\":\n              - /url: mailto:george.costanza@vandelay.example.com\n          - cell \"-\"\n          - cell \"-\"\n        - row \"RH Russ Hammond russ.hammond@vandelay.example.com - -\":\n          - cell \"RH Russ Hammond\":\n            - text: RH\n            - link \"Russ Hammond\":\n              - /url: https://soundit-dev/people/8\n          - cell \"russ.hammond@vandelay.example.com\":\n            - link \"russ.hammond@vandelay.example.com\":\n              - /url: mailto:russ.hammond@vandelay.example.com\n          - cell \"-\"\n          - cell \"-\"\n        - row \"EP Eileen Park eileen.park@vandelay.example.com - -\":\n          - cell \"EP Eileen Park\":\n            - text: EP\n            - link \"Eileen Park\":\n              - /url: https://soundit-dev/people/7\n          - cell \"eileen.park@vandelay.example.com\":\n            - link \"eileen.park@vandelay.example.com\":\n              - /url: mailto:eileen.park@vandelay.example.com\n          - cell \"-\"\n          - cell \"-\"\n        - row \"MW Maya Whitfield maya.whitfield@vandelay.example.com - -\":\n          - cell \"MW Maya Whitfield\":\n            - text: MW\n            - link \"Maya Whitfield\":\n              - /url: https://soundit-dev/people/9\n          - cell \"maya.whitfield@vandelay.example.com\":\n            - link \"maya.whitfield@vandelay.example.com\":\n              - /url: mailto:maya.whitfield@vandelay.example.com\n          - cell \"-\"\n          - cell \"-\"\n    - text:  Contracts 2 active\n    - link \" New Invoice\":\n      - /url: https://soundit-dev/invoices/create?client_id=3\n    - link \"View all\":\n      - /url: https://soundit-dev/clients/3/contracts\n    - link \" New\":\n      - /url: https://soundit-dev/clients/3/contracts/create\n    - table:\n      - rowgroup:\n        - row \"Name Type Billing Prepay Profiles\":\n          - columnheader \"Name\"\n          - columnheader \"Type\"\n          - columnheader \"Billing\"\n          - columnheader \"Prepay\"\n          - columnheader \"Profiles\"\n      - rowgroup:\n        - row \"Managed Services Agreement Managed Services Monthly - 1\":\n          - cell \"Managed Services Agreement\":\n            - link \"Managed Services Agreement\":\n              - /url: https://soundit-dev/contracts/4\n          - cell \"Managed Services\"\n          - cell \"Monthly\"\n          - cell \"-\"\n          - cell \"1\"\n        - row \"Project Work - Q2 Custom Monthly - 0\":\n          - cell \"Project Work - Q2\":\n            - link \"Project Work - Q2\":\n              - /url: https://soundit-dev/contracts/5\n          - cell \"Custom\"\n          - cell \"Monthly\"\n          - cell \"-\"\n          - cell \"0\"\n    - text:  Self-Service Install Link Install URL\n    - textbox: https://soundit-dev/setup/JQqXLhyD0AF1JL1BjZX46z3i5DD63dEh\n    - button \"\"\n    - link \"\":\n      - /url: https://soundit-dev/setup/JQqXLhyD0AF1JL1BjZX46z3i5DD63dEh\n    - text: Primary RMM\n    - combobox:\n      - option \"Ninja\" [selected]\n      - option \"Tactical\"\n    - button \"Update\"\n    - button \" Rotate link\"\n    - button \" Disable\"\n  - text:  Details\n  - table:\n    - rowgroup:\n      - row \"Phone -\":\n        - rowheader \"Phone\"\n        - cell \"-\"\n      - row \"Email office@vandelay.example.com\":\n        - rowheader \"Email\"\n        - cell \"office@vandelay.example.com\":\n          - link \"office@vandelay.example.com\":\n            - /url: mailto:office@vandelay.example.com\n      - row \"Website https://www.vandelay.example.com\":\n        - rowheader \"Website\"\n        - cell \"https://www.vandelay.example.com\":\n          - link \"https://www.vandelay.example.com\":\n            - /url: https://www.vandelay.example.com\n      - row \"Primary Tech Priya Shah\":\n        - rowheader \"Primary Tech\"\n        - cell \"Priya Shah\"\n  - text:  Address\n  - paragraph: 150 Main Street, Tacoma, WA 97026\n- contentinfo: © 2026 Sound IT PSA",
+  "axe": [],
+  "error": null,
+  "pageErrors": []
+}

@@ -1,0 +1,70 @@
+{
+  "scenario": "tix-resolve-20260709-2322",
+  "ok": true,
+  "steps": [
+    {
+      "i": 0,
+      "type": "goto",
+      "ok": true,
+      "detail": "status=loaded url=https://soundit-dev/tickets/180"
+    },
+    {
+      "i": 1,
+      "type": "click",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 2,
+      "type": "fill",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 3,
+      "type": "click",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 4,
+      "type": "expectText",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 5,
+      "type": "expectText",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 6,
+      "type": "expectText",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 7,
+      "type": "snapshot",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 8,
+      "type": "screenshot",
+      "ok": true,
+      "detail": ""
+    }
+  ],
+  "screenshots": [
+    "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/tix-resolve-20260709-2322-resolved-ticket.png"
+  ],
+  "finalUrl": "https://soundit-dev/tickets/180",
+  "snapshot": "- complementary \"Main navigation\":\n  - link \"Sound IT PSA\":\n    - /url: https://soundit-dev\n    - img \"Sound IT PSA\"\n  - navigation:\n    - link \" Dashboard\":\n      - /url: https://soundit-dev\n    - text: Manage\n    - link \" Clients\":\n      - /url: https://soundit-dev/clients\n    - link \" People\":\n      - /url: https://soundit-dev/people\n    - link \" Assets\":\n      - /url: https://soundit-dev/assets\n    - text: Service\n    - link \" Tickets\":\n      - /url: https://soundit-dev/tickets\n    - link \" Cockpit 4\":\n      - /url: https://soundit-dev/cockpit\n    - link \" Calls 3\":\n      - /url: https://soundit-dev/calls\n    - link \" Phone Directory\":\n      - /url: https://soundit-dev/phone-directory\n    - link \" Emails\":\n      - /url: https://soundit-dev/emails\n    - link \" Alerts 5\":\n      - /url: https://soundit-dev/alerts\n    - text: Billing\n    - link \" Billing \":\n      - /url: \"#sidebarBilling\"\n    - text: Settings\n    - link \" General\":\n      - /url: https://soundit-dev/settings/general\n    - link \" Staff\":\n      - /url: https://soundit-dev/settings/staff\n    - link \" Integrations\":\n      - /url: https://soundit-dev/settings/integrations\n    - link \" Alerts Hub\":\n      - /url: https://soundit-dev/settings/alerts\n    - link \" MCP Tokens\":\n      - /url: https://soundit-dev/settings/mcp-tokens\n    - text: Recent\n    - link \" T-180 QA smoke 20260709 2...\":\n      - /url: https://soundit-dev/tickets/180\n    - link \" George Costanza\":\n      - /url: https://soundit-dev/people/6\n    - link \" Vandelay Industries\":\n      - /url: https://soundit-dev/clients/3\n    - link \" VAN-DC01\":\n      - /url: https://soundit-dev/assets/7\n    - link \" T-179 QA smoke 20260709 2...\":\n      - /url: https://soundit-dev/tickets/179\n    - link \" T-26 QA nightly manual ti...\":\n      - /url: https://soundit-dev/tickets/26\n    - link \" QA Search Create 20260709...\":\n      - /url: https://soundit-dev/clients/88\n    - link \" Anjali Patel\":\n      - /url: https://soundit-dev/people/1\n  - button \"Toggle sidebar\" [expanded]: \n- banner:\n  - text: T-180 QA smoke 20260709 2312 description path\n  - button \" Search Ctrl+K\"\n  - button \"AM Alex Morgan\"\n- main:\n  - alert:\n    - text: Status changed to Resolved.\n    - button\n  - link \" Back to Tickets\":\n    - /url: https://soundit-dev/tickets\n  - heading \"T-180\" [level=4]\n  - heading \"QA smoke 20260709 2312 description path\" [level=5]\n  - paragraph: Technician QA smoke description entered through the visible Markdown editor for the manual ticket creation scenario.\n  - text: Resolution\n  - paragraph: Resolved during QA by confirming the manually created ticket renders, appears in search, and links to VAN-DC01 from both ticket and asset context.\n  - text:  Notes\n  - button \" Show system notes\"\n  - button \" Note\"\n  - button \" Reply\"\n  - button \" Change Status\"\n  - text:  Alex Morgan — New  Resolved 0 seconds ago Resolved\n  - button \"P3 - Medium\"\n  - text: \n  - combobox:\n    - option \"Unassigned\"\n    - option \"Alex Morgan\" [selected]\n    - option \"Devon Carter\"\n    - option \"Priya Shah\"\n    - option \"Riley Okafor\"\n    - option \"Sam Whitaker\"\n  - button \" Close\"\n  - button \" Reopen\"\n  - button \" Run Script\"\n  - button \" Run Command\"\n  - text:  Ticket Info Subject\n  - textbox: QA smoke 20260709 2312 description path\n  - text: Category\n  - combobox:\n    - option \"-- None --\" [selected]\n    - option \"Hardware\"\n    - option \"Software\"\n    - option \"Network\"\n    - option \"Email\"\n    - option \"User Account\"\n    - option \"Security\"\n    - option \"Server\"\n    - option \"Cloud\"\n  - text: Subcategory\n  - combobox:\n    - option \"-- None --\" [selected]\n  - button \"Save\"\n  - table:\n    - rowgroup:\n      - row \"Type  Incident\":\n        - rowheader \"Type\"\n        - cell \" Incident\"\n      - row \"Source Manual\":\n        - rowheader \"Source\"\n        - cell \"Manual\"\n  - text:  Details\n  - table:\n    - rowgroup:\n      - row \"Client Vandelay Industries Vandelay Industries \":\n        - rowheader \"Client\"\n        - cell \"Vandelay Industries Vandelay Industries \":\n          - img \"Vandelay Industries\"\n          - link \"Vandelay Industries\":\n            - /url: https://soundit-dev/clients/3\n          - button \"\"\n      - row \"Contact None\":\n        - rowheader \"Contact\"\n        - cell \"None\":\n          - combobox:\n            - option \"None\" [selected]\n            - option \"Eileen Park\"\n            - option \"George Costanza\"\n            - option \"Maya Whitfield\"\n            - option \"Russ Hammond\"\n      - row \"Assets VAN-DC01  + Link asset... \":\n        - rowheader \"Assets\"\n        - cell \"VAN-DC01  + Link asset... \":\n          - link \"VAN-DC01\":\n            - /url: https://soundit-dev/assets/7\n          - button \"\"\n          - combobox:\n            - option \"+ Link asset...\" [selected]\n            - option \"Eileen Park PC (Workstation)\"\n            - option \"ERP Server (Server)\"\n            - option \"George Costanza PC (Workstation)\"\n            - option \"Warehouse Laptop (Laptop)\"\n          - button \"\"\n      - 'row \"Contract None Coverage: Managed Services Agreement\"':\n        - rowheader \"Contract\"\n        - 'cell \"None Coverage: Managed Services Agreement\"':\n          - combobox:\n            - option \"None\" [selected]\n            - option \"Managed Services Agreement\"\n            - option \"Project Work - Q2\"\n          - text: \"Coverage:\"\n          - link \"Managed Services Agreement\":\n            - /url: https://soundit-dev/contracts/4\n      - row \"Due 2026-07-10T23:12\":\n        - rowheader \"Due\"\n        - cell \"2026-07-10T23:12\":\n          - textbox: 2026-07-10T23:12\n      - row \"Total Time -\":\n        - rowheader \"Total Time\"\n        - cell \"-\"\n      - row \"Created By Alex Morgan\":\n        - rowheader \"Created By\"\n        - cell \"Alex Morgan\"\n      - row \"Merge  Merge into this\":\n        - rowheader \"Merge\"\n        - cell \" Merge into this\":\n          - button \" Merge into this\"\n  - strong: \"Opened:\"\n  - text: Jul 9 16:12\n  - strong: \"Responded:\"\n  - text: \"-\"\n  - strong: \"Resolved:\"\n  - text: Jul 9 16:15\n  - strong: \"Closed:\"\n  - text: \"-  AI Triage\"\n  - button \" Run Triage\"\n  - text:  Site Notes\n  - link \"\":\n    - /url: https://soundit-dev/clients/3#siteNotes\n  - text: Updated 1 month ago\n- contentinfo: © 2026 Sound IT PSA",
+  "axe": [],
+  "error": null,
+  "pageErrors": [
+    "TypeError: e.target.closest is not a function"
+  ]
+}

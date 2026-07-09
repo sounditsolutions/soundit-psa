@@ -1,0 +1,56 @@
+{
+  "scenario": "asset-ticket-link-20260709-2318-inpage-tab",
+  "ok": true,
+  "steps": [
+    {
+      "i": 0,
+      "type": "goto",
+      "ok": true,
+      "detail": "status=loaded url=https://soundit-dev/assets/7"
+    },
+    {
+      "i": 1,
+      "type": "click",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 2,
+      "type": "expectText",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 3,
+      "type": "expectText",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 4,
+      "type": "expectText",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 5,
+      "type": "snapshot",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 6,
+      "type": "screenshot",
+      "ok": true,
+      "detail": ""
+    }
+  ],
+  "screenshots": [
+    "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/asset-ticket-link-20260709-2318-inpage-tab-asset-inpage-alerts-tab.png"
+  ],
+  "finalUrl": "https://soundit-dev/assets/7",
+  "snapshot": "- complementary \"Main navigation\":\n  - link \"Sound IT PSA\":\n    - /url: https://soundit-dev\n    - img \"Sound IT PSA\"\n  - navigation:\n    - link \" Dashboard\":\n      - /url: https://soundit-dev\n    - text: Manage\n    - link \" Clients\":\n      - /url: https://soundit-dev/clients\n    - link \" People\":\n      - /url: https://soundit-dev/people\n    - link \" Assets\":\n      - /url: https://soundit-dev/assets\n    - text: Service\n    - link \" Tickets\":\n      - /url: https://soundit-dev/tickets\n    - link \" Cockpit 4\":\n      - /url: https://soundit-dev/cockpit\n    - link \" Calls 3\":\n      - /url: https://soundit-dev/calls\n    - link \" Phone Directory\":\n      - /url: https://soundit-dev/phone-directory\n    - link \" Emails\":\n      - /url: https://soundit-dev/emails\n    - link \" Alerts 5\":\n      - /url: https://soundit-dev/alerts\n    - text: Billing\n    - link \" Billing \":\n      - /url: \"#sidebarBilling\"\n    - text: Settings\n    - link \" General\":\n      - /url: https://soundit-dev/settings/general\n    - link \" Staff\":\n      - /url: https://soundit-dev/settings/staff\n    - link \" Integrations\":\n      - /url: https://soundit-dev/settings/integrations\n    - link \" Alerts Hub\":\n      - /url: https://soundit-dev/settings/alerts\n    - link \" MCP Tokens\":\n      - /url: https://soundit-dev/settings/mcp-tokens\n    - text: Recent\n    - link \" VAN-DC01\":\n      - /url: https://soundit-dev/assets/7\n    - link \" T-180 QA smoke 20260709 2...\":\n      - /url: https://soundit-dev/tickets/180\n    - link \" T-179 QA smoke 20260709 2...\":\n      - /url: https://soundit-dev/tickets/179\n    - link \" T-26 QA nightly manual ti...\":\n      - /url: https://soundit-dev/tickets/26\n    - link \" QA Search Create 20260709...\":\n      - /url: https://soundit-dev/clients/88\n    - link \" Anjali Patel\":\n      - /url: https://soundit-dev/people/1\n    - link \" Acme Dental Practice\":\n      - /url: https://soundit-dev/clients/1\n    - link \" Managed Services Agreemen...\":\n      - /url: https://soundit-dev/contracts/4\n  - button \"Toggle sidebar\" [expanded]: \n- banner:\n  - text: VAN-DC01\n  - button \" Search Ctrl+K\"\n  - button \"AM Alex Morgan\"\n- main:\n  - link \" Back to Vandelay Industries\":\n    - /url: https://soundit-dev/clients/3\n  - heading \"VAN-DC01\" [level=4]\n  - text: Domain Controller Online\n  - link \" Managed Services Agreement\":\n    - /url: https://soundit-dev/contracts/4\n  - link \" Edit\":\n    - /url: https://soundit-dev/assets/7/edit\n  - button \"\"\n  - tablist:\n    - tab \"Overview\"\n    - tab \"Network\"\n    - tab \"Storage\"\n    - tab \"Software\"\n    - tab \"Patches\"\n    - tab \"Security\"\n    - tab \"Alerts & Tickets\" [selected]\n    - tab \"Backup\"\n  - tabpanel:\n    - paragraph: No alerts for this device.\n    - text:  Recent Tickets\n    - link \"View all tickets\":\n      - /url: https://soundit-dev/assets/7/tickets\n    - table:\n      - rowgroup:\n        - row \"ID Subject Priority Status Assignee Updated\":\n          - columnheader \"ID\"\n          - columnheader \"Subject\"\n          - columnheader \"Priority\"\n          - columnheader \"Status\"\n          - columnheader \"Assignee\"\n          - columnheader \"Updated\"\n      - rowgroup:\n        - row \"T-180 QA smoke 20260709 2312 description path P3 - Medium New Alex Morgan 1 minute ago\":\n          - cell \"T-180\"\n          - cell \"QA smoke 20260709 2312 description path\":\n            - link \"QA smoke 20260709 2312 description path\":\n              - /url: https://soundit-dev/tickets/180\n          - cell \"P3 - Medium\"\n          - cell \"New\"\n          - cell \"Alex Morgan\"\n          - cell \"1 minute ago\"\n- contentinfo: © 2026 Sound IT PSA",
+  "axe": [],
+  "error": null,
+  "pageErrors": []
+}
