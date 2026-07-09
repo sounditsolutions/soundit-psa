@@ -37,8 +37,14 @@ class MineTicketKnowledgeTest extends TestCase
 
     private function mockAiNoFacts(): void
     {
+        $this->mockAiRaw(['facts' => []]);
+    }
+
+    /** Mock the AI extraction call to return an arbitrary decoded JSON shape. */
+    private function mockAiRaw(array $raw): void
+    {
         $mock = $this->mock(AiClient::class);
-        $mock->shouldReceive('completeJson')->andReturn(['facts' => []]);
+        $mock->shouldReceive('completeJson')->andReturn($raw);
         $mock->shouldReceive('cumulativeInputTokens')->andReturn(500);
         $mock->shouldReceive('cumulativeOutputTokens')->andReturn(100);
         $mock->shouldReceive('cumulativeTotalTokens')->andReturn(600);
@@ -369,5 +375,121 @@ class MineTicketKnowledgeTest extends TestCase
         // tokens on a recompose.
         $this->assertSame(WikiRunStatus::Completed, WikiRun::first()->status);
         Bus::assertNotDispatched(ComposeClientOverview::class);
+    }
+
+    // ── envelope salvage: model drifts from the {"facts":[...]} wrapper (psa-tqv9) ──
+
+    public function test_bare_array_envelope_is_salvaged_into_a_fact(): void
+    {
+        Bus::fake([ComposeClientOverview::class]);
+        $this->enableWiki();
+        $client = Client::factory()->create();
+        $ticket = $this->makeClosedTicketWithResolution(
+            $client,
+            'Warehouse label printer on static IP 192.168.10.254, USB to VAN-WS01.',
+        );
+        app(WikiSkeletonService::class)->ensureForClient($client);
+
+        // Model returns a BARE ARRAY of facts (no {"facts": ...} wrapper). Before the fix
+        // this was dropped silently — a fact-rich resolution mined to zero facts with zero
+        // discard reasons, the exact psa-tqv9 symptom.
+        $this->mockAiRaw([
+            [
+                'page' => 'network',
+                'anchor' => 'equipment',
+                'subject_key' => 'network:label-printer',
+                'statement' => 'Warehouse label printer uses static IP 192.168.10.254, USB to VAN-WS01',
+                'volatility' => 'durable',
+                'confidence' => 0.9,
+            ],
+        ]);
+
+        MineTicketKnowledge::dispatchSync($ticket->id);
+
+        $run = WikiRun::first();
+        $this->assertSame(WikiRunStatus::Completed, $run->status);
+
+        $fact = WikiFact::first();
+        $this->assertNotNull($fact, 'bare-array envelope should be salvaged into a written fact');
+        $this->assertSame('network:label-printer', $fact->subject_key);
+        $this->assertSame(1, $run->stage_results['facts_extracted']);
+        $this->assertSame(1, $run->stage_results['ai_candidates_returned']);
+    }
+
+    public function test_single_bare_object_envelope_is_salvaged_into_a_fact(): void
+    {
+        Bus::fake([ComposeClientOverview::class]);
+        $this->enableWiki();
+        $client = Client::factory()->create();
+        $ticket = $this->makeClosedTicketWithResolution($client, 'Replaced edge firewall.');
+        app(WikiSkeletonService::class)->ensureForClient($client);
+
+        // Model returns a SINGLE fact object — not wrapped, not in a list.
+        $this->mockAiRaw([
+            'page' => 'network',
+            'anchor' => 'equipment',
+            'subject_key' => 'network:edge-firewall',
+            'statement' => 'Edge firewall is a FortiGate 60F',
+            'volatility' => 'durable',
+            'confidence' => 0.9,
+        ]);
+
+        MineTicketKnowledge::dispatchSync($ticket->id);
+
+        $this->assertSame(WikiRunStatus::Completed, WikiRun::first()->status);
+        $fact = WikiFact::first();
+        $this->assertNotNull($fact, 'single bare fact object should be salvaged into a written fact');
+        $this->assertSame('network:edge-firewall', $fact->subject_key);
+    }
+
+    // ── observability: a zero-fact run always records WHY (psa-tqv9) ──────────────
+
+    public function test_zero_candidates_records_a_clear_outcome_reason(): void
+    {
+        $this->enableWiki();
+        $client = Client::factory()->create();
+        $ticket = $this->makeClosedTicketWithResolution($client, 'Routine maintenance, no new info.');
+        app(WikiSkeletonService::class)->ensureForClient($client);
+        $this->mockAiNoFacts(); // {"facts": []}
+
+        MineTicketKnowledge::dispatchSync($ticket->id);
+
+        $run = WikiRun::first();
+        $this->assertSame(WikiRunStatus::Completed, $run->status);
+        $this->assertSame(0, $run->stage_results['facts_extracted']);
+        $this->assertSame(0, $run->stage_results['ai_candidates_returned']);
+        // The run is no longer a silent void — it records that the AI itself returned nothing.
+        $this->assertStringContainsString('no candidate facts', $run->stage_results['outcome_reason']);
+    }
+
+    public function test_all_discarded_candidates_record_an_outcome_reason(): void
+    {
+        $this->enableWiki();
+        $client = Client::factory()->create();
+        $ticket = $this->makeClosedTicketWithResolution($client, 'Something happened.');
+        app(WikiSkeletonService::class)->ensureForClient($client);
+
+        // One candidate that fails validation (page is not an allowed page) → discarded,
+        // never written. The ledger must distinguish this from "AI returned nothing".
+        $this->mockAiRaw(['facts' => [
+            [
+                'page' => 'not-a-real-page',
+                'anchor' => 'nope',
+                'subject_key' => 'x:y',
+                'statement' => 'Some statement',
+                'volatility' => 'durable',
+                'confidence' => 0.9,
+            ],
+        ]]);
+
+        MineTicketKnowledge::dispatchSync($ticket->id);
+
+        $run = WikiRun::first();
+        $this->assertSame(WikiRunStatus::Completed, $run->status);
+        $this->assertSame(0, $run->stage_results['facts_extracted']);
+        $this->assertSame(1, $run->stage_results['ai_candidates_returned']);
+        $this->assertSame(1, $run->stage_results['facts_discarded_by_extractor']);
+        $this->assertStringContainsString('discarded', $run->stage_results['outcome_reason']);
+        $this->assertNotEmpty($run->stage_results['discarded_details']);
     }
 }
