@@ -110,8 +110,8 @@ class ClientService
             throw new \RuntimeException("Cannot delete client with {$activeContracts} active contract(s). Cancel or expire them first.");
         }
 
-        // Block deletion if client has unpaid invoices
-        $unpaidInvoices = $client->invoices()->where('status', 'sent')->count();
+        // Block deletion if client has unpaid invoices (issued but not paid or voided)
+        $unpaidInvoices = $client->invoices()->unpaid()->count();
         if ($unpaidInvoices > 0) {
             throw new \RuntimeException("Cannot delete client with {$unpaidInvoices} unpaid invoice(s). Mark them as paid or void first.");
         }
