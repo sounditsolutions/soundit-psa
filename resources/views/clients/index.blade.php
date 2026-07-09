@@ -45,9 +45,9 @@
                 <thead class="thead-brand">
                     <tr>
                         <th>Name</th>
-                        <th>Phone</th>
-                        <th>Email</th>
-                        <th class="text-center">People</th>
+                        <th class="d-none d-md-table-cell">Phone</th>
+                        <th class="d-none d-md-table-cell">Email</th>
+                        <th class="text-center d-none d-md-table-cell">People</th>
                         <th></th>
                     </tr>
                 </thead>
@@ -62,8 +62,29 @@
                                 @if($client->reseller)
                                     <i class="bi bi-arrow-up-right-circle text-info ms-1" title="Reseller: {{ $client->reseller->name }}"></i>
                                 @endif
+
+                                {{-- Mobile-only contact/action context: Phone/Email/People columns are
+                                     hidden below md, so surface them stacked under the name here. --}}
+                                <div class="d-md-none small text-muted mt-1">
+                                    @if($client->phone_display)
+                                        <div>
+                                            <i class="bi bi-telephone me-1"></i>
+                                            <a href="#" data-phone="{{ $client->phone }}" class="text-decoration-none dial-link">{{ $client->phone_display }}</a>
+                                        </div>
+                                    @endif
+                                    @if($client->email)
+                                        <div class="text-break">
+                                            <i class="bi bi-envelope me-1"></i>{{ $client->email }}
+                                        </div>
+                                    @endif
+                                    @if($client->people_count > 0)
+                                        <div>
+                                            <i class="bi bi-people me-1"></i>{{ $client->people_count }} {{ \Illuminate\Support\Str::plural('contact', $client->people_count) }}
+                                        </div>
+                                    @endif
+                                </div>
                             </td>
-                            <td>
+                            <td class="d-none d-md-table-cell">
                                 @if($client->phone_display)
                                     <a href="#" data-phone="{{ $client->phone }}" class="text-decoration-none dial-link">
                                         {{ $client->phone_display }}
@@ -72,8 +93,8 @@
                                     <span class="text-muted">-</span>
                                 @endif
                             </td>
-                            <td>{{ $client->email ?? '-' }}</td>
-                            <td class="text-center">
+                            <td class="d-none d-md-table-cell">{{ $client->email ?? '-' }}</td>
+                            <td class="text-center d-none d-md-table-cell">
                                 @if($client->people_count > 0)
                                     <span class="badge bg-light text-dark">{{ $client->people_count }}</span>
                                 @else
