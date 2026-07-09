@@ -15,7 +15,7 @@
     <div class="col d-flex flex-wrap align-items-center justify-content-between gap-2">
         <div>
             <h4 class="section-title mb-1">{{ $invoice->invoice_number }}</h4>
-            <span class="badge {{ $invoice->status->badgeClass() }}">{{ $invoice->status->label() }}</span>
+            <span class="badge {{ $invoice->displayStatusBadgeClass() }}">{{ $invoice->displayStatusLabel() }}</span>
         </div>
         <div class="d-flex flex-wrap gap-2">
             @if($invoice->is_editable)

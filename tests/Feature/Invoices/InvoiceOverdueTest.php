@@ -61,6 +61,30 @@ class InvoiceOverdueTest extends TestCase
         $this->assertFalse($invoice->isOverdue());
     }
 
+    // ── Display helpers ──
+
+    public function test_display_status_label_reports_overdue_for_past_due_posted_invoice(): void
+    {
+        $invoice = $this->makeInvoice([
+            'status' => InvoiceStatus::Posted,
+            'due_date' => now()->subDay(),
+        ]);
+
+        $this->assertSame('Overdue', $invoice->displayStatusLabel());
+        $this->assertSame('bg-danger', $invoice->displayStatusBadgeClass());
+    }
+
+    public function test_display_status_label_falls_back_to_status_when_not_overdue(): void
+    {
+        $invoice = $this->makeInvoice([
+            'status' => InvoiceStatus::Posted,
+            'due_date' => now()->addDay(),
+        ]);
+
+        $this->assertSame('Posted', $invoice->displayStatusLabel());
+        $this->assertSame(InvoiceStatus::Posted->badgeClass(), $invoice->displayStatusBadgeClass());
+    }
+
     // ── Invoice list view ──
 
     public function test_invoices_list_shows_overdue_badge_for_past_due_posted_invoice(): void
@@ -104,6 +128,51 @@ class InvoiceOverdueTest extends TestCase
 
         $resp->assertOk();
         $resp->assertSee('Paid');
+        $resp->assertDontSee('Overdue');
+    }
+
+    // ── Invoice detail view (regression: detail must not disagree with the list) ──
+
+    public function test_invoice_detail_shows_overdue_for_past_due_posted_invoice(): void
+    {
+        $user = User::factory()->create();
+        $invoice = $this->makeInvoice([
+            'status' => InvoiceStatus::Posted,
+            'due_date' => now()->subDay(),
+        ]);
+
+        $resp = $this->actingAs($user)->get(route('invoices.show', $invoice));
+
+        $resp->assertOk();
+        $resp->assertSee('Overdue');
+    }
+
+    public function test_invoice_detail_shows_posted_for_future_due_posted_invoice(): void
+    {
+        $user = User::factory()->create();
+        $invoice = $this->makeInvoice([
+            'status' => InvoiceStatus::Posted,
+            'due_date' => now()->addDay(),
+        ]);
+
+        $resp = $this->actingAs($user)->get(route('invoices.show', $invoice));
+
+        $resp->assertOk();
+        $resp->assertSee('Posted');
+        $resp->assertDontSee('Overdue');
+    }
+
+    public function test_invoice_detail_shows_paid_not_overdue_for_paid_invoice(): void
+    {
+        $user = User::factory()->create();
+        $invoice = $this->makeInvoice([
+            'status' => InvoiceStatus::Paid,
+            'due_date' => now()->subDay(),
+        ]);
+
+        $resp = $this->actingAs($user)->get(route('invoices.show', $invoice));
+
+        $resp->assertOk();
         $resp->assertDontSee('Overdue');
     }
 }

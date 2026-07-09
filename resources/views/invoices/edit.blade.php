@@ -14,7 +14,7 @@
 <div class="row mb-4">
     <div class="col">
         <h4 class="section-title mb-1">Edit {{ $invoice->invoice_number }}</h4>
-        <span class="badge {{ $invoice->status->badgeClass() }}">{{ $invoice->status->label() }}</span>
+        <span class="badge {{ $invoice->displayStatusBadgeClass() }}">{{ $invoice->displayStatusLabel() }}</span>
         <span class="text-muted ms-2 small">{{ $invoice->client->name }}</span>
     </div>
 </div>
