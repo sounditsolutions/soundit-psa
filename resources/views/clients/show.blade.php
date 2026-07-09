@@ -76,10 +76,13 @@
 @php
     $activeContracts = $client->contracts()->active()->withCount('profiles')->get();
     if (!in_array($activeTab ?? '', ['tickets', 'assets', 'people', 'contracts', 'licenses'])) {
+        // True open-ticket count for the badge (uncapped); $openTickets stays a 5-row preview.
+        $openTicketsCount = $client->tickets()->open()->count();
         $openTickets = $client->tickets()->open()->orderByDesc('updated_at')->limit(5)->get();
         $closedTickets = $client->tickets()->closed()->orderByDesc('updated_at')->limit(3)->get();
         $allRecent = $openTickets->merge($closedTickets);
     } else {
+        $openTicketsCount = 0;
         $openTickets = collect();
         $closedTickets = collect();
         $allRecent = collect();
@@ -114,7 +117,7 @@
                     </button>
                 @else
                     <a class="nav-link" href="{{ route('clients.tickets', $client) }}">
-                        Tickets @if(!$isTabOverride && $openTickets->isNotEmpty())<span class="text-muted">({{ $openTickets->count() }})</span>@endif
+                        Tickets @if(!$isTabOverride && $openTicketsCount > 0)<span class="text-muted">({{ $openTicketsCount }})</span>@endif
                     </a>
                 @endif
             </li>
@@ -503,8 +506,8 @@
                         <div class="card-header d-flex justify-content-between align-items-center">
                             <div>
                                 <i class="bi bi-ticket-perforated me-2"></i>Recent Tickets
-                                @if($openTickets->isNotEmpty())
-                                    <span class="badge bg-light text-dark ms-1">{{ $openTickets->count() }} open</span>
+                                @if($openTicketsCount > 0)
+                                    <span class="badge bg-light text-dark ms-1">{{ $openTicketsCount }} open</span>
                                 @endif
                             </div>
                             <a href="{{ route('clients.tickets', $client) }}"
