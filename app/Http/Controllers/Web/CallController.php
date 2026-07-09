@@ -42,11 +42,9 @@ class CallController extends Controller
     {
         $filters = $request->only(['status', 'date_from', 'date_to', 'search']);
 
-        // Default to today if no date filter
-        if (empty($filters['date_from']) && empty($filters['date_to']) && empty($filters['search']) && empty($filters['status'])) {
-            $filters['date_from'] = today()->toDateString();
-        }
-
+        // No silent default filter: a fresh Call Log shows the most recent calls
+        // (capped in getRecentCalls), so the calls the sidebar "needs follow-up"
+        // badge advertises are visible on landing and "Clear" genuinely clears.
         $calls = $this->phoneCallService->getRecentCalls(100, $filters);
 
         $missedCount = PhoneCall::unfollowedUp()->count();
