@@ -76,6 +76,29 @@ class HuntressClientReadTest extends TestCase
         $this->assertSame('sent', $result['status']);
     }
 
+    public function test_get_escalations_auto_paginates_and_unwraps_the_escalations_key(): void
+    {
+        // Page 1 carries a next_page_token; page 2 ends pagination. Rows live under the
+        // "escalations" key (list-endpoint wrapping), flattened across pages by the client.
+        $client = $this->clientReturning([
+            new Response(200, [], json_encode([
+                'escalations' => [['id' => 1, 'status' => 'sent'], ['id' => 2, 'status' => 'resolved']],
+                'pagination' => ['next_page_token' => 'abc'],
+            ])),
+            new Response(200, [], json_encode([
+                'escalations' => [['id' => 3, 'status' => 'resolved']],
+                'pagination' => ['next_page_token' => null],
+            ])),
+        ]);
+
+        $result = $client->getEscalations(['organization_id' => 42]);
+
+        $this->assertCount(3, $result);
+        $this->assertSame([1, 2, 3], array_column($result, 'id'));
+        $this->assertSame('/v1/escalations', $this->lastPath());
+        $this->assertCount(2, $this->history, 'both pages should have been fetched');
+    }
+
     public function test_a_429_is_retried_after_backoff_then_succeeds(): void
     {
         // Retry-After: 0 keeps the test instant while still exercising the retry loop.

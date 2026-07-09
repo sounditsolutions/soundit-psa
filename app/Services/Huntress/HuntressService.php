@@ -67,6 +67,15 @@ class HuntressService
             $incidentReportUrl = $m[1];
         }
 
+        // Capture an escalation id if the payload carries an escalations URL. This makes an
+        // escalation ticket reconcilable by EXACT id (HuntressEscalationReconcileService's id
+        // fast path) rather than the weaker org+subject correspondence. Most escalation
+        // payloads (e.g. account-level "Failed to Deliver") carry none — a no-op then.
+        $escalationId = null;
+        if (preg_match('#escalations/(\d+)#', $description, $m)) {
+            $escalationId = (int) $m[1];
+        }
+
         $duplicate = null;
         if ($incidentReportUrl) {
             $duplicate = Ticket::where('source', TicketSource::Huntress->value)
@@ -168,6 +177,7 @@ class HuntressService
                 'fired_at' => now(),
                 'metadata' => [
                     'incident_report_url' => $incidentReportUrl,
+                    'escalation_id' => $escalationId,
                     'organization' => $parsed['organization'],
                     'agent' => $parsed['agent'],
                     'vendor_severity' => $parsedSeverity,
