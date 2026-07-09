@@ -250,6 +250,18 @@
                     populates history from closed tickets and respects the same daily ceiling. The daily
                     ceiling is a hard cap on total wiki AI spend — no single operation can exceed it.
                 </p>
+                @unless(\App\Support\AiConfig::isConfigured())
+                    <div class="alert alert-warning d-flex align-items-start gap-2 py-2 px-3 small mb-3" role="alert">
+                        <i class="bi bi-exclamation-triangle-fill mt-1"></i>
+                        <div>
+                            <strong>Mining needs a configured AI provider.</strong>
+                            Closed-ticket mining and AI resolution drafting are entirely AI-driven, so they will
+                            not run until an AI API key is set in
+                            <a href="{{ route('settings.integrations') }}">Settings &rarr; Integrations</a>.
+                            You can turn the options below on now, but no facts will be mined until a provider is configured.
+                        </div>
+                    </div>
+                @endunless
                 <form method="POST" action="{{ route('settings.general.wiki') }}">
                     @csrf
                     <div class="form-check form-switch mb-2">
