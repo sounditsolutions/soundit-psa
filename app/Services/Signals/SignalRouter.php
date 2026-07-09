@@ -4,7 +4,9 @@ namespace App\Services\Signals;
 
 use App\Jobs\CheckSignalStepAcks;
 use App\Jobs\DeliverSignal;
+use App\Models\McpToken;
 use App\Models\SignalDelivery;
+use App\Models\SignalDestination;
 use App\Models\SignalEvent;
 use App\Models\SignalRoute;
 use App\Models\SignalRouteStep;
@@ -147,6 +149,21 @@ class SignalRouter
             ]);
         }
 
+        // A revoked MCP token can never authenticate to poll again, so delivering
+        // to a destination that points at one (or at no token at all) only piles up
+        // signal_inbox rows nobody can read. Suppress instead of enqueueing.
+        $mcpBlockReason = $this->mcpDeliveryBlockReason($step->destination);
+        if ($mcpBlockReason !== null) {
+            return SignalDelivery::create([
+                'event_id' => $event->id,
+                'route_id' => $route->id,
+                'step_order' => $step->step_order,
+                'destination_id' => $step->destination_id,
+                'status' => 'suppressed',
+                'error' => $mcpBlockReason,
+            ]);
+        }
+
         $delivery = SignalDelivery::create([
             'event_id' => $event->id,
             'route_id' => $route->id,
@@ -158,6 +175,24 @@ class SignalRouter
         DeliverSignal::dispatch($delivery->id);
 
         return $delivery;
+    }
+
+    /**
+     * Why an MCP destination cannot be delivered to right now, or null if it can.
+     * Non-MCP destinations are never blocked here. Draft/paused tokens are fine —
+     * only a revoked or absent token means nobody will ever poll the queue.
+     */
+    private function mcpDeliveryBlockReason(SignalDestination $destination): ?string
+    {
+        if ($destination->type !== 'mcp') {
+            return null;
+        }
+
+        if (trim((string) $destination->mcp_token_label) === '') {
+            return 'mcp-token-missing';
+        }
+
+        return McpToken::hasLiveLabel($destination->mcp_token_label) ? null : 'mcp-token-revoked';
     }
 
     private function causalDepth(SignalEvent $event): int

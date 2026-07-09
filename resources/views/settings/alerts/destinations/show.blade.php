@@ -31,8 +31,21 @@
         <div class="d-flex align-items-center gap-2">
             <span class="badge bg-light text-dark border">{{ strtoupper($destination->type) }}</span>
             @include('settings.alerts._status_badge', ['enabled' => $destination->enabled])
+            @if($destination->type === 'mcp' && ($destination->mcp_token_broken ?? false))
+                <span class="badge bg-danger-subtle text-danger-emphasis alerts-destination-token-broken">
+                    <i class="bi bi-plug me-1"></i>Token revoked
+                </span>
+            @endif
         </div>
     </div>
+
+    @if($destination->type === 'mcp' && ($destination->mcp_token_broken ?? false))
+        <div class="alert alert-danger w-100 mb-0" role="alert">
+            <i class="bi bi-exclamation-triangle me-1"></i>
+            The linked MCP token <code>{{ $destination->mcp_token_label ?: '(none)' }}</code> is revoked or no longer exists.
+            No agent can poll this destination — pick an active token below or disable it.
+        </div>
+    @endif
 
     <div class="d-flex align-items-center gap-2">
         <form method="POST" action="{{ route('settings.alerts.destinations.test', $destination) }}" class="d-inline">

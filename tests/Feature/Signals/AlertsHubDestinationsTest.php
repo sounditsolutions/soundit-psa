@@ -4,6 +4,7 @@ namespace Tests\Feature\Signals;
 
 use App\Jobs\DeliverSignal;
 use App\Jobs\RouteSignalEvent;
+use App\Models\McpToken;
 use App\Models\SignalConfigLog;
 use App\Models\SignalDelivery;
 use App\Models\SignalDestination;
@@ -99,6 +100,35 @@ class AlertsHubDestinationsTest extends TestCase
         $response->assertDontSee('<script>alert(1)</script>', false);
         // Exactly one failure indicator on the page (only the broken row, not the healthy one).
         $this->assertSame(1, substr_count($response->getContent(), 'alerts-destination-failure'));
+    }
+
+    public function test_index_flags_mcp_destination_whose_token_is_revoked(): void
+    {
+        McpConfig::rotateStaffToken(allowedTools: ['find_staff'], label: 'ghost');
+        McpToken::where('label', 'ghost')->update(['revoked_at' => now()]);
+        SignalDestination::create([
+            'label' => 'Orphan inbox',
+            'type' => 'mcp',
+            'mcp_token_label' => 'ghost',
+            'enabled' => true,
+        ]);
+
+        // A destination backed by a live token must not be flagged.
+        McpConfig::rotateStaffToken(allowedTools: ['find_staff'], label: 'chet');
+        SignalDestination::create([
+            'label' => 'Healthy inbox',
+            'type' => 'mcp',
+            'mcp_token_label' => 'chet',
+            'enabled' => true,
+        ]);
+
+        $response = $this->actingAs($this->user)
+            ->get(route('settings.alerts.index'))
+            ->assertOk()
+            ->assertSee('Token revoked');
+
+        // Exactly one broken-token indicator — only the orphaned destination.
+        $this->assertSame(1, substr_count($response->getContent(), 'alerts-destination-token-broken'));
     }
 
     public function test_create_page_renders_and_store_redirects_to_detail(): void

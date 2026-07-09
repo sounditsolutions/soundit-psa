@@ -32,14 +32,26 @@
     @enderror
 </div>
 
+@php
+    $selectedTokenLabel = old('mcp_token_label', $destination->mcp_token_label ?? null);
+    // $mcpTokens lists only non-revoked tokens. A stored label absent from it is
+    // orphaned (its token was revoked/deleted), so the form must not look healthy.
+    $tokenOrphaned = filled($selectedTokenLabel)
+        && ! $mcpTokens->contains(fn ($token) => $token->label === $selectedTokenLabel);
+@endphp
 <div class="mb-3" data-field-for="mcp">
     <label for="mcp_token_label" class="form-label">MCP Token Label</label>
-    <select id="mcp_token_label" name="mcp_token_label" class="form-select @error('mcp_token_label') is-invalid @enderror">
+    <select id="mcp_token_label" name="mcp_token_label" class="form-select @error('mcp_token_label') is-invalid @enderror @if($tokenOrphaned) is-invalid @endif">
         <option value="">Choose a scoped token</option>
         @foreach($mcpTokens as $token)
-            <option value="{{ $token->label }}" @selected(old('mcp_token_label', $destination->mcp_token_label ?? null) === $token->label)>{{ $token->label }}</option>
+            <option value="{{ $token->label }}" @selected($selectedTokenLabel === $token->label)>{{ $token->label }}</option>
         @endforeach
     </select>
+    @if($tokenOrphaned)
+        <div class="invalid-feedback d-block">
+            Previously linked token <code>{{ $selectedTokenLabel }}</code> is revoked or no longer exists. Choose an active token.
+        </div>
+    @endif
     <div class="form-text">{{ "Rotating this token's label re-points or orphans this destination" }}</div>
     @error('mcp_token_label')
         <div class="invalid-feedback">{{ $message }}</div>
