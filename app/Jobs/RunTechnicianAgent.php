@@ -8,6 +8,7 @@ use App\Models\Client;
 use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Services\Agent\SignificanceGate;
+use App\Services\Agent\Steering\LeaveItOutcomeRecorder;
 use App\Services\Agent\Steering\LessonCapture;
 use App\Services\Agent\TechnicianAgent;
 use App\Support\AgentConfig;
@@ -166,7 +167,18 @@ class RunTechnicianAgent implements ShouldQueue
         }
 
         // 10. Wake the agent to reason and (maybe) propose a close.
-        app(TechnicianAgent::class)->run($ticket, $correctionContext);
+        $outcome = app(TechnicianAgent::class)->run($ticket, $correctionContext);
+
+        // 10.5. VISIBLE LEAVE-IT (psa-3q0c, psa-rmus FIX 2): when the operator's correction re-assessed
+        //       this ticket and the agent produced NO new proposal (chose to leave it as-is), the old
+        //       proposal was already superseded — so the cockpit card would just VANISH with no trace.
+        //       Record the reasoned "left as-is" outcome as an assistant turn on the SAME
+        //       ticket_correction conversation so the operator sees an outcome, never silence. Only on a
+        //       correction-driven run that actually assessed and left it. ($outcome is null only under a
+        //       test mock; the real run() always returns an outcome.) Recorder is fail-soft internally.
+        if ($this->correctionDriven && $correctionConversation !== null && $outcome?->leftAsIs()) {
+            app(LeaveItOutcomeRecorder::class)->record($correctionConversation, $outcome->narration);
+        }
 
         // 11. LEARN (psa-ck6x): distill the operator's correction into a durable wiki fact so the agent
         //     never needs that correction twice. Reached ONLY on a correction-driven run that already

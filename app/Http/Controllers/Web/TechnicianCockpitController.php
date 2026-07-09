@@ -33,6 +33,8 @@ class TechnicianCockpitController extends Controller
             'recipientViews' => $drafts->mapWithKeys(fn ($run) => [$run->id => $recipients->for($run)])->filter(),
             'flagged' => $query->flaggedForAttention(),
             'needs' => $query->needsAttention(),
+            // psa-3q0c: correction-driven "left as-is" outcomes so a correction never looks silent.
+            'reassessedLeftAsIs' => $query->reassessedLeftAsIs(),
             'intake' => $query->intakeReview(),
             'intakeSpam' => $query->intakeSpamReview(),
             'queued' => $query->queuedOffline(),
