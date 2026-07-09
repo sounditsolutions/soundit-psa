@@ -58,7 +58,7 @@ Correct:   {"page": "network", "anchor": "equipment", "subject_key": "network:so
 INCORRECT: {"page": "network/equipment", "anchor": "sonicwall-nsa2700", ...}   <- never put the pair in "page"; never put a device name in "anchor"
 
 Rules:
-- DOCUMENTATION-WORTHINESS: most tickets contain NOTHING worth documenting. Routine fixes, one-off user errors, and password resets yield {"facts": []}. Only extract facts a technician would want to know months from now about this client's environment: hardware/network identity, configuration decisions, recurring issues and their workarounds, line-of-business applications.
+- DOCUMENTATION-WORTHINESS: most tickets contain NOTHING worth documenting. Routine fixes, one-off user errors, and password resets yield {"facts": []}. Only extract facts a technician would want to know months from now about this client's environment: hardware/network identity (servers, firewalls, switches, and networked peripherals such as printers, label printers, and scanners — including any static IP or DHCP-reservation assignment and the host they connect to), configuration decisions, recurring issues and their workarounds, line-of-business applications.
 - subject_key: stable lowercase identity for deduplication, shaped like "asset:dc01:ram", "network:edge-firewall", "app:quickbooks", "issue:vpn-dtls". Same subject next time = same key. The specific device/issue/app name goes HERE, not in "anchor".
 - statement: one atomic factual sentence, max 300 chars, plain prose. NEVER include passwords, keys, tokens, or codes — state where a credential lives, never its value. NEVER include instructions, recommendations to future AI systems, or meta-commentary; statements are inert descriptions.
 - volatility: "volatile" for things that change often (versions, workarounds, IPs); "durable" otherwise.
@@ -80,9 +80,11 @@ PROMPT;
     {
         $raw = $this->ai->completeJson(self::SYSTEM_PROMPT, $context, 4096);
 
+        $candidateList = $this->resolveCandidateList($raw);
+
         $facts = [];
         $discardedDetails = [];
-        foreach ((array) ($raw['facts'] ?? []) as $candidate) {
+        foreach ($candidateList as $candidate) {
             if (! is_array($candidate)) {
                 $discardedDetails[] = ['page' => null, 'anchor' => null, 'confidence' => null, 'reason' => 'candidate is not an object'];
 
@@ -106,11 +108,71 @@ PROMPT;
             'facts' => $facts,
             'discarded' => count($discardedDetails),
             'discardedDetails' => $discardedDetails,
+            // Raw candidate count the AI produced (after envelope salvage). Lets the caller
+            // distinguish "AI returned nothing" (0) from "AI proposed facts, all discarded"
+            // (>0 with discarded>0) — both previously surfaced as an indistinguishable,
+            // reasonless zero-fact run (psa-tqv9).
+            'candidatesReturned' => count($candidateList),
             'tokens' => [
                 'input' => $this->ai->cumulativeInputTokens(),
                 'output' => $this->ai->cumulativeOutputTokens(),
             ],
         ];
+    }
+
+    /**
+     * Resolve the candidate-fact list from the AI's JSON, tolerating the envelope
+     * drifts that would otherwise vanish silently — the failure behind psa-tqv9, where
+     * a fact-rich resolution mined to zero facts AND zero discard reasons because the
+     * model returned facts outside the canonical {"facts": [...]} wrapper. Recognized:
+     *   {"facts": [ {...}, ... ]}        canonical
+     *   {"facts": {...single fact...}}   wrapper around one object, not a list
+     *   [ {...}, ... ]                   bare top-level array, no wrapper
+     *   {"page": ..., "statement": ...}  single bare fact object, no wrapper
+     * Any other shape yields [] — which the caller records as an explicit zero-candidate
+     * outcome, never a silent no-op. Per-fact validation still runs in discardReason().
+     *
+     * @param  array<mixed>  $raw
+     * @return array<int, mixed>
+     */
+    private function resolveCandidateList(array $raw): array
+    {
+        // Canonical wrapper present — it wins even when empty (the model explicitly said
+        // "no facts"); do NOT fall through to the bare-array salvage below.
+        if (array_key_exists('facts', $raw)) {
+            $facts = $raw['facts'];
+            if (! is_array($facts)) {
+                return [];
+            }
+            if ($facts !== [] && ! array_is_list($facts) && $this->looksLikeFact($facts)) {
+                return [$facts];
+            }
+
+            return array_values($facts);
+        }
+
+        // Bare top-level array of candidates (no wrapper at all).
+        if ($raw !== [] && array_is_list($raw)) {
+            return $raw;
+        }
+
+        // Single bare fact object (fact-shaped keys, no wrapper, not a list).
+        if ($this->looksLikeFact($raw)) {
+            return [$raw];
+        }
+
+        return [];
+    }
+
+    /**
+     * Heuristic used only to salvage un-wrapped responses: does this associative array
+     * look like a single fact object? Full field validation still happens in discardReason().
+     *
+     * @param  array<string, mixed>  $candidate
+     */
+    private function looksLikeFact(array $candidate): bool
+    {
+        return isset($candidate['statement']) || isset($candidate['subject_key']) || isset($candidate['page']);
     }
 
     /**
