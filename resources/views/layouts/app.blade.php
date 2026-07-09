@@ -32,7 +32,7 @@
 <body class="@yield('body-class', 'bg-brand-light')">
     @auth
         @include('components.sidebar')
-        <div class="psa-content-wrapper d-flex flex-column min-vh-100">
+        <div class="psa-content-wrapper d-flex flex-column min-vh-100 {{ \App\Support\AssistantConfig::isEnabled() ? 'has-assistant-bubble' : '' }}">
             @include('components.topbar')
             <main class="container-fluid py-4 flex-grow-1">
                 @if (! empty($storageWarnings))
