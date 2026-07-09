@@ -9,6 +9,7 @@ use App\Enums\TicketStatus;
 use App\Enums\TicketType;
 use App\Enums\WhoType;
 use App\Http\Controllers\Controller;
+use App\Models\Person;
 use App\Models\Ticket;
 use App\Models\TicketNote;
 use App\Services\AttachmentService;
@@ -29,10 +30,7 @@ class PortalTicketController extends Controller
         $person = $request->attributes->get('portal_person');
         $clientId = $request->attributes->get('portal_client_id');
 
-        $query = Ticket::where('client_id', $clientId);
-        if (! $person->company_wide_access) {
-            $query->where('contact_id', $person->id);
-        }
+        $query = Ticket::where('client_id', $clientId)->portalVisibleTo($person);
 
         $tab = $request->query('tab', 'open');
         if ($tab === 'open') {
@@ -199,10 +197,12 @@ class PortalTicketController extends Controller
 
     public function uploadAttachment(Request $request, Ticket $ticket, AttachmentService $attachmentService): JsonResponse
     {
+        $person = $request->attributes->get('portal_person');
         $clientId = $request->attributes->get('portal_client_id');
-        if ($ticket->client_id !== $clientId) {
-            abort(403);
-        }
+
+        // Same visibility gate as viewing/replying: a contact cannot attach to
+        // a ticket they are not allowed to see (including confidential tickets).
+        $this->authorizePortalAccess($ticket, $clientId, $person);
 
         $request->validate([
             'file' => ['required', 'file', 'max:10240', 'mimetypes:image/png,image/jpeg,image/gif,image/webp'],
@@ -225,13 +225,16 @@ class PortalTicketController extends Controller
         ]);
     }
 
-    private function authorizePortalAccess(Ticket $ticket, int $clientId, $person): void
+    private function authorizePortalAccess(Ticket $ticket, int $clientId, Person $person): void
     {
         if ($ticket->client_id !== $clientId) {
             abort(403);
         }
 
-        if (! $person->company_wide_access && $ticket->contact_id !== $person->id) {
+        // Enforces both client-contact scoping and confidentiality: a
+        // confidential ticket is reachable only by its assigned contact,
+        // even for coworkers holding company-wide access.
+        if (! $ticket->isVisibleInPortalTo($person)) {
             abort(403);
         }
     }

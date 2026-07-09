@@ -39,6 +39,11 @@
         @if($ticket->client && $ticket->client->stage === \App\Enums\ClientStage::Prospect)
             <span class="badge bg-warning text-dark badge-prospect mb-3">Prospect</span>
         @endif
+        @if($ticket->confidential)
+            <span class="badge bg-danger mb-3 ms-1" title="Confidential — in the portal, only the assigned contact can see this ticket, even coworkers with company-wide access cannot.">
+                <i class="bi bi-shield-lock-fill me-1"></i>Confidential
+            </span>
+        @endif
 
         @if($ticket->rendered_description)
             <div class="card card-static shadow-sm mb-3">
@@ -600,6 +605,23 @@
                             <i class="bi bi-terminal-fill me-1"></i>Run Command
                         </button>
                     @endif
+                </div>
+                {{-- Confidential toggle: when on, the client portal shows this
+                     ticket only to its assigned contact, hiding it from coworkers
+                     who otherwise have company-wide portal access. --}}
+                <div class="border-top mt-2 pt-2">
+                    <form method="POST" action="{{ route('tickets.update', $ticket) }}" class="d-inline">
+                        @csrf
+                        @method('PATCH')
+                        <input type="hidden" name="confidential" value="{{ $ticket->confidential ? 0 : 1 }}">
+                        <button type="submit" class="btn btn-sm {{ $ticket->confidential ? 'btn-danger' : 'btn-outline-danger' }}"
+                                title="{{ $ticket->confidential
+                                    ? 'Confidential: in the portal only the assigned contact can see this ticket. Click to make it visible to company-wide portal users again.'
+                                    : 'Make this ticket confidential: in the portal only the assigned contact will see it, even coworkers with company-wide access.' }}">
+                            <i class="bi bi-shield-lock{{ $ticket->confidential ? '-fill' : '' }} me-1"></i>
+                            {{ $ticket->confidential ? 'Confidential' : 'Mark Confidential' }}
+                        </button>
+                    </form>
                 </div>
             </div>
         </div>

@@ -38,6 +38,7 @@ class Ticket extends Model
         'source_ref',
         'type',
         'status',
+        'confidential',
         'priority',
         'priority_order',
         'category',
@@ -62,6 +63,7 @@ class Ticket extends Model
     {
         return [
             'resolution_ai_drafted' => 'boolean',
+            'confidential' => 'boolean',
             'status' => TicketStatus::class,
             'priority' => TicketPriority::class,
             'type' => TicketType::class,
@@ -192,6 +194,49 @@ class Ticket extends Model
     public function scopeForClient(Builder $query, int $clientId): Builder
     {
         return $query->where('client_id', $clientId);
+    }
+
+    /**
+     * Constrain a portal ticket query to what a given portal contact may see.
+     *
+     * Base rule: a contact always sees the tickets they are the contact on;
+     * a contact with company-wide access additionally sees every ticket for
+     * their client. Confidential tickets override the company-wide grant —
+     * they remain visible only to the specific contact assigned to them, so
+     * coworkers with company-wide access never see them.
+     *
+     * Callers must still scope by client_id separately (e.g. ->forClient()).
+     */
+    public function scopePortalVisibleTo(Builder $query, Person $person): Builder
+    {
+        if ($person->company_wide_access) {
+            return $query->where(function (Builder $q) use ($person) {
+                $q->where('confidential', false)
+                    ->orWhere('contact_id', $person->id);
+            });
+        }
+
+        return $query->where('contact_id', $person->id);
+    }
+
+    /**
+     * Whether a given portal contact is allowed to view this specific ticket.
+     *
+     * Mirrors scopePortalVisibleTo() for single-record authorization checks
+     * (ticket detail, replies, attachment uploads). Client scoping is enforced
+     * separately by the caller.
+     */
+    public function isVisibleInPortalTo(Person $person): bool
+    {
+        // The assigned contact always sees their own ticket. Cast both sides:
+        // contact_id has no model cast, so some DB drivers return it as a string.
+        if ($this->contact_id !== null && (int) $this->contact_id === (int) $person->id) {
+            return true;
+        }
+
+        // Otherwise company-wide access is required, and a confidential ticket
+        // is never visible to anyone but its assigned contact.
+        return $person->company_wide_access && ! $this->confidential;
     }
 
     public function scopeAssignedTo(Builder $query, int $userId): Builder

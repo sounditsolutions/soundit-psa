@@ -25,6 +25,7 @@ class TicketUpdateRequest extends FormRequest
             'priority' => ['sometimes', 'required', Rule::enum(TicketPriority::class)],
             'category' => ['nullable', 'string', 'max:100', Rule::in($categoryKeys)],
             'subcategory' => ['nullable', 'string', 'max:100'],
+            'confidential' => ['sometimes', 'boolean'],
             'contact_id' => ['nullable', 'exists:people,id'],
             'asset_id' => ['nullable', 'exists:assets,id'],
             'assignee_id' => ['nullable', 'exists:users,id'],

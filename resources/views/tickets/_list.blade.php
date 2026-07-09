@@ -344,6 +344,9 @@
                                 <a href="{{ route('tickets.show', $ticket) }}" class="text-decoration-none fw-semibold">
                                     {{ Str::limit($ticket->subject, 60) }}
                                 </a>
+                                @if($ticket->confidential)
+                                    <i class="bi bi-shield-lock-fill text-danger ms-1" title="Confidential — portal-visible only to the assigned contact"></i>
+                                @endif
                             </td>
                             @endif
                             @if((!$columns || in_array('client', $columns)) && !isset($prefilter['client_id']))
