@@ -1228,6 +1228,7 @@ class AssetController extends Controller
         $statusColor = match ($statusLabel) {
             'Online' => '#198754',
             'Offline' => '#dc3545',
+            'Stale' => '#ffc107',
             default => '#6c757d',
         };
 

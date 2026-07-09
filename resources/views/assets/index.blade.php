@@ -63,6 +63,8 @@
                                     <span class="badge bg-success" title="Online per RMM">Online</span>
                                 @elseif($status === 'Offline')
                                     <span class="badge bg-danger" title="Offline per RMM">Offline</span>
+                                @elseif($status === 'Stale')
+                                    <span class="badge bg-warning text-dark" title="RMM reported online, but last contact was over 24h ago — status may be outdated">Stale</span>
                                 @else
                                     <span class="badge bg-secondary" title="No RMM status available">Unknown</span>
                                 @endif

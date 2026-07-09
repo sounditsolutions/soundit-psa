@@ -15,6 +15,17 @@ class Asset extends Model
 {
     use HasFactory, SoftDeletes;
 
+    /**
+     * How long after its last RMM heartbeat an asset's cached online flag is
+     * treated as stale. Ninja/Level device syncs run every 4 hours and write
+     * rmm_online and last_seen_at together; if a sync stops running, both
+     * freeze at their last values. Once the heartbeat is older than this, the
+     * cached rmm_online=true can no longer be trusted, so getStatusBadgeAttribute()
+     * reports "Stale" rather than a confident "Online". Kept comfortably above the
+     * 4-hour sync cadence so normal gaps between syncs never trip it.
+     */
+    public const RMM_STALE_AFTER_HOURS = 24;
+
     protected $fillable = [
         'halo_id',
         'ninja_id',
@@ -193,16 +204,26 @@ class Asset extends Model
     // ── Accessors ──
 
     /**
-     * Status badge: Online, Offline, or Unknown.
+     * Status badge: Online, Offline, Stale, or Unknown.
      *
      * When rmm_online is set (by Level or Ninja sync), it is the authoritative source.
      * Level: direct boolean from API/webhooks (real-time).
      * Ninja: derived from lastContact heartbeat freshness (updated every 5 min).
      * Falls back to last_seen_at timestamp for non-RMM assets.
+     *
+     * The cached rmm_online flag is a point-in-time snapshot from the last
+     * successful sync. If that sync has stopped, rmm_online stays true forever
+     * while last_seen_at ages — presenting a long-dead host as "Online". When
+     * the heartbeat is stale (see RMM_STALE_AFTER_HOURS) we surface "Stale"
+     * instead so a technician isn't misled into thinking the host is reachable.
      */
     public function getStatusBadgeAttribute(): string
     {
         if ($this->rmm_online !== null) {
+            if ($this->rmm_online && $this->isRmmDataStale()) {
+                return 'Stale';
+            }
+
             return $this->rmm_online ? 'Online' : 'Offline';
         }
 
@@ -211,6 +232,23 @@ class Asset extends Model
         }
 
         return $this->last_seen_at->diffInMinutes(now()) <= 15 ? 'Online' : 'Offline';
+    }
+
+    /**
+     * True when the asset carries an RMM status flag whose heartbeat
+     * (last_seen_at) is older than RMM_STALE_AFTER_HOURS — i.e. the sync that
+     * set rmm_online has likely stopped, so the flag is no longer trustworthy.
+     * Returns false when there is no RMM flag or no heartbeat to judge against
+     * (nothing proves it stale). The status badge only downgrades the Online
+     * case to "Stale"; a stale Offline reading is still shown as Offline.
+     */
+    public function isRmmDataStale(): bool
+    {
+        if ($this->rmm_online === null || ! $this->last_seen_at) {
+            return false;
+        }
+
+        return $this->last_seen_at->lt(now()->subHours(self::RMM_STALE_AFTER_HOURS));
     }
 
     public function getControldStatusLabelAttribute(): ?string

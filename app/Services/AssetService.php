@@ -42,10 +42,15 @@ class AssetService
             $query->where('asset_type', $filters['asset_type']);
         }
 
-        // Status (rmm_online column)
+        // Status (rmm_online column). "online" excludes assets whose heartbeat
+        // has gone stale (rmm_online frozen true by a stopped sync) so the filter
+        // agrees with the status badge — see Asset::isRmmDataStale(). Such assets
+        // match neither toggle, the same way rmm_online IS NULL ("unknown") does.
         if (! empty($filters['status'])) {
             match ($filters['status']) {
-                'online' => $query->where('rmm_online', true),
+                'online' => $query->where('rmm_online', true)
+                    ->where(fn ($q) => $q->whereNull('last_seen_at')
+                        ->orWhere('last_seen_at', '>=', now()->subHours(Asset::RMM_STALE_AFTER_HOURS))),
                 'offline' => $query->where('rmm_online', false),
                 'unknown' => $query->whereNull('rmm_online'),
                 default => null,

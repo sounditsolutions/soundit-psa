@@ -7,6 +7,7 @@
         $dotColor = match($statusLabel) {
             'Online' => '#198754',
             'Offline' => '#dc3545',
+            'Stale' => '#ffc107',
             default => '#6c757d',
         };
         $displayName = $asset->hostname ?: $asset->name;
