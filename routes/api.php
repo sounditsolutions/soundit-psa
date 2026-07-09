@@ -52,6 +52,12 @@ Route::post('plivo/{secret}/resolve-caller', [PlivoWebhookController::class, 're
 Route::post('mcp/staff', [\App\Http\Controllers\Api\McpStaffController::class, 'handle'])
     ->middleware([\App\Http\Middleware\VerifyMcpStaffToken::class, 'throttle:120,1']);
 
+// MCP server — client-portal tool surface for the client Teams agent. Bearer
+// token authenticates the bridge; the end user is identified per-request by an
+// Entra Object ID header and scoped to that portal Person's client.
+Route::post('mcp/portal', [\App\Http\Controllers\Api\McpPortalController::class, 'handle'])
+    ->middleware([\App\Http\Middleware\VerifyMcpPortalToken::class, 'throttle:120,1']);
+
 // PSA-native Teams bot (Bot Framework) — inbound channel pipe (E1). FAIL-CLOSED
 // Bot Framework JWT validation; per-person identity resolved in the controller.
 Route::post('teams/messages', [\App\Http\Controllers\Api\TeamsMessagesController::class, 'handle'])

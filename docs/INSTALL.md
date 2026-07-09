@@ -1101,6 +1101,25 @@ Per-tool MSP custom instructions are configured on the Settings -> MCP Tokens pa
 
 **Protocol notes:** JSON-RPC 2.0 over HTTP. Implements `initialize`, `tools/list`, `tools/call` only — the MCP connector beta only supports tool calls. Tool input schemas are translated at the boundary (`input_schema` → `inputSchema`) to match the MCP spec.
 
+### MCP server — client-portal tool surface
+
+A second MCP server is exposed at `POST /api/mcp/portal` for a client-facing "Teams agent": an AI assistant that end users at a client talk to (e.g. in Microsoft Teams) which acts on their behalf against the PSA. It is the client-facing sibling of the staff server and is dormant until a token is minted.
+
+**Identity model (two parts):**
+1. A shared **bearer token** authenticates the trusted bridge (the client Teams agent connector). Without it the endpoint returns 401 — nobody can call it and impersonate a portal user.
+2. The **end user** is identified per-request by the `X-Mcp-Portal-Object-Id` header, carrying the Teams sender's Entra (Azure AD) Object ID. It is resolved to a portal contact via `people.cipp_user_id` (stamped by the CIPP contact sync) and must be an active, portal-enabled contact of an Active client — the same gate a browser portal login enforces. The identity never comes from tool arguments, so the model cannot choose which user it acts as.
+
+Every tool is **client-locked** to the resolved contact's client (and, for tickets, honours company-wide access exactly like the web portal). The fixed tool surface is: `list_my_open_tickets`, `get_my_ticket`, `search_my_tickets`, `create_ticket`, `add_my_ticket_reply`, `list_my_assets`. There are no cross-client, admin, billing, or vendor (CIPP/Ninja/Tactical) tools. `create_ticket` opens a `Portal`-source service request with the caller as contact; `add_my_ticket_reply` posts an end-user reply — both reuse the same `TicketService` paths as the web portal.
+
+**Enable:**
+1. Generate a bearer token: `php artisan mcp:rotate-portal-token` (token only displayed once).
+2. Configure the bridge with `url: "https://your-psa-domain/api/mcp/portal"`, the generated token as the bearer, and the `X-Mcp-Portal-Object-Id` header set to the Teams sender's validated `from.aadObjectId` on each request.
+3. Ensure the CIPP contact sync is populating `people.cipp_user_id`, and that the contacts you want reachable are portal-enabled on an Active client.
+
+**Audit log:** shares the `mcp_audit_logs` table (`server_name = 'portal'`, `actor_label = portal:{person_id}`). Ticket subjects and bodies are redacted to length placeholders in the audit trail.
+
+**Protocol notes:** identical JSON-RPC 2.0 shape to the staff server (`initialize`, `tools/list`, `tools/call`; `input_schema` → `inputSchema`).
+
 ---
 
 ## 10. Updating
