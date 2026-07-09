@@ -135,4 +135,23 @@ class Invoice extends Model
             && $this->due_date !== null
             && $this->due_date->isPast();
     }
+
+    /**
+     * Status label for display, accounting for the computed "Overdue" state.
+     *
+     * Overdue is not a stored status — an unpaid Posted invoice past its due
+     * date reads as "Overdue" wherever it is surfaced. Use this (and
+     * displayStatusBadgeClass()) instead of $invoice->status->label() so the
+     * detail, list, and contract views cannot disagree about billing state.
+     */
+    public function displayStatusLabel(): string
+    {
+        return $this->isOverdue() ? 'Overdue' : $this->status->label();
+    }
+
+    /** Badge class matching displayStatusLabel(). */
+    public function displayStatusBadgeClass(): string
+    {
+        return $this->isOverdue() ? 'bg-danger' : $this->status->badgeClass();
+    }
 }

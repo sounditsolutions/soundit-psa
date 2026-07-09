@@ -172,11 +172,7 @@
                             @endif
                             @if(!$columns || in_array('status', $columns))
                             <td>
-                                @if($invoice->isOverdue())
-                                    <span class="badge bg-danger">Overdue</span>
-                                @else
-                                    <span class="badge {{ $invoice->status->badgeClass() }}">{{ $invoice->status->label() }}</span>
-                                @endif
+                                <span class="badge {{ $invoice->displayStatusBadgeClass() }}">{{ $invoice->displayStatusLabel() }}</span>
                             </td>
                             @endif
                             @if(!$columns || in_array('sync', $columns))
