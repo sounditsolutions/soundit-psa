@@ -244,6 +244,13 @@
                 <i class="bi bi-key sidebar-icon"></i>
                 <span class="sidebar-label">MCP Tokens</span>
             </a>
+            <a href="{{ route('settings.tooling-gaps.index') }}"
+               class="sidebar-link {{ request()->routeIs('settings.tooling-gaps*') ? 'active' : '' }}"
+               @if(request()->routeIs('settings.tooling-gaps*')) aria-current="page" @endif
+               data-bs-toggle="tooltip" data-bs-placement="right" data-bs-title="AI Tooling Gaps">
+                <i class="bi bi-wrench-adjustable sidebar-icon"></i>
+                <span class="sidebar-label">Tooling Gaps</span>
+            </a>
         </div>
 
         {{-- Recent Items --}}

@@ -32,6 +32,7 @@ class ToolingGap extends Model
         'ticket_id',
         'client_id',
         'capability_gap',
+        'tool_name',
         'evidence',
         'classification',
         'source',
@@ -61,6 +62,9 @@ class ToolingGap extends Model
     /**
      * Create a new ToolingGap row. Born Open. No dedup in v1 — callers
      * are responsible for dedup if required (Tasks 2/3 will add call-sites).
+     *
+     * `$toolName` is set only for `tool_broken` reports (which existing tool
+     * misbehaved); left null for tool_missing / tool_unused.
      */
     public static function record(
         ?int $ticketId,
@@ -70,11 +74,13 @@ class ToolingGap extends Model
         ToolingGapClassification $classification,
         ToolingGapSource $source,
         ?string $agentNote = null,
+        ?string $toolName = null,
     ): self {
         return self::create([
             'ticket_id' => $ticketId,
             'client_id' => $clientId,
             'capability_gap' => $capabilityGap,
+            'tool_name' => $toolName,
             'evidence' => $evidence,
             'classification' => $classification,
             'source' => $source,

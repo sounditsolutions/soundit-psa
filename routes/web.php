@@ -308,6 +308,10 @@ Route::middleware('auth')->group(function () {
     Route::delete('/settings/mcp-tokens/{token}/signal-destinations/{destination}', [McpTokensController::class, 'unlinkSignalDestination'])->name('settings.mcp-tokens.signal-destinations.unlink');
     Route::delete('/settings/mcp-tokens/{token}', [McpTokensController::class, 'revoke'])->name('settings.mcp-tokens.revoke');
 
+    // Settings — AI Tooling Gaps (agent-reported missing/unused/broken tools + operator corrections)
+    Route::get('/settings/tooling-gaps', [\App\Http\Controllers\Web\ToolingGapController::class, 'index'])->name('settings.tooling-gaps.index');
+    Route::patch('/settings/tooling-gaps/{toolingGap}', [\App\Http\Controllers\Web\ToolingGapController::class, 'update'])->name('settings.tooling-gaps.update');
+
     // Contractor Time Pool
     Route::get('/contractors/{user}/time-pool', [ContractorTimePoolController::class, 'show'])->name('contractors.time-pool');
     Route::post('/contractors/{user}/time-pool', [ContractorTimePoolController::class, 'store'])->name('contractors.time-pool.store');
