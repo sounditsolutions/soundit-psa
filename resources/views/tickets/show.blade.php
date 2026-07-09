@@ -996,6 +996,7 @@
 
         @include('tickets._triage_card')
         @include('tickets._site_notes_card')
+        @include('tickets._change_history_card')
     </div>
 </div>
 

@@ -149,6 +149,14 @@ class Ticket extends Model
         return $this->hasMany(PhoneCall::class);
     }
 
+    /**
+     * Field-level change audit trail (psa-eif) — newest first.
+     */
+    public function activities(): HasMany
+    {
+        return $this->hasMany(TicketActivity::class)->orderByDesc('created_at');
+    }
+
     public function triageRuns(): HasMany
     {
         return $this->hasMany(TriageRun::class)->orderByDesc('created_at');

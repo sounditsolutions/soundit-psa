@@ -145,9 +145,13 @@ class TicketController extends Controller
 
         $defaultBillable = app(TicketService::class)->defaultBillable($ticket);
 
+        // Field-level change audit trail (psa-eif), bounded for display.
+        $activities = $ticket->activities()->with('user:id,name')->limit(100)->get();
+
         return view('tickets.show', [
             'ticket' => $ticket,
             'timeline' => $timeline,
+            'activities' => $activities,
             'users' => User::active()->orderBy('name')->get(['id', 'name']),
             'statuses' => TicketStatus::cases(),
             'priorities' => TicketPriority::cases(),

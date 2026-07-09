@@ -13,6 +13,7 @@ use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Services\NotificationService;
 use App\Services\Signals\SignalHub;
+use App\Services\TicketActivityLogger;
 use App\Support\T2TConfig;
 use App\Support\TechnicianConfig;
 use App\Support\TriageConfig;
@@ -58,6 +59,11 @@ class TicketObserver
 
     public function updated(Ticket $ticket): void
     {
+        // Field-level change audit trail (psa-eif): record one ticket_activities
+        // row per tracked column that changed on this save. Self-contained and
+        // failure-isolated — never throws back into the ticket save.
+        app(TicketActivityLogger::class)->record($ticket);
+
         // T2T callback — only for HelpdeskButton tickets, on a status change.
         if ($ticket->source === TicketSource::HelpdeskButton && $ticket->wasChanged('status')) {
             $callbackUrl = T2TConfig::get('callback_url');
