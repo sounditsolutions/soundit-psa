@@ -148,14 +148,15 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 /* ── Responsive table cards (mobile) ──
-   Wide console tables (the tickets queue and the client People/Contracts lists)
-   keep the full table at md+ and fall back to a stacked layout below md, so the
-   triage signal (priority, status, assignee, due) stays visible without a
-   horizontal scroll. Flat by doctrine (DESIGN.md §4): depth is the hairline
-   border and the canvas/surface tonal step, never a shadow. Priority reads as a
-   badge here, not the color-only row stripe (DESIGN.md §5: state is never color
-   alone). */
-.ticket-card {
+   Wide console tables (the tickets queue, the invoice list, and the client
+   People/Contracts lists) keep the full table at md+ and fall back to a stacked
+   layout below md, so the key signal (priority/status/assignee/due for tickets;
+   status/dates/total for invoices) stays visible without a horizontal scroll.
+   Flat by doctrine (DESIGN.md §4): depth is the hairline border and the
+   canvas/surface tonal step, never a shadow. State reads as a badge here, not a
+   color-only row stripe (DESIGN.md §5: state is never color alone). */
+.ticket-card,
+.invoice-card {
     display: block;
     background: #fff;
     border: 1px solid #e5e7eb;
@@ -164,13 +165,16 @@ h1, h2, h3, h4, h5, h6 {
     color: var(--text-body);
     cursor: pointer;
 }
-.ticket-card + .ticket-card {
+.ticket-card + .ticket-card,
+.invoice-card + .invoice-card {
     margin-top: 0.5rem;
 }
-.ticket-card-subject {
+.ticket-card-subject,
+.invoice-card-subject {
     color: var(--primary);
 }
-.ticket-card-subject:hover {
+.ticket-card-subject:hover,
+.invoice-card-subject:hover {
     color: var(--accent-hover);
 }
 
