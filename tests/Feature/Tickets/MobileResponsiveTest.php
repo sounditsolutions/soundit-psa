@@ -18,6 +18,9 @@ use Tests\TestCase;
  *    stacked cards below md so triage signal stays visible without a scroll.
  *  - psa-iqzv: the client Details card locks its table width and wraps long
  *    email/website values so they stay inside the card on a mobile viewport.
+ *  - psa-ybif: the two columns split at lg (not md) so the dense right rail
+ *    stacks below the content at tablet width (768px) instead of overflowing a
+ *    33% column and clipping fields off-screen (matches contracts/show).
  */
 class MobileResponsiveTest extends TestCase
 {
@@ -36,10 +39,17 @@ class MobileResponsiveTest extends TestCase
 
         $resp = $this->actingAs($user)->get(route('tickets.show', $ticket))->assertOk();
 
-        // Content column (subject/description/notes) leads on mobile (order-1);
+        // Content column (subject/description/notes) leads while stacked (order-1);
         // the metadata sidebar (status/info/details/triage) follows (order-2). psa-i2e7.
-        $resp->assertSee('col-md-8 order-1 order-md-1', false);
-        $resp->assertSee('col-md-4 order-2 order-md-2 detail-sidebar', false);
+        // Columns split at lg so the rail stacks below the content at tablet width
+        // rather than clipping off-screen in a cramped 33% column. psa-ybif.
+        $resp->assertSee('col-lg-8 order-1 order-lg-1', false);
+        $resp->assertSee('col-lg-4 order-2 order-lg-2 detail-sidebar', false);
+
+        // Guard against regressing to the md breakpoint, where the side rail sat
+        // beside the content at 768px and overflowed the tablet viewport. psa-ybif.
+        $resp->assertDontSee('col-md-8 order-1 order-md-1', false);
+        $resp->assertDontSee('col-md-4 order-2 order-md-2 detail-sidebar', false);
     }
 
     public function test_tickets_index_renders_mobile_card_fallback(): void
