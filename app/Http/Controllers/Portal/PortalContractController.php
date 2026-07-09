@@ -4,11 +4,14 @@ namespace App\Http\Controllers\Portal;
 
 use App\Http\Controllers\Controller;
 use App\Models\Contract;
+use App\Services\PrepayExpirationService;
 use Illuminate\Http\Request;
 use Illuminate\View\View;
 
 class PortalContractController extends Controller
 {
+    public function __construct(private readonly PrepayExpirationService $expirationService) {}
+
     public function index(Request $request): View
     {
         $clientId = $request->attributes->get('portal_client_id');
@@ -33,12 +36,17 @@ class PortalContractController extends Controller
         $contract->load('assets', 'people');
 
         $prepayTransactions = null;
-        if ($portalPerson?->company_wide_access && $contract->has_prepay && ! $contract->prepay_as_amount) {
-            $prepayTransactions = $contract->prepayTransactions()
-                ->orderByDesc('date')
-                ->paginate(20);
+        $prepayNextExpiry = null;
+        if ($contract->has_prepay && ! $contract->prepay_as_amount) {
+            $prepayNextExpiry = $this->expirationService->nextExpiry($contract);
+
+            if ($portalPerson?->company_wide_access) {
+                $prepayTransactions = $contract->prepayTransactions()
+                    ->orderByDesc('date')
+                    ->paginate(20);
+            }
         }
 
-        return view('portal.contracts.show', compact('contract', 'prepayTransactions'));
+        return view('portal.contracts.show', compact('contract', 'prepayTransactions', 'prepayNextExpiry'));
     }
 }

@@ -242,6 +242,45 @@ class PrepayExpirationService
     }
 
     /**
+     * The next upcoming forfeiture, projected as "if nothing else changes": the
+     * soonest FUTURE expiry among credit lots that still hold an unconsumed
+     * remainder after all recorded consumption, or null when nothing is
+     * scheduled to expire. Reuses the same FIFO replay as expireContract(), so a
+     * lot already drained by earlier consumption correctly contributes nothing.
+     *
+     * The hours are the "consume nothing more" upper bound — the client will
+     * usually burn some down before the date, so surface it as "up to N hours".
+     *
+     * @return array{expiry_date: CarbonInterface, hours: float}|null
+     */
+    public function nextExpiry(Contract $contract, ?CarbonInterface $asOf = null): ?array
+    {
+        $asOf ??= now();
+
+        if (! $contract->has_prepay || $contract->prepay_as_amount) {
+            return null;
+        }
+
+        // Project the entire forfeiture schedule (asOf far enough out that every
+        // lot's expiry checkpoint fires), then keep only lots still in the future.
+        $future = array_values(array_filter(
+            $this->computeExpirations($contract, $asOf->copy()->addYears(200)),
+            fn (array $e) => $e['expiry_date']->gt($asOf),
+        ));
+
+        if ($future === []) {
+            return null;
+        }
+
+        usort($future, fn (array $a, array $b) => $a['expiry_date']->timestamp <=> $b['expiry_date']->timestamp);
+
+        return [
+            'expiry_date' => $future[0]['expiry_date'],
+            'hours' => $future[0]['hours'],
+        ];
+    }
+
+    /**
      * @return array{skipped:bool, forfeited_hours:float, lots:int, created:int, updated:int, deleted:int}
      */
     private function summary(bool $skipped): array

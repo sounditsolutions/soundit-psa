@@ -707,15 +707,19 @@
                                 <div class="form-text">Leave blank to disable alerts.</div>
                             </div>
                             <div class="mb-3">
+                                @php $prepayGlobalExpiry = (int) \App\Models\Setting::getValue('prepay_default_expiry_months', 0); @endphp
                                 <label for="prepayExpiryMonths" class="form-label text-muted small">
                                     Prepaid time expires after (months):
                                 </label>
                                 <input type="number" name="prepay_expiry_months" id="prepayExpiryMonths"
                                        class="form-control form-control-sm" style="max-width: 150px;"
                                        value="{{ $contract->prepay_expiry_months }}"
-                                       min="1" max="120" step="1" placeholder="Never">
+                                       min="0" max="120" step="1"
+                                       placeholder="{{ $prepayGlobalExpiry > 0 ? 'Default: '.$prepayGlobalExpiry : 'Never' }}">
                                 <div class="form-text">
-                                    Leave blank for no expiration. Applies to credits added from now on (no backfill).
+                                    Leave blank to use the global default
+                                    (@if($prepayGlobalExpiry > 0){{ $prepayGlobalExpiry }} month{{ $prepayGlobalExpiry === 1 ? '' : 's' }}@else no expiration@endif),
+                                    or enter <strong>0</strong> to never expire. Applies to credits added from now on (no backfill).
                                 </div>
                             </div>
                             @if($contract->portal_prepay_sku_id)

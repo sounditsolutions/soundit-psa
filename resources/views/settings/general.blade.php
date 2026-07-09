@@ -180,6 +180,36 @@
             </div>
         </div>
 
+        {{-- Prepaid Time Expiration --}}
+        <div class="card card-static shadow-sm mt-4">
+            <div class="card-header">
+                <i class="bi bi-hourglass-split me-2"></i>Prepaid Time Expiration
+            </div>
+            <div class="card-body">
+                <form method="POST" action="{{ route('settings.general.prepay-expiry') }}">
+                    @csrf
+                    <div class="row align-items-end g-2">
+                        <div class="col-md-4">
+                            <label for="prepay_default_expiry_months" class="form-label">Default expiration (months)</label>
+                            <input type="number" class="form-control" id="prepay_default_expiry_months"
+                                   name="prepay_default_expiry_months" min="0" max="120" step="1"
+                                   value="{{ $prepayDefaultExpiryMonths ?: '' }}" placeholder="Never">
+                        </div>
+                        <div class="col-md-2">
+                            <button type="submit" class="btn btn-primary">
+                                <i class="bi bi-check-lg me-1"></i>Save
+                            </button>
+                        </div>
+                    </div>
+                    <div class="form-text mt-2">
+                        New prepaid-time credits expire this many months after they're added.
+                        Leave blank (or 0) for no expiration. Applies to credits added from now on — no backfill.
+                        Individual contracts can override this default, including opting out of expiration entirely.
+                    </div>
+                </form>
+            </div>
+        </div>
+
         {{-- Billing Asset Type Mapping --}}
         <div class="card card-static shadow-sm mt-4">
             <div class="card-header">

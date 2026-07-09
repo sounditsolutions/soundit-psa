@@ -367,4 +367,58 @@ class PrepayExpirationServiceTest extends TestCase
         $c->refresh();
         $this->assertEqualsWithDelta(10.0, (float) $c->prepay_balance, 0.0001); // unchanged
     }
+
+    // ── nextExpiry(): portal "upcoming expiry" projection (psa-5uy) ──
+
+    public function test_next_expiry_returns_soonest_future_lot(): void
+    {
+        $c = $this->prepayContract();
+        $this->credit($c, 10, '2026-01-01', '2026-06-01');
+
+        $next = $this->service()->nextExpiry($c, Carbon::parse('2026-03-01'));
+
+        $this->assertNotNull($next);
+        $this->assertSame('2026-06-01', $next['expiry_date']->format('Y-m-d'));
+        $this->assertEqualsWithDelta(10.0, $next['hours'], 0.0001);
+    }
+
+    public function test_next_expiry_excludes_already_consumed_lots(): void
+    {
+        // Oldest lot (expires sooner) is fully consumed → the real at-risk hours
+        // sit in the newer lot. FIFO replay must skip the drained lot.
+        $c = $this->prepayContract();
+        $this->credit($c, 10, '2026-01-01', '2026-06-01');
+        $this->debit($c, 10, '2026-02-01');
+        $this->credit($c, 5, '2026-02-15', '2026-09-01');
+
+        $next = $this->service()->nextExpiry($c, Carbon::parse('2026-03-01'));
+
+        $this->assertNotNull($next);
+        $this->assertSame('2026-09-01', $next['expiry_date']->format('Y-m-d'));
+        $this->assertEqualsWithDelta(5.0, $next['hours'], 0.0001);
+    }
+
+    public function test_next_expiry_ignores_lots_that_already_expired(): void
+    {
+        $c = $this->prepayContract();
+        $this->credit($c, 10, '2026-01-01', '2026-02-01'); // expired before asOf
+
+        $this->assertNull($this->service()->nextExpiry($c, Carbon::parse('2026-03-01')));
+    }
+
+    public function test_next_expiry_null_when_no_expiry_policy(): void
+    {
+        $c = $this->prepayContract();
+        $this->credit($c, 10, '2026-01-01'); // no expiry_date
+
+        $this->assertNull($this->service()->nextExpiry($c, Carbon::parse('2026-03-01')));
+    }
+
+    public function test_next_expiry_null_for_dollar_based_prepay(): void
+    {
+        $c = $this->prepayContract(['prepay_as_amount' => true]);
+        $this->credit($c, 10, '2026-01-01', '2026-06-01');
+
+        $this->assertNull($this->service()->nextExpiry($c, Carbon::parse('2026-03-01')));
+    }
 }

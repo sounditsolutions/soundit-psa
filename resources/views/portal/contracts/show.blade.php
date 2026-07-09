@@ -53,6 +53,16 @@
                 <div class="stat-value">{{ number_format($contract->prepay_balance, 1) }}h</div>
                 <div class="stat-label">Prepaid Balance</div>
             </div>
+            @if(($prepayNextExpiry ?? null) && $contract->prepay_balance > 0)
+                <div class="mt-2 small text-muted">
+                    <i class="bi bi-hourglass-split me-1"></i>Up to
+                    <strong>{{ number_format($prepayNextExpiry['hours'], 1) }}h</strong>
+                    expire on {{ $prepayNextExpiry['expiry_date']->toAppTz()->format('M j, Y') }}
+                    @if($prepayNextExpiry['expiry_date']->isBefore(now()->addDays(30)))
+                        <span class="badge bg-warning text-dark ms-1">Soon</span>
+                    @endif
+                </div>
+            @endif
             @if($contract->is_portal_purchasable)
                 <div class="mt-2">
                     <a href="{{ route('portal.prepaid.form', $contract) }}" class="btn btn-sm btn-accent">

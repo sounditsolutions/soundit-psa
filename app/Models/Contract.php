@@ -232,6 +232,32 @@ class Contract extends Model
     }
 
     /**
+     * Resolve the effective prepaid-time expiry term (in months) for new credits.
+     *
+     * Tri-state precedence mirrors RecurringInvoiceProfile::shouldSkipZeroInvoices():
+     *   - a non-null per-contract prepay_expiry_months wins — 0 means "never
+     *     expire" (an explicit opt-out of the global policy), a positive value
+     *     means that many months;
+     *   - null inherits the global `prepay_default_expiry_months` setting;
+     *   - the global default is itself "never" (0 / unset) unless an operator sets it.
+     *
+     * Returns null when the effective policy is "never expire" — including for
+     * dollar-based prepay, which never expires — otherwise a positive month count.
+     */
+    public function effectivePrepayExpiryMonths(): ?int
+    {
+        if ($this->prepay_as_amount) {
+            return null;
+        }
+
+        // ?? (not ?:) so an explicit per-contract 0 overrides the global default.
+        $months = $this->prepay_expiry_months
+            ?? (int) Setting::getValue('prepay_default_expiry_months', 0);
+
+        return $months > 0 ? (int) $months : null;
+    }
+
+    /**
      * Average consumption per week over the last 30 days.
      * Memoized to avoid N+1 on list views (dashboard).
      */
