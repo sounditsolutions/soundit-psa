@@ -6,9 +6,12 @@ use App\Enums\NoteType;
 use App\Enums\TechnicianRunState;
 use App\Enums\TicketStatus;
 use App\Enums\WhoType;
+use App\Models\AssistantConversation;
+use App\Models\AssistantMessage;
 use App\Models\PhoneCall;
 use App\Models\TechnicianRun;
 use App\Models\Ticket;
+use App\Services\Agent\Steering\LeaveItOutcomeRecorder;
 use Illuminate\Support\Collection;
 
 /**
@@ -29,6 +32,9 @@ class CockpitQuery
         'propose_close',
         'propose_merge',
     ];
+
+    /** How far back the "re-assessed → left as-is" lane looks (psa-3q0c). Self-clearing. */
+    private const LEAVE_IT_WINDOW_HOURS = 48;
 
     public function pendingCount(): int
     {
@@ -240,6 +246,84 @@ class CockpitQuery
             ->with(['client', 'contact'])
             ->orderBy('updated_at')
             ->get();
+    }
+
+    /**
+     * "Re-assessed from your correction → left as-is" (psa-3q0c). When an operator declines +
+     * corrects a proposal and the re-assessment produces NO new proposal, the superseded card
+     * would just vanish. The agent's leave-it decision is recorded as an assistant turn on the
+     * ticket_correction conversation (LeaveItOutcomeRecorder); this lane surfaces the recent ones
+     * so a correction never looks like it did nothing.
+     *
+     * We show a correction thread only when its MOST RECENT turn is an assistant leave-it (a newer
+     * operator correction — a user turn — or a new proposal supersedes it), within a recent window,
+     * for a still-open ticket on an active client. One (newest) entry per ticket. Pure query.
+     *
+     * @return Collection<int, object{ticket: Ticket, note: string, at: \Illuminate\Support\Carbon|null}>
+     */
+    public function reassessedLeftAsIs(): Collection
+    {
+        // ticket_correction conversations are daily-keyed (a conversation only ever receives
+        // messages on its creation day — CorrectionRecorder keys on Y-m-d), so any conversation
+        // holding a message inside the window was created inside the window + one day. Bounding
+        // the pluck by created_at keeps this hot (per-page-load) query's IN-list from growing
+        // unbounded as correction history accumulates. +24h absorbs the day boundary safely.
+        $conversationIds = AssistantConversation::query()
+            ->where('context_type', 'ticket_correction')
+            ->where('created_at', '>=', now()->subHours(self::LEAVE_IT_WINDOW_HOURS + 24))
+            ->pluck('id');
+
+        if ($conversationIds->isEmpty()) {
+            return collect();
+        }
+
+        // The latest message id per correction conversation (selectRaw mirrors needsAttention()).
+        $latestIds = AssistantMessage::query()
+            ->whereIn('conversation_id', $conversationIds)
+            ->selectRaw('MAX(id) as id')
+            ->groupBy('conversation_id')
+            ->pluck('id');
+
+        // Keep only those whose latest turn is an assistant leave-it within the window.
+        $messages = AssistantMessage::query()
+            ->whereIn('id', $latestIds)
+            ->where('role', 'assistant')
+            ->where('content', 'like', LeaveItOutcomeRecorder::NOTE_PREFIX.'%')
+            ->where('created_at', '>=', now()->subHours(self::LEAVE_IT_WINDOW_HOURS))
+            ->with('conversation')
+            ->orderByDesc('created_at')
+            ->get();
+
+        if ($messages->isEmpty()) {
+            return collect();
+        }
+
+        // Resolve tickets by the conversation's context_id — only open tickets on active clients.
+        $ticketIds = $messages->pluck('conversation.context_id')->filter()->unique()->values();
+        $tickets = Ticket::query()
+            ->whereIn('id', $ticketIds)
+            ->whereIn('status', $this->openStatuses())
+            ->whereHas('client', fn ($q) => $q->where('is_active', true))
+            ->with('client')
+            ->get()
+            ->keyBy('id');
+
+        return $messages
+            ->map(function (AssistantMessage $message) use ($tickets): ?object {
+                $ticket = $tickets->get($message->conversation?->context_id);
+                if ($ticket === null) {
+                    return null;
+                }
+
+                return (object) [
+                    'ticket' => $ticket,
+                    'note' => $message->content,
+                    'at' => $message->created_at,
+                ];
+            })
+            ->filter()
+            ->unique(fn (object $row): int => $row->ticket->id) // newest per ticket (already sorted desc)
+            ->values();
     }
 
     private function isOverdue(?Ticket $ticket): bool
