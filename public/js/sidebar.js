@@ -16,9 +16,27 @@
         document.body.classList.add('sidebar-collapsed');
     }
 
+    // ── Enable layout transitions for explicit toggles only ──
+    // Base CSS carries no transition on the sidebar width / topbar offset /
+    // content margin, so a viewport resize reflows instantly. Without that a
+    // mobile → desktop resize would animate the content margin while the fixed
+    // sidebar snaps in, briefly covering the page content (psa-vzk1). Add the
+    // class just before a user toggle changes those properties, then drop it
+    // once the ~200ms animation has run.
+    var animateTimer = null;
+    function animateLayout() {
+        document.body.classList.add('sidebar-animate');
+        if (animateTimer) { clearTimeout(animateTimer); }
+        animateTimer = setTimeout(function () {
+            document.body.classList.remove('sidebar-animate');
+            animateTimer = null;
+        }, 250);
+    }
+
     // ── Desktop collapse toggle ──
     if (collapseBtn) {
         collapseBtn.addEventListener('click', function () {
+            animateLayout();
             document.body.classList.toggle('sidebar-collapsed');
             var collapsed = document.body.classList.contains('sidebar-collapsed');
             localStorage.setItem(STORAGE_KEY, collapsed ? '1' : '0');
@@ -69,6 +87,7 @@
                 e.stopPropagation();
 
                 // Expand sidebar temporarily
+                animateLayout();
                 document.body.classList.remove('sidebar-collapsed');
 
                 // Show the billing submenu
@@ -86,6 +105,7 @@
     // ── Cross-tab sync ──
     window.addEventListener('storage', function (e) {
         if (e.key === STORAGE_KEY && isDesktop.matches) {
+            animateLayout();
             document.body.classList.toggle('sidebar-collapsed', e.newValue === '1');
             initTooltips();
         }
