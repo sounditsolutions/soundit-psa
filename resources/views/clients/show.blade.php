@@ -1219,7 +1219,10 @@
         <div class="card shadow-sm card-static mb-3">
             <div class="card-header"><i class="bi bi-info-circle me-2"></i>Details</div>
             <div class="card-body">
-                <table class="table table-borderless mb-0">
+                {{-- table-layout:fixed locks the table to the card width and text-break wraps
+                     long email/website values so they cannot bleed past the rounded card
+                     boundary on a narrow mobile viewport. psa-iqzv. --}}
+                <table class="table table-borderless mb-0 text-break" style="table-layout: fixed;">
                     <tbody>
                         <tr>
                             <th class="text-muted" style="width: 110px;">Phone</th>
