@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Enums\ContractType;
 use App\Http\Controllers\Controller;
 use App\Models\PhoneCall;
 use App\Services\NotificationService;
@@ -128,7 +129,16 @@ class PlivoWebhookController extends Controller
      *   - blocked: true if on the blocked list
      *   - allowed: true if on the allow list
      *
+     * Contract-type fields (populated only on a client match, so the PHLO can
+     * route on coverage as well as identity):
+     *   - has_active_contract: true if the matched client has any active contract
+     *   - contract_type:       headline active-contract type value (managed|breakfix|custom) or null
+     *   - contract_type_label: human label for contract_type (e.g. "Managed Services") or null
+     *   - managed:             convenience flag — true if the headline tier is Managed Services
+     *
      * Branch priority for the PHLO: blocked -> allowed -> client -> unknown.
+     * Within the client branch the PHLO can sub-branch on `managed` /
+     * `contract_type` to prioritise managed-services callers over break-fix.
      * The endpoint never blocks or fails the call: any error returns
      * everything-false so PHLO routes the caller to the unknown branch.
      */
@@ -148,6 +158,10 @@ class PlivoWebhookController extends Controller
             'client_id' => null,
             'client_name' => null,
             'caller_label' => null,
+            'has_active_contract' => false,
+            'contract_type' => null,
+            'contract_type_label' => null,
+            'managed' => false,
         ];
 
         if (! $from) {
@@ -216,11 +230,22 @@ class PlivoWebhookController extends Controller
         $payload['client_id'] = $person->client_id;
         $payload['client_name'] = $person->client?->name;
 
+        // Contract-type routing: expose the client's headline coverage tier so
+        // the PHLO can prioritise managed-services callers before ringing.
+        $contractType = $person->client?->primaryContractType();
+        if ($contractType !== null) {
+            $payload['has_active_contract'] = true;
+            $payload['contract_type'] = $contractType->value;
+            $payload['contract_type_label'] = $contractType->label();
+            $payload['managed'] = $contractType === ContractType::Managed;
+        }
+
         Log::info('[PlivoResolveCaller] Match', [
             'call_uuid' => $callUuid,
             'from' => $from,
             'person_id' => $person->id,
             'client_id' => $person->client_id,
+            'contract_type' => $payload['contract_type'],
         ]);
 
         return response()->json($payload);

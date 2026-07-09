@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Enums\ContractType;
 use App\Helpers\MarkdownRenderer;
 use App\Support\AvatarHelper;
 use Illuminate\Database\Eloquent\Builder;
@@ -146,6 +147,23 @@ class Client extends Model
     public function contracts(): HasMany
     {
         return $this->hasMany(Contract::class);
+    }
+
+    /**
+     * The client's headline active-contract coverage tier, or null when the
+     * client has no active contracts. When several active contracts of
+     * different types exist, the highest ContractType::routingPriority() wins
+     * (Managed > Custom > Break-Fix). Drives pre-ring call routing so the IVR
+     * can branch on the caller's coverage (PlivoWebhookController::resolveCaller).
+     */
+    public function primaryContractType(): ?ContractType
+    {
+        return $this->contracts()
+            ->active()
+            ->get()
+            ->sortByDesc(fn (Contract $contract) => $contract->type->routingPriority())
+            ->first()
+            ?->type;
     }
 
     public function invoices(): HasMany
