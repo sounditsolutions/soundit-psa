@@ -48,6 +48,11 @@
             @endif
         </div>
         <div class="d-flex align-items-center flex-wrap gap-2">
+            @unless($asset->trashed())
+                <a href="#tab-overview" class="text-decoration-none" title="See health breakdown">
+                    <x-asset-health-badge :asset="$asset" :showLabel="true" class="fs-6" />
+                </a>
+            @endunless
             @php $status = $asset->statusBadge; @endphp
             @if($status === 'Online')
                 <span class="badge bg-success fs-6" title="Online per RMM">Online</span>
@@ -173,6 +178,68 @@
                 </div>
             </div>
         @endif
+
+        {{-- ==================== ASSET HEALTH SCORE ==================== --}}
+        @unless($asset->trashed())
+        @php
+            $hGrade = $asset->health_grade instanceof \App\Enums\AssetHealthGrade
+                ? $asset->health_grade
+                : \App\Enums\AssetHealthGrade::fromScore($asset->health_score);
+            $hFactors = is_array($asset->health_breakdown) ? $asset->health_breakdown : [];
+            $hStatusMeta = [
+                'ok' => ['bi-check-circle-fill', 'text-success'],
+                'warn' => ['bi-exclamation-circle-fill', 'text-warning'],
+                'bad' => ['bi-x-circle-fill', 'text-danger'],
+                'unknown' => ['bi-dash-circle', 'text-muted'],
+            ];
+        @endphp
+        <div class="card shadow-sm mb-4">
+            <div class="card-header d-flex align-items-center justify-content-between">
+                <span><i class="bi bi-heart-pulse me-2"></i>Health Score</span>
+                @if($asset->health_computed_at)
+                    <small class="text-muted" title="{{ $asset->health_computed_at->toAppTz()->format('Y-m-d H:i T') }}">
+                        Updated {{ $asset->health_computed_at->diffForHumans() }}@if($asset->health_summary_is_ai) · <i class="bi bi-robot"></i> AI @endif
+                    </small>
+                @endif
+            </div>
+            <div class="card-body">
+                <div class="row g-3 align-items-center">
+                    {{-- Score dial --}}
+                    <div class="col-auto text-center">
+                        <div class="d-inline-flex align-items-center justify-content-center rounded-circle"
+                             style="width:84px;height:84px;border:6px solid {{ $hGrade->color() }};">
+                            <div>
+                                <div style="font-size:1.6rem;font-weight:700;line-height:1;">{{ $asset->health_score ?? '—' }}</div>
+                                <div class="text-muted" style="font-size:0.62rem;">/ 100</div>
+                            </div>
+                        </div>
+                        <div><span class="badge {{ $hGrade->badgeClass() }} mt-2">{{ $hGrade->label() }}</span></div>
+                    </div>
+                    {{-- Explanation + factor breakdown --}}
+                    <div class="col">
+                        @if($asset->health_summary)
+                            <p class="mb-2">{{ $asset->health_summary }}</p>
+                        @endif
+                        @if(!empty($hFactors))
+                            <div class="row g-2 small">
+                                @foreach($hFactors as $f)
+                                    @php [$fIcon, $fColor] = $hStatusMeta[$f['status'] ?? 'unknown'] ?? $hStatusMeta['unknown']; @endphp
+                                    <div class="col-md-6 d-flex align-items-start gap-2">
+                                        <i class="bi {{ $fIcon }} {{ $fColor }} mt-1"></i>
+                                        <div>
+                                            <strong>{{ $f['label'] ?? '' }}</strong>@if(($f['points'] ?? 0) < 0) <span class="text-danger">({{ $f['points'] }})</span>@endif
+                                            <br><span class="text-muted">{{ $f['detail'] ?? '' }}</span>
+                                        </div>
+                                    </div>
+                                @endforeach
+                            </div>
+                        @endif
+                    </div>
+                </div>
+            </div>
+        </div>
+        @endunless
+
         <div class="row g-4">
             {{-- Left column: Device Identity --}}
             <div class="col-md-6">
