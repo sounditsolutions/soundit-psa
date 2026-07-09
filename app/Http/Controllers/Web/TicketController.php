@@ -176,13 +176,24 @@ class TicketController extends Controller
 
         $newStatus = TicketStatus::from($request->input('status'));
 
+        // Resolving must record what was done — the resolution feeds future
+        // tickets and the client wiki. A whitespace-only summary counts as empty.
+        // Other transitions (and programmatic paths through TicketService) keep
+        // the resolution optional.
+        $resolution = trim((string) $request->input('resolution', ''));
+
+        if ($newStatus === TicketStatus::Resolved && $resolution === '') {
+            return redirect()->route('tickets.show', $ticket)
+                ->with('error', 'Add a brief resolution summary before resolving this ticket.');
+        }
+
         try {
             $this->ticketService->changeStatus(
                 $ticket,
                 $newStatus,
                 auth()->id(),
                 $request->input('note'),
-                $request->input('resolution'),
+                $resolution !== '' ? $resolution : null,
             );
         } catch (\InvalidArgumentException $e) {
             return redirect()->route('tickets.show', $ticket)
