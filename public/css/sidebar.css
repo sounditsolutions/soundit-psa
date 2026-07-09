@@ -37,7 +37,6 @@
     display: flex;
     flex-direction: column;
     z-index: 1020;
-    transition: width var(--sidebar-transition);
     overflow-x: hidden;
     overflow-y: auto;
     scrollbar-width: thin;
@@ -201,7 +200,6 @@
     align-items: center;
     padding: 0 20px;
     z-index: 1045;
-    transition: left var(--sidebar-transition);
     box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
 }
 
@@ -215,12 +213,30 @@
 .psa-content-wrapper {
     margin-left: var(--sidebar-width);
     min-height: 100vh;
-    transition: margin-left var(--sidebar-transition);
 }
 
 /* Push main content below the fixed topbar */
 .psa-content-wrapper > main {
     margin-top: var(--topbar-height);
+}
+
+/* ── Layout transitions: opt-in via .sidebar-animate ──
+   The sidebar width, topbar offset, and content margin animate the collapse
+   toggle. They are deliberately NOT on the base selectors above: a viewport
+   resize that crosses a breakpoint (mobile → desktop) also changes these
+   properties, and animating them leaves the fixed sidebar overlapping the main
+   content while the margin eases in (the sidebar's transform snaps in at once,
+   the content margin lags behind). sidebar.js adds .sidebar-animate only for
+   the duration of an explicit user toggle, so resize reflows are instant while
+   the toggle stays smooth. (psa-vzk1) */
+body.sidebar-animate .psa-sidebar {
+    transition: width var(--sidebar-transition);
+}
+body.sidebar-animate .psa-topbar {
+    transition: left var(--sidebar-transition);
+}
+body.sidebar-animate .psa-content-wrapper {
+    transition: margin-left var(--sidebar-transition);
 }
 
 /* ── Mobile Backdrop ── */
