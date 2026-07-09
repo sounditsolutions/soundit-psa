@@ -12,12 +12,12 @@
 </div>
 
 <div class="row mb-4">
-    <div class="col d-flex align-items-center justify-content-between">
+    <div class="col d-flex flex-wrap align-items-center justify-content-between gap-2">
         <div>
             <h4 class="section-title mb-1">{{ $invoice->invoice_number }}</h4>
             <span class="badge {{ $invoice->status->badgeClass() }}">{{ $invoice->status->label() }}</span>
         </div>
-        <div class="d-flex gap-2">
+        <div class="d-flex flex-wrap gap-2">
             @if($invoice->is_editable)
                 <a href="{{ route('invoices.edit', $invoice) }}" class="btn btn-outline-primary btn-sm">
                     <i class="bi bi-pencil me-1"></i>Edit
@@ -119,32 +119,34 @@
         <div class="card shadow-sm mb-4">
             <div class="card-header"><i class="bi bi-info-circle me-2"></i>Invoice Details</div>
             <div class="card-body">
-                <table class="table table-borderless table-sm mb-0">
-                    <tr>
-                        <th class="text-muted" style="width: 140px;">Client</th>
-                        <td><x-client-badge :client="$invoice->client" :size="24" /></td>
-                    </tr>
-                    @if($invoice->contract)
+                <div class="table-responsive">
+                    <table class="table table-borderless table-sm mb-0">
                         <tr>
-                            <th class="text-muted">Contract</th>
-                            <td><x-contract-badge :contract="$invoice->contract" /></td>
+                            <th class="text-muted" style="width: 140px;">Client</th>
+                            <td><x-client-badge :client="$invoice->client" :size="24" /></td>
                         </tr>
-                    @endif
-                    <tr>
-                        <th class="text-muted">Invoice Date</th>
-                        <td>{{ $invoice->invoice_date->format('M j, Y') }}</td>
-                    </tr>
-                    <tr>
-                        <th class="text-muted">Due Date</th>
-                        <td>{{ $invoice->due_date->format('M j, Y') }}</td>
-                    </tr>
-                    @if($invoice->notes)
+                        @if($invoice->contract)
+                            <tr>
+                                <th class="text-muted">Contract</th>
+                                <td><x-contract-badge :contract="$invoice->contract" /></td>
+                            </tr>
+                        @endif
                         <tr>
-                            <th class="text-muted">Notes</th>
-                            <td>{{ $invoice->notes }}</td>
+                            <th class="text-muted">Invoice Date</th>
+                            <td>{{ $invoice->invoice_date->format('M j, Y') }}</td>
                         </tr>
-                    @endif
-                </table>
+                        <tr>
+                            <th class="text-muted">Due Date</th>
+                            <td>{{ $invoice->due_date->format('M j, Y') }}</td>
+                        </tr>
+                        @if($invoice->notes)
+                            <tr>
+                                <th class="text-muted">Notes</th>
+                                <td>{{ $invoice->notes }}</td>
+                            </tr>
+                        @endif
+                    </table>
+                </div>
             </div>
         </div>
 
