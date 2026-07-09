@@ -36,7 +36,7 @@ class EmergencyAckController extends Controller
         // 1. Decode the claimed {em, u} WITHOUT trusting them (CO-16).
         $claims = EmergencyAckToken::claims($token);
         if ($claims === null) {
-            abort(403);
+            return $this->invalidLink();
         }
 
         $emergencyId = $claims['em'];
@@ -45,7 +45,7 @@ class EmergencyAckController extends Controller
         // 2. Verify the HMAC + TTL against the claimed tuple. A tampered/expired
         //    token fails here and never touches the row.
         if (! EmergencyAckToken::verify($token, $emergencyId, $userId)) {
-            abort(403);
+            return $this->invalidLink();
         }
 
         // 3. Single-use CAS: only an OPEN emergency flips to acknowledged. A second
@@ -68,6 +68,22 @@ class EmergencyAckController extends Controller
         return response()->view('technician.emergency.ack', [
             'ticketId' => $emergency?->ticket_id,
         ]);
+    }
+
+    /**
+     * Expired/tampered/garbled token: keep the 403 status and the no-mutation
+     * behavior exactly as-is, but render an on-brand page for the AWAY operator
+     * instead of the bare Laravel "403 FORBIDDEN". claims() decoded nothing it
+     * trusts, so this leaks nothing — it only tells the operator the tap was NOT
+     * recorded, that the backstop is still watching, and where to go next.
+     */
+    private function invalidLink(): Response
+    {
+        return response()->view(
+            'technician.emergency.ack-invalid',
+            [],
+            Response::HTTP_FORBIDDEN
+        );
     }
 
     /**
