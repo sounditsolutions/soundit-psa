@@ -7,6 +7,35 @@
     $prefilter = $prefilter ?? [];
 @endphp
 
+{{-- Primary search — always visible so finding a specific device never requires opening Filters.
+     Hidden inputs carry the active filters so searching doesn't reset them. --}}
+<form method="GET" action="{{ route($listRoute, $prefilter) }}" class="mb-3">
+    @unless(isset($prefilter['client_id']))
+        @if(!empty($filters['client_id']))
+            <input type="hidden" name="client_id" value="{{ $filters['client_id'] }}">
+        @endif
+    @endunless
+    @if(!empty($filters['asset_type']))<input type="hidden" name="asset_type" value="{{ $filters['asset_type'] }}">@endif
+    @if(!empty($filters['status']))<input type="hidden" name="status" value="{{ $filters['status'] }}">@endif
+    @if(!empty($filters['rmm']))<input type="hidden" name="rmm" value="{{ $filters['rmm'] }}">@endif
+    @if(!empty($filters['health']))<input type="hidden" name="health" value="{{ $filters['health'] }}">@endif
+    @if(!empty($filters['user_assignment']))<input type="hidden" name="user_assignment" value="{{ $filters['user_assignment'] }}">@endif
+    @if(!empty($filters['sort']) && $filters['sort'] !== 'hostname')<input type="hidden" name="sort" value="{{ $filters['sort'] }}">@endif
+    @if(!empty($filters['direction']) && $filters['direction'] !== 'asc')<input type="hidden" name="direction" value="{{ $filters['direction'] }}">@endif
+    @if($filters['show_inactive'] ?? false)<input type="hidden" name="show_inactive" value="1">@endif
+    @if($filters['show_deleted'] ?? false)<input type="hidden" name="show_deleted" value="1">@endif
+    <div class="input-group">
+        <input type="text" name="search" class="form-control"
+               placeholder="Search hostname, name, serial, IP..."
+               value="{{ $filters['search'] ?? '' }}" aria-label="Search assets">
+        <button class="btn btn-primary" type="submit"><i class="bi bi-search me-1"></i>Search</button>
+        @if(!empty($filters['search']))
+            <a href="{{ route($listRoute, array_merge($prefilter, request()->except('search', 'page'))) }}"
+               class="btn btn-outline-secondary" title="Clear search"><i class="bi bi-x-lg"></i></a>
+        @endif
+    </div>
+</form>
+
 {{-- Quick filter pills --}}
 @php
     $isOnline = ($filters['status'] ?? '') === 'online';
@@ -59,7 +88,6 @@
         if ($isUnhealthy) $activeFilters[] = 'Unhealthy';
         if (!empty($filters['asset_type'])) $activeFilters[] = $filters['asset_type'];
         if (!empty($filters['client_id']) && !isset($prefilter['client_id'])) $activeFilters[] = $clients->firstWhere('id', $filters['client_id'])?->name ?? 'Client';
-        if (!empty($filters['search'])) $activeFilters[] = '"' . $filters['search'] . '"';
         if (!empty($filters['user_assignment'])) $activeFilters[] = $filters['user_assignment'] === 'assigned' ? 'Has users' : 'No users';
         if ($filters['show_inactive'] ?? false) $activeFilters[] = 'Including inactive';
         if ($filters['show_deleted'] ?? false) $activeFilters[] = 'Including deleted';
@@ -76,7 +104,7 @@
 {{-- Filter card --}}
 @php
     $hasAdvancedFilters = (!empty($filters['asset_type'])) || (!empty($filters['client_id']) && !isset($prefilter['client_id']))
-        || (!empty($filters['search'])) || (!empty($filters['status']) && !$isOnline && !$isOffline)
+        || (!empty($filters['status']) && !$isOnline && !$isOffline)
         || (!empty($filters['rmm']) && !$isUnlinked)
         || (!empty($filters['user_assignment']))
         || ($filters['show_inactive'] ?? false)
@@ -100,6 +128,10 @@
                 @endif
                 @if(!empty($filters['health']))
                     <input type="hidden" name="health" value="{{ $filters['health'] }}">
+                @endif
+                {{-- Search lives in the always-visible bar above; carry it through so advanced filters don't drop it. --}}
+                @if(!empty($filters['search']))
+                    <input type="hidden" name="search" value="{{ $filters['search'] }}">
                 @endif
                 <div class="row g-2">
                     <div class="col-lg-2 col-md-3">
@@ -130,11 +162,6 @@
                             <option value="assigned" {{ ($filters['user_assignment'] ?? '') === 'assigned' ? 'selected' : '' }}>Assigned</option>
                             <option value="unassigned" {{ ($filters['user_assignment'] ?? '') === 'unassigned' ? 'selected' : '' }}>Unassigned</option>
                         </select>
-                    </div>
-                    <div class="col-lg-3 col-md-4">
-                        <input type="text" name="search" class="form-control form-control-sm"
-                               placeholder="Search hostname, name, serial, IP..."
-                               value="{{ $filters['search'] ?? '' }}">
                     </div>
                     <div class="col-lg-3 col-md-4 d-flex align-items-center gap-3">
                         <div class="form-check">
