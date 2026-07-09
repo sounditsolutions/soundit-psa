@@ -877,6 +877,21 @@ Alternative to QuickBooks Online for invoice creation and payment tracking. Each
 10. Product sync: `php artisan stripe:sync-products --import` imports Stripe Products as SKUs, `--push` pushes local SKUs to Stripe
 11. **Import historical invoices**: Click **Import Invoices** on Settings > Integrations (Stripe card), or run `php artisan stripe:sync-invoices --import`. To re-import from scratch: `php artisan stripe:sync-invoices --import --full`
 
+### PandaDoc (Agreements & E-Signatures)
+
+Generate agreement documents from PandaDoc templates and send contract contacts a request for e-signature, tracking signing status back onto the contract. Complements the local PDF + AI-summary "Documents" feature — this is for documents you want signed. No `.env` changes required.
+
+1. In PandaDoc, go to **Settings → API & Integrations** and create an **API key**.
+2. Settings > Integrations > PandaDoc (Billing tab)
+3. Enter your **API Key** and click **Test Connection** to verify
+4. (Recommended) In PandaDoc, add a **Webhook** pointing at `https://psa.yourmsp.com/api/webhooks/pandadoc`, subscribe it to the **document state changed** event, and copy the webhook's **shared key** into the **Webhook Shared Key** field so signature status updates arrive in real time. Without a webhook, use the refresh button on each agreement to pull the latest status. (Requires a queue worker — see the Call Transcription section for queue setup.)
+5. On any contract's detail page, the **Agreements (PandaDoc)** card lets you create a document from a template ID, send it for signature, refresh its status, and download the signed PDF once completed.
+
+**Notes:**
+- Templates are authored in PandaDoc; enter the template's ID when creating an agreement. Template `tokens` (`Contract.Name`, `Client.Name`, `Contract.StartDate`, `Contract.EndDate`) are auto-filled from the contract.
+- Signed PDFs are archived to the `contract-documents`-adjacent `pandadoc-documents/{contract_id}/` path on the local disk.
+- The webhook endpoint verifies an HMAC-SHA-256 signature (hex digest of the raw body, keyed by the shared key) passed in the `signature` query parameter.
+
 ### Tier2Tickets / HelpDesk Buttons
 
 Desktop shortcut/application that lets MSP clients submit support tickets directly from their workstation. Uses a ConnectWise Manage API compatibility layer built into Sound PSA.

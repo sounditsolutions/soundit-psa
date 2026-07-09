@@ -26,6 +26,7 @@ use App\Http\Controllers\Web\LicenseTypeController;
 use App\Http\Controllers\Web\McpTokensController;
 use App\Http\Controllers\Web\MeshCustomerController;
 use App\Http\Controllers\Web\NinjaOrgController;
+use App\Http\Controllers\Web\PandaDocDocumentController;
 use App\Http\Controllers\Web\PersonController;
 use App\Http\Controllers\Web\PortalManagementController;
 use App\Http\Controllers\Web\PreferencesController;
@@ -435,6 +436,8 @@ Route::middleware('auth')->group(function () {
     Route::get('/settings/integrations/stripe/customers', [\App\Http\Controllers\Web\StripeCustomerController::class, 'index'])->name('settings.stripe-customers.index');
     Route::post('/settings/integrations/stripe/customers', [\App\Http\Controllers\Web\StripeCustomerController::class, 'update'])->name('settings.stripe-customers.update');
     Route::get('/settings/integrations/stripe/customers/auto-match', [\App\Http\Controllers\Web\StripeCustomerController::class, 'autoMatch'])->name('settings.stripe-customers.auto-match');
+    Route::post('/settings/integrations/pandadoc', [IntegrationsController::class, 'updatePandaDoc'])->name('settings.integrations.pandadoc.update');
+    Route::post('/settings/integrations/pandadoc/test', [IntegrationsController::class, 'testPandaDoc'])->name('settings.integrations.pandadoc.test');
 
     // Settings — Avatars
     Route::post('/settings/integrations/avatars', [IntegrationsController::class, 'updateAvatars'])->name('settings.integrations.avatars.update');
@@ -543,6 +546,13 @@ Route::middleware('auth')->group(function () {
     Route::delete('/contracts/{contract}/documents/{document}', [ContractDocumentController::class, 'destroy'])->name('contracts.delete-document');
     Route::post('/contracts/{contract}/documents/{document}/resummarize', [ContractDocumentController::class, 'resummarize'])->name('contracts.resummarize-document');
     Route::get('/contracts/{contract}/documents/{document}/status', [ContractDocumentController::class, 'status'])->name('contracts.document-status');
+
+    // Contract PandaDoc Agreements (e-signature)
+    Route::post('/contracts/{contract}/pandadoc', [PandaDocDocumentController::class, 'store'])->name('contracts.pandadoc.store');
+    Route::post('/contracts/{contract}/pandadoc/{document}/send', [PandaDocDocumentController::class, 'send'])->name('contracts.pandadoc.send');
+    Route::post('/contracts/{contract}/pandadoc/{document}/sync', [PandaDocDocumentController::class, 'sync'])->name('contracts.pandadoc.sync');
+    Route::get('/contracts/{contract}/pandadoc/{document}/download', [PandaDocDocumentController::class, 'download'])->name('contracts.pandadoc.download');
+    Route::delete('/contracts/{contract}/pandadoc/{document}', [PandaDocDocumentController::class, 'destroy'])->name('contracts.pandadoc.destroy');
 
     // Contract Assignments
     Route::post('/contracts/{contract}/assets', [ContractAssignmentController::class, 'assignAsset'])->name('contracts.assign-asset');

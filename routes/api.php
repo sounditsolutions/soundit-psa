@@ -6,6 +6,7 @@ use App\Http\Controllers\Api\HealthController;
 use App\Http\Controllers\Api\HuntressController;
 use App\Http\Controllers\Api\LevelWebhookController;
 use App\Http\Controllers\Api\NinjaWebhookController;
+use App\Http\Controllers\Api\PandaDocWebhookController;
 use App\Http\Controllers\Api\PlivoWebhookController;
 use App\Http\Controllers\Api\QboWebhookController;
 use App\Http\Controllers\Api\ScreenConnectWebhookController;
@@ -14,6 +15,7 @@ use App\Http\Controllers\Api\TacticalWebhookController;
 use App\Http\Middleware\VerifyCometWebhookKey;
 use App\Http\Middleware\VerifyHuntressApiKey;
 use App\Http\Middleware\VerifyLevelWebhookSignature;
+use App\Http\Middleware\VerifyPandaDocWebhookSignature;
 use App\Http\Middleware\VerifyPlivoWebhookSecret;
 use App\Http\Middleware\VerifyQboWebhookSignature;
 use App\Http\Middleware\VerifyScreenConnectSecret;
@@ -33,6 +35,10 @@ Route::post('webhooks/level', [LevelWebhookController::class, 'handle'])
 // QuickBooks Online webhooks — HMAC-SHA-256 signature verification
 Route::post('webhooks/qbo', [QboWebhookController::class, 'handle'])
     ->middleware([VerifyQboWebhookSignature::class, 'throttle:120,1']);
+
+// PandaDoc webhooks — HMAC-SHA-256 signature in the `signature` query param
+Route::post('webhooks/pandadoc', [PandaDocWebhookController::class, 'handle'])
+    ->middleware([VerifyPandaDocWebhookSignature::class, 'throttle:120,1']);
 
 // Microsoft Graph webhooks — clientState verification in controller
 Route::post('webhooks/graph/mail', [GraphWebhookController::class, 'handle']);

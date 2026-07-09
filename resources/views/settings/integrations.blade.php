@@ -344,6 +344,94 @@
             </div>
         </div>
 
+        {{-- PandaDoc Card --}}
+        <div class="card card-static shadow-sm mb-4">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <div>
+                    <i class="bi bi-pen me-2"></i>PandaDoc (Agreements &amp; E-Signatures)
+                </div>
+                @if($pandadocConnected ?? false)
+                    <span class="badge bg-success">Connected</span>
+                @elseif($pandadocConfigured ?? false)
+                    <span class="badge bg-warning text-dark">Not tested</span>
+                @else
+                    <span class="badge bg-secondary">Not configured</span>
+                @endif
+            </div>
+            <div class="card-body">
+                <p class="text-muted small mb-3">
+                    Generate agreements from PandaDoc templates and send them to contract contacts for e-signature.
+                    Signed PDFs are archived back onto the contract. Create an API key in
+                    <a href="https://app.pandadoc.com/a/#/settings/api-dashboard" target="_blank">PandaDoc &rarr; Settings &rarr; API &amp; Integrations</a>.
+                </p>
+
+                <form method="POST" action="{{ route('settings.integrations.pandadoc.update') }}">
+                    @csrf
+
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label for="pandadoc_api_key" class="form-label">API Key</label>
+                            <input type="password" class="form-control" id="pandadoc_api_key" name="api_key"
+                                   value=""
+                                   placeholder="{{ ($pandadocConfigured ?? false) ? '••••••••' : 'PandaDoc API key' }}">
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label for="pandadoc_webhook_secret" class="form-label">Webhook Shared Key</label>
+                            <input type="password" class="form-control" id="pandadoc_webhook_secret" name="webhook_secret"
+                                   value=""
+                                   placeholder="{{ ($pandadocHasWebhookSecret ?? false) ? 'Leave blank to keep current' : 'Shared key from PandaDoc webhook' }}">
+                        </div>
+                    </div>
+
+                    <div class="d-flex gap-2">
+                        <button type="submit" class="btn btn-primary btn-sm">Save PandaDoc Settings</button>
+                        <button type="button" class="btn btn-outline-secondary" id="test-pandadoc-btn"
+                                onclick="testConnection('pandadoc')">
+                            <i class="bi bi-plug me-1"></i>Test Connection
+                        </button>
+                    </div>
+                    <div id="test-result-pandadoc" class="alert mt-2" style="display:none;"></div>
+                </form>
+
+                <div class="mt-3">
+                    <button type="button" class="btn btn-outline-info btn-sm" data-bs-toggle="collapse" data-bs-target="#pandadoc-webhook-setup">
+                        <i class="bi bi-broadcast me-1"></i>Webhook Setup
+                    </button>
+                    <div class="collapse mt-3" id="pandadoc-webhook-setup">
+                        <div class="border rounded p-3 bg-light">
+                            <h6 class="fw-bold mb-2"><i class="bi bi-broadcast me-1"></i>Webhook Setup</h6>
+                            <p class="small mb-2">
+                                Webhooks push signature status changes from PandaDoc in real time (viewed, completed, declined).
+                                In PandaDoc go to <strong>Settings &rarr; API &amp; Integrations &rarr; Webhooks</strong> and add an endpoint:
+                            </p>
+                            <ul class="small mb-2">
+                                <li>URL: <code>{{ url('/api/webhooks/pandadoc') }}</code></li>
+                                <li>Events: <strong>Document state changed</strong> (and document updates)</li>
+                                <li>Copy the <strong>shared key</strong> into the field above so signatures can be verified.</li>
+                            </ul>
+                            <p class="small mb-0 text-muted">
+                                Without webhooks, use the <i class="bi bi-arrow-clockwise"></i> refresh button on each agreement to pull the latest status.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
+                @if($pandadocConfigured ?? false)
+                <div class="border-top pt-3 mt-3">
+                    <form method="POST" action="{{ route('settings.integrations.toggle') }}">
+                        @csrf
+                        <input type="hidden" name="integration" value="pandadoc">
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" name="enabled" value="1"
+                                   id="pandadoc_enabled" {{ ($pandadocEnabled ?? true) ? 'checked' : '' }} onchange="this.form.submit()">
+                            <label class="form-check-label" for="pandadoc_enabled">Integration enabled</label>
+                        </div>
+                    </form>
+                </div>
+                @endif
+            </div>
+        </div>
+
         </div>{{-- /billing tab --}}
 
         {{-- ============================================================ --}}
@@ -3810,6 +3898,7 @@ function testConnection(service) {
 
     const routes = {
         stripe: '{{ route("settings.integrations.stripe.test") }}',
+        pandadoc: '{{ route("settings.integrations.pandadoc.test") }}',
         ninja: '{{ route("settings.integrations.ninja.test") }}',
         level: '{{ route("settings.integrations.level.test") }}',
         mesh: '{{ route("settings.integrations.mesh.test") }}',

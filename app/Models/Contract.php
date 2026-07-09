@@ -83,6 +83,7 @@ class Contract extends Model
             if ($contract->isForceDeleting()) {
                 // Clean up documents (triggers per-model deleting event for disk cleanup)
                 $contract->documents()->each(fn (ContractDocument $doc) => $doc->forceDelete());
+                $contract->pandaDocuments()->withTrashed()->each(fn (PandaDocDocument $doc) => $doc->forceDelete());
 
                 return;
             }
@@ -165,6 +166,11 @@ class Contract extends Model
     public function documents(): HasMany
     {
         return $this->hasMany(ContractDocument::class);
+    }
+
+    public function pandaDocuments(): HasMany
+    {
+        return $this->hasMany(PandaDocDocument::class)->orderByDesc('created_at');
     }
 
     public function portalPrepaySku(): BelongsTo

@@ -19,6 +19,7 @@ use App\Support\ControlDConfig;
 use App\Support\HuntressConfig;
 use App\Support\LevelConfig;
 use App\Support\MeshConfig;
+use App\Support\PandaDocConfig;
 use App\Support\PlivoConfig;
 use App\Support\PrintixConfig;
 use App\Support\ScreenConnectConfig;
@@ -85,6 +86,12 @@ class IntegrationsController extends Controller
         $stripeMode = StripeConfig::get('mode');
         $stripeConnected = (bool) $fmtTs(Setting::getValue('stripe_connected_at'));
         $stripeAutoPush = Setting::getValue('stripe_auto_push_invoices') === '1';
+
+        // PandaDoc (agreements + e-signatures)
+        $pandadocConfigured = PandaDocConfig::isConfigured();
+        $pandadocEnabled = PandaDocConfig::isEnabled();
+        $pandadocConnected = (bool) $fmtTs(Setting::getValue('pandadoc_connected_at'));
+        $pandadocHasWebhookSecret = (bool) PandaDocConfig::webhookSecret();
 
         // Level
         $levelHasApiKey = (bool) (Setting::getValue('level_api_key') ?? config('services.level.api_key'));
@@ -355,6 +362,7 @@ class IntegrationsController extends Controller
         return view('settings.integrations', compact(
             'qboClientId', 'qboHasSecret', 'qboEnvironment', 'qboRealmId', 'qboConnected', 'qboTokenExpiresAt', 'qboAutoPush', 'qboHasWebhookToken', 'qboDefaultIncomeId', 'qboDefaultExpenseId', 'qboIncomeAccounts', 'qboExpenseAccounts',
             'stripeConfigured', 'stripeMode', 'stripeConnected', 'stripeAutoPush', 'stripeEnabled',
+            'pandadocConfigured', 'pandadocEnabled', 'pandadocConnected', 'pandadocHasWebhookSecret',
             'ninjaClientId', 'ninjaConnected', 'ninjaConnectedAt', 'ninjaEnabled',
             'levelHasApiKey', 'levelConnected', 'levelConnectedAt', 'levelWebhookSecret', 'levelHasInstallAccountToken', 'levelEnabled',
             'meshHasApiKey', 'meshBaseUrl', 'meshConnected', 'meshEnabled',
@@ -394,7 +402,7 @@ class IntegrationsController extends Controller
     {
         $allowed = [
             'ninja', 'level', 'mesh', 'cipp', 'cipp_mcp', 'cipp_contact_sync', 'cipp_device_sync', 'cipp_mcp_catalog_sync', 'huntress', 'servosity', 'controld', 'zorus', 'appriver', 'printix',
-            'plivo', 'graph', 'stripe', 't2t', 'ai', 'screenconnect', 'tactical',
+            'plivo', 'graph', 'stripe', 'pandadoc', 't2t', 'ai', 'screenconnect', 'tactical',
         ];
 
         $request->validate([
@@ -516,6 +524,48 @@ class IntegrationsController extends Controller
             }
 
             return response()->json(['success' => false, 'message' => 'Stripe API returned an error.']);
+        } catch (\Throwable $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()]);
+        }
+    }
+
+    // --- PandaDoc ---
+
+    public function updatePandaDoc(Request $request)
+    {
+        $validated = $request->validate([
+            'api_key' => 'nullable|string|min:1|max:500',
+            'webhook_secret' => 'nullable|string|min:1|max:500',
+        ]);
+
+        if (! empty($validated['api_key'])) {
+            Setting::setEncrypted('pandadoc_api_key', $validated['api_key']);
+        }
+
+        if (! empty($validated['webhook_secret'])) {
+            Setting::setEncrypted('pandadoc_webhook_secret', $validated['webhook_secret']);
+        }
+
+        return redirect()->route('settings.integrations')
+            ->with('success', 'PandaDoc credentials saved.');
+    }
+
+    public function testPandaDoc()
+    {
+        if (! PandaDocConfig::isConfigured()) {
+            return response()->json(['success' => false, 'message' => 'PandaDoc API key not configured.']);
+        }
+
+        try {
+            $client = new \App\Services\PandaDoc\PandaDocClient;
+
+            if ($client->isHealthy()) {
+                Setting::setValue('pandadoc_connected_at', now()->toDateTimeString());
+
+                return response()->json(['success' => true, 'message' => 'Connected to PandaDoc!']);
+            }
+
+            return response()->json(['success' => false, 'message' => 'PandaDoc API returned an error.']);
         } catch (\Throwable $e) {
             return response()->json(['success' => false, 'message' => $e->getMessage()]);
         }

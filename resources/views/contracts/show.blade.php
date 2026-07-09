@@ -937,6 +937,113 @@
                 @endforelse
             </div>
         </div>
+
+        {{-- PandaDoc Agreements (e-signature) --}}
+        <div class="card shadow-sm mt-3">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <div><i class="bi bi-pen me-2"></i>Agreements <span class="text-muted small">(PandaDoc)</span></div>
+                @if($contract->pandaDocuments->isNotEmpty())
+                    <span class="badge bg-light text-dark">{{ $contract->pandaDocuments->count() }}</span>
+                @endif
+            </div>
+            <div class="card-body">
+                @if(\App\Support\PandaDocConfig::isConfigured())
+                    {{-- Create-from-template form --}}
+                    <form method="POST" action="{{ route('contracts.pandadoc.store', $contract) }}" class="mb-3" id="pandadoc-create-form">
+                        @csrf
+                        <div class="mb-2">
+                            <input type="text" class="form-control form-control-sm" name="template_id"
+                                   placeholder="PandaDoc template ID" required>
+                        </div>
+                        <div class="row g-2 mb-2">
+                            <div class="col-6">
+                                <input type="email" class="form-control form-control-sm" name="recipient_email"
+                                       placeholder="Recipient email" required>
+                            </div>
+                            <div class="col-6">
+                                <input type="text" class="form-control form-control-sm" name="recipient_name"
+                                       placeholder="Recipient name" required>
+                            </div>
+                        </div>
+                        <div class="input-group input-group-sm">
+                            <input type="text" class="form-control form-control-sm" name="name"
+                                   placeholder="Agreement name (optional)">
+                            <button type="submit" class="btn btn-outline-primary btn-sm" id="pandadoc-create-btn">
+                                <i class="bi bi-plus-lg me-1"></i>Create
+                            </button>
+                        </div>
+                        <div class="text-muted mt-1" style="font-size: 0.7rem;">
+                            Creates a draft in PandaDoc from the template. Send it for signature once ready.
+                        </div>
+                        @error('template_id')<div class="text-danger small mt-1">{{ $message }}</div>@enderror
+                        @error('recipient_email')<div class="text-danger small mt-1">{{ $message }}</div>@enderror
+                    </form>
+                @else
+                    <p class="text-muted small mb-3">
+                        Configure PandaDoc in <a href="{{ route('settings.integrations') }}">Settings &rarr; Integrations</a>
+                        to generate and send agreements for e-signature.
+                    </p>
+                @endif
+
+                {{-- Agreement list --}}
+                @forelse($contract->pandaDocuments as $agreement)
+                    <div class="mb-2 pb-2 {{ !$loop->last ? 'border-bottom' : '' }}">
+                        <div class="d-flex align-items-start justify-content-between">
+                            <div class="small flex-grow-1" style="min-width: 0;">
+                                <div class="text-truncate" title="{{ $agreement->name }}">
+                                    <i class="bi bi-pen text-primary me-1"></i>{{ $agreement->name }}
+                                </div>
+                                <div class="text-muted" style="font-size: 0.7rem;">
+                                    {{ $agreement->recipient_email }}
+                                    &middot; {{ $agreement->created_at->diffForHumans() }}
+                                    @if($agreement->creator)
+                                        &middot; {{ $agreement->creator->name }}
+                                    @endif
+                                </div>
+                                <div class="mt-1">
+                                    <span class="badge {{ $agreement->status->badgeClass() }}" style="font-size: 0.65rem;">
+                                        {{ $agreement->status->label() }}
+                                    </span>
+                                </div>
+                            </div>
+                            <div class="d-flex gap-1 ms-2 flex-shrink-0">
+                                @if($agreement->status === \App\Enums\PandaDocStatus::Draft)
+                                    <form method="POST" action="{{ route('contracts.pandadoc.send', [$contract, $agreement]) }}">
+                                        @csrf
+                                        <button type="submit" class="btn btn-outline-primary p-1" style="font-size: 0.7rem; line-height: 1;" title="Send for signature">
+                                            <i class="bi bi-send"></i>
+                                        </button>
+                                    </form>
+                                @endif
+                                @if(!$agreement->status->isTerminal())
+                                    <form method="POST" action="{{ route('contracts.pandadoc.sync', [$contract, $agreement]) }}">
+                                        @csrf
+                                        <button type="submit" class="btn btn-outline-secondary p-1" style="font-size: 0.7rem; line-height: 1;" title="Refresh status">
+                                            <i class="bi bi-arrow-clockwise"></i>
+                                        </button>
+                                    </form>
+                                @endif
+                                @if($agreement->hasSignedPdf())
+                                    <a href="{{ route('contracts.pandadoc.download', [$contract, $agreement]) }}"
+                                       class="btn btn-outline-success p-1" style="font-size: 0.7rem; line-height: 1;" title="Download signed PDF">
+                                        <i class="bi bi-download"></i>
+                                    </a>
+                                @endif
+                                <form method="POST" action="{{ route('contracts.pandadoc.destroy', [$contract, $agreement]) }}"
+                                      onsubmit="return confirm('Remove this agreement? If not yet signed, it will be voided in PandaDoc.')">
+                                    @csrf @method('DELETE')
+                                    <button type="submit" class="btn btn-outline-danger p-1" style="font-size: 0.7rem; line-height: 1;" title="Remove">
+                                        <i class="bi bi-trash"></i>
+                                    </button>
+                                </form>
+                            </div>
+                        </div>
+                    </div>
+                @empty
+                    <div class="text-muted small text-center">No agreements yet.</div>
+                @endforelse
+            </div>
+        </div>
     </div>
 </div>
 
