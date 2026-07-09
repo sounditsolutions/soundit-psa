@@ -1,0 +1,21 @@
+{
+  "run_label": "tester-client-contacts-2026-07-09-2144",
+  "results": [
+    {
+      "scenario": "client-contacts",
+      "status": "pass",
+      "notes": "Acme Dental Practice /clients/1 surfaced People on the overview, labeled Anjali Patel as Primary, linked to /clients/1/people, and /people/1 rendered the contact name, email, owner role, client, active status, primary flag, and M365 context. Phone/mobile are blank in the UI, but that is already tracked by open QA bead psa-klwu."
+    }
+  ],
+  "findings": [],
+  "artifacts": [
+    "storage/qa-reports/screens/client-contacts-discovery-client-contacts-discovery-clients.png",
+    "storage/qa-reports/screens/client-contacts-client-contacts-client-detail.png",
+    "storage/qa-reports/screens/client-contacts-client-contacts-people-list.png",
+    "storage/qa-reports/screens/client-contacts-client-contacts-person-detail.png"
+  ],
+  "dedup_observed": [
+    "client-contacts|Primary contact phone and mobile render blank despite stored numbers",
+    "client-contacts|[bug] \"Recent\" sidebar stores absolute host-qualified URLs - links rot on domain change / break across multiple hosts"
+  ]
+}
