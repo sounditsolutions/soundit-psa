@@ -96,7 +96,7 @@
                 <div class="card shadow-sm">
                     <div class="card-header"><i class="bi bi-person me-2"></i>Contact Info</div>
                     <div class="card-body">
-                        <table class="table table-borderless mb-0">
+                        <table class="table table-borderless mb-0 text-break">
                             <tbody>
                                 <tr>
                                     <th class="text-muted" style="width: 120px;">Name</th>
@@ -159,7 +159,7 @@
                 <div class="card shadow-sm">
                     <div class="card-header"><i class="bi bi-building me-2"></i>Details</div>
                     <div class="card-body">
-                        <table class="table table-borderless mb-0">
+                        <table class="table table-borderless mb-0 text-break">
                             <tbody>
                                 <tr>
                                     <th class="text-muted" style="width: 120px;">Client</th>
@@ -215,7 +215,7 @@
                                 <i class="bi bi-exclamation-triangle me-1"></i>Data may be stale (last enriched {{ $person->cipp_enriched_at->diffForHumans() }})
                             </div>
                         @endif
-                        <table class="table table-borderless mb-0">
+                        <table class="table table-borderless mb-0 text-break">
                             <tbody>
                                 @if($person->cipp_upn)
                                 <tr>
