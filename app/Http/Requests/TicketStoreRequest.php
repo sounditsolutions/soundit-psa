@@ -2,6 +2,9 @@
 
 namespace App\Http\Requests;
 
+use App\Enums\CabApproval;
+use App\Enums\ChangeType;
+use App\Enums\RiskLevel;
 use App\Enums\TicketPriority;
 use App\Enums\TicketType;
 use Illuminate\Foundation\Http\FormRequest;
@@ -28,6 +31,9 @@ class TicketStoreRequest extends FormRequest
             'priority' => ['required', Rule::enum(TicketPriority::class)],
             'category' => ['nullable', 'string', 'max:100', Rule::in($categoryKeys)],
             'subcategory' => ['nullable', 'string', 'max:100'],
+            'change_type' => ['nullable', Rule::enum(ChangeType::class)],
+            'risk_level' => ['nullable', Rule::enum(RiskLevel::class)],
+            'cab_approval' => ['nullable', Rule::enum(CabApproval::class)],
             'assignee_id' => ['nullable', 'exists:users,id'],
             'due_at' => ['nullable', 'date'],
         ];

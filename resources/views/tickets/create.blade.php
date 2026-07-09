@@ -141,6 +141,50 @@
                 </div>
             </div>
 
+            {{-- Change management (ITIL) — shown only when Type is Change --}}
+            <div class="row g-3 mt-1 {{ old('type', 'incident') === 'change' ? '' : 'd-none' }}" id="changeMgmtFields">
+                <div class="col-12">
+                    <hr class="mb-1">
+                    <div class="form-text mb-0"><i class="bi bi-arrow-repeat me-1"></i>Change Management</div>
+                </div>
+                {{-- Change type --}}
+                <div class="col-md-4">
+                    <label for="change_type" class="form-label">Change Type</label>
+                    <select name="change_type" id="change_type" class="form-select">
+                        <option value="">-- None --</option>
+                        @foreach($changeTypes as $ct)
+                            <option value="{{ $ct->value }}" {{ old('change_type') === $ct->value ? 'selected' : '' }}>
+                                {{ $ct->label() }}
+                            </option>
+                        @endforeach
+                    </select>
+                </div>
+                {{-- Risk level --}}
+                <div class="col-md-4">
+                    <label for="risk_level" class="form-label">Risk Level</label>
+                    <select name="risk_level" id="risk_level" class="form-select">
+                        <option value="">-- None --</option>
+                        @foreach($riskLevels as $rl)
+                            <option value="{{ $rl->value }}" {{ old('risk_level') === $rl->value ? 'selected' : '' }}>
+                                {{ $rl->label() }}
+                            </option>
+                        @endforeach
+                    </select>
+                </div>
+                {{-- CAB approval --}}
+                <div class="col-md-4">
+                    <label for="cab_approval" class="form-label">CAB Approval</label>
+                    <select name="cab_approval" id="cab_approval" class="form-select">
+                        <option value="">-- None --</option>
+                        @foreach($cabApprovals as $ca)
+                            <option value="{{ $ca->value }}" {{ old('cab_approval') === $ca->value ? 'selected' : '' }}>
+                                {{ $ca->label() }}
+                            </option>
+                        @endforeach
+                    </select>
+                </div>
+            </div>
+
             <div class="mt-4">
                 <button type="submit" class="btn btn-primary">
                     <i class="bi bi-plus-lg me-1"></i>Create Ticket
@@ -163,7 +207,16 @@ document.addEventListener('DOMContentLoaded', function() {
     const subcategorySelect = document.getElementById('subcategory');
     const prioritySelect = document.getElementById('priority');
     const dueAtInput = document.getElementById('due_at');
+    const typeSelect = document.getElementById('type');
+    const changeMgmtFields = document.getElementById('changeMgmtFields');
     const csrfToken = document.querySelector('meta[name="csrf-token"]').content;
+
+    // Type change → reveal ITIL change management fields only for Change tickets
+    if (typeSelect && changeMgmtFields) {
+        typeSelect.addEventListener('change', function() {
+            changeMgmtFields.classList.toggle('d-none', this.value !== 'change');
+        });
+    }
 
     // Client change → load contacts and assets
     clientSelect.addEventListener('change', function() {

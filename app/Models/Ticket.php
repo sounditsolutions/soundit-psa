@@ -2,7 +2,10 @@
 
 namespace App\Models;
 
+use App\Enums\CabApproval;
+use App\Enums\ChangeType;
 use App\Enums\NoteType;
+use App\Enums\RiskLevel;
 use App\Enums\TicketPriority;
 use App\Enums\TicketSource;
 use App\Enums\TicketStatus;
@@ -42,6 +45,9 @@ class Ticket extends Model
         'priority_order',
         'category',
         'subcategory',
+        'change_type',
+        'risk_level',
+        'cab_approval',
         'search_keywords',
         'opened_at',
         'responded_at',
@@ -66,6 +72,9 @@ class Ticket extends Model
             'priority' => TicketPriority::class,
             'type' => TicketType::class,
             'source' => TicketSource::class,
+            'change_type' => ChangeType::class,
+            'risk_level' => RiskLevel::class,
+            'cab_approval' => CabApproval::class,
             'total_pending_minutes' => 'integer',
             'total_time_minutes' => 'integer',
             'opened_at' => 'datetime',

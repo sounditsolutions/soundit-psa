@@ -674,6 +674,66 @@
             </div>
         </div>
 
+        {{-- Change Management (ITIL) — only for Change-type tickets --}}
+        @if($ticket->type === App\Enums\TicketType::Change)
+            <div class="card card-static shadow-sm mb-3">
+                <div class="card-header"><i class="bi bi-arrow-repeat me-2"></i>Change Management</div>
+                <div class="card-body">
+                    @if($ticket->change_type || $ticket->risk_level || $ticket->cab_approval)
+                        <div class="d-flex flex-wrap gap-1 mb-3">
+                            @if($ticket->change_type)
+                                <span class="badge {{ $ticket->change_type->badgeClass() }}">{{ $ticket->change_type->label() }} change</span>
+                            @endif
+                            @if($ticket->risk_level)
+                                <span class="badge {{ $ticket->risk_level->badgeClass() }}">{{ $ticket->risk_level->label() }} risk</span>
+                            @endif
+                            @if($ticket->cab_approval)
+                                <span class="badge {{ $ticket->cab_approval->badgeClass() }}">CAB: {{ $ticket->cab_approval->label() }}</span>
+                            @endif
+                        </div>
+                    @endif
+                    <form method="POST" action="{{ route('tickets.update', $ticket) }}">
+                        @csrf
+                        @method('PATCH')
+                        <div class="mb-2">
+                            <label class="form-label small text-muted mb-1">Change Type</label>
+                            <select name="change_type" class="form-select form-select-sm">
+                                <option value="">-- None --</option>
+                                @foreach($changeTypes as $ct)
+                                    <option value="{{ $ct->value }}" {{ $ticket->change_type === $ct ? 'selected' : '' }}>
+                                        {{ $ct->label() }}
+                                    </option>
+                                @endforeach
+                            </select>
+                        </div>
+                        <div class="mb-2">
+                            <label class="form-label small text-muted mb-1">Risk Level</label>
+                            <select name="risk_level" class="form-select form-select-sm">
+                                <option value="">-- None --</option>
+                                @foreach($riskLevels as $rl)
+                                    <option value="{{ $rl->value }}" {{ $ticket->risk_level === $rl ? 'selected' : '' }}>
+                                        {{ $rl->label() }}
+                                    </option>
+                                @endforeach
+                            </select>
+                        </div>
+                        <div class="mb-2">
+                            <label class="form-label small text-muted mb-1">CAB Approval</label>
+                            <select name="cab_approval" class="form-select form-select-sm">
+                                <option value="">-- None --</option>
+                                @foreach($cabApprovals as $ca)
+                                    <option value="{{ $ca->value }}" {{ $ticket->cab_approval === $ca ? 'selected' : '' }}>
+                                        {{ $ca->label() }}
+                                    </option>
+                                @endforeach
+                            </select>
+                        </div>
+                        <button type="submit" class="btn btn-primary btn-sm">Save</button>
+                    </form>
+                </div>
+            </div>
+        @endif
+
         {{-- Details --}}
         <div class="card card-static shadow-sm">
             <div class="card-header"><i class="bi bi-info-circle me-2"></i>Details</div>

@@ -2,6 +2,9 @@
 
 namespace App\Http\Controllers\Web;
 
+use App\Enums\CabApproval;
+use App\Enums\ChangeType;
+use App\Enums\RiskLevel;
 use App\Enums\TicketPriority;
 use App\Enums\TicketSource;
 use App\Enums\TicketStatus;
@@ -73,6 +76,9 @@ class TicketController extends Controller
             'types' => TicketType::cases(),
             'priorities' => TicketPriority::cases(),
             'categories' => config('tickets.categories', []),
+            'changeTypes' => ChangeType::cases(),
+            'riskLevels' => RiskLevel::cases(),
+            'cabApprovals' => CabApproval::cases(),
         ]);
     }
 
@@ -152,6 +158,9 @@ class TicketController extends Controller
             'statuses' => TicketStatus::cases(),
             'priorities' => TicketPriority::cases(),
             'categories' => config('tickets.categories', []),
+            'changeTypes' => ChangeType::cases(),
+            'riskLevels' => RiskLevel::cases(),
+            'cabApprovals' => CabApproval::cases(),
             'clientAssets' => $clientAssets,
             'clientContacts' => $clientContacts,
             'defaultBillable' => $defaultBillable,

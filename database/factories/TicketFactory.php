@@ -2,6 +2,9 @@
 
 namespace Database\Factories;
 
+use App\Enums\CabApproval;
+use App\Enums\ChangeType;
+use App\Enums\RiskLevel;
 use App\Enums\TicketPriority;
 use App\Enums\TicketSource;
 use App\Enums\TicketStatus;
@@ -27,5 +30,18 @@ class TicketFactory extends Factory
             'opened_at' => now()->subDays(3),
             'closed_at' => now(),
         ];
+    }
+
+    /**
+     * A change-management ticket with ITIL change fields populated.
+     */
+    public function change(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'type' => TicketType::Change->value,
+            'change_type' => ChangeType::Normal->value,
+            'risk_level' => RiskLevel::Medium->value,
+            'cab_approval' => CabApproval::Pending->value,
+        ]);
     }
 }
