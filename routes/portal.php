@@ -3,6 +3,7 @@
 use App\Http\Controllers\Portal\PortalAccountController;
 use App\Http\Controllers\Portal\PortalAssetController;
 use App\Http\Controllers\Portal\PortalAuthController;
+use App\Http\Controllers\Portal\PortalChatbotController;
 use App\Http\Controllers\Portal\PortalContractController;
 use App\Http\Controllers\Portal\PortalDashboardController;
 use App\Http\Controllers\Portal\PortalInvoiceController;
@@ -48,6 +49,12 @@ Route::middleware(['portal.enabled', 'portal.auth', 'portal.scope'])->group(func
 
     // Dashboard
     Route::get('/dashboard', [PortalDashboardController::class, 'index'])->name('portal.dashboard');
+
+    // AI Chatbot
+    Route::get('/chatbot', [PortalChatbotController::class, 'index'])->name('portal.chatbot');
+    Route::post('/chatbot/message', [PortalChatbotController::class, 'send'])
+        ->name('portal.chatbot.send')
+        ->middleware('throttle:15,1');
 
     // Tickets
     Route::get('/tickets', [PortalTicketController::class, 'index'])->name('portal.tickets.index');

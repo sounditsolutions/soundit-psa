@@ -11,6 +11,16 @@ class PortalConfig
         return Setting::getValue('portal_enabled', '0') === '1';
     }
 
+    /**
+     * Whether the client-facing AI chatbot is turned on (operator opt-in,
+     * default off). Whether it is actually usable also depends on the AI
+     * provider being configured — see PortalChatbotService::isAvailable().
+     */
+    public static function chatbotEnabled(): bool
+    {
+        return Setting::getValue('portal_chatbot_enabled', '0') === '1';
+    }
+
     public static function companyName(): string
     {
         return Setting::getValue('portal_company_name', config('app.name', 'Sound PSA'));

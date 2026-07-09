@@ -2292,6 +2292,7 @@ class IntegrationsController extends Controller
     {
         $validated = $request->validate([
             'portal_enabled' => 'nullable|in:0,1',
+            'portal_chatbot_enabled' => 'nullable|in:0,1',
             'portal_company_name' => 'nullable|string|max:100',
             'portal_logo_url' => 'nullable|url|max:500',
             'portal_billing_url' => 'nullable|url|max:500',
@@ -2300,6 +2301,7 @@ class IntegrationsController extends Controller
         ]);
 
         Setting::setValue('portal_enabled', $validated['portal_enabled'] ?? '0');
+        Setting::setValue('portal_chatbot_enabled', $validated['portal_chatbot_enabled'] ?? '0');
         Setting::setValue('portal_company_name', $validated['portal_company_name'] ?? '');
         Setting::setValue('portal_logo_url', $validated['portal_logo_url'] ?? '');
         Setting::setValue('portal_billing_url', $validated['portal_billing_url'] ?? '');

@@ -1007,6 +1007,7 @@ A self-service portal where your clients can view tickets, invoices, devices, an
 4. Optionally set a **Logo URL** for portal branding
 5. Optionally set **Billing Portal URL** and **Label** (for MSPs using external billing like BenjiPays)
 6. Optionally set **Prepaid Order URL** (supports `{client_id}` placeholder, shown as "Purchase Prepaid Time" link)
+7. Optionally enable the **AI Chatbot** — adds an "Ask AI" assistant to the portal that answers each client's questions about their own tickets, invoices, devices, and service agreements. It is read-only (it cannot create or change anything) and strictly scoped to the logged-in contact's client. Requires the AI Provider to be configured for **Claude (Anthropic)** (Section 9 > AI Provider) — the tool loop is Anthropic-only. Off by default (`portal_chatbot_enabled` setting).
 
 **Creating portal users:**
 
@@ -1026,6 +1027,7 @@ A self-service portal where your clients can view tickets, invoices, devices, an
 - **Invoices**: View posted/paid invoices with line items (no cost data). "Pay Online" button for Stripe invoices
 - **Devices**: View active devices (hostname, type, OS, online/offline status)
 - **Service Agreements**: View active contracts with prepaid balance and assigned devices/people
+- **Ask AI** (optional): A read-only AI assistant that answers questions about the client's own tickets, invoices, devices, and agreements. Enabled per-deployment and requires an Anthropic AI provider
 - **Account**: Update name and phone. Change password
 
 **Portal notifications:**
