@@ -16,6 +16,7 @@ class ToolingGapFactory extends Factory
             'ticket_id' => null,   // set by caller
             'client_id' => null,   // set by caller
             'capability_gap' => fake()->sentence(),
+            'tool_name' => null,   // set by caller (only for tool_broken reports)
             'evidence' => fake()->optional()->sentence(),
             'classification' => ToolingGapClassification::ToolMissing,
             'source' => ToolingGapSource::Agent,
