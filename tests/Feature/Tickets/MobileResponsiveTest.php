@@ -16,6 +16,8 @@ use Tests\TestCase;
  *    metadata/forms follow (Bootstrap order-* swap, not a source-order change).
  *  - psa-6zs7: wide console tables keep the full table at md+ and fall back to
  *    stacked cards below md so triage signal stays visible without a scroll.
+ *  - psa-vhwt: client detail header stacks the title above the action buttons
+ *    below md so the destructive delete button can't clip off a phone viewport.
  */
 class MobileResponsiveTest extends TestCase
 {
@@ -66,5 +68,21 @@ class MobileResponsiveTest extends TestCase
 
         // Compile/render smoke for the People + Contracts dual-render edits. psa-6zs7.
         $this->actingAs($user)->get(route('clients.show', $client))->assertOk();
+    }
+
+    public function test_client_detail_header_actions_stack_on_mobile(): void
+    {
+        $user = User::factory()->create();
+        $client = Client::factory()->create();
+
+        $resp = $this->actingAs($user)->get(route('clients.show', $client))->assertOk();
+
+        // Below md the header column stacks (title block above the action row,
+        // both left-aligned); at md+ it restores the side-by-side, space-between,
+        // vertically-centered layout. Keeps the delete button inside the mobile
+        // viewport instead of clipping off the right edge. psa-vhwt.
+        $resp->assertSee('flex-column flex-md-row justify-content-between align-items-start align-items-md-center', false);
+        // The action button group wraps instead of overflowing on narrow widths.
+        $resp->assertSee('d-flex flex-wrap gap-2', false);
     }
 }
