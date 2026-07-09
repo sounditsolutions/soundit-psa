@@ -387,3 +387,21 @@ Schedule::command('agent:escalation-sweep')
     ->withoutOverlapping()
     ->runInBackground()
     ->when(fn () => \App\Support\AgentConfig::escalationEnabled());
+
+// Daily technician briefing — a personalized start-of-day digest (open tickets,
+// SLA risks, overnight alerts, voicemails + AI-suggested next actions) emailed to
+// each active technician at the operator-local configured time (default 07:00).
+// Runs everyMinute and self-gates to fire once per local day at the configured
+// minute (mirrors technician:digest); per-technician idempotency is enforced by
+// the daily_briefings table. Ships dormant — briefing_enabled defaults to off.
+Schedule::command('briefing:send-daily')
+    ->everyMinute()
+    ->withoutOverlapping(10)
+    ->runInBackground()
+    ->when(function () {
+        if (! \App\Support\BriefingConfig::isEnabled()) {
+            return false;
+        }
+
+        return now()->setTimezone(AppTimezone::get())->format('H:i') === \App\Support\BriefingConfig::sendTimeLocal();
+    });
