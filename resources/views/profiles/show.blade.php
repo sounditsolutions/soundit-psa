@@ -638,6 +638,7 @@ function previewInvoice() {
                     <strong>Invoice Date:</strong> ${data.invoice_date}<br>
                     <strong>Due Date:</strong> ${data.due_date}
                 </div>
+                <div class="table-responsive">
                 <table class="table table-sm">
                     <thead><tr>
                         <th>Description</th>
@@ -656,6 +657,7 @@ function previewInvoice() {
                         </tr>
                     </tfoot>
                 </table>
+                </div>
                 ${data.total_prepaid_minutes ? `<p class="small text-muted mb-1"><i class="bi bi-clock-history me-1"></i>${formatHours(data.total_prepaid_minutes)} of prepaid time will be deposited into the contract balance when this invoice is marked Paid.</p>` : ''}
                 <p class="text-muted small mb-0">Tax will be calculated by QuickBooks after syncing.</p>`;
         })
