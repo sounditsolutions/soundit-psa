@@ -316,6 +316,30 @@ class McpTokensPageTest extends TestCase
             ->assertSee('tools/call');
     }
 
+    public function test_detail_page_names_icon_controls_and_the_directive_for_accessibility(): void
+    {
+        McpConfig::rotateStaffToken(allowedTools: ['find_staff'], label: 'chet');
+        $token = McpToken::where('label', 'chet')->firstOrFail();
+
+        // A linked MCP destination renders the icon-only unlink control.
+        SignalDestination::create(['label' => 'Inbox', 'type' => 'mcp', 'mcp_token_label' => 'chet']);
+
+        $this->actingAs($this->user)
+            ->withSession(['success' => 'Saved.'])
+            ->get(route('settings.mcp-tokens.show', $token))
+            ->assertOk()
+            // Icon-only back link exposes an accessible name (axe link-name).
+            ->assertSee('aria-label="Back to all tokens"', false)
+            // The decorative back-arrow glyph is hidden from assistive tech.
+            ->assertSee('bi bi-arrow-left me-1" aria-hidden="true"', false)
+            // The dismissible success alert's close button is named (axe button-name).
+            ->assertSee('class="btn-close" data-bs-dismiss="alert" aria-label="Close"', false)
+            // The Directive textarea carries a programmatic label (axe label).
+            ->assertSee('id="mcpDirective" rows="6" maxlength="20000" aria-label="Directive"', false)
+            // The icon-only unlink control exposes a name (axe button-name).
+            ->assertSee('title="Unlink" aria-label="Unlink"', false);
+    }
+
     public function test_revoke_stamps_revoked_at_and_blocks_resolution(): void
     {
         $plain = McpConfig::rotateStaffToken(allowedTools: ['find_staff'], label: 'chet');

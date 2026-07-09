@@ -102,15 +102,15 @@
 @section('content')
 <div class="mcp-cfg" data-token-id="{{ $token->id }}">
 
-<a href="{{ route('settings.mcp-tokens.index') }}" class="btn btn-sm btn-link text-decoration-none ps-0 mb-2">
-    <i class="bi bi-arrow-left me-1"></i>All tokens
+<a href="{{ route('settings.mcp-tokens.index') }}" class="btn btn-sm btn-link text-decoration-none ps-0 mb-2" aria-label="Back to all tokens">
+    <i class="bi bi-arrow-left me-1" aria-hidden="true"></i>All tokens
 </a>
 
 @if(session('success'))
-    <div class="alert alert-success alert-dismissible fade show">{{ session('success') }}<button type="button" class="btn-close" data-bs-dismiss="alert"></button></div>
+    <div class="alert alert-success alert-dismissible fade show">{{ session('success') }}<button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button></div>
 @endif
 @if(session('error'))
-    <div class="alert alert-danger alert-dismissible fade show">{{ session('error') }}<button type="button" class="btn-close" data-bs-dismiss="alert"></button></div>
+    <div class="alert alert-danger alert-dismissible fade show">{{ session('error') }}<button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button></div>
 @endif
 
 {{-- one-time secret (only right after creation) --}}
@@ -119,7 +119,7 @@
         <div class="fw-semibold mb-1"><i class="bi bi-check-circle me-1"></i>Token created</div>
         <div class="small text-danger fw-semibold mb-2">Copy the secret now. For security it will not be shown again.</div>
         <div class="input-group">
-            <input type="text" class="form-control mcp-secret-input" id="mcpNewToken" value="{{ $newToken }}" readonly>
+            <input type="text" class="form-control mcp-secret-input" id="mcpNewToken" value="{{ $newToken }}" readonly aria-label="New token secret">
             <button type="button" class="btn btn-outline-secondary" id="mcpCopySecret"><i class="bi bi-clipboard me-1"></i>Copy</button>
         </div>
     </div>
@@ -224,7 +224,7 @@
         <div class="d-flex gap-2 flex-wrap align-items-center mb-3">
             <div class="mcp-search position-relative flex-grow-1" style="min-width:220px;">
                 <i class="bi bi-search"></i>
-                <input type="text" class="form-control" id="mcpToolSearch" placeholder="Search all {{ $totalCount }} tools by name or description…" autocomplete="off" spellcheck="false" @disabled($readOnly)>
+                <input type="text" class="form-control" id="mcpToolSearch" placeholder="Search all {{ $totalCount }} tools by name or description…" autocomplete="off" spellcheck="false" aria-label="Search tools" @disabled($readOnly)>
             </div>
             <div class="btn-group btn-group-sm mcp-filter" role="group" data-filter="grant" aria-label="Filter by grant status">
                 <button class="btn btn-outline-secondary active" data-val="all">All</button>
@@ -299,7 +299,7 @@
                                                         <i class="bi bi-sliders2 me-1"></i>{{ $hasInstr ? 'Edit shared instruction' : 'Add shared instruction' }}
                                                     </button>
                                                     <div class="mcp-instr-body mt-1" style="display:none;">
-                                                        <textarea class="form-control form-control-sm tool-instr-input" rows="2" data-tool="{{ $tool['name'] }}" maxlength="5000" placeholder="Guidance for {{ $tool['name'] }}…" @disabled($readOnly)>{{ $toolInstructions[$tool['name']] ?? '' }}</textarea>
+                                                        <textarea class="form-control form-control-sm tool-instr-input" rows="2" data-tool="{{ $tool['name'] }}" maxlength="5000" placeholder="Guidance for {{ $tool['name'] }}…" aria-label="Shared instruction for {{ $tool['name'] }}" @disabled($readOnly)>{{ $toolInstructions[$tool['name']] ?? '' }}</textarea>
                                                         <div class="glob mt-1"><i class="bi bi-globe2 me-1"></i>Shared — applies to <code>{{ $tool['name'] }}</code> on every token.</div>
                                                     </div>
                                                 </div>
@@ -329,7 +329,7 @@
                         <span class="badge rounded-pill bg-light text-dark border ms-auto">Per token</span></div>
                     <div class="card-body">
                         <p class="text-muted small">The system directive prepended to this token's calls. It sets who this token is and how it behaves. Unique to this token.</p>
-                        <textarea class="form-control" id="mcpDirective" rows="6" maxlength="20000" @disabled($readOnly)>{{ $token->directiveOrDefault() }}</textarea>
+                        <textarea class="form-control" id="mcpDirective" rows="6" maxlength="20000" aria-label="Directive" @disabled($readOnly)>{{ $token->directiveOrDefault() }}</textarea>
                         <div class="small text-muted mt-2" id="mcpDirectiveStatus"><i class="bi bi-info-circle me-1"></i>Saves automatically.</div>
                     </div>
                 </div>
@@ -409,7 +409,7 @@
                         <span><i class="bi bi-bell me-2 text-secondary"></i>{{ $destination->label }}</span>
                         <form method="POST" action="{{ route('settings.mcp-tokens.signal-destinations.unlink', [$token, $destination]) }}">
                             @csrf @method('DELETE')
-                            <button class="btn btn-outline-danger btn-sm" title="Unlink"><i class="bi bi-x-lg"></i></button>
+                            <button class="btn btn-outline-danger btn-sm" title="Unlink" aria-label="Unlink"><i class="bi bi-x-lg" aria-hidden="true"></i></button>
                         </form>
                     </div>
                 @empty
