@@ -148,6 +148,47 @@ class McpConfig
             ->exists();
     }
 
+    // ── Portal MCP server ─────────────────────────────────────────────────
+    //
+    // The portal MCP server (`/api/mcp/portal`) is a client-facing sibling of
+    // the staff server. It carries a single shared bearer token that
+    // authenticates the trusted bridge (the client Teams agent connector); the
+    // end user is identified per-request by an Entra Object ID header and
+    // resolved to a portal Person. Unlike the staff surface there are no scoped
+    // tokens or per-tool grants — the whole surface is fixed and client-locked
+    // to the resolved Person, so a single break-glass token is sufficient.
+
+    public static function portalToken(): ?string
+    {
+        return Setting::getEncrypted('mcp_portal_token');
+    }
+
+    public static function isPortalEnabled(): bool
+    {
+        return ! empty(self::portalToken());
+    }
+
+    public static function resolvePortalToken(string $token): bool
+    {
+        $stored = self::portalToken();
+
+        return is_string($stored) && $stored !== '' && hash_equals($stored, $token);
+    }
+
+    /**
+     * Generate and store a new portal MCP bearer token. Returns the plaintext
+     * once — the caller hands it to the bridge operator. Replaces any existing
+     * token, invalidating the previous one.
+     */
+    public static function rotatePortalToken(): string
+    {
+        $token = 'psa-mcp-portal-'.Str::random(48);
+
+        Setting::setEncrypted('mcp_portal_token', $token);
+
+        return $token;
+    }
+
     private static function tokenPrefix(string $token): string
     {
         return Str::substr($token, 0, 12).'...';
