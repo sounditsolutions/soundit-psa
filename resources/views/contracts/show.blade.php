@@ -448,11 +448,7 @@
                                                 <td class="small">${{ number_format($invoice->tax, 2) }}</td>
                                                 <td class="small fw-semibold">${{ number_format($invoice->total, 2) }}</td>
                                                 <td>
-                                                    @if($invoice->isOverdue())
-                                                        <span class="badge bg-danger">Overdue</span>
-                                                    @else
-                                                        <span class="badge {{ $invoice->status->badgeClass() }}">{{ $invoice->status->label() }}</span>
-                                                    @endif
+                                                    <span class="badge {{ $invoice->displayStatusBadgeClass() }}">{{ $invoice->displayStatusLabel() }}</span>
                                                 </td>
                                             </tr>
                                         @endforeach
