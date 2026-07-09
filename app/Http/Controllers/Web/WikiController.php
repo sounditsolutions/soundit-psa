@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Web;
 
 use App\Enums\WikiAuthorType;
 use App\Enums\WikiFactStatus;
+use App\Enums\WikiPageKind;
 use App\Enums\WikiScope;
 use App\Helpers\LineDiff;
 use App\Http\Controllers\Controller;
@@ -20,6 +21,7 @@ use App\Services\Wiki\WikiSkeletonService;
 use App\Support\WikiConfig;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controllers\HasMiddleware;
+use Illuminate\Support\Str;
 
 class WikiController extends Controller implements HasMiddleware
 {
@@ -42,13 +44,104 @@ class WikiController extends Controller implements HasMiddleware
         return view('wiki.index', ['pages' => $pages, 'client' => null, 'health' => $health]);
     }
 
-    public function clientIndex(Client $client, WikiSkeletonService $skeleton)
+    /**
+     * psa-s5bf: consolidated single-scroll client-environment view (spec Option B).
+     *
+     * A tech working a queue under time pressure lands here and reads the whole client
+     * environment on one scrollable page — overview, network, infrastructure, m365,
+     * security, backup, applications, known-issues, history, notes — with a sticky
+     * in-page anchor nav, instead of clicking through ten separate pages. Honours the
+     * spec's "the whole picture in one place" principle; individual pages remain
+     * reachable (edit / history / fact provenance) via each section's "Open" link.
+     */
+    public function clientIndex(Client $client, WikiSkeletonService $skeleton, WikiMarkdown $renderer)
     {
         $skeleton->ensureForClient($client); // lazy skeleton on first visit (spec §4.6)
-        $pages = WikiPage::active()->forClient($client->id)->orderBy('kind')->orderBy('title')->get()->groupBy(fn ($p) => $p->kind->value);
-        $health = $this->healthCounts($client->id);
 
-        return view('wiki.index', ['pages' => $pages, 'client' => $client, 'health' => $health]);
+        $pages = WikiPage::active()->forClient($client->id)->get();
+
+        // The environment scroll inlines the short, read-often environment pages
+        // (overview / environment / note kinds). Runbooks and deviations render via
+        // their own cascade view (§4.5), so they stay as sidebar links, not sections.
+        [$envPages, $otherPages] = $pages->partition(
+            fn (WikiPage $p) => in_array($p->kind, [WikiPageKind::Overview, WikiPageKind::Environment, WikiPageKind::Note], true)
+        );
+
+        // Skeleton blueprint order first (overview → notes); any AI-created extras
+        // fall after, ordered by title, so the scroll stays predictable.
+        $order = array_flip(array_keys(WikiSkeletonService::blueprint()));
+        $envPages = $envPages
+            ->sort(fn (WikiPage $a, WikiPage $b) => [$order[$a->slug] ?? PHP_INT_MAX, $a->title] <=> [$order[$b->slug] ?? PHP_INT_MAX, $b->title])
+            ->values();
+
+        $summaries = $this->clientFactSummaries($client->id);
+
+        $sections = $envPages->map(fn (WikiPage $p) => [
+            'page' => $p,
+            'anchor' => $this->anchorFor($p->slug),
+            'html' => $renderer->render($p),
+            'summary' => $summaries[$p->id] ?? null,
+        ])->all();
+
+        return view('wiki.environment', [
+            'client' => $client,
+            'sections' => $sections,
+            'otherPages' => $otherPages->sortBy('title')->values(),
+            'health' => $this->healthCounts($client->id),
+        ]);
+    }
+
+    /**
+     * psa-s5bf: per-page ambient provenance summary for the consolidated view —
+     * "3 unverified · 1 disputed · 2 stale" (spec §8.1.1), silent when a page is clean.
+     * Bulk-computed (two grouped queries) to avoid an N+1 across the section list.
+     *
+     * @return array<int, string> page_id => summary line
+     */
+    private function clientFactSummaries(int $clientId): array
+    {
+        $counts = WikiFact::where('client_id', $clientId)
+            ->whereIn('status', [WikiFactStatus::Unverified->value, WikiFactStatus::Disputed->value])
+            ->selectRaw('page_id, status, COUNT(*) as c')
+            ->groupBy('page_id', 'status')
+            ->get();
+
+        // Staleness is a computed predicate — its own grouped pass (cf. sectionSummaries()).
+        $stale = WikiFact::stale()
+            ->where('client_id', $clientId)
+            ->selectRaw('page_id, COUNT(*) as c')
+            ->groupBy('page_id')
+            ->pluck('c', 'page_id');
+
+        $perPage = [];
+        foreach ($counts as $row) {
+            $perPage[$row->page_id][$row->status->value] = (int) $row->c;
+        }
+
+        $summaries = [];
+        foreach (collect($perPage)->keys()->merge($stale->keys())->unique() as $pageId) {
+            $parts = [];
+            if ($u = $perPage[$pageId][WikiFactStatus::Unverified->value] ?? 0) {
+                $parts[] = "{$u} unverified";
+            }
+            if ($d = $perPage[$pageId][WikiFactStatus::Disputed->value] ?? 0) {
+                $parts[] = "{$d} disputed";
+            }
+            if ($s = (int) ($stale[$pageId] ?? 0)) {
+                $parts[] = "{$s} stale";
+            }
+            if ($parts) {
+                $summaries[$pageId] = implode(' · ', $parts);
+            }
+        }
+
+        return $summaries;
+    }
+
+    /** psa-s5bf: stable, collision-safe DOM id for a page's section anchor in the consolidated view. */
+    private function anchorFor(string $slug): string
+    {
+        return 'wiki-'.Str::slug($slug);
     }
 
     public function show(string $slug, WikiMarkdown $renderer)
