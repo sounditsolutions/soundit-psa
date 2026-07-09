@@ -60,4 +60,25 @@ class AssetTicketsTabTest extends TestCase
         $resp->assertOk();
         $resp->assertSee('Open ticket subject');
     }
+
+    /**
+     * Regression (psa-cvpf): AssetController@tickets renders assets/show.blade.php
+     * but omitted `cometJobData` from the view data. The Comet backup section of
+     * that view — guarded by `@if($asset->comet_device_id)` — references
+     * `$cometJobData`, so the tickets route 500'd ("Undefined variable
+     * $cometJobData") for any asset with a comet device id. Assets without one
+     * (the default factory state) skip the block, which is why the existing tab
+     * tests never caught it.
+     */
+    public function test_tickets_tab_renders_for_comet_linked_asset(): void
+    {
+        $user = User::factory()->create();
+        $asset = Asset::factory()->create(['comet_device_id' => 'comet-dev-regression']);
+
+        $resp = $this->actingAs($user)->get(route('assets.tickets', $asset));
+
+        $resp->assertOk();
+        // The comet backup block (which dereferences $cometJobData) rendered.
+        $resp->assertSee('Backup Storage (Comet)');
+    }
 }
