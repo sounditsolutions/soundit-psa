@@ -109,4 +109,40 @@ class McpTokenSignalDestinationsTest extends TestCase
 
         $this->assertNull($destination->fresh()->mcp_token_label);
     }
+
+    public function test_revoking_a_token_disables_its_linked_mcp_destinations(): void
+    {
+        McpConfig::rotateStaffToken(allowedTools: ['find_staff'], label: 'chet');
+        $token = McpToken::where('label', 'chet')->firstOrFail();
+        $linked = SignalDestination::create([
+            'label' => 'Chet signal inbox',
+            'type' => 'mcp',
+            'mcp_token_label' => 'chet',
+            'enabled' => true,
+        ]);
+
+        // A destination linked to a different live token must be left untouched.
+        McpConfig::rotateStaffToken(allowedTools: ['find_staff'], label: 'gus');
+        $other = SignalDestination::create([
+            'label' => 'Gus signal inbox',
+            'type' => 'mcp',
+            'mcp_token_label' => 'gus',
+            'enabled' => true,
+        ]);
+
+        $this->actingAs($this->user)
+            ->delete(route('settings.mcp-tokens.revoke', $token))
+            ->assertRedirect(route('settings.mcp-tokens.index'));
+
+        $linked = $linked->fresh();
+        $this->assertFalse($linked->enabled, 'The revoked token\'s destination should be disabled.');
+        $this->assertStringContainsString('revoked', (string) $linked->last_error);
+        $this->assertTrue($other->fresh()->enabled, 'Destinations on other tokens are untouched.');
+
+        $this->assertDatabaseHas('signal_config_log', [
+            'action' => 'disabled',
+            'subject_type' => SignalDestination::class,
+            'subject_id' => $linked->id,
+        ]);
+    }
 }

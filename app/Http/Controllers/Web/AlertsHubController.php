@@ -541,6 +541,11 @@ class AlertsHubController extends Controller
         $destination->masked_address = $this->mask($destination->address);
         $destination->masked_wake_url = $this->mask($destination->wake_url);
         $destination->masked_wake_secret = $this->mask($destination->wake_secret);
+        // An MCP destination is only reachable while a non-revoked token backs its
+        // label. A revoked/absent token means no agent can poll it — surface that
+        // as broken/orphaned so it never silently reads as a healthy target.
+        $destination->mcp_token_broken = $destination->type === 'mcp'
+            && ! McpToken::hasLiveLabel($destination->mcp_token_label);
 
         return $destination;
     }

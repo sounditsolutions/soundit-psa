@@ -72,6 +72,23 @@ class McpToken extends Model
         return $this->revoked_at !== null;
     }
 
+    /**
+     * Whether a non-revoked token exists for the given label. This is the gate
+     * for anything that assumes an agent can still poll a label (Alerts Hub MCP
+     * destinations): a revoked token can never authenticate again, so a
+     * destination pointing at one — or at no token at all — is orphaned.
+     *
+     * Draft and paused tokens count as live: both can still be activated/resumed
+     * and drain a queued backlog. Only revocation is terminal.
+     */
+    public static function hasLiveLabel(?string $label): bool
+    {
+        $label = trim((string) $label);
+
+        return $label !== ''
+            && static::query()->where('label', $label)->whereNull('revoked_at')->exists();
+    }
+
     public function isDraft(): bool
     {
         return $this->revoked_at === null
