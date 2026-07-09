@@ -134,4 +134,18 @@ class TriageConfig
 
         return $value !== null ? (int) $value : 80;
     }
+
+    /**
+     * Whether AI-suggested ticket categories require staff approval before being
+     * applied (psa-xop / GitHub #80). When enabled (the default), the triage
+     * `set_ticket_category` tool records a pending suggestion for the approval
+     * queue instead of writing the category straight onto the ticket. Disable to
+     * restore immediate AI category writes.
+     */
+    public static function categoryApprovalEnabled(): bool
+    {
+        $value = Setting::getValue('triage_category_approval');
+
+        return $value === null || (bool) $value;
+    }
 }

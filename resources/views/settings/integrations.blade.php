@@ -3070,6 +3070,19 @@
                         </div>
                     </div>
 
+                    {{-- Category Approval --}}
+                    <hr>
+                    <h6 class="fw-bold mb-3">Category Approval</h6>
+                    <div class="form-check mb-2">
+                        <input class="form-check-input" type="checkbox" name="triage_category_approval" id="triage_category_approval" value="1" @checked($triageCategoryApproval ?? true)>
+                        <label class="form-check-label" for="triage_category_approval">Require staff approval for AI-suggested categories</label>
+                        <div class="form-text">
+                            When enabled, categories suggested during technical triage are held in the
+                            <a href="{{ route('triage.category-suggestions.index') }}">Categories</a> queue for staff approval
+                            instead of being applied to the ticket automatically. Disable to let AI set ticket categories directly.
+                        </div>
+                    </div>
+
                     {{-- Advanced Settings --}}
                     <hr>
                     <h6 class="fw-bold mb-3">Advanced</h6>

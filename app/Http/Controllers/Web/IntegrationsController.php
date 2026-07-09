@@ -239,6 +239,7 @@ class IntegrationsController extends Controller
             $v = Setting::getValue("triage_stage_{$s}");
             $triageStages[$s] = $v === null || (bool) $v;
         }
+        $triageCategoryApproval = \App\Support\TriageConfig::categoryApprovalEnabled();
         // ScreenConnect
         $screenconnectBaseUrl = Setting::getValue('screenconnect_base_url', '');
         $screenconnectWebhookSecret = Setting::getValue('screenconnect_webhook_secret', '');
@@ -372,7 +373,7 @@ class IntegrationsController extends Controller
             'huntressCwConfigured', 'huntressCwHost', 'huntressCwCompanyId', 'huntressCwPublicKey', 'huntressCwSystemUserId', 'huntressCwUsers',
             't2tConfigured', 't2tApiUrl', 't2tCompanyId', 't2tCallbackUrl', 't2tUsers', 't2tSystemUserId', 't2tEnabled',
             'triageEnabled', 'triageAutoNew', 'triageAutoReview', 'triageReviewFrequency', 'triageReviewAutoClose', 'triageReviewThreshold',
-            'triageDefaultAssignee', 'triageSystemUser', 'triageModel', 'triageMaxTokens', 'triageDailyTokens', 'triageBatchSize', 'triageStages',
+            'triageDefaultAssignee', 'triageSystemUser', 'triageModel', 'triageMaxTokens', 'triageDailyTokens', 'triageBatchSize', 'triageStages', 'triageCategoryApproval',
             'assistantEnabled', 'assistantMaxMessages', 'assistantDailyTokens',
             'technicianEnabled', 'technicianEmergencyEnabled', 'technicianAutoAck',
             'technicianTeamsWebhookSet', 'technicianNotifyEmail', 'technicianDigestEnabled', 'technicianDigestTime', 'technicianHeartbeatInterval',
@@ -1703,6 +1704,7 @@ class IntegrationsController extends Controller
             'triage_review_frequency_minutes' => 'nullable|integer|min:5|max:1440',
             'triage_review_auto_close' => 'nullable',
             'triage_review_auto_close_threshold' => 'nullable|integer|min:50|max:100',
+            'triage_category_approval' => 'nullable',
             'triage_default_assignee_id' => 'nullable|integer|exists:users,id',
             'triage_system_user_id' => 'nullable|integer|exists:users,id',
             'triage_model' => 'nullable|string|max:100',
@@ -1727,6 +1729,10 @@ class IntegrationsController extends Controller
         foreach (['contact_resolution', 'junk_filter', 'classification', 'asset_assignment', 'technical_triage', 'conversation_review'] as $stage) {
             Setting::setValue("triage_stage_{$stage}", $request->has("triage_stage_{$stage}") ? '1' : '0');
         }
+
+        // psa-xop: default-on toggle — store '0' when unchecked so the default-true
+        // config reader (null-or-truthy) reflects the operator's explicit opt-out.
+        Setting::setValue('triage_category_approval', $request->has('triage_category_approval') ? '1' : '0');
 
         return redirect()->route('settings.integrations')
             ->with('success', 'AI Triage settings saved.');

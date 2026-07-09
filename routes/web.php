@@ -682,4 +682,9 @@ Route::middleware('auth')->group(function () {
     Route::post('/cockpit/runs/{run}/intake-dismiss', [\App\Http\Controllers\Web\TechnicianCockpitController::class, 'intakeDismiss'])->name('cockpit.intake-dismiss')->middleware('throttle:60,1');
     // psa-xcyo Task 6b: spam lane — one-tap mark-followed-up + block number for a suspected-spam call.
     Route::post('/cockpit/calls/{call}/intake-spam-block', [\App\Http\Controllers\Web\TechnicianCockpitController::class, 'intakeSpamBlock'])->name('cockpit.intake-spam-block')->middleware('throttle:60,1');
+
+    // AI triage category approval queue (psa-xop / GitHub #80)
+    Route::get('/triage/category-suggestions', [\App\Http\Controllers\Web\TicketCategorySuggestionController::class, 'index'])->name('triage.category-suggestions.index');
+    Route::post('/triage/category-suggestions/{suggestion}/approve', [\App\Http\Controllers\Web\TicketCategorySuggestionController::class, 'approve'])->name('triage.category-suggestions.approve');
+    Route::post('/triage/category-suggestions/{suggestion}/reject', [\App\Http\Controllers\Web\TicketCategorySuggestionController::class, 'reject'])->name('triage.category-suggestions.reject');
 });

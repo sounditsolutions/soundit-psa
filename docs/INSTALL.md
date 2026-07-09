@@ -791,6 +791,8 @@ Automatically classifies, enriches, and prepares new tickets for technician revi
 - **Technical Analysis** — AI writes a detailed private tech note with resolution steps, similar past tickets, device health (requires AI)
 - **Conversation Review** — hourly cron assesses open ticket status and writes recommendations (requires AI)
 
+**Category approval:** By default, categories suggested during technical analysis are **not** applied to the ticket automatically — they are held in the **Categories** approval queue (sidebar link, or `/triage/category-suggestions`) for staff to approve or reject. Approving applies the category/subcategory to the ticket; rejecting leaves it unchanged. Toggle **Require staff approval for AI-suggested categories** off (Settings > Integrations > AI Ticket Triage > Category Approval) to let AI set categories directly.
+
 **Cost control:** Per-run token budget (default 200K) and daily token ceiling (default 2M) prevent runaway API spend. Token usage is tracked on each triage run.
 
 **Search keyword backfill:** Triage stamps `search_keywords` on every ticket it processes so future searches find related tickets. To populate keywords on tickets that pre-date the triage run, use:

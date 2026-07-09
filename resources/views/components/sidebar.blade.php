@@ -69,6 +69,17 @@
                     <span class="sidebar-badge bg-danger">{{ $cockpitPending }}</span>
                 @endif
             </a>
+            <a href="{{ route('triage.category-suggestions.index') }}"
+               class="sidebar-link {{ request()->routeIs('triage.category-suggestions.*') ? 'active' : '' }}"
+               @if(request()->routeIs('triage.category-suggestions.*')) aria-current="page" @endif
+               data-bs-toggle="tooltip" data-bs-placement="right" data-bs-title="Category Suggestions">
+                <i class="bi bi-tags sidebar-icon"></i>
+                <span class="sidebar-label">Categories</span>
+                @php $categorySuggestionsPending = \Illuminate\Support\Facades\Cache::remember('sidebar:category_suggestions_pending', 60, fn () => app(\App\Services\Triage\TicketCategorySuggestionService::class)->pendingCount()); @endphp
+                @if($categorySuggestionsPending > 0)
+                    <span class="sidebar-badge bg-warning text-dark">{{ $categorySuggestionsPending }}</span>
+                @endif
+            </a>
             <a href="{{ route('calls.index') }}"
                class="sidebar-link {{ request()->routeIs('calls.*') ? 'active' : '' }}"
                @if(request()->routeIs('calls.*')) aria-current="page" @endif

@@ -21,6 +21,7 @@ use App\Services\Tactical\TacticalClient;
 use App\Services\Tactical\TacticalFieldMap;
 use App\Services\Wiki\HandlesWikiTools;
 use App\Support\ControlDConfig;
+use App\Support\TriageConfig;
 use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Log;
@@ -443,6 +444,29 @@ class TriageToolExecutor
         // Validate subcategory if provided
         if ($subcategory && ! in_array($subcategory, $validCategories[$category])) {
             return ['error' => "Invalid subcategory '{$subcategory}' for {$category}. Valid: ".implode(', ', $validCategories[$category])];
+        }
+
+        // Approval workflow (psa-xop / GitHub #80): unless direct writes are
+        // explicitly re-enabled, hold the AI's category as a pending suggestion
+        // for staff approval rather than applying it to the ticket immediately.
+        if (TriageConfig::categoryApprovalEnabled()) {
+            $suggestion = app(TicketCategorySuggestionService::class)
+                ->suggest($this->ticket, $category, $subcategory);
+
+            Log::info('[Triage] AI suggested ticket category (pending approval)', [
+                'ticket_id' => $this->ticket->id,
+                'suggestion_id' => $suggestion->id,
+                'category' => $category,
+                'subcategory' => $subcategory,
+            ]);
+
+            return [
+                'success' => true,
+                'status' => 'pending_approval',
+                'category' => $category,
+                'subcategory' => $subcategory,
+                'message' => 'Category suggestion recorded and is pending staff approval; it has not been applied to the ticket yet.',
+            ];
         }
 
         $updates = ['category' => $category];
