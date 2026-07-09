@@ -13,7 +13,7 @@
 </div>
 
 <div class="row mb-4">
-    <div class="col d-flex justify-content-between align-items-center">
+    <div class="col d-flex flex-column flex-md-row justify-content-between align-items-start align-items-md-center gap-3">
         <div class="d-flex align-items-center gap-3">
             <x-avatar :avatarUrl="$client->logo_url" :name="$client->name" :size="48" />
             <div>
@@ -33,7 +33,7 @@
             </div>
         </div>
 
-        <div class="d-flex gap-2">
+        <div class="d-flex flex-wrap gap-2">
             <a href="{{ route('clients.portal', $client) }}" class="btn btn-outline-secondary btn-sm">
                 <i class="bi bi-person-lines-fill me-1"></i>Portal
             </a>
