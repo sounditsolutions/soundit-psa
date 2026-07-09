@@ -26,7 +26,7 @@
                     @include('clients._form')
 
                     <div class="d-flex gap-2 mt-4">
-                        <button type="submit" class="btn btn-primary">Create Client</button>
+                        <button type="submit" id="client-form-submit" class="btn btn-primary">Create Client</button>
                         <a href="{{ route('clients.index') }}" class="btn btn-outline-secondary">Cancel</a>
                     </div>
                 </form>

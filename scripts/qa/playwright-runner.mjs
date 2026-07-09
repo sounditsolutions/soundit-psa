@@ -102,9 +102,28 @@ async function run(job) {
             await page.goto(`${baseUrl}${action.path}`, { waitUntil: 'networkidle', timeout: 30000 });
             step.detail = `status=${(await page.title()) ? 'loaded' : '?'} url=${page.url()}`;
             break;
-          case 'click':
-            await page.click(action.selector, { timeout: 10000 });
+          case 'click': {
+            // Click the first *visible* match, not merely the first DOM match.
+            // A broad selector (e.g. button[type=submit]) can resolve to an
+            // element that is present but hidden — such as the topbar logout
+            // button, which sits earlier in the DOM inside a collapsed
+            // dropdown. Targeting that hidden element makes the click wait out
+            // the full timeout instead of submitting the form the tester means
+            // (see the "Create Client submit hangs" QA finding). Falling back to
+            // the first match preserves the prior behavior when nothing matches
+            // or every match is hidden.
+            const matches = page.locator(action.selector);
+            const count = await matches.count();
+            let target = matches.first();
+            for (let k = 0; k < count; k++) {
+              if (await matches.nth(k).isVisible()) {
+                target = matches.nth(k);
+                break;
+              }
+            }
+            await target.click({ timeout: 10000 });
             break;
+          }
           case 'fill':
             await page.fill(action.selector, action.value, { timeout: 10000 });
             break;
