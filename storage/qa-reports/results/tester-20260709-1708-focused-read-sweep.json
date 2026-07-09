@@ -1,0 +1,55 @@
+{
+  "run_label": "tester-focused-read-sweep-2026-07-09-1708",
+  "results": [
+    {
+      "scenario": "client-overview",
+      "status": "pass",
+      "notes": "Vandelay client detail exposed contacts, primary contact, contracts, details, portal/wiki links, and billing links. Observed sidebar overlap/a11y/mobile issues are already tracked by open QA beads."
+    },
+    {
+      "scenario": "invoice-list",
+      "status": "pass",
+      "notes": "Invoice list rendered clients, contract names, dates, totals, and text status badges. Known mobile/status table findings are already tracked."
+    },
+    {
+      "scenario": "invoice-detail",
+      "status": "pass",
+      "notes": "Invoice INV-2026103 rendered client, contract, posted status, line items, subtotal, tax, total, cost, margin, and QuickBooks state. The missing standalone mark-paid path is already tracked."
+    },
+    {
+      "scenario": "asset-detail",
+      "status": "pass",
+      "notes": "Asset VAN-APP01 rendered client, asset type/status, RMM recency, contract, alert state, and recent linked tickets. Existing mobile alert-tab/link issues were reproduced but not duplicated."
+    },
+    {
+      "scenario": "asset-ticket-link",
+      "status": "pass",
+      "notes": "VAN-APP01 Alerts & Tickets tab exposed ticket links back to T-1, T-9, and T-174 from the asset side. The alert-title dead link and mobile responsiveness defects are already open."
+    }
+  ],
+  "findings": [],
+  "artifacts": [
+    "storage/qa-reports/results/client-overview-20260709-1708-client-detail.json",
+    "storage/qa-reports/results/invoice-detail-20260709-1708.json",
+    "storage/qa-reports/results/asset-detail-20260709-1708.json",
+    "storage/qa-reports/screens/client-overview-20260709-1708-client-detail@desktop.png",
+    "storage/qa-reports/screens/client-overview-20260709-1708-client-detail@mobile.png",
+    "storage/qa-reports/screens/invoice-detail-20260709-1708-invoice-list@desktop.png",
+    "storage/qa-reports/screens/invoice-detail-20260709-1708-invoice-detail@desktop.png",
+    "storage/qa-reports/screens/invoice-detail-20260709-1708-invoice-detail@mobile.png",
+    "storage/qa-reports/screens/asset-detail-20260709-1708-asset-list@desktop.png",
+    "storage/qa-reports/screens/asset-detail-20260709-1708-asset-detail@desktop.png",
+    "storage/qa-reports/screens/asset-detail-20260709-1708-asset-alerts-tickets@desktop.png",
+    "storage/qa-reports/screens/asset-detail-20260709-1708-asset-alerts-tickets@mobile.png"
+  ],
+  "dedup_observed": [
+    "client-overview|[responsive] Sidebar covers page content after resizing from mobile to desktop",
+    "client-overview|Client Overview 'Tickets (N)' badge capped at 5",
+    "invoice-detail|No mark-paid affordance for standalone invoices",
+    "asset-detail|Asset detail shows conflicting OS values without a source/conflict warning",
+    "asset-ticket-link|Asset alert titles look clickable but do not open anything",
+    "asset-ticket-link|[responsive] Asset Alerts & Tickets tab makes linked tickets unreadable on mobile",
+    "design-audit|[a11y] No H1 on primary console screens + unlabeled icon-buttons/selects",
+    "design-audit|[color] Pervasive muted-text contrast below WCAG AA across console"
+  ]
+}

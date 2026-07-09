@@ -1,0 +1,262 @@
+{
+  "scenario": "asset-detail-20260709-1708",
+  "ok": true,
+  "steps": [
+    {
+      "i": 0,
+      "type": "goto",
+      "ok": true,
+      "detail": "status=loaded url=https://soundit-dev/assets"
+    },
+    {
+      "i": 1,
+      "type": "expectText",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 2,
+      "type": "snapshot",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 3,
+      "type": "screenshot",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 4,
+      "type": "axe",
+      "ok": true,
+      "detail": "axe @ https://soundit-dev/assets: 3 violation(s)"
+    },
+    {
+      "i": 5,
+      "type": "goto",
+      "ok": true,
+      "detail": "status=loaded url=https://soundit-dev/assets/8"
+    },
+    {
+      "i": 6,
+      "type": "expectText",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 7,
+      "type": "snapshot",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 8,
+      "type": "screenshot",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 9,
+      "type": "axe",
+      "ok": true,
+      "detail": "axe @ https://soundit-dev/assets/8: 5 violation(s)"
+    },
+    {
+      "i": 10,
+      "type": "click",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 11,
+      "type": "snapshot",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 12,
+      "type": "screenshot",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 13,
+      "type": "axe",
+      "ok": true,
+      "detail": "axe @ https://soundit-dev/assets/8: 2 violation(s)"
+    }
+  ],
+  "screenshots": [
+    "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/asset-detail-20260709-1708-asset-list@mobile.png",
+    "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/asset-detail-20260709-1708-asset-list@tablet.png",
+    "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/asset-detail-20260709-1708-asset-list@desktop.png",
+    "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/asset-detail-20260709-1708-asset-detail@mobile.png",
+    "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/asset-detail-20260709-1708-asset-detail@tablet.png",
+    "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/asset-detail-20260709-1708-asset-detail@desktop.png",
+    "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/asset-detail-20260709-1708-asset-alerts-tickets@mobile.png",
+    "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/asset-detail-20260709-1708-asset-alerts-tickets@tablet.png",
+    "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/asset-detail-20260709-1708-asset-alerts-tickets@desktop.png"
+  ],
+  "finalUrl": "https://soundit-dev/assets/8",
+  "snapshot": "- complementary \"Main navigation\":\n  - link \"Sound IT PSA\":\n    - /url: https://soundit-dev\n    - img \"Sound IT PSA\"\n  - navigation:\n    - link \" Dashboard\":\n      - /url: https://soundit-dev\n    - text: Manage\n    - link \" Clients\":\n      - /url: https://soundit-dev/clients\n    - link \" People\":\n      - /url: https://soundit-dev/people\n    - link \" Assets\":\n      - /url: https://soundit-dev/assets\n    - text: Service\n    - link \" Tickets\":\n      - /url: https://soundit-dev/tickets\n    - link \" Cockpit 4\":\n      - /url: https://soundit-dev/cockpit\n    - link \" Calls 3\":\n      - /url: https://soundit-dev/calls\n    - link \" Phone Directory\":\n      - /url: https://soundit-dev/phone-directory\n    - link \" Emails\":\n      - /url: https://soundit-dev/emails\n    - link \" Alerts 5\":\n      - /url: https://soundit-dev/alerts\n    - text: Billing\n    - link \" Billing \":\n      - /url: \"#sidebarBilling\"\n    - text: Settings\n    - link \" General\":\n      - /url: https://soundit-dev/settings/general\n    - link \" Staff\":\n      - /url: https://soundit-dev/settings/staff\n    - link \" Integrations\":\n      - /url: https://soundit-dev/settings/integrations\n    - link \" Alerts Hub\":\n      - /url: https://soundit-dev/settings/alerts\n    - link \" MCP Tokens\":\n      - /url: https://soundit-dev/settings/mcp-tokens\n    - text: Recent\n    - link \" VAN-APP01\":\n      - /url: https://soundit-dev/assets/8\n    - link \" Vandelay Industries\":\n      - /url: https://soundit-dev/clients/3\n    - link \" T-173 QA tester live crea...\":\n      - /url: https://soundit-dev/tickets/173\n    - link \" T-174 QA tester live flow...\":\n      - /url: https://soundit-dev/tickets/174\n    - link \" T-1 [ALERT] VAN-APP01 - S...\":\n      - /url: https://soundit-dev/tickets/1\n    - link \" T-172 QA tester manual ti...\":\n      - /url: https://soundit-dev/tickets/172\n    - link \" T-99 QA status flow 20260...\":\n      - /url: https://soundit-dev/tickets/99\n    - link \" Managed Services Agreemen...\":\n      - /url: https://soundit-dev/contracts/4\n  - button \"Toggle sidebar\" [expanded]: \n- banner:\n  - text: VAN-APP01\n  - button \" Search Ctrl+K\"\n  - button \"AM Alex Morgan\"\n- main:\n  - link \" Back to Vandelay Industries\":\n    - /url: https://soundit-dev/clients/3\n  - heading \"VAN-APP01\" [level=4]\n  - text: ERP Server Online\n  - link \" Managed Services Agreement\":\n    - /url: https://soundit-dev/contracts/4\n  - link \" Edit\":\n    - /url: https://soundit-dev/assets/8/edit\n  - button \"\"\n  - tablist:\n    - tab \"Overview\"\n    - tab \"Network\"\n    - tab \"Storage\"\n    - tab \"Software\"\n    - tab \"Patches\"\n    - tab \"Security\"\n    - tab \"Alerts & Tickets\" [selected]\n    - tab \"Backup\"\n  - tabpanel:\n    - text:  Alerts 2 active\n    - link \"View all\":\n      - /url: https://soundit-dev/alerts?asset_id=8\n    - table:\n      - rowgroup:\n        - row \"Source Severity Alert Message Fired Status Actions\":\n          - columnheader \"Source\"\n          - columnheader \"Severity\"\n          - columnheader \"Alert\"\n          - columnheader \"Message\"\n          - columnheader \"Fired\"\n          - columnheader \"Status\"\n          - columnheader \"Actions\"\n      - rowgroup:\n        - 'row \" Tactical RMM Critical Server unreachable Agent has not checked in for >10 minutes. Jul 2, 9:59 AM Ticketed #T-1 \"':\n          - cell \" Tactical RMM\"\n          - cell \"Critical\"\n          - cell \"Server unreachable\":\n            - link \"Server unreachable\":\n              - /url: \"#\"\n          - cell \"Agent has not checked in for >10 minutes.\"\n          - cell \"Jul 2, 9:59 AM\"\n          - 'cell \"Ticketed #T-1\"':\n            - text: Ticketed\n            - link \"#T-1\":\n              - /url: https://soundit-dev/tickets/1\n          - cell \"\":\n            - button \"\"\n        - 'row \" Tactical RMM Warning C: drive low free space Free space dropped below 10% threshold. Jun 29, 11:59 AM Ticketed #T-9 \"':\n          - cell \" Tactical RMM\"\n          - cell \"Warning\"\n          - 'cell \"C: drive low free space\"':\n            - 'link \"C: drive low free space\"':\n              - /url: \"#\"\n          - cell \"Free space dropped below 10% threshold.\"\n          - cell \"Jun 29, 11:59 AM\"\n          - 'cell \"Ticketed #T-9\"':\n            - text: Ticketed\n            - link \"#T-9\":\n              - /url: https://soundit-dev/tickets/9\n          - cell \"\":\n            - button \"\"\n    - text:  Recent Tickets\n    - link \"View all tickets\":\n      - /url: https://soundit-dev/assets/8/tickets\n    - table:\n      - rowgroup:\n        - row \"ID Subject Priority Status Assignee Updated\":\n          - columnheader \"ID\"\n          - columnheader \"Subject\"\n          - columnheader \"Priority\"\n          - columnheader \"Status\"\n          - columnheader \"Assignee\"\n          - columnheader \"Updated\"\n      - rowgroup:\n        - row \"T-174 QA tester live flow 20260709 1613 P2 - High In Progress Alex Morgan 58 minutes ago\":\n          - cell \"T-174\"\n          - cell \"QA tester live flow 20260709 1613\":\n            - link \"QA tester live flow 20260709 1613\":\n              - /url: https://soundit-dev/tickets/174\n          - cell \"P2 - High\"\n          - cell \"In Progress\"\n          - cell \"Alex Morgan\"\n          - cell \"58 minutes ago\"\n        - row \"T-1 [ALERT] VAN-APP01 - Server unreachable P1 - Critical In Progress Devon Carter 2 days ago\":\n          - cell \"T-1\"\n          - cell \"[ALERT] VAN-APP01 - Server unreachable\":\n            - link \"[ALERT] VAN-APP01 - Server unreachable\":\n              - /url: https://soundit-dev/tickets/1\n          - cell \"P1 - Critical\"\n          - cell \"In Progress\"\n          - cell \"Devon Carter\"\n          - cell \"2 days ago\"\n        - 'row \"T-9 VAN-APP01 - C: drive low free space P2 - High In Progress Priya Shah 6 days ago\"':\n          - cell \"T-9\"\n          - 'cell \"VAN-APP01 - C: drive low free space\"':\n            - 'link \"VAN-APP01 - C: drive low free space\"':\n              - /url: https://soundit-dev/tickets/9\n          - cell \"P2 - High\"\n          - cell \"In Progress\"\n          - cell \"Priya Shah\"\n          - cell \"6 days ago\"\n- contentinfo: © 2026 Sound IT PSA",
+  "axe": [
+    {
+      "url": "https://soundit-dev/assets",
+      "label": "asset-list",
+      "violations": [
+        {
+          "id": "color-contrast",
+          "impact": "serious",
+          "help": "Elements must meet minimum color contrast ratio thresholds",
+          "nodes": [
+            ".sidebar-group:nth-child(2) > .sidebar-group-label",
+            ".sidebar-group:nth-child(3) > .sidebar-group-label",
+            ".sidebar-group:nth-child(4) > .sidebar-group-label",
+            ".sidebar-group:nth-child(5) > .sidebar-group-label",
+            ".d-lg-inline",
+            ".btn-outline-success",
+            ".btn-outline-danger",
+            ".btn-outline-warning",
+            "button[data-bs-target=\"#filterCard\"]"
+          ]
+        },
+        {
+          "id": "image-redundant-alt",
+          "impact": "minor",
+          "help": "Alternative text of images should not be repeated as text",
+          "nodes": [
+            "tr:nth-child(1) > td:nth-child(3) > span[onclick=\"event.stopPropagation()\"] > .d-inline-flex[data-bs-toggle=\"popover\"][data-bs-trigger=\"hover focus\"] > img[alt=\"Brightside Marketing Agency\"][loading=\"lazy\"]",
+            "tr:nth-child(2) > td:nth-child(3) > span[onclick=\"event.stopPropagation()\"] > .d-inline-flex[data-bs-toggle=\"popover\"][data-bs-trigger=\"hover focus\"] > img[alt=\"Brightside Marketing Agency\"][loading=\"lazy\"]",
+            "img[alt=\"Cascade Wellness Center\"]",
+            "tr:nth-child(4) > td:nth-child(3) > span[onclick=\"event.stopPropagation()\"] > .d-inline-flex[data-bs-toggle=\"popover\"][data-bs-trigger=\"hover focus\"] > img[alt=\"Crestmont Architects\"][loading=\"lazy\"]",
+            "tr:nth-child(5) > td:nth-child(3) > span[onclick=\"event.stopPropagation()\"] > .d-inline-flex[data-bs-toggle=\"popover\"][data-bs-trigger=\"hover focus\"] > img[alt=\"Crestmont Architects\"][loading=\"lazy\"]",
+            "tr:nth-child(6) > td:nth-child(3) > span[onclick=\"event.stopPropagation()\"] > .d-inline-flex[data-bs-toggle=\"popover\"][data-bs-trigger=\"hover focus\"] > img[alt=\"Acme Dental Practice\"][loading=\"lazy\"]",
+            "tr:nth-child(7) > td:nth-child(3) > span[onclick=\"event.stopPropagation()\"] > .d-inline-flex[data-bs-toggle=\"popover\"][data-bs-trigger=\"hover focus\"] > img[alt=\"Acme Dental Practice\"][loading=\"lazy\"]",
+            "tr:nth-child(8) > td:nth-child(3) > span[onclick=\"event.stopPropagation()\"] > .d-inline-flex[data-bs-toggle=\"popover\"][data-bs-trigger=\"hover focus\"] > img[alt=\"Acme Dental Practice\"][loading=\"lazy\"]",
+            "tr:nth-child(9) > td:nth-child(3) > span[onclick=\"event.stopPropagation()\"] > .d-inline-flex[data-bs-toggle=\"popover\"][data-bs-trigger=\"hover focus\"] > img[alt=\"Acme Dental Practice\"][loading=\"lazy\"]",
+            "tr:nth-child(10) > td:nth-child(3) > span[onclick=\"event.stopPropagation()\"] > .d-inline-flex[data-bs-toggle=\"popover\"][data-bs-trigger=\"hover focus\"] > img[alt=\"HarborView Law Partners\"][loading=\"lazy\"]",
+            "tr:nth-child(11) > td:nth-child(3) > span[onclick=\"event.stopPropagation()\"] > .d-inline-flex[data-bs-toggle=\"popover\"][data-bs-trigger=\"hover focus\"] > img[alt=\"HarborView Law Partners\"][loading=\"lazy\"]",
+            "tr:nth-child(12) > td:nth-child(3) > span[onclick=\"event.stopPropagation()\"] > .d-inline-flex[data-bs-toggle=\"popover\"][data-bs-trigger=\"hover focus\"] > img[alt=\"HarborView Law Partners\"][loading=\"lazy\"]",
+            "tr:nth-child(13) > td:nth-child(3) > span[onclick=\"event.stopPropagation()\"] > .d-inline-flex[data-bs-toggle=\"popover\"][data-bs-trigger=\"hover focus\"] > img[alt=\"Pinnacle Insurance Group\"][loading=\"lazy\"]",
+            "tr:nth-child(14) > td:nth-child(3) > span[onclick=\"event.stopPropagation()\"] > .d-inline-flex[data-bs-toggle=\"popover\"][data-bs-trigger=\"hover focus\"] > img[alt=\"Pinnacle Insurance Group\"][loading=\"lazy\"]",
+            "tr:nth-child(15) > td:nth-child(3) > span[onclick=\"event.stopPropagation()\"] > .d-inline-flex[data-bs-toggle=\"popover\"][data-bs-trigger=\"hover focus\"] > img[alt=\"Pinnacle Insurance Group\"][loading=\"lazy\"]",
+            "img[alt=\"Sterling Realty Group\"]",
+            "img[alt=\"TechFlow Distribution\"]",
+            "tr:nth-child(18) > td:nth-child(3) > span[onclick=\"event.stopPropagation()\"] > .d-inline-flex[data-bs-toggle=\"popover\"][data-bs-trigger=\"hover focus\"] > img[alt=\"Vandelay Industries\"][loading=\"lazy\"]",
+            "tr:nth-child(19) > td:nth-child(3) > span[onclick=\"event.stopPropagation()\"] > .d-inline-flex[data-bs-toggle=\"popover\"][data-bs-trigger=\"hover focus\"] > img[alt=\"Vandelay Industries\"][loading=\"lazy\"]",
+            "tr:nth-child(20) > td:nth-child(3) > span[onclick=\"event.stopPropagation()\"] > .d-inline-flex[data-bs-toggle=\"popover\"][data-bs-trigger=\"hover focus\"] > img[alt=\"Vandelay Industries\"][loading=\"lazy\"]",
+            "tr:nth-child(21) > td:nth-child(3) > span[onclick=\"event.stopPropagation()\"] > .d-inline-flex[data-bs-toggle=\"popover\"][data-bs-trigger=\"hover focus\"] > img[alt=\"Vandelay Industries\"][loading=\"lazy\"]",
+            "tr:nth-child(22) > td:nth-child(3) > span[onclick=\"event.stopPropagation()\"] > .d-inline-flex[data-bs-toggle=\"popover\"][data-bs-trigger=\"hover focus\"] > img[alt=\"Vandelay Industries\"][loading=\"lazy\"]"
+          ]
+        },
+        {
+          "id": "page-has-heading-one",
+          "impact": "moderate",
+          "help": "Page should contain a level-one heading",
+          "nodes": [
+            "html"
+          ]
+        }
+      ]
+    },
+    {
+      "url": "https://soundit-dev/assets/8",
+      "label": "asset-detail",
+      "violations": [
+        {
+          "id": "color-contrast",
+          "impact": "serious",
+          "help": "Elements must meet minimum color contrast ratio thresholds",
+          "nodes": [
+            ".sidebar-group:nth-child(2) > .sidebar-group-label",
+            ".sidebar-group:nth-child(3) > .sidebar-group-label",
+            ".sidebar-group:nth-child(4) > .sidebar-group-label",
+            ".sidebar-group:nth-child(5) > .sidebar-group-label",
+            ".d-lg-inline",
+            "a[href$=\"#tab-network\"]",
+            "a[href$=\"#tab-storage\"]",
+            "a[href$=\"#tab-software\"]",
+            "a[href$=\"#tab-patches\"]",
+            "a[href$=\"#tab-security\"]",
+            "a[href$=\"#tab-alerts\"]",
+            "a[href$=\"#tab-backup\"]",
+            "tr:nth-child(10) > td > .bg-primary.text-decoration-none.badge",
+            "#tacticalFreshness"
+          ]
+        },
+        {
+          "id": "heading-order",
+          "impact": "moderate",
+          "help": "Heading levels should only increase by one",
+          "nodes": [
+            ".col-md-6:nth-child(1) > h6"
+          ]
+        },
+        {
+          "id": "image-redundant-alt",
+          "impact": "minor",
+          "help": "Alternative text of images should not be repeated as text",
+          "nodes": [
+            "img[alt=\"Vandelay Industries\"]"
+          ]
+        },
+        {
+          "id": "page-has-heading-one",
+          "impact": "moderate",
+          "help": "Page should contain a level-one heading",
+          "nodes": [
+            "html"
+          ]
+        },
+        {
+          "id": "select-name",
+          "impact": "critical",
+          "help": "Select element must have an accessible name",
+          "nodes": [
+            "#tacticalScriptSelect",
+            "#tacticalScriptTimeout",
+            "select[name=\"person_id\"]"
+          ]
+        }
+      ]
+    },
+    {
+      "url": "https://soundit-dev/assets/8",
+      "label": "asset-alerts-tickets",
+      "violations": [
+        {
+          "id": "color-contrast",
+          "impact": "serious",
+          "help": "Elements must meet minimum color contrast ratio thresholds",
+          "nodes": [
+            ".sidebar-group:nth-child(2) > .sidebar-group-label",
+            ".sidebar-group:nth-child(3) > .sidebar-group-label",
+            ".sidebar-group:nth-child(4) > .sidebar-group-label",
+            ".sidebar-group:nth-child(5) > .sidebar-group-label",
+            ".d-lg-inline",
+            "a[href$=\"#tab-overview\"]",
+            "a[href$=\"#tab-network\"]",
+            "a[href$=\"#tab-storage\"]",
+            "a[href$=\"#tab-software\"]",
+            "a[href$=\"#tab-patches\"]",
+            "a[href$=\"#tab-security\"]",
+            "a[href$=\"#tab-backup\"]",
+            ".ms-1.bg-primary[href$=\"tickets/1\"]",
+            ".ms-1.bg-primary[href$=\"tickets/9\"]"
+          ]
+        },
+        {
+          "id": "page-has-heading-one",
+          "impact": "moderate",
+          "help": "Page should contain a level-one heading",
+          "nodes": [
+            "html"
+          ]
+        }
+      ]
+    }
+  ],
+  "error": null,
+  "pageErrors": []
+}
