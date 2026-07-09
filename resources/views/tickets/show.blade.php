@@ -373,6 +373,12 @@
                 @empty
                     <p class="text-muted small mb-0">No activity yet.</p>
                 @endforelse
+
+                @if($timeline->hasPages())
+                    <div class="mt-3 d-flex justify-content-center">
+                        {{ $timeline->links() }}
+                    </div>
+                @endif
             </div>
         </div>
 

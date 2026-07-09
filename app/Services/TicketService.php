@@ -8,6 +8,7 @@ use App\Enums\TicketSource;
 use App\Enums\TicketStatus;
 use App\Helpers\MarkdownRenderer;
 use App\Models\Asset;
+use App\Models\AssistantConversation;
 use App\Models\Client;
 use App\Models\Contract;
 use App\Models\Email;
@@ -18,7 +19,11 @@ use App\Models\TicketNote;
 use App\Models\User;
 use App\Support\AppTimezone;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
+use Illuminate\Database\Eloquent\Collection as EloquentCollection;
+use Illuminate\Pagination\LengthAwarePaginator as LengthAwarePaginatorInstance;
+use Illuminate\Pagination\Paginator;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 
 class TicketService
@@ -605,6 +610,81 @@ class TicketService
         return $query
             ->paginate(25)
             ->withQueryString();
+    }
+
+    /**
+     * Build the ticket activity timeline — notes, phone calls, and AI
+     * conversations merged into a single newest-first stream, paginated for
+     * display.
+     *
+     * The three sources live in different tables, so their chronological order
+     * has to be resolved in memory. To keep that affordable on long-lived
+     * tickets, only the bare rows are pulled up front for sorting; the heavy
+     * display relations (note authors/contracts/attachments/emails, call
+     * parties, chat messages) are eager-loaded for just the page being
+     * rendered — not for every note the ticket has ever accumulated.
+     */
+    public function buildTimeline(Ticket $ticket, int $perPage = 25): LengthAwarePaginator
+    {
+        $items = $ticket->notes()->get()
+            ->concat($ticket->phoneCalls()->get())
+            ->concat(
+                AssistantConversation::where('context_type', 'ticket')
+                    ->where('context_id', $ticket->id)
+                    ->get()
+            )
+            ->sortByDesc(fn ($item) => $this->timelineSortKey($item))
+            ->values();
+
+        $page = Paginator::resolveCurrentPage();
+
+        $paginator = new LengthAwarePaginatorInstance(
+            $items->forPage($page, $perPage)->values(),
+            $items->count(),
+            $perPage,
+            $page,
+            ['path' => Paginator::resolveCurrentPath()],
+        );
+
+        $this->loadTimelineRelations($paginator->getCollection());
+
+        return $paginator->withQueryString();
+    }
+
+    /**
+     * The moment a timeline item sorts by: a call's start, a conversation's
+     * creation, or a note's (possibly back-dated) noted_at.
+     */
+    private function timelineSortKey(object $item): ?Carbon
+    {
+        if ($item instanceof PhoneCall) {
+            return $item->started_at;
+        }
+
+        if ($item instanceof AssistantConversation) {
+            return $item->created_at;
+        }
+
+        return $item->noted_at;
+    }
+
+    /**
+     * Eager-load display relations for the current timeline page only, grouped
+     * by model type so each relation set costs a single query.
+     */
+    private function loadTimelineRelations(Collection $items): void
+    {
+        $items->groupBy(fn ($item) => $item::class)
+            ->each(function (Collection $group, string $class): void {
+                $models = new EloquentCollection($group->all());
+
+                match ($class) {
+                    TicketNote::class => $models->load(['author', 'contract', 'attachments', 'email']),
+                    PhoneCall::class => $models->load(['answeredBy', 'person']),
+                    AssistantConversation::class => $models->load(['user:id,name', 'messages']),
+                    default => null,
+                };
+            });
     }
 
     /**

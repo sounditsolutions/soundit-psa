@@ -90,7 +90,6 @@ class TicketController extends Controller
     public function show(Ticket $ticket)
     {
         $ticket->load([
-            'notes.author', 'notes.contract', 'notes.attachments', 'notes.email',
             'attachments',
             'client.contracts',
             'contact',
@@ -100,8 +99,6 @@ class TicketController extends Controller
             'createdBy',
             'parentTicket',
             'childTickets',
-            'phoneCalls.answeredBy',
-            'phoneCalls.person',
         ])->loadSum('notes', 'time_minutes');
 
         // Client assets available for linking (exclude already-linked)
@@ -115,26 +112,10 @@ class TicketController extends Controller
                 ->get(['id', 'name', 'asset_type']);
         }
 
-        // Build merged timeline: notes + phone calls + AI conversations, sorted newest-first
-        $conversations = \App\Models\AssistantConversation::where('context_type', 'ticket')
-            ->where('context_id', $ticket->id)
-            ->with(['user:id,name', 'messages'])
-            ->get();
-
-        $timeline = $ticket->notes
-            ->concat($ticket->phoneCalls)
-            ->concat($conversations)
-            ->sortByDesc(function ($item) {
-                if ($item instanceof \App\Models\PhoneCall) {
-                    return $item->started_at;
-                }
-                if ($item instanceof \App\Models\AssistantConversation) {
-                    return $item->created_at;
-                }
-
-                return $item->noted_at;
-            })
-            ->values();
+        // Merged, newest-first activity timeline (notes + phone calls + AI
+        // conversations), paginated so tickets with long histories don't
+        // eager-load and render every note at once.
+        $timeline = $this->ticketService->buildTimeline($ticket);
 
         // Contacts for the ticket's client (for contact reassignment dropdown)
         $clientContacts = $ticket->client
