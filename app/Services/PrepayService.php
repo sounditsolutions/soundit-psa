@@ -539,7 +539,8 @@ class PrepayService
 
     /**
      * Resolve the expiry date for a new credit. Precedence: explicit override >
-     * the contract's prepay_expiry_months policy applied to $base > null (never
+     * the effective expiry-months policy (per-contract override falling back to
+     * the global `prepay_expiry_months` default) applied to $base > null (never
      * expires). Hours-based prepay only — dollar-based credits never expire.
      */
     private function expiryForCredit(
@@ -551,13 +552,15 @@ class PrepayService
             return $explicit;
         }
 
-        if ($contract->prepay_as_amount || ! $contract->prepay_expiry_months) {
+        $months = $contract->effectivePrepayExpiryMonths();
+
+        if ($contract->prepay_as_amount || ! $months) {
             return null;
         }
 
         $base = $base ? Carbon::parse($base) : now();
 
-        return $base->copy()->addMonths((int) $contract->prepay_expiry_months);
+        return $base->copy()->addMonths($months);
     }
 
     /**

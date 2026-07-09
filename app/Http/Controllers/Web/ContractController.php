@@ -498,14 +498,23 @@ class ContractController extends Controller
             // Expiration policy. Staff-only: this field is deliberately NOT exposed
             // on the portal updateAlertSettings allowlist — a client must never set
             // their own forfeiture term. Do not share a FormRequest with the portal.
-            'prepay_expiry_months' => 'nullable|integer|min:1|max:120',
+            // min:0 admits an explicit 0 = "never expire" override; blank inherits
+            // the global prepay_expiry_months default.
+            'prepay_expiry_months' => 'nullable|integer|min:0|max:120',
         ]);
+
+        // Distinguish a blank field (null → inherit the global default) from an
+        // explicit 0 (→ never expire for this contract, overriding any global).
+        // A plain `?: null` would collapse both to null and lose the override.
+        $expiryMonths = ($validated['prepay_expiry_months'] ?? null) === null
+            ? null
+            : (int) $validated['prepay_expiry_months'];
 
         $contract->update([
             'prepay_alert_threshold' => $validated['prepay_alert_threshold'] ?: null,
             'prepay_auto_topup_enabled' => $validated['prepay_auto_topup_enabled'] ?? false,
             'prepay_auto_topup_qty' => $validated['prepay_auto_topup_qty'] ?? null,
-            'prepay_expiry_months' => $validated['prepay_expiry_months'] ?: null,
+            'prepay_expiry_months' => $expiryMonths,
             // Clear notification flag when settings change
             'prepay_alert_notified_at' => null,
         ]);

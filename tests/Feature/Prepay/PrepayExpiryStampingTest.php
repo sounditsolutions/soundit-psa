@@ -6,6 +6,7 @@ use App\Enums\PrepayTransactionSource;
 use App\Models\Client;
 use App\Models\Contract;
 use App\Models\PrepayTransaction;
+use App\Models\Setting;
 use App\Services\PrepayService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
@@ -66,11 +67,62 @@ class PrepayExpiryStampingTest extends TestCase
 
     public function test_no_policy_means_no_expiry(): void
     {
-        $c = $this->contract(); // prepay_expiry_months null
+        $c = $this->contract(); // prepay_expiry_months null, no global default
 
         $txn = $this->service()->addManualCredit($c, 5, 'top up');
 
         $this->assertNull($txn->expiry_date);
+    }
+
+    public function test_global_default_applies_when_contract_has_no_policy(): void
+    {
+        Carbon::setTestNow('2026-05-01 12:00:00');
+        Setting::setValue('prepay_expiry_months', '6'); // global default
+        $c = $this->contract(); // prepay_expiry_months null → inherit global
+
+        $txn = $this->service()->addManualCredit($c, 5, 'top up');
+
+        $this->assertNotNull($txn->expiry_date);
+        $this->assertSame('2026-11-01', $txn->expiry_date->format('Y-m-d'));
+    }
+
+    public function test_contract_policy_overrides_global_default(): void
+    {
+        Carbon::setTestNow('2026-05-01 12:00:00');
+        Setting::setValue('prepay_expiry_months', '6');
+        $c = $this->contract(['prepay_expiry_months' => 12]); // override wins
+
+        $txn = $this->service()->addManualCredit($c, 5, 'top up');
+
+        $this->assertSame('2027-05-01', $txn->expiry_date->format('Y-m-d'));
+    }
+
+    public function test_contract_zero_never_expires_despite_global_default(): void
+    {
+        Carbon::setTestNow('2026-05-01 12:00:00');
+        Setting::setValue('prepay_expiry_months', '6');
+        // Explicit 0 opts this contract out of the global forfeiture policy.
+        $c = $this->contract(['prepay_expiry_months' => 0]);
+
+        $txn = $this->service()->addManualCredit($c, 5, 'top up');
+
+        $this->assertNull($txn->expiry_date);
+    }
+
+    public function test_effective_prepay_expiry_months_resolves_all_states(): void
+    {
+        // No global, no override → never expire.
+        $this->assertNull($this->contract()->effectivePrepayExpiryMonths());
+
+        // Global set, contract null → inherit global.
+        Setting::setValue('prepay_expiry_months', '9');
+        $this->assertSame(9, $this->contract()->effectivePrepayExpiryMonths());
+
+        // Contract override (positive) wins over global.
+        $this->assertSame(3, $this->contract(['prepay_expiry_months' => 3])->effectivePrepayExpiryMonths());
+
+        // Contract explicit 0 = never, overriding the global.
+        $this->assertNull($this->contract(['prepay_expiry_months' => 0])->effectivePrepayExpiryMonths());
     }
 
     public function test_dollar_based_credit_is_never_stamped(): void

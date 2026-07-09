@@ -30,6 +30,7 @@ class GeneralSettingsController extends Controller
             'invoicePrefix' => config('billing.invoice_prefix', 'INV'),
             'invoiceNextNumber' => Setting::getValue('billing_invoice_next_number', ''),
             'billingSkipZero' => (bool) Setting::getValue('billing_skip_zero_invoices', false),
+            'prepayExpiryMonths' => Setting::getValue('prepay_expiry_months', ''),
             'allAssetTypes' => $allAssetTypes,
             'workstationTypes' => $workstationTypes,
             'serverTypes' => $serverTypes,
@@ -68,6 +69,25 @@ class GeneralSettingsController extends Controller
 
         return redirect()->route('settings.general')
             ->with('success', 'Empty invoice setting saved.');
+    }
+
+    public function updatePrepayExpiry(Request $request)
+    {
+        $validated = $request->validate([
+            // Blank → no global expiration. A positive value sets the default
+            // term; individual contracts can override it (including 0 = never).
+            'prepay_expiry_months' => ['nullable', 'integer', 'min:1', 'max:120'],
+        ]);
+
+        Setting::setValue(
+            'prepay_expiry_months',
+            ($validated['prepay_expiry_months'] ?? null) !== null
+                ? (string) $validated['prepay_expiry_months']
+                : ''
+        );
+
+        return redirect()->route('settings.general')
+            ->with('success', 'Prepaid time expiration default saved.');
     }
 
     public function updateBillingTypes(Request $request)

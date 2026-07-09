@@ -180,6 +180,38 @@
             </div>
         </div>
 
+        {{-- Prepaid Time Expiration --}}
+        <div class="card card-static shadow-sm mt-4">
+            <div class="card-header">
+                <i class="bi bi-hourglass-split me-2"></i>Prepaid Time Expiration
+            </div>
+            <div class="card-body">
+                <form method="POST" action="{{ route('settings.general.prepay-expiry') }}" class="row g-2 align-items-end">
+                    @csrf
+                    <div class="col-auto">
+                        <label for="prepay_expiry_months" class="form-label small text-muted mb-1">
+                            Prepaid time expires after (months):
+                        </label>
+                        <input type="number" name="prepay_expiry_months" id="prepay_expiry_months"
+                               class="form-control form-control-sm" style="max-width: 150px;"
+                               value="{{ $prepayExpiryMonths }}"
+                               min="1" max="120" step="1" placeholder="No expiration">
+                    </div>
+                    <div class="col-auto">
+                        <button type="submit" class="btn btn-primary btn-sm">
+                            <i class="bi bi-check-lg me-1"></i>Save
+                        </button>
+                    </div>
+                    <div class="form-text mt-2">
+                        Global default applied to hours-based prepaid credits when a contract does not set its own
+                        expiration policy. Leave blank for no expiration. Individual contracts can override this
+                        (including opting a single contract out with a "0 = never expire" override).
+                        Applies to credits added from now on — no backfill of existing balances.
+                    </div>
+                </form>
+            </div>
+        </div>
+
         {{-- Billing Asset Type Mapping --}}
         <div class="card card-static shadow-sm mt-4">
             <div class="card-header">

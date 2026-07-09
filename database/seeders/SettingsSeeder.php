@@ -21,6 +21,9 @@ class SettingsSeeder extends Seeder
             // General
             'app_timezone',
 
+            // Billing
+            'prepay_expiry_months',
+
             // AI
             'ai_provider',
             'ai_api_key',

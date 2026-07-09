@@ -201,6 +201,26 @@ class Contract extends Model
         return $this->prepay_balance !== null;
     }
 
+    /**
+     * Effective prepaid-time expiration term (in months) for newly-stamped
+     * credits, resolving the per-contract override against the global default.
+     *
+     * Mirrors the billing_skip_zero_invoices pattern (nullable per-record
+     * override + global setting): a non-null column value is an explicit
+     * override where 0 means "never expire"; null falls back to the global
+     * `prepay_expiry_months` setting (0 / unset = no expiration). Returns null
+     * whenever the effective policy is "never expire", so callers can treat a
+     * null result as "do not stamp an expiry".
+     */
+    public function effectivePrepayExpiryMonths(): ?int
+    {
+        $months = $this->prepay_expiry_months !== null
+            ? (int) $this->prepay_expiry_months
+            : (int) Setting::getValue('prepay_expiry_months', 0);
+
+        return $months > 0 ? $months : null;
+    }
+
     public function getIsPortalPurchasableAttribute(): bool
     {
         return $this->status === ContractStatus::Active
