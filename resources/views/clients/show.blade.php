@@ -46,6 +46,9 @@
             <a href="{{ route('clients.portal', $client) }}" class="btn btn-outline-secondary btn-sm">
                 <i class="bi bi-person-lines-fill me-1"></i>Portal
             </a>
+            <a href="{{ route('clients.weekly-report', $client) }}" class="btn btn-outline-secondary btn-sm" title="Generate a weekly QBR-ready service report">
+                <i class="bi bi-file-earmark-bar-graph me-1"></i>Weekly report
+            </a>
             @if (\App\Support\WikiConfig::isEnabled())
             <a href="{{ route('clients.wiki.index', $client) }}" class="btn btn-outline-secondary btn-sm">
                 <i class="bi bi-journal-text"></i> Wiki
