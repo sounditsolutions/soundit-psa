@@ -1,12 +1,17 @@
 {{-- Reusable asset list partial.
      Expects: $assets, $filters, $clients, $assetTypes
      Optional: $listRoute (string, default 'assets.index'), $prefilter (array, default [])
+               $columns (array, default null = all columns), $showFilters (bool, default true)
+     Column keys: device, type, client, os, ip, last_seen, status, primary_user
 --}}
 @php
     $listRoute = $listRoute ?? 'assets.index';
     $prefilter = $prefilter ?? [];
+    $showFilters = $showFilters ?? true;
+    $columns = $columns ?? null; // null = show all columns
 @endphp
 
+@if($showFilters)
 {{-- Quick filter pills --}}
 @php
     $isOnline = ($filters['status'] ?? '') === 'online';
@@ -143,6 +148,7 @@
         </div>
     </div>
 </div>
+@endif
 
 @if($assets->isEmpty())
     <div class="text-center py-5 text-muted">
@@ -166,40 +172,54 @@
             <table class="table table-hover mb-0">
                 <thead class="thead-brand">
                     <tr>
+                        @if(!$columns || in_array('device', $columns))
                         <th class="{{ $currentSort === 'hostname' ? 'active-sort' : '' }}">
                             <a href="{{ request()->fullUrlWithQuery(['sort' => 'hostname', 'direction' => $currentSort === 'hostname' ? ($currentDir === 'asc' ? 'desc' : 'asc') : ($defaultDirs['hostname'] ?? 'asc'), 'page' => null]) }}" class="sortable-th">
                                 Device <i class="bi {{ $currentSort === 'hostname' ? ($currentDir === 'asc' ? 'bi-chevron-up' : 'bi-chevron-down') : 'bi-chevron-expand' }} sort-icon"></i>
                             </a>
                         </th>
+                        @endif
+                        @if(!$columns || in_array('type', $columns))
                         <th class="d-none d-md-table-cell {{ $currentSort === 'type' ? 'active-sort' : '' }}">
                             <a href="{{ request()->fullUrlWithQuery(['sort' => 'type', 'direction' => $currentSort === 'type' ? ($currentDir === 'asc' ? 'desc' : 'asc') : ($defaultDirs['type'] ?? 'asc'), 'page' => null]) }}" class="sortable-th">
                                 Type <i class="bi {{ $currentSort === 'type' ? ($currentDir === 'asc' ? 'bi-chevron-up' : 'bi-chevron-down') : 'bi-chevron-expand' }} sort-icon"></i>
                             </a>
                         </th>
-                        @unless(isset($prefilter['client_id']))
+                        @endif
+                        @if((!$columns || in_array('client', $columns)) && !isset($prefilter['client_id']))
                         <th class="{{ $currentSort === 'client' ? 'active-sort' : '' }}">
                             <a href="{{ request()->fullUrlWithQuery(['sort' => 'client', 'direction' => $currentSort === 'client' ? ($currentDir === 'asc' ? 'desc' : 'asc') : ($defaultDirs['client'] ?? 'asc'), 'page' => null]) }}" class="sortable-th">
                                 Client <i class="bi {{ $currentSort === 'client' ? ($currentDir === 'asc' ? 'bi-chevron-up' : 'bi-chevron-down') : 'bi-chevron-expand' }} sort-icon"></i>
                             </a>
                         </th>
-                        @endunless
+                        @endif
+                        @if(!$columns || in_array('os', $columns))
                         <th class="d-none d-md-table-cell {{ $currentSort === 'os' ? 'active-sort' : '' }}">
                             <a href="{{ request()->fullUrlWithQuery(['sort' => 'os', 'direction' => $currentSort === 'os' ? ($currentDir === 'asc' ? 'desc' : 'asc') : ($defaultDirs['os'] ?? 'asc'), 'page' => null]) }}" class="sortable-th">
                                 OS <i class="bi {{ $currentSort === 'os' ? ($currentDir === 'asc' ? 'bi-chevron-up' : 'bi-chevron-down') : 'bi-chevron-expand' }} sort-icon"></i>
                             </a>
                         </th>
+                        @endif
+                        @if(!$columns || in_array('ip', $columns))
                         <th class="d-none d-lg-table-cell">IP</th>
+                        @endif
+                        @if(!$columns || in_array('last_seen', $columns))
                         <th class="d-none d-md-table-cell {{ $currentSort === 'last_seen' ? 'active-sort' : '' }}">
                             <a href="{{ request()->fullUrlWithQuery(['sort' => 'last_seen', 'direction' => $currentSort === 'last_seen' ? ($currentDir === 'asc' ? 'desc' : 'asc') : ($defaultDirs['last_seen'] ?? 'desc'), 'page' => null]) }}" class="sortable-th">
                                 Last Seen <i class="bi {{ $currentSort === 'last_seen' ? ($currentDir === 'asc' ? 'bi-chevron-up' : 'bi-chevron-down') : 'bi-chevron-expand' }} sort-icon"></i>
                             </a>
                         </th>
+                        @endif
+                        @if(!$columns || in_array('status', $columns))
                         <th class="text-center {{ $currentSort === 'status' ? 'active-sort' : '' }}" style="width: 90px;">
                             <a href="{{ request()->fullUrlWithQuery(['sort' => 'status', 'direction' => $currentSort === 'status' ? ($currentDir === 'asc' ? 'desc' : 'asc') : ($defaultDirs['status'] ?? 'asc'), 'page' => null]) }}" class="sortable-th">
                                 Status <i class="bi {{ $currentSort === 'status' ? ($currentDir === 'asc' ? 'bi-chevron-up' : 'bi-chevron-down') : 'bi-chevron-expand' }} sort-icon"></i>
                             </a>
                         </th>
+                        @endif
+                        @if(!$columns || in_array('primary_user', $columns))
                         <th class="d-none d-lg-table-cell">Primary User</th>
+                        @endif
                     </tr>
                 </thead>
                 <tbody>
@@ -207,6 +227,7 @@
                         @php $status = $asset->statusBadge; @endphp
                         <tr style="cursor:pointer;" onclick="window.location='{{ route('assets.show', $asset) }}'"
                             class="{{ $status === 'Offline' ? 'table-danger-subtle' : '' }}">
+                            @if(!$columns || in_array('device', $columns))
                             <td>
                                 <strong>{{ $asset->hostname ?: $asset->name }}</strong>
                                 @if($asset->hostname && $asset->hostname !== $asset->name)
@@ -218,16 +239,24 @@
                                     <span class="badge bg-secondary ms-1" style="font-size: 0.6rem;">Inactive</span>
                                 @endif
                             </td>
+                            @endif
+                            @if(!$columns || in_array('type', $columns))
                             <td class="d-none d-md-table-cell">{{ $asset->asset_type ?: '-' }}</td>
-                            @unless(isset($prefilter['client_id']))
+                            @endif
+                            @if((!$columns || in_array('client', $columns)) && !isset($prefilter['client_id']))
                             <td>
                                 <span onclick="event.stopPropagation()">
                                     <x-client-badge :client="$asset->client" fallback="-" />
                                 </span>
                             </td>
-                            @endunless
+                            @endif
+                            @if(!$columns || in_array('os', $columns))
                             <td class="d-none d-md-table-cell">{{ $asset->os ?: '-' }}</td>
+                            @endif
+                            @if(!$columns || in_array('ip', $columns))
                             <td class="d-none d-lg-table-cell">{{ $asset->ip_address ?: '-' }}</td>
+                            @endif
+                            @if(!$columns || in_array('last_seen', $columns))
                             <td class="d-none d-md-table-cell">
                                 @if($asset->last_seen_at)
                                     <span title="{{ $asset->last_seen_at->toAppTz()->format('Y-m-d H:i T') }}">
@@ -237,6 +266,8 @@
                                     <span class="text-muted">-</span>
                                 @endif
                             </td>
+                            @endif
+                            @if(!$columns || in_array('status', $columns))
                             <td class="text-center">
                                 @if($status === 'Online')
                                     <span class="badge bg-success" title="Online per RMM">Online</span>
@@ -246,6 +277,8 @@
                                     <span class="badge bg-secondary" title="No RMM status available">Unknown</span>
                                 @endif
                             </td>
+                            @endif
+                            @if(!$columns || in_array('primary_user', $columns))
                             <td class="d-none d-lg-table-cell small">
                                 @php $primaryUser = $asset->users->first(); @endphp
                                 @if($primaryUser)
@@ -256,6 +289,7 @@
                                     <span class="text-muted">&mdash;</span>
                                 @endif
                             </td>
+                            @endif
                         </tr>
                     @endforeach
                 </tbody>
@@ -283,8 +317,10 @@
 
 @push('scripts')
 <script>
+@if($showFilters)
 document.querySelectorAll('#filterCard select').forEach(function(sel) {
     sel.addEventListener('change', function() { this.closest('form').submit(); });
 });
+@endif
 </script>
 @endpush

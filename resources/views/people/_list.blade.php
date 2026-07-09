@@ -1,12 +1,19 @@
 {{-- Reusable people list partial.
      Expects: $people, $clients, $search, $clientId, $personType
      Optional: $listRoute (string, default 'people.index'), $prefilter (array, default [])
+               $columns (array, default null = all columns), $showFilters (bool, default true),
+               $showBulkActions (bool, default true)
+     Column keys: checkbox, name, email, phone, mobile, client
 --}}
 @php
     $listRoute = $listRoute ?? 'people.index';
     $prefilter = $prefilter ?? [];
+    $showFilters = $showFilters ?? true;
+    $showBulkActions = $showBulkActions ?? true;
+    $columns = $columns ?? null; // null = show all columns
 @endphp
 
+@if($showFilters)
 <form method="GET" action="{{ route($listRoute, $prefilter) }}" class="mb-3">
     <div class="row g-2">
         <div class="col">
@@ -39,6 +46,7 @@
         </div>
     </div>
 </form>
+@endif
 
 @if($people->isEmpty())
     <div class="alert alert-info">
@@ -49,31 +57,46 @@
         @endif
     </div>
 @else
+    @if($showBulkActions)
     <form method="POST" action="{{ route('people.bulk-type') }}" id="bulkTypeForm">
         @csrf
+    @endif
         <div class="card shadow-sm card-static">
             <div class="table-responsive">
                 <table class="table table-hover mb-0">
                     <thead class="thead-brand">
                         <tr>
+                            @if($showBulkActions && (!$columns || in_array('checkbox', $columns)))
                             <th style="width: 36px;">
                                 <input class="form-check-input" type="checkbox" id="selectAll" title="Select all">
                             </th>
+                            @endif
+                            @if(!$columns || in_array('name', $columns))
                             <th>Name</th>
+                            @endif
+                            @if(!$columns || in_array('email', $columns))
                             <th>Email</th>
+                            @endif
+                            @if(!$columns || in_array('phone', $columns))
                             <th>Phone</th>
+                            @endif
+                            @if(!$columns || in_array('mobile', $columns))
                             <th>Mobile</th>
-                            @unless(isset($prefilter['client_id']))
+                            @endif
+                            @if((!$columns || in_array('client', $columns)) && !isset($prefilter['client_id']))
                             <th>Client</th>
-                            @endunless
+                            @endif
                         </tr>
                     </thead>
                     <tbody>
                         @foreach($people as $person)
                             <tr>
+                                @if($showBulkActions && (!$columns || in_array('checkbox', $columns)))
                                 <td>
                                     <input class="form-check-input bulk-check" type="checkbox" name="person_ids[]" value="{{ $person->id }}">
                                 </td>
+                                @endif
+                                @if(!$columns || in_array('name', $columns))
                                 <td>
                                     <x-person-badge :person="$person" :size="24" />
                                     @if($person->is_primary)
@@ -85,6 +108,8 @@
                                         </span>
                                     @endif
                                 </td>
+                                @endif
+                                @if(!$columns || in_array('email', $columns))
                                 <td>
                                     @if($person->email)
                                         <a href="mailto:{{ $person->email }}">{{ $person->email }}</a>
@@ -92,6 +117,8 @@
                                         <span class="text-muted">-</span>
                                     @endif
                                 </td>
+                                @endif
+                                @if(!$columns || in_array('phone', $columns))
                                 <td>
                                     @if($person->phone_display)
                                         <a href="#" data-phone="{{ $person->phone }}" class="text-decoration-none dial-link">
@@ -101,6 +128,8 @@
                                         <span class="text-muted">-</span>
                                     @endif
                                 </td>
+                                @endif
+                                @if(!$columns || in_array('mobile', $columns))
                                 <td>
                                     @if($person->mobile_display)
                                         <a href="#" data-phone="{{ $person->mobile }}" class="text-decoration-none dial-link">
@@ -110,9 +139,10 @@
                                         <span class="text-muted">-</span>
                                     @endif
                                 </td>
-                                @unless(isset($prefilter['client_id']))
+                                @endif
+                                @if((!$columns || in_array('client', $columns)) && !isset($prefilter['client_id']))
                                 <td><x-client-badge :client="$person->client" fallback="-" /></td>
-                                @endunless
+                                @endif
                             </tr>
                         @endforeach
                     </tbody>
@@ -120,6 +150,7 @@
             </div>
         </div>
 
+        @if($showBulkActions)
         {{-- Bulk action bar --}}
         <div class="card shadow-sm mt-2 d-none" id="bulkBar">
             <div class="card-body py-2 d-flex align-items-center gap-2">
@@ -135,6 +166,7 @@
             </div>
         </div>
     </form>
+    @endif
 
     <div class="mt-3">
         {{ $people->links() }}
@@ -142,6 +174,7 @@
 @endif
 
 <script>
+@if($showBulkActions)
 document.addEventListener('DOMContentLoaded', function() {
     const selectAll = document.getElementById('selectAll');
     const checks = document.querySelectorAll('.bulk-check');
@@ -163,4 +196,5 @@ document.addEventListener('DOMContentLoaded', function() {
 
     checks.forEach(c => c.addEventListener('change', updateBar));
 });
+@endif
 </script>

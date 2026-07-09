@@ -1,10 +1,14 @@
 {{-- Reusable license list partial.
      Expects: $licenses, $clients, $licenseTypes, $vendors, $clientId, $licenseTypeId, $vendor, $wasteOnly
      Optional: $listRoute (string, default 'licenses.index'), $prefilter (array, default [])
+               $columns (array, default null = all columns), $showFilters (bool, default true)
+     Column keys: client, license_type, vendor, qty, utilization, synced, status, actions
 --}}
 @php
     $listRoute = $listRoute ?? 'licenses.index';
     $prefilter = $prefilter ?? [];
+    $showFilters = $showFilters ?? true;
+    $columns = $columns ?? null; // null = show all columns
 @endphp
 
 @if(session('success'))
@@ -26,6 +30,7 @@
     </div>
 @endif
 
+@if($showFilters)
 <form method="GET" action="{{ route($listRoute, $prefilter ?? []) }}" class="mb-3">
     <div class="row g-2">
         @unless(isset($prefilter['client_id']))
@@ -70,6 +75,7 @@
         @endif
     </div>
 </form>
+@endif
 
 @if($licenses->isEmpty())
     <div class="alert alert-info">No licenses found. Create one or configure integration sync.</div>
@@ -79,36 +85,51 @@
             <table class="table table-hover mb-0">
                 <thead class="thead-brand">
                     <tr>
-                        @unless(isset($prefilter['client_id']))
+                        @if((!$columns || in_array('client', $columns)) && !isset($prefilter['client_id']))
                         <th>Client</th>
-                        @endunless
-                        @unless(isset($prefilter['license_type_id']))
+                        @endif
+                        @if((!$columns || in_array('license_type', $columns)) && !isset($prefilter['license_type_id']))
                         <th>License Type</th>
-                        @endunless
+                        @endif
+                        @if(!$columns || in_array('vendor', $columns))
                         <th class="d-none d-md-table-cell">Vendor</th>
+                        @endif
+                        @if(!$columns || in_array('qty', $columns))
                         <th class="text-end">Qty</th>
+                        @endif
+                        @if(!$columns || in_array('utilization', $columns))
                         <th class="text-center d-none d-md-table-cell">Utilization</th>
+                        @endif
+                        @if(!$columns || in_array('synced', $columns))
                         <th class="d-none d-md-table-cell">Synced</th>
+                        @endif
+                        @if(!$columns || in_array('status', $columns))
                         <th class="text-center" style="width: 90px;">Status</th>
+                        @endif
+                        @if(!$columns || in_array('actions', $columns))
                         <th style="width: 50px;"></th>
+                        @endif
                     </tr>
                 </thead>
                 <tbody>
                     @foreach($licenses as $license)
                         <tr>
-                            @unless(isset($prefilter['client_id']))
+                            @if((!$columns || in_array('client', $columns)) && !isset($prefilter['client_id']))
                             <td>
                                 <a href="{{ route('clients.show', $license->client) }}" class="text-decoration-none">
                                     {{ $license->client->name }}
                                 </a>
                             </td>
-                            @endunless
-                            @unless(isset($prefilter['license_type_id']))
+                            @endif
+                            @if((!$columns || in_array('license_type', $columns)) && !isset($prefilter['license_type_id']))
                             <td>{{ $license->licenseType->name }}</td>
-                            @endunless
+                            @endif
+                            @if(!$columns || in_array('vendor', $columns))
                             <td class="d-none d-md-table-cell">
                                 <span class="badge bg-light text-dark">{{ $license->licenseType->vendor }}</span>
                             </td>
+                            @endif
+                            @if(!$columns || in_array('qty', $columns))
                             <td class="text-end fw-semibold">
                                 @if($license->seat_manageable || $license->is_manual)
                                     <span id="qty-display-{{ $license->id }}">
@@ -165,6 +186,8 @@
                                     {{ $license->quantity }}
                                 @endif
                             </td>
+                            @endif
+                            @if(!$columns || in_array('utilization', $columns))
                             <td class="text-center d-none d-md-table-cell">
                                 @if($license->utilization_percent !== null)
                                     @php
@@ -183,9 +206,13 @@
                                     <span class="text-muted">—</span>
                                 @endif
                             </td>
+                            @endif
+                            @if(!$columns || in_array('synced', $columns))
                             <td class="d-none d-md-table-cell small text-muted">
                                 {{ $license->synced_at?->diffForHumans() ?? 'Manual' }}
                             </td>
+                            @endif
+                            @if(!$columns || in_array('status', $columns))
                             <td class="text-center">
                                 @if($license->status === 'active')
                                     <span class="badge bg-success">Active</span>
@@ -195,6 +222,8 @@
                                     <span class="badge bg-secondary">Cancelled</span>
                                 @endif
                             </td>
+                            @endif
+                            @if(!$columns || in_array('actions', $columns))
                             <td class="text-center">
                                 @unless($license->synced_at)
                                     <form method="POST" action="{{ route('licenses.destroy', $license) }}"
@@ -207,6 +236,7 @@
                                     </form>
                                 @endunless
                             </td>
+                            @endif
                         </tr>
                     @endforeach
                 </tbody>
