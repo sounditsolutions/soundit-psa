@@ -5,6 +5,7 @@ namespace App\Services\Triage;
 use App\Models\Asset;
 use App\Models\Ticket;
 use App\Services\Ninja\NinjaClient;
+use App\Support\TriageConfig;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -97,6 +98,41 @@ class AssetMatcher
         Log::info('[Triage] Asset matching: no workstation found', ['ticket_id' => $ticket->id]);
 
         return null;
+    }
+
+    /**
+     * Intake seam (psa-vggw): eagerly link a confident asset match onto a
+     * freshly-created intake ticket (the call / email front door), so the ticket
+     * carries the right device from the start rather than waiting on the
+     * asynchronous triage Stage-2c run — which may be delayed, or disabled.
+     *
+     * Held-first + fail-soft, matching the rest of the intake posture:
+     *  - honours the SAME `asset_assignment` stage toggle triage uses, so an
+     *    operator who turned asset auto-assignment off gets none here either;
+     *  - delegates to match(), which links only a confident match and skips a
+     *    ticket that already has an asset (e.g. a vendor-specific hostname link),
+     *    leaving genuinely-ambiguous cases for a human;
+     *  - swallows any error so a matcher failure can never break ticket creation.
+     *
+     * Idempotent with the later async triage run: once this links an asset, the
+     * Stage-2c matcher sees a linked ticket and skips it.
+     */
+    public static function matchAtIntake(Ticket $ticket): ?Asset
+    {
+        if (! TriageConfig::stageEnabled('asset_assignment')) {
+            return null;
+        }
+
+        try {
+            return self::match($ticket);
+        } catch (\Throwable $e) {
+            Log::warning('[Intake] Asset matching failed — ticket left without a linked asset', [
+                'ticket_id' => $ticket->id,
+                'error' => $e->getMessage(),
+            ]);
+
+            return null;
+        }
     }
 
     // ── Strategy Implementations ──
