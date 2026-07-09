@@ -202,9 +202,10 @@
                                     </div>
                                 </div>
                             </div>
-                            <div class="overage-config-panel mt-2 p-2 border rounded bg-light" style="display:none">
+                            <div class="formula-config-panel mt-2 p-2 border rounded bg-light" style="display:none">
+                                <div class="small text-muted mb-1">Billing formula (optional): qty = ⌈(usage − included) ÷ divisor⌉</div>
                                 <div class="row g-2">
-                                    <div class="col-md-3">
+                                    <div class="col-md-3 overage-only">
                                         <label class="form-label small">Usage License Type</label>
                                         <select class="form-select form-select-sm" name="lines[0][usage_license_type_id]">
                                             <option value="">Select...</option>
@@ -214,7 +215,7 @@
                                         </select>
                                         <div class="form-text">What to measure</div>
                                     </div>
-                                    <div class="col-md-3">
+                                    <div class="col-md-3 overage-only">
                                         <label class="form-label small">Base License Type</label>
                                         <select class="form-select form-select-sm" name="lines[0][base_license_type_id]">
                                             <option value="">(none — use 1)</option>
@@ -225,16 +226,16 @@
                                         <div class="form-text">What provides included amount</div>
                                     </div>
                                     <div class="col-md-3">
-                                        <label class="form-label small">Included per Base</label>
+                                        <label class="form-label small">Included</label>
                                         <input type="number" class="form-control form-control-sm included-per-base-input"
-                                               name="lines[0][included_per_base_unit]" min="0" step="1" placeholder="e.g. 1024">
-                                        <div class="form-text">Units included per base unit</div>
+                                               name="lines[0][included_per_base_unit]" min="0" step="1" placeholder="e.g. 10">
+                                        <div class="form-text">Allowance included before billing (× base for overage)</div>
                                     </div>
                                     <div class="col-md-3">
-                                        <label class="form-label small">Overage Divisor</label>
+                                        <label class="form-label small">Divisor</label>
                                         <input type="number" class="form-control form-control-sm"
                                                name="lines[0][overage_divisor]" min="1" step="1" value="1">
-                                        <div class="form-text">Convert raw overage to billing units</div>
+                                        <div class="form-text">Bill in blocks of this size</div>
                                     </div>
                                 </div>
                             </div>
@@ -325,16 +326,17 @@ function addLine() {
                     </button>
                 </div>
             </div>
-            <div class="overage-config-panel mt-2 p-2 border rounded bg-light" style="display:none">
+            <div class="formula-config-panel mt-2 p-2 border rounded bg-light" style="display:none">
+                <div class="small text-muted mb-1">Billing formula (optional): qty = ⌈(usage − included) ÷ divisor⌉</div>
                 <div class="row g-2">
-                    <div class="col-md-3">
+                    <div class="col-md-3 overage-only">
                         <label class="form-label small">Usage License Type</label>
                         <select class="form-select form-select-sm" name="lines[${lineIndex}][usage_license_type_id]">
                             ${licenseTypeOptions}
                         </select>
                         <div class="form-text">What to measure</div>
                     </div>
-                    <div class="col-md-3">
+                    <div class="col-md-3 overage-only">
                         <label class="form-label small">Base License Type</label>
                         <select class="form-select form-select-sm" name="lines[${lineIndex}][base_license_type_id]">
                             ${licenseTypeOptionsWithNone}
@@ -342,16 +344,16 @@ function addLine() {
                         <div class="form-text">What provides included amount</div>
                     </div>
                     <div class="col-md-3">
-                        <label class="form-label small">Included per Base</label>
+                        <label class="form-label small">Included</label>
                         <input type="number" class="form-control form-control-sm included-per-base-input"
-                               name="lines[${lineIndex}][included_per_base_unit]" min="0" step="1" placeholder="e.g. 1024">
-                        <div class="form-text">Units included per base unit</div>
+                               name="lines[${lineIndex}][included_per_base_unit]" min="0" step="1" placeholder="e.g. 10">
+                        <div class="form-text">Allowance included before billing (× base for overage)</div>
                     </div>
                     <div class="col-md-3">
-                        <label class="form-label small">Overage Divisor</label>
+                        <label class="form-label small">Divisor</label>
                         <input type="number" class="form-control form-control-sm"
                                name="lines[${lineIndex}][overage_divisor]" min="1" step="1" value="1">
-                        <div class="form-text">Convert raw overage to billing units</div>
+                        <div class="form-text">Bill in blocks of this size</div>
                     </div>
                 </div>
             </div>
@@ -381,9 +383,11 @@ function onSkuSelected(select) {
     if (price && opt.dataset.price) price.value = parseFloat(opt.dataset.price).toFixed(2);
     if (taxable) taxable.checked = opt.dataset.taxable === '1';
 
-    // Auto-fill included_per_base_unit from SKU's included_per_unit
+    // Auto-fill included_per_base_unit from SKU's included_per_unit — only for
+    // overage SKUs, since included_per_unit is a per-base-unit overage concept.
+    // Leaking it onto other quantity types would silently apply an allowance.
     const includedInput = lineItem.querySelector('.included-per-base-input');
-    if (includedInput && opt.dataset.includedPerUnit) {
+    if (includedInput && opt.dataset.includedPerUnit && opt.dataset.defaultQuantityType === 'overage') {
         includedInput.value = opt.dataset.includedPerUnit;
     }
 
@@ -412,11 +416,18 @@ function toggleConditionalFields(select) {
     const row = select.closest('.row');
     const fixedCol = row.querySelector('.fixed-qty-col');
     const licenseCol = row.querySelector('.license-type-col');
-    const overagePanel = lineItem.querySelector('.overage-config-panel');
+    const formulaPanel = lineItem.querySelector('.formula-config-panel');
 
     if (fixedCol) fixedCol.style.display = select.value === 'fixed' ? '' : 'none';
     if (licenseCol) licenseCol.style.display = (select.value === 'per_license_type' || select.value === 'per_reseller_license_type') ? '' : 'none';
-    if (overagePanel) overagePanel.style.display = select.value === 'overage' ? '' : 'none';
+    // The included-allowance / divisor formula applies to every dynamic type;
+    // only the usage/base license selectors are overage-specific.
+    if (formulaPanel) {
+        formulaPanel.style.display = select.value === 'fixed' ? 'none' : '';
+        formulaPanel.querySelectorAll('.overage-only').forEach(el => {
+            el.style.display = select.value === 'overage' ? '' : 'none';
+        });
+    }
 }
 
 // Initialize visibility on page load

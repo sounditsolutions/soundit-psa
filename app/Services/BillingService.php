@@ -20,8 +20,20 @@ class BillingService
 {
     /**
      * Resolve the quantity for a profile line.
-     * When a contract has assignments, counts are contract-scoped.
-     * Falls back to client-wide for contracts with no assignments.
+     *
+     * Every dynamic quantity type produces a raw usage count (workstations,
+     * servers, users, licenses, …). The same included-allowance + divisor
+     * formula then applies to that count for ALL types, not just Overage:
+     *
+     *     qty = max(0, ceil((usage - base × includedPerBaseUnit) / divisor))
+     *
+     * For non-Overage types there is no base license type, so `base` is 1 and
+     * `includedPerBaseUnit` acts as a flat included allowance. With the neutral
+     * defaults (included = 0, divisor = 1) the formula collapses to the raw
+     * count, so lines that don't configure a formula are unaffected.
+     *
+     * When a contract has assignments, counts are contract-scoped. Falls back
+     * to client-wide for contracts with no assignments.
      */
     public function resolveQuantity(
         QuantityType $type,
@@ -38,6 +50,29 @@ class BillingService
             return max(1, (int) ($fixedQuantity ?? 1));
         }
 
+        $usage = $this->resolveRawUsage($type, $client, $contract, $licenseTypeId, $usageLicenseTypeId);
+
+        // Only Overage measures its included allowance against another license
+        // count. Every other dynamic type has no base, so base = 1.
+        $base = ($type === QuantityType::Overage && $baseLicenseTypeId)
+            ? $this->countLicensesByType($client, $contract, $baseLicenseTypeId)
+            : 1;
+
+        return $this->applyQuantityFormula($usage, $base, $includedPerBaseUnit, $overageDivisor);
+    }
+
+    /**
+     * Raw usage count for a dynamic quantity type, before the included-allowance
+     * and divisor formula is applied. Overage measures its configured usage
+     * license type; the other types count their respective entities.
+     */
+    private function resolveRawUsage(
+        QuantityType $type,
+        Client $client,
+        ?Contract $contract,
+        ?int $licenseTypeId,
+        ?int $usageLicenseTypeId,
+    ): int {
         return match ($type) {
             QuantityType::PerWorkstation => $this->countAssets(
                 $client, $contract, $this->getWorkstationTypes(),
@@ -63,13 +98,28 @@ class BillingService
                 $client, $licenseTypeId,
             ),
 
-            QuantityType::Overage => $this->countOverage(
-                $client, $contract, $usageLicenseTypeId, $baseLicenseTypeId,
-                $includedPerBaseUnit, $overageDivisor,
+            QuantityType::Overage => $this->countLicensesByType(
+                $client, $contract, $usageLicenseTypeId,
             ),
 
-            default => 1,
+            default => 0,
         };
+    }
+
+    /**
+     * Apply the general quantity formula to a raw usage count:
+     *
+     *     max(0, ceil((usage - base × includedPerBaseUnit) / divisor))
+     *
+     * Neutral inputs (includedPerBaseUnit = 0, divisor = 1) return the raw
+     * usage unchanged, so this is a no-op for lines without a formula.
+     */
+    private function applyQuantityFormula(int $usage, int $base, int $includedPerBaseUnit, int $overageDivisor): int
+    {
+        $included = $base * $includedPerBaseUnit;
+        $divisor = max(1, $overageDivisor);
+
+        return (int) ceil(max(0, $usage - $included) / $divisor);
     }
 
     /**
@@ -171,36 +221,6 @@ class BillingService
             ->where('status', 'active')
             ->where('license_type_id', $licenseTypeId)
             ->sum('quantity');
-    }
-
-    /**
-     * Count overage: usage above what's included per base unit.
-     *
-     * Formula: max(0, ceil((usage - base × includedPerBase) / divisor))
-     */
-    private function countOverage(
-        Client $client,
-        ?Contract $contract,
-        ?int $usageLicenseTypeId,
-        ?int $baseLicenseTypeId,
-        int $includedPerBaseUnit,
-        int $overageDivisor,
-    ): int {
-        if (! $usageLicenseTypeId) {
-            return 0;
-        }
-
-        $usage = $this->countLicensesByType($client, $contract, $usageLicenseTypeId);
-
-        $base = $baseLicenseTypeId
-            ? $this->countLicensesByType($client, $contract, $baseLicenseTypeId)
-            : 1;
-
-        $included = $base * $includedPerBaseUnit;
-        $overageRaw = max(0, $usage - $included);
-        $divisor = max(1, $overageDivisor);
-
-        return (int) ceil($overageRaw / $divisor);
     }
 
     public function generateInvoicesForDueProfiles(): array
@@ -532,6 +552,22 @@ class BillingService
 
         $label = strtolower($type->label());
         $source = "{$quantity} {$label} ({$scope}-scoped) as of {$dateStr}";
+
+        // When a general included-allowance / divisor formula was applied to
+        // this count, record the arithmetic so the invoice line stays auditable.
+        if ($line) {
+            $included = (int) ($line->included_per_base_unit ?? 0);
+            $divisor = max(1, (int) ($line->overage_divisor ?? 1));
+
+            if ($included > 0 || $divisor > 1) {
+                $client = $contract?->client ?? $line->profile?->contract?->client;
+                if ($client) {
+                    $usage = $this->resolveRawUsage($type, $client, $contract, $licenseTypeId, $line->usage_license_type_id);
+                    $raw = max(0, $usage - $included);
+                    $source = "{$quantity} {$label} ({$usage} usage - {$included} included = {$raw} raw / {$divisor} divisor, {$scope}-scoped) as of {$dateStr}";
+                }
+            }
+        }
 
         // Staleness warning for license-based quantities
         if ($type === QuantityType::PerLicense || $type === QuantityType::PerLicenseType) {
