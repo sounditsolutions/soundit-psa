@@ -5,10 +5,19 @@ namespace App\Services\Cipp;
 use App\Models\Client;
 use App\Models\Person;
 use App\Services\SyncResult;
+use App\Support\AvatarHelper;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 
 class CippContactEnrichmentService
 {
+    /**
+     * How long a synced (or checked-and-empty) profile photo stays fresh before
+     * we re-poll CIPP. Photos are a per-user API call, so we bound the churn —
+     * most M365 photos never change.
+     */
+    private const PHOTO_TTL_DAYS = 30;
+
     public function __construct(
         private readonly CippClient $client,
     ) {}
@@ -69,6 +78,82 @@ class CippContactEnrichmentService
             Log::warning("[CippEnrich] Inactive accounts failed for {$client->name}: {$e->getMessage()}");
             $result->recordError("Inactive accounts for {$client->name}: {$e->getMessage()}");
         }
+
+        try {
+            $this->enrichPhotos($client, $tenantDomain, $result);
+        } catch (\Throwable $e) {
+            Log::warning("[CippEnrich] Photo sync failed for {$client->name}: {$e->getMessage()}");
+            $result->recordError("Photos for {$client->name}: {$e->getMessage()}");
+        }
+    }
+
+    /**
+     * Sync M365 profile photos into local avatars via CIPP's ListUserPhoto.
+     *
+     * Unlike the other enrichment passes (one tenant-wide list call), photos are
+     * fetched one user at a time, so we only touch persons whose photo hasn't
+     * been checked within PHOTO_TTL_DAYS. Each fetch is guarded independently —
+     * one user's failure never aborts the client's run.
+     */
+    private function enrichPhotos(Client $client, string $tenantDomain, SyncResult $result): void
+    {
+        $persons = Person::where('client_id', $client->id)
+            ->whereNotNull('cipp_user_id')
+            ->where(function ($q) {
+                $q->whereNull('avatar_synced_at')
+                    ->orWhere('avatar_synced_at', '<', now()->subDays(self::PHOTO_TTL_DAYS));
+            })
+            ->get(['id', 'cipp_user_id', 'avatar_path', 'avatar_synced_at']);
+
+        foreach ($persons as $person) {
+            try {
+                $this->syncPhotoForPerson($person, $tenantDomain, $result);
+            } catch (\Throwable $e) {
+                Log::warning("[CippEnrich] Photo fetch failed for person {$person->id}: {$e->getMessage()}");
+            }
+        }
+    }
+
+    /**
+     * Fetch and store one person's M365 photo. CIPP returns raw image bytes when
+     * a photo is set, or a JSON error payload ({"error": {"code": "ImageNotFound"}})
+     * when none exists. Either way we stamp avatar_synced_at so the TTL skip holds
+     * and we don't re-poll a photoless user every day.
+     */
+    private function syncPhotoForPerson(Person $person, string $tenantDomain, SyncResult $result): void
+    {
+        $response = $this->client->getUserPhoto($tenantDomain, $person->cipp_user_id);
+
+        $body = $response['body'] ?? '';
+        $contentType = strtolower($response['contentType'] ?? '');
+
+        // No photo: CIPP hands back a JSON error object instead of image bytes.
+        $looksLikeJson = str_contains($contentType, 'json')
+            || (isset($body[0]) && ($body[0] === '{' || $body[0] === '['));
+
+        if ($body === '' || $looksLikeJson) {
+            Person::where('id', $person->id)->update(['avatar_synced_at' => now()]);
+
+            return;
+        }
+
+        $jpeg = AvatarHelper::cropToSquareJpeg($body);
+
+        if ($jpeg === null) {
+            // Unrecognized/corrupt image data — stamp so we don't retry immediately.
+            Person::where('id', $person->id)->update(['avatar_synced_at' => now()]);
+
+            return;
+        }
+
+        $path = "avatars/people/{$person->id}.jpg";
+        Storage::disk('public')->put($path, $jpeg);
+
+        Person::where('id', $person->id)->update([
+            'avatar_path' => $path,
+            'avatar_synced_at' => now(),
+        ]);
+        $result->updated++;
     }
 
     /**

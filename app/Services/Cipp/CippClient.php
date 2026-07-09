@@ -6,6 +6,7 @@ use GuzzleHttp\Client;
 use GuzzleHttp\Exception\GuzzleException;
 use Illuminate\Contracts\Cache\Repository as CacheInterface;
 use Illuminate\Support\Facades\Log;
+use Psr\Http\Message\ResponseInterface;
 
 class CippClient
 {
@@ -16,19 +17,64 @@ class CippClient
     public function __construct(
         private readonly array $config,
         private readonly CacheInterface $cache,
+        ?Client $http = null,
     ) {
-        $this->http = new Client([
+        $this->http = $http ?? new Client([
             'base_uri' => rtrim($this->config['api_url'] ?? '', '/').'/',
             'timeout' => 60,
         ]);
     }
 
     /**
-     * Make an authenticated GET request to the CIPP API.
+     * Make an authenticated GET request to the CIPP API, returning decoded JSON.
      */
     public function get(string $endpoint, array $params = []): array
     {
-        return $this->request('GET', $endpoint, ['query' => $params]);
+        $response = $this->sendRequest('GET', $endpoint, ['query' => $params], 'application/json');
+
+        $data = json_decode((string) $response->getBody(), true) ?? [];
+
+        // CIPP wraps list results in {"Results": [...]} — unwrap
+        if (is_array($data) && isset($data['Results'])) {
+            return $data['Results'];
+        }
+
+        return $data;
+    }
+
+    /**
+     * Make an authenticated GET request and return the raw response bytes.
+     *
+     * Used for endpoints that return binary payloads (e.g. profile photos).
+     * CIPP's api/ListUserPhoto returns raw image bytes when a photo exists, or a
+     * JSON error object ({"error": {...}}) when it doesn't — the caller inspects
+     * the content type / body to tell them apart.
+     *
+     * @return array{status: int, contentType: string, body: string}
+     */
+    public function getRaw(string $endpoint, array $params = [], string $accept = '*/*'): array
+    {
+        $response = $this->sendRequest('GET', $endpoint, ['query' => $params], $accept);
+
+        return [
+            'status' => $response->getStatusCode(),
+            'contentType' => $response->getHeaderLine('Content-Type'),
+            'body' => (string) $response->getBody(),
+        ];
+    }
+
+    /**
+     * Fetch a user's M365 profile photo. Returns the raw response — image bytes
+     * when a photo is set, or a JSON error payload when none exists.
+     *
+     * @return array{status: int, contentType: string, body: string}
+     */
+    public function getUserPhoto(string $tenantFilter, string $userId): array
+    {
+        return $this->getRaw('api/ListUserPhoto', [
+            'TenantFilter' => $tenantFilter,
+            'userId' => $userId,
+        ]);
     }
 
     /**
@@ -200,10 +246,11 @@ class CippClient
     }
 
     /**
-     * Internal request method with OAuth2 Bearer token.
+     * Internal request method with OAuth2 Bearer token. Returns the raw PSR-7
+     * response so callers can decode JSON or read binary bytes as needed.
      * Auto-retries on 401 (token expired) and 429 (rate limited).
      */
-    private function request(string $method, string $endpoint, array $options = []): array
+    private function sendRequest(string $method, string $endpoint, array $options, string $accept): ResponseInterface
     {
         $attempts = 0;
         $maxAttempts = 3;
@@ -214,11 +261,11 @@ class CippClient
             $token = $this->getToken();
             $options['headers'] = [
                 'Authorization' => "Bearer {$token}",
-                'Accept' => 'application/json',
+                'Accept' => $accept,
             ];
 
             try {
-                $response = $this->http->request($method, $endpoint, $options);
+                return $this->http->request($method, $endpoint, $options);
             } catch (GuzzleException $e) {
                 $code = $e->getCode();
 
@@ -245,16 +292,6 @@ class CippClient
                 Log::error("[CippClient] {$method} {$endpoint} failed: {$e->getMessage()}");
                 throw new CippClientException("CIPP API error: {$e->getMessage()}", $code, $e);
             }
-
-            $body = (string) $response->getBody();
-            $data = json_decode($body, true) ?? [];
-
-            // CIPP wraps list results in {"Results": [...]} — unwrap
-            if (is_array($data) && isset($data['Results'])) {
-                return $data['Results'];
-            }
-
-            return $data;
         }
 
         throw new CippClientException('CIPP request failed after max retries');

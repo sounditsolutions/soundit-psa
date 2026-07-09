@@ -33,6 +33,47 @@ class AvatarHelper
     }
 
     /**
+     * Center-crop arbitrary image bytes to a square JPEG suitable for an avatar.
+     *
+     * Mirrors the sizing AvatarService uses for staff Entra photos (200px, q85)
+     * so people and staff avatars render consistently. Returns null when the
+     * bytes aren't a decodable image (e.g. an API returned an error payload
+     * instead of image data) so callers can skip gracefully.
+     */
+    public static function cropToSquareJpeg(string $data, int $size = 200, int $quality = 85): ?string
+    {
+        // getimagesizefromstring() returns false (silently) for anything that
+        // isn't a recognized image, so we can reject error payloads / junk before
+        // handing bytes to imagecreatefromstring() — which would otherwise warn.
+        if ($data === '' || getimagesizefromstring($data) === false) {
+            return null;
+        }
+
+        $source = @imagecreatefromstring($data);
+        if ($source === false) {
+            return null;
+        }
+
+        $srcW = imagesx($source);
+        $srcH = imagesy($source);
+
+        // Center-crop to a square using the shorter side.
+        $cropSize = min($srcW, $srcH);
+        $srcX = (int) (($srcW - $cropSize) / 2);
+        $srcY = (int) (($srcH - $cropSize) / 2);
+
+        $dest = imagecreatetruecolor($size, $size);
+        imagecopyresampled($dest, $source, 0, 0, $srcX, $srcY, $size, $size, $cropSize, $cropSize);
+        imagedestroy($source);
+
+        ob_start();
+        imagejpeg($dest, null, $quality);
+        imagedestroy($dest);
+
+        return ob_get_clean();
+    }
+
+    /**
      * Build a DeBounce Logo URL for the given domain.
      * Returns 404 for unknown domains — onerror fallback shows initials.
      */

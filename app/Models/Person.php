@@ -11,6 +11,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Foundation\Auth\User as Authenticatable;
+use Illuminate\Support\Facades\Storage;
 
 class Person extends Authenticatable
 {
@@ -50,6 +51,8 @@ class Person extends Authenticatable
         'portal_last_login_at',
         'cipp_synced_at',
         'cipp_enriched_at',
+        'avatar_path',
+        'avatar_synced_at',
     ];
 
     protected $hidden = [
@@ -74,6 +77,7 @@ class Person extends Authenticatable
             'mailbox_deliver_and_forward' => 'boolean',
             'last_sign_in_at' => 'datetime',
             'cipp_inactive' => 'boolean',
+            'avatar_synced_at' => 'datetime',
         ];
     }
 
@@ -267,6 +271,14 @@ class Person extends Authenticatable
 
     protected function avatarUrl(): Attribute
     {
-        return Attribute::get(fn () => $this->email ? AvatarHelper::gravatarUrl($this->email) : null);
+        return Attribute::get(function () {
+            // A synced M365 profile photo (CIPP) is the real person's face — prefer it
+            // over the Gravatar fallback.
+            if ($this->avatar_path) {
+                return Storage::disk('public')->url($this->avatar_path);
+            }
+
+            return $this->email ? AvatarHelper::gravatarUrl($this->email) : null;
+        });
     }
 }
