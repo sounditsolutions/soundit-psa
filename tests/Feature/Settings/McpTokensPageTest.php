@@ -370,6 +370,31 @@ class McpTokensPageTest extends TestCase
         $this->assertSame(1, substr_count($response->getContent(), $error));
     }
 
+    public function test_tool_grant_scroll_region_is_keyboard_focusable(): void
+    {
+        // Regression (a11y): the scrollable tool-grant list must be reachable by
+        // keyboard — axe rule scrollable-region-focusable. tabindex="0" makes the
+        // container focusable even when it holds no focusable descendants.
+        McpConfig::rotateStaffToken(allowedTools: ['find_staff'], label: 'chet');
+        $active = McpToken::where('label', 'chet')->firstOrFail();
+
+        $this->actingAs($this->user)
+            ->get(route('settings.mcp-tokens.show', $active))
+            ->assertOk()
+            ->assertSee('class="mcp-scroll" tabindex="0" role="group"', false);
+
+        // A revoked token is read-only: every inner switch is disabled, so the
+        // scroll container itself must carry the focusable affordance.
+        McpConfig::rotateStaffToken(allowedTools: ['find_staff'], label: 'dead');
+        $revoked = McpToken::where('label', 'dead')->firstOrFail();
+        $revoked->update(['revoked_at' => now()]);
+
+        $this->actingAs($this->user)
+            ->get(route('settings.mcp-tokens.show', $revoked))
+            ->assertOk()
+            ->assertSee('class="mcp-scroll" tabindex="0"', false);
+    }
+
     public function test_revoke_stamps_revoked_at_and_blocks_resolution(): void
     {
         $plain = McpConfig::rotateStaffToken(allowedTools: ['find_staff'], label: 'chet');

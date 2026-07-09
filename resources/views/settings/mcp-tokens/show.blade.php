@@ -255,7 +255,9 @@
                         <i class="bi bi-chevron-right mcp-chev"></i>
                     </button>
                     <div class="mcp-group-body">
-                        <div class="mcp-scroll">
+                        {{-- tabindex makes the scrollable tool list keyboard-focusable (axe: scrollable-region-focusable);
+                             matters most when the token is read-only and the inner switches are disabled. --}}
+                        <div class="mcp-scroll" tabindex="0" role="group" aria-label="{{ $group['label'] }} tools">
                             @foreach($group['tiers'] as $tier)
                                 @php $tierGranted = collect($tier['tools'])->filter(fn ($t) => $grantedList->contains($t['name']))->count(); @endphp
                                 <div class="mcp-tier {{ $tier['sensitive'] ? 'sensitive' : '' }}" data-tier-sensitive="{{ $tier['sensitive'] ? '1' : '0' }}">
