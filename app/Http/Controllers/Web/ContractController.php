@@ -350,11 +350,7 @@ class ContractController extends Controller
             ->orderByDesc('invoice_date');
 
         if ($request->filled('status')) {
-            if ($request->query('status') === 'outstanding') {
-                $query->whereIn('status', [InvoiceStatus::Posted, InvoiceStatus::Synced]);
-            } else {
-                $query->where('status', $request->query('status'));
-            }
+            $query->statusFilter($request->query('status'));
         }
 
         if ($request->filled('from_date')) {
@@ -407,7 +403,7 @@ class ContractController extends Controller
             'invoices' => $invoices,
             'invoiceFilters' => $invoiceFilters,
             'invoiceClients' => Client::operational()->orderBy('name')->get(['id', 'name']),
-            'invoiceStatuses' => InvoiceStatus::cases(),
+            'invoiceStatuses' => InvoiceStatus::filterOptions(),
         ]);
     }
 

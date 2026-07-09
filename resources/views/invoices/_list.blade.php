@@ -1,5 +1,6 @@
 {{-- Reusable invoice list partial.
-     Expects: $invoices, $clients, $statuses, $filters
+     Expects: $invoices, $clients, $filters,
+              $statuses (value => label map, e.g. InvoiceStatus::filterOptions())
      Optional: $listRoute (string, default 'invoices.index'), $prefilter (array, default [])
                $columns (array, default null = all columns), $showFilters (bool, default true),
                $showBulkActions (bool, default true)
@@ -38,9 +39,9 @@
                 <div class="col-md-2">
                     <select name="status" class="form-select form-select-sm">
                         <option value="">All Statuses</option>
-                        @foreach($statuses as $s)
-                            <option value="{{ $s->value }}" {{ ($filters['status'] ?? '') === $s->value ? 'selected' : '' }}>
-                                {{ $s->label() }}
+                        @foreach($statuses as $value => $label)
+                            <option value="{{ $value }}" {{ ($filters['status'] ?? '') === $value ? 'selected' : '' }}>
+                                {{ $label }}
                             </option>
                         @endforeach
                     </select>
