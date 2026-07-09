@@ -47,3 +47,9 @@ Thumbs.db
 
 # Beads / Dolt files (added by bd init)
 .beads/proxieddb/
+
+# so-ssoj: secret-backup guard — .env.bak-* dodged the .env rule and leaked to the public repo.
+.env.bak*
+*.bak
+!.env.example
+.env.rotate-bak*
