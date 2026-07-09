@@ -719,6 +719,12 @@ Optionally set a key expiry and rotate periodically (no rotation runbook is auto
 1. Settings > Integrations > Plivo
 2. Enter your Plivo **auth ID**, **auth token**, **DID number**, **app ID**, and **webhook secret**
 
+**Hold music (optional):** The **Hold Music URL** field sets the audio played to the
+caller when a technician puts a softphone call on hold. It must be a publicly reachable
+MP3/WAV URL (Plivo's servers fetch it). Leave it blank to use a built-in sample track.
+Hold uses the Plivo Voice API — the auth ID/token above must be valid for it to work.
+Optionally override the default with the `PLIVO_HOLD_MUSIC_URL` `.env` variable.
+
 **IVR caller-routing endpoint (optional, used with a Plivo PHLO flow):**
 PSA exposes a synchronous lookup that a Plivo PHLO HTTP-request node can call to identify the inbound caller before dialing:
 

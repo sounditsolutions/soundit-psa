@@ -2170,6 +2170,23 @@
                         @enderror
                     </div>
 
+                    <div class="mb-3">
+                        <label for="plivo_hold_music_url" class="form-label">Hold Music URL</label>
+                        <input type="url"
+                               class="form-control @error('hold_music_url') is-invalid @enderror"
+                               id="plivo_hold_music_url"
+                               name="hold_music_url"
+                               value="{{ old('hold_music_url', $plivoHoldMusicUrl) }}"
+                               placeholder="Leave blank to use the default hold music">
+                        <div class="form-text">
+                            Audio played to the caller when a softphone call is placed on hold. Must be a publicly
+                            reachable MP3/WAV URL (Plivo fetches it). Defaults to a sample track when blank.
+                        </div>
+                        @error('hold_music_url')
+                            <div class="invalid-feedback">{{ $message }}</div>
+                        @enderror
+                    </div>
+
                     @if($plivoConnectedAt)
                     <div class="mb-3">
                         <small class="text-muted">

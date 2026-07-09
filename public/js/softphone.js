@@ -37,6 +37,8 @@
     var plivoSdk = null;
     var isRegistered = false;
     var isMuted = false;
+    var isHeld = false;
+    var holdPending = false;
     var currentCallUuid = null;
     var currentCallerNumber = '';
     var timerInterval = null;
@@ -49,6 +51,10 @@
     var passwordMeta = document.querySelector('meta[name="plivo-password"]');
     var username = usernameMeta ? usernameMeta.content : null;
     var password = passwordMeta ? passwordMeta.content : null;
+
+    // CSRF token for the server-side hold/unhold endpoints
+    var csrfMeta = document.querySelector('meta[name="csrf-token"]');
+    var csrfToken = csrfMeta ? csrfMeta.content : '';
 
     // ── BroadcastChannel (popup ↔ parent tabs communication) ──
     var channel = new BroadcastChannel('psa-softphone');
@@ -118,9 +124,51 @@
         }
     });
 
-    // Hold — deferred (see GitHub issue #4). Disable button for now.
-    holdBtn.disabled = true;
-    holdBtn.title = 'Hold — coming soon';
+    // Hold / unhold — server-side call control via the Plivo Play API. The
+    // browser SDK has no hold primitive, so we POST the call UUID to the app and
+    // it plays looping hold music to the remote caller (see softphone hold).
+    holdBtn.addEventListener('click', function () {
+        if (!inCall || !currentCallUuid || holdPending) return;
+
+        var goingOnHold = !isHeld;
+        holdPending = true;
+        holdBtn.disabled = true;
+
+        fetch(goingOnHold ? '/softphone/hold' : '/softphone/unhold', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'X-CSRF-TOKEN': csrfToken,
+            },
+            body: JSON.stringify({ call_uuid: currentCallUuid }),
+        })
+            .then(function (r) { return r.json().catch(function () { return {}; }); })
+            .then(function (data) {
+                if (data && data.success) {
+                    setHeld(goingOnHold);
+                } else {
+                    showError(goingOnHold ? 'Could not hold call' : 'Could not resume call');
+                }
+            })
+            .catch(function () {
+                showError(goingOnHold ? 'Could not hold call' : 'Could not resume call');
+            })
+            .finally(function () {
+                holdPending = false;
+                holdBtn.disabled = false;
+            });
+    });
+
+    function setHeld(held) {
+        isHeld = held;
+        holdBtn.classList.toggle('active', held);
+        holdBtn.querySelector('i').className = held ? 'bi bi-play-fill' : 'bi bi-pause-fill';
+        var label = holdBtn.querySelector('span');
+        if (label) label.textContent = held ? 'Resume' : 'Hold';
+        holdLabel.style.display = held ? '' : 'none';
+    }
 
     // DTMF toggle — swap context panel and keypad visibility
     dtmfBtn.addEventListener('click', function () {
@@ -490,6 +538,8 @@
     function resetToIdle() {
         inCall = false;
         isMuted = false;
+        isHeld = false;
+        holdPending = false;
         currentCallUuid = null;
         currentCallerNumber = '';
         stopTimer();
@@ -498,6 +548,12 @@
         numberInput.value = '';
         muteBtn.classList.remove('active');
         muteBtn.querySelector('i').className = 'bi bi-mic-fill';
+        holdBtn.disabled = false;
+        holdBtn.classList.remove('active');
+        holdBtn.querySelector('i').className = 'bi bi-pause-fill';
+        var holdSpan = holdBtn.querySelector('span');
+        if (holdSpan) holdSpan.textContent = 'Hold';
+        holdLabel.style.display = 'none';
         dtmfBtn.classList.remove('active');
         dtmfPad.style.display = 'none';
         showView('idle');

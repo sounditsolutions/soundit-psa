@@ -147,6 +147,7 @@ class IntegrationsController extends Controller
         $plivoHasToken = (bool) (Setting::getValue('plivo_auth_token') ?? config('services.plivo.auth_token'));
         $plivoHasWebhookSecret = (bool) (Setting::getValue('plivo_webhook_secret') ?? config('services.plivo.webhook_secret'));
         $plivoConnectedAt = $fmtTs(Setting::getValue('plivo_connected_at'));
+        $plivoHoldMusicUrl = Setting::settingOrConfig('plivo_hold_music_url', 'services.plivo.hold_music_url');
 
         // Graph (Email)
         $graphMailbox = Setting::getValue('graph_mailbox');
@@ -365,7 +366,7 @@ class IntegrationsController extends Controller
             'appriverConfigured', 'appriverConnected', 'appriverConnectedAt', 'appriverEnabled',
             'printixConfigured', 'printixPartnerId', 'printixHasSecret', 'printixConnected', 'printixEnabled',
             'cippConfigured', 'cippApiUrl', 'cippTenantId', 'cippClientId', 'cippApplicationId', 'cippHasSecret', 'cippMcpClientId', 'cippMcpHasSecret', 'cippMcpConfigured', 'cippConnected', 'cippEnabled', 'cippMcpEnabled', 'cippContactSyncEnabled', 'cippDeviceSyncEnabled', 'cippMcpCatalogSyncEnabled',
-            'plivoAuthId', 'plivoDidNumber', 'plivoAppId', 'plivoHasToken', 'plivoHasWebhookSecret', 'plivoConnectedAt', 'plivoEnabled',
+            'plivoAuthId', 'plivoDidNumber', 'plivoAppId', 'plivoHasToken', 'plivoHasWebhookSecret', 'plivoConnectedAt', 'plivoEnabled', 'plivoHoldMusicUrl',
             'graphMailbox', 'graphConnectedAt', 'graphEmailSignature', 'emailAutoTicket', 'graphEnabled', 'autoCloseResolvedDays', 'gravatarDefault',
             'aiProvider', 'aiHasKey', 'aiModel', 'aiConnectedAt', 'aiEnabled', 'aiReplyGuidelines',
             'transcriptionConfigured', 'transcriptionHasKey', 'transcriptionAutoEnabled', 'transcriptionMinSeconds',
@@ -1581,11 +1582,13 @@ class IntegrationsController extends Controller
             'webhook_secret' => 'nullable|string|min:1|max:500',
             'did_number' => 'required|string|max:20',
             'app_id' => 'required|string|max:50',
+            'hold_music_url' => 'nullable|url|max:2048',
         ]);
 
         Setting::setValue('plivo_auth_id', $validated['auth_id']);
         Setting::setValue('plivo_did_number', $validated['did_number']);
         Setting::setValue('plivo_app_id', $validated['app_id']);
+        Setting::setValue('plivo_hold_music_url', $validated['hold_music_url'] ?? '');
 
         if (! empty($validated['auth_token'])) {
             Setting::setEncrypted('plivo_auth_token', $validated['auth_token']);

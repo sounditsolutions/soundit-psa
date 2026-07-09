@@ -37,6 +37,7 @@ use App\Http\Controllers\Web\QuickSearchController;
 use App\Http\Controllers\Web\RecurringProfileController;
 use App\Http\Controllers\Web\ResellerReportController;
 use App\Http\Controllers\Web\SkuController;
+use App\Http\Controllers\Web\SoftphoneController;
 use App\Http\Controllers\Web\StaffController;
 use App\Http\Controllers\Web\TacticalSiteController;
 use App\Http\Controllers\Web\TicketController;
@@ -625,8 +626,9 @@ Route::middleware('auth')->group(function () {
     Route::get('/api/skus/search', [SkuController::class, 'apiSearch'])->name('api.skus.search');
 
     // Softphone (opens as popup window, not iframe)
-    Route::get('/softphone', fn () => view('softphone.index'))
-        ->name('softphone');
+    Route::get('/softphone', [SoftphoneController::class, 'index'])->name('softphone');
+    Route::post('/softphone/hold', [SoftphoneController::class, 'hold'])->name('softphone.hold');
+    Route::post('/softphone/unhold', [SoftphoneController::class, 'unhold'])->name('softphone.unhold');
 
     // About
     Route::get('/about', [AboutController::class, 'index'])->name('about');

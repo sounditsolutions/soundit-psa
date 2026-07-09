@@ -64,6 +64,7 @@ return [
         'webhook_secret' => env('PLIVO_WEBHOOK_SECRET'),
         'did_number' => env('PLIVO_DID_NUMBER'),
         'app_id' => env('PLIVO_APP_ID'),
+        'hold_music_url' => env('PLIVO_HOLD_MUSIC_URL'),
     ],
 
     'ai' => [
