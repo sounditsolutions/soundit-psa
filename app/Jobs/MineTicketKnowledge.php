@@ -62,6 +62,21 @@ class MineTicketKnowledge implements ShouldQueue
             return;
         }
 
+        // ── Gate 1b: an AI provider must be configured ───────────────────────
+        // Mining is entirely AI-driven — the extract stage calls the model. Without an
+        // API key the run would throw deep inside AiClient (a TypeError on the null key),
+        // dead-letter after its retries, and leave a Failed wiki_runs row with no facts
+        // and no operator-visible cause. Skip cleanly instead (mirrors the triage
+        // pipeline's graceful skip of AI stages when unconfigured); the Client Wiki
+        // settings card surfaces the actionable "configure an AI provider" warning.
+        if (! AiConfig::isConfigured()) {
+            Log::warning('[MineTicketKnowledge] Skipping — no AI provider configured; set an AI API key in Settings → Integrations', [
+                'ticket_id' => $this->ticketId,
+            ]);
+
+            return;
+        }
+
         $ticket = Ticket::find($this->ticketId);
 
         // ── Gate 2: ticket must exist, have a resolution, not be a merge closure ──

@@ -25,6 +25,9 @@ class MineTicketKnowledgeTest extends TestCase
     {
         Setting::setValue('wiki_enabled', '1');
         Setting::setValue('wiki_auto_mine', '1');
+        // Mining is AI-driven; a configured provider is a precondition for the pipeline
+        // to run (Gate 1b). Set the encrypted key so AiConfig::isConfigured() is true.
+        Setting::setEncrypted('ai_api_key', 'test-key');
     }
 
     private function makeClosedTicketWithResolution(Client $client, string $resolution = 'Fixed the firewall.'): Ticket
@@ -87,6 +90,24 @@ class MineTicketKnowledgeTest extends TestCase
 
         MineTicketKnowledge::dispatchSync($child->id);
 
+        $this->assertSame(0, WikiRun::count());
+    }
+
+    public function test_noop_when_ai_provider_not_configured(): void
+    {
+        // The reported bug (psa-fhru): wiki + auto-mine ON but NO AI key configured.
+        // Mining is entirely AI-driven, so it must skip cleanly — no run row, no TypeError
+        // deep in AiClient on the null key, no dead-lettered retries — instead of crashing.
+        Setting::setValue('wiki_enabled', '1');
+        Setting::setValue('wiki_auto_mine', '1');
+        // deliberately NO ai_api_key → AiConfig::isConfigured() is false
+
+        $client = Client::factory()->create();
+        $ticket = $this->makeClosedTicketWithResolution($client, 'Rebuilt the DHCP scope.');
+
+        MineTicketKnowledge::dispatchSync($ticket->id);
+
+        // Skipped before opening the ledger entry — no Running/Failed row is left behind.
         $this->assertSame(0, WikiRun::count());
     }
 
