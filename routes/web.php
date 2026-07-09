@@ -11,6 +11,7 @@ use App\Http\Controllers\Web\CallController;
 use App\Http\Controllers\Web\CippTenantController;
 use App\Http\Controllers\Web\ClientController;
 use App\Http\Controllers\Web\ClientIntegrationController;
+use App\Http\Controllers\Web\ClientReportController;
 use App\Http\Controllers\Web\ContractAssignmentController;
 use App\Http\Controllers\Web\ContractController;
 use App\Http\Controllers\Web\ContractDocumentController;
@@ -142,6 +143,8 @@ Route::middleware('auth')->group(function () {
     Route::get('/clients/{client}/tickets', [ClientController::class, 'tickets'])->name('clients.tickets');
     Route::get('/clients/{client}/people', [ClientController::class, 'people'])->name('clients.people');
     Route::get('/clients/{client}/licenses', [ClientController::class, 'licenses'])->name('clients.licenses');
+    Route::get('/clients/{client}/weekly-report', [ClientReportController::class, 'show'])->name('clients.weekly-report');
+    Route::post('/clients/{client}/weekly-report/email', [ClientReportController::class, 'email'])->name('clients.weekly-report.email');
 
     // Client Integrations (per-client link/unlink)
     Route::get('/clients/{client}/integrations/{vendor}/entities', [ClientIntegrationController::class, 'entities'])->name('clients.integrations.entities')
