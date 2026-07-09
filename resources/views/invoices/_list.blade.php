@@ -62,7 +62,10 @@
         <p class="mt-3">No invoices found.</p>
     </div>
 @else
-    <div class="card shadow-sm card-static">
+    {{-- Desktop: the full table (md+). Below md it is replaced by the stacked
+         cards beneath this block so the total/status signal stays visible
+         without a horizontal scroll (psa-e2no). --}}
+    <div class="card shadow-sm card-static d-none d-md-block">
         <div class="table-responsive">
             <table class="table table-hover mb-0">
                 <thead class="thead-brand">
@@ -141,6 +144,55 @@
                 </tbody>
             </table>
         </div>
+    </div>
+
+    {{-- Mobile: stacked cards (below md). Promotes the key invoice signal —
+         total, status, due date — into a card so it is visible without a
+         horizontal scroll. Reuses the shared responsive table-card primitive
+         (.ticket-card) documented in app.css (psa-e2no). --}}
+    <div class="d-md-none invoice-cards">
+        @foreach($invoices as $invoice)
+            <div class="ticket-card" onclick="window.location='{{ route('invoices.show', $invoice) }}'">
+                <div class="d-flex justify-content-between align-items-center gap-2 mb-1">
+                    <a href="{{ route('invoices.show', $invoice) }}" class="ticket-card-subject fw-semibold text-decoration-none" onclick="event.stopPropagation()">
+                        {{ $invoice->invoice_number }}
+                    </a>
+                    @if($invoice->isOverdue())
+                        <span class="badge bg-danger">Overdue</span>
+                    @else
+                        <span class="badge {{ $invoice->status->badgeClass() }}">{{ $invoice->status->label() }}</span>
+                    @endif
+                </div>
+                @unless(isset($prefilter['contract_id']))
+                    <div class="small mb-1" onclick="event.stopPropagation()">
+                        <x-client-badge :client="$invoice->client" fallback="-" />
+                    </div>
+                @endunless
+                @if($invoice->contract)
+                    <div class="small text-muted mb-2 text-truncate" onclick="event.stopPropagation()">
+                        <i class="bi bi-file-earmark-text me-1"></i>{{ $invoice->contract->name }}
+                    </div>
+                @endif
+                <div class="d-flex flex-wrap align-items-center gap-2 small">
+                    <span class="fw-semibold">${{ number_format($invoice->total, 2) }}</span>
+                    <span class="text-muted">
+                        <i class="bi bi-calendar3 me-1"></i>{{ $invoice->invoice_date->format('M j, Y') }}
+                    </span>
+                    <span class="ms-auto d-inline-flex align-items-center gap-2">
+                        <span class="{{ $invoice->isOverdue() ? 'text-danger fw-semibold' : 'text-muted' }}">
+                            Due {{ $invoice->due_date->format('M j, Y') }}
+                        </span>
+                        @if($invoice->stripe_sync_error || $invoice->qbo_sync_error)
+                            <i class="bi bi-exclamation-triangle-fill text-danger" title="{{ $invoice->stripe_sync_error ?: $invoice->qbo_sync_error }}"></i>
+                        @elseif($invoice->stripe_invoice_id)
+                            <i class="bi bi-stripe text-success" title="Synced to Stripe"></i>
+                        @elseif($invoice->qbo_invoice_id)
+                            <i class="bi bi-cloud-check text-success" title="Synced to QBO"></i>
+                        @endif
+                    </span>
+                </div>
+            </div>
+        @endforeach
     </div>
 
     <div class="mt-3">
