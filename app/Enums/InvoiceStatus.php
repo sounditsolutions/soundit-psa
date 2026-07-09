@@ -23,6 +23,30 @@ enum InvoiceStatus: string
         };
     }
 
+    /**
+     * Ordered value => label map for the invoice-list status filter dropdown.
+     *
+     * Leads with the derived filters ("outstanding", "overdue") that map to
+     * query scopes on the Invoice model rather than stored status values,
+     * followed by the concrete statuses. Consumed by the invoice-list dropdown
+     * and routed to queries via Invoice::scopeStatusFilter().
+     *
+     * @return array<string, string>
+     */
+    public static function filterOptions(): array
+    {
+        $options = [
+            'outstanding' => 'Outstanding',
+            'overdue' => 'Overdue',
+        ];
+
+        foreach (self::cases() as $status) {
+            $options[$status->value] = $status->label();
+        }
+
+        return $options;
+    }
+
     public function badgeClass(): string
     {
         return match ($this) {

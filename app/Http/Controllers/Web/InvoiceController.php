@@ -42,11 +42,7 @@ class InvoiceController extends Controller
         }
 
         if ($request->filled('status')) {
-            if ($request->query('status') === 'outstanding') {
-                $query->whereIn('status', [InvoiceStatus::Posted, InvoiceStatus::Synced]);
-            } else {
-                $query->where('status', $request->query('status'));
-            }
+            $query->statusFilter($request->query('status'));
         }
 
         if ($request->filled('from_date')) {
@@ -62,7 +58,7 @@ class InvoiceController extends Controller
         return view('invoices.index', [
             'invoices' => $invoices,
             'clients' => Client::operational()->orderBy('name')->get(['id', 'name']),
-            'statuses' => InvoiceStatus::cases(),
+            'statuses' => InvoiceStatus::filterOptions(),
             'filters' => $request->only(['client_id', 'contract_id', 'status', 'from_date', 'to_date']),
         ]);
     }

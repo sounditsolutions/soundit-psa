@@ -103,6 +103,41 @@ class Invoice extends Model
         return $query->where('client_id', $clientId);
     }
 
+    /**
+     * Invoices awaiting payment (posted or synced to the billing backend).
+     * Mirrors the "Outstanding" dashboard stat and list filter.
+     */
+    public function scopeOutstanding(Builder $query): Builder
+    {
+        return $query->whereIn('status', [InvoiceStatus::Posted, InvoiceStatus::Synced]);
+    }
+
+    /**
+     * Posted invoices whose due date has passed. Kept in lockstep with the
+     * isOverdue() accessor so the list filter matches the "Overdue" badge.
+     */
+    public function scopeOverdue(Builder $query): Builder
+    {
+        return $query->where('status', InvoiceStatus::Posted)
+            ->whereNotNull('due_date')
+            ->where('due_date', '<', now());
+    }
+
+    /**
+     * Apply an invoice-list status filter value to the query. Routes the
+     * derived filters ("outstanding", "overdue") to their scopes and falls
+     * back to an exact status match for concrete statuses. Mirrors the values
+     * exposed by InvoiceStatus::filterOptions().
+     */
+    public function scopeStatusFilter(Builder $query, string $status): Builder
+    {
+        return match ($status) {
+            'outstanding' => $query->outstanding(),
+            'overdue' => $query->overdue(),
+            default => $query->where('status', $status),
+        };
+    }
+
     // ── Accessors ──
 
     public function getFormattedTotalAttribute(): string
