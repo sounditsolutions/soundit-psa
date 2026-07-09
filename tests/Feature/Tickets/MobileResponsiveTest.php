@@ -16,6 +16,8 @@ use Tests\TestCase;
  *    metadata/forms follow (Bootstrap order-* swap, not a source-order change).
  *  - psa-6zs7: wide console tables keep the full table at md+ and fall back to
  *    stacked cards below md so triage signal stays visible without a scroll.
+ *  - psa-iqzv: the client Details card locks its table width and wraps long
+ *    email/website values so they stay inside the card on a mobile viewport.
  */
 class MobileResponsiveTest extends TestCase
 {
@@ -66,5 +68,28 @@ class MobileResponsiveTest extends TestCase
 
         // Compile/render smoke for the People + Contracts dual-render edits. psa-6zs7.
         $this->actingAs($user)->get(route('clients.show', $client))->assertOk();
+    }
+
+    public function test_client_detail_card_wraps_long_contact_values_on_mobile(): void
+    {
+        $user = User::factory()->create();
+        // Long, unbreakable email + website — the values that used to push the
+        // Details table past the rounded card boundary on a 390px viewport.
+        $client = Client::factory()->create([
+            'email' => 'accounts.receivable.department@averylongcorporatedomainname.example.com',
+            'website' => 'https://www.averylongcorporatedomainname.example.com/about/contact-us',
+        ]);
+
+        $resp = $this->actingAs($user)->get(route('clients.show', $client))->assertOk();
+
+        // The long values render in full...
+        $resp->assertSee($client->email, false);
+        $resp->assertSee($client->website, false);
+
+        // ...inside a Details table that is width-locked (table-layout: fixed) and
+        // breaks long tokens (text-break), so they wrap instead of overflowing the
+        // rounded card boundary. psa-iqzv.
+        $resp->assertSee('table table-borderless mb-0 text-break', false);
+        $resp->assertSee('table-layout: fixed', false);
     }
 }
