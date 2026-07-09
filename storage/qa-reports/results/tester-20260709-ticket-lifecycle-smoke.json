@@ -1,0 +1,59 @@
+{
+  "run_label": "tester ticket lifecycle smoke 2026-07-09",
+  "results": [
+    {
+      "scenario": "tix-create-manual",
+      "status": "pass",
+      "notes": "Created T-162 from /tickets/create for Vandelay Industries with subject, description, P2 - High priority, and Network category. The detail page showed the entered subject, description, client, priority, and category.",
+      "screenshots": [
+        "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/tix-lifecycle-20260709-20260709005740-create-created-detail.png"
+      ],
+      "finalUrl": "https://soundit-dev/tickets/162"
+    },
+    {
+      "scenario": "tix-resolve",
+      "status": "pass",
+      "notes": "Resolved T-162 with a non-empty resolution summary and verified the ticket showed Resolved plus the entered resolution text. The already-filed optional-empty-resolution gap remains open as psa-5d8f.",
+      "screenshots": [
+        "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/tix-lifecycle-20260709-20260709005740-resolve-reopen-resolved-detail.png"
+      ],
+      "finalUrl": "https://soundit-dev/tickets/162"
+    },
+    {
+      "scenario": "tix-reopen",
+      "status": "pass",
+      "notes": "Reopened T-162 from Resolved to In Progress. The prior resolution remained visible as Prior resolution (ticket reopened), status-change notes were visible, and the ticket list search showed T-162 as In Progress.",
+      "screenshots": [
+        "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/tix-lifecycle-20260709-20260709005740-resolve-reopen-reopened-detail.png",
+        "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/tix-lifecycle-20260709-20260709005740-list-ticket-list-search.png"
+      ],
+      "finalUrl": "https://soundit-dev/tickets?search=QA%2020260709%20lifecycle%2020260709005740"
+    }
+  ],
+  "findings": [],
+  "existing_findings_observed": [
+    "psa-5d8f",
+    "psa-uq6l",
+    "psa-vm2r",
+    "psa-4638",
+    "psa-de8u"
+  ],
+  "artifacts": {
+    "runner_results": [
+      "/home/charlie/repos/soundit-psa/storage/qa-reports/results/tix-lifecycle-20260709-20260709005740-runner-create.json",
+      "/home/charlie/repos/soundit-psa/storage/qa-reports/results/tix-lifecycle-20260709-20260709005740-runner-resolve-reopen.json",
+      "/home/charlie/repos/soundit-psa/storage/qa-reports/results/tix-lifecycle-20260709-20260709005740-runner-list.json"
+    ],
+    "axe": [
+      {
+        "screen": "reopened ticket detail",
+        "violations": 6,
+        "notes": "Axe reported the known ticket-detail accessibility family: unlabeled buttons/inputs/selects, missing H1, redundant image alt, and muted-text contrast. These are already covered by open QA design beads psa-4638 and psa-de8u."
+      }
+    ],
+    "notes": [
+      "No open or in-progress bead was assigned to tester at run start; this was an autonomous focused smoke from the scenario library.",
+      "The impeccable design-critique skill/tool was not available in this session or deferred tool search, so no new design finding was filed from an impeccable audit."
+    ]
+  }
+}

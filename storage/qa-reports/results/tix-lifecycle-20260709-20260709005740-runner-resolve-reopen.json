@@ -1,0 +1,166 @@
+{
+  "scenario": "tix-lifecycle-20260709-20260709005740-resolve-reopen",
+  "ok": true,
+  "steps": [
+    {
+      "i": 0,
+      "type": "goto",
+      "ok": true,
+      "detail": "status=loaded url=https://soundit-dev/tickets/162"
+    },
+    {
+      "i": 1,
+      "type": "click",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 2,
+      "type": "fill",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 3,
+      "type": "click",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 4,
+      "type": "expectText",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 5,
+      "type": "expectText",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 6,
+      "type": "screenshot",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 7,
+      "type": "click",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 8,
+      "type": "expectText",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 9,
+      "type": "expectText",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 10,
+      "type": "expectText",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 11,
+      "type": "screenshot",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 12,
+      "type": "snapshot",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 13,
+      "type": "axe",
+      "ok": true,
+      "detail": "axe @ https://soundit-dev/tickets/162: 6 violation(s)"
+    }
+  ],
+  "screenshots": [
+    "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/tix-lifecycle-20260709-20260709005740-resolve-reopen-resolved-detail.png",
+    "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/tix-lifecycle-20260709-20260709005740-resolve-reopen-reopened-detail.png"
+  ],
+  "finalUrl": "https://soundit-dev/tickets/162",
+  "snapshot": "- complementary \"Main navigation\":\n  - link \"Sound IT PSA\":\n    - /url: https://soundit-dev\n    - img \"Sound IT PSA\"\n  - navigation:\n    - link \" Dashboard\":\n      - /url: https://soundit-dev\n    - text: Manage\n    - link \" Clients\":\n      - /url: https://soundit-dev/clients\n    - link \" People\":\n      - /url: https://soundit-dev/people\n    - link \" Assets\":\n      - /url: https://soundit-dev/assets\n    - text: Service\n    - link \" Tickets\":\n      - /url: https://soundit-dev/tickets\n    - link \" Cockpit 4\":\n      - /url: https://soundit-dev/cockpit\n    - link \" Calls 3\":\n      - /url: https://soundit-dev/calls\n    - link \" Phone Directory\":\n      - /url: https://soundit-dev/phone-directory\n    - link \" Emails\":\n      - /url: https://soundit-dev/emails\n    - link \" Alerts 5\":\n      - /url: https://soundit-dev/alerts\n    - text: Billing\n    - link \" Billing \":\n      - /url: \"#sidebarBilling\"\n    - text: Settings\n    - link \" General\":\n      - /url: https://soundit-dev/settings/general\n    - link \" Staff\":\n      - /url: https://soundit-dev/settings/staff\n    - link \" Integrations\":\n      - /url: https://soundit-dev/settings/integrations\n    - link \" Alerts Hub\":\n      - /url: https://soundit-dev/settings/alerts\n    - link \" MCP Tokens\":\n      - /url: https://soundit-dev/settings/mcp-tokens\n    - text: Recent\n    - link \" T-162 QA 20260709 lifecyc...\":\n      - /url: https://soundit-dev/tickets/162\n    - link \" T-161 QA tester manual ti...\":\n      - /url: https://soundit-dev/tickets/161\n    - link \" Vandelay Industries\":\n      - /url: https://soundit-dev/clients/3\n    - link \" T-160 QA tester manual ti...\":\n      - /url: https://soundit-dev/tickets/160\n    - link \" T-1 [ALERT] VAN-APP01 - S...\":\n      - /url: https://soundit-dev/tickets/1\n    - link \" Managed Services Agreemen...\":\n      - /url: https://soundit-dev/contracts/4\n    - link \" VAN-APP01\":\n      - /url: https://soundit-dev/assets/8\n    - link \" QA Client Create 20260708...\":\n      - /url: https://soundit-dev/clients/84\n  - button \"Toggle sidebar\" [expanded]: \n- banner:\n  - text: T-162 QA 20260709 lifecycle 20260709005740\n  - button \" Search Ctrl+K\"\n  - button \"AM Alex Morgan\"\n- main:\n  - alert:\n    - text: Status changed to In Progress.\n    - button\n  - link \" Back to Tickets\":\n    - /url: https://soundit-dev/tickets\n  - heading \"T-162\" [level=4]\n  - heading \"QA 20260709 lifecycle 20260709005740\" [level=5]\n  - paragraph: QA-created ticket for tix-create-manual and tix-reopen smoke at 20260709005740.\n  - text: Prior resolution (ticket reopened)\n  - paragraph: \"QA resolution 20260709005740: documented restart of the affected network service and confirmed connectivity was restored.\"\n  - text:  Notes\n  - button \" Show system notes\"\n  - button \" Note\"\n  - button \" Reply\"\n  - button \" Change Status\"\n  - text:  Alex Morgan — New  Resolved 0 seconds ago  Alex Morgan — Resolved  In Progress 0 seconds ago In Progress\n  - button \"P2 - High\"\n  - text: \n  - combobox:\n    - option \"Unassigned\"\n    - option \"Alex Morgan\" [selected]\n    - option \"Devon Carter\"\n    - option \"Priya Shah\"\n    - option \"Riley Okafor\"\n    - option \"Sam Whitaker\"\n  - button \" Resolve\"\n  - button \" Close\"\n  - text:  Ticket Info Subject\n  - textbox: QA 20260709 lifecycle 20260709005740\n  - text: Category\n  - combobox:\n    - option \"-- None --\"\n    - option \"Hardware\"\n    - option \"Software\"\n    - option \"Network\" [selected]\n    - option \"Email\"\n    - option \"User Account\"\n    - option \"Security\"\n    - option \"Server\"\n    - option \"Cloud\"\n  - text: Subcategory\n  - combobox:\n    - option \"-- None --\" [selected]\n    - option \"Connectivity\"\n    - option \"DNS\"\n    - option \"VPN\"\n    - option \"Firewall\"\n    - option \"WiFi\"\n    - option \"Other\"\n  - button \"Save\"\n  - table:\n    - rowgroup:\n      - row \"Type  Incident\":\n        - rowheader \"Type\"\n        - cell \" Incident\"\n      - row \"Source Manual\":\n        - rowheader \"Source\"\n        - cell \"Manual\"\n  - text:  Details\n  - table:\n    - rowgroup:\n      - row \"Client Vandelay Industries Vandelay Industries \":\n        - rowheader \"Client\"\n        - cell \"Vandelay Industries Vandelay Industries \":\n          - img \"Vandelay Industries\"\n          - link \"Vandelay Industries\":\n            - /url: https://soundit-dev/clients/3\n          - button \"\"\n      - row \"Contact None\":\n        - rowheader \"Contact\"\n        - cell \"None\":\n          - combobox:\n            - option \"None\" [selected]\n            - option \"Eileen Park\"\n            - option \"George Costanza\"\n            - option \"Maya Whitfield\"\n            - option \"Russ Hammond\"\n      - row \"Assets None + Link asset... \":\n        - rowheader \"Assets\"\n        - cell \"None + Link asset... \":\n          - text: None\n          - combobox:\n            - option \"+ Link asset...\" [selected]\n            - option \"Domain Controller (Server)\"\n            - option \"Eileen Park PC (Workstation)\"\n            - option \"ERP Server (Server)\"\n            - option \"George Costanza PC (Workstation)\"\n            - option \"Warehouse Laptop (Laptop)\"\n          - button \"\"\n      - row \"Contract None\":\n        - rowheader \"Contract\"\n        - cell \"None\":\n          - combobox:\n            - option \"None\" [selected]\n            - option \"Managed Services Agreement\"\n            - option \"Project Work - Q2\"\n      - row \"Due 2026-07-09T08:57\":\n        - rowheader \"Due\"\n        - cell \"2026-07-09T08:57\":\n          - textbox: 2026-07-09T08:57\n      - row \"Total Time -\":\n        - rowheader \"Total Time\"\n        - cell \"-\"\n      - row \"Created By Alex Morgan\":\n        - rowheader \"Created By\"\n        - cell \"Alex Morgan\"\n      - row \"Merge  Merge into this\":\n        - rowheader \"Merge\"\n        - cell \" Merge into this\":\n          - button \" Merge into this\"\n  - strong: \"Opened:\"\n  - text: Jul 8 17:57\n  - strong: \"Responded:\"\n  - text: \"-\"\n  - strong: \"Resolved:\"\n  - text: \"-\"\n  - strong: \"Closed:\"\n  - text: \"-  AI Triage\"\n  - button \" Run Triage\"\n  - button \" Review\"\n  - text:  Site Notes\n  - link \"\":\n    - /url: https://soundit-dev/clients/3#siteNotes\n  - text: Updated 1 month ago\n- contentinfo: © 2026 Sound IT PSA",
+  "axe": [
+    {
+      "url": "https://soundit-dev/tickets/162",
+      "label": "reopened-detail",
+      "violations": [
+        {
+          "id": "button-name",
+          "impact": "critical",
+          "help": "Buttons must have discernible text",
+          "nodes": [
+            "button[data-bs-dismiss=\"alert\"]",
+            ".input-group.input-group-sm > .btn-outline-primary.btn-sm[type=\"submit\"]"
+          ]
+        },
+        {
+          "id": "color-contrast",
+          "impact": "serious",
+          "help": "Elements must meet minimum color contrast ratio thresholds",
+          "nodes": [
+            ".sidebar-group:nth-child(2) > .sidebar-group-label",
+            ".sidebar-group:nth-child(3) > .sidebar-group-label",
+            ".sidebar-group:nth-child(4) > .sidebar-group-label",
+            ".sidebar-group:nth-child(5) > .sidebar-group-label",
+            ".d-lg-inline",
+            "#toggleSystemNotes"
+          ]
+        },
+        {
+          "id": "image-redundant-alt",
+          "impact": "minor",
+          "help": "Alternative text of images should not be repeated as text",
+          "nodes": [
+            "img[alt=\"Vandelay Industries\"]"
+          ]
+        },
+        {
+          "id": "label",
+          "impact": "critical",
+          "help": "Form elements must have labels",
+          "nodes": [
+            "input[name=\"subject\"]",
+            "input[type=\"datetime-local\"]"
+          ]
+        },
+        {
+          "id": "page-has-heading-one",
+          "impact": "moderate",
+          "help": "Page should contain a level-one heading",
+          "nodes": [
+            "html"
+          ]
+        },
+        {
+          "id": "select-name",
+          "impact": "critical",
+          "help": "Select element must have an accessible name",
+          "nodes": [
+            "select[name=\"assignee_id\"]",
+            "#editCategory",
+            "#editSubcategory",
+            "select[name=\"contact_id\"][onchange=\"this.form.submit()\"]",
+            "select[name=\"asset_id\"]",
+            "select[name=\"contract_id\"][onchange=\"this.form.submit()\"]"
+          ]
+        }
+      ]
+    }
+  ],
+  "error": null,
+  "pageErrors": []
+}
