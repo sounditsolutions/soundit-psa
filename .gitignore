@@ -55,3 +55,9 @@ Thumbs.db
 .cursor/mcp.json
 opencode.json
 mimocode.json
+
+# so-ssoj: secret-backup guard — .env.bak-* dodged the .env rule and leaked to the public repo.
+.env.bak*
+*.bak
+!.env.example
+.env.rotate-bak*
