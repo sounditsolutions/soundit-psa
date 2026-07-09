@@ -275,6 +275,12 @@ class AssetController extends Controller
         return view('assets.show', [
             'asset' => $asset,
             'backupJobs' => null,
+            // The shared assets.show view renders the overview tab pane in the DOM
+            // even on the tickets tab, so it references $cometJobData inside the
+            // @if($asset->comet_device_id) block. Pass null (as with backupJobs and
+            // the DNS integrations above) so the backup-jobs card is skipped without
+            // making Comet API calls the tickets tab doesn't need.
+            'cometJobData' => null,
             'controldDevices' => collect(),
             'zorusEndpoints' => collect(),
             'lastUserPerson' => $lastUserPerson,

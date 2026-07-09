@@ -60,4 +60,25 @@ class AssetTicketsTabTest extends TestCase
         $resp->assertOk();
         $resp->assertSee('Open ticket subject');
     }
+
+    public function test_tickets_tab_renders_for_comet_linked_asset(): void
+    {
+        // Regression (psa-9s3r): the shared assets.show view renders the overview
+        // tab pane in the DOM even on the tickets tab, and references $cometJobData
+        // inside @if($asset->comet_device_id). The tickets() action must pass that
+        // variable — a Comet-linked asset used to 500 with "Undefined variable
+        // $cometJobData".
+        $user = User::factory()->create();
+        $asset = Asset::factory()->create(['comet_device_id' => 'comet-dev-123']);
+        $ticket = Ticket::factory()->create([
+            'status' => TicketStatus::InProgress,
+            'subject' => 'Comet asset ticket',
+        ]);
+        $asset->tickets()->attach($ticket);
+
+        $resp = $this->actingAs($user)->get(route('assets.tickets', $asset));
+
+        $resp->assertOk();
+        $resp->assertSee('Comet asset ticket');
+    }
 }
