@@ -54,7 +54,7 @@
                 <form method="POST" action="{{ route('settings.alerts.routes.update', $route) }}">
                     @csrf
                     @method('PUT')
-                    @include('settings.alerts.routes._form', ['route' => $route, 'eventTypeGroups' => $eventTypeGroups, 'routeDestinations' => $routeDestinations])
+                    @include('settings.alerts.routes._form', ['route' => $route, 'eventTypeGroups' => $eventTypeGroups, 'routeDestinations' => $routeDestinations, 'derivedRecipients' => $derivedRecipients])
                     <button type="submit" class="btn btn-primary">
                         <i class="bi bi-check-lg me-1"></i>Save
                     </button>

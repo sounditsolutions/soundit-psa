@@ -3,9 +3,11 @@
 namespace App\Jobs;
 
 use App\Models\SignalDelivery;
+use App\Models\SignalDestination;
 use App\Models\SignalEvent;
 use App\Models\SignalRoute;
 use App\Models\SignalRouteStep;
+use App\Services\Signals\DerivedRecipientResolver;
 use App\Services\Signals\SignalDeliveryState;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Database\Eloquent\Collection;
@@ -130,7 +132,8 @@ class CheckSignalStepAcks implements ShouldQueue
     {
         $pendingCount = 0;
         foreach ($steps as $step) {
-            if (self::createPendingDelivery($route, $event, $step)->status === 'pending') {
+            $delivery = self::createPendingDelivery($route, $event, $step);
+            if ($delivery !== null && $delivery->status === 'pending') {
                 $pendingCount++;
             }
         }
@@ -140,19 +143,24 @@ class CheckSignalStepAcks implements ShouldQueue
         }
     }
 
-    private static function createPendingDelivery(SignalRoute $route, SignalEvent $event, SignalRouteStep $step): SignalDelivery
+    private static function createPendingDelivery(SignalRoute $route, SignalEvent $event, SignalRouteStep $step): ?SignalDelivery
     {
-        $delivery = self::existingDelivery($route, $event, $step);
+        $destination = app(DerivedRecipientResolver::class)->resolveForStep($step, $event);
+        if ($destination === null) {
+            return null;
+        }
+
+        $delivery = self::existingDelivery($route, $event, $step, $destination);
         if ($delivery !== null) {
             return $delivery;
         }
 
-        if (! $step->destination?->enabled) {
+        if (! $destination->enabled) {
             return SignalDelivery::create([
                 'event_id' => $event->id,
                 'route_id' => $route->id,
                 'step_order' => $step->step_order,
-                'destination_id' => $step->destination_id,
+                'destination_id' => $destination->id,
                 'status' => 'suppressed',
                 'error' => 'destination-disabled',
             ]);
@@ -162,7 +170,7 @@ class CheckSignalStepAcks implements ShouldQueue
             'event_id' => $event->id,
             'route_id' => $route->id,
             'step_order' => $step->step_order,
-            'destination_id' => $step->destination_id,
+            'destination_id' => $destination->id,
             'status' => 'pending',
         ]);
 
@@ -171,9 +179,14 @@ class CheckSignalStepAcks implements ShouldQueue
         return $delivery;
     }
 
-    private static function createSuppressedDelivery(SignalRoute $route, SignalEvent $event, SignalRouteStep $step): SignalDelivery
+    private static function createSuppressedDelivery(SignalRoute $route, SignalEvent $event, SignalRouteStep $step): ?SignalDelivery
     {
-        $delivery = self::existingDelivery($route, $event, $step);
+        $destination = app(DerivedRecipientResolver::class)->resolveForStep($step, $event);
+        if ($destination === null) {
+            return null;
+        }
+
+        $delivery = self::existingDelivery($route, $event, $step, $destination);
         if ($delivery !== null) {
             return $delivery;
         }
@@ -182,19 +195,19 @@ class CheckSignalStepAcks implements ShouldQueue
             'event_id' => $event->id,
             'route_id' => $route->id,
             'step_order' => $step->step_order,
-            'destination_id' => $step->destination_id,
+            'destination_id' => $destination->id,
             'status' => 'suppressed',
             'error' => 'acked-upstream',
         ]);
     }
 
-    private static function existingDelivery(SignalRoute $route, SignalEvent $event, SignalRouteStep $step): ?SignalDelivery
+    private static function existingDelivery(SignalRoute $route, SignalEvent $event, SignalRouteStep $step, SignalDestination $destination): ?SignalDelivery
     {
         return SignalDelivery::query()
             ->where('event_id', $event->id)
             ->where('route_id', $route->id)
             ->where('step_order', $step->step_order)
-            ->where('destination_id', $step->destination_id)
+            ->where('destination_id', $destination->id)
             ->first();
     }
 

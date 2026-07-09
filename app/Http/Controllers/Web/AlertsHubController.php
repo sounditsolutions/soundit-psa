@@ -10,6 +10,7 @@ use App\Models\SignalDestination;
 use App\Models\SignalEvent;
 use App\Models\SignalRoute;
 use App\Rules\SafeWebhookUrl;
+use App\Services\Signals\DerivedRecipients;
 use App\Services\Signals\SignalEventTypes;
 use App\Services\Signals\Sinks\EmailSink;
 use App\Services\Signals\Sinks\McpSink;
@@ -32,6 +33,7 @@ class AlertsHubController extends Controller
     {
         return view('settings.alerts.index', [
             'destinations' => SignalDestination::query()
+                ->manual()
                 ->orderBy('label')
                 ->get()
                 ->map(fn (SignalDestination $destination) => $this->decorateDestination($destination)),
@@ -187,7 +189,8 @@ class AlertsHubController extends Controller
     public function createRoute()
     {
         return view('settings.alerts.routes.create', [
-            'routeDestinations' => SignalDestination::query()->orderBy('label')->get(['id', 'label', 'type']),
+            'routeDestinations' => SignalDestination::query()->manual()->orderBy('label')->get(['id', 'label', 'type']),
+            'derivedRecipients' => DerivedRecipients::all(),
             'eventTypeGroups' => $this->eventTypeGroups(),
         ]);
     }
@@ -196,7 +199,8 @@ class AlertsHubController extends Controller
     {
         return view('settings.alerts.routes.show', [
             'route' => $this->decorateRoute($route->load('steps.destination')),
-            'routeDestinations' => SignalDestination::query()->orderBy('label')->get(['id', 'label', 'type']),
+            'routeDestinations' => SignalDestination::query()->manual()->orderBy('label')->get(['id', 'label', 'type']),
+            'derivedRecipients' => DerivedRecipients::all(),
             'eventTypeGroups' => $this->eventTypeGroups(),
             'recentFires' => SignalDelivery::query()->where('route_id', $route->id)
                 ->with(['destination', 'event'])->latest()->limit(20)->get(),
@@ -373,7 +377,7 @@ class AlertsHubController extends Controller
             'event_filter.client_ids' => ['nullable'],
             'cooldown_seconds' => ['nullable', 'integer', 'min:0', 'max:604800'],
             'steps' => ['required', 'array', 'min:1'],
-            'steps.*.destination_id' => ['required', 'integer', Rule::exists('signal_destinations', 'id')],
+            'steps.*.destination_id' => ['required', $this->stepDestinationRule()],
             'steps.*.wait_for_ack_seconds' => ['nullable', 'integer', 'min:0', 'max:604800'],
             'steps.*.resolve_within_seconds' => ['nullable', 'integer', 'min:0', 'max:604800'],
             'steps.*.non_suppressible' => ['nullable', 'boolean'],
@@ -474,9 +478,12 @@ class AlertsHubController extends Controller
                 $order++;
             }
 
+            [$destinationId, $derivedFrom] = $this->parseStepDestination((string) ($step['destination_id'] ?? ''));
+
             $normalized[] = [
                 'step_order' => $order,
-                'destination_id' => (int) $step['destination_id'],
+                'destination_id' => $destinationId,
+                'derived_from' => $derivedFrom,
                 'wait_for_ack_seconds' => $this->nullableInt($step['wait_for_ack_seconds'] ?? null),
                 'resolve_within_seconds' => $this->nullableInt($step['resolve_within_seconds'] ?? null),
                 'non_suppressible' => filter_var($step['non_suppressible'] ?? false, FILTER_VALIDATE_BOOLEAN),
@@ -484,6 +491,40 @@ class AlertsHubController extends Controller
         }
 
         return $normalized;
+    }
+
+    /**
+     * Split a step's submitted destination value into a fixed destination id or
+     * a derived-recipient kind. Derived values arrive as `derived:<kind>`.
+     *
+     * @return array{0: ?int, 1: ?string} [destination_id, derived_from]
+     */
+    private function parseStepDestination(string $raw): array
+    {
+        if (str_starts_with($raw, 'derived:')) {
+            return [null, substr($raw, strlen('derived:'))];
+        }
+
+        return [(int) $raw, null];
+    }
+
+    private function stepDestinationRule(): \Closure
+    {
+        return function (string $attribute, mixed $value, \Closure $fail): void {
+            $value = (string) $value;
+
+            if (str_starts_with($value, 'derived:')) {
+                if (! DerivedRecipients::has(substr($value, strlen('derived:')))) {
+                    $fail('The selected derived recipient is invalid.');
+                }
+
+                return;
+            }
+
+            if (! ctype_digit($value) || ! SignalDestination::whereKey($value)->exists()) {
+                $fail('The selected destination is invalid.');
+            }
+        };
     }
 
     private function nullableInt(mixed $value): ?int
@@ -584,7 +625,9 @@ class AlertsHubController extends Controller
             ->groupBy('step_order')
             ->map(function ($steps): string {
                 $labels = $steps
-                    ->map(fn ($step): string => $step->destination?->label ?? "Destination #{$step->destination_id}")
+                    ->map(fn ($step): string => $step->derived_from !== null
+                        ? DerivedRecipients::label($step->derived_from)
+                        : ($step->destination?->label ?? "Destination #{$step->destination_id}"))
                     ->implode(' + ');
                 $wait = $steps->max('wait_for_ack_seconds');
 

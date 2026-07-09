@@ -2,6 +2,7 @@
     $route = $route ?? null;
     $eventTypeGroups = $eventTypeGroups ?? [];
     $routeDestinations = $routeDestinations ?? collect();
+    $derivedRecipients = $derivedRecipients ?? [];
     $routeTypes = $route->event_filter['types'] ?? [];
     $existingSteps = ($route->steps ?? collect())->values();
     $stepSlotCount = max(3, $existingSteps->count());
@@ -83,11 +84,26 @@
         <div class="border rounded p-2 mb-2">
             <div class="row g-2">
                 <div class="col-md-12">
+                    @php
+                        $stepDefault = $existingStep?->derived_from
+                            ? 'derived:'.$existingStep->derived_from
+                            : $existingStep?->destination_id;
+                        $stepSelected = (string) old('steps.'.$i.'.destination_id', $stepDefault ?? '');
+                    @endphp
                     <select name="steps[{{ $i }}][destination_id]" class="form-select @error('steps.'.$i.'.destination_id') is-invalid @enderror">
                         <option value="">Destination</option>
-                        @foreach($routeDestinations as $destination)
-                            <option value="{{ $destination->id }}" @selected((string) old('steps.'.$i.'.destination_id', $existingStep?->destination_id) === (string) $destination->id)>{{ $destination->label }}</option>
-                        @endforeach
+                        @if(!empty($derivedRecipients))
+                            <optgroup label="Derived recipients">
+                                @foreach($derivedRecipients as $kind => $label)
+                                    <option value="derived:{{ $kind }}" @selected($stepSelected === 'derived:'.$kind)>{{ $label }}</option>
+                                @endforeach
+                            </optgroup>
+                        @endif
+                        <optgroup label="Destinations">
+                            @foreach($routeDestinations as $destination)
+                                <option value="{{ $destination->id }}" @selected($stepSelected === (string) $destination->id)>{{ $destination->label }}</option>
+                            @endforeach
+                        </optgroup>
                     </select>
                     @error('steps.'.$i.'.destination_id')
                         <div class="invalid-feedback">{{ $message }}</div>

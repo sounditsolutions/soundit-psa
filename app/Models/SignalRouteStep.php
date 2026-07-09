@@ -13,6 +13,7 @@ class SignalRouteStep extends Model
         'route_id',
         'step_order',
         'destination_id',
+        'derived_from',
         'wait_for_ack_seconds',
         'resolve_within_seconds',
         'non_suppressible',

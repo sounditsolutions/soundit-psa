@@ -5,6 +5,7 @@ namespace App\Services\Signals;
 use App\Jobs\CheckSignalStepAcks;
 use App\Jobs\DeliverSignal;
 use App\Models\SignalDelivery;
+use App\Models\SignalDestination;
 use App\Models\SignalEvent;
 use App\Models\SignalRoute;
 use App\Models\SignalRouteStep;
@@ -13,6 +14,10 @@ use Illuminate\Database\Eloquent\Collection;
 class SignalRouter
 {
     public const MAX_PER_TYPE_PER_HOUR = 60;
+
+    public function __construct(
+        private readonly DerivedRecipientResolver $recipientResolver,
+    ) {}
 
     public function route(SignalEvent $event): void
     {
@@ -43,7 +48,8 @@ class SignalRouter
 
                 $pendingCount = 0;
                 foreach ($steps as $step) {
-                    if ($this->createDelivery($route, $event, $step)->status === 'pending') {
+                    $delivery = $this->createDelivery($route, $event, $step);
+                    if ($delivery !== null && $delivery->status === 'pending') {
                         $pendingCount++;
                     }
                 }
@@ -123,41 +129,60 @@ class SignalRouter
     private function createSuppressedDeliveries(SignalRoute $route, SignalEvent $event, Collection $steps, string $reason): void
     {
         foreach ($steps as $step) {
+            $destination = $this->recipientResolver->resolveForStep($step, $event);
+            if ($destination === null) {
+                continue;
+            }
+
             SignalDelivery::create([
                 'event_id' => $event->id,
                 'route_id' => $route->id,
                 'step_order' => $step->step_order,
-                'destination_id' => $step->destination_id,
+                'destination_id' => $destination->id,
                 'status' => 'suppressed',
                 'error' => $reason,
             ]);
         }
     }
 
-    private function createDelivery(SignalRoute $route, SignalEvent $event, SignalRouteStep $step): SignalDelivery
+    private function createDelivery(SignalRoute $route, SignalEvent $event, SignalRouteStep $step): ?SignalDelivery
     {
-        if (! $step->destination?->enabled) {
-            return SignalDelivery::create([
-                'event_id' => $event->id,
-                'route_id' => $route->id,
-                'step_order' => $step->step_order,
-                'destination_id' => $step->destination_id,
-                'status' => 'suppressed',
-                'error' => 'destination-disabled',
-            ]);
+        $destination = $this->recipientResolver->resolveForStep($step, $event);
+
+        // Derived recipient could not be resolved (e.g. non-ticket event, or a
+        // ticket with no owner). Skip silently — a delivery needs a real
+        // destination, and there is no one to alert.
+        if ($destination === null) {
+            return null;
+        }
+
+        if (! $destination->enabled) {
+            return $this->recordSuppressed($route, $event, $step, $destination, 'destination-disabled');
         }
 
         $delivery = SignalDelivery::create([
             'event_id' => $event->id,
             'route_id' => $route->id,
             'step_order' => $step->step_order,
-            'destination_id' => $step->destination_id,
+            'destination_id' => $destination->id,
             'status' => 'pending',
         ]);
 
         DeliverSignal::dispatch($delivery->id);
 
         return $delivery;
+    }
+
+    private function recordSuppressed(SignalRoute $route, SignalEvent $event, SignalRouteStep $step, SignalDestination $destination, string $reason): SignalDelivery
+    {
+        return SignalDelivery::create([
+            'event_id' => $event->id,
+            'route_id' => $route->id,
+            'step_order' => $step->step_order,
+            'destination_id' => $destination->id,
+            'status' => 'suppressed',
+            'error' => $reason,
+        ]);
     }
 
     private function causalDepth(SignalEvent $event): int

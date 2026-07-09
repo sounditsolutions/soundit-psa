@@ -35,7 +35,7 @@
             <div class="card-body">
                 <form method="POST" action="{{ route('settings.alerts.routes.store') }}">
                     @csrf
-                    @include('settings.alerts.routes._form', ['route' => null, 'eventTypeGroups' => $eventTypeGroups, 'routeDestinations' => $routeDestinations])
+                    @include('settings.alerts.routes._form', ['route' => null, 'eventTypeGroups' => $eventTypeGroups, 'routeDestinations' => $routeDestinations, 'derivedRecipients' => $derivedRecipients])
                     <button type="submit" class="btn btn-primary">
                         <i class="bi bi-plus-lg me-1"></i>Create route
                     </button>
