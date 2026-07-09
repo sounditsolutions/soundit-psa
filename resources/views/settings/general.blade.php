@@ -231,6 +231,13 @@
                         </button>
                     </form>
                 @endif
+
+                <hr class="my-3">
+                <p class="small text-muted mb-0">
+                    Need to bill by other asset categories (firewalls, switches, printers, access points)?
+                    <a href="{{ route('settings.quantity-types.index') }}">Manage custom quantity types</a> to
+                    define your own asset-type counters for recurring profile lines.
+                </p>
             </div>
         </div>
 

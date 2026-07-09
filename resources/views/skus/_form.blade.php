@@ -96,6 +96,7 @@
                 id="default_quantity_type" name="default_quantity_type" onchange="toggleSkuQtyTypeFields()">
             <option value="">None</option>
             @foreach(\App\Enums\QuantityType::cases() as $qt)
+                @continue($qt === \App\Enums\QuantityType::Custom)
                 <option value="{{ $qt->value }}"
                     {{ old('default_quantity_type', $sku?->default_quantity_type?->value) === $qt->value ? 'selected' : '' }}>
                     {{ $qt->label() }}

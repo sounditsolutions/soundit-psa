@@ -299,7 +299,8 @@
     var pageProfileCount = {{ $profiles->count() }};
     var currentFilters = @json(array_filter($filters ?? []));
     var skuOptions = @json($skus->map(fn($s) => ['id' => $s->id, 'name' => $s->name]));
-    var quantityTypeOptions = @json(collect($quantityTypes)->map(fn($qt) => ['value' => $qt->value, 'label' => $qt->label()]));
+    {{-- Custom types are excluded from bulk assignment: each needs a specific type chosen per line. --}}
+    var quantityTypeOptions = @json(collect($quantityTypes)->reject(fn($qt) => $qt === \App\Enums\QuantityType::Custom)->map(fn($qt) => ['value' => $qt->value, 'label' => $qt->label()])->values());
 
     function updateBar() {
         var displayCount = selectAllFilter ? totalFilterCount : selectedIds.size;

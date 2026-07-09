@@ -15,6 +15,7 @@ use App\Http\Controllers\Web\ContractAssignmentController;
 use App\Http\Controllers\Web\ContractController;
 use App\Http\Controllers\Web\ContractDocumentController;
 use App\Http\Controllers\Web\ContractorTimePoolController;
+use App\Http\Controllers\Web\CustomQuantityTypeController;
 use App\Http\Controllers\Web\DashboardController;
 use App\Http\Controllers\Web\EmailController;
 use App\Http\Controllers\Web\GeneralSettingsController;
@@ -274,6 +275,13 @@ Route::middleware('auth')->group(function () {
     Route::post('/settings/general/billing-numbering', [GeneralSettingsController::class, 'updateBillingNumbering'])->name('settings.general.billing-numbering');
     Route::post('/settings/general/billing-skip-zero', [GeneralSettingsController::class, 'updateBillingSkipZero'])->name('settings.general.billing-skip-zero');
     Route::post('/settings/general/wiki', [GeneralSettingsController::class, 'updateWiki'])->name('settings.general.wiki');
+
+    // Settings — Custom Quantity Types (user-defined asset-type counters for billing)
+    Route::get('/settings/quantity-types', [CustomQuantityTypeController::class, 'index'])->name('settings.quantity-types.index');
+    Route::post('/settings/quantity-types', [CustomQuantityTypeController::class, 'store'])->name('settings.quantity-types.store');
+    Route::get('/settings/quantity-types/{quantityType}/edit', [CustomQuantityTypeController::class, 'edit'])->name('settings.quantity-types.edit');
+    Route::patch('/settings/quantity-types/{quantityType}', [CustomQuantityTypeController::class, 'update'])->name('settings.quantity-types.update');
+    Route::delete('/settings/quantity-types/{quantityType}', [CustomQuantityTypeController::class, 'destroy'])->name('settings.quantity-types.destroy');
 
     // Settings — Staff
     Route::get('/settings/staff', [StaffController::class, 'index'])->name('settings.staff.index');

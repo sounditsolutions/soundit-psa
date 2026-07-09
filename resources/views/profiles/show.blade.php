@@ -3,6 +3,13 @@
 @section('title', $profile->name . '')
 
 @section('content')
+@php
+    // "Custom" is only offered for brand-new lines when an active custom quantity type exists.
+    // Existing lines that already use a (possibly deactivated) custom type keep it — handled per line below.
+    $selectableQuantityTypes = $customQuantityTypes->isNotEmpty()
+        ? $quantityTypes
+        : collect($quantityTypes)->reject(fn ($qt) => $qt === \App\Enums\QuantityType::Custom);
+@endphp
 <div class="row mb-3">
     <div class="col">
         <a href="{{ route('contracts.show', $profile->contract) }}" class="text-decoration-none text-muted">
@@ -247,10 +254,12 @@
                                         <select class="form-select form-select-sm qty-type-select"
                                                 name="lines[{{ $i }}][quantity_type]" onchange="toggleFixedQty(this)">
                                             @foreach($quantityTypes as $qt)
-                                                <option value="{{ $qt->value }}"
-                                                    {{ old("lines.{$i}.quantity_type", $line->quantity_type->value) === $qt->value ? 'selected' : '' }}>
-                                                    {{ $qt->label() }}
-                                                </option>
+                                                @if($qt !== \App\Enums\QuantityType::Custom || $customQuantityTypes->isNotEmpty() || $line->quantity_type === \App\Enums\QuantityType::Custom)
+                                                    <option value="{{ $qt->value }}"
+                                                        {{ old("lines.{$i}.quantity_type", $line->quantity_type->value) === $qt->value ? 'selected' : '' }}>
+                                                        {{ $qt->label() }}
+                                                    </option>
+                                                @endif
                                             @endforeach
                                         </select>
                                     </div>
@@ -268,6 +277,25 @@
                                             @foreach($licenseTypes as $lt)
                                                 <option value="{{ $lt->id }}" {{ old("lines.{$i}.license_type_id", $line->license_type_id) == $lt->id ? 'selected' : '' }}>
                                                     {{ $lt->name }}
+                                                </option>
+                                            @endforeach
+                                        </select>
+                                    </div>
+                                    <div class="col-md-2 custom-type-col" style="{{ $line->quantity_type !== \App\Enums\QuantityType::Custom ? 'display:none' : '' }}">
+                                        <label class="form-label small">Custom Type</label>
+                                        @php
+                                            // Ensure this line's current custom type is present even if it was
+                                            // since deactivated, so editing the profile never silently drops it.
+                                            $lineCustom = $line->customQuantityType;
+                                            $customOpts = ($lineCustom && ! $customQuantityTypes->contains('id', $lineCustom->id))
+                                                ? $customQuantityTypes->concat([$lineCustom])
+                                                : $customQuantityTypes;
+                                        @endphp
+                                        <select class="form-select form-select-sm" name="lines[{{ $i }}][custom_quantity_type_id]">
+                                            <option value="">Select...</option>
+                                            @foreach($customOpts as $cqt)
+                                                <option value="{{ $cqt->id }}" {{ old("lines.{$i}.custom_quantity_type_id", $line->custom_quantity_type_id) == $cqt->id ? 'selected' : '' }}>
+                                                    {{ $cqt->name }}{{ ! $cqt->is_active ? ' (inactive)' : '' }}
                                                 </option>
                                             @endforeach
                                         </select>
@@ -455,10 +483,11 @@ let lineIndex = {{ $profile->lines->count() }};
 
 function addLine() {
     const container = document.getElementById('linesContainer');
-    const quantityOptions = `@foreach($quantityTypes as $qt)<option value="{{ $qt->value }}">{{ $qt->label() }}</option>@endforeach`;
+    const quantityOptions = `@foreach($selectableQuantityTypes as $qt)<option value="{{ $qt->value }}">{{ $qt->label() }}</option>@endforeach`;
     const skuOptions = `<option value="">-- Manual --</option>@foreach($skus as $s)<option value="{{ $s->id }}" data-price="{{ $s->unit_price }}" data-taxable="{{ $s->is_taxable ? '1' : '0' }}" data-description="{{ $s->name }}" data-included-per-unit="{{ $s->included_per_unit }}" data-default-quantity-type="{{ $s->default_quantity_type?->value }}" data-default-license-type-id="{{ $s->default_license_type_id }}">{{ $s->sku_code }} — {{ $s->name }}</option>@endforeach`;
     const licenseTypeOptions = `<option value="">Select...</option>@foreach($licenseTypes as $lt)<option value="{{ $lt->id }}">{{ $lt->name }} ({{ $lt->vendor }})</option>@endforeach`;
     const licenseTypeOptionsWithNone = `<option value="">(none — use 1)</option>@foreach($licenseTypes as $lt)<option value="{{ $lt->id }}">{{ $lt->name }} ({{ $lt->vendor }})</option>@endforeach`;
+    const customTypeOptions = `<option value="">Select...</option>@foreach($customQuantityTypes as $cqt)<option value="{{ $cqt->id }}">{{ $cqt->name }}</option>@endforeach`;
 
     const html = `
         <div class="line-item border rounded p-3 mb-3" data-index="${lineIndex}">
@@ -492,6 +521,12 @@ function addLine() {
                     <label class="form-label small">Qty</label>
                     <input type="number" class="form-control form-control-sm"
                            name="lines[${lineIndex}][fixed_quantity]" value="1" step="0.01" min="0">
+                </div>
+                <div class="col-md-2 custom-type-col" style="display:none">
+                    <label class="form-label small">Custom Type</label>
+                    <select class="form-select form-select-sm" name="lines[${lineIndex}][custom_quantity_type_id]">
+                        ${customTypeOptions}
+                    </select>
                 </div>
                 <div class="col-md-1 d-flex align-items-end gap-2">
                     <div class="form-check mb-2">
@@ -592,10 +627,12 @@ function toggleFixedQty(select) {
     const row = select.closest('.row');
     const fixedCol = row.querySelector('.fixed-qty-col');
     const licenseCol = row.querySelector('.license-type-col');
+    const customCol = row.querySelector('.custom-type-col');
     const overagePanel = lineItem.querySelector('.overage-config-panel');
 
     if (fixedCol) fixedCol.style.display = select.value === 'fixed' ? '' : 'none';
     if (licenseCol) licenseCol.style.display = (select.value === 'per_license_type' || select.value === 'per_reseller_license_type') ? '' : 'none';
+    if (customCol) customCol.style.display = select.value === 'custom' ? '' : 'none';
     if (overagePanel) overagePanel.style.display = select.value === 'overage' ? '' : 'none';
 }
 

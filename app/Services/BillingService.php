@@ -33,6 +33,7 @@ class BillingService
         ?int $baseLicenseTypeId = null,
         int $includedPerBaseUnit = 0,
         int $overageDivisor = 1,
+        ?array $customAssetTypes = null,
     ): int {
         if ($type === QuantityType::Fixed) {
             return max(1, (int) ($fixedQuantity ?? 1));
@@ -66,6 +67,10 @@ class BillingService
             QuantityType::Overage => $this->countOverage(
                 $client, $contract, $usageLicenseTypeId, $baseLicenseTypeId,
                 $includedPerBaseUnit, $overageDivisor,
+            ),
+
+            QuantityType::Custom => $this->countAssets(
+                $client, $contract, $customAssetTypes ?? [],
             ),
 
             default => 1,
@@ -245,7 +250,7 @@ class BillingService
      */
     public function generateInvoice(RecurringInvoiceProfile $profile): array
     {
-        $profile->loadMissing(['contract.client', 'lines.sku']);
+        $profile->loadMissing(['contract.client', 'lines.sku', 'lines.customQuantityType']);
         $contract = $profile->contract;
         $client = $contract->client;
         $invoiceDate = $profile->next_run_date;
@@ -273,6 +278,7 @@ class BillingService
                     $line->license_type_id,
                     $line->usage_license_type_id, $line->base_license_type_id,
                     $line->included_per_base_unit ?? 0, $line->overage_divisor ?? 1,
+                    $line->customQuantityType?->asset_types,
                 );
 
                 if ($quantity > 0) {
@@ -383,7 +389,7 @@ class BillingService
 
     public function previewInvoice(RecurringInvoiceProfile $profile): array
     {
-        $profile->loadMissing(['contract.client', 'lines.sku']);
+        $profile->loadMissing(['contract.client', 'lines.sku', 'lines.customQuantityType']);
         $contract = $profile->contract;
         $client = $contract->client;
         $invoiceDate = $profile->next_run_date ?? today();
@@ -399,6 +405,7 @@ class BillingService
                 $line->license_type_id,
                 $line->usage_license_type_id, $line->base_license_type_id,
                 $line->included_per_base_unit ?? 0, $line->overage_divisor ?? 1,
+                $line->customQuantityType?->asset_types,
             );
 
             if ($quantity > 0) {
@@ -528,6 +535,16 @@ class BillingService
             }
 
             return $source;
+        }
+
+        // Custom asset-type counter gets its own format naming the definition.
+        if ($type === QuantityType::Custom) {
+            $custom = $line?->customQuantityType;
+            $name = $custom?->name ?? 'custom';
+            $assetTypes = $custom?->asset_types ?? [];
+            $typeList = ! empty($assetTypes) ? implode(', ', $assetTypes) : 'no asset types configured';
+
+            return "{$quantity} {$name} (asset types: {$typeList}, {$scope}-scoped) as of {$dateStr}";
         }
 
         $label = strtolower($type->label());

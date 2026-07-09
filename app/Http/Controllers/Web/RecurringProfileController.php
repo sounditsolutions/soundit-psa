@@ -7,6 +7,7 @@ use App\Enums\QuantityType;
 use App\Http\Controllers\Controller;
 use App\Models\Client;
 use App\Models\Contract;
+use App\Models\CustomQuantityType;
 use App\Models\LicenseType;
 use App\Models\RecurringInvoiceProfile;
 use App\Models\RecurringInvoiceProfileLine;
@@ -137,6 +138,13 @@ class RecurringProfileController extends Controller
                     'new_quantity_type' => ['required', new Enum(QuantityType::class)],
                 ]);
                 $newQtyType = QuantityType::from($request->input('new_quantity_type'));
+                // Custom types each need a specific CustomQuantityType selected, which the
+                // bulk form does not collect. Bulk-setting to Custom would leave lines
+                // without a definition (resolving to qty 0), so reject it here.
+                if ($newQtyType === QuantityType::Custom) {
+                    return redirect()->route('profiles.index')
+                        ->with('error', 'Custom quantity types must be assigned per line so each can select its specific type. Bulk assignment is not supported for Custom.');
+                }
                 $affected = RecurringInvoiceProfileLine::whereIn('profile_id', $profileIds)
                     ->where('sku_id', $request->input('target_sku_id'))
                     ->update(['quantity_type' => $newQtyType->value]);
@@ -196,6 +204,7 @@ class RecurringProfileController extends Controller
             'billingPeriods' => BillingPeriod::cases(),
             'skus' => Sku::active()->orderBy('name')->get(),
             'licenseTypes' => LicenseType::active()->orderBy('name')->get(),
+            'customQuantityTypes' => CustomQuantityType::active()->orderBy('name')->get(),
             'defaultNextRun' => $defaultNextRun->format('Y-m-d'),
             'defaultBillingPeriod' => $contract->billing_period?->value ?? 'monthly',
             'defaultBillingDay' => $contract->billing_day ?? 1,
@@ -218,7 +227,8 @@ class RecurringProfileController extends Controller
             'lines.*.license_type_id' => ['nullable', 'integer', 'exists:license_types,id'],
             'lines.*.description' => ['required', 'string', 'max:255'],
             'lines.*.unit_price' => ['required', 'numeric', 'min:0'],
-            'lines.*.quantity_type' => ['required', 'string'],
+            'lines.*.quantity_type' => ['required', new Enum(QuantityType::class)],
+            'lines.*.custom_quantity_type_id' => ['required_if:lines.*.quantity_type,custom', 'nullable', 'integer', 'exists:custom_quantity_types,id'],
             'lines.*.fixed_quantity' => ['nullable', 'numeric', 'min:0'],
             'lines.*.unit_cost_override' => ['nullable', 'numeric', 'min:0'],
             'lines.*.prepaid_time_override' => ['nullable', 'integer', 'min:0'],
@@ -254,6 +264,7 @@ class RecurringProfileController extends Controller
                     'profile_id' => $profile->id,
                     'sku_id' => ! empty($lineData['sku_id']) ? $lineData['sku_id'] : null,
                     'license_type_id' => ! empty($lineData['license_type_id']) ? $lineData['license_type_id'] : null,
+                    'custom_quantity_type_id' => ! empty($lineData['custom_quantity_type_id']) ? $lineData['custom_quantity_type_id'] : null,
                     'usage_license_type_id' => ! empty($lineData['usage_license_type_id']) ? $lineData['usage_license_type_id'] : null,
                     'base_license_type_id' => ! empty($lineData['base_license_type_id']) ? $lineData['base_license_type_id'] : null,
                     'included_per_base_unit' => $lineData['included_per_base_unit'] ?? null,
@@ -278,7 +289,7 @@ class RecurringProfileController extends Controller
 
     public function show(RecurringInvoiceProfile $profile)
     {
-        $profile->load(['contract.client', 'lines.sku', 'lines.licenseType', 'lines.usageLicenseType', 'lines.baseLicenseType']);
+        $profile->load(['contract.client', 'lines.sku', 'lines.licenseType', 'lines.usageLicenseType', 'lines.baseLicenseType', 'lines.customQuantityType']);
 
         $invoices = $profile->invoices()
             ->with('lines.sku')
@@ -292,6 +303,7 @@ class RecurringProfileController extends Controller
             'billingPeriods' => BillingPeriod::cases(),
             'skus' => Sku::active()->orderBy('name')->get(),
             'licenseTypes' => LicenseType::active()->orderBy('name')->get(),
+            'customQuantityTypes' => CustomQuantityType::active()->orderBy('name')->get(),
         ]);
     }
 
@@ -345,7 +357,8 @@ class RecurringProfileController extends Controller
             'lines.*.license_type_id' => ['nullable', 'integer', 'exists:license_types,id'],
             'lines.*.description' => ['required', 'string', 'max:255'],
             'lines.*.unit_price' => ['required', 'numeric', 'min:0'],
-            'lines.*.quantity_type' => ['required', 'string'],
+            'lines.*.quantity_type' => ['required', new Enum(QuantityType::class)],
+            'lines.*.custom_quantity_type_id' => ['required_if:lines.*.quantity_type,custom', 'nullable', 'integer', 'exists:custom_quantity_types,id'],
             'lines.*.fixed_quantity' => ['nullable', 'numeric', 'min:0'],
             'lines.*.unit_cost_override' => ['nullable', 'numeric', 'min:0'],
             'lines.*.prepaid_time_override' => ['nullable', 'integer', 'min:0'],
@@ -384,6 +397,7 @@ class RecurringProfileController extends Controller
                     'profile_id' => $profile->id,
                     'sku_id' => ! empty($lineData['sku_id']) ? $lineData['sku_id'] : null,
                     'license_type_id' => ! empty($lineData['license_type_id']) ? $lineData['license_type_id'] : null,
+                    'custom_quantity_type_id' => ! empty($lineData['custom_quantity_type_id']) ? $lineData['custom_quantity_type_id'] : null,
                     'usage_license_type_id' => ! empty($lineData['usage_license_type_id']) ? $lineData['usage_license_type_id'] : null,
                     'base_license_type_id' => ! empty($lineData['base_license_type_id']) ? $lineData['base_license_type_id'] : null,
                     'included_per_base_unit' => $lineData['included_per_base_unit'] ?? null,

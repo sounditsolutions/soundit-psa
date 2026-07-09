@@ -13,6 +13,7 @@ class RecurringInvoiceProfileLine extends Model
         'profile_id',
         'sku_id',
         'license_type_id',
+        'custom_quantity_type_id',
         'usage_license_type_id',
         'base_license_type_id',
         'included_per_base_unit',
@@ -31,6 +32,7 @@ class RecurringInvoiceProfileLine extends Model
     {
         return [
             'quantity_type' => QuantityType::class,
+            'custom_quantity_type_id' => 'integer',
             'unit_price' => 'decimal:2',
             'unit_cost_override' => 'decimal:2',
             'prepaid_time_override' => 'integer',
@@ -57,6 +59,11 @@ class RecurringInvoiceProfileLine extends Model
     public function licenseType(): BelongsTo
     {
         return $this->belongsTo(LicenseType::class);
+    }
+
+    public function customQuantityType(): BelongsTo
+    {
+        return $this->belongsTo(CustomQuantityType::class);
     }
 
     public function usageLicenseType(): BelongsTo
