@@ -208,8 +208,8 @@
                                 </div>
                             </div>
                         @elseif($isAiTriage)
-                            {{-- AI Triage note: collapsed by default with summary line --}}
-                            <div class="d-flex gap-3 py-3 {{ !$loop->last ? 'border-bottom' : '' }}">
+                            {{-- AI Triage note: system-generated, so it is hidden by default and revealed via the "system notes" toggle --}}
+                            <div class="d-flex gap-3 py-3 system-note {{ !$loop->last ? 'border-bottom' : '' }}" style="display: none;">
                                 <div class="flex-shrink-0">
                                     @if($note->author)
                                         <x-avatar :user="$note->author" :size="36" />
