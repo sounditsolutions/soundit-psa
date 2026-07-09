@@ -11,6 +11,7 @@ use App\Models\PhoneCall;
 use App\Models\PhoneDirectoryEntry;
 use App\Models\TechnicianRun;
 use App\Models\TicketNote;
+use App\Services\Agent\Steering\ProposalOutcomeSignal;
 use App\Services\Technician\Cockpit\CockpitQuery;
 use App\Services\Technician\Cockpit\CockpitUndoToken;
 use App\Services\Technician\TechnicianApprovalService;
@@ -109,6 +110,13 @@ class TechnicianCockpitController extends Controller
             default => 'Could not send — the Technician declined (it may be paused). Try again.',
         };
 
+        // Close the STEER/LEARN loop to the MCP agent: an approval is the operator
+        // endorsing the AI's proposal. Only on a real outcome — an already_handled /
+        // gate_declined replay leaves $ok false and emits nothing (bd psa-0xvv).
+        if ($ok) {
+            app(ProposalOutcomeSignal::class)->approved($run);
+        }
+
         return $this->actionResponse(
             $request,
             $ok,
@@ -123,6 +131,13 @@ class TechnicianCockpitController extends Controller
     public function deny(Request $request, TechnicianRun $run, TechnicianApprovalService $service)
     {
         $ok = $service->deny($run);
+
+        // A plain decline taught the MCP agent nothing before — now it is fed back as
+        // an outcome signal (bd psa-0xvv). deny() is a CAS, so a double-tap returns
+        // false and emits nothing. flag_attention/intake_route never reach deny().
+        if ($ok) {
+            app(ProposalOutcomeSignal::class)->declined($run);
+        }
 
         return $this->actionResponse(
             $request,
@@ -295,6 +310,12 @@ class TechnicianCockpitController extends Controller
 
         // Supersede the current run and dispatch a correctionDriven RunTechnicianAgent.
         app(\App\Services\Agent\Steering\ReassessTrigger::class)->reassess($ticket, $run);
+
+        // The SEAM (bd psa-0xvv): reassess() re-drives only the in-process agent and
+        // emitted nothing toward MCP. Feed the correction back to the out-of-process
+        // agent too — the correction text rides the (redacted, content-sink-only)
+        // summary; the MCP agent gets the reference-only doorbell.
+        app(ProposalOutcomeSignal::class)->corrected($run, $validated['correction']);
 
         return $this->actionResponse($request, true, 'reassessing', "Re-assessing #{$ticket->id} with your correction.");
     }

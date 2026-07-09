@@ -67,6 +67,21 @@ class SignalEventTypes
                 'core' => false,
                 'routable' => true,
             ],
+            'agent.proposal_approved' => [
+                'label' => 'Agent proposal approved',
+                'core' => false,
+                'routable' => true,
+            ],
+            'agent.proposal_declined' => [
+                'label' => 'Agent proposal declined',
+                'core' => false,
+                'routable' => true,
+            ],
+            'agent.proposal_corrected' => [
+                'label' => 'Agent proposal corrected',
+                'core' => false,
+                'routable' => true,
+            ],
             'agent.run_failed' => [
                 'label' => 'Agent run failed',
                 'core' => false,
