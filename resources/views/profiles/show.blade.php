@@ -224,9 +224,10 @@
                                     </div>
                                     <div class="col-md-1">
                                         <label class="form-label small">Price</label>
-                                        <input type="number" class="form-control form-control-sm price-input"
+                                        <input type="number" class="form-control form-control-sm price-input{{ $line->isTiered() ? ' bg-light' : '' }}"
                                                name="lines[{{ $i }}][unit_price]" step="0.01" min="0"
-                                               value="{{ old("lines.{$i}.unit_price", $line->unit_price) }}" required>
+                                               value="{{ old("lines.{$i}.unit_price", $line->unit_price) }}" required
+                                               {{ $line->isTiered() ? 'readonly title=Set-by-the-first-tier-below' : '' }}>
                                     </div>
                                     <div class="col-md-1">
                                         <label class="form-label small">Cost</label>
@@ -284,6 +285,44 @@
                                             <i class="bi bi-trash"></i>
                                         </button>
                                     </div>
+                                </div>
+                                @php $lineTiers = $line->pricingTiers(); @endphp
+                                <div class="mt-2">
+                                    <div class="form-check form-check-inline">
+                                        <input type="checkbox" class="form-check-input tiered-toggle" id="tiered-{{ $i }}" onchange="toggleTiered(this)" {{ $lineTiers ? 'checked' : '' }}>
+                                        <label class="form-check-label small" for="tiered-{{ $i }}">Tiered pricing (graduated)</label>
+                                    </div>
+                                </div>
+                                <div class="tier-config-panel mt-2 p-2 border rounded bg-light" data-tier-seq="{{ count($lineTiers) }}" style="{{ $lineTiers ? '' : 'display:none' }}">
+                                    <div class="small text-muted mb-2">
+                                        <i class="bi bi-bar-chart-steps me-1"></i>Graduated pricing — each band prices only the units that fall in its range (first N @ $X, next M @ $Y). Leave the last "Up to" blank; it covers everything above. The Price above is taken from the first band.
+                                    </div>
+                                    <div class="tier-rows">
+                                        @foreach($lineTiers as $ti => $tier)
+                                            <div class="row g-2 tier-row mb-1 align-items-end">
+                                                <div class="col-md-4">
+                                                    <label class="form-label small">Up to (qty)</label>
+                                                    <input type="number" class="form-control form-control-sm tier-upto"
+                                                           name="lines[{{ $i }}][pricing_tiers][{{ $ti }}][up_to]" min="1" step="1" placeholder="unlimited"
+                                                           value="{{ $tier['up_to'] }}">
+                                                </div>
+                                                <div class="col-md-4">
+                                                    <label class="form-label small">Unit price</label>
+                                                    <input type="number" class="form-control form-control-sm tier-price"
+                                                           name="lines[{{ $i }}][pricing_tiers][{{ $ti }}][unit_price]" min="0" step="0.01" oninput="syncTierBasePrice(this)"
+                                                           value="{{ $tier['unit_price'] }}">
+                                                </div>
+                                                <div class="col-md-2">
+                                                    <button type="button" class="btn btn-outline-danger btn-sm" onclick="removeTier(this)">
+                                                        <i class="bi bi-trash"></i>
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        @endforeach
+                                    </div>
+                                    <button type="button" class="btn btn-outline-secondary btn-sm mt-1 add-tier-btn" onclick="addTier(this)">
+                                        <i class="bi bi-plus-lg me-1"></i>Add tier
+                                    </button>
                                 </div>
                                 <div class="overage-config-panel mt-2 p-2 border rounded bg-light" style="{{ $line->quantity_type !== \App\Enums\QuantityType::Overage ? 'display:none' : '' }}">
                                     <div class="row g-2">
@@ -505,6 +544,21 @@ function addLine() {
                     </button>
                 </div>
             </div>
+            <div class="mt-2">
+                <div class="form-check form-check-inline">
+                    <input type="checkbox" class="form-check-input tiered-toggle" id="tiered-${lineIndex}" onchange="toggleTiered(this)">
+                    <label class="form-check-label small" for="tiered-${lineIndex}">Tiered pricing (graduated)</label>
+                </div>
+            </div>
+            <div class="tier-config-panel mt-2 p-2 border rounded bg-light" data-tier-seq="0" style="display:none">
+                <div class="small text-muted mb-2">
+                    <i class="bi bi-bar-chart-steps me-1"></i>Graduated pricing — each band prices only the units that fall in its range (first N @ $X, next M @ $Y). Leave the last "Up to" blank; it covers everything above. The Price above is taken from the first band.
+                </div>
+                <div class="tier-rows"></div>
+                <button type="button" class="btn btn-outline-secondary btn-sm mt-1 add-tier-btn" onclick="addTier(this)">
+                    <i class="bi bi-plus-lg me-1"></i>Add tier
+                </button>
+            </div>
             <div class="overage-config-panel mt-2 p-2 border rounded bg-light" style="display:none">
                 <div class="row g-2">
                     <div class="col-md-3">
@@ -597,6 +651,75 @@ function toggleFixedQty(select) {
     if (fixedCol) fixedCol.style.display = select.value === 'fixed' ? '' : 'none';
     if (licenseCol) licenseCol.style.display = (select.value === 'per_license_type' || select.value === 'per_reseller_license_type') ? '' : 'none';
     if (overagePanel) overagePanel.style.display = select.value === 'overage' ? '' : 'none';
+}
+
+// ── Tiered (graduated) pricing ──
+
+function tierRowHtml(lineIdx, tierIdx) {
+    return `
+        <div class="row g-2 tier-row mb-1 align-items-end">
+            <div class="col-md-4">
+                <label class="form-label small">Up to (qty)</label>
+                <input type="number" class="form-control form-control-sm tier-upto"
+                       name="lines[${lineIdx}][pricing_tiers][${tierIdx}][up_to]" min="1" step="1" placeholder="unlimited">
+            </div>
+            <div class="col-md-4">
+                <label class="form-label small">Unit price</label>
+                <input type="number" class="form-control form-control-sm tier-price"
+                       name="lines[${lineIdx}][pricing_tiers][${tierIdx}][unit_price]" min="0" step="0.01" oninput="syncTierBasePrice(this)">
+            </div>
+            <div class="col-md-2">
+                <button type="button" class="btn btn-outline-danger btn-sm" onclick="removeTier(this)">
+                    <i class="bi bi-trash"></i>
+                </button>
+            </div>
+        </div>`;
+}
+
+function addTier(el) {
+    const panel = el.closest('.tier-config-panel');
+    const lineItem = panel.closest('.line-item');
+    const rows = panel.querySelector('.tier-rows');
+    const seq = parseInt(panel.dataset.tierSeq || '0', 10);
+    panel.dataset.tierSeq = (seq + 1).toString();
+    rows.insertAdjacentHTML('beforeend', tierRowHtml(lineItem.dataset.index, seq));
+}
+
+function removeTier(btn) {
+    const lineItem = btn.closest('.line-item');
+    btn.closest('.tier-row').remove();
+    syncTierBasePriceFromLine(lineItem);
+}
+
+function toggleTiered(checkbox) {
+    const lineItem = checkbox.closest('.line-item');
+    const panel = lineItem.querySelector('.tier-config-panel');
+    const priceInput = lineItem.querySelector('.price-input');
+
+    if (checkbox.checked) {
+        panel.style.display = '';
+        if (!panel.querySelector('.tier-row')) addTier(panel.querySelector('.add-tier-btn'));
+        if (priceInput) { priceInput.readOnly = true; priceInput.classList.add('bg-light'); priceInput.title = 'Set by the first tier below'; }
+        syncTierBasePriceFromLine(lineItem);
+    } else {
+        panel.style.display = 'none';
+        panel.querySelectorAll('.tier-row').forEach(r => r.remove());
+        if (priceInput) { priceInput.readOnly = false; priceInput.classList.remove('bg-light'); priceInput.title = ''; }
+    }
+}
+
+// The stored/flat unit price mirrors the first tier so it stays a sensible base
+// and satisfies the required unit_price validation.
+function syncTierBasePrice(input) {
+    syncTierBasePriceFromLine(input.closest('.line-item'));
+}
+
+function syncTierBasePriceFromLine(lineItem) {
+    const firstTier = lineItem.querySelector('.tier-config-panel .tier-price');
+    const priceInput = lineItem.querySelector('.price-input');
+    if (firstTier && priceInput && firstTier.value !== '') {
+        priceInput.value = parseFloat(firstTier.value).toFixed(2);
+    }
 }
 
 function previewInvoice() {

@@ -12,6 +12,7 @@ use App\Models\InvoiceLine;
 use App\Models\RecurringInvoiceProfile;
 use App\Models\RecurringInvoiceProfileLine;
 use App\Models\Setting;
+use App\Support\TieredPricing;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -203,6 +204,49 @@ class BillingService
         return (int) ceil($overageRaw / $divisor);
     }
 
+    /**
+     * Break a profile line into one or more priced segments.
+     *
+     * A flat line yields a single segment (quantity × unit_price). A tiered
+     * line yields one segment per consumed graduated band — each with an exact
+     * quantity × unit_price — so the emitted invoice lines preserve the
+     * `amount = round(quantity × unit_price, 2)` invariant that the Stripe
+     * (taxable) and QBO push paths rely on. A tiered line at zero quantity
+     * yields a single zero-unit segment (record of coverage).
+     *
+     * @return array<int, array{quantity: int, unit_price: float, amount: float, label: ?string}>
+     */
+    private function priceLineSegments(RecurringInvoiceProfileLine $line, int $quantity): array
+    {
+        $tiers = $line->pricingTiers();
+
+        if ($tiers === []) {
+            return [[
+                'quantity' => $quantity,
+                'unit_price' => (float) $line->unit_price,
+                'amount' => round($quantity * (float) $line->unit_price, 2),
+                'label' => null,
+            ]];
+        }
+
+        $rows = [];
+
+        foreach (TieredPricing::breakdown($tiers, $quantity) as $segment) {
+            $rows[] = [
+                'quantity' => $segment['quantity'],
+                'unit_price' => $segment['unit_price'],
+                'amount' => round($segment['quantity'] * $segment['unit_price'], 2),
+                // Annotate the band range onto the invoice line description.
+                // Skipped for the zero-quantity placeholder segment.
+                'label' => $quantity > 0
+                    ? "units {$segment['from']}\u{2013}{$segment['to']} @ \$".number_format($segment['unit_price'], 2)
+                    : null,
+            ];
+        }
+
+        return $rows;
+    }
+
     public function generateInvoicesForDueProfiles(): array
     {
         $profiles = RecurringInvoiceProfile::due()->with(['contract.client', 'lines'])->get();
@@ -279,35 +323,45 @@ class BillingService
                     $hasNonZeroQty = true;
                 }
 
-                $amount = round($quantity * (float) $line->unit_price, 2);
-                $subtotal += $amount;
-
                 $unitCost = (float) ($line->unit_cost_override ?? $line->sku?->unit_cost ?? 0);
-                $costAmount = round($quantity * $unitCost, 2);
-                $totalCost += $costAmount;
+                $prepaidMinutesPerUnit = $line->prepaid_time_override ?? $line->sku?->prepaid_time_minutes;
 
                 $quantitySource = $this->buildQuantitySource(
                     $line->quantity_type, $quantity, $invoiceDate, $contract,
                     $line->license_type_id, $line,
                 );
 
-                $prepaidMinutesPerUnit = $line->prepaid_time_override ?? $line->sku?->prepaid_time_minutes;
-                $prepaidTimeMinutes = $prepaidMinutesPerUnit ? (int) ($quantity * $prepaidMinutesPerUnit) : null;
+                // Flat lines yield one segment; tiered lines expand into one
+                // invoice line per consumed graduated band.
+                foreach ($this->priceLineSegments($line, $quantity) as $segment) {
+                    $segQty = $segment['quantity'];
+                    $amount = $segment['amount'];
+                    $subtotal += $amount;
 
-                $lineData[] = [
-                    'sku_id' => $line->sku_id,
-                    'description' => $line->description,
-                    'quantity' => $quantity,
-                    'unit_price' => $line->unit_price,
-                    'unit_cost' => $unitCost,
-                    'amount' => $amount,
-                    'cost_amount' => $costAmount,
-                    'prepaid_time_minutes' => $prepaidTimeMinutes,
-                    'quantity_source' => $quantitySource,
-                    'is_taxable' => $line->is_taxable,
-                    'qbo_item_ref' => $line->sku?->qbo_item_id,
-                    'sort_order' => $line->sort_order,
-                ];
+                    $costAmount = round($segQty * $unitCost, 2);
+                    $totalCost += $costAmount;
+
+                    $prepaidTimeMinutes = $prepaidMinutesPerUnit ? (int) ($segQty * $prepaidMinutesPerUnit) : null;
+
+                    $description = $segment['label'] !== null
+                        ? $line->description." ({$segment['label']})"
+                        : $line->description;
+
+                    $lineData[] = [
+                        'sku_id' => $line->sku_id,
+                        'description' => $description,
+                        'quantity' => $segQty,
+                        'unit_price' => $segment['unit_price'],
+                        'unit_cost' => $unitCost,
+                        'amount' => $amount,
+                        'cost_amount' => $costAmount,
+                        'prepaid_time_minutes' => $prepaidTimeMinutes,
+                        'quantity_source' => $quantitySource,
+                        'is_taxable' => $line->is_taxable,
+                        'qbo_item_ref' => $line->sku?->qbo_item_id,
+                        'sort_order' => $line->sort_order,
+                    ];
+                }
             }
 
             // Phase 2: Check if invoice should be skipped (nothing to bill)
@@ -405,27 +459,38 @@ class BillingService
                 $hasNonZeroQty = true;
             }
 
-            $amount = round($quantity * (float) $line->unit_price, 2);
-            $subtotal += $amount;
-
             $prepaidMinutesPerUnit = $line->prepaid_time_override ?? $line->sku?->prepaid_time_minutes;
-            $prepaidTimeMinutes = $prepaidMinutesPerUnit ? (int) ($quantity * $prepaidMinutesPerUnit) : null;
-            if ($prepaidTimeMinutes) {
-                $totalPrepaidMinutes += $prepaidTimeMinutes;
-            }
+            $quantityTypeLabel = $line->quantity_type->label();
+            $quantitySource = $this->buildQuantitySource(
+                $line->quantity_type, $quantity, $invoiceDate, $contract,
+                $line->license_type_id, $line,
+            );
 
-            $lines[] = [
-                'description' => $line->description,
-                'quantity' => $quantity,
-                'unit_price' => (float) $line->unit_price,
-                'amount' => $amount,
-                'prepaid_time_minutes' => $prepaidTimeMinutes,
-                'quantity_type' => $line->quantity_type->label(),
-                'quantity_source' => $this->buildQuantitySource(
-                    $line->quantity_type, $quantity, $invoiceDate, $contract,
-                    $line->license_type_id, $line,
-                ),
-            ];
+            // Mirror generateInvoice(): tiered lines preview as one row per band.
+            foreach ($this->priceLineSegments($line, $quantity) as $segment) {
+                $segQty = $segment['quantity'];
+                $amount = $segment['amount'];
+                $subtotal += $amount;
+
+                $prepaidTimeMinutes = $prepaidMinutesPerUnit ? (int) ($segQty * $prepaidMinutesPerUnit) : null;
+                if ($prepaidTimeMinutes) {
+                    $totalPrepaidMinutes += $prepaidTimeMinutes;
+                }
+
+                $description = $segment['label'] !== null
+                    ? $line->description." ({$segment['label']})"
+                    : $line->description;
+
+                $lines[] = [
+                    'description' => $description,
+                    'quantity' => $segQty,
+                    'unit_price' => $segment['unit_price'],
+                    'amount' => $amount,
+                    'prepaid_time_minutes' => $prepaidTimeMinutes,
+                    'quantity_type' => $quantityTypeLabel,
+                    'quantity_source' => $quantitySource,
+                ];
+            }
         }
 
         $wouldSkip = $profile->shouldSkipZeroInvoices() && (empty($lines) || ! $hasNonZeroQty);

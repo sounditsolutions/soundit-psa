@@ -12,6 +12,7 @@ use App\Models\RecurringInvoiceProfile;
 use App\Models\RecurringInvoiceProfileLine;
 use App\Models\Sku;
 use App\Services\BillingService;
+use App\Support\TieredPricing;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -218,6 +219,9 @@ class RecurringProfileController extends Controller
             'lines.*.license_type_id' => ['nullable', 'integer', 'exists:license_types,id'],
             'lines.*.description' => ['required', 'string', 'max:255'],
             'lines.*.unit_price' => ['required', 'numeric', 'min:0'],
+            'lines.*.pricing_tiers' => ['nullable', 'array'],
+            'lines.*.pricing_tiers.*.up_to' => ['nullable', 'integer', 'min:1'],
+            'lines.*.pricing_tiers.*.unit_price' => ['nullable', 'numeric', 'min:0'],
             'lines.*.quantity_type' => ['required', 'string'],
             'lines.*.fixed_quantity' => ['nullable', 'numeric', 'min:0'],
             'lines.*.unit_cost_override' => ['nullable', 'numeric', 'min:0'],
@@ -250,23 +254,9 @@ class RecurringProfileController extends Controller
             ]);
 
             foreach ($validated['lines'] as $index => $lineData) {
-                RecurringInvoiceProfileLine::create([
-                    'profile_id' => $profile->id,
-                    'sku_id' => ! empty($lineData['sku_id']) ? $lineData['sku_id'] : null,
-                    'license_type_id' => ! empty($lineData['license_type_id']) ? $lineData['license_type_id'] : null,
-                    'usage_license_type_id' => ! empty($lineData['usage_license_type_id']) ? $lineData['usage_license_type_id'] : null,
-                    'base_license_type_id' => ! empty($lineData['base_license_type_id']) ? $lineData['base_license_type_id'] : null,
-                    'included_per_base_unit' => $lineData['included_per_base_unit'] ?? null,
-                    'overage_divisor' => $lineData['overage_divisor'] ?? null,
-                    'description' => $lineData['description'],
-                    'unit_price' => $lineData['unit_price'],
-                    'unit_cost_override' => ! empty($lineData['unit_cost_override']) ? $lineData['unit_cost_override'] : null,
-                    'prepaid_time_override' => ! empty($lineData['prepaid_time_override']) ? $lineData['prepaid_time_override'] : null,
-                    'quantity_type' => $lineData['quantity_type'],
-                    'fixed_quantity' => $lineData['fixed_quantity'] ?? 1,
-                    'is_taxable' => $lineData['is_taxable'] ?? true,
-                    'sort_order' => $index,
-                ]);
+                RecurringInvoiceProfileLine::create(
+                    $this->buildLineAttributes($profile->id, $lineData, $index)
+                );
             }
 
             return $profile;
@@ -345,6 +335,9 @@ class RecurringProfileController extends Controller
             'lines.*.license_type_id' => ['nullable', 'integer', 'exists:license_types,id'],
             'lines.*.description' => ['required', 'string', 'max:255'],
             'lines.*.unit_price' => ['required', 'numeric', 'min:0'],
+            'lines.*.pricing_tiers' => ['nullable', 'array'],
+            'lines.*.pricing_tiers.*.up_to' => ['nullable', 'integer', 'min:1'],
+            'lines.*.pricing_tiers.*.unit_price' => ['nullable', 'numeric', 'min:0'],
             'lines.*.quantity_type' => ['required', 'string'],
             'lines.*.fixed_quantity' => ['nullable', 'numeric', 'min:0'],
             'lines.*.unit_cost_override' => ['nullable', 'numeric', 'min:0'],
@@ -380,28 +373,49 @@ class RecurringProfileController extends Controller
             $profile->lines()->delete();
 
             foreach ($lines as $index => $lineData) {
-                RecurringInvoiceProfileLine::create([
-                    'profile_id' => $profile->id,
-                    'sku_id' => ! empty($lineData['sku_id']) ? $lineData['sku_id'] : null,
-                    'license_type_id' => ! empty($lineData['license_type_id']) ? $lineData['license_type_id'] : null,
-                    'usage_license_type_id' => ! empty($lineData['usage_license_type_id']) ? $lineData['usage_license_type_id'] : null,
-                    'base_license_type_id' => ! empty($lineData['base_license_type_id']) ? $lineData['base_license_type_id'] : null,
-                    'included_per_base_unit' => $lineData['included_per_base_unit'] ?? null,
-                    'overage_divisor' => $lineData['overage_divisor'] ?? null,
-                    'description' => $lineData['description'],
-                    'unit_price' => $lineData['unit_price'],
-                    'unit_cost_override' => ! empty($lineData['unit_cost_override']) ? $lineData['unit_cost_override'] : null,
-                    'prepaid_time_override' => ! empty($lineData['prepaid_time_override']) ? $lineData['prepaid_time_override'] : null,
-                    'quantity_type' => $lineData['quantity_type'],
-                    'fixed_quantity' => $lineData['fixed_quantity'] ?? 1,
-                    'is_taxable' => $lineData['is_taxable'] ?? true,
-                    'sort_order' => $index,
-                ]);
+                RecurringInvoiceProfileLine::create(
+                    $this->buildLineAttributes($profile->id, $lineData, $index)
+                );
             }
         });
 
         return redirect()->route('profiles.show', $profile)
             ->with('success', 'Profile updated.');
+    }
+
+    /**
+     * Build the persisted attributes for a profile line from validated request
+     * data. Shared by store() and update() so line handling — including tiered
+     * pricing normalization — stays in one place.
+     *
+     * @param  array<string, mixed>  $lineData
+     * @return array<string, mixed>
+     */
+    private function buildLineAttributes(int $profileId, array $lineData, int $index): array
+    {
+        $pricingTiers = TieredPricing::normalize($lineData['pricing_tiers'] ?? []);
+        $tiered = $pricingTiers !== [];
+
+        return [
+            'profile_id' => $profileId,
+            'sku_id' => ! empty($lineData['sku_id']) ? $lineData['sku_id'] : null,
+            'license_type_id' => ! empty($lineData['license_type_id']) ? $lineData['license_type_id'] : null,
+            'usage_license_type_id' => ! empty($lineData['usage_license_type_id']) ? $lineData['usage_license_type_id'] : null,
+            'base_license_type_id' => ! empty($lineData['base_license_type_id']) ? $lineData['base_license_type_id'] : null,
+            'included_per_base_unit' => $lineData['included_per_base_unit'] ?? null,
+            'overage_divisor' => $lineData['overage_divisor'] ?? null,
+            'description' => $lineData['description'],
+            // For a tiered line the first band's price is the authoritative base
+            // unit price; otherwise store the submitted flat price.
+            'unit_price' => $tiered ? $pricingTiers[0]['unit_price'] : $lineData['unit_price'],
+            'pricing_tiers' => $tiered ? $pricingTiers : null,
+            'unit_cost_override' => ! empty($lineData['unit_cost_override']) ? $lineData['unit_cost_override'] : null,
+            'prepaid_time_override' => ! empty($lineData['prepaid_time_override']) ? $lineData['prepaid_time_override'] : null,
+            'quantity_type' => $lineData['quantity_type'],
+            'fixed_quantity' => $lineData['fixed_quantity'] ?? 1,
+            'is_taxable' => $lineData['is_taxable'] ?? true,
+            'sort_order' => $index,
+        ];
     }
 
     public function preview(RecurringInvoiceProfile $profile)
