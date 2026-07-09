@@ -119,6 +119,76 @@ class WikiProvenancePanelTest extends TestCase
             ->assertDontSee('AI challenge');                        // no challenger left to render
     }
 
+    public function test_actionable_facts_are_surfaced_above_confirmed_facts(): void
+    {
+        // psa-za3g: unverified/disputed facts must render before confirmed history so a
+        // tech doesn't scroll a long confirmed stack to find what needs a decision. The
+        // section/subject ordering alone buries them: here the confirmed fact's subject_key
+        // sorts first alphabetically, so under the old ordering it appeared above the
+        // unverified one.
+        $user = User::factory()->create();
+        $client = Client::factory()->create();
+        $page = WikiPage::factory()->forClient($client)->create(['slug' => 'infrastructure']);
+
+        WikiFact::factory()->create([
+            'client_id' => $client->id, 'page_id' => $page->id,
+            'status' => WikiFactStatus::Confirmed,
+            'section_anchor' => 'network', 'subject_key' => 'net:aaa:dns',
+            'statement' => 'DNS server is 10.0.0.5',
+        ]);
+        WikiFact::factory()->create([
+            'client_id' => $client->id, 'page_id' => $page->id,
+            'status' => WikiFactStatus::Unverified,
+            'section_anchor' => 'network', 'subject_key' => 'net:zzz:dhcp',
+            'statement' => 'DHCP scope is 10.0.0.0/24',
+            'source_type' => 'ticket', 'source_refs' => [['type' => 'ticket', 'id' => 42]],
+        ]);
+
+        $this->actingAs($user)->get("/clients/{$client->id}/wiki/infrastructure")
+            ->assertOk()
+            // Unverified (actionable) appears before Confirmed despite sorting last by subject_key.
+            ->assertSeeInOrder(['DHCP scope is 10.0.0.0/24', 'DNS server is 10.0.0.5']);
+    }
+
+    public function test_summary_shows_count_of_facts_needing_review(): void
+    {
+        // psa-za3g: the collapsed summary surfaces how many facts still need a decision
+        // (Unverified or Disputed) so the actionable load is visible without expanding.
+        // Confirmed facts do not count.
+        $user = User::factory()->create();
+        $client = Client::factory()->create();
+        $page = WikiPage::factory()->forClient($client)->create(['slug' => 'infrastructure']);
+
+        WikiFact::factory()->count(2)->sequence(
+            ['subject_key' => 'net:a:one', 'statement' => 'Unverified fact one'],
+            ['subject_key' => 'net:b:two', 'statement' => 'Unverified fact two'],
+        )->create([
+            'client_id' => $client->id, 'page_id' => $page->id,
+            'status' => WikiFactStatus::Unverified, 'section_anchor' => 'network',
+            'source_type' => 'ticket', 'source_refs' => [['type' => 'ticket', 'id' => 1]],
+        ]);
+        // A disputed fact also counts toward the review load (renders as a normal row here:
+        // no Ticket-source challenger, so it is not part of an AI-challenge pair).
+        WikiFact::factory()->create([
+            'client_id' => $client->id, 'page_id' => $page->id,
+            'status' => WikiFactStatus::Disputed,
+            'section_anchor' => 'network', 'subject_key' => 'net:c:disputed',
+            'statement' => 'Disputed fact',
+        ]);
+        // A confirmed fact must NOT inflate the count.
+        WikiFact::factory()->create([
+            'client_id' => $client->id, 'page_id' => $page->id,
+            'status' => WikiFactStatus::Confirmed,
+            'section_anchor' => 'network', 'subject_key' => 'net:d:confirmed',
+            'statement' => 'Confirmed fact',
+        ]);
+
+        $this->actingAs($user)->get("/clients/{$client->id}/wiki/infrastructure")
+            ->assertOk()
+            ->assertSee('Show provenance (4)')  // all four non-retired facts
+            ->assertSee('3 to review');          // 2 unverified + 1 disputed, not the confirmed
+    }
+
     public function test_panel_absent_when_page_has_no_facts(): void
     {
         $user = User::factory()->create();
