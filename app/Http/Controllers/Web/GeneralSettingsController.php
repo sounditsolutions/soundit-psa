@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Web;
 use App\Http\Controllers\Controller;
 use App\Models\Asset;
 use App\Models\Setting;
+use App\Support\WikiConfig;
 use Illuminate\Http\Request;
 
 class GeneralSettingsController extends Controller
@@ -98,11 +99,15 @@ class GeneralSettingsController extends Controller
         Setting::setValue('wiki_enabled', $request->boolean('wiki_enabled') ? '1' : '0');
         Setting::setValue('wiki_auto_mine', $request->boolean('wiki_auto_mine') ? '1' : '0');
         Setting::setValue('wiki_maintenance_enabled', $request->boolean('wiki_maintenance_enabled') ? '1' : '0');
-        Setting::setValue('wiki_model', $validated['wiki_model'] ?? '');
-        Setting::setValue('wiki_max_tokens_per_run', (string) ($validated['wiki_max_tokens_per_run'] ?? 50000));
-        Setting::setValue('wiki_daily_token_limit', (string) ($validated['wiki_daily_token_limit'] ?? 500000));
-        Setting::setValue('wiki_staleness_days_volatile', (string) ($validated['wiki_staleness_days_volatile'] ?? 90));
-        Setting::setValue('wiki_backfill_batch_size', (string) ($validated['wiki_backfill_batch_size'] ?? 25));
+
+        // The config inputs are disabled in the UI while the module is off, so a save can omit them.
+        // Fall back to the current stored value (not a hard-coded default) so turning the module off
+        // and saving never silently resets an operator's configured budgets, limits, or model override.
+        Setting::setValue('wiki_model', $validated['wiki_model'] ?? (string) Setting::getValue('wiki_model', ''));
+        Setting::setValue('wiki_max_tokens_per_run', (string) ($validated['wiki_max_tokens_per_run'] ?? WikiConfig::maxTokensPerRun()));
+        Setting::setValue('wiki_daily_token_limit', (string) ($validated['wiki_daily_token_limit'] ?? WikiConfig::dailyTokenLimit()));
+        Setting::setValue('wiki_staleness_days_volatile', (string) ($validated['wiki_staleness_days_volatile'] ?? WikiConfig::stalenessDaysVolatile()));
+        Setting::setValue('wiki_backfill_batch_size', (string) ($validated['wiki_backfill_batch_size'] ?? WikiConfig::backfillBatchSize()));
 
         return redirect()->route('settings.general')->with('success', 'Wiki settings updated.');
     }
