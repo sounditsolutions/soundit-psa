@@ -174,6 +174,33 @@ h1, h2, h3, h4, h5, h6 {
     color: var(--accent-hover);
 }
 
+/* Mobile asset inventory cards (assets/_list.blade.php). Mirrors .ticket-card:
+   below md the asset table's Type/OS/status columns are hidden, so the stacked
+   card surfaces them instead. Offline state is carried by the "Offline" badge
+   text; the tint is a supplementary cue only (DESIGN.md §5). */
+.asset-card {
+    display: block;
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 12px;
+    padding: 0.75rem 0.875rem;
+    color: var(--text-body);
+    cursor: pointer;
+}
+.asset-card + .asset-card {
+    margin-top: 0.5rem;
+}
+.asset-card-offline {
+    border-color: #f1aeb5;
+    background: #fdf3f4;
+}
+.asset-card-title {
+    color: var(--primary);
+}
+.asset-card-title:hover {
+    color: var(--accent-hover);
+}
+
 /* In-card stacked rows for the secondary tables (client People / Contracts).
    The parent .card keeps its navy header and actions; only the tabular body
    swaps to label/value rows separated by the hairline, so there is no
