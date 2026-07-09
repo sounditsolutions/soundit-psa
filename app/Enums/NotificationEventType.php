@@ -20,6 +20,7 @@ enum NotificationEventType: string
     case PrepayAutoTopUp = 'prepay_auto_topup';
     case InvoiceGenerationFailed = 'invoice_generation_failed';
     case InvoicePushFailed = 'invoice_push_failed';
+    case DailyBriefing = 'daily_briefing';
 
     public function label(): string
     {
@@ -40,6 +41,7 @@ enum NotificationEventType: string
             self::PrepayAutoTopUp => 'Prepay auto top-up invoices',
             self::InvoiceGenerationFailed => 'Invoice generation failed',
             self::InvoicePushFailed => 'Invoice push failed',
+            self::DailyBriefing => 'Daily briefing',
         };
     }
 
@@ -62,6 +64,7 @@ enum NotificationEventType: string
             self::PrepayAutoTopUp => 'When an auto top-up invoice is generated for a client',
             self::InvoiceGenerationFailed => 'When automatic invoice generation fails for a billing profile',
             self::InvoicePushFailed => 'When an invoice fails to push to QBO or Stripe',
+            self::DailyBriefing => 'A personalized start-of-day digest of your tickets, SLA risks, overnight alerts, and voicemails',
         };
     }
 
@@ -84,6 +87,7 @@ enum NotificationEventType: string
             self::PrepayAutoTopUp => 'bi-arrow-repeat',
             self::InvoiceGenerationFailed => 'bi-exclamation-triangle',
             self::InvoicePushFailed => 'bi-exclamation-triangle',
+            self::DailyBriefing => 'bi-newspaper',
         };
     }
 
