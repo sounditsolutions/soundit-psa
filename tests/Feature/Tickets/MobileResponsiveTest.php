@@ -8,6 +8,7 @@ use App\Enums\AlertStatus;
 use App\Enums\TicketStatus;
 use App\Models\Alert;
 use App\Models\Client;
+use App\Models\SignalDestination;
 use App\Models\Ticket;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -28,6 +29,9 @@ use Tests\TestCase;
  *  - psa-dxie: the operational alerts list keeps the full table at md+ and falls
  *    back to stacked rows below md so the client, status, and response controls
  *    stay visible without a horizontal scroll.
+ *  - psa-0h6e: Alerts Hub destinations table keeps the full table at md+ and
+ *    falls back to stacked label/value rows below md so Target/Status/Actions
+ *    stay reachable on a phone viewport instead of clipping off the right edge.
  */
 class MobileResponsiveTest extends TestCase
 {
@@ -107,6 +111,31 @@ class MobileResponsiveTest extends TestCase
         // The operational context (affected client + alert) is present in the markup.
         $resp->assertSee($client->name, false);
         $resp->assertSee($alert->title, false);
+    }
+
+    public function test_alerts_hub_destinations_render_mobile_card_fallback(): void
+    {
+        $user = User::factory()->create();
+
+        SignalDestination::create([
+            'label' => 'Ops webhook',
+            'type' => 'webhook',
+            'address' => 'https://93.184.216.34/hooks/abcd1234',
+            'enabled' => true,
+        ]);
+
+        $resp = $this->actingAs($user)
+            ->get(route('settings.alerts.index'))
+            ->assertOk();
+
+        // Desktop: the full destinations table is hidden below md.
+        $resp->assertSee('table-responsive d-none d-md-block', false);
+        // Mobile: below md the destinations body swaps to stacked label/value rows
+        // so Target/Status/Actions stay reachable without a horizontal scroll. psa-0h6e.
+        $resp->assertSee('d-md-none', false);
+        $resp->assertSee('data-label', false);
+        // The destination still renders in the mobile fallback.
+        $resp->assertSee('Ops webhook');
     }
 
     public function test_client_detail_renders_with_responsive_tables(): void
