@@ -105,10 +105,17 @@ class WikiController extends Controller implements HasMiddleware
             'sectionSummaries' => $this->sectionSummaries($page),
             'backlinks' => $page->backlinks()->with('fromPage')->get(),
             'deviationAnchors' => [],
+            // psa-za3g: actionable facts (unverified/disputed) surface above confirmed
+            // history so a tech doesn't scroll a long confirmed stack to find what needs
+            // Confirm/Correct/Retire. sortBy is stable, so the section/subject order is
+            // preserved within each priority band. Display-only ordering: the provenance
+            // partial pairs disputed facts via keyBy(), which is order-independent.
             'facts' => $page->facts()
-                ->whereNot('status', \App\Enums\WikiFactStatus::Retired->value)
+                ->whereNot('status', WikiFactStatus::Retired->value)
                 ->orderBy('section_anchor')->orderBy('subject_key')
-                ->get(),
+                ->get()
+                ->sortBy(fn (WikiFact $fact) => $fact->status->reviewSortOrder())
+                ->values(),
         ]));
     }
 
