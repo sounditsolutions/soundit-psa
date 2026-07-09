@@ -4,6 +4,7 @@ namespace App\Models;
 
 use App\Enums\PersonType;
 use App\Support\AvatarHelper;
+use App\Support\PhoneNumber;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -268,5 +269,31 @@ class Person extends Authenticatable
     protected function avatarUrl(): Attribute
     {
         return Attribute::get(fn () => $this->email ? AvatarHelper::gravatarUrl($this->email) : null);
+    }
+
+    /**
+     * Display-formatted phone. `phone_display` is a denormalized column that
+     * PersonService writes alongside `phone`, but rows created outside that
+     * path (seeders, imports, pre-normalization syncs) store the raw number
+     * with a null display. Since every view renders the display column, fall
+     * back to formatting the raw `phone` so the contact's number is never
+     * blank when a number is actually stored (psa-klwu).
+     */
+    protected function phoneDisplay(): Attribute
+    {
+        return Attribute::get(
+            fn (?string $value) => $value ?: ($this->phone ? PhoneNumber::format($this->phone) : null),
+        );
+    }
+
+    /**
+     * Display-formatted mobile — same denormalization fallback as
+     * {@see phoneDisplay()} for the `mobile`/`mobile_display` pair.
+     */
+    protected function mobileDisplay(): Attribute
+    {
+        return Attribute::get(
+            fn (?string $value) => $value ?: ($this->mobile ? PhoneNumber::format($this->mobile) : null),
+        );
     }
 }
