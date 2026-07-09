@@ -109,6 +109,34 @@
         <p class="text-muted mb-0">New proposals from the AI Technician will appear here when they are staged.</p>
     </div>
 
+    {{-- psa-3q0c (psa-rmus FIX 2): correction-driven "left as-is" outcomes. When you decline +
+         correct a proposal and the re-assessment decides to leave the ticket as-is, the old card is
+         superseded — so this small note confirms your correction WAS acted on (re-assessed → left
+         as-is, with the reason) instead of the card silently vanishing. Informational: it sits
+         outside the counts-driven filter strip and self-clears after 48h. --}}
+    @if($reassessedLeftAsIs->isNotEmpty())
+        <section class="cockpit-section mb-4" data-section-key="reassessed-left-as-is">
+            <div class="cockpit-section-head">
+                <h2><i class="bi bi-arrow-repeat me-2"></i>Re-assessed from your correction</h2>
+                <span class="badge rounded-pill text-bg-light border">{{ $reassessedLeftAsIs->count() }}</span>
+            </div>
+            <div class="vstack gap-2">
+                @foreach ($reassessedLeftAsIs as $outcome)
+                    <a href="{{ route('tickets.show', $outcome->ticket->id) }}" class="card cockpit-needs-link text-decoration-none text-reset">
+                        <div class="card-body py-2 small">
+                            <div class="d-flex flex-wrap align-items-center gap-2 mb-1">
+                                <span class="fw-semibold">{{ $outcome->ticket->subject ?? 'Ticket #'.$outcome->ticket->id }}</span>
+                                @if($outcome->ticket->client)<span class="badge rounded-pill bg-light text-dark border">{{ $outcome->ticket->client->name }}</span>@endif
+                                <span class="ms-auto text-muted">{{ optional($outcome->at)->diffForHumans() }}</span>
+                            </div>
+                            <div class="text-muted">{{ $outcome->note }}</div>
+                        </div>
+                    </a>
+                @endforeach
+            </div>
+        </section>
+    @endif
+
     <section class="cockpit-section mb-4" data-section-key="replies" x-show="visible('replies')" :class="{ 'cockpit-section-empty': counts.replies === 0 }">
         <div class="cockpit-section-head">
             <h2><i class="bi bi-envelope me-2"></i>Replies &amp; sends</h2>
