@@ -52,7 +52,8 @@
     <form method="POST" action="{{ route('people.bulk-type') }}" id="bulkTypeForm">
         @csrf
         <div class="card shadow-sm card-static">
-            <div class="table-responsive">
+            {{-- Desktop: full table (hidden below md so columns do not clip — psa-4nmp) --}}
+            <div class="table-responsive d-none d-md-block">
                 <table class="table table-hover mb-0">
                     <thead class="thead-brand">
                         <tr>
@@ -117,6 +118,55 @@
                         @endforeach
                     </tbody>
                 </table>
+            </div>
+            {{-- Mobile: stacked rows below md so Phone/Mobile do not clip off-screen (psa-4nmp).
+                 Bulk-select is desktop-only, mirroring tickets/_list. --}}
+            <div class="d-md-none">
+                @foreach($people as $person)
+                    <div class="data-row">
+                        <div class="fw-semibold mb-1">
+                            <x-person-badge :person="$person" :size="24" />
+                            @if($person->is_primary)
+                                <span class="badge bg-warning text-dark ms-1">Primary</span>
+                            @endif
+                            @if($person->person_type !== \App\Enums\PersonType::User)
+                                <span class="badge bg-secondary ms-1" title="{{ $person->person_type->label() }}">
+                                    <i class="{{ $person->person_type->icon() }} me-1"></i>{{ $person->person_type->label() }}
+                                </span>
+                            @endif
+                        </div>
+                        <div class="d-flex justify-content-between gap-3 small py-1">
+                            <span class="data-label">Email</span>
+                            @if($person->email)
+                                <a href="mailto:{{ $person->email }}" class="text-break text-end">{{ $person->email }}</a>
+                            @else
+                                <span class="text-muted text-end">-</span>
+                            @endif
+                        </div>
+                        <div class="d-flex justify-content-between gap-3 small py-1">
+                            <span class="data-label">Phone</span>
+                            @if($person->phone_display)
+                                <a href="#" data-phone="{{ $person->phone }}" class="text-decoration-none dial-link text-end">{{ $person->phone_display }}</a>
+                            @else
+                                <span class="text-muted text-end">-</span>
+                            @endif
+                        </div>
+                        <div class="d-flex justify-content-between gap-3 small py-1">
+                            <span class="data-label">Mobile</span>
+                            @if($person->mobile_display)
+                                <a href="#" data-phone="{{ $person->mobile }}" class="text-decoration-none dial-link text-end">{{ $person->mobile_display }}</a>
+                            @else
+                                <span class="text-muted text-end">-</span>
+                            @endif
+                        </div>
+                        @unless(isset($prefilter['client_id']))
+                            <div class="d-flex justify-content-between gap-3 small py-1">
+                                <span class="data-label">Client</span>
+                                <span class="text-end"><x-client-badge :client="$person->client" fallback="-" /></span>
+                            </div>
+                        @endunless
+                    </div>
+                @endforeach
             </div>
         </div>
 
