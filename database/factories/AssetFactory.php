@@ -2,6 +2,7 @@
 
 namespace Database\Factories;
 
+use App\Enums\AssetHealthGrade;
 use App\Models\Client;
 use Illuminate\Database\Eloquent\Factories\Factory;
 
@@ -20,5 +21,15 @@ class AssetFactory extends Factory
             'asset_type' => 'Workstation',
             'is_active' => true,
         ];
+    }
+
+    /** Pre-seed a cached health score + matching grade (fresh). */
+    public function scored(int $score): static
+    {
+        return $this->state(fn () => [
+            'health_score' => $score,
+            'health_grade' => AssetHealthGrade::fromScore($score)->value,
+            'health_computed_at' => now(),
+        ]);
     }
 }

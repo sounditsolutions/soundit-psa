@@ -348,6 +348,7 @@ These commands execute automatically based on their schedule:
 | `appriver:sync-licenses` | Daily at 05:50 | Sync M365 subscription seat counts from AppRiver (only if configured + clients mapped) |
 | `cipp:sync-contacts` | Daily at 05:55 | Sync M365 users as contacts + mailbox/MFA enrichment from CIPP (only if contact sync enabled + tenants mapped) |
 | `cipp:sync-devices` | Daily at 05:59 | Sync Intune devices + Defender state to assets from CIPP (only if device sync enabled + tenants mapped) |
+| `assets:refresh-health` | Daily at 06:30 | Recompute cached asset health scores (0-100) and the AI explanation from the overnight-synced signals (RMM, alerts, backup, patch, M365, tickets). Flags: `--no-ai` (deterministic explanation only), `--client=ID`, `--stale-hours=N`, `--limit=N`. |
 | `cipp:sync-mcp-catalog` | Weekly Sunday at 06:05 | Sync the dynamic CIPP MCP tool catalog for staff MCP token grants (default off; only runs when CIPP MCP catalog auto-sync is enabled) |
 | `billing:generate` | Daily at 06:00 | Generate recurring invoices |
 | `tickets:close-resolved` | Daily at 06:00 | Auto-close resolved tickets after configured number of days |

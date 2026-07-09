@@ -61,6 +61,14 @@ class AssetService
             }
         }
 
+        // Health (cached health score) — "unhealthy" = a known Poor score.
+        // Unknown (null) scores are excluded: we can't call an unmonitored
+        // device unhealthy.
+        if (($filters['health'] ?? '') === 'unhealthy') {
+            $query->whereNotNull('assets.health_score')
+                ->where('assets.health_score', '<', \App\Enums\AssetHealthGrade::FAIR_THRESHOLD);
+        }
+
         // User assignment
         if (! empty($filters['user_assignment'])) {
             if ($filters['user_assignment'] === 'unassigned') {
@@ -79,6 +87,7 @@ class AssetService
             'os' => 'assets.os',
             'last_seen' => 'assets.last_seen_at',
             'status' => 'assets.rmm_online',
+            'health' => 'assets.health_score',
         ];
 
         $sortKey = $filters['sort'] ?? 'hostname';
@@ -91,7 +100,7 @@ class AssetService
         }
 
         // Nulls last for timestamp and nullable columns
-        if (in_array($sortColumn, ['assets.last_seen_at', 'assets.rmm_online', 'assets.asset_type', 'assets.os'])) {
+        if (in_array($sortColumn, ['assets.last_seen_at', 'assets.rmm_online', 'assets.asset_type', 'assets.os', 'assets.health_score'])) {
             $query->orderByRaw("{$sortColumn} IS NULL");
         }
 

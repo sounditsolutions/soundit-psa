@@ -12,6 +12,7 @@
     $isOnline = ($filters['status'] ?? '') === 'online';
     $isOffline = ($filters['status'] ?? '') === 'offline';
     $isUnlinked = ($filters['rmm'] ?? '') === 'unlinked';
+    $isUnhealthy = ($filters['health'] ?? '') === 'unhealthy';
 @endphp
 <div class="mb-3 d-flex flex-wrap align-items-center gap-2">
     <a href="{{ route($listRoute, array_merge(
@@ -38,6 +39,15 @@
        class="btn btn-sm {{ $isUnlinked ? 'btn-warning text-dark' : 'btn-outline-warning' }}">
         <i class="bi bi-link-45deg me-1"></i>Unlinked
     </a>
+    <a href="{{ route($listRoute, array_merge(
+        $prefilter,
+        request()->except('health', 'page'),
+        $isUnhealthy ? [] : ['health' => 'unhealthy']
+    )) }}"
+       class="btn btn-sm {{ $isUnhealthy ? 'btn-danger' : 'btn-outline-danger' }}"
+       title="Devices with a Poor health score">
+        <i class="bi bi-heart-pulse me-1"></i>Unhealthy
+    </a>
 
     @php
         $activeFilters = [];
@@ -46,6 +56,7 @@
         elseif (($filters['status'] ?? '') === 'unknown') $activeFilters[] = 'Unknown status';
         if ($isUnlinked) $activeFilters[] = 'No RMM';
         elseif (($filters['rmm'] ?? '') === 'linked') $activeFilters[] = 'RMM linked';
+        if ($isUnhealthy) $activeFilters[] = 'Unhealthy';
         if (!empty($filters['asset_type'])) $activeFilters[] = $filters['asset_type'];
         if (!empty($filters['client_id']) && !isset($prefilter['client_id'])) $activeFilters[] = $clients->firstWhere('id', $filters['client_id'])?->name ?? 'Client';
         if (!empty($filters['search'])) $activeFilters[] = '"' . $filters['search'] . '"';
@@ -86,6 +97,9 @@
                 @endif
                 @if(!empty($filters['rmm']))
                     <input type="hidden" name="rmm" value="{{ $filters['rmm'] }}">
+                @endif
+                @if(!empty($filters['health']))
+                    <input type="hidden" name="health" value="{{ $filters['health'] }}">
                 @endif
                 <div class="row g-2">
                     <div class="col-lg-2 col-md-3">
@@ -157,7 +171,7 @@
 
         $defaultDirs = [
             'hostname' => 'asc', 'name' => 'asc', 'type' => 'asc', 'client' => 'asc',
-            'os' => 'asc', 'last_seen' => 'desc', 'status' => 'asc',
+            'os' => 'asc', 'last_seen' => 'desc', 'status' => 'asc', 'health' => 'asc',
         ];
     @endphp
 
@@ -197,6 +211,11 @@
                         <th class="text-center {{ $currentSort === 'status' ? 'active-sort' : '' }}" style="width: 90px;">
                             <a href="{{ request()->fullUrlWithQuery(['sort' => 'status', 'direction' => $currentSort === 'status' ? ($currentDir === 'asc' ? 'desc' : 'asc') : ($defaultDirs['status'] ?? 'asc'), 'page' => null]) }}" class="sortable-th">
                                 Status <i class="bi {{ $currentSort === 'status' ? ($currentDir === 'asc' ? 'bi-chevron-up' : 'bi-chevron-down') : 'bi-chevron-expand' }} sort-icon"></i>
+                            </a>
+                        </th>
+                        <th class="text-center d-none d-sm-table-cell {{ $currentSort === 'health' ? 'active-sort' : '' }}" style="width: 80px;">
+                            <a href="{{ request()->fullUrlWithQuery(['sort' => 'health', 'direction' => $currentSort === 'health' ? ($currentDir === 'asc' ? 'desc' : 'asc') : ($defaultDirs['health'] ?? 'asc'), 'page' => null]) }}" class="sortable-th">
+                                Health <i class="bi {{ $currentSort === 'health' ? ($currentDir === 'asc' ? 'bi-chevron-up' : 'bi-chevron-down') : 'bi-chevron-expand' }} sort-icon"></i>
                             </a>
                         </th>
                         <th class="d-none d-lg-table-cell">Primary User</th>
@@ -245,6 +264,11 @@
                                 @else
                                     <span class="badge bg-secondary" title="No RMM status available">Unknown</span>
                                 @endif
+                            </td>
+                            <td class="text-center d-none d-sm-table-cell">
+                                <span onclick="event.stopPropagation()">
+                                    <x-asset-health-badge :asset="$asset" />
+                                </span>
                             </td>
                             <td class="d-none d-lg-table-cell small">
                                 @php $primaryUser = $asset->users->first(); @endphp

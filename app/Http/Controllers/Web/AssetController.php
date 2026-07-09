@@ -9,11 +9,13 @@ use App\Enums\TicketType;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\AssetStoreRequest;
 use App\Http\Requests\AssetUpdateRequest;
+use App\Jobs\RefreshAssetHealth;
 use App\Models\Asset;
 use App\Models\Client;
 use App\Models\Person;
 use App\Models\Ticket;
 use App\Models\User;
+use App\Services\AssetHealthService;
 use App\Services\AssetService;
 use App\Services\ControlD\ControlDAnalyticsClient;
 use App\Services\ControlD\ControlDClient;
@@ -29,6 +31,7 @@ use App\Services\Servosity\ServosityDeploymentService;
 use App\Services\TicketService;
 use App\Services\Zorus\ZorusClient;
 use App\Services\Zorus\ZorusClientException;
+use App\Support\AiConfig;
 use App\Support\ControlDConfig;
 use App\Support\ZorusConfig;
 use Carbon\Carbon;
@@ -51,6 +54,7 @@ class AssetController extends Controller
             'asset_type' => $request->query('asset_type'),
             'status' => $request->query('status'),
             'rmm' => $request->query('rmm'),
+            'health' => $request->query('health'),
             'user_assignment' => $request->query('user_assignment'),
             'show_inactive' => $request->boolean('show_inactive'),
             'show_deleted' => $request->boolean('show_deleted'),
@@ -182,6 +186,8 @@ class AssetController extends Controller
 
         \App\Support\RecentItems::track(auth()->id(), 'asset', $asset->id, $asset->hostname ?: $asset->name, route('assets.show', $asset));
 
+        $this->refreshHealth($asset);
+
         $lastUserPerson = $asset->resolveLastUserPerson();
 
         $clientPeople = $asset->client_id
@@ -203,6 +209,30 @@ class AssetController extends Controller
             'tacticalInsight' => $this->tacticalInsight($asset),
             'tacticalActionTotal' => $this->tacticalActionTotal($asset),
         ]);
+    }
+
+    /**
+     * Keep the cached asset health score fresh on view.
+     *
+     * refreshIfStale() recomputes the deterministic score in-process only when
+     * the cache has expired (cheap, DB-only). When an AI provider is configured
+     * and we don't yet have an AI-written explanation, upgrade the narrative in
+     * the background so the AI call never blocks the render. Offboarded (trashed)
+     * devices are left as-is.
+     */
+    private function refreshHealth(Asset $asset): void
+    {
+        if ($asset->trashed()) {
+            return;
+        }
+
+        app(AssetHealthService::class)->refreshIfStale($asset);
+
+        if (AiConfig::isConfigured()
+            && $asset->health_score !== null
+            && ! $asset->health_summary_is_ai) {
+            RefreshAssetHealth::dispatchAfterResponse($asset->id);
+        }
     }
 
     /**
@@ -261,6 +291,8 @@ class AssetController extends Controller
 
         // Load same data as show()
         $asset->load(['client', 'contracts', 'activeAlerts', 'users', 'tacticalAsset']);
+
+        $this->refreshHealth($asset);
 
         $lastUserPerson = $asset->resolveLastUserPerson();
 
