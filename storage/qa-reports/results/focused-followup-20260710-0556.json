@@ -1,0 +1,39 @@
+{
+  "run_label": "tester focused follow-up 2026-07-10 05:56 UTC",
+  "results": [
+    {
+      "scenario": "client-overview",
+      "status": "pass"
+    },
+    {
+      "scenario": "asset-detail",
+      "status": "pass"
+    },
+    {
+      "scenario": "asset-ticket-link",
+      "status": "pass"
+    },
+    {
+      "scenario": "invoice-list",
+      "status": "pass"
+    },
+    {
+      "scenario": "ticket-detail spot check",
+      "status": "pass"
+    }
+  ],
+  "findings": [],
+  "notes": [
+    "No new QA beads filed. Observed defects matched existing open QA beads: invoice Overdue filter omission (psa-nnmj), client Tickets tab count capped at 5 (psa-76cw), asset OS/source conflict (psa-sp30), alert-title href '#' (psa-tzlv), and systemic a11y label/H1/contrast issues (psa-4638, psa-de8u).",
+    "Asset-to-ticket relationship for ticket T-197 and asset VAN-APP01 passed bidirectionally during this follow-up."
+  ],
+  "screenshots": [
+    "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/focused-followup-discovery-focused-followup-clients-list.png",
+    "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/focused-followup-discovery-focused-followup-assets-list.png",
+    "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/focused-followup-discovery-focused-followup-invoices-list.png",
+    "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/focused-followup-client-overview-client-vandelay-overview.png",
+    "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/focused-followup-asset-detail-asset-8-detail.png",
+    "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/focused-followup-ticket-detail-ticket-197-detail.png",
+    "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/focused-followup-asset-ticket-tab-asset-8-alerts-tickets-tab.png"
+  ]
+}
