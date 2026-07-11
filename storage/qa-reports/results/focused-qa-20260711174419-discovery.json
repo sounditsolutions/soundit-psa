@@ -1,0 +1,199 @@
+{
+  "scenario": "focused-qa-20260711-discovery",
+  "ok": true,
+  "steps": [
+    {
+      "i": 0,
+      "type": "goto",
+      "ok": true,
+      "detail": "status=loaded url=https://soundit-dev/invoices"
+    },
+    {
+      "i": 1,
+      "type": "snapshot",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 2,
+      "type": "screenshot",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 3,
+      "type": "axe",
+      "ok": true,
+      "detail": "axe @ https://soundit-dev/invoices: 7 violation(s)"
+    },
+    {
+      "i": 4,
+      "type": "goto",
+      "ok": true,
+      "detail": "status=loaded url=https://soundit-dev/assets/8"
+    },
+    {
+      "i": 5,
+      "type": "snapshot",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 6,
+      "type": "screenshot",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 7,
+      "type": "click",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 8,
+      "type": "snapshot",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 9,
+      "type": "screenshot",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 10,
+      "type": "axe",
+      "ok": true,
+      "detail": "axe @ https://soundit-dev/assets/8: 2 violation(s)"
+    }
+  ],
+  "screenshots": [
+    "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/focused-qa-20260711-discovery-invoice-list-initial.png",
+    "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/focused-qa-20260711-discovery-asset-detail-initial.png",
+    "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/focused-qa-20260711-discovery-asset-alerts-tab.png"
+  ],
+  "finalUrl": "https://soundit-dev/assets/8",
+  "snapshot": "- complementary \"Main navigation\":\n  - link \"Sound IT PSA\":\n    - /url: https://soundit-dev\n    - img \"Sound IT PSA\"\n  - navigation:\n    - link \" Dashboard\":\n      - /url: https://soundit-dev\n    - text: Manage\n    - link \" Clients\":\n      - /url: https://soundit-dev/clients\n    - link \" People\":\n      - /url: https://soundit-dev/people\n    - link \" Assets\":\n      - /url: https://soundit-dev/assets\n    - text: Service\n    - link \" Tickets\":\n      - /url: https://soundit-dev/tickets\n    - link \" Cockpit 4\":\n      - /url: https://soundit-dev/cockpit\n    - link \" Calls 3\":\n      - /url: https://soundit-dev/calls\n    - link \" Phone Directory\":\n      - /url: https://soundit-dev/phone-directory\n    - link \" Emails\":\n      - /url: https://soundit-dev/emails\n    - link \" Alerts 5\":\n      - /url: https://soundit-dev/alerts\n    - text: Billing\n    - link \" Billing \":\n      - /url: \"#sidebarBilling\"\n    - text: Settings\n    - link \" General\":\n      - /url: https://soundit-dev/settings/general\n    - link \" Staff\":\n      - /url: https://soundit-dev/settings/staff\n    - link \" Integrations\":\n      - /url: https://soundit-dev/settings/integrations\n    - link \" Alerts Hub\":\n      - /url: https://soundit-dev/settings/alerts\n    - link \" MCP Tokens\":\n      - /url: https://soundit-dev/settings/mcp-tokens\n    - text: Recent\n    - link \" VAN-APP01\":\n      - /url: https://soundit-dev/assets/8\n    - link \" T-236 QA tester 202607111...\":\n      - /url: https://soundit-dev/tickets/236\n    - link \" Vandelay Industries\":\n      - /url: https://soundit-dev/clients/3\n    - link \" George Costanza\":\n      - /url: https://soundit-dev/people/6\n    - link \" Managed Services Agreemen...\":\n      - /url: https://soundit-dev/contracts/4\n    - link \" T-235 QA tester 202607111...\":\n      - /url: https://soundit-dev/tickets/235\n    - link \" T-234 QA nightly ticket 2...\":\n      - /url: https://127.0.0.1/tickets/234\n    - link \" T-207 QA focused manual t...\":\n      - /url: https://soundit-dev/tickets/207\n  - button \"Toggle sidebar\" [expanded]: \n- banner:\n  - text: VAN-APP01\n  - button \" Search Ctrl+K\"\n  - button \"AM Alex Morgan\"\n- main:\n  - link \" Back to Vandelay Industries\":\n    - /url: https://soundit-dev/clients/3\n  - heading \"VAN-APP01\" [level=4]\n  - text: ERP Server Online\n  - link \" Managed Services Agreement\":\n    - /url: https://soundit-dev/contracts/4\n  - link \" Edit\":\n    - /url: https://soundit-dev/assets/8/edit\n  - button \"\"\n  - tablist:\n    - tab \"Overview\"\n    - tab \"Network\"\n    - tab \"Storage\"\n    - tab \"Software\"\n    - tab \"Patches\"\n    - tab \"Security\"\n    - tab \"Alerts & Tickets\" [selected]\n    - tab \"Backup\"\n  - tabpanel:\n    - text:  Alerts 2 active\n    - link \"View all\":\n      - /url: https://soundit-dev/alerts?asset_id=8\n    - table:\n      - rowgroup:\n        - row \"Source Severity Alert Message Fired Status Actions\":\n          - columnheader \"Source\"\n          - columnheader \"Severity\"\n          - columnheader \"Alert\"\n          - columnheader \"Message\"\n          - columnheader \"Fired\"\n          - columnheader \"Status\"\n          - columnheader \"Actions\"\n      - rowgroup:\n        - 'row \" Tactical RMM Critical Server unreachable Agent has not checked in for >10 minutes. Jul 2, 9:59 AM Ticketed #T-1 \"':\n          - cell \" Tactical RMM\"\n          - cell \"Critical\"\n          - cell \"Server unreachable\":\n            - link \"Server unreachable\":\n              - /url: \"#\"\n          - cell \"Agent has not checked in for >10 minutes.\"\n          - cell \"Jul 2, 9:59 AM\"\n          - 'cell \"Ticketed #T-1\"':\n            - text: Ticketed\n            - link \"#T-1\":\n              - /url: https://soundit-dev/tickets/1\n          - cell \"\":\n            - button \"\"\n        - 'row \" Tactical RMM Warning C: drive low free space Free space dropped below 10% threshold. Jun 29, 11:59 AM Ticketed #T-9 \"':\n          - cell \" Tactical RMM\"\n          - cell \"Warning\"\n          - 'cell \"C: drive low free space\"':\n            - 'link \"C: drive low free space\"':\n              - /url: \"#\"\n          - cell \"Free space dropped below 10% threshold.\"\n          - cell \"Jun 29, 11:59 AM\"\n          - 'cell \"Ticketed #T-9\"':\n            - text: Ticketed\n            - link \"#T-9\":\n              - /url: https://soundit-dev/tickets/9\n          - cell \"\":\n            - button \"\"\n    - text:  Recent Tickets\n    - link \"View all tickets\":\n      - /url: https://soundit-dev/assets/8/tickets\n    - table:\n      - rowgroup:\n        - row \"ID Subject Priority Status Assignee Updated\":\n          - columnheader \"ID\"\n          - columnheader \"Subject\"\n          - columnheader \"Priority\"\n          - columnheader \"Status\"\n          - columnheader \"Assignee\"\n          - columnheader \"Updated\"\n      - rowgroup:\n        - row \"T-235 QA tester 20260711170214 manual ticket P2 - High In Progress Alex Morgan 41 minutes ago\":\n          - cell \"T-235\"\n          - cell \"QA tester 20260711170214 manual ticket\":\n            - link \"QA tester 20260711170214 manual ticket\":\n              - /url: https://soundit-dev/tickets/235\n          - cell \"P2 - High\"\n          - cell \"In Progress\"\n          - cell \"Alex Morgan\"\n          - cell \"41 minutes ago\"\n        - row \"T-197 QA tester submit check 20260710051509 P2 - High In Progress Alex Morgan 1 day ago\":\n          - cell \"T-197\"\n          - cell \"QA tester submit check 20260710051509\":\n            - link \"QA tester submit check 20260710051509\":\n              - /url: https://soundit-dev/tickets/197\n          - cell \"P2 - High\"\n          - cell \"In Progress\"\n          - cell \"Alex Morgan\"\n          - cell \"1 day ago\"\n        - row \"T-174 QA tester live flow 20260709 1613 P2 - High In Progress Alex Morgan 2 days ago\":\n          - cell \"T-174\"\n          - cell \"QA tester live flow 20260709 1613\":\n            - link \"QA tester live flow 20260709 1613\":\n              - /url: https://soundit-dev/tickets/174\n          - cell \"P2 - High\"\n          - cell \"In Progress\"\n          - cell \"Alex Morgan\"\n          - cell \"2 days ago\"\n        - row \"T-1 [ALERT] VAN-APP01 - Server unreachable P1 - Critical In Progress Devon Carter 4 days ago\":\n          - cell \"T-1\"\n          - cell \"[ALERT] VAN-APP01 - Server unreachable\":\n            - link \"[ALERT] VAN-APP01 - Server unreachable\":\n              - /url: https://soundit-dev/tickets/1\n          - cell \"P1 - Critical\"\n          - cell \"In Progress\"\n          - cell \"Devon Carter\"\n          - cell \"4 days ago\"\n        - 'row \"T-9 VAN-APP01 - C: drive low free space P2 - High In Progress Priya Shah 1 week ago\"':\n          - cell \"T-9\"\n          - 'cell \"VAN-APP01 - C: drive low free space\"':\n            - 'link \"VAN-APP01 - C: drive low free space\"':\n              - /url: https://soundit-dev/tickets/9\n          - cell \"P2 - High\"\n          - cell \"In Progress\"\n          - cell \"Priya Shah\"\n          - cell \"1 week ago\"\n- contentinfo: © 2026 Sound IT PSA",
+  "axe": [
+    {
+      "url": "https://soundit-dev/invoices",
+      "label": "invoice-list-initial",
+      "violations": [
+        {
+          "id": "button-name",
+          "impact": "critical",
+          "help": "Buttons must have discernible text",
+          "nodes": [
+            ".btn-primary.btn-sm[type=\"submit\"]"
+          ]
+        },
+        {
+          "id": "color-contrast",
+          "impact": "serious",
+          "help": "Elements must meet minimum color contrast ratio thresholds",
+          "nodes": [
+            ".sidebar-group:nth-child(2) > .sidebar-group-label",
+            ".sidebar-group:nth-child(3) > .sidebar-group-label",
+            ".sidebar-group:nth-child(4) > .sidebar-group-label",
+            ".d-lg-inline"
+          ]
+        },
+        {
+          "id": "empty-table-header",
+          "impact": "minor",
+          "help": "Table header text should not be empty",
+          "nodes": [
+            "th:nth-child(1)"
+          ]
+        },
+        {
+          "id": "image-redundant-alt",
+          "impact": "minor",
+          "help": "Alternative text of images should not be repeated as text",
+          "nodes": [
+            ".cursor-pointer:nth-child(1) > .small:nth-child(3) > .d-inline-flex.gap-1[data-bs-toggle=\"popover\"] > img[alt=\"Vandelay Industries\"][loading=\"lazy\"]",
+            "img[alt=\"Sterling Realty Group\"]",
+            ".cursor-pointer:nth-child(3) > .small:nth-child(3) > .d-inline-flex.gap-1[data-bs-toggle=\"popover\"] > img[alt=\"Vandelay Industries\"][loading=\"lazy\"]",
+            ".cursor-pointer:nth-child(4) > .small:nth-child(3) > .d-inline-flex.gap-1[data-bs-toggle=\"popover\"] > img[alt=\"Acme Dental Practice\"][loading=\"lazy\"]",
+            "img[alt=\"HarborView Law Partners\"]",
+            "img[alt=\"Pinnacle Insurance Group\"]",
+            ".cursor-pointer:nth-child(7) > .small:nth-child(3) > .d-inline-flex.gap-1[data-bs-toggle=\"popover\"] > img[alt=\"Vandelay Industries\"][loading=\"lazy\"]",
+            ".cursor-pointer:nth-child(8) > .small:nth-child(3) > .d-inline-flex.gap-1[data-bs-toggle=\"popover\"] > img[alt=\"Acme Dental Practice\"][loading=\"lazy\"]"
+          ]
+        },
+        {
+          "id": "label",
+          "impact": "critical",
+          "help": "Form elements must have labels",
+          "nodes": [
+            "#selectAll",
+            ".invoice-checkbox.form-check-input[value=\"3\"]",
+            ".invoice-checkbox.form-check-input[value=\"8\"]",
+            ".invoice-checkbox.form-check-input[value=\"2\"]",
+            ".invoice-checkbox.form-check-input[value=\"4\"]",
+            ".invoice-checkbox.form-check-input[value=\"6\"]",
+            ".invoice-checkbox.form-check-input[value=\"7\"]",
+            ".invoice-checkbox.form-check-input[value=\"1\"]",
+            ".invoice-checkbox.form-check-input[value=\"5\"]"
+          ]
+        },
+        {
+          "id": "page-has-heading-one",
+          "impact": "moderate",
+          "help": "Page should contain a level-one heading",
+          "nodes": [
+            "html"
+          ]
+        },
+        {
+          "id": "select-name",
+          "impact": "critical",
+          "help": "Select element must have an accessible name",
+          "nodes": [
+            "select[name=\"client_id\"]",
+            "select[name=\"status\"]"
+          ]
+        }
+      ]
+    },
+    {
+      "url": "https://soundit-dev/assets/8",
+      "label": "asset-alerts-tab",
+      "violations": [
+        {
+          "id": "color-contrast",
+          "impact": "serious",
+          "help": "Elements must meet minimum color contrast ratio thresholds",
+          "nodes": [
+            ".sidebar-group:nth-child(2) > .sidebar-group-label",
+            ".sidebar-group:nth-child(3) > .sidebar-group-label",
+            ".sidebar-group:nth-child(4) > .sidebar-group-label",
+            ".sidebar-group:nth-child(5) > .sidebar-group-label",
+            ".d-lg-inline",
+            "a[href$=\"#tab-overview\"]",
+            "a[href$=\"#tab-network\"]",
+            "a[href$=\"#tab-storage\"]",
+            "a[href$=\"#tab-software\"]",
+            "a[href$=\"#tab-patches\"]",
+            "a[href$=\"#tab-security\"]",
+            "a[href$=\"#tab-backup\"]",
+            ".ms-1.bg-primary[href$=\"tickets/1\"]",
+            ".ms-1.bg-primary[href$=\"tickets/9\"]"
+          ]
+        },
+        {
+          "id": "page-has-heading-one",
+          "impact": "moderate",
+          "help": "Page should contain a level-one heading",
+          "nodes": [
+            "html"
+          ]
+        }
+      ]
+    }
+  ],
+  "error": null,
+  "pageErrors": []
+}

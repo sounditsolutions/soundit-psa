@@ -1,0 +1,18 @@
+{
+  "run_label": "focused-qa-20260711-1746-tester",
+  "results": [
+    {
+      "scenario": "invoice-list",
+      "status": "pass"
+    },
+    {
+      "scenario": "asset-detail",
+      "status": "pass"
+    },
+    {
+      "scenario": "asset-ticket-link",
+      "status": "pass"
+    }
+  ],
+  "findings": []
+}

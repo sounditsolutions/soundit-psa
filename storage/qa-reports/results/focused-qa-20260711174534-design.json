@@ -1,0 +1,172 @@
+{
+  "scenario": "focused-qa-20260711-design",
+  "ok": true,
+  "steps": [
+    {
+      "i": 0,
+      "type": "goto",
+      "ok": true,
+      "detail": "status=loaded url=https://soundit-dev/invoices?client_id=&status=paid&from_date=&to_date="
+    },
+    {
+      "i": 1,
+      "type": "screenshot",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 2,
+      "type": "axe",
+      "ok": true,
+      "detail": "axe @ https://soundit-dev/invoices?client_id=&status=paid&from_date=&to_date=: 7 violation(s)"
+    },
+    {
+      "i": 3,
+      "type": "goto",
+      "ok": true,
+      "detail": "status=loaded url=https://soundit-dev/assets/8"
+    },
+    {
+      "i": 4,
+      "type": "click",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 5,
+      "type": "screenshot",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 6,
+      "type": "axe",
+      "ok": true,
+      "detail": "axe @ https://soundit-dev/assets/8: 2 violation(s)"
+    }
+  ],
+  "screenshots": [
+    "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/focused-qa-20260711-design-invoice-list-paid@mobile.png",
+    "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/focused-qa-20260711-design-invoice-list-paid@tablet.png",
+    "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/focused-qa-20260711-design-invoice-list-paid@desktop.png",
+    "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/focused-qa-20260711-design-asset-alerts-tab@mobile.png",
+    "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/focused-qa-20260711-design-asset-alerts-tab@tablet.png",
+    "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/focused-qa-20260711-design-asset-alerts-tab@desktop.png"
+  ],
+  "finalUrl": "https://soundit-dev/assets/8",
+  "snapshot": null,
+  "axe": [
+    {
+      "url": "https://soundit-dev/invoices?client_id=&status=paid&from_date=&to_date=",
+      "label": "invoice-list-paid",
+      "violations": [
+        {
+          "id": "button-name",
+          "impact": "critical",
+          "help": "Buttons must have discernible text",
+          "nodes": [
+            ".btn-primary.btn-sm[type=\"submit\"]"
+          ]
+        },
+        {
+          "id": "color-contrast",
+          "impact": "serious",
+          "help": "Elements must meet minimum color contrast ratio thresholds",
+          "nodes": [
+            ".sidebar-group:nth-child(2) > .sidebar-group-label",
+            ".sidebar-group:nth-child(3) > .sidebar-group-label",
+            ".sidebar-group:nth-child(4) > .sidebar-group-label",
+            ".d-lg-inline"
+          ]
+        },
+        {
+          "id": "empty-table-header",
+          "impact": "minor",
+          "help": "Table header text should not be empty",
+          "nodes": [
+            "th[onclick=\"event.stopPropagation()\"]"
+          ]
+        },
+        {
+          "id": "image-redundant-alt",
+          "impact": "minor",
+          "help": "Alternative text of images should not be repeated as text",
+          "nodes": [
+            ".cursor-pointer:nth-child(1) > .small:nth-child(3) > .d-inline-flex.gap-1[data-bs-toggle=\"popover\"] > img[alt=\"Vandelay Industries\"][loading=\"lazy\"]",
+            ".cursor-pointer:nth-child(2) > .small:nth-child(3) > .d-inline-flex.gap-1[data-bs-toggle=\"popover\"] > img[alt=\"Acme Dental Practice\"][loading=\"lazy\"]",
+            "img[alt=\"HarborView Law Partners\"]",
+            ".cursor-pointer:nth-child(4) > .small:nth-child(3) > .d-inline-flex.gap-1[data-bs-toggle=\"popover\"] > img[alt=\"Vandelay Industries\"][loading=\"lazy\"]",
+            ".cursor-pointer:nth-child(5) > .small:nth-child(3) > .d-inline-flex.gap-1[data-bs-toggle=\"popover\"] > img[alt=\"Acme Dental Practice\"][loading=\"lazy\"]"
+          ]
+        },
+        {
+          "id": "label",
+          "impact": "critical",
+          "help": "Form elements must have labels",
+          "nodes": [
+            "#selectAll",
+            ".invoice-checkbox.form-check-input[value=\"2\"]",
+            ".invoice-checkbox.form-check-input[value=\"4\"]",
+            ".invoice-checkbox.form-check-input[value=\"6\"]",
+            ".invoice-checkbox.form-check-input[value=\"1\"]",
+            ".invoice-checkbox.form-check-input[value=\"5\"]"
+          ]
+        },
+        {
+          "id": "page-has-heading-one",
+          "impact": "moderate",
+          "help": "Page should contain a level-one heading",
+          "nodes": [
+            "html"
+          ]
+        },
+        {
+          "id": "select-name",
+          "impact": "critical",
+          "help": "Select element must have an accessible name",
+          "nodes": [
+            "select[name=\"client_id\"]",
+            "select[name=\"status\"]"
+          ]
+        }
+      ]
+    },
+    {
+      "url": "https://soundit-dev/assets/8",
+      "label": "asset-alerts-tab",
+      "violations": [
+        {
+          "id": "color-contrast",
+          "impact": "serious",
+          "help": "Elements must meet minimum color contrast ratio thresholds",
+          "nodes": [
+            ".sidebar-group:nth-child(2) > .sidebar-group-label",
+            ".sidebar-group:nth-child(3) > .sidebar-group-label",
+            ".sidebar-group:nth-child(4) > .sidebar-group-label",
+            ".sidebar-group:nth-child(5) > .sidebar-group-label",
+            ".d-lg-inline",
+            "a[href$=\"#tab-overview\"]",
+            "a[href$=\"#tab-network\"]",
+            "a[href$=\"#tab-storage\"]",
+            "a[href$=\"#tab-software\"]",
+            "a[href$=\"#tab-patches\"]",
+            "a[href$=\"#tab-security\"]",
+            "a[href$=\"#tab-backup\"]",
+            ".ms-1.bg-primary[href$=\"tickets/1\"]",
+            ".ms-1.bg-primary[href$=\"tickets/9\"]"
+          ]
+        },
+        {
+          "id": "page-has-heading-one",
+          "impact": "moderate",
+          "help": "Page should contain a level-one heading",
+          "nodes": [
+            "html"
+          ]
+        }
+      ]
+    }
+  ],
+  "error": null,
+  "pageErrors": []
+}

@@ -1,0 +1,132 @@
+{
+  "scenario": "focused-qa-20260711-invoice-filter",
+  "ok": true,
+  "steps": [
+    {
+      "i": 0,
+      "type": "goto",
+      "ok": true,
+      "detail": "status=loaded url=https://soundit-dev/invoices"
+    },
+    {
+      "i": 1,
+      "type": "selectOption",
+      "ok": true,
+      "detail": "selected [\"paid\"]"
+    },
+    {
+      "i": 2,
+      "type": "click",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 3,
+      "type": "snapshot",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 4,
+      "type": "screenshot",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 5,
+      "type": "expectText",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "i": 6,
+      "type": "axe",
+      "ok": true,
+      "detail": "axe @ https://soundit-dev/invoices?client_id=&status=paid&from_date=&to_date=: 7 violation(s)"
+    }
+  ],
+  "screenshots": [
+    "/home/charlie/repos/soundit-psa/storage/qa-reports/screens/focused-qa-20260711-invoice-filter-paid-filter-after-submit.png"
+  ],
+  "finalUrl": "https://soundit-dev/invoices?client_id=&status=paid&from_date=&to_date=",
+  "snapshot": "- complementary \"Main navigation\":\n  - link \"Sound IT PSA\":\n    - /url: https://soundit-dev\n    - img \"Sound IT PSA\"\n  - navigation:\n    - link \" Dashboard\":\n      - /url: https://soundit-dev\n    - text: Manage\n    - link \" Clients\":\n      - /url: https://soundit-dev/clients\n    - link \" People\":\n      - /url: https://soundit-dev/people\n    - link \" Assets\":\n      - /url: https://soundit-dev/assets\n    - text: Service\n    - link \" Tickets\":\n      - /url: https://soundit-dev/tickets\n    - link \" Cockpit 4\":\n      - /url: https://soundit-dev/cockpit\n    - link \" Calls 3\":\n      - /url: https://soundit-dev/calls\n    - link \" Phone Directory\":\n      - /url: https://soundit-dev/phone-directory\n    - link \" Emails\":\n      - /url: https://soundit-dev/emails\n    - link \" Alerts 5\":\n      - /url: https://soundit-dev/alerts\n    - text: Billing\n    - link \" Billing \" [expanded]:\n      - /url: \"#sidebarBilling\"\n    - link \" Invoices\":\n      - /url: https://soundit-dev/invoices\n    - link \" Contracts\":\n      - /url: https://soundit-dev/contracts\n    - link \" Recurring Profiles\":\n      - /url: https://soundit-dev/profiles\n    - link \" Prepay\":\n      - /url: https://soundit-dev/prepay\n    - link \" SKUs\":\n      - /url: https://soundit-dev/skus\n    - link \" Licenses\":\n      - /url: https://soundit-dev/licenses\n    - link \" License Types\":\n      - /url: https://soundit-dev/license-types\n    - link \" Profitability\":\n      - /url: https://soundit-dev/profitability\n    - link \" Reseller Report\":\n      - /url: https://soundit-dev/reseller-report\n    - link \" Time Report\":\n      - /url: https://soundit-dev/reports/time\n    - text: Settings\n    - link \" General\":\n      - /url: https://soundit-dev/settings/general\n    - link \" Staff\":\n      - /url: https://soundit-dev/settings/staff\n    - link \" Integrations\":\n      - /url: https://soundit-dev/settings/integrations\n    - link \" Alerts Hub\":\n      - /url: https://soundit-dev/settings/alerts\n    - link \" MCP Tokens\":\n      - /url: https://soundit-dev/settings/mcp-tokens\n    - text: Recent\n    - link \" VAN-APP01\":\n      - /url: https://soundit-dev/assets/8\n    - link \" T-236 QA tester 202607111...\":\n      - /url: https://soundit-dev/tickets/236\n    - link \" Vandelay Industries\":\n      - /url: https://soundit-dev/clients/3\n    - link \" George Costanza\":\n      - /url: https://soundit-dev/people/6\n    - link \" Managed Services Agreemen...\":\n      - /url: https://soundit-dev/contracts/4\n    - link \" T-235 QA tester 202607111...\":\n      - /url: https://soundit-dev/tickets/235\n    - link \" T-234 QA nightly ticket 2...\":\n      - /url: https://127.0.0.1/tickets/234\n    - link \" T-207 QA focused manual t...\":\n      - /url: https://soundit-dev/tickets/207\n  - button \"Toggle sidebar\" [expanded]: \n- banner:\n  - text: Invoices\n  - button \" Search Ctrl+K\"\n  - button \"AM Alex Morgan\"\n- main:\n  - heading \"Invoices\" [level=4]\n  - link \" New Invoice\":\n    - /url: https://soundit-dev/invoices/create\n  - combobox:\n    - option \"All Clients\" [selected]\n    - option \"Acme Dental Practice\"\n    - option \"Apex Trading Co.\"\n    - option \"Brightside Marketing Agency\"\n    - option \"Cascade Wellness Center\"\n    - option \"Crestmont Architects\"\n    - option \"HarborView Law Partners\"\n    - option \"Pinnacle Insurance Group\"\n    - option \"Pollich-Hagenes\"\n    - option \"QA Autotest Client 20260704 0908\"\n    - option \"QA Client 2026-07-02 1958\"\n    - option \"QA Client 2026-07-02 2041\"\n    - option \"QA Client 2026-07-02 2130\"\n    - option \"QA Client 2026-07-02 2208\"\n    - option \"QA Client 2026-07-02 2301\"\n    - option \"QA Client 2026-07-03 0905\"\n    - option \"QA Client 20260703094453\"\n    - option \"QA Client 20260703110859\"\n    - option \"QA Client 20260703134504\"\n    - option \"QA Client 20260705 1858\"\n    - option \"QA Client 20260711 20260711131748\"\n    - option \"QA Client Create 20260708053410\"\n    - option \"QA Client Retry 20260703143018\"\n    - option \"QA Client Search Create 20260705 1949\"\n    - option \"QA Client Search Create 20260707161130\"\n    - option \"QA Client Search Create 20260709092959\"\n    - option \"QA Client Search Create 20260709093050\"\n    - option \"QA Codex Client 20260705 1752\"\n    - option \"QA Default Run Client 20260705200949\"\n    - option \"QA Focused Client 20260705123117\"\n    - option \"QA Full Sweep Client 202607061020\"\n    - option \"QA Library Client 20260705143913\"\n    - option \"QA Library Sweep Client 20260706 0812\"\n    - option \"QA Nightly Client 20260703123301\"\n    - option \"QA Nightly Client 20260703151421\"\n    - option \"QA Nightly Client 20260704103445\"\n    - option \"QA Nightly Client 20260706022758\"\n    - option \"QA Nightly Client 20260707022030\"\n    - option \"QA Nightly Client 20260709234930\"\n    - option \"QA Nightly Client 20260710120921\"\n    - option \"QA Nightly Client 20260710123857\"\n    - option \"QA Nightly Client 20260711011444\"\n    - option \"QA Nightly Codex Client 20260705 1840Z\"\n    - option \"QA Nightly Full Client 20260706 1501\"\n    - option \"QA Nightly Search Client 20260706095456\"\n    - option \"QA Nightly Sweep Client 20260705193838\"\n    - option \"QA Recipient Card 20260707020026\"\n    - option \"QA Run 20260707 0150 Client\"\n    - option \"QA Run 20260707 0152 Client\"\n    - option \"QA Run Client 20260705131834\"\n    - option \"QA Sample Client 2026-07-02 1908\"\n    - option \"QA Search Create 20260705213552\"\n    - option \"QA Search Create 20260707 0918\"\n    - option \"QA Search Create 20260707 1027\"\n    - option \"QA Search Create 202607070623\"\n    - option \"QA Search Create 202607092209\"\n    - option \"QA Search Create Client 20260706140042\"\n    - option \"QA Smoke Client 20260706135317\"\n    - option \"QA Sweep Client 20260706002359\"\n    - option \"QA Tester Client 20260705 1531Z\"\n    - option \"QA Tester Client 20260705 160006\"\n    - option \"QA Tester Client 20260705 20260705151818\"\n    - option \"QA Tester Client 20260705140729\"\n    - option \"QA Tester Client 20260705154608\"\n    - option \"QA Tester Client 20260707040225\"\n    - option \"QA Tester Client 20260709103738\"\n    - option \"QA Tester Client Retry 20260705090834\"\n    - option \"QA Tester Client undefined\"\n    - option \"QA Tester Current Client 20260708022111\"\n    - option \"QA Tester Fresh Client 20260705195858\"\n    - option \"QA y4ft Client 20260707215056\"\n    - option \"QA y4ft Dedup Client 20260707215211\"\n    - option \"QA-SC-20260705220243\"\n    - option \"Sterling Realty Group\"\n    - option \"TechFlow Distribution\"\n    - option \"Vandelay Industries\"\n  - combobox:\n    - option \"All Statuses\"\n    - option \"Draft\"\n    - option \"Pending Sync\"\n    - option \"Synced\"\n    - option \"Posted\"\n    - option \"Paid\" [selected]\n    - option \"Void\"\n  - textbox:\n    - /placeholder: From\n  - textbox:\n    - /placeholder: To\n  - button \"\"\n  - link \"\":\n    - /url: https://soundit-dev/invoices\n  - table:\n    - rowgroup:\n      - 'row \"Invoice # Client Contract Profile Date Due Date Subtotal Tax Total Status Sync\"':\n        - columnheader:\n          - checkbox\n        - 'columnheader \"Invoice #\"'\n        - columnheader \"Client\"\n        - columnheader \"Contract\"\n        - columnheader \"Profile\"\n        - columnheader \"Date\"\n        - columnheader \"Due Date\"\n        - columnheader \"Subtotal\"\n        - columnheader \"Tax\"\n        - columnheader \"Total\"\n        - columnheader \"Status\"\n        - columnheader \"Sync\"\n    - rowgroup:\n      - row \"INV-2026102 Vandelay Industries Vandelay Industries Managed Services Agreement - Jun 2, 2026 Jun 17, 2026 $3,337.04 $308.68 $3,645.72 Paid \":\n        - cell:\n          - checkbox\n        - cell \"INV-2026102\":\n          - link \"INV-2026102\":\n            - /url: https://soundit-dev/invoices/2\n        - cell \"Vandelay Industries Vandelay Industries\":\n          - img \"Vandelay Industries\"\n          - link \"Vandelay Industries\":\n            - /url: https://soundit-dev/clients/3\n        - cell \"Managed Services Agreement\":\n          - link \"Managed Services Agreement\":\n            - /url: https://soundit-dev/contracts/4\n        - cell \"-\"\n        - cell \"Jun 2, 2026\"\n        - cell \"Jun 17, 2026\"\n        - cell \"$3,337.04\"\n        - cell \"$308.68\"\n        - cell \"$3,645.72\"\n        - cell \"Paid\"\n        - cell \"\"\n      - row \"INV-2026104 Acme Dental Practice Acme Dental Practice Managed Services Agreement - Jun 2, 2026 Jun 17, 2026 $781.00 $72.24 $853.24 Paid \":\n        - cell:\n          - checkbox\n        - cell \"INV-2026104\":\n          - link \"INV-2026104\":\n            - /url: https://soundit-dev/invoices/4\n        - cell \"Acme Dental Practice Acme Dental Practice\":\n          - img \"Acme Dental Practice\"\n          - link \"Acme Dental Practice\":\n            - /url: https://soundit-dev/clients/1\n        - cell \"Managed Services Agreement\":\n          - link \"Managed Services Agreement\":\n            - /url: https://soundit-dev/contracts/1\n        - cell \"-\"\n        - cell \"Jun 2, 2026\"\n        - cell \"Jun 17, 2026\"\n        - cell \"$781.00\"\n        - cell \"$72.24\"\n        - cell \"$853.24\"\n        - cell \"Paid\"\n        - cell \"\"\n      - row \"INV-2026106 HarborView Law Partners HarborView Law Partners Premium Managed Agreement - Jun 2, 2026 Jun 17, 2026 $2,043.00 $188.98 $2,231.98 Paid \":\n        - cell:\n          - checkbox\n        - cell \"INV-2026106\":\n          - link \"INV-2026106\":\n            - /url: https://soundit-dev/invoices/6\n        - cell \"HarborView Law Partners HarborView Law Partners\":\n          - img \"HarborView Law Partners\"\n          - link \"HarborView Law Partners\":\n            - /url: https://soundit-dev/clients/5\n        - cell \"Premium Managed Agreement\":\n          - link \"Premium Managed Agreement\":\n            - /url: https://soundit-dev/contracts/7\n        - cell \"-\"\n        - cell \"Jun 2, 2026\"\n        - cell \"Jun 17, 2026\"\n        - cell \"$2,043.00\"\n        - cell \"$188.98\"\n        - cell \"$2,231.98\"\n        - cell \"Paid\"\n        - cell \"\"\n      - row \"INV-2026101 Vandelay Industries Vandelay Industries Managed Services Agreement - May 2, 2026 May 17, 2026 $3,337.04 $308.68 $3,645.72 Paid \":\n        - cell:\n          - checkbox\n        - cell \"INV-2026101\":\n          - link \"INV-2026101\":\n            - /url: https://soundit-dev/invoices/1\n        - cell \"Vandelay Industries Vandelay Industries\":\n          - img \"Vandelay Industries\"\n          - link \"Vandelay Industries\":\n            - /url: https://soundit-dev/clients/3\n        - cell \"Managed Services Agreement\":\n          - link \"Managed Services Agreement\":\n            - /url: https://soundit-dev/contracts/4\n        - cell \"-\"\n        - cell \"May 2, 2026\"\n        - cell \"May 17, 2026\"\n        - cell \"$3,337.04\"\n        - cell \"$308.68\"\n        - cell \"$3,645.72\"\n        - cell \"Paid\"\n        - cell \"\"\n      - row \"INV-2026105 Acme Dental Practice Acme Dental Practice Prepay Time Block - Apr 2, 2026 Apr 17, 2026 $2,900.00 $268.25 $3,168.25 Paid \":\n        - cell:\n          - checkbox\n        - cell \"INV-2026105\":\n          - link \"INV-2026105\":\n            - /url: https://soundit-dev/invoices/5\n        - cell \"Acme Dental Practice Acme Dental Practice\":\n          - img \"Acme Dental Practice\"\n          - link \"Acme Dental Practice\":\n            - /url: https://soundit-dev/clients/1\n        - cell \"Prepay Time Block\":\n          - link \"Prepay Time Block\":\n            - /url: https://soundit-dev/contracts/2\n        - cell \"-\"\n        - cell \"Apr 2, 2026\"\n        - cell \"Apr 17, 2026\"\n        - cell \"$2,900.00\"\n        - cell \"$268.25\"\n        - cell \"$3,168.25\"\n        - cell \"Paid\"\n        - cell \"\"\n- contentinfo: © 2026 Sound IT PSA",
+  "axe": [
+    {
+      "url": "https://soundit-dev/invoices?client_id=&status=paid&from_date=&to_date=",
+      "label": "paid-filter-after-submit",
+      "violations": [
+        {
+          "id": "button-name",
+          "impact": "critical",
+          "help": "Buttons must have discernible text",
+          "nodes": [
+            ".btn-primary.btn-sm[type=\"submit\"]"
+          ]
+        },
+        {
+          "id": "color-contrast",
+          "impact": "serious",
+          "help": "Elements must meet minimum color contrast ratio thresholds",
+          "nodes": [
+            ".sidebar-group:nth-child(2) > .sidebar-group-label",
+            ".sidebar-group:nth-child(3) > .sidebar-group-label",
+            ".sidebar-group:nth-child(4) > .sidebar-group-label",
+            ".d-lg-inline"
+          ]
+        },
+        {
+          "id": "empty-table-header",
+          "impact": "minor",
+          "help": "Table header text should not be empty",
+          "nodes": [
+            "th[onclick=\"event.stopPropagation()\"]"
+          ]
+        },
+        {
+          "id": "image-redundant-alt",
+          "impact": "minor",
+          "help": "Alternative text of images should not be repeated as text",
+          "nodes": [
+            ".cursor-pointer:nth-child(1) > .small:nth-child(3) > .d-inline-flex.gap-1[data-bs-toggle=\"popover\"] > img[alt=\"Vandelay Industries\"][loading=\"lazy\"]",
+            ".cursor-pointer:nth-child(2) > .small:nth-child(3) > .d-inline-flex.gap-1[data-bs-toggle=\"popover\"] > img[alt=\"Acme Dental Practice\"][loading=\"lazy\"]",
+            "img[alt=\"HarborView Law Partners\"]",
+            ".cursor-pointer:nth-child(4) > .small:nth-child(3) > .d-inline-flex.gap-1[data-bs-toggle=\"popover\"] > img[alt=\"Vandelay Industries\"][loading=\"lazy\"]",
+            ".cursor-pointer:nth-child(5) > .small:nth-child(3) > .d-inline-flex.gap-1[data-bs-toggle=\"popover\"] > img[alt=\"Acme Dental Practice\"][loading=\"lazy\"]"
+          ]
+        },
+        {
+          "id": "label",
+          "impact": "critical",
+          "help": "Form elements must have labels",
+          "nodes": [
+            "#selectAll",
+            ".invoice-checkbox.form-check-input[value=\"2\"]",
+            ".invoice-checkbox.form-check-input[value=\"4\"]",
+            ".invoice-checkbox.form-check-input[value=\"6\"]",
+            ".invoice-checkbox.form-check-input[value=\"1\"]",
+            ".invoice-checkbox.form-check-input[value=\"5\"]"
+          ]
+        },
+        {
+          "id": "page-has-heading-one",
+          "impact": "moderate",
+          "help": "Page should contain a level-one heading",
+          "nodes": [
+            "html"
+          ]
+        },
+        {
+          "id": "select-name",
+          "impact": "critical",
+          "help": "Select element must have an accessible name",
+          "nodes": [
+            "select[name=\"client_id\"]",
+            "select[name=\"status\"]"
+          ]
+        }
+      ]
+    }
+  ],
+  "error": null,
+  "pageErrors": []
+}
