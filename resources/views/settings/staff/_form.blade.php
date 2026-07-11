@@ -16,6 +16,23 @@
     @enderror
 </div>
 
+@if($user?->exists)
+    <div class="mb-3">
+        <label for="role" class="form-label">Role</label>
+        <select class="form-select @error('role') is-invalid @enderror" id="role" name="role">
+            @foreach(\App\Enums\UserRole::cases() as $role)
+                <option value="{{ $role->value }}" @selected(old('role', $user->role?->value) === $role->value)>
+                    {{ $role->label() }}
+                </option>
+            @endforeach
+        </select>
+        <div class="form-text">Controls what this staff member can access. New staff default to Administrator.</div>
+        @error('role')
+            <div class="invalid-feedback">{{ $message }}</div>
+        @enderror
+    </div>
+@endif
+
 @if($user?->exists && $user->id !== auth()->id())
     <div class="form-check mb-3">
         <input type="hidden" name="is_active" value="0">

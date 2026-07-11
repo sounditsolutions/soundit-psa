@@ -51,6 +51,7 @@ class StaffController extends Controller
             'email' => $request->validated('email'),
             'is_active' => $request->boolean('is_active', $user->is_active),
             'is_contractor' => $request->boolean('is_contractor'),
+            'role' => $request->validated('role'),
         ]);
 
         return redirect()->route('settings.staff.index')
