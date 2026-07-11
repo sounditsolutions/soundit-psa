@@ -59,6 +59,19 @@ class McpStaffController extends Controller
 
     private const WHOAMI_TOOL = 'whoami';
 
+    /**
+     * Appended to every grant-check denial. A denied call is the failure that
+     * doubles as a refresh signal: the token's allowed-tool surface may have
+     * drifted from the tools/list snapshot the client cached at startup (a grant
+     * added or revoked since — {@see toolAllowed()} re-checks live DB grants on
+     * every call, so the client list is a cache, not truth). Per the wake-spec
+     * authority/trigger separation, this hint stays instruction-free: it states
+     * the fact and points at whoami (the live set) and the token directive (the
+     * authority), never issuing an imperative. A pointer that carries no
+     * authority is inert on any pipe — a forged copy cannot instruct.
+     */
+    private const TOOL_SURFACE_DRIFT_HINT = "The token's allowed-tool surface may have changed since this client cached tools/list; whoami returns the current allowed tools, and your token directive governs how to proceed.";
+
     /** Write tools that can be forced to carry an explicit client_id scope. */
     private const EXPLICIT_CLIENT_SCOPE_WRITE_TOOLS = [
         'add_ticket_note',
@@ -427,11 +440,14 @@ class McpStaffController extends Controller
             $message = "Tool not allowed for this token: {$name}";
             $this->audit('tools/call', (string) $name, $arguments, 'error', $message, $start, $request);
 
+            // The denial itself is the refresh signal: surface the drift hint to
+            // the model so a stale cached tools/list self-heals. The audit above
+            // keeps the bare reason; only the client-facing text carries the hint.
             return response()->json([
                 'jsonrpc' => '2.0',
                 'id' => $id,
                 'result' => [
-                    'content' => [['type' => 'text', 'text' => $message]],
+                    'content' => [['type' => 'text', 'text' => $message.' '.self::TOOL_SURFACE_DRIFT_HINT]],
                     'isError' => true,
                 ],
             ]);
