@@ -51,6 +51,9 @@ class ProspectAiVisibilityTest extends TestCase
     {
         Setting::setValue('wiki_enabled', '1');
         Setting::setValue('wiki_auto_mine', '1');
+        // Wiki mining + resolution drafting are AI-driven and now hard-gate on a configured
+        // provider; set the encrypted key so these jobs actually run under test.
+        Setting::setEncrypted('ai_api_key', 'test-key');
     }
 
     public function test_prospect_ticket_creation_dispatches_triage_notifications_and_technician_loop(): void

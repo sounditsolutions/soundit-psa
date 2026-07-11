@@ -56,4 +56,25 @@ class WikiSettingsTest extends TestCase
             ->assertSee('Client Wiki')
             ->assertSee('wiki_auto_mine', false); // form field name present in HTML
     }
+
+    public function test_wiki_card_warns_when_ai_provider_not_configured(): void
+    {
+        // No ai_api_key set → AiConfig::isConfigured() is false. The card must warn the
+        // operator that mining needs a provider (psa-fhru: the actionable state).
+        $user = User::factory()->create();
+
+        $this->actingAs($user)->get('/settings/general')
+            ->assertOk()
+            ->assertSee('Mining needs a configured AI provider');
+    }
+
+    public function test_wiki_card_hides_ai_warning_when_provider_configured(): void
+    {
+        $user = User::factory()->create();
+        Setting::setEncrypted('ai_api_key', 'test-key');
+
+        $this->actingAs($user)->get('/settings/general')
+            ->assertOk()
+            ->assertDontSee('Mining needs a configured AI provider');
+    }
 }

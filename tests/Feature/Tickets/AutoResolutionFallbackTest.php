@@ -20,6 +20,9 @@ class AutoResolutionFallbackTest extends TestCase
     {
         Setting::setValue('wiki_enabled', '1');
         Setting::setValue('wiki_auto_mine', '1');
+        // Resolution drafting is AI-driven and now hard-gates on a configured provider;
+        // set the encrypted key so the drafter runs under test.
+        Setting::setEncrypted('ai_api_key', 'test-key');
     }
 
     // ── Observer tests ───────────────────────────────────────────────────────
@@ -105,6 +108,29 @@ class AutoResolutionFallbackTest extends TestCase
     }
 
     // ── Job tests ────────────────────────────────────────────────────────────
+
+    public function test_job_noop_when_ai_provider_not_configured(): void
+    {
+        // auto-mine ON but NO AI key (psa-fhru): the drafter must not be invoked — it would
+        // throw on the null key deep in AiClient. The job skips cleanly, ticket untouched.
+        Setting::setValue('wiki_enabled', '1');
+        Setting::setValue('wiki_auto_mine', '1');
+        // deliberately NO ai_api_key → AiConfig::isConfigured() is false
+
+        $ticket = Ticket::factory()->create([
+            'status' => TicketStatus::Resolved,
+            'resolution' => null,
+        ]);
+
+        $drafter = $this->createMock(TicketResolutionDrafter::class);
+        $drafter->expects($this->never())->method('draft');
+
+        Bus::fake(); // suppress observer re-fire dispatches
+
+        (new GenerateTicketResolution($ticket->id))->handle($drafter);
+
+        $this->assertNull($ticket->fresh()->resolution);
+    }
 
     public function test_job_applies_draft_and_marks_ai_drafted(): void
     {
