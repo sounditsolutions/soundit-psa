@@ -131,6 +131,50 @@ class EmergencyAckTest extends TestCase
         }
     }
 
+    public function test_garbled_token_renders_branded_recovery_page_not_bare_403(): void
+    {
+        // A garbled link (claims() === null path) must land the AWAY operator on a
+        // friendly, on-brand page — NOT the bare Laravel "403 FORBIDDEN" — while
+        // keeping the 403 status and mutating nothing.
+        $e = $this->emergency();
+
+        $response = $this->get(route('emergency.ack', ['token' => 'garbage']));
+
+        $response->assertForbidden();
+        $response->assertSee('This link is no longer valid');
+        $response->assertSee('still tracking this');
+        $response->assertSee('on-call coordinator');
+        $response->assertDontSee('Forbidden');
+
+        $this->assertSame(EmergencyState::Open, $e->fresh()->state);
+    }
+
+    public function test_expired_token_renders_branded_recovery_page_not_bare_403(): void
+    {
+        // The verify()-fail path (here: TTL expiry) is the operator's single most
+        // likely real failure — a late tap. It must also reach the branded page,
+        // stay 403, and leave the emergency Open for the sweep.
+        $user = User::factory()->create();
+        $e = $this->emergency();
+        $token = EmergencyAckToken::issue($e->id, $user->id);
+
+        \Illuminate\Support\Carbon::setTestNow(now()->addMinutes(31));
+
+        try {
+            $response = $this->get(route('emergency.ack', ['token' => $token]));
+
+            $response->assertForbidden();
+            $response->assertSee('This link is no longer valid');
+            $response->assertSee('still tracking this');
+            $response->assertDontSee('Forbidden');
+
+            $this->assertSame(EmergencyState::Open, $e->fresh()->state);
+            $this->assertDatabaseMissing('technician_action_logs', ['action_type' => 'emergency_ack']);
+        } finally {
+            \Illuminate\Support\Carbon::setTestNow();
+        }
+    }
+
     /**
      * Flip a character in the signature portion of the base64url envelope so the
      * HMAC no longer verifies, while the envelope still base64url-decodes to JSON.
