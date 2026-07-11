@@ -145,6 +145,57 @@
     </div>
 </div>
 
+@php
+    $storageTiers = old('tiers');
+    if ($storageTiers === null) {
+        $storageTiers = ($sku?->backupStorageTiers ?? collect())
+            ->map(fn ($t) => ['up_to_gb' => $t->up_to_gb, 'unit_price' => $t->unit_price])
+            ->values()
+            ->all();
+    }
+@endphp
+<div class="mb-3" id="skuStorageTiersSection"
+     style="{{ old('default_quantity_type', $sku?->default_quantity_type?->value) === 'per_backup_storage_gb' ? '' : 'display:none' }}">
+    <label class="form-label mb-1">
+        Backup Storage Pricing Tiers
+        <i class="bi bi-question-circle text-muted ms-1" data-bs-toggle="tooltip" data-bs-placement="top"
+           title="Volume pricing for backup storage. When a recurring profile line for this SKU uses quantity type &quot;Backup Storage (GB)&quot;, the measured storage selects the first tier whose upper bound covers it, and the whole amount is billed at that tier's per-GB rate. Leave &quot;Up to (GB)&quot; blank on the last tier for an unbounded catch-all. With no tiers, the flat Unit Price applies per GB."></i>
+    </label>
+    <table class="table table-sm align-middle mb-2" style="max-width: 520px;">
+        <thead>
+            <tr>
+                <th style="width:45%">Up to (GB)</th>
+                <th style="width:45%">Price / GB ($)</th>
+                <th style="width:10%"></th>
+            </tr>
+        </thead>
+        <tbody id="storageTiersBody">
+            @foreach($storageTiers as $tier)
+                <tr>
+                    <td>
+                        <input type="number" class="form-control form-control-sm"
+                               name="tiers[{{ $loop->index }}][up_to_gb]"
+                               value="{{ $tier['up_to_gb'] ?? '' }}" min="1" step="1" placeholder="∞ (unbounded)">
+                    </td>
+                    <td>
+                        <input type="number" class="form-control form-control-sm"
+                               name="tiers[{{ $loop->index }}][unit_price]"
+                               value="{{ $tier['unit_price'] ?? '' }}" min="0" step="0.01" placeholder="0.00">
+                    </td>
+                    <td>
+                        <button type="button" class="btn btn-sm btn-outline-danger" onclick="removeStorageTier(this)">
+                            <i class="bi bi-x-lg"></i>
+                        </button>
+                    </td>
+                </tr>
+            @endforeach
+        </tbody>
+    </table>
+    <button type="button" class="btn btn-sm btn-outline-secondary" onclick="addStorageTier()">
+        <i class="bi bi-plus-lg"></i> Add tier
+    </button>
+</div>
+
 @if(!empty($qboIncomeAccounts ?? []) || !empty($qboExpenseAccounts ?? []))
 <div class="row g-3 mb-3">
     <div class="col-12">
@@ -185,6 +236,7 @@ function toggleSkuQtyTypeFields() {
     var val = sel.value;
     var licenseCol = document.getElementById('skuLicenseTypeCol');
     var includedCol = document.getElementById('skuIncludedPerUnitCol');
+    var tiersSection = document.getElementById('skuStorageTiersSection');
     var tooltipIcon = document.getElementById('licenseTypeTooltip');
 
     // License type: show for per_license_type, per_reseller_license_type, and overage
@@ -192,6 +244,9 @@ function toggleSkuQtyTypeFields() {
 
     // Included per unit: only for overage
     includedCol.style.display = val === 'overage' ? '' : 'none';
+
+    // Backup storage pricing tiers: only for per_backup_storage_gb
+    if (tiersSection) tiersSection.style.display = val === 'per_backup_storage_gb' ? '' : 'none';
 
     // Update tooltip text based on context
     if (tooltipIcon) {
@@ -202,6 +257,21 @@ function toggleSkuQtyTypeFields() {
             : 'Auto-fills the license type on profile lines. The billing quantity will equal the count of this license type assigned to the contract.');
         new bootstrap.Tooltip(tooltipIcon);
     }
+}
+
+let storageTierIndex = {{ count($storageTiers) }};
+function addStorageTier() {
+    var body = document.getElementById('storageTiersBody');
+    var tr = document.createElement('tr');
+    tr.innerHTML =
+        '<td><input type="number" class="form-control form-control-sm" name="tiers[' + storageTierIndex + '][up_to_gb]" min="1" step="1" placeholder="∞ (unbounded)"></td>' +
+        '<td><input type="number" class="form-control form-control-sm" name="tiers[' + storageTierIndex + '][unit_price]" min="0" step="0.01" placeholder="0.00"></td>' +
+        '<td><button type="button" class="btn btn-sm btn-outline-danger" onclick="removeStorageTier(this)"><i class="bi bi-x-lg"></i></button></td>';
+    body.appendChild(tr);
+    storageTierIndex++;
+}
+function removeStorageTier(btn) {
+    btn.closest('tr').remove();
 }
 
 document.addEventListener('DOMContentLoaded', function() {

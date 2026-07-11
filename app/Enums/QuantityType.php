@@ -13,6 +13,7 @@ enum QuantityType: string
     case PerLicenseType = 'per_license_type';
     case PerResellerLicenseType = 'per_reseller_license_type';
     case Overage = 'overage';
+    case PerBackupStorageGb = 'per_backup_storage_gb';
 
     public function label(): string
     {
@@ -26,6 +27,7 @@ enum QuantityType: string
             self::PerLicenseType => 'Per License Type',
             self::PerResellerLicenseType => 'Per Reseller License Type',
             self::Overage => 'Overage',
+            self::PerBackupStorageGb => 'Backup Storage (GB)',
         };
     }
 

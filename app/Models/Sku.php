@@ -64,6 +64,16 @@ class Sku extends Model
         return $this->hasMany(RecurringInvoiceProfileLine::class);
     }
 
+    /**
+     * Backup-storage volume-pricing tiers. Ordered as a rate card:
+     * bounded tiers ascending by GB, the unbounded (null) tier last.
+     */
+    public function backupStorageTiers(): HasMany
+    {
+        return $this->hasMany(BackupStorageTier::class)
+            ->orderByRaw('up_to_gb IS NULL, up_to_gb ASC');
+    }
+
     public function invoiceLines(): HasMany
     {
         return $this->hasMany(InvoiceLine::class);
@@ -98,5 +108,51 @@ class Sku extends Model
         }
 
         return round(((float) $this->unit_price - (float) $this->unit_cost) / (float) $this->unit_price * 100, 1);
+    }
+
+    /**
+     * Resolve the volume-pricing rate (price per GB) for a measured backup
+     * storage total, using this SKU's tier rate card.
+     *
+     * Volume pricing: the whole quantity is billed at the rate of the first
+     * tier whose upper bound covers it. A tier with a null `up_to_gb` is the
+     * unbounded catch-all. If usage exceeds every bounded tier and no
+     * unbounded tier exists, the highest bounded tier's rate applies (we
+     * never silently drop to an unpriced fallback once tiers are defined).
+     *
+     * Returns null when the SKU has no tiers configured, so callers can fall
+     * back to the flat line/SKU unit price.
+     */
+    public function priceForStorageGb(int $gb): ?float
+    {
+        $tiers = $this->relationLoaded('backupStorageTiers')
+            ? $this->backupStorageTiers
+            : $this->backupStorageTiers()->get();
+
+        if ($tiers->isEmpty()) {
+            return null;
+        }
+
+        // Defensive re-sort in case the collection arrived unordered (e.g.
+        // hydrated without the relation's orderBy): bounded ascending, the
+        // unbounded tier last.
+        $sorted = $tiers->sort(function (BackupStorageTier $a, BackupStorageTier $b) {
+            if ($a->up_to_gb === null) {
+                return 1;
+            }
+            if ($b->up_to_gb === null) {
+                return -1;
+            }
+
+            return $a->up_to_gb <=> $b->up_to_gb;
+        })->values();
+
+        foreach ($sorted as $tier) {
+            if ($tier->up_to_gb === null || $gb <= $tier->up_to_gb) {
+                return (float) $tier->unit_price;
+            }
+        }
+
+        return (float) $sorted->last()->unit_price;
     }
 }
