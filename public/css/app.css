@@ -194,6 +194,26 @@ h1, h2, h3, h4, h5, h6 {
     font-size: 0.8rem;
 }
 
+/* ── Asset detail: fit the mobile viewport (psa-kqpq) ──
+   The device console packs key/value tables (Device Identity, Status &
+   Hardware, the RMM cards) and an action toolbar onto one page. On phones
+   (<md) the fixed-width label columns plus long unbreakable values (serials,
+   disk summaries, agent versions, joined IP lists) could push the page wider
+   than the viewport and force a horizontal scroll. Relax the fixed label
+   widths and let long values wrap so the content stays inside 390px. The
+   header toolbar and the Tactical card header wrap via flex-wrap in the Blade;
+   the `.asset-detail-page` body hook scopes these rules to this page only. */
+@media (max-width: 767.98px) {
+    .asset-detail-page .table th[style*="width"] {
+        width: auto !important;
+    }
+    .asset-detail-page .table th,
+    .asset-detail-page .table td {
+        overflow-wrap: anywhere;
+        word-break: break-word;
+    }
+}
+
 /* ── Forms ── */
 .form-control,
 .form-select {

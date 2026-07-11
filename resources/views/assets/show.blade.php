@@ -2,6 +2,10 @@
 
 @section('title', ($asset->hostname ?: $asset->name) . '')
 
+{{-- psa-kqpq: scopes the mobile viewport-fit CSS (.asset-detail-page) so the
+     device console never forces a horizontal scroll on phones. --}}
+@section('body-class', 'bg-brand-light asset-detail-page')
+
 @section('content')
 <div class="row mb-3">
     <div class="col">
@@ -33,14 +37,17 @@
 @endif
 
 <div class="row mb-4">
-    <div class="col d-flex align-items-center justify-content-between">
+    {{-- psa-kqpq: stack the title above the action toolbar below md so the
+         status/contract badges + Edit/offboard controls never overflow a phone
+         viewport; inline (row) from md up as before. --}}
+    <div class="col d-flex flex-column flex-md-row align-items-start align-items-md-center justify-content-between gap-2">
         <div>
             <h4 class="section-title mb-1">{{ $asset->hostname ?: $asset->name }}</h4>
             @if($asset->hostname && $asset->hostname !== $asset->name)
                 <small class="text-muted">{{ $asset->name }}</small>
             @endif
         </div>
-        <div class="d-flex align-items-center gap-2">
+        <div class="d-flex align-items-center flex-wrap gap-2">
             @php $status = $asset->statusBadge; @endphp
             @if($status === 'Online')
                 <span class="badge bg-success fs-6" title="Online per RMM">Online</span>
@@ -388,9 +395,9 @@
             $freshStale = $insight?->stale ?? false;
         @endphp
         <div class="card shadow-sm card-static mb-3 mt-4">
-            <div class="card-header d-flex justify-content-between align-items-center">
+            <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
                 <span><i class="bi bi-pc-display me-2"></i>Tactical RMM</span>
-                <span class="d-flex align-items-center gap-2">
+                <span class="d-flex align-items-center flex-wrap gap-2 justify-content-end">
                     {{-- E3: prominent "alerts muted" warning when maintenance is ON,
                          placed right next to the device status. --}}
                     <span class="badge bg-warning text-dark" id="tacticalMaintenanceBadge"
