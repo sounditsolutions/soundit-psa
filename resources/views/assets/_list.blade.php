@@ -167,7 +167,10 @@
         ];
     @endphp
 
-    <div class="card shadow-sm card-static">
+    {{-- Desktop: the full table (md+). Below md it is replaced by the stacked
+         asset cards beneath this block, so device type and online/stale status
+         stay legible on a phone without horizontal panning (psa-b0fh). --}}
+    <div class="card shadow-sm card-static d-none d-md-block">
         <div class="table-responsive">
             <table class="table table-hover mb-0">
                 <thead class="thead-brand">
@@ -295,6 +298,68 @@
                 </tbody>
             </table>
         </div>
+    </div>
+
+    {{-- Mobile: stacked cards (below md). The desktop table hides Type, OS, IP,
+         Last Seen and Primary User at narrow widths, leaving only Device and
+         Client legible on a phone. Cards keep the identifying signal — type and
+         online/stale status — visible without horizontal panning (psa-b0fh). --}}
+    <div class="d-md-none asset-cards">
+        @foreach($assets as $asset)
+            @php $status = $asset->statusBadge; @endphp
+            <div class="asset-card {{ $status === 'Offline' ? 'asset-card-offline' : '' }}"
+                 onclick="window.location='{{ route('assets.show', $asset) }}'">
+                <div class="d-flex justify-content-between align-items-start gap-2 mb-1">
+                    <a href="{{ route('assets.show', $asset) }}"
+                       class="asset-card-title fw-semibold text-decoration-none text-break"
+                       onclick="event.stopPropagation()">
+                        {{ $asset->hostname ?: $asset->name }}
+                    </a>
+                    <span class="flex-shrink-0">
+                        @if($status === 'Online')
+                            <span class="badge bg-success" title="Online per RMM">Online</span>
+                        @elseif($status === 'Offline')
+                            <span class="badge bg-danger" title="Offline per RMM">Offline</span>
+                        @else
+                            <span class="badge bg-secondary" title="No RMM status available">Unknown</span>
+                        @endif
+                    </span>
+                </div>
+
+                @if($asset->hostname && $asset->hostname !== $asset->name)
+                    <small class="text-muted d-block mb-1 text-break">{{ $asset->name }}</small>
+                @endif
+
+                @if($asset->trashed())
+                    <span class="badge bg-danger mb-1" style="font-size: 0.6rem;">Deleted</span>
+                @elseif(!$asset->is_active)
+                    <span class="badge bg-secondary mb-1" style="font-size: 0.6rem;">Inactive</span>
+                @endif
+
+                @unless(isset($prefilter['client_id']))
+                    <div class="small mb-2" onclick="event.stopPropagation()">
+                        <x-client-badge :client="$asset->client" fallback="-" />
+                    </div>
+                @endunless
+
+                <div class="d-flex flex-wrap align-items-center gap-2 small text-muted">
+                    <span class="d-inline-flex align-items-center gap-1">
+                        <i class="bi bi-pc-display"></i>{{ $asset->asset_type ?: 'Unknown type' }}
+                    </span>
+                    @if($asset->os)
+                        <span class="d-inline-flex align-items-center gap-1">
+                            <i class="bi bi-hdd"></i>{{ $asset->os }}
+                        </span>
+                    @endif
+                    @if($asset->last_seen_at)
+                        <span class="ms-auto d-inline-flex align-items-center gap-1"
+                              title="{{ $asset->last_seen_at->toAppTz()->format('Y-m-d H:i T') }}">
+                            <i class="bi bi-clock-history"></i>{{ $asset->last_seen_at->diffForHumans() }}
+                        </span>
+                    @endif
+                </div>
+            </div>
+        @endforeach
     </div>
 
     <div class="mt-3">
