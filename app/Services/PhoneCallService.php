@@ -13,6 +13,7 @@ use App\Models\Person;
 use App\Models\PhoneCall;
 use App\Models\SipEndpoint;
 use App\Models\Ticket;
+use App\Services\Triage\AssetMatcher;
 use App\Support\PhoneNumber;
 use App\Support\PlivoConfig;
 use App\Support\TriageConfig;
@@ -501,6 +502,13 @@ class PhoneCallService
         $ticket = app(TicketService::class)->createTicket($ticketData, null);
 
         $this->linkCallToTicketWithNote($call, $ticket->id, "Ticket created from phone call #{$call->id}.");
+
+        // psa-vggw: link the caller's device(s) onto the ticket at creation so it
+        // carries real asset context from the start (held-first, fail-soft). Reuses
+        // the triage Stage-2c matcher against the resolved person/client's fleet plus
+        // any hostname named in the summary; the later async triage run then simply
+        // skips an already-linked ticket.
+        AssetMatcher::matchAtIntake($ticket);
 
         return $ticket;
     }

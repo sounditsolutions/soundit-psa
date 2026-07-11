@@ -26,6 +26,7 @@ use App\Services\Email\ForwardedEmailParser;
 use App\Services\Graph\GraphClient;
 use App\Services\Graph\GraphClientException;
 use App\Services\Mesh\MeshEmailParser;
+use App\Services\Triage\AssetMatcher;
 use App\Services\Zorus\ZorusEmailParser;
 use App\Support\AgentConfig;
 use App\Support\AiConfig;
@@ -929,6 +930,12 @@ PROMPT;
         }
 
         $this->linkEmailToTicket($email, $ticket, $emailAttachments ?? []);
+
+        // psa-vggw: link the sender's device(s) onto the ticket at creation so it
+        // carries real asset context from the start (held-first, fail-soft). Skips when
+        // a vendor-specific hostname link (e.g. Zorus, above) already attached an asset;
+        // the later async triage run then simply skips an already-linked ticket.
+        AssetMatcher::matchAtIntake($ticket);
 
         Log::info('[EmailService] Auto-created ticket from email', [
             'email_id' => $email->id,
