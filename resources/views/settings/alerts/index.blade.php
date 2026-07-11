@@ -39,7 +39,10 @@
             <i class="bi bi-plus-lg me-1"></i>New destination
         </a>
     </div>
-    <div class="table-responsive">
+    {{-- Desktop: full table (md+). Below md it swaps to stacked label/value rows
+         so Status and Actions cannot clip off the right edge of a phone viewport
+         (psa-0h6e; mirrors the Contracts table treatment in clients/show, psa-6zs7). --}}
+    <div class="table-responsive d-none d-md-block">
         <table class="table table-hover mb-0 align-middle">
             <thead class="thead-brand">
                 <tr>
@@ -96,6 +99,55 @@
                 @endforelse
             </tbody>
         </table>
+    </div>
+    {{-- Mobile: stacked rows below md so Target/Status/Actions stay reachable (psa-0h6e). --}}
+    <div class="d-md-none">
+        @forelse($destinations as $destination)
+            <div class="data-row">
+                <div class="d-flex justify-content-between align-items-start gap-2 mb-1">
+                    <a href="{{ route('settings.alerts.destinations.show', $destination) }}" class="text-decoration-none fw-semibold">
+                        <i class="bi {{ $destination->type === 'webhook' ? 'bi-webhook' : ($destination->type === 'email' ? 'bi-envelope' : 'bi-robot') }} me-1"></i>{{ $destination->label }}
+                    </a>
+                    <a href="{{ route('settings.alerts.destinations.show', $destination) }}" class="btn btn-sm btn-outline-secondary flex-shrink-0">
+                        <i class="bi bi-gear me-1"></i>Open
+                    </a>
+                </div>
+                <div class="text-muted small mb-1">{{ strtoupper($destination->type) }}</div>
+                <div class="d-flex justify-content-between gap-3 small py-1">
+                    <span class="data-label">Target</span>
+                    <span class="text-end text-break">
+                        @if($destination->type === 'mcp')
+                            <code>{{ $destination->mcp_token_label }}</code>
+                            @if($destination->masked_wake_url)
+                                <div class="text-muted">Wake: {{ $destination->masked_wake_url }}</div>
+                            @endif
+                        @else
+                            <span class="font-monospace">{{ $destination->masked_address ?? 'not set' }}</span>
+                        @endif
+                    </span>
+                </div>
+                <div class="d-flex justify-content-between gap-3 small py-1">
+                    <span class="data-label">Status</span>
+                    <span class="text-end">
+                        @include('settings.alerts._status_badge', ['enabled' => $destination->enabled])
+                        @if($destination->last_delivery_status === 'failed')
+                            {{-- last_error is HTML-escaped ({{ }}) — it can carry remote-server text. --}}
+                            <div class="mt-1">
+                                <span class="badge bg-danger-subtle text-danger-emphasis alerts-destination-failure"
+                                      title="{{ $destination->last_error }}">
+                                    <i class="bi bi-exclamation-triangle-fill me-1"></i>{{ \Illuminate\Support\Str::limit($destination->last_error, 40) }}
+                                </span>
+                            </div>
+                        @endif
+                        @if($destination->last_delivery_at)
+                            <div class="text-muted mt-1">{{ $destination->last_delivery_at->toAppTz()->format('Y-m-d H:i') }}</div>
+                        @endif
+                    </span>
+                </div>
+            </div>
+        @empty
+            <div class="data-row text-muted small">No destinations yet.</div>
+        @endforelse
     </div>
 </div>
 

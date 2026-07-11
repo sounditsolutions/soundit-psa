@@ -97,8 +97,11 @@ class AlertsHubDestinationsTest extends TestCase
         // ...HTML-escaped (last_error can carry remote-server response text) — never raw.
         $response->assertSee('&lt;script&gt;', false);
         $response->assertDontSee('<script>alert(1)</script>', false);
-        // Exactly one failure indicator on the page (only the broken row, not the healthy one).
-        $this->assertSame(1, substr_count($response->getContent(), 'alerts-destination-failure'));
+        // The failure indicator renders once per layout: the desktop table and the
+        // mobile stacked rows both live in the DOM (toggled by CSS), so the one broken
+        // destination surfaces it exactly twice — and the healthy one never does (a
+        // wrongly-flagged healthy destination would push this to four). psa-0h6e.
+        $this->assertSame(2, substr_count($response->getContent(), 'alerts-destination-failure'));
     }
 
     public function test_create_page_renders_and_store_redirects_to_detail(): void

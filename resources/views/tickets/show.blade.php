@@ -31,9 +31,12 @@
 
 <div class="row g-4">
     {{-- Left column: Subject, Description, Notes --}}
-    {{-- order-1 on mobile so title + description + notes lead the page; order-md-1
-         keeps the content-then-sidebar layout on desktop (psa-i2e7). --}}
-    <div class="col-md-8 order-1 order-md-1">
+    {{-- order-1 so title + description + notes lead the page while stacked; order-lg-1
+         keeps the content-then-sidebar layout on desktop (psa-i2e7). The columns split
+         at lg (≥992px), not md: at tablet width (768px) the dense right rail overflowed
+         a 33% column, so it now stacks below the content — matching contracts/show
+         (psa-ybif). --}}
+    <div class="col-lg-8 order-1 order-lg-1">
         <h4 class="section-title mb-1">{{ $ticket->display_id }}</h4>
         <h5 class="mb-3">{{ $ticket->subject }}</h5>
         @if($ticket->client && $ticket->client->stage === \App\Enums\ClientStage::Prospect)
@@ -516,9 +519,10 @@
     </div>
 
     {{-- Right column: Status, Details, Triage --}}
-    {{-- order-2 on mobile so metadata/forms follow the content (psa-i2e7);
-         order-md-2 keeps it in the right rail on desktop. --}}
-    <div class="col-md-4 order-2 order-md-2 detail-sidebar">
+    {{-- order-2 so metadata/forms follow the content when stacked below lg (psa-i2e7);
+         order-lg-2 keeps it in the right rail on desktop. col-lg-4 stacks the rail below
+         the main content at tablet width instead of clipping fields off-screen (psa-ybif). --}}
+    <div class="col-lg-4 order-2 order-lg-2 detail-sidebar">
         {{-- Status & Actions --}}
         <div class="card card-static shadow-sm mb-3">
             <div class="card-body py-2">
