@@ -240,6 +240,8 @@ class CippMcpClient
      */
     private function unwrapMcpResult(array $result): array
     {
+        $text = null;
+
         if (isset($result['content']) && is_array($result['content'])) {
             $text = '';
             foreach ($result['content'] as $part) {
@@ -247,15 +249,31 @@ class CippMcpClient
                     $text .= $part['text'];
                 }
             }
+        }
 
-            if ($text !== '') {
-                $decodedText = json_decode($text, true);
-                if (is_array($decodedText)) {
-                    return $this->unwrapCippEnvelope($decodedText);
-                }
+        // CIPP's ExecMCP reports tool failures as HTTP 200 + isError:true with
+        // the message as text content. Surface them as exceptions — otherwise
+        // the message decodes into pseudo-rows that read as a false-empty
+        // result downstream (psa-3twu).
+        if (($result['isError'] ?? false) === true) {
+            throw new CippClientException('CIPP MCP tool error: '.mb_substr($text !== null && $text !== '' ? $text : 'no error detail provided', 0, 500));
+        }
 
-                return ['text' => $text];
+        if ($text !== null) {
+            if ($text === '') {
+                // Empty tool result: PowerShell's ConvertTo-Json emits nothing
+                // for an empty array, so "no rows" arrives as empty text — not
+                // a reason to fall back to the envelope, which would fabricate
+                // one junk row out of {content, isError}.
+                return [];
             }
+
+            $decodedText = json_decode($text, true);
+            if (is_array($decodedText)) {
+                return $this->unwrapCippEnvelope($decodedText);
+            }
+
+            return ['text' => $text];
         }
 
         return $this->unwrapCippEnvelope($result);

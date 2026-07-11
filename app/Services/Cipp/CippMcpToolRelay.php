@@ -39,7 +39,13 @@ class CippMcpToolRelay
         'cipp_list_devices' => ['id', 'deviceName', 'displayName', 'userPrincipalName', 'operatingSystem', 'osVersion', 'complianceState', 'isCompliant', 'managementAgent', 'enrolledDateTime', 'lastSyncDateTime', 'serialNumber'],
         'cipp_list_groups' => ['id', 'displayName', 'mail', 'mailEnabled', 'securityEnabled', 'groupTypes', 'description'],
         'cipp_list_user_groups' => ['id', 'displayName', 'mail', 'mailEnabled', 'securityEnabled', 'groupTypes', 'description'],
-        'cipp_list_mailbox_permissions' => ['identity', 'user', 'accessRights', 'isInherited', 'deny', 'recipientPrincipal'],
+        // Real ListmailboxPermissions shape (verified against CIPP-API
+        // Invoke-ListmailboxPermissions.ps1, psa-3twu): CIPP collapses
+        // Get-MailboxPermission / Get-RecipientPermission / GrantSendOnBehalfTo
+        // into two-key {User, Permissions} rows server-side. Permissions is a
+        // joined string on FullAccess rows but a raw accessRights ARRAY on
+        // SendAs rows; SendOnBehalf rows carry display names in User.
+        'cipp_list_mailbox_permissions' => ['user', 'permissions'],
         'cipp_list_mailbox_rules' => ['name', 'enabled', 'priority', 'description', 'from', 'sentTo', 'forwardTo', 'redirectTo', 'deleteMessage', 'moveToFolder'],
         'cipp_list_defender_state' => ['managedDeviceId', 'azureADDeviceId', 'deviceName', 'managedDeviceName', 'userPrincipalName', 'antiVirusStatus', 'realTimeProtectionEnabled', 'antivirusEnabled', 'antiVirusSignatureVersion', 'antiMalwareVersion', 'signatureVersion', 'lastFullScanDateTime', 'lastQuickScanDateTime'],
         'cipp_list_conditional_access_policies' => ['id', 'displayName', 'state', 'createdDateTime', 'modifiedDateTime', 'conditions', 'grantControls', 'sessionControls'],
@@ -59,6 +65,8 @@ class CippMcpToolRelay
         'managedDeviceId' => ['managedDeviceId', 'ManagedDeviceId'],
         'azureADDeviceId' => ['azureADDeviceId', 'AzureADDeviceId', 'azureAdDeviceId', 'AzureAdDeviceId'],
         'userPrincipalName' => ['userPrincipalName', 'UserPrincipalName', 'UPN', 'upn'],
+        'user' => ['user', 'User'],
+        'permissions' => ['permissions', 'Permissions'],
         'primarySmtpAddress' => ['primarySmtpAddress', 'PrimarySmtpAddress', 'mail', 'Mail'],
         'mailboxSizeBytes' => ['mailboxSizeBytes', 'MailboxSizeBytes', 'totalItemSizeBytes', 'TotalItemSizeBytes'],
         'itemCount' => ['itemCount', 'ItemCount', 'mailboxItemCount', 'MailboxItemCount'],
@@ -452,7 +460,7 @@ class CippMcpToolRelay
     {
         $fields = self::DEFAULT_FIELDS[$toolName] ?? [];
 
-        return array_map(function (array $row) use ($toolName, $fields): array {
+        $projected = array_map(function (array $row) use ($toolName, $fields): array {
             $projected = [];
 
             foreach ($fields as $field) {
@@ -475,6 +483,20 @@ class CippMcpToolRelay
 
             return $projected;
         }, $rows);
+
+        // Non-empty upstream rows that all project to {} mean DEFAULT_FIELDS has
+        // drifted from the live CIPP response shape, and the tool would report a
+        // false "no results" (psa-3twu). Row keys are schema names and safe to
+        // log; row values are untrusted tenant data and never logged.
+        if ($rows !== [] && array_filter($projected) === []) {
+            Log::warning('[CippMcpToolRelay] Every row projected empty — DEFAULT_FIELDS out of sync with CIPP response shape', [
+                'tool' => $toolName,
+                'row_count' => count($rows),
+                'first_row_keys' => array_slice(array_keys($rows[0]), 0, 12),
+            ]);
+        }
+
+        return $projected;
     }
 
     /**
@@ -607,6 +629,9 @@ class CippMcpToolRelay
             'jobTitle',
             'department',
             'officeLocation',
+            // Mailbox-permission trustees can be display names (SendOnBehalf rows),
+            // not just UPNs — treat as untrusted free text.
+            'user',
             'Subject',
             'subject',
             'appDisplayName',
