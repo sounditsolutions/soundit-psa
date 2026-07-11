@@ -3,6 +3,7 @@
 namespace Tests\Feature\Mcp;
 
 use App\Models\CippMcpTool;
+use App\Support\McpToolModes;
 use App\Support\McpToolRegistry;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
@@ -30,16 +31,16 @@ class McpToolRegistryTest extends TestCase
         $this->assertNotContains('tactical_run_diagnostic', $names('integration'));
         $this->assertContains('wiki_add_fact', $names('wiki_write'));
         $this->assertContains('tactical_run_command', $names('tactical_action'));
-        $this->assertContains('tactical_stage_command', $names('tactical_action'));
+        $this->assertNotContains('tactical_stage_command', $names('tactical_action'));
         $this->assertContains('tactical_shutdown_device', $names('tactical_action'));
         $this->assertContains('tactical_create_client_site', $names('tactical_admin'));
         $this->assertContains('tactical_set_default_alert_template', $names('tactical_admin'));
         $this->assertContains('tactical_get_or_create_installer', $names('tactical_admin'));
         $this->assertContains('create_ticket', $names('psa_action'));
         $this->assertContains('send_email', $names('psa_action'));
-        $this->assertContains('stage_email', $names('psa_action'));
+        $this->assertNotContains('stage_email', $names('psa_action'));
         $this->assertContains('write_public_note', $names('psa_action'));
-        $this->assertContains('stage_public_note', $names('psa_action'));
+        $this->assertNotContains('stage_public_note', $names('psa_action'));
         $this->assertContains('propose_merge', $names('psa_action'));
         $this->assertContains('create_client', $names('psa_records'));
         $this->assertContains('update_client', $names('psa_records'));
@@ -156,17 +157,43 @@ class McpToolRegistryTest extends TestCase
         $this->assertContains('list_teams_chats', $all);
         $this->assertContains('wiki_add_fact', $all);
         $this->assertContains('tactical_run_command', $all);
-        $this->assertContains('tactical_stage_command', $all);
         $this->assertContains('tactical_shutdown_device', $all);
         $this->assertContains('tactical_create_client_site', $all);
         $this->assertContains('tactical_set_default_alert_template', $all);
         $this->assertContains('tactical_get_or_create_installer', $all);
         $this->assertContains('send_email', $all);
-        $this->assertContains('stage_email', $all);
         $this->assertContains('write_public_note', $all);
-        $this->assertContains('stage_public_note', $all);
         $this->assertContains('propose_merge', $all);
         $this->assertContains('post_to_operator', $all);
         $this->assertSame(array_values(array_unique($all)), $all, 'no duplicates');
+    }
+
+    public function test_staged_aliases_are_retired_from_the_catalog_but_map_to_their_canonical_tool(): void
+    {
+        $all = McpToolRegistry::allToolNames();
+
+        foreach (McpToolModes::stagedToCanonical() as $alias => $canonical) {
+            $this->assertNotContains($alias, $all, "{$alias} is a retired staged alias and must not be grantable");
+            $this->assertContains($canonical, $all, "{$canonical} must remain the grantable capability for {$alias}");
+            $this->assertSame($canonical, McpToolModes::canonicalForAlias($alias));
+            $this->assertSame($alias, McpToolModes::stagedInternalFor($canonical));
+            $this->assertTrue(McpToolModes::isStageable($canonical));
+        }
+
+        // The token detail page flags stageable capabilities for the per-tool
+        // staged/immediate mode control.
+        $flags = [];
+        foreach (McpToolRegistry::integrationGroups() as $group) {
+            foreach ($group['tiers'] as $tier) {
+                foreach ($tier['tools'] as $tool) {
+                    $flags[$tool['name']] = $tool['stageable'] ?? null;
+                }
+            }
+        }
+        $this->assertTrue($flags['send_email']);
+        $this->assertTrue($flags['tactical_run_script']);
+        $this->assertTrue($flags['cipp_convert_mailbox'] ?? true, 'cipp tools only render when configured');
+        $this->assertFalse($flags['create_ticket']);
+        $this->assertFalse($flags['find_clients'] ?? false);
     }
 }

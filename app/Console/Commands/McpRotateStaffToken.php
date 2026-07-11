@@ -8,7 +8,7 @@ use Illuminate\Console\Command;
 class McpRotateStaffToken extends Command
 {
     protected $signature = 'mcp:rotate-staff-token
-        {--tool=* : Tool name allowed for this scoped token. Repeat or comma-separate. Omit for the legacy full-surface token.}
+        {--tool=* : Tool name allowed for this scoped token. Repeat or comma-separate. Stageable action tools accept a mode suffix (name:staged holds every call for cockpit approval; name:immediate allows direct execution; bare name = immediate). Omit for the legacy full-surface token.}
         {--tools= : Comma-separated tool names allowed for this scoped token.}
         {--label= : Stable label for a scoped token; rotating the same label replaces the previous scoped token.}
         {--force : Skip confirmation prompts.}';

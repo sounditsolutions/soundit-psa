@@ -27,6 +27,7 @@ use App\Services\Tactical\Actions\ActionRedactor;
 use App\Support\McpInputSchema;
 use App\Support\McpStaffToken;
 use App\Support\McpToolInstructions;
+use App\Support\McpToolModes;
 use App\Support\McpToolRegistry;
 use App\Support\McpToolSurface;
 use App\Support\TechnicianConfig;
@@ -327,6 +328,16 @@ class McpStaffController extends Controller
             $merged[$t['name']] = $t;
         }
         $allTools = array_values($merged);
+
+        // Unified staged/immediate surface: retire the paired stage_* names
+        // from the advertised list and fold each into its canonical tool as a
+        // `staged` parameter, with the schema shaped by this token's granted
+        // mode (staged-only tokens see the staged variant's requirements).
+        $staffToken = $request->attributes->get('mcp_staff_token');
+        $allTools = McpToolModes::unifyDefinitionsForList(
+            $allTools,
+            $staffToken instanceof McpStaffToken ? $staffToken : null,
+        );
         $allTools = array_values(array_filter(
             $allTools,
             fn (array $tool): bool => $this->toolAllowed($request, (string) ($tool['name'] ?? '')),
@@ -416,9 +427,30 @@ class McpStaffController extends Controller
             return $this->error($id, -32602, 'Missing tool name');
         }
 
+        // Unified staged/immediate boundary. Retired stage_* names remain
+        // callable as thin aliases that force staged=true on their canonical
+        // tool; stageable canonicals carry a `staged` argument instead. The
+        // grant gate and mode gate both run on the canonical name, then the
+        // call is dispatched under the internal (staged or immediate) name so
+        // every executor path, cooldown key, and audit action_type is
+        // identical to the legacy paired call.
+        $requestedName = (string) $name;
+        $stageable = false;
+        $staged = false;
+        if (($aliasCanonical = McpToolModes::canonicalForAlias($requestedName)) !== null) {
+            $name = $aliasCanonical;
+            $stageable = true;
+            $staged = true;
+            unset($arguments['staged']);
+        } elseif (McpToolModes::isStageable($requestedName)) {
+            $stageable = true;
+            $staged = filter_var($arguments['staged'] ?? false, FILTER_VALIDATE_BOOLEAN);
+            unset($arguments['staged']);
+        }
+
         if (! $this->toolAllowed($request, (string) $name)) {
-            $message = "Tool not allowed for this token: {$name}";
-            $this->audit('tools/call', (string) $name, $arguments, 'error', $message, $start, $request);
+            $message = "Tool not allowed for this token: {$requestedName}";
+            $this->audit('tools/call', $requestedName, $arguments, 'error', $message, $start, $request);
 
             // The denial itself is the refresh signal: surface the drift hint to
             // the model so a stale cached tools/list self-heals. The audit above
@@ -431,6 +463,23 @@ class McpStaffController extends Controller
                     'isError' => true,
                 ],
             ]);
+        }
+
+        // Mode gate: staged=false (immediate execution) needs the per-tool
+        // immediate mode grant; a staged-only grant auto-downgrades the call
+        // to a staged proposal rather than failing it — staging is strictly
+        // the safer path and keeps the agent's workflow moving while a human
+        // still approves the action. Any grant of a stageable tool permits
+        // staged=true. After the gate, rewrite to the internal dispatch name.
+        $downgradedToStaged = false;
+        if ($stageable) {
+            if (! $staged && ! $this->allowsImmediateExecution($request, (string) $name)) {
+                $staged = true;
+                $downgradedToStaged = true;
+            }
+            if ($staged) {
+                $name = (string) McpToolModes::stagedInternalFor((string) $name);
+            }
         }
 
         // Extract client_id from the arguments — this is how client-scoped
@@ -827,6 +876,17 @@ class McpStaffController extends Controller
                 $executor = new AssistantToolExecutor(ticket: null, clientId: $clientId, userId: $userId);
                 $result = $executor->execute($name, is_array($arguments) ? $arguments : []);
             }
+            // Make an auto-downgrade unmistakable to the caller: it asked for
+            // immediate execution but got a held proposal instead.
+            if ($downgradedToStaged && is_array($result)) {
+                $result['downgraded_to_staged'] = true;
+                if (isset($result['error'])) {
+                    $result['error'] = 'Immediate execution is not granted for this token; the call was downgraded to a staged proposal. '.$result['error'];
+                } else {
+                    $result['message'] = trim('Immediate execution is not granted for this token; the call was downgraded to a staged proposal. '.(string) ($result['message'] ?? ''));
+                }
+            }
+
             $isError = is_array($result) && isset($result['error']);
 
             $this->audit(
@@ -1826,6 +1886,18 @@ class McpStaffController extends Controller
         return $token->allows($toolName);
     }
 
+    /**
+     * Whether staged=false may execute a stageable tool now. The legacy
+     * full-surface token retains full trust; scoped tokens need the per-tool
+     * immediate mode grant (see McpStaffToken::allowsImmediate()).
+     */
+    private function allowsImmediateExecution(Request $request, string $toolName): bool
+    {
+        $token = $request->attributes->get('mcp_staff_token');
+
+        return $token instanceof McpStaffToken && $token->allowsImmediate($toolName);
+    }
+
     private function userIdForToolCall(Request $request, string $toolName): ?int
     {
         if ($this->usesAiActorForWrite($request, $toolName)) {
@@ -1988,13 +2060,23 @@ class McpStaffController extends Controller
     {
         $token = $request->attributes->get('mcp_staff_token');
 
-        return [
+        $payload = [
             'label' => $token instanceof McpStaffToken && $token->label !== null ? $token->label : McpStaffToken::LEGACY_ACTOR_LABEL,
             'directive' => $token instanceof McpStaffToken ? $token->directiveOrDefault() : McpToken::defaultDirective(),
             'allowed_tools' => $token instanceof McpStaffToken && $token->allowedTools !== null
                 ? array_values(array_unique(array_merge([self::WHOAMI_TOOL, self::TOOL_SURFACE_TOOL], $token->allowedTools)))
                 : null,
         ];
+
+        // Per-tool execution mode for granted stageable capabilities:
+        // 'staged' = every call is held for approval, 'immediate' = staged
+        // and immediate both allowed. Omitted entirely when no stageable
+        // tool is granted (and for the legacy full-surface token).
+        if ($token instanceof McpStaffToken && $token->toolModes !== []) {
+            $payload['tool_modes'] = $token->toolModes;
+        }
+
+        return $payload;
     }
 
     /** @return array<string, mixed> */

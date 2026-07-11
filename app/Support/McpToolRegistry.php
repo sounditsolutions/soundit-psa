@@ -43,7 +43,7 @@ class McpToolRegistry
             ));
             $integrationNames = array_flip(array_column($integration, 'name'));
 
-            $psaActions = self::shape(self::psaActionTools());
+            $psaActions = self::shape(self::withoutStagedAliases(self::psaActionTools()));
             $psaActionNames = array_flip(array_column($psaActions, 'name'));
 
             $client = array_values(array_filter(
@@ -55,12 +55,12 @@ class McpToolRegistry
 
             $bridge = self::shape(OperatorBridgeTools::definitions());
             $wikiWrites = self::shape([self::wikiAddFactTool(), self::wikiCreatePageTool(), self::wikiUpdatePageTool()]);
-            $cippWrites = self::shape(array_merge(
+            $cippWrites = self::shape(self::withoutStagedAliases(array_merge(
                 self::dynamicCippWriteTools(),
                 self::cippWriteTools(),
-            ));
-            $tacticalActions = self::shape(self::tacticalActionTools());
-            $tacticalAdmin = self::shape(self::tacticalAdminTools());
+            )));
+            $tacticalActions = self::shape(self::withoutStagedAliases(self::tacticalActionTools()));
+            $tacticalAdmin = self::shape(self::withoutStagedAliases(self::tacticalAdminTools()));
             $psaRecords = self::shape(self::psaRecordsTools());
             $psaRead = self::shape(self::psaReadTools());
             $intakeManage = self::shape(self::intakeManageTools());
@@ -140,6 +140,7 @@ class McpToolRegistry
                     'name' => $tool['name'],
                     'description' => $tool['description'] ?? '',
                     'sensitive' => $sensitive,
+                    'stageable' => McpToolModes::isStageable((string) $tool['name']),
                 ];
             };
 
@@ -1588,6 +1589,23 @@ class McpToolRegistry
                 'required' => ['slug', 'title', 'body_md'],
             ],
         ];
+    }
+
+    /**
+     * Drop retired staged-alias definitions from a family list. The catalog
+     * (and therefore the grantable surface) is one tool per capability; the
+     * staged twin lives on only as a call-time alias and internal dispatch
+     * name (see McpToolModes).
+     *
+     * @param  array<int, array<string, mixed>>  $tools
+     * @return array<int, array<string, mixed>>
+     */
+    private static function withoutStagedAliases(array $tools): array
+    {
+        return array_values(array_filter(
+            $tools,
+            static fn (array $tool): bool => ! McpToolModes::isStagedAlias((string) ($tool['name'] ?? '')),
+        ));
     }
 
     /**

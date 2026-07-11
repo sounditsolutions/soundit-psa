@@ -17,6 +17,7 @@ use App\Models\User;
 use App\Services\Tactical\TacticalClient;
 use App\Services\Technician\TechnicianApprovalService;
 use App\Support\McpConfig;
+use App\Support\McpToolModes;
 use App\Support\McpToolRegistry;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Testing\TestResponse;
@@ -152,6 +153,14 @@ class TacticalServiceControlPhase4Test extends TestCase
 
         $actionNames = array_column($groups['tactical_action']['tools'], 'name');
         foreach (self::SERVICE_TOOLS as $tool) {
+            if (($canonical = McpToolModes::canonicalForAlias($tool)) !== null) {
+                // Retired staged alias: callable, but the catalog carries only
+                // the canonical capability (with a staged mode grant).
+                $this->assertNotContains($tool, $actionNames, "{$tool} is a retired staged alias");
+                $this->assertContains($canonical, $actionNames);
+
+                continue;
+            }
             $this->assertContains($tool, $actionNames, "{$tool} should be in the sensitive Tactical action group");
             $this->assertContains($tool, McpToolRegistry::allToolNames(), "{$tool} should be token-grantable");
         }
@@ -164,12 +173,23 @@ class TacticalServiceControlPhase4Test extends TestCase
         $scopedTools = collect($this->listTools($this->token(['tactical_stop_service', 'tactical_stage_restart_service'])))
             ->keyBy('name');
 
+        // Immediate grant: the unified tool keeps the direct schema (typed
+        // confirmation friction) plus the staged parameter.
         $this->assertTrue($scopedTools->has('tactical_stop_service'));
-        $this->assertTrue($scopedTools->has('tactical_stage_restart_service'));
         $this->assertContains('client_id', $scopedTools['tactical_stop_service']['inputSchema']['required']);
         $this->assertContains('confirm_hostname', $scopedTools['tactical_stop_service']['inputSchema']['required']);
         $this->assertContains('confirm_service_name', $scopedTools['tactical_stop_service']['inputSchema']['required']);
         $this->assertStringContainsString('interrupt applications or dependent services', $scopedTools['tactical_stop_service']['description']);
+
+        // Staged-only grant (via the legacy alias): the capability is
+        // advertised under its canonical name with the staged variant's
+        // schema — ticket_id required, no typed-confirmation friction.
+        $this->assertFalse($scopedTools->has('tactical_stage_restart_service'));
+        $restart = $scopedTools['tactical_restart_service'];
+        $this->assertContains('ticket_id', $restart['inputSchema']['required']);
+        $this->assertArrayNotHasKey('confirm_hostname', $restart['inputSchema']['properties']);
+        $this->assertArrayHasKey('staged', $restart['inputSchema']['properties']);
+        $this->assertStringContainsString('staged mode only', $restart['description']);
     }
 
     public function test_direct_start_service_rejects_upstream_ids_then_executes_with_resolved_service(): void

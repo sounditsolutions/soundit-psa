@@ -183,6 +183,32 @@ class McpTokensPageTest extends TestCase
         $this->assertSame(['find_staff'], $token->fresh()->tools);
     }
 
+    public function test_update_tools_normalizes_stageable_mode_entries_and_aliases(): void
+    {
+        McpConfig::rotateStaffToken(allowedTools: ['find_staff'], label: 'chet');
+        $token = McpToken::where('label', 'chet')->firstOrFail();
+
+        // A legacy staged-alias entry plus a bare canonical collapse onto one
+        // capability with the immediate mode (immediate implies staged).
+        $this->actingAs($this->user)
+            ->patchJson(route('settings.mcp-tokens.tools', $token), ['tools' => ['stage_email', 'find_clients', 'send_email']])
+            ->assertOk()
+            ->assertJson(['ok' => true, 'granted_count' => 2]);
+        $this->assertSame(['find_clients', 'send_email:immediate'], $token->fresh()->tools);
+
+        // A staged-only selection persists the staged mode explicitly.
+        $this->actingAs($this->user)
+            ->patchJson(route('settings.mcp-tokens.tools', $token), ['tools' => ['write_public_note:staged']])
+            ->assertOk();
+        $this->assertSame(['write_public_note:staged'], $token->fresh()->tools);
+
+        // A malformed mode suffix is rejected like any unknown tool.
+        $this->actingAs($this->user)
+            ->patchJson(route('settings.mcp-tokens.tools', $token), ['tools' => ['send_email:sometimes']])
+            ->assertStatus(422);
+        $this->assertSame(['write_public_note:staged'], $token->fresh()->tools);
+    }
+
     public function test_update_tools_edits_scope_in_place_without_rotating_the_secret(): void
     {
         // The reason editing scope exists separately from "regenerate": a live token's
