@@ -34,6 +34,15 @@
         </div>
 
         <div class="d-flex gap-2">
+            @if($client->stage === \App\Enums\ClientStage::Prospect)
+            <form method="POST" action="{{ route('prospects.convert', ['prospect' => $client]) }}"
+                  onsubmit="return confirm('Convert this prospect to an active client? This opens triage and automation for their future tickets.');">
+                @csrf
+                <button type="submit" class="btn btn-success btn-sm">
+                    <i class="bi bi-person-check me-1"></i>Convert to client
+                </button>
+            </form>
+            @endif
             <a href="{{ route('clients.portal', $client) }}" class="btn btn-outline-secondary btn-sm">
                 <i class="bi bi-person-lines-fill me-1"></i>Portal
             </a>
