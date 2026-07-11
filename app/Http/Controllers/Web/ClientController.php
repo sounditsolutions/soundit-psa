@@ -32,6 +32,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
 
 class ClientController extends Controller
 {
@@ -117,7 +118,20 @@ class ClientController extends Controller
             'client' => $client,
             'assets' => $assets,
             'integrations' => $integrations,
+            'mergeCandidates' => $this->mergeCandidatesFor($client),
         ]);
+    }
+
+    /**
+     * Other clients that could be merged INTO this one (this client survives).
+     * Includes inactive clients — a deactivated duplicate is a prime merge target.
+     */
+    private function mergeCandidatesFor(Client $client)
+    {
+        return Client::query()
+            ->where('id', '!=', $client->id)
+            ->orderBy('name')
+            ->get(['id', 'name', 'is_active', 'stage']);
     }
 
     public function tickets(Request $request, Client $client)
@@ -437,6 +451,51 @@ class ClientController extends Controller
 
         return redirect()->route('clients.index')
             ->with('success', 'Client deleted successfully.');
+    }
+
+    public function merge(Request $request, Client $client)
+    {
+        // Laravel's bare `exists` rule ignores the SoftDeletes scope, so scope the
+        // candidate to non-deleted rows. The service enforces the self-merge guard
+        // as the inner layer (defense in depth).
+        $validated = $request->validate([
+            'duplicate_id' => [
+                'required',
+                'integer',
+                Rule::exists('clients', 'id')->where(fn ($q) => $q->whereNull('deleted_at')),
+            ],
+        ]);
+
+        // findOrFail re-applies the SoftDeletes scope → clean 404 on a tampered id
+        $duplicate = Client::findOrFail($validated['duplicate_id']);
+        $duplicateName = $duplicate->name;
+
+        try {
+            $summary = $this->clientService->mergeClients($client, $duplicate, auth()->id());
+        } catch (\InvalidArgumentException|\RuntimeException $e) {
+            return redirect()->route('clients.show', $client)->with('error', $e->getMessage());
+        }
+
+        $parts = [];
+        foreach ([
+            ['tickets', 'ticket', 'tickets'],
+            ['assets', 'device', 'devices'],
+            ['people', 'contact', 'contacts'],
+            ['calls', 'call', 'calls'],
+            ['emails', 'email', 'emails'],
+            ['contracts', 'contract', 'contracts'],
+            ['invoices', 'invoice', 'invoices'],
+            ['licenses', 'license', 'licenses'],
+            ['reseller_children', 'reseller child', 'reseller children'],
+        ] as [$key, $one, $many]) {
+            if (! empty($summary[$key])) {
+                $parts[] = $summary[$key].' '.($summary[$key] === 1 ? $one : $many);
+            }
+        }
+        $movedText = $parts ? ' Moved '.implode(', ', $parts).'.' : '';
+
+        return redirect()->route('clients.show', $client)
+            ->with('success', "Merged {$duplicateName} into {$client->name}.{$movedText}");
     }
 
     public function updateSiteNotes(ClientSiteNotesUpdateRequest $request, Client $client)

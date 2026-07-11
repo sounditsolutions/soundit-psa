@@ -130,6 +130,7 @@ Route::middleware('auth')->group(function () {
     Route::get('/clients/{client}/edit', [ClientController::class, 'edit'])->name('clients.edit');
     Route::patch('/clients/{client}', [ClientController::class, 'update'])->name('clients.update');
     Route::delete('/clients/{client}', [ClientController::class, 'destroy'])->name('clients.destroy');
+    Route::post('/clients/{client}/merge', [ClientController::class, 'merge'])->name('clients.merge');
     Route::patch('/clients/{client}/site-notes', [ClientController::class, 'updateSiteNotes'])->name('clients.site-notes.update');
     Route::patch('/clients/{client}/credentials', [ClientController::class, 'updateCredentials'])->name('clients.credentials.update');
     Route::post('/clients/{client}/install-link/generate', [ClientController::class, 'generateInstallLink'])->name('clients.install-link.generate');
