@@ -533,6 +533,7 @@ Route::middleware('auth')->group(function () {
     Route::get('/contracts/{contract}/invoices', [ContractController::class, 'invoices'])->name('contracts.invoices');
     Route::patch('/contracts/{contract}', [ContractController::class, 'update'])->name('contracts.update');
     Route::post('/contracts/{contract}/prepay/adjust', [ContractController::class, 'prepayAdjust'])->name('contracts.prepay-adjust');
+    Route::post('/contracts/{contract}/prepay/transfer', [ContractController::class, 'prepayTransfer'])->name('contracts.prepay-transfer');
     Route::post('/contracts/{contract}/prepay/initialize', [ContractController::class, 'initializePrepay'])->name('contracts.initialize-prepay');
     Route::put('/contracts/{contract}/portal-sku', [ContractController::class, 'updatePortalSku'])->name('contracts.update-portal-sku');
     Route::put('/contracts/{contract}/alert-settings', [ContractController::class, 'updateAlertSettings'])->name('contracts.update-alert-settings');

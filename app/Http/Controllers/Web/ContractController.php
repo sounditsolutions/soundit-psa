@@ -248,6 +248,18 @@ class ContractController extends Controller
         // Unassigned licenses — scoped to ANY contract for the client (not just this one)
         $unassignedLicenses = $assignmentService->getUnassignedLicenses($contract);
 
+        // Contracts eligible to receive a prepay transfer: same client, active,
+        // prepay enabled, and the same tracking unit (hours vs dollars).
+        $prepayTransferTargets = $contract->has_prepay
+            ? Contract::where('client_id', $contract->client_id)
+                ->where('id', '!=', $contract->id)
+                ->where('status', ContractStatus::Active)
+                ->whereNotNull('prepay_balance')
+                ->where('prepay_as_amount', $contract->prepay_as_amount)
+                ->orderBy('name')
+                ->get()
+            : collect();
+
         \App\Support\RecentItems::track(auth()->id(), 'contract', $contract->id, \Illuminate\Support\Str::limit($contract->name, 30), route('contracts.show', $contract));
 
         return view('contracts.show', [
@@ -256,6 +268,7 @@ class ContractController extends Controller
             'unassignedAssets' => $unassignedAssets,
             'unassignedPeople' => $unassignedPeople,
             'unassignedLicenses' => $unassignedLicenses,
+            'prepayTransferTargets' => $prepayTransferTargets,
             'ruleTypes' => \App\Enums\AssignmentRuleType::cases(),
             'types' => ContractType::cases(),
             'statuses' => ContractStatus::cases(),
@@ -458,6 +471,52 @@ class ContractController extends Controller
 
         return redirect()->route('contracts.show', $contract)
             ->with('success', "{$label} of {$validated['value']} {$unit} applied.");
+    }
+
+    public function prepayTransfer(Request $request, Contract $contract)
+    {
+        if (! $contract->has_prepay) {
+            return redirect()->route('contracts.show', $contract)
+                ->with('error', 'Prepay is not enabled on this contract.');
+        }
+
+        $validated = $request->validate([
+            'to_contract_id' => ['required', 'integer', 'exists:contracts,id'],
+            'value' => ['required', 'numeric', 'gt:0'],
+            'note' => ['required', 'string', 'max:500'],
+        ]);
+
+        $target = Contract::find($validated['to_contract_id']);
+
+        // Business rules — surfaced as friendly redirects. PrepayService::transfer()
+        // re-asserts each of these defensively (throws), so the guard is honoured
+        // even if a caller bypasses the form.
+        $error = match (true) {
+            $target === null => 'Destination contract not found.',
+            $target->id === $contract->id => 'Cannot transfer prepay to the same contract.',
+            $target->client_id !== $contract->client_id => 'Prepay can only be transferred between contracts of the same client.',
+            ! $target->has_prepay => 'The destination contract does not have prepay enabled.',
+            $target->prepay_as_amount !== $contract->prepay_as_amount => 'Prepay tracking units must match (hours vs dollars).',
+            round((float) $validated['value'], 4) > round((float) $contract->prepay_balance, 4) => 'Insufficient prepay balance to transfer.',
+            default => null,
+        };
+
+        if ($error !== null) {
+            return redirect()->route('contracts.show', $contract)->with('error', $error);
+        }
+
+        try {
+            $this->prepayService->transfer(
+                $contract, $target, (float) $validated['value'], $validated['note'], auth()->user(),
+            );
+        } catch (\InvalidArgumentException $e) {
+            return redirect()->route('contracts.show', $contract)->with('error', $e->getMessage());
+        }
+
+        $unit = $contract->prepay_as_amount ? 'dollars' : 'hours';
+
+        return redirect()->route('contracts.show', $contract)
+            ->with('success', "Transferred {$validated['value']} {$unit} to {$target->name}.");
     }
 
     public function updatePortalSku(Request $request, Contract $contract)
