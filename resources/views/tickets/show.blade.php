@@ -568,8 +568,13 @@
                         <button type="button" class="btn btn-success btn-sm" data-bs-toggle="modal" data-bs-target="#resolveModal">
                             <i class="bi bi-check-lg me-1"></i>Resolve
                         </button>
-                    @endif
-                    @if($ticket->status !== App\Enums\TicketStatus::Closed)
+                        {{-- Closing an active ticket routes through the resolution prompt (see #closeModal)
+                             so a tech can't accidentally bypass the fix-summary / wiki-mining path (psa-2jho). --}}
+                        <button type="button" class="btn btn-secondary btn-sm" data-bs-toggle="modal" data-bs-target="#closeModal">
+                            <i class="bi bi-x-circle me-1"></i>Close
+                        </button>
+                    @elseif($ticket->status !== App\Enums\TicketStatus::Closed)
+                        {{-- Ticket is already Resolved: the resolution is captured, so Close is a one-click finalize. --}}
                         <form method="POST" action="{{ route('tickets.update-status', $ticket) }}">
                             @csrf
                             @method('PATCH')
@@ -1213,6 +1218,47 @@
 </div>
 @endif
 
+{{-- Close modal — closing an active ticket still captures a resolution so the
+     fix summary / wiki-mining path is not bypassed (psa-2jho). Mirrors #resolveModal. --}}
+@if($ticket->status->isOpen())
+<div class="modal fade" id="closeModal" tabindex="-1" aria-labelledby="closeModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <form method="POST" action="{{ route('tickets.update-status', $ticket) }}">
+                @csrf
+                @method('PATCH')
+                <input type="hidden" name="status" value="closed">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="closeModalLabel">Close ticket</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <p class="text-muted small mb-2">Closing finalises the ticket and skips the <strong>Resolved</strong> step. Add a short resolution summary so the fix is recorded and can feed the client wiki.</p>
+                    <div class="d-flex align-items-center justify-content-between mb-1">
+                        <label for="closeResolution" class="form-label mb-0">Resolution summary <span class="text-muted">(recommended)</span></label>
+                        @if(\App\Support\AiConfig::isConfigured())
+                        <button type="button" class="btn btn-outline-secondary btn-sm" id="draftCloseResolutionBtn"
+                                data-url="{{ route('tickets.draft-resolution', $ticket) }}"
+                                title="Draft with AI">
+                            <i class="bi bi-robot me-1"></i>Draft with AI
+                        </button>
+                        @endif
+                    </div>
+                    <textarea name="resolution" id="closeResolution" class="form-control" rows="3"
+                              placeholder="How was this resolved?"></textarea>
+                    <div class="form-text">A short summary is recorded on the ticket and feeds the client wiki — it helps future tickets.@if(\App\Support\AiConfig::isConfigured()) Leave it blank and we'll draft one from the ticket's notes.@endif</div>
+                    <div class="mt-1 small text-danger d-none" id="draftCloseResolutionError"></div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-secondary"><i class="bi bi-x-circle me-1"></i>Close ticket</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+@endif
+
 @endsection
 
 @push('scripts')
@@ -1310,24 +1356,25 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     }
 
-    // AI Draft Resolution
-    const draftResolutionBtn = document.getElementById('draftResolutionBtn');
-    if (draftResolutionBtn) {
-        draftResolutionBtn.addEventListener('click', function() {
-            const textarea = document.getElementById('resolveResolution');
-            const errorEl = document.getElementById('draftResolutionError');
+    // AI Draft Resolution — shared by the Resolve (#resolveModal) and Close (#closeModal) modals.
+    function wireDraftResolution(btnId, textareaId, errorId) {
+        const btn = document.getElementById(btnId);
+        if (!btn) return;
+        btn.addEventListener('click', function() {
+            const textarea = document.getElementById(textareaId);
+            const errorEl = document.getElementById(errorId);
 
             // Overwrite protection
             if (textarea && textarea.value.trim() && !confirm('Replace current text with AI draft?')) {
                 return;
             }
 
-            const originalHtml = draftResolutionBtn.innerHTML;
-            draftResolutionBtn.disabled = true;
-            draftResolutionBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Drafting...';
+            const originalHtml = btn.innerHTML;
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Drafting...';
             if (errorEl) errorEl.classList.add('d-none');
 
-            fetch(draftResolutionBtn.dataset.url, {
+            fetch(btn.dataset.url, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -1355,11 +1402,13 @@ document.addEventListener('DOMContentLoaded', function() {
                 }
             })
             .finally(function() {
-                draftResolutionBtn.disabled = false;
-                draftResolutionBtn.innerHTML = originalHtml;
+                btn.disabled = false;
+                btn.innerHTML = originalHtml;
             });
         });
     }
+    wireDraftResolution('draftResolutionBtn', 'resolveResolution', 'draftResolutionError');
+    wireDraftResolution('draftCloseResolutionBtn', 'closeResolution', 'draftCloseResolutionError');
 
     // Move ticket panel
     const moveBtn = document.getElementById('moveTicketBtn');
