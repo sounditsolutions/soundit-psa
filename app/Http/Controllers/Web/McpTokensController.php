@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Web;
 use App\Http\Controllers\Controller;
 use App\Models\McpAuditLog;
 use App\Models\McpToken;
+use App\Models\SignalConfigLog;
 use App\Models\SignalDelivery;
 use App\Models\SignalDestination;
 use App\Models\SignalInboxEntry;
@@ -247,6 +248,7 @@ class McpTokensController extends Controller
         $wasDraft = $token->isDraft();
         $token->forceFill(['revoked_at' => now()])->save();
         $this->clearPendingSignalInboxForLabel($label);
+        $this->disableSignalDestinationsForRevokedLabel($request, $label);
 
         $this->audit($request, 'token/revoke', $label, ['tools' => $tools, 'was_draft' => $wasDraft]);
 
@@ -384,6 +386,35 @@ class McpTokensController extends Controller
         } catch (\Throwable $e) {
             Log::warning('[Settings/McpTokens] Audit write failed: '.$e->getMessage());
         }
+    }
+
+    /**
+     * Revocation is terminal: the token can never authenticate to poll again, so
+     * any Alerts Hub MCP destination pointing at this label is now unpollable.
+     * Disable those destinations (the router already suppresses disabled ones) and
+     * leave a breadcrumb so the operator can see why it went dark. Non-MCP
+     * destinations and destinations targeting other labels are untouched.
+     */
+    private function disableSignalDestinationsForRevokedLabel(Request $request, string $label): void
+    {
+        SignalDestination::query()
+            ->where('type', 'mcp')
+            ->where('mcp_token_label', $label)
+            ->where('enabled', true)
+            ->get()
+            ->each(function (SignalDestination $destination) use ($request, $label): void {
+                $destination->forceFill([
+                    'enabled' => false,
+                    'last_error' => 'Linked MCP token "'.$label.'" was revoked',
+                ])->save();
+
+                SignalConfigLog::record(
+                    $request->user()?->id,
+                    'disabled',
+                    $destination,
+                    ['enabled' => false, 'reason' => 'mcp-token-revoked'],
+                );
+            });
     }
 
     private function clearPendingSignalInboxForLabel(string $label): void

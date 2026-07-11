@@ -2,10 +2,12 @@
 
 namespace Tests\Feature\Signals;
 
+use App\Models\McpToken;
 use App\Models\SignalDelivery;
 use App\Models\SignalDestination;
 use App\Models\SignalEvent;
 use App\Models\User;
+use App\Support\McpConfig;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -62,5 +64,38 @@ class AlertsHubDestinationDetailTest extends TestCase
             ->assertSee('Chet doorbell')
             ->assertDontSee('zx9q')                       // not even last-4
             ->assertDontSee('hmac-secret-value-zx9q');    // never the value
+    }
+
+    public function test_show_warns_when_linked_mcp_token_is_revoked(): void
+    {
+        McpConfig::rotateStaffToken(allowedTools: ['find_staff'], label: 'ghost');
+        McpToken::where('label', 'ghost')->update(['revoked_at' => now()]);
+        $dest = SignalDestination::create([
+            'label' => 'Orphan inbox',
+            'type' => 'mcp',
+            'mcp_token_label' => 'ghost',
+            'enabled' => true,
+        ]);
+
+        $this->actingAs($this->user)->get(route('settings.alerts.destinations.show', $dest))
+            ->assertOk()
+            ->assertSee('Token revoked')
+            ->assertSee('revoked or no longer exists');
+    }
+
+    public function test_show_does_not_warn_when_linked_mcp_token_is_live(): void
+    {
+        McpConfig::rotateStaffToken(allowedTools: ['find_staff'], label: 'chet');
+        $dest = SignalDestination::create([
+            'label' => 'Healthy inbox',
+            'type' => 'mcp',
+            'mcp_token_label' => 'chet',
+            'enabled' => true,
+        ]);
+
+        $this->actingAs($this->user)->get(route('settings.alerts.destinations.show', $dest))
+            ->assertOk()
+            ->assertDontSee('Token revoked')
+            ->assertDontSee('revoked or no longer exists');
     }
 }
