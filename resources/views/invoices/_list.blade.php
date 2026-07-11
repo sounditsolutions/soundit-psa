@@ -1,12 +1,20 @@
 {{-- Reusable invoice list partial.
      Expects: $invoices, $clients, $statuses, $filters
      Optional: $listRoute (string, default 'invoices.index'), $prefilter (array, default [])
+               $columns (array, default null = all columns), $showFilters (bool, default true),
+               $showBulkActions (bool, default true)
+     Column keys: checkbox, invoice_number, client, contract, profile, date, due_date,
+                  subtotal, tax, total, status, sync
 --}}
 @php
     $listRoute = $listRoute ?? 'invoices.index';
     $prefilter = $prefilter ?? [];
+    $showFilters = $showFilters ?? true;
+    $showBulkActions = $showBulkActions ?? true;
+    $columns = $columns ?? null; // null = show all columns
 @endphp
 
+@if($showFilters)
 {{-- Filters --}}
 <div class="card shadow-sm card-static mb-3">
     <div class="card-body">
@@ -55,6 +63,7 @@
         </form>
     </div>
 </div>
+@endif
 
 @if($invoices->isEmpty())
     <div class="text-center py-5 text-muted">
@@ -70,38 +79,65 @@
             <table class="table table-hover mb-0">
                 <thead class="thead-brand">
                     <tr>
+                        @if($showBulkActions && (!$columns || in_array('checkbox', $columns)))
                         <th style="width: 40px;" onclick="event.stopPropagation()">
                             <input type="checkbox" class="form-check-input" id="selectAll">
                         </th>
+                        @endif
+                        @if(!$columns || in_array('invoice_number', $columns))
                         <th>Invoice #</th>
-                        @unless(isset($prefilter['contract_id']))
+                        @endif
+                        @if((!$columns || in_array('client', $columns)) && !isset($prefilter['contract_id']))
                         <th>Client</th>
-                        @endunless
+                        @endif
+                        @if(!$columns || in_array('contract', $columns))
                         <th>Contract</th>
+                        @endif
+                        @if(!$columns || in_array('profile', $columns))
                         <th>Profile</th>
+                        @endif
+                        @if(!$columns || in_array('date', $columns))
                         <th>Date</th>
+                        @endif
+                        @if(!$columns || in_array('due_date', $columns))
                         <th>Due Date</th>
+                        @endif
+                        @if(!$columns || in_array('subtotal', $columns))
                         <th class="text-end">Subtotal</th>
+                        @endif
+                        @if(!$columns || in_array('tax', $columns))
                         <th class="text-end">Tax</th>
+                        @endif
+                        @if(!$columns || in_array('total', $columns))
                         <th class="text-end">Total</th>
+                        @endif
+                        @if(!$columns || in_array('status', $columns))
                         <th>Status</th>
+                        @endif
+                        @if(!$columns || in_array('sync', $columns))
                         <th>Sync</th>
+                        @endif
                     </tr>
                 </thead>
                 <tbody>
                     @foreach($invoices as $invoice)
                         <tr class="cursor-pointer" onclick="window.location='{{ route('invoices.show', $invoice) }}'">
+                            @if($showBulkActions && (!$columns || in_array('checkbox', $columns)))
                             <td onclick="event.stopPropagation()">
                                 <input type="checkbox" class="form-check-input invoice-checkbox" value="{{ $invoice->id }}">
                             </td>
+                            @endif
+                            @if(!$columns || in_array('invoice_number', $columns))
                             <td>
                                 <a href="{{ route('invoices.show', $invoice) }}" class="text-decoration-none fw-semibold">
                                     {{ $invoice->invoice_number }}
                                 </a>
                             </td>
-                            @unless(isset($prefilter['contract_id']))
+                            @endif
+                            @if((!$columns || in_array('client', $columns)) && !isset($prefilter['contract_id']))
                             <td class="small"><x-client-badge :client="$invoice->client" fallback="-" /></td>
-                            @endunless
+                            @endif
+                            @if(!$columns || in_array('contract', $columns))
                             <td class="small">
                                 @if($invoice->contract)
                                     <a href="{{ route('contracts.show', $invoice->contract) }}" class="text-decoration-none" onclick="event.stopPropagation()">{{ $invoice->contract->name }}</a>
@@ -109,6 +145,8 @@
                                     <span class="text-muted">-</span>
                                 @endif
                             </td>
+                            @endif
+                            @if(!$columns || in_array('profile', $columns))
                             <td class="small">
                                 @if($invoice->profile)
                                     {{ $invoice->profile->name }}
@@ -116,11 +154,23 @@
                                     <span class="text-muted">-</span>
                                 @endif
                             </td>
+                            @endif
+                            @if(!$columns || in_array('date', $columns))
                             <td class="small">{{ $invoice->invoice_date->format('M j, Y') }}</td>
+                            @endif
+                            @if(!$columns || in_array('due_date', $columns))
                             <td class="small">{{ $invoice->due_date->format('M j, Y') }}</td>
+                            @endif
+                            @if(!$columns || in_array('subtotal', $columns))
                             <td class="small text-end">${{ number_format($invoice->subtotal, 2) }}</td>
+                            @endif
+                            @if(!$columns || in_array('tax', $columns))
                             <td class="small text-end">${{ number_format($invoice->tax, 2) }}</td>
+                            @endif
+                            @if(!$columns || in_array('total', $columns))
                             <td class="text-end fw-semibold">${{ number_format($invoice->total, 2) }}</td>
+                            @endif
+                            @if(!$columns || in_array('status', $columns))
                             <td>
                                 @if($invoice->isOverdue())
                                     <span class="badge bg-danger">Overdue</span>
@@ -128,6 +178,8 @@
                                     <span class="badge {{ $invoice->status->badgeClass() }}">{{ $invoice->status->label() }}</span>
                                 @endif
                             </td>
+                            @endif
+                            @if(!$columns || in_array('sync', $columns))
                             <td>
                                 @if($invoice->stripe_sync_error || $invoice->qbo_sync_error)
                                     <i class="bi bi-exclamation-triangle-fill text-danger" title="{{ $invoice->stripe_sync_error ?: $invoice->qbo_sync_error }}"></i>
@@ -139,6 +191,7 @@
                                     <i class="bi bi-dash text-muted" title="Not synced"></i>
                                 @endif
                             </td>
+                            @endif
                         </tr>
                     @endforeach
                 </tbody>
@@ -191,6 +244,7 @@
     </div>
 @endif
 
+@if($showBulkActions)
 {{-- Bulk Action Bar --}}
 <div id="bulkBar" style="display: none; position: fixed; bottom: 0; left: 0; right: 0; z-index: 1050; background: var(--primary, #1a365d); color: #fff; border-top: 3px solid var(--accent, #fed136); padding: 12px 24px;">
     <div class="d-flex align-items-center justify-content-between">
@@ -231,6 +285,7 @@
         </div>
     </div>
 </div>
+@endif
 
 @push('styles')
 <style>
@@ -240,6 +295,7 @@
 
 @push('scripts')
 <script>
+@if($showBulkActions)
 (function() {
     var selectedIds = new Set();
 
@@ -340,5 +396,6 @@
         new bootstrap.Modal(document.getElementById('bulkActionModal')).show();
     };
 })();
+@endif
 </script>
 @endpush

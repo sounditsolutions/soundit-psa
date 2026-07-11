@@ -1,12 +1,19 @@
 {{-- Reusable contract list partial.
      Expects: $contracts, $filters, $clients, $statuses, $types, $prepaySkus
      Optional: $listRoute (string, default 'contracts.index-all'), $prefilter (array, default [])
+               $columns (array, default null = all columns), $showFilters (bool, default true),
+               $showBulkActions (bool, default true)
+     Column keys: checkbox, client, contract, type, status, billing, start, end, assignments, profiles
 --}}
 @php
     $listRoute = $listRoute ?? 'contracts.index-all';
     $prefilter = $prefilter ?? [];
+    $showFilters = $showFilters ?? true;
+    $showBulkActions = $showBulkActions ?? true;
+    $columns = $columns ?? null; // null = show all columns
 @endphp
 
+@if($showFilters)
 {{-- Filters --}}
 <div class="card shadow-sm card-static mb-3">
     <div class="card-body">
@@ -54,6 +61,7 @@
         </form>
     </div>
 </div>
+@endif
 
 @if($contracts->isEmpty())
     <div class="text-center py-5 text-muted">
@@ -62,42 +70,65 @@
     </div>
 @else
     <div class="card shadow-sm card-static">
+        @if($showBulkActions)
         <div class="text-center py-2 bg-light border-bottom small" id="selectAllBanner" style="display:none;">
             <span id="selectAllBannerText"></span>
         </div>
+        @endif
         <div class="table-responsive">
             <table class="table table-hover mb-0">
                 <thead class="thead-brand">
                     <tr>
+                        @if($showBulkActions && (!$columns || in_array('checkbox', $columns)))
                         <th style="width: 30px;"><input type="checkbox" class="form-check-input" id="selectAll"></th>
-                        @unless(isset($prefilter['client_id']))
+                        @endif
+                        @if((!$columns || in_array('client', $columns)) && !isset($prefilter['client_id']))
                         <th>Client</th>
-                        @endunless
+                        @endif
+                        @if(!$columns || in_array('contract', $columns))
                         <th>Contract</th>
+                        @endif
+                        @if(!$columns || in_array('type', $columns))
                         <th>Type</th>
+                        @endif
+                        @if(!$columns || in_array('status', $columns))
                         <th>Status</th>
+                        @endif
+                        @if(!$columns || in_array('billing', $columns))
                         <th>Billing</th>
+                        @endif
+                        @if(!$columns || in_array('start', $columns))
                         <th>Start</th>
+                        @endif
+                        @if(!$columns || in_array('end', $columns))
                         <th>End</th>
+                        @endif
+                        @if(!$columns || in_array('assignments', $columns))
                         <th>Assignments</th>
+                        @endif
+                        @if(!$columns || in_array('profiles', $columns))
                         <th class="text-center">Profiles</th>
+                        @endif
                     </tr>
                 </thead>
                 <tbody>
                     @foreach($contracts as $contract)
                         <tr class="cursor-pointer" onclick="window.location='{{ route('contracts.show', $contract) }}'">
+                            @if($showBulkActions && (!$columns || in_array('checkbox', $columns)))
                             <td onclick="event.stopPropagation()">
                                 <input type="checkbox" class="form-check-input contract-checkbox"
                                        value="{{ $contract->id }}">
                             </td>
-                            @unless(isset($prefilter['client_id']))
+                            @endif
+                            @if((!$columns || in_array('client', $columns)) && !isset($prefilter['client_id']))
                             <td class="small">
                                 <a href="{{ route('clients.show', $contract->client) }}" class="text-decoration-none text-muted"
                                    onclick="event.stopPropagation()">
                                     {{ $contract->client?->name ?? '—' }}
                                 </a>
                             </td>
-                            @endunless
+                            @endif
+                            @if(!$columns || in_array('contract', $columns))
                             <td>
                                 <a href="{{ route('contracts.show', $contract) }}" class="text-decoration-none fw-semibold">
                                     {{ $contract->name }}
@@ -106,11 +137,23 @@
                                     <i class="bi bi-file-earmark-text text-muted ms-1" title="{{ $contract->documents_count }} document(s)"></i>
                                 @endif
                             </td>
+                            @endif
+                            @if(!$columns || in_array('type', $columns))
                             <td class="small">{{ $contract->type->label() }}</td>
+                            @endif
+                            @if(!$columns || in_array('status', $columns))
                             <td><span class="badge {{ $contract->status->badgeClass() }}">{{ $contract->status->label() }}</span></td>
+                            @endif
+                            @if(!$columns || in_array('billing', $columns))
                             <td class="small">{{ $contract->billing_period->label() }}</td>
+                            @endif
+                            @if(!$columns || in_array('start', $columns))
                             <td class="small">{{ $contract->start_date->format('M j, Y') }}</td>
+                            @endif
+                            @if(!$columns || in_array('end', $columns))
                             <td class="small">{{ $contract->end_date?->format('M j, Y') ?? '—' }}</td>
+                            @endif
+                            @if(!$columns || in_array('assignments', $columns))
                             <td class="small">
                                 @if($contract->people_count + $contract->assets_count + $contract->licenses_count > 0)
                                     <span title="People">{{ $contract->people_count }}<i class="bi bi-people ms-1 me-2 text-muted"></i></span>
@@ -120,7 +163,10 @@
                                     <span class="text-muted">—</span>
                                 @endif
                             </td>
+                            @endif
+                            @if(!$columns || in_array('profiles', $columns))
                             <td class="text-center small">{{ $contract->profiles_count }}</td>
+                            @endif
                         </tr>
                     @endforeach
                 </tbody>
@@ -132,6 +178,7 @@
         {{ $contracts->links() }}
     </div>
 
+    @if($showBulkActions)
     {{-- Bulk Action Bar --}}
     <div class="bulk-action-bar" id="bulkBar">
         <span id="bulkCount" class="fw-semibold me-2">0 selected</span>
@@ -174,6 +221,7 @@
             </div>
         </div>
     </div>
+    @endif
 @endif
 
 @push('styles')
@@ -200,6 +248,7 @@
 
 @push('scripts')
 <script>
+@if($showBulkActions)
 (function() {
     var selectedIds = new Set();
     var selectAllFilter = false;
@@ -416,5 +465,6 @@
         new bootstrap.Modal(document.getElementById('bulkActionModal')).show();
     };
 })();
+@endif
 </script>
 @endpush
