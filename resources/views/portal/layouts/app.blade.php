@@ -65,6 +65,13 @@
                             </a>
                         </li>
                     @endif
+                    @if(App\Support\PortalConfig::chatbotEnabled())
+                        <li class="nav-item">
+                            <a class="nav-link {{ request()->routeIs('portal.chatbot') ? 'active' : '' }}" href="{{ route('portal.chatbot') }}">
+                                <i class="bi bi-robot me-1"></i>Ask AI
+                            </a>
+                        </li>
+                    @endif
                     @if(App\Support\PortalConfig::billingUrl())
                         <li class="nav-item">
                             <a class="nav-link" href="{{ App\Support\PortalConfig::billingUrl() }}" target="_blank">
