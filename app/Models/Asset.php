@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Enums\AssetHealthGrade;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -91,6 +92,11 @@ class Asset extends Model
         return [
             'is_active' => 'boolean',
             'rmm_online' => 'boolean',
+            'health_score' => 'integer',
+            'health_grade' => AssetHealthGrade::class,
+            'health_summary_is_ai' => 'boolean',
+            'health_breakdown' => 'array',
+            'health_computed_at' => 'datetime',
             'ram_gb' => 'decimal:2',
             'last_seen_at' => 'datetime',
             'last_boot_at' => 'datetime',

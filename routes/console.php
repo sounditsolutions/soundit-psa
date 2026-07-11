@@ -224,6 +224,13 @@ Schedule::command('assets:assign-users')
     ->withoutOverlapping()
     ->runInBackground();
 
+// Asset health scores — recompute cached score + AI explanation daily, after
+// the overnight vendor syncs (RMM, backup, M365) have refreshed the signals.
+Schedule::command('assets:refresh-health')
+    ->dailyAt('06:30')
+    ->withoutOverlapping()
+    ->runInBackground();
+
 // QBO — pull payment status every 4 hours (always runs)
 Schedule::command('qbo:sync-invoices --pull-status')
     ->everyFourHours()
