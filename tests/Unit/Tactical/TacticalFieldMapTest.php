@@ -117,4 +117,41 @@ class TacticalFieldMapTest extends TestCase
             ],
         ], $volumes);
     }
+
+    public function test_software_rows_unwraps_the_installed_software_wrapper(): void
+    {
+        // GET software/{agent}/ serializes the inventory as {id, agent,
+        // software: [...]} — the rows live under the `software` key. Mapping
+        // the wrapper itself yields three phantom {name: "Unknown"} rows.
+        $rows = TacticalFieldMap::softwareRows([
+            'id' => 4,
+            'agent' => 12,
+            'software' => [
+                ['name' => 'Mozilla Firefox', 'version' => '128.0.3', 'publisher' => 'Mozilla'],
+                ['name' => '7-Zip', 'version' => '24.07', 'publisher' => 'Igor Pavlov'],
+            ],
+        ]);
+
+        $this->assertSame(['Mozilla Firefox', '7-Zip'], array_column($rows, 'name'));
+    }
+
+    public function test_software_rows_passes_a_bare_list_through_and_drops_non_row_entries(): void
+    {
+        $rows = TacticalFieldMap::softwareRows([
+            ['name' => 'Google Chrome', 'version' => '126.0'],
+            'not-a-row',
+            ['name' => 'Zoom Workplace'],
+        ]);
+
+        $this->assertSame(['Google Chrome', 'Zoom Workplace'], array_column($rows, 'name'));
+    }
+
+    public function test_software_rows_treats_empty_and_unknown_object_shapes_as_no_inventory(): void
+    {
+        // An agent with no inventory record returns []; an unrecognized object
+        // must map to no rows, never to placeholder rows.
+        $this->assertSame([], TacticalFieldMap::softwareRows([]));
+        $this->assertSame([], TacticalFieldMap::softwareRows(['id' => 4, 'agent' => 12]));
+        $this->assertSame([], TacticalFieldMap::softwareRows(['detail' => 'Not found.']));
+    }
 }

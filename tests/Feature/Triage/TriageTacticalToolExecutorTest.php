@@ -63,4 +63,45 @@ class TriageTacticalToolExecutorTest extends TestCase
         $this->assertSame('online', $result['status']);
         $this->assertSame(16.0, $result['ram_gb']);
     }
+
+    public function test_tactical_software_tool_unwraps_the_wrapper_payload_instead_of_returning_phantom_rows(): void
+    {
+        $client = Client::factory()->create();
+        $asset = Asset::factory()->create([
+            'client_id' => $client->id,
+            'hostname' => 'PC-01',
+        ]);
+        TacticalAsset::create([
+            'asset_id' => $asset->id,
+            'agent_id' => 'agent-1',
+            'hostname' => 'PC-01',
+        ]);
+
+        // Live Tactical serializes the inventory as a wrapper object — the rows
+        // live under `software`. Mapping the wrapper itself used to return three
+        // phantom {name: "Unknown", version: null, publisher: null} rows.
+        $tactical = Mockery::mock(TacticalClient::class);
+        $tactical->shouldReceive('getSoftware')
+            ->once()
+            ->with('agent-1')
+            ->andReturn([
+                'id' => 4,
+                'agent' => 12,
+                'software' => [
+                    ['name' => 'Mozilla Firefox', 'version' => '128.0.3', 'publisher' => 'Mozilla'],
+                    ['name' => '7-Zip', 'version' => '24.07', 'publisher' => 'Igor Pavlov'],
+                ],
+            ]);
+        $this->app->instance(TacticalClient::class, $tactical);
+
+        $ticket = Ticket::factory()->create(['client_id' => $client->id]);
+        $result = (new TriageToolExecutor($ticket))->execute('tactical_get_device_software', [
+            'hostname' => 'pc-01',
+        ]);
+
+        $this->assertSame([
+            ['name' => '7-Zip', 'version' => '24.07', 'publisher' => 'Igor Pavlov'],
+            ['name' => 'Mozilla Firefox', 'version' => '128.0.3', 'publisher' => 'Mozilla'],
+        ], $result);
+    }
 }
