@@ -183,6 +183,38 @@ class McpTokensPageTest extends TestCase
         $this->assertSame(['find_staff'], $token->fresh()->tools);
     }
 
+    public function test_update_tools_edits_scope_in_place_without_rotating_the_secret(): void
+    {
+        // The reason editing scope exists separately from "regenerate": a live token's
+        // secret is left intact, so every consumer keeps working without being re-wired.
+        // This is the exact gap the mayor hit — adding get_staff to an already-live token
+        // instead of rotating it (which would force pasting a new secret everywhere).
+        $plain = McpConfig::rotateStaffToken(allowedTools: ['find_staff'], label: 'chet');
+        $token = McpToken::where('label', 'chet')->firstOrFail();
+
+        $this->assertTrue($token->isActive());
+        $activatedAt = $token->activated_at?->copy();
+        $oldHash = $token->token_hash;
+        $oldPrefix = $token->token_prefix;
+
+        $this->actingAs($this->user)
+            ->patchJson(route('settings.mcp-tokens.tools', $token), ['tools' => ['find_staff', 'get_staff']])
+            ->assertOk()
+            ->assertJson(['ok' => true, 'granted_count' => 2]);
+
+        $fresh = $token->fresh();
+        // Scope changed in place...
+        $this->assertSame(['find_staff', 'get_staff'], $fresh->tools);
+        // ...but the secret did NOT rotate — the same token string still authenticates
+        // (contrast test_regenerate_secret_*, which asserts the hash/prefix DO change).
+        $this->assertSame($oldHash, $fresh->token_hash);
+        $this->assertSame($oldPrefix, $fresh->token_prefix);
+        $this->assertSame(hash('sha256', $plain), $fresh->token_hash);
+        // ...and it stays the same live token — no revert to draft, no re-activation.
+        $this->assertTrue($fresh->isActive());
+        $this->assertEquals($activatedAt, $fresh->activated_at);
+    }
+
     public function test_directive_and_trust_flags_auto_save(): void
     {
         McpConfig::rotateStaffToken(allowedTools: ['find_staff'], label: 'chet', aiActor: false, requireExplicitClientScope: false);
