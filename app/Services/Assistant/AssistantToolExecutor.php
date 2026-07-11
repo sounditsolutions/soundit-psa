@@ -512,14 +512,15 @@ class AssistantToolExecutor
         }
 
         $ticketId = $input['ticket_id'] ?? null;
-        if (! $ticketId) {
+        if (! $ticketId || (! is_int($ticketId) && ! is_string($ticketId))) {
             return ['error' => 'ticket_id is required'];
         }
 
-        // CLIENT-SCOPED: verify the ticket belongs to this client
-        $ticket = Ticket::where('id', $ticketId)
-            ->where('client_id', $this->clientId)
-            ->first();
+        // CLIENT-SCOPED: verify the ticket belongs to this client. Resolve
+        // display ids too ("#8351" / bare synced number) — MCP callers echo
+        // back the number they see, which diverges from the internal id on
+        // externally-synced tickets (psa-gq0f).
+        $ticket = Ticket::resolveReference($ticketId, $this->clientId);
 
         if (! $ticket) {
             return ['error' => 'Ticket not found or belongs to a different client'];
@@ -528,7 +529,7 @@ class AssistantToolExecutor
         // Latest notes, not oldest: fetch the newest 20 then present them
         // chronologically. The old ASC+limit dropped the tail on busy tickets,
         // so "what did the client say last" could be absent entirely (psa-m7re).
-        $notes = TicketNote::where('ticket_id', $ticketId)
+        $notes = TicketNote::where('ticket_id', $ticket->id)
             ->orderByDesc('noted_at')
             ->limit(20)
             ->get()
