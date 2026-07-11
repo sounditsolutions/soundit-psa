@@ -238,12 +238,20 @@
     background: var(--accent-hover, #fdc50c);
 }
 
-/* Mobile responsive */
-@media (max-width: 480px) {
+/* Mobile: hide the floating bubble + flyout.
+   The bubble is `position: fixed` in the bottom-right corner. On phones and
+   small tablets, form fields stack full-width (Bootstrap `col-md-*` collapses
+   below `md`), so the fixed bubble sits on top of the right edge of whatever
+   control is under it — obscuring the dropdown chevron of selectors like
+   Priority on the ticket create form or Primary Tech on the client create
+   form (psa-ap59). There is no overlap-free corner over a full-width form, so
+   the desktop-oriented bubble is hidden here; the topbar "Ask AI" trigger
+   opens the full-width assistant panel on these viewports instead.
+   Breakpoint mirrors the `md` boundary used elsewhere (see assistant-chat.css). */
+@media (max-width: 767.98px) {
+    #assistantBubble,
     .ab-flyout {
-        width: calc(100vw - 32px);
-        right: 16px;
-        bottom: 76px;
+        display: none !important;
     }
 }
 
