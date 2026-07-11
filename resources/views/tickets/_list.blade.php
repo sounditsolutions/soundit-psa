@@ -23,13 +23,13 @@
         <a href="{{ route($listRoute, array_merge($prefilter, request()->except('assignee_id', 'page'), ['assignee_id' => 'all'])) }}"
            class="btn {{ ($filters['assignee_id'] ?? '') === 'all' ? 'btn-primary' : 'btn-outline-primary' }}">
             All
-            @if($unassignedCount > 0)
-                <span class="badge bg-warning text-dark ms-1">{{ $unassignedCount }}</span>
-            @endif
         </a>
         <a href="{{ route($listRoute, array_merge($prefilter, request()->except('assignee_id', 'page'), ['assignee_id' => 'unassigned'])) }}"
            class="btn {{ ($filters['assignee_id'] ?? '') === 'unassigned' ? 'btn-primary' : 'btn-outline-primary' }}">
             Unassigned
+            @if($unassignedCount > 0)
+                <span class="badge bg-warning text-dark ms-1">{{ $unassignedCount }}</span>
+            @endif
         </a>
     </div>
 
