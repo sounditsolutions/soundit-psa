@@ -1162,6 +1162,25 @@ cd /var/www/psa && php artisan schedule:run
 
 Prepay balances are calculated from the transaction ledger. If balances look wrong, run `php artisan prepay:reconcile` (or `--contract=ID` for a specific contract) to recalculate from all transactions. Auto-deposits happen when invoices are generated from recurring profiles with SKUs that have `prepaid_time_minutes` set. Check the SKU and profile line configuration if deposits aren't appearing.
 
+**Historical invoices missing prepaid time:** Invoices generated before a SKU had `prepaid_time_minutes` configured carry no prepaid time on their lines, so no deposit is created when they are paid. Backfill them from the current SKU configuration:
+
+```bash
+# Preview: fill prepaid_time_minutes on PSA-native invoice lines from their linked SKU
+php artisan billing:backfill-prepaid-time --dry-run
+
+# Apply (only fills lines never set; never overwrites existing values)
+php artisan billing:backfill-prepaid-time
+
+# Also create the missing prepay deposits for invoices that were ALREADY paid
+# (unpaid invoices deposit automatically when they are later marked Paid)
+php artisan billing:backfill-prepaid-time --deposit-paid
+
+# Include Halo-imported invoices too (default: PSA-native only)
+php artisan billing:backfill-prepaid-time --include-halo
+```
+
+The command mirrors the generation-time formula (`quantity × sku.prepaid_time_minutes`). Deposit creation reuses the idempotent auto-deposit path, so re-running it never double-deposits.
+
 ### 403 Forbidden when sending email (reply or compose)
 
 The Entra app registration is missing the `Mail.Send` Application permission. Go to Azure Portal > App registrations > your app > API permissions, add `Mail.Send` under Microsoft Graph Application permissions, and grant admin consent. See Section 7.
