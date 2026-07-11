@@ -441,6 +441,58 @@ class DataSurfaceToolsTest extends TestCase
         $this->assertStringNotContainsString('SuperSecret123', $software['publisher']);
     }
 
+    public function test_tactical_software_unwraps_the_wrapper_payload_instead_of_returning_phantom_rows(): void
+    {
+        $this->configureTactical();
+
+        $client = Client::factory()->create();
+        $asset = Asset::factory()->create([
+            'client_id' => $client->id,
+            'hostname' => 'PC-01',
+        ]);
+        TacticalAsset::create([
+            'asset_id' => $asset->id,
+            'agent_id' => 'agent-1',
+            'hostname' => 'PC-01',
+        ]);
+
+        // Live Tactical serializes the inventory as a wrapper object — the rows
+        // live under `software`. Mapping the wrapper itself used to return three
+        // phantom {name: "Unknown", version: null, publisher: null} rows.
+        $tactical = Mockery::mock(TacticalClient::class);
+        $tactical->shouldReceive('getSoftware')
+            ->once()
+            ->with('agent-1')
+            ->andReturn([
+                'id' => 4,
+                'agent' => 12,
+                'software' => [
+                    ['name' => 'Mozilla Firefox', 'version' => '128.0.3', 'publisher' => 'Mozilla'],
+                    ['name' => '7-Zip 24.07 (x64)', 'version' => '24.07', 'publisher' => 'Igor Pavlov'],
+                ],
+            ]);
+        $this->app->instance(TacticalClient::class, $tactical);
+
+        $token = $this->chetToken(['tactical_get_device_software']);
+        $response = $this->callTool($token, 'tactical_get_device_software', [
+            'client_id' => $client->id,
+            'hostname' => 'PC-01',
+        ]);
+
+        $response->assertOk();
+        $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
+
+        $software = $this->decodedResult($response);
+        $this->assertCount(2, $software);
+        // Alphabetical order; real names/versions/publishers come through.
+        $this->assertStringContainsString('7-Zip 24.07 (x64)', $software[0]['name']);
+        $this->assertSame('24.07', $software[0]['version']);
+        $this->assertStringContainsString('Igor Pavlov', $software[0]['publisher']);
+        $this->assertStringContainsString('Mozilla Firefox', $software[1]['name']);
+        $this->assertSame('128.0.3', $software[1]['version']);
+        $this->assertStringNotContainsString('Unknown', json_encode($software));
+    }
+
     public function test_tactical_service_name_and_display_name_are_redacted_and_fenced_before_returning_to_chet(): void
     {
         $this->configureTactical();

@@ -975,12 +975,15 @@ class TriageToolExecutor
         }
 
         try {
-            $software = app(TacticalClient::class)->getSoftware($resolved['agent_id']);
+            $payload = app(TacticalClient::class)->getSoftware($resolved['agent_id']);
         } catch (\Throwable $e) {
             Log::warning('[Triage] Tactical software query failed', ['hostname' => $hostname, 'error' => $e->getMessage()]);
 
             return ['error' => 'Tactical query failed: '.mb_substr($e->getMessage(), 0, 200)];
         }
+
+        // The inventory rows arrive wrapped as {id, agent, software: [...]}.
+        $software = TacticalFieldMap::softwareRows($payload);
 
         // Sort alphabetically, limit to 50
         usort($software, fn ($a, $b) => strcasecmp($a['name'] ?? '', $b['name'] ?? ''));

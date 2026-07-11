@@ -147,6 +147,36 @@ class TacticalFieldMap
         return $check['check_result']['status'] ?? $check['status'] ?? 'unknown';
     }
 
+    /**
+     * Normalize a getSoftware (GET software/{agent}/) payload to a flat list of
+     * software rows.
+     *
+     * Tactical serializes the per-agent inventory as a WRAPPER OBJECT —
+     * {id, agent, software: [...]} — with the rows under the `software` key
+     * (the same shape TacticalPanelData::software() unwraps). Mapping the
+     * wrapper directly yields exactly three phantom {name: "Unknown"} rows,
+     * one per wrapper key. A bare list of rows passes through; an agent with
+     * no inventory record returns [] upstream; any other object shape is
+     * treated as no inventory rather than mapped into placeholder rows. This
+     * is the single source of truth, consumed by TriageToolExecutor and
+     * TacticalReadOnlyToolset.
+     *
+     * @param  array<mixed>  $payload
+     * @return array<int, array<string, mixed>>
+     */
+    public static function softwareRows(array $payload): array
+    {
+        if (isset($payload['software']) && is_array($payload['software'])) {
+            $payload = $payload['software'];
+        }
+
+        if (! array_is_list($payload)) {
+            return [];
+        }
+
+        return array_values(array_filter($payload, 'is_array'));
+    }
+
     /** Cap the per-agent mapped volume/adapter lists so a pathological agent can't blow the response. */
     public const DISK_VOLUME_LIMIT = 10;
 
