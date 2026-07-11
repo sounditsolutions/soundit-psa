@@ -118,6 +118,20 @@ class HuntressClient
     }
 
     /**
+     * List escalations (auto-paginates). Pass `organization_id` to scope to one org's
+     * escalations; omit it for account-level escalations (integration-health, e.g.
+     * "Failed to Deliver", which carry no organization association).
+     *
+     * Each row carries id, status {open,sent,resolved}, resolved_at, severity, subject,
+     * type, subtype, created_at, updated_at, and an organizations[] array. `resolved_at`
+     * set (or status `resolved`) means the escalation has been handled upstream.
+     */
+    public function getEscalations(array $params = []): array
+    {
+        return $this->getAllPages('escalations', $params);
+    }
+
+    /**
      * Get account info.
      */
     public function getAccount(): array
