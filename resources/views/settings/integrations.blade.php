@@ -3489,7 +3489,7 @@
                     </div>
 
                     <hr class="my-3">
-                    <h6 class="text-muted text-uppercase small mb-2">Notify (Plan 1C)</h6>
+                    <h6 class="text-muted text-uppercase small mb-2">Notify</h6>
                     <div class="mb-3">
                         <label class="form-label small" for="technician_teams_webhook_url">Teams webhook URL</label>
                         {{-- psa-uvuy: a stored secret — never echo the raw URL; show a mask and keep on blank submit. --}}
