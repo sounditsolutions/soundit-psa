@@ -276,7 +276,7 @@ class McpTokensPageTest extends TestCase
         $payload = json_decode((string) $whoami->json('result.content.0.text'), true);
         $this->assertSame('chet', $payload['label']);
         $this->assertSame('Use Chet rules.', $payload['directive']);
-        $this->assertSame(['whoami', 'find_staff'], $payload['allowed_tools']);
+        $this->assertSame(['whoami', 'list_tool_surface', 'find_staff'], $payload['allowed_tools']);
     }
 
     public function test_regenerate_secret_rejects_revoked_tokens_without_revealing_a_new_secret(): void
