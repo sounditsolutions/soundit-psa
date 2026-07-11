@@ -39,7 +39,7 @@ class ToolingGapsList extends Command
             return self::SUCCESS;
         }
 
-        $headers = ['ID', 'Ticket', 'Capability gap', 'Classification', 'Source', 'Status', 'Created'];
+        $headers = ['ID', 'Ticket', 'Tool', 'Capability gap', 'Classification', 'Source', 'Status', 'Created'];
         if ($withEvidence) {
             $headers[] = 'Evidence';
         }
@@ -49,6 +49,7 @@ class ToolingGapsList extends Command
             $row = [
                 $gap->id,
                 $ticket,
+                $gap->tool_name ?? '—',
                 $gap->capability_gap,
                 $gap->classification->label(),
                 $gap->source->label(),

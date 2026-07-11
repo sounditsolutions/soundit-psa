@@ -33,30 +33,39 @@ class RequestToolTool
     {
         return [
             'name' => 'request_tool',
-            'description' => 'Report that you lacked a tool or data you needed to handle this ticket well, OR '
-                .'that relevant information existed but you could not retrieve it — so the team can improve your '
-                .'future capabilities. This is an INTERNAL note for the team, NOT an action on the ticket: it '
+            'description' => 'Report a tooling problem so the team can improve your future capabilities. Use it '
+                .'when you lacked a tool or data you needed, when relevant information existed but you could not '
+                .'retrieve it, OR when an EXISTING tool you called MISBEHAVED (errored, timed out, or returned '
+                .'wrong/empty results). This is an INTERNAL note for the team, NOT an action on the ticket: it '
                 .'does nothing to the ticket and is not a substitute for handling it. It does NOT count as your '
                 .'one action — you may still propose_close / send_reply / flag_attention as well. Describe the '
-                .'capability in ABSTRACT, reusable terms; never include secrets, credentials, or specific values.',
+                .'problem in ABSTRACT, reusable terms; never include secrets, credentials, or specific values.',
             'input_schema' => [
                 'type' => 'object',
                 'properties' => [
                     'capability_gap' => [
                         'type' => 'string',
-                        'description' => 'The missing capability in abstract, reusable terms — e.g. "needs to '
-                            .'check recent ticket history for prior context on the same client". No secrets, no '
-                            .'instance-specific identifiers.',
+                        'description' => 'The missing capability OR the symptom of the broken tool, in abstract, '
+                            .'reusable terms — e.g. "needs to check recent ticket history for prior context on the '
+                            .'same client", or "device lookup returned an empty list for a client that clearly has '
+                            .'devices". No secrets, no instance-specific identifiers.',
                     ],
                     'classification' => [
                         'type' => 'string',
-                        'enum' => ['tool_missing', 'tool_unused'],
+                        'enum' => ['tool_missing', 'tool_unused', 'tool_broken'],
                         'description' => 'tool_missing = you had no way to obtain this; tool_unused = the '
-                            .'capability/data existed but you did not use it.',
+                            .'capability/data existed but you did not use it; tool_broken = an existing tool you '
+                            .'called misbehaved (errored, timed out, or returned wrong/empty data).',
+                    ],
+                    'tool_name' => [
+                        'type' => 'string',
+                        'description' => 'For tool_broken only: the name of the tool that misbehaved '
+                            .'(e.g. "ninja_get_devices"). Omit for tool_missing / tool_unused.',
                     ],
                     'note' => [
                         'type' => 'string',
-                        'description' => 'Optional: one line on why it would have helped on THIS ticket.',
+                        'description' => 'Optional: one line on why it would have helped, or what you expected the '
+                            .'tool to return, on THIS ticket.',
                     ],
                 ],
                 'required' => ['capability_gap', 'classification'],
@@ -77,9 +86,15 @@ class RequestToolTool
 
         $note = isset($input['note']) ? mb_substr(trim((string) $input['note']), 0, 500) : null;
 
-        // Security: capability_gap is the forwardable ABSTRACT column — scan both fields
-        // before storing. A model-emitted secret or injection pattern must never reach the DB.
-        if ($this->redactor->scan($gap) !== [] || ($note !== null && $this->redactor->scan($note) !== [])) {
+        // tool_name identifies the misbehaving tool on tool_broken reports. Abstract and
+        // forwardable (a bare tool name), but still model-supplied — cap and scan it too.
+        $toolName = isset($input['tool_name']) ? mb_substr(trim((string) $input['tool_name']), 0, 100) : null;
+
+        // Security: capability_gap / tool_name are forwardable ABSTRACT columns — scan every
+        // model-supplied field before storing. A secret or injection pattern must never reach the DB.
+        if ($this->redactor->scan($gap) !== []
+            || ($note !== null && $this->redactor->scan($note) !== [])
+            || ($toolName !== null && $toolName !== '' && $this->redactor->scan($toolName) !== [])) {
             return 'Report rejected: the capability description contained sensitive or injection-like content. '
                 .'Please re-describe the capability in abstract terms with no secrets, credentials, or specific values.';
         }
@@ -92,6 +107,7 @@ class RequestToolTool
             classification: ToolingGapClassification::fromInput($input['classification'] ?? null),
             source: ToolingGapSource::Agent,
             agentNote: ($note === '' ? null : $note),
+            toolName: ($toolName === '' ? null : $toolName),
         );
 
         return 'Logged a tooling-gap for the team to review. This did NOT change the ticket — continue handling it.';

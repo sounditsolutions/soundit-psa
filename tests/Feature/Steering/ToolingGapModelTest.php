@@ -55,6 +55,29 @@ class ToolingGapModelTest extends TestCase
         $this->assertSame('would have resolved the SPF question', $gap->agent_note);
     }
 
+    /** A tool_broken report persists the tool_name alongside the abstract symptom. */
+    public function test_record_persists_tool_name_for_broken_tool(): void
+    {
+        $gap = ToolingGap::record(
+            null,
+            null,
+            'device lookup returned an empty list for a client that clearly has devices',
+            null,
+            ToolingGapClassification::ToolBroken,
+            ToolingGapSource::Agent,
+            null,
+            'ninja_get_devices',
+        );
+
+        $fresh = ToolingGap::find($gap->id);
+        $this->assertSame('ninja_get_devices', $fresh->tool_name);
+        $this->assertSame(ToolingGapClassification::ToolBroken, $fresh->classification);
+        // tool_name defaults to null for the non-broken classifications.
+        $this->assertNull(
+            ToolingGap::record(null, null, 'needs a DNS tool', null, ToolingGapClassification::ToolMissing, ToolingGapSource::Agent)->tool_name
+        );
+    }
+
     /** Enum casts round-trip through the database. */
     public function test_enum_casts_round_trip(): void
     {
@@ -82,6 +105,13 @@ class ToolingGapModelTest extends TestCase
     {
         $this->assertSame(ToolingGapClassification::ToolMissing, ToolingGapClassification::fromInput('garbage'));
         $this->assertSame(ToolingGapSource::Agent, ToolingGapSource::fromInput(null));
+    }
+
+    /** The tool_broken classification parses and labels correctly. */
+    public function test_tool_broken_classification_parses_and_labels(): void
+    {
+        $this->assertSame(ToolingGapClassification::ToolBroken, ToolingGapClassification::fromInput('tool_broken'));
+        $this->assertSame('Tool broken', ToolingGapClassification::ToolBroken->label());
     }
 
     /** Deleting the linked ticket nullifies ticket_id but the gap row survives. */
