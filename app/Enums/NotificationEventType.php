@@ -14,6 +14,7 @@ enum NotificationEventType: string
     case TicketStatusChanged = 'ticket_status_changed';
     case TicketPortalReply = 'ticket_portal_reply';
     case PortalPrepayPurchase = 'portal_prepay_purchase';
+    case PortalProductOrder = 'portal_product_order';
     case NewVoicemail = 'new_voicemail';
     case PrepayLowBalance = 'prepay_low_balance';
     case PrepayAutoTopUp = 'prepay_auto_topup';
@@ -33,6 +34,7 @@ enum NotificationEventType: string
             self::TicketStatusChanged => 'Status changes',
             self::TicketPortalReply => 'Client portal replies',
             self::PortalPrepayPurchase => 'Portal prepaid purchases',
+            self::PortalProductOrder => 'Portal product orders',
             self::NewVoicemail => 'New voicemails',
             self::PrepayLowBalance => 'Low prepay balance alerts',
             self::PrepayAutoTopUp => 'Prepay auto top-up invoices',
@@ -54,6 +56,7 @@ enum NotificationEventType: string
             self::TicketStatusChanged => 'When the status changes on your ticket',
             self::TicketPortalReply => 'When a client replies via the portal on your ticket',
             self::PortalPrepayPurchase => 'When a client purchases prepaid time via the portal',
+            self::PortalProductOrder => 'When a client places a product order via the portal shop',
             self::NewVoicemail => 'When a voicemail is left on an unanswered call',
             self::PrepayLowBalance => 'When a client\'s prepay balance drops below their alert threshold',
             self::PrepayAutoTopUp => 'When an auto top-up invoice is generated for a client',
@@ -75,6 +78,7 @@ enum NotificationEventType: string
             self::TicketStatusChanged => 'bi-arrow-left-right',
             self::TicketPortalReply => 'bi-person-lines-fill',
             self::PortalPrepayPurchase => 'bi-cart-check',
+            self::PortalProductOrder => 'bi-bag-check',
             self::NewVoicemail => 'bi-voicemail',
             self::PrepayLowBalance => 'bi-exclamation-diamond',
             self::PrepayAutoTopUp => 'bi-arrow-repeat',
