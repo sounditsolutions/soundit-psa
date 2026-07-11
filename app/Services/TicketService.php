@@ -29,7 +29,12 @@ class TicketService
 
     public function createTicket(array $data, ?int $createdByUserId): Ticket
     {
-        $priority = TicketPriority::from($data['priority']);
+        // Callers may hand us either a TicketPriority instance (e.g. the portal
+        // controller) or its scalar backing value; normalise both. Native
+        // enum from() only accepts string|int and throws a TypeError on an instance.
+        $priority = $data['priority'] instanceof TicketPriority
+            ? $data['priority']
+            : TicketPriority::from($data['priority']);
 
         $data['created_by'] = $createdByUserId;
         $data['source'] = $data['source'] ?? TicketSource::Manual->value;
