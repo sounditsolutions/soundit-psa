@@ -51,11 +51,14 @@ class TechnicianAgent
      *                                         'summary'] so each ACT tool can record provenance in
      *                                         the resulting TechnicianRun's proposed_meta. Null on
      *                                         a normal (non-correction) run.
+     * @return TechnicianAgentOutcome What the agent decided — used by the caller to surface a
+     *                                correction-driven "leave-it" outcome (psa-3q0c). notAssessed()
+     *                                when the loop never ran (unconfigured/disabled/fail-soft error).
      */
-    public function run(Ticket $ticket, ?array $correctionContext = null): void
+    public function run(Ticket $ticket, ?array $correctionContext = null): TechnicianAgentOutcome
     {
         if (! AiConfig::isConfigured() || ! AiConfig::isEnabled()) {
-            return;
+            return TechnicianAgentOutcome::notAssessed();
         }
 
         try {
@@ -119,7 +122,7 @@ class TechnicianAgent
                 return $toolExecutor->execute($toolName, $input);
             };
 
-            $this->ai->runToolLoop(
+            $response = $this->ai->runToolLoop(
                 system: $system,
                 userMessage: $userMessage,
                 tools: $tools,
@@ -128,12 +131,20 @@ class TechnicianAgent
                 maxTokenBudget: 200_000,
                 wallClockSeconds: 240,
             );
+
+            // The loop ran to completion. If the agent took no action, $response->text is its
+            // closing narration — the "leave-it" reason the caller surfaces on a correction-driven
+            // run (psa-3q0c). When it acted, leftAsIs() is false and the narration is ignored.
+            return new TechnicianAgentOutcome(assessed: true, acted: $acted, narration: trim($response->text));
         } catch (\Throwable $e) {
             Log::warning('[TechnicianAgent] run() failed — skipping ticket', [
                 'ticket_id' => $ticket->id,
                 'error' => $e->getMessage(),
                 'class' => $e::class,
             ]);
+
+            // Fail-soft: a caught error is NOT a "leave-it" — the agent never reached a decision.
+            return TechnicianAgentOutcome::notAssessed();
         }
     }
 }

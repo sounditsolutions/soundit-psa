@@ -328,6 +328,87 @@ class TechnicianAgentTest extends TestCase
         $this->assertSame(0, TechnicianRun::where('ticket_id', $ticket->id)->count());
     }
 
+    // ── psa-3q0c: run() surfaces a leave-it outcome (for correction visibility) ──
+
+    /**
+     * When the model takes NO action, run() returns an outcome whose leftAsIs() is true and
+     * whose narration carries the model's closing reasoning — the reason the caller surfaces
+     * to the operator on a correction-driven re-assessment.
+     */
+    public function test_run_returns_a_left_as_is_outcome_with_the_agent_narration(): void
+    {
+        $this->configureAi();
+        $ticket = $this->openTicketWithClient();
+
+        $ai = $this->mock(AiClient::class);
+        $ai->shouldReceive('runToolLoop')->once()
+            ->andReturnUsing(fn ($system, $user, $tools, $executor): AiResponse => new AiResponse(
+                text: 'Leaving as-is: the client confirmed the printer was fixed on 2026-06-01 and no reply is pending.',
+            ));
+
+        $outcome = $this->agent($ai)->run($ticket);
+
+        $this->assertTrue($outcome->assessed, 'the loop ran');
+        $this->assertFalse($outcome->acted, 'no action was taken');
+        $this->assertTrue($outcome->leftAsIs(), 'a no-action run is a leave-it');
+        $this->assertStringContainsString('printer was fixed', $outcome->narration);
+    }
+
+    /**
+     * When the model DOES act (propose_close), the outcome is acted (leftAsIs() false) — there is
+     * a new proposal to surface, so the caller records no leave-it note.
+     */
+    public function test_run_returns_an_acted_outcome_when_the_agent_proposes(): void
+    {
+        $this->configureAi();
+        $ticket = $this->openTicketWithClient();
+
+        $notifier = $this->mock(OperatorNotifier::class);
+        $notifier->shouldReceive('notify')->never();
+
+        $ai = $this->mock(AiClient::class);
+        $ai->shouldReceive('runToolLoop')->once()
+            ->andReturnUsing(function ($system, $user, $tools, $executor): AiResponse {
+                $executor('propose_close', ['reason' => 'client confirmed sorted 100d ago', 'confidence' => 0.5]);
+
+                return $this->fakeAiResponse();
+            });
+
+        $outcome = $this->agent($ai)->run($ticket);
+
+        $this->assertTrue($outcome->acted, 'the agent acted');
+        $this->assertFalse($outcome->leftAsIs(), 'an acted run is not a leave-it');
+    }
+
+    /** AI unconfigured → notAssessed(): NOT a leave-it (no conclusion was reached). */
+    public function test_run_returns_not_assessed_when_ai_is_unconfigured(): void
+    {
+        $ticket = $this->openTicketWithClient();
+
+        $ai = $this->mock(AiClient::class);
+        $ai->shouldReceive('runToolLoop')->never();
+
+        $outcome = $this->agent($ai)->run($ticket);
+
+        $this->assertFalse($outcome->assessed);
+        $this->assertFalse($outcome->leftAsIs(), 'an unrun agent must NOT report a leave-it');
+    }
+
+    /** A caught fail-soft error → notAssessed(): a crash is NOT a "decided to leave it". */
+    public function test_run_returns_not_assessed_when_the_loop_throws(): void
+    {
+        $this->configureAi();
+        $ticket = $this->openTicketWithClient();
+
+        $ai = $this->mock(AiClient::class);
+        $ai->shouldReceive('runToolLoop')->once()->andThrow(new \RuntimeException('model hiccup'));
+
+        $outcome = $this->agent($ai)->run($ticket);
+
+        $this->assertFalse($outcome->assessed);
+        $this->assertFalse($outcome->leftAsIs(), 'a caught error must NOT report a leave-it');
+    }
+
     // ── A2a: send_reply is built + guarded, but NOT yet offered (inert) ───────
 
     private function unaddressedClientReply(Ticket $ticket): void
