@@ -34,6 +34,9 @@
                 <label class="form-label small mb-1">Status</label>
                 <select name="status" class="form-select form-select-sm">
                     <option value="">All</option>
+                    <option value="needs-follow-up" {{ ($filters['status'] ?? '') === 'needs-follow-up' ? 'selected' : '' }}>
+                        Needs follow-up
+                    </option>
                     @foreach(\App\Enums\CallStatus::cases() as $status)
                         <option value="{{ $status->value }}" {{ ($filters['status'] ?? '') === $status->value ? 'selected' : '' }}>
                             {{ $status->label() }}
@@ -170,7 +173,11 @@
                 <tr>
                     <td colspan="8" class="text-center text-muted py-4">
                         <i class="bi bi-telephone-x fs-3 d-block mb-2"></i>
-                        No calls found for the selected filters.
+                        @if(array_filter($filters))
+                            No calls found for the selected filters.
+                        @else
+                            No calls recorded yet.
+                        @endif
                     </td>
                 </tr>
                 @endforelse
