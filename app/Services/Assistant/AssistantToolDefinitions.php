@@ -210,8 +210,8 @@ class AssistantToolDefinitions
                     'type' => 'object',
                     'properties' => [
                         'ticket_id' => [
-                            'type' => 'integer',
-                            'description' => 'The ticket ID to get notes for',
+                            'type' => ['integer', 'string'],
+                            'description' => 'The ticket to read: internal numeric ID, or a display ID like "#12345" (externally-synced ticket number) or "T-123"',
                         ],
                     ],
                     'required' => ['ticket_id'],

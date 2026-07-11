@@ -381,6 +381,38 @@ class Ticket extends Model
         return "T-{$this->id}";
     }
 
+    /**
+     * Resolve a ticket from an AI-tool or user-supplied reference — the inverse
+     * of display_id. Accepts the internal id (8351, "8351", "T-8351") and the
+     * display id shown for externally-synced tickets ("#8351" → halo_id). A bare
+     * number prefers the internal id and falls back to halo_id, so internal-id
+     * callers keep their existing matches while display-number callers stop
+     * getting "not found" on synced tickets whose internal id diverges.
+     * When $clientId is given, every lookup is scoped to that client.
+     */
+    public static function resolveReference(int|string $reference, ?int $clientId = null): ?self
+    {
+        $reference = trim((string) $reference);
+
+        $query = fn (): Builder => static::query()
+            ->when($clientId !== null, fn (Builder $q) => $q->where('client_id', $clientId));
+
+        if (preg_match('/^T-?(\d+)$/i', $reference, $matches)) {
+            return $query()->where('id', (int) $matches[1])->first();
+        }
+
+        if (preg_match('/^#(\d+)$/', $reference, $matches)) {
+            return $query()->where('halo_id', (int) $matches[1])->first();
+        }
+
+        if (! preg_match('/^\d+$/', $reference)) {
+            return null;
+        }
+
+        return $query()->where('id', (int) $reference)->first()
+            ?? $query()->where('halo_id', (int) $reference)->first();
+    }
+
     public function getFormattedTotalTimeAttribute(): ?string
     {
         // Prefer Halo's ticket-level total, fall back to notes sum
