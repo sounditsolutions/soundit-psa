@@ -106,12 +106,7 @@
     <i class="bi bi-arrow-left me-1"></i>All tokens
 </a>
 
-@if(session('success'))
-    <div class="alert alert-success alert-dismissible fade show">{{ session('success') }}<button type="button" class="btn-close" data-bs-dismiss="alert"></button></div>
-@endif
-@if(session('error'))
-    <div class="alert alert-danger alert-dismissible fade show">{{ session('error') }}<button type="button" class="btn-close" data-bs-dismiss="alert"></button></div>
-@endif
+{{-- Success/error flashes render globally in layouts.app; don't repeat them here (double banner, psa-8ygv). --}}
 
 {{-- one-time secret (only right after creation) --}}
 @if($newToken)
