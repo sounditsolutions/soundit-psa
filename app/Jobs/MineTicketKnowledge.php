@@ -262,6 +262,8 @@ class MineTicketKnowledge implements ShouldQueue
                 }
             }
 
+            $candidatesReturned = $extraction['candidatesReturned'] ?? count($candidates);
+
             $run->update([
                 'status' => WikiRunStatus::Completed,
                 'stages_completed' => ['gather', 'extract', 'scan', 'merge', 'compose'],
@@ -271,6 +273,16 @@ class MineTicketKnowledge implements ShouldQueue
                     // Per-candidate discard reasons (page/anchor/confidence/reason) so a
                     // zero-fact run is diagnosable from the ledger, not silent.
                     'discarded_details' => $extraction['discardedDetails'] ?? [],
+                    // How many candidates the AI actually returned, plus a one-line outcome
+                    // summary — so a zero-fact run ALWAYS records why (psa-tqv9): AI returned
+                    // nothing vs. proposed-but-all-discarded vs. accepted-but-unwritable.
+                    'ai_candidates_returned' => $candidatesReturned,
+                    'outcome_reason' => $this->outcomeReason(
+                        count($candidates),
+                        $candidatesReturned,
+                        $extraction['discarded'],
+                        $touchedAnchors !== [],
+                    ),
                     'touched_anchors' => array_map(fn ($a) => array_keys($a), $touchedAnchors),
                 ],
                 'ai_tokens_used' => $extraction['tokens'],
@@ -305,5 +317,26 @@ class MineTicketKnowledge implements ShouldQueue
 
             throw $e;
         }
+    }
+
+    /**
+     * One-line, always-present summary of a mine's outcome so a zero-fact run is
+     * self-explanatory in the wiki_runs ledger (psa-tqv9) instead of an empty result
+     * that reads identically whether the AI found nothing or the pipeline silently
+     * dropped real facts.
+     */
+    private function outcomeReason(int $factsExtracted, int $candidatesReturned, int $discarded, bool $wroteAnything): string
+    {
+        if ($wroteAnything) {
+            return "Extracted {$factsExtracted} fact(s) and merged into the wiki.";
+        }
+        if ($factsExtracted > 0) {
+            return "Extractor accepted {$factsExtracted} fact(s), but none matched an existing wiki page/anchor to write.";
+        }
+        if ($candidatesReturned > 0) {
+            return "AI proposed {$candidatesReturned} candidate(s); all {$discarded} were discarded during validation — see discarded_details.";
+        }
+
+        return 'AI returned no candidate facts for this resolution — nothing documentation-worthy was extracted.';
     }
 }
