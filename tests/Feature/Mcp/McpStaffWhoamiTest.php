@@ -92,7 +92,7 @@ class McpStaffWhoamiTest extends TestCase
 
         $this->assertSame('chet', $payload['label']);
         $this->assertSame('You are the Chet bridge token.', $payload['directive']);
-        $this->assertSame(['whoami', 'find_staff'], $payload['allowed_tools']);
+        $this->assertSame(['whoami', 'list_tool_surface', 'find_staff'], $payload['allowed_tools']);
         $this->assertArrayNotHasKey('posture', $payload);
         $this->assertDatabaseHas('mcp_audit_logs', [
             'method' => 'tools/call',
@@ -113,7 +113,7 @@ class McpStaffWhoamiTest extends TestCase
         $this->assertSame('mcp-legacy', $legacyPayload['label']);
         $this->assertNull($legacyPayload['allowed_tools']);
         $this->assertSame('legacy', $scopedPayload['label']);
-        $this->assertSame(['whoami', 'find_staff'], $scopedPayload['allowed_tools']);
+        $this->assertSame(['whoami', 'list_tool_surface', 'find_staff'], $scopedPayload['allowed_tools']);
 
         $this->assertDatabaseHas('mcp_audit_logs', [
             'method' => 'tools/call',

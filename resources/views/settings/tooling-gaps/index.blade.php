@@ -11,6 +11,8 @@
         ToolingGapClassification::ToolMissing => 'bg-warning text-dark',
         ToolingGapClassification::ToolUnused => 'bg-info text-dark',
         ToolingGapClassification::ToolBroken => 'bg-danger',
+        ToolingGapClassification::ToolUngranted => 'bg-primary',
+        ToolingGapClassification::ToolUnconfigured => 'bg-secondary',
     };
     $sourceBadge = fn (ToolingGapSource $s) => match ($s) {
         ToolingGapSource::Agent => 'bg-primary',

@@ -12,7 +12,6 @@ use App\Models\Person;
 use App\Models\Ticket;
 use App\Services\Agent\RequestToolTool;
 use App\Services\Agent\SendReplyTool;
-use App\Services\Assistant\AssistantToolDefinitions;
 use App\Services\Assistant\AssistantToolExecutor;
 use App\Services\Chet\ChetDataSurfaceToolExecutor;
 use App\Services\Chet\ChetDataSurfaceTools;
@@ -25,12 +24,11 @@ use App\Services\Mcp\StaffPsaActionToolExecutor;
 use App\Services\Mcp\StaffTacticalActionToolExecutor;
 use App\Services\Mcp\StaffTacticalAdminToolExecutor;
 use App\Services\Tactical\Actions\ActionRedactor;
-use App\Support\CippConfig;
 use App\Support\McpInputSchema;
 use App\Support\McpStaffToken;
 use App\Support\McpToolInstructions;
 use App\Support\McpToolRegistry;
-use App\Support\TacticalConfig;
+use App\Support\McpToolSurface;
 use App\Support\TechnicianConfig;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -59,6 +57,8 @@ class McpStaffController extends Controller
 
     private const WHOAMI_TOOL = 'whoami';
 
+    private const TOOL_SURFACE_TOOL = 'list_tool_surface';
+
     /**
      * Appended to every grant-check denial. A denied call is the failure that
      * doubles as a refresh signal: the token's allowed-tool surface may have
@@ -70,7 +70,7 @@ class McpStaffController extends Controller
      * authority), never issuing an imperative. A pointer that carries no
      * authority is inert on any pipe — a forged copy cannot instruct.
      */
-    private const TOOL_SURFACE_DRIFT_HINT = "The token's allowed-tool surface may have changed since this client cached tools/list; whoami returns the current allowed tools, and your token directive governs how to proceed.";
+    private const TOOL_SURFACE_DRIFT_HINT = "The token's allowed-tool surface may have changed since this client cached tools/list; whoami returns the current allowed tools, list_tool_surface classifies the full tool surface (granted / available_ungranted / unavailable_config), and your token directive governs how to proceed.";
 
     /** Write tools that can be forced to carry an explicit client_id scope. */
     private const EXPLICIT_CLIENT_SCOPE_WRITE_TOOLS = [
@@ -306,40 +306,20 @@ class McpStaffController extends Controller
     private function listTools(mixed $id, Request $request, float $start): JsonResponse
     {
         // Expose the full tool surface — both the general (no client context
-        // required) and the client-scoped sets, deduped. For client-scoped
-        // tools, inject `client_id` into the input schema — the AI picks it
-        // up via find_clients() and passes it along on the call. The boundary
-        // strips client_id off before dispatch, so the executor doesn't need
-        // to know about MCP.
+        // required) and the client-scoped sets, deduped. The config-gated
+        // assemblies live in McpToolSurface so list_tool_surface classifies
+        // the same surface this method publishes. For client-scoped tools,
+        // inject `client_id` into the input schema — the AI picks it up via
+        // find_clients() and passes it along on the call. The boundary strips
+        // client_id off before dispatch, so the executor doesn't need to know
+        // about MCP.
         $generalTools = array_merge(
-            [$this->whoamiToolDefinition()],
-            AssistantToolDefinitions::getTools(hasClient: false),
-            [
-                McpToolRegistry::proposeCloseTool(),
-                McpToolRegistry::sendReplyTool(),
-                McpToolRegistry::requestToolTool(),
-                McpToolRegistry::wikiAddFactTool(),
-                McpToolRegistry::wikiCreatePageTool(),
-                McpToolRegistry::wikiUpdatePageTool(),
-            ],
-            McpToolRegistry::psaActionTools(),
-            McpToolRegistry::psaRecordsTools(),
-            McpToolRegistry::psaReadTools(),
-            McpToolRegistry::intakeManageTools(),
-            TacticalConfig::isConfigured() ? McpToolRegistry::tacticalAdminTools() : [],
-            ChetDataSurfaceTools::generalTools(),
-            OperatorBridgeTools::definitions(),
+            [$this->whoamiToolDefinition(), $this->toolSurfaceToolDefinition()],
+            McpToolSurface::liveGeneralToolDefinitions(),
         );
         $generalNames = array_flip(array_column($generalTools, 'name'));
 
-        $clientScopedTools = array_merge(
-            AssistantToolDefinitions::getTools(hasClient: true),
-            ChetDataSurfaceTools::clientTools(),
-            McpToolRegistry::dynamicCippReadTools(),
-            McpToolRegistry::dynamicCippWriteTools(),
-            (CippConfig::isEnabled() && CippConfig::isConfigured()) ? McpToolRegistry::cippWriteTools() : [],
-            TacticalConfig::isConfigured() ? McpToolRegistry::tacticalActionTools() : [],
-        );
+        $clientScopedTools = McpToolSurface::liveClientScopedToolDefinitions();
 
         // Merge by tool name (general tools win on duplicate names).
         $merged = [];
@@ -773,6 +753,8 @@ class McpStaffController extends Controller
         try {
             if ($name === self::WHOAMI_TOOL) {
                 $result = $this->whoami($request);
+            } elseif ($name === self::TOOL_SURFACE_TOOL) {
+                $result = $this->listToolSurface($request, $arguments);
             } elseif (OperatorBridgeTools::handles((string) $name)) {
                 $token = $request->attributes->get('mcp_staff_token');
                 $result = app(OperatorBridgeToolExecutor::class)->execute(
@@ -839,7 +821,7 @@ class McpStaffController extends Controller
             } elseif ((string) $name === 'send_reply') {
                 $result = $this->sendReply($arguments, $request);
             } elseif ((string) $name === 'request_tool') {
-                $result = $this->requestTool($arguments);
+                $result = $this->requestTool($arguments, $request);
             } else {
                 $userId = $this->userIdForToolCall($request, (string) $name);
                 $executor = new AssistantToolExecutor(ticket: null, clientId: $clientId, userId: $userId);
@@ -935,7 +917,7 @@ class McpStaffController extends Controller
     }
 
     /** @return array<string, mixed> */
-    private function requestTool(array $arguments): array
+    private function requestTool(array $arguments, Request $request): array
     {
         $ticketId = $this->positiveIntegerArgument($arguments['ticket_id'] ?? null);
         if ($ticketId === null) {
@@ -947,7 +929,13 @@ class McpStaffController extends Controller
             return ['error' => 'Ticket not found'];
         }
 
-        $message = app(RequestToolTool::class)->execute($ticket, $arguments);
+        // The caller's live grant check lets auto-classification distinguish
+        // "already granted" from "built but ungranted" for this token.
+        $message = app(RequestToolTool::class)->execute(
+            $ticket,
+            $arguments,
+            fn (string $tool): bool => $this->toolAllowed($request, $tool),
+        );
 
         return [
             'success' => true,
@@ -1780,7 +1768,9 @@ class McpStaffController extends Controller
             return false;
         }
 
-        if ($toolName === self::WHOAMI_TOOL) {
+        // Transport built-ins: identity and surface discovery are always
+        // callable — a token that cannot see its own scope cannot self-heal.
+        if ($toolName === self::WHOAMI_TOOL || $toolName === self::TOOL_SURFACE_TOOL) {
             return true;
         }
 
@@ -2002,8 +1992,85 @@ class McpStaffController extends Controller
             'label' => $token instanceof McpStaffToken && $token->label !== null ? $token->label : McpStaffToken::LEGACY_ACTOR_LABEL,
             'directive' => $token instanceof McpStaffToken ? $token->directiveOrDefault() : McpToken::defaultDirective(),
             'allowed_tools' => $token instanceof McpStaffToken && $token->allowedTools !== null
-                ? array_values(array_unique(array_merge([self::WHOAMI_TOOL], $token->allowedTools)))
+                ? array_values(array_unique(array_merge([self::WHOAMI_TOOL, self::TOOL_SURFACE_TOOL], $token->allowedTools)))
                 : null,
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private function toolSurfaceToolDefinition(): array
+    {
+        return [
+            'name' => self::TOOL_SURFACE_TOOL,
+            'description' => 'List the full tool catalog of this server with a per-tool state: granted (in this token\'s allowlist, callable now), available_ungranted (built and configured but not granted — an operator token grant enables it), or unavailable_config (built but its integration is not configured on this instance). Tools absent from this catalog do not exist; request_tool records a build request. Names and one-line descriptions only — no data, no secrets.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'state' => [
+                        'type' => 'string',
+                        'enum' => [
+                            McpToolSurface::STATE_GRANTED,
+                            McpToolSurface::STATE_AVAILABLE_UNGRANTED,
+                            McpToolSurface::STATE_UNAVAILABLE_CONFIG,
+                        ],
+                        'description' => 'Optional: only return tools in this state. Counts always cover the full surface.',
+                    ],
+                    'category' => [
+                        'type' => 'string',
+                        'description' => 'Optional: only return tools in this catalog category (e.g. general, integration, psa_action). The response lists valid categories.',
+                    ],
+                ],
+                'required' => [],
+            ],
+        ];
+    }
+
+    /**
+     * The list_tool_surface handler: classify the full grant catalog for this
+     * caller's token. Capability names, categories, and one-line descriptions
+     * only — never data or configuration values.
+     *
+     * @return array<string, mixed>
+     */
+    private function listToolSurface(Request $request, array $arguments): array
+    {
+        $states = McpToolSurface::states();
+
+        $stateFilter = trim((string) ($arguments['state'] ?? ''));
+        if ($stateFilter !== '' && ! isset($states[$stateFilter])) {
+            return ['error' => 'Unknown state: '.$stateFilter.'. Valid states: '.implode(', ', array_keys($states)).'.'];
+        }
+
+        $categories = [];
+        foreach (McpToolRegistry::groups() as $categoryKey => $group) {
+            $categories[$categoryKey] = $group['label'];
+        }
+
+        $categoryFilter = trim((string) ($arguments['category'] ?? ''));
+        if ($categoryFilter !== '' && ! isset($categories[$categoryFilter])) {
+            return ['error' => 'Unknown category: '.$categoryFilter.'. Valid categories: '.implode(', ', array_keys($categories)).'.'];
+        }
+
+        $entries = McpToolSurface::classify(fn (string $tool): bool => $this->toolAllowed($request, $tool));
+
+        $counts = array_fill_keys(array_keys($states), 0);
+        foreach ($entries as $entry) {
+            $counts[$entry['state']]++;
+        }
+        $counts['total'] = count($entries);
+
+        $filtered = array_values(array_filter(
+            $entries,
+            fn (array $entry): bool => ($stateFilter === '' || $entry['state'] === $stateFilter)
+                && ($categoryFilter === '' || $entry['category'] === $categoryFilter),
+        ));
+
+        return [
+            'states' => $states,
+            'absent_means' => 'A capability not in this catalog does not exist on this server — request_tool records it as a build request.',
+            'counts' => $counts,
+            'categories' => $categories,
+            'tools' => $filtered,
         ];
     }
 
