@@ -417,11 +417,8 @@ class BillingService
 
     private function advanceNextRunDate(RecurringInvoiceProfile $profile, $invoiceDate): void
     {
-        $months = $profile->billing_period->months();
-        $nextDate = $invoiceDate->copy()->addMonths($months);
-
         $profile->update([
-            'next_run_date' => $nextDate,
+            'next_run_date' => $profile->billing_period->advance($invoiceDate),
             'last_run_date' => today(),
         ]);
     }
