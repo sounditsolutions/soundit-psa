@@ -264,52 +264,57 @@
                 @endunless
                 <form method="POST" action="{{ route('settings.general.wiki') }}">
                     @csrf
+                    @php($wikiEnabled = \App\Support\WikiConfig::isEnabled())
                     <div class="form-check form-switch mb-2">
                         <input class="form-check-input" type="checkbox" id="wiki_enabled" name="wiki_enabled" value="1"
-                               @checked(\App\Support\WikiConfig::isEnabled())>
+                               @checked($wikiEnabled)>
                         <label class="form-check-label" for="wiki_enabled">Enable the Client Wiki module</label>
                     </div>
-                    <div class="form-check form-switch mb-2">
-                        <input class="form-check-input" type="checkbox" id="wiki_auto_mine" name="wiki_auto_mine" value="1"
-                               @checked((bool) \App\Models\Setting::getValue('wiki_auto_mine'))>
-                        <label class="form-check-label" for="wiki_auto_mine">
-                            Mine closed tickets into wiki facts (spends AI tokens; requires the module enabled above)
-                        </label>
-                    </div>
-                    <div class="form-check form-switch mb-3">
-                        <input class="form-check-input" type="checkbox" id="wiki_maintenance_enabled" name="wiki_maintenance_enabled" value="1"
-                               @checked(\App\Support\WikiConfig::maintenanceEnabled())>
-                        <label class="form-check-label" for="wiki_maintenance_enabled">
-                            Run nightly maintenance (staleness sweep, contradiction detection, stale-overview regen)
-                        </label>
-                    </div>
-                    <div class="row g-3">
-                        <div class="col-md-4">
-                            <label class="form-label" for="wiki_model">Model override</label>
-                            <input class="form-control" id="wiki_model" name="wiki_model"
-                                   value="{{ \App\Models\Setting::getValue('wiki_model') }}" placeholder="(uses AI default)">
+                    {{-- Dependent AI-spend controls stay muted + disabled while the master switch is off, so the
+                         card can never show mining "on" when WikiConfig has it gated off. JS keeps this live. --}}
+                    <div id="wiki-dependent-fields" @class(['opacity-50' => ! $wikiEnabled])>
+                        <div class="form-check form-switch mb-2">
+                            <input class="form-check-input" type="checkbox" id="wiki_auto_mine" name="wiki_auto_mine" value="1"
+                                   @checked(\App\Support\WikiConfig::autoMineEnabled()) @disabled(! $wikiEnabled)>
+                            <label class="form-check-label" for="wiki_auto_mine">
+                                Mine closed tickets into wiki facts (spends AI tokens; requires the module enabled above)
+                            </label>
                         </div>
-                        <div class="col-md-4">
-                            <label class="form-label" for="wiki_max_tokens_per_run">Tokens per mining run</label>
-                            <input type="number" class="form-control" id="wiki_max_tokens_per_run" name="wiki_max_tokens_per_run"
-                                   value="{{ \App\Support\WikiConfig::maxTokensPerRun() }}">
+                        <div class="form-check form-switch mb-3">
+                            <input class="form-check-input" type="checkbox" id="wiki_maintenance_enabled" name="wiki_maintenance_enabled" value="1"
+                                   @checked(\App\Support\WikiConfig::maintenanceEnabled()) @disabled(! $wikiEnabled)>
+                            <label class="form-check-label" for="wiki_maintenance_enabled">
+                                Run nightly maintenance (staleness sweep, contradiction detection, stale-overview regen)
+                            </label>
                         </div>
-                        <div class="col-md-4">
-                            <label class="form-label" for="wiki_daily_token_limit">Daily token ceiling</label>
-                            <input type="number" class="form-control" id="wiki_daily_token_limit" name="wiki_daily_token_limit"
-                                   value="{{ \App\Support\WikiConfig::dailyTokenLimit() }}">
-                        </div>
-                        <div class="col-md-4">
-                            <label class="form-label" for="wiki_staleness_days_volatile">Staleness window (days)</label>
-                            <input type="number" class="form-control" id="wiki_staleness_days_volatile" name="wiki_staleness_days_volatile"
-                                   value="{{ \App\Support\WikiConfig::stalenessDaysVolatile() }}" min="1">
-                            <div class="form-text">Volatile facts un-reaffirmed longer than this are flagged stale (default 90).</div>
-                        </div>
-                        <div class="col-md-4">
-                            <label class="form-label" for="wiki_backfill_batch_size">Backfill batch size</label>
-                            <input type="number" class="form-control" id="wiki_backfill_batch_size" name="wiki_backfill_batch_size"
-                                   value="{{ \App\Support\WikiConfig::backfillBatchSize() }}" min="1" max="500">
-                            <div class="form-text">Max tickets dispatched per <code>wiki:backfill --execute</code> run (default 25).</div>
+                        <div class="row g-3">
+                            <div class="col-md-4">
+                                <label class="form-label" for="wiki_model">Model override</label>
+                                <input class="form-control" id="wiki_model" name="wiki_model"
+                                       value="{{ \App\Models\Setting::getValue('wiki_model') }}" placeholder="(uses AI default)" @disabled(! $wikiEnabled)>
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label" for="wiki_max_tokens_per_run">Tokens per mining run</label>
+                                <input type="number" class="form-control" id="wiki_max_tokens_per_run" name="wiki_max_tokens_per_run"
+                                       value="{{ \App\Support\WikiConfig::maxTokensPerRun() }}" @disabled(! $wikiEnabled)>
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label" for="wiki_daily_token_limit">Daily token ceiling</label>
+                                <input type="number" class="form-control" id="wiki_daily_token_limit" name="wiki_daily_token_limit"
+                                       value="{{ \App\Support\WikiConfig::dailyTokenLimit() }}" @disabled(! $wikiEnabled)>
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label" for="wiki_staleness_days_volatile">Staleness window (days)</label>
+                                <input type="number" class="form-control" id="wiki_staleness_days_volatile" name="wiki_staleness_days_volatile"
+                                       value="{{ \App\Support\WikiConfig::stalenessDaysVolatile() }}" min="1" @disabled(! $wikiEnabled)>
+                                <div class="form-text">Volatile facts un-reaffirmed longer than this are flagged stale (default 90).</div>
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label" for="wiki_backfill_batch_size">Backfill batch size</label>
+                                <input type="number" class="form-control" id="wiki_backfill_batch_size" name="wiki_backfill_batch_size"
+                                       value="{{ \App\Support\WikiConfig::backfillBatchSize() }}" min="1" max="500" @disabled(! $wikiEnabled)>
+                                <div class="form-text">Max tickets dispatched per <code>wiki:backfill --execute</code> run (default 25).</div>
+                            </div>
                         </div>
                     </div>
                     <button type="submit" class="btn btn-primary mt-3">Save Wiki Settings</button>
@@ -318,4 +323,28 @@
         </div>
     </div>
 </div>
+
+@push('scripts')
+<script>
+(function () {
+    const master = document.getElementById('wiki_enabled');
+    const dependents = document.getElementById('wiki-dependent-fields');
+    if (!master || !dependents) return;
+
+    // While the master Client Wiki switch is off, its dependent AI-spend controls
+    // must read as inactive — disabled + muted — so the card never implies mining
+    // is running when WikiConfig has it gated off.
+    function syncWikiDependents() {
+        const off = !master.checked;
+        dependents.classList.toggle('opacity-50', off);
+        dependents.querySelectorAll('input, select, textarea').forEach((el) => {
+            el.disabled = off;
+        });
+    }
+
+    master.addEventListener('change', syncWikiDependents);
+    syncWikiDependents();
+})();
+</script>
+@endpush
 @endsection
