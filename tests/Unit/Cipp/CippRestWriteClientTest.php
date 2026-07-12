@@ -37,9 +37,98 @@ class CippRestWriteClientTest extends TestCase
         $this->assertContains('disableMailboxForwarding', $methods);
         $this->assertContains('setMailboxGalVisibility', $methods);
         $this->assertContains('setMailboxOutOfOffice', $methods);
+        $this->assertContains('setMailboxDelegate', $methods);
         $this->assertContains('resetUserPassword', $methods);
         $this->assertNotContains('post', $methods);
         $this->assertNotContains('request', $methods);
+    }
+
+    public function test_set_mailbox_delegate_posts_exec_edit_mailbox_permissions_shape(): void
+    {
+        Http::fake([
+            'login.microsoftonline.com/*' => Http::response([
+                'access_token' => 'WRITE-TOKEN',
+                'expires_in' => 3600,
+            ]),
+            'cipp.example.test/api/*' => Http::response(['Results' => [['ok' => true, 'raw' => 'not returned']]]),
+        ]);
+
+        $client = new CippRestWriteClient([
+            'api_url' => 'https://cipp.example.test',
+            'tenant_id' => 'tenant-1',
+            'client_id' => 'write-client',
+            'client_secret' => 'write-secret',
+        ], Cache::store(), fn (string $host): array => ['93.184.216.34']);
+
+        $result = $client->setMailboxDelegate('acme.onmicrosoft.com', 'alex@acme.example', 'target@acme.example', 'full_access', 'grant', true);
+        $client->setMailboxDelegate('acme.onmicrosoft.com', 'alex@acme.example', 'target@acme.example', 'full_access', 'grant', false);
+        $client->setMailboxDelegate('acme.onmicrosoft.com', 'alex@acme.example', 'target@acme.example', 'full_access', 'remove', true);
+        $client->setMailboxDelegate('acme.onmicrosoft.com', 'alex@acme.example', 'target@acme.example', 'send_as', 'grant', true);
+        $client->setMailboxDelegate('acme.onmicrosoft.com', 'alex@acme.example', 'target@acme.example', 'send_as', 'remove', true);
+        $client->setMailboxDelegate('acme.onmicrosoft.com', 'alex@acme.example', 'target@acme.example', 'send_on_behalf', 'grant', true);
+        $client->setMailboxDelegate('acme.onmicrosoft.com', 'alex@acme.example', 'target@acme.example', 'send_on_behalf', 'remove', true);
+
+        $this->assertSame(['success' => true, 'status' => 200], $result);
+        $this->assertStringNotContainsString('not returned', json_encode($result));
+
+        $entry = [['value' => 'target@acme.example', 'label' => 'target@acme.example']];
+        $base = [
+            'TenantFilter' => 'acme.onmicrosoft.com',
+            'UserID' => 'alex@acme.example',
+            'AddFullAccess' => [],
+            'AddFullAccessNoAutoMap' => [],
+            'RemoveFullAccess' => [],
+            'AddSendAs' => [],
+            'RemoveSendAs' => [],
+            'AddSendOnBehalf' => [],
+            'RemoveSendOnBehalf' => [],
+        ];
+
+        // Full access grant with automap populates AddFullAccess only.
+        Http::assertSent(fn ($request) => $request->url() === 'https://cipp.example.test/api/ExecEditMailboxPermissions'
+            && $request->method() === 'POST'
+            && $request->hasHeader('Authorization', 'Bearer WRITE-TOKEN')
+            && $request->data() === array_merge($base, ['AddFullAccess' => $entry]));
+
+        // Full access grant without automap populates AddFullAccessNoAutoMap only.
+        Http::assertSent(fn ($request) => $request->url() === 'https://cipp.example.test/api/ExecEditMailboxPermissions'
+            && $request->data() === array_merge($base, ['AddFullAccessNoAutoMap' => $entry]));
+
+        Http::assertSent(fn ($request) => $request->url() === 'https://cipp.example.test/api/ExecEditMailboxPermissions'
+            && $request->data() === array_merge($base, ['RemoveFullAccess' => $entry]));
+
+        Http::assertSent(fn ($request) => $request->url() === 'https://cipp.example.test/api/ExecEditMailboxPermissions'
+            && $request->data() === array_merge($base, ['AddSendAs' => $entry]));
+
+        Http::assertSent(fn ($request) => $request->url() === 'https://cipp.example.test/api/ExecEditMailboxPermissions'
+            && $request->data() === array_merge($base, ['RemoveSendAs' => $entry]));
+
+        Http::assertSent(fn ($request) => $request->url() === 'https://cipp.example.test/api/ExecEditMailboxPermissions'
+            && $request->data() === array_merge($base, ['AddSendOnBehalf' => $entry]));
+
+        Http::assertSent(fn ($request) => $request->url() === 'https://cipp.example.test/api/ExecEditMailboxPermissions'
+            && $request->data() === array_merge($base, ['RemoveSendOnBehalf' => $entry]));
+    }
+
+    public function test_set_mailbox_delegate_rejects_empty_trustee_before_any_request(): void
+    {
+        Http::fake();
+
+        $client = new CippRestWriteClient([
+            'api_url' => 'https://cipp.example.test',
+            'tenant_id' => 'tenant-1',
+            'client_id' => 'write-client',
+            'client_secret' => 'write-secret',
+        ], Cache::store(), fn (string $host): array => ['93.184.216.34']);
+
+        $this->expectException(CippClientException::class);
+        $this->expectExceptionMessage('trustee UPN is required');
+
+        try {
+            $client->setMailboxDelegate('acme.onmicrosoft.com', 'alex@acme.example', '  ', 'full_access', 'grant', true);
+        } finally {
+            Http::assertNothingSent();
+        }
     }
 
     public function test_posts_curated_user_lifecycle_shapes_with_redirect_refusal_and_dns_pinning(): void

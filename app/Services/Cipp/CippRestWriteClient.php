@@ -200,6 +200,56 @@ class CippRestWriteClient
     }
 
     /**
+     * Grant or remove a single mailbox delegate permission (FullAccess, Send-As,
+     * or Send-on-Behalf) for one trustee on one mailbox via CIPP's
+     * ExecEditMailboxPermissions endpoint. Each permission bucket is an array of
+     * {value,label} entries (CIPP autocomplete shape); exactly one bucket is
+     * populated per call and the rest are sent empty. FullAccess grants choose
+     * between auto-map (AddFullAccess) and no-auto-map (AddFullAccessNoAutoMap).
+     *
+     * @param  string  $permission  one of full_access|send_as|send_on_behalf
+     * @param  string  $operation  one of grant|remove
+     * @return array<int|string, mixed>
+     */
+    public function setMailboxDelegate(string $tenantFilter, string $mailboxUserPrincipalName, string $trusteeUserPrincipalName, string $permission, string $operation, bool $autoMap): array
+    {
+        if (trim($trusteeUserPrincipalName) === '') {
+            throw new CippClientException('Mailbox delegate trustee UPN is required');
+        }
+
+        $body = [
+            'TenantFilter' => $tenantFilter,
+            'UserID' => $mailboxUserPrincipalName,
+            'AddFullAccess' => [],
+            'AddFullAccessNoAutoMap' => [],
+            'RemoveFullAccess' => [],
+            'AddSendAs' => [],
+            'RemoveSendAs' => [],
+            'AddSendOnBehalf' => [],
+            'RemoveSendOnBehalf' => [],
+        ];
+
+        $entry = [['value' => $trusteeUserPrincipalName, 'label' => $trusteeUserPrincipalName]];
+
+        // Each arm gates on BOTH permission and operation so an unrecognized
+        // operation falls through to the throw rather than silently removing.
+        $bucket = match (true) {
+            $permission === 'full_access' && $operation === 'grant' && $autoMap => 'AddFullAccess',
+            $permission === 'full_access' && $operation === 'grant' => 'AddFullAccessNoAutoMap',
+            $permission === 'full_access' && $operation === 'remove' => 'RemoveFullAccess',
+            $permission === 'send_as' && $operation === 'grant' => 'AddSendAs',
+            $permission === 'send_as' && $operation === 'remove' => 'RemoveSendAs',
+            $permission === 'send_on_behalf' && $operation === 'grant' => 'AddSendOnBehalf',
+            $permission === 'send_on_behalf' && $operation === 'remove' => 'RemoveSendOnBehalf',
+            default => throw new CippClientException("Unsupported mailbox delegate permission/operation {$permission}/{$operation}"),
+        };
+
+        $body[$bucket] = $entry;
+
+        return $this->send('api/ExecEditMailboxPermissions', $body);
+    }
+
+    /**
      * @param  array<int|string, mixed>  $body
      * @return array<int|string, mixed>
      */

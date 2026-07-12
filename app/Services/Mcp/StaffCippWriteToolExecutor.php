@@ -39,6 +39,7 @@ class StaffCippWriteToolExecutor
         'cipp_stage_set_mailbox_forwarding' => 'cipp_set_mailbox_forwarding',
         'cipp_stage_set_mailbox_gal_visibility' => 'cipp_set_mailbox_gal_visibility',
         'cipp_stage_set_mailbox_out_of_office' => 'cipp_set_mailbox_out_of_office',
+        'cipp_stage_set_mailbox_delegate' => 'cipp_set_mailbox_delegate',
     ];
 
     /** @var array<string, int> */
@@ -65,6 +66,8 @@ class StaffCippWriteToolExecutor
         'cipp_stage_set_mailbox_gal_visibility' => 300,
         'cipp_set_mailbox_out_of_office' => 300,
         'cipp_stage_set_mailbox_out_of_office' => 300,
+        'cipp_set_mailbox_delegate' => 300,
+        'cipp_stage_set_mailbox_delegate' => 300,
         'cipp_reset_user_password' => 300,
     ];
 
@@ -83,6 +86,12 @@ class StaffCippWriteToolExecutor
     private const OOO_STATES = ['Disabled', 'Enabled', 'Scheduled'];
 
     /** @var array<int, string> */
+    private const DELEGATE_PERMISSIONS = ['full_access', 'send_as', 'send_on_behalf'];
+
+    /** @var array<int, string> */
+    private const DELEGATE_OPERATIONS = ['grant', 'remove'];
+
+    /** @var array<int, string> */
     private const UPSTREAM_IDENTIFIER_KEYS = [
         'tenantFilter',
         'TenantFilter',
@@ -96,6 +105,7 @@ class StaffCippWriteToolExecutor
         'id',
         'userId',
         'userID',
+        'UserID',
         'userPrincipalName',
         'Username',
         'upstream_user_id',
@@ -123,6 +133,13 @@ class StaffCippWriteToolExecutor
         'KeepCopy',
         'HideFromGAL',
         'AutoReplyState',
+        'AddFullAccess',
+        'AddFullAccessNoAutoMap',
+        'RemoveFullAccess',
+        'AddSendAs',
+        'RemoveSendAs',
+        'AddSendOnBehalf',
+        'RemoveSendOnBehalf',
         'StartTime',
         'EndTime',
         'target_upn',
@@ -166,6 +183,8 @@ class StaffCippWriteToolExecutor
             self::stageSetMailboxGalVisibilityTool(),
             self::setMailboxOutOfOfficeTool(),
             self::stageSetMailboxOutOfOfficeTool(),
+            self::setMailboxDelegateTool(),
+            self::stageSetMailboxDelegateTool(),
             self::resetUserPasswordTool(),
         ];
     }
@@ -665,6 +684,14 @@ class StaffCippWriteToolExecutor
                 $mailbox['end_time'] ?? null,
                 $mailbox['timezone'] ?? null,
             ),
+            'cipp_set_mailbox_delegate' => $this->client->setMailboxDelegate(
+                $tenant,
+                $person->userPrincipalName,
+                ($mailbox['delegate_person'] ?? null) instanceof ResolvedCippPerson ? $mailbox['delegate_person']->userPrincipalName : '',
+                (string) ($mailbox['permission'] ?? ''),
+                (string) ($mailbox['operation'] ?? ''),
+                (bool) ($mailbox['auto_map'] ?? true),
+            ),
             default => throw new \InvalidArgumentException("Unsupported CIPP write tool {$tool}"),
         };
     }
@@ -700,8 +727,50 @@ class StaffCippWriteToolExecutor
             'cipp_set_mailbox_forwarding' => $this->mailboxForwardingParams($clientId, $arguments, $approvalInputs, $isHeld, $heldApproval),
             'cipp_set_mailbox_gal_visibility' => $this->mailboxGalParams($arguments),
             'cipp_set_mailbox_out_of_office' => $this->mailboxOutOfOfficeParams($arguments, $approvalInputs, $isHeld, $heldApproval),
+            'cipp_set_mailbox_delegate' => $this->mailboxDelegateParams($clientId, $arguments),
             default => null,
         };
+    }
+
+    /**
+     * Resolve delegate-permission params on both the initial call and the held
+     * approval replay. The trustee is a second PSA person in the same client
+     * (server-derived UPN, never caller-supplied); permission/operation are
+     * validated against the closed enums; auto_map defaults on and is consulted
+     * only for a FullAccess grant. Every stored value is a safe local scalar, so
+     * nothing needs re-entry at approval.
+     *
+     * @return array<string, mixed>
+     */
+    private function mailboxDelegateParams(int $clientId, array $arguments): array
+    {
+        $permission = $this->canonicalChoice($this->requiredString($arguments, 'permission'), self::DELEGATE_PERMISSIONS, 'permission');
+        $operation = $this->canonicalChoice($this->requiredString($arguments, 'operation'), self::DELEGATE_OPERATIONS, 'operation');
+        $delegate = $this->resolver->resolveCippPerson($clientId, $arguments['delegate_person_id'] ?? null);
+
+        // Self-delegation is an upstream no-op that only muddies the audit trail
+        // and the held proposal. person_id is present on the initial call (direct
+        // + stage), so a self-delegation is rejected before it can ever stage;
+        // the held-approval replay carries no person_id and never sees one.
+        if (array_key_exists('person_id', $arguments) && (int) $arguments['person_id'] === (int) $delegate->person->id) {
+            throw new CippWriteScopeException('The delegate must be a different person than the mailbox owner.');
+        }
+
+        // auto_map changes the upstream call only for a FullAccess grant
+        // (AddFullAccess vs AddFullAccessNoAutoMap). Pin it to a constant for
+        // every other permission/operation so an inert auto_map value cannot
+        // fork the content hash and defeat the idempotent dedup guard.
+        $autoMap = ($permission === 'full_access' && $operation === 'grant')
+            ? (array_key_exists('auto_map', $arguments) ? $this->booleanValue($arguments['auto_map'], 'auto_map') : true)
+            : true;
+
+        return [
+            'permission' => $permission,
+            'operation' => $operation,
+            'auto_map' => $autoMap,
+            'delegate_person_id' => $delegate->person->id,
+            'delegate_person' => $delegate,
+        ];
     }
 
     /** @return array<string, mixed> */
@@ -1103,6 +1172,10 @@ class StaffCippWriteToolExecutor
             'start_time',
             'end_time',
             'timezone',
+            'permission',
+            'operation',
+            'auto_map',
+            'delegate_person_id',
         ] as $key) {
             if (array_key_exists($key, $mailbox)) {
                 $safe[$key] = $mailbox[$key];
@@ -1214,8 +1287,36 @@ class StaffCippWriteToolExecutor
             'cipp_set_mailbox_forwarding' => $this->mailboxForwardingDisplay($person, $mailbox ?? []),
             'cipp_set_mailbox_gal_visibility' => 'Set GAL visibility for PSA person #'.$person->person->id.' to '.((bool) ($mailbox['hidden'] ?? false) ? 'hidden' : 'visible').'.',
             'cipp_set_mailbox_out_of_office' => $this->mailboxOutOfOfficeDisplay($person, $mailbox ?? []),
+            'cipp_set_mailbox_delegate' => $this->mailboxDelegateDisplay($person, $mailbox ?? []),
             default => $directTool.' for PSA person #'.$person->person->id.'.',
         };
+    }
+
+    private function mailboxDelegateDisplay(ResolvedCippPerson $person, array $mailbox): string
+    {
+        $operation = (string) ($mailbox['operation'] ?? '');
+        $permission = (string) ($mailbox['permission'] ?? '');
+        $delegate = ($mailbox['delegate_person'] ?? null) instanceof ResolvedCippPerson ? $mailbox['delegate_person'] : null;
+
+        // A mailbox-access grant is a two-party decision, so the cockpit approver
+        // must be able to verify WHO gains access to WHOSE mailbox without leaving
+        // the queue. Name both parties by UPN (a same-client internal address, not
+        // a secret) plus the PSA id. Only the display carries the UPN — the stored
+        // encrypted payload and audit summary stay id-only.
+        $delegateLabel = $delegate !== null
+            ? $delegate->userPrincipalName.' (PSA person #'.$delegate->person->id.')'
+            : 'PSA delegate person #'.($mailbox['delegate_person_id'] ?? 'unknown');
+        $ownerLabel = $person->userPrincipalName.' (PSA person #'.$person->person->id.')';
+
+        $verb = $operation === 'grant' ? 'Grant' : 'Remove';
+        $preposition = $operation === 'grant' ? 'on the mailbox of' : 'from the mailbox of';
+        $display = $verb.' '.$permission.' for delegate '.$delegateLabel.' '.$preposition.' '.$ownerLabel.'.';
+
+        if ($permission === 'full_access' && $operation === 'grant') {
+            $display .= ' auto_map='.((bool) ($mailbox['auto_map'] ?? true) ? 'true' : 'false').'.';
+        }
+
+        return $display;
     }
 
     private function mailboxForwardingDisplay(ResolvedCippPerson $person, array $mailbox): string
@@ -1397,6 +1498,31 @@ class StaffCippWriteToolExecutor
             'timezone' => [
                 'type' => 'string',
                 'description' => 'Optional Exchange timezone identifier.',
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private static function delegateProperties(): array
+    {
+        return [
+            'delegate_person_id' => [
+                'type' => 'integer',
+                'description' => 'PSA person ID of the trustee/delegate who receives or loses the access. The server verifies it belongs to client_id and derives the delegate UPN; the mailbox owner is person_id.',
+            ],
+            'permission' => [
+                'type' => 'string',
+                'enum' => self::DELEGATE_PERMISSIONS,
+                'description' => 'Delegate permission kind: full_access (open and read the mailbox), send_as (send as the mailbox), or send_on_behalf (send on behalf of the mailbox).',
+            ],
+            'operation' => [
+                'type' => 'string',
+                'enum' => self::DELEGATE_OPERATIONS,
+                'description' => 'grant to add the permission for the delegate, remove to revoke it.',
+            ],
+            'auto_map' => [
+                'type' => 'boolean',
+                'description' => 'Only used when permission=full_access and operation=grant: whether the mailbox auto-maps into the delegate\'s Outlook. Defaults to true; ignored for send_as, send_on_behalf, and removals.',
             ],
         ];
     }
@@ -1654,6 +1780,28 @@ class StaffCippWriteToolExecutor
             'Stage mailbox out-of-office state/messages/schedule for cockpit approval. Message bodies are re-entered at approval and are not stored; the proposal stores message lengths only plus safe schedule metadata.',
             array_merge(self::personProperties(ticket: true), self::outOfOfficeProperties()),
             ['person_id', 'state', 'ticket_id', 'confirm_upn', 'reason'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function setMailboxDelegateTool(): array
+    {
+        return self::tool(
+            'cipp_set_mailbox_delegate',
+            'Grant or remove a Microsoft 365 mailbox delegate permission (FullAccess, Send-As, or Send-on-Behalf) immediately through CIPP for one server-derived mailbox owner (person_id) and one server-derived delegate (delegate_person_id, a different person). Delegate access exposes another user\'s mailbox and can enable impersonation or data exfiltration, so it is a sensitive write. confirm_upn must be the mailbox OWNER\'s UPN (person_id). Requires an explicit grant, reason, confirm_upn, kill-switch, cooldown, and audit.',
+            array_merge(self::personProperties(), self::delegateProperties()),
+            ['person_id', 'delegate_person_id', 'permission', 'operation', 'confirm_upn', 'reason'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function stageSetMailboxDelegateTool(): array
+    {
+        return self::tool(
+            'cipp_stage_set_mailbox_delegate',
+            'Stage a Microsoft 365 mailbox delegate permission change (FullAccess, Send-As, or Send-on-Behalf) for cockpit approval. Delegate grants expose another user\'s mailbox; the held payload stores only local PSA identifiers plus the permission/operation, and approval revalidates local client/person scope before CIPP execution. confirm_upn must be the mailbox OWNER\'s UPN (person_id); delegate_person_id is a different person in the same client.',
+            array_merge(self::personProperties(ticket: true), self::delegateProperties()),
+            ['person_id', 'delegate_person_id', 'permission', 'operation', 'ticket_id', 'confirm_upn', 'reason'],
         );
     }
 
