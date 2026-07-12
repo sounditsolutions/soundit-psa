@@ -310,6 +310,100 @@ class InvoiceVoidZeroingTest extends TestCase
         $this->assertSame('500.00', $line->pre_void_amount);
     }
 
+    // ── Stripe status pull → PSA void detection ──
+
+    private function syncStatusFromStripe(Invoice $invoice, array $payload): void
+    {
+        $stripeClient = \Mockery::mock(StripeClient::class);
+        $stripeClient->shouldReceive('getInvoice')
+            ->with($invoice->stripe_invoice_id)
+            ->andReturn($payload);
+
+        // Construct with the mocked client so the internal void-service
+        // resolution still uses the real container binding.
+        (new StripeSyncService($stripeClient))->syncInvoiceStatusFromStripe($invoice);
+    }
+
+    public function test_stripe_status_pull_void_zeroes_and_snapshots(): void
+    {
+        $invoice = $this->makeInvoice([
+            'stripe_invoice_id' => 'in_status_void',
+            'status' => InvoiceStatus::Synced,
+        ]);
+
+        // Stripe retains the original amounts on a voided invoice; the status
+        // pull must route through the void service (zero + snapshot), not copy
+        // the retained tax/total back onto a live-looking Synced invoice.
+        $this->syncStatusFromStripe($invoice, [
+            'id' => 'in_status_void',
+            'status' => 'void',
+            'tax' => 4000,
+            'total' => 54000,
+        ]);
+
+        $invoice = $invoice->fresh();
+        $this->assertZeroedWithSnapshot($invoice);
+        $this->assertNotNull($invoice->stripe_synced_at);
+    }
+
+    public function test_stripe_status_pull_uncollectible_zeroes_and_snapshots(): void
+    {
+        $invoice = $this->makeInvoice([
+            'stripe_invoice_id' => 'in_status_uncoll',
+            'status' => InvoiceStatus::Synced,
+        ]);
+
+        $this->syncStatusFromStripe($invoice, [
+            'id' => 'in_status_uncoll',
+            'status' => 'uncollectible',
+            'tax' => 4000,
+            'total' => 54000,
+        ]);
+
+        $this->assertZeroedWithSnapshot($invoice->fresh());
+    }
+
+    public function test_stripe_status_pull_paid_marks_paid_not_void(): void
+    {
+        $invoice = $this->makeInvoice([
+            'stripe_invoice_id' => 'in_status_paid',
+            'status' => InvoiceStatus::Synced,
+        ]);
+
+        $this->syncStatusFromStripe($invoice, [
+            'id' => 'in_status_paid',
+            'status' => 'paid',
+            'tax' => 4000,
+            'total' => 54000,
+        ]);
+
+        $invoice = $invoice->fresh();
+        // A paid invoice keeps its amounts — the void path must not fire.
+        $this->assertSame(InvoiceStatus::Paid, $invoice->status);
+        $this->assertNull($invoice->pre_void_total);
+        $this->assertSame('540.00', $invoice->total);
+    }
+
+    public function test_stripe_status_pull_open_invoice_is_not_voided(): void
+    {
+        $invoice = $this->makeInvoice([
+            'stripe_invoice_id' => 'in_status_open',
+            'status' => InvoiceStatus::Synced,
+        ]);
+
+        $this->syncStatusFromStripe($invoice, [
+            'id' => 'in_status_open',
+            'status' => 'open',
+            'tax' => 4000,
+            'total' => 54000,
+        ]);
+
+        $invoice = $invoice->fresh();
+        // Still awaiting payment — neither paid nor void.
+        $this->assertSame(InvoiceStatus::Synced, $invoice->status);
+        $this->assertNull($invoice->pre_void_total);
+    }
+
     // ── Backfill migration for pre-existing voided invoices ──
 
     public function test_backfill_migration_snapshots_and_zeroes_legacy_void_invoices(): void
