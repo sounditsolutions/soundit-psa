@@ -113,6 +113,22 @@
     </div>
 @endif
 
+@if($invoice->isVoidWithSnapshot())
+    <div class="alert alert-danger d-flex align-items-start" role="alert">
+        <i class="bi bi-x-octagon-fill me-2 mt-1"></i>
+        <div>
+            <strong>This invoice is void.</strong>
+            The amounts below are the original pre-void values, shown intentionally for reference —
+            this invoice's reportable value is $0.00 and it is excluded from revenue and profitability totals.
+            @if($invoice->qbo_invoice_id)
+                QuickBooks shows this invoice as $0.00.
+            @elseif($invoice->stripe_invoice_id)
+                Stripe shows this invoice as voided.
+            @endif
+        </div>
+    </div>
+@endif
+
 <div class="row g-4">
     {{-- Left column: Client info + Line items --}}
     <div class="col-lg-8">
@@ -178,13 +194,13 @@
                                 </td>
                                 <td class="text-end">{{ rtrim(rtrim(number_format($line->quantity, 2), '0'), '.') }}</td>
                                 <td class="text-end">${{ number_format($line->unit_price, 2) }}</td>
-                                <td class="text-end fw-semibold">${{ number_format($line->amount, 2) }}</td>
+                                <td class="text-end fw-semibold">${{ number_format($line->display_amount, 2) }}</td>
                                 <td class="text-end d-none d-lg-table-cell text-muted">
-                                    {{ $line->cost_amount !== null ? '$' . number_format($line->cost_amount, 2) : '-' }}
+                                    {{ $line->display_cost_amount !== null ? '$' . number_format($line->display_cost_amount, 2) : '-' }}
                                 </td>
-                                <td class="text-end d-none d-lg-table-cell {{ ($line->amount - ($line->cost_amount ?? 0)) >= 0 ? 'text-success' : 'text-danger' }}">
-                                    @if($line->cost_amount !== null)
-                                        ${{ number_format($line->amount - $line->cost_amount, 2) }}
+                                <td class="text-end d-none d-lg-table-cell {{ ($line->display_amount - ($line->display_cost_amount ?? 0)) >= 0 ? 'text-success' : 'text-danger' }}">
+                                    @if($line->display_cost_amount !== null)
+                                        ${{ number_format($line->display_amount - $line->display_cost_amount, 2) }}
                                     @else
                                         -
                                     @endif
@@ -195,24 +211,24 @@
                     <tfoot>
                         <tr>
                             <td colspan="3" class="text-end text-muted">Subtotal</td>
-                            <td class="text-end">${{ number_format($invoice->subtotal, 2) }}</td>
+                            <td class="text-end">${{ number_format($invoice->display_subtotal, 2) }}</td>
                             <td class="d-none d-lg-table-cell"></td>
                             <td class="d-none d-lg-table-cell"></td>
                         </tr>
                         <tr>
                             <td colspan="3" class="text-end text-muted">Tax</td>
-                            <td class="text-end">${{ number_format($invoice->tax, 2) }}</td>
+                            <td class="text-end">${{ number_format($invoice->display_tax, 2) }}</td>
                             <td class="d-none d-lg-table-cell"></td>
                             <td class="d-none d-lg-table-cell"></td>
                         </tr>
                         <tr class="fw-bold">
                             <td colspan="3" class="text-end">Total</td>
-                            <td class="text-end">${{ number_format($invoice->total, 2) }}</td>
+                            <td class="text-end">${{ number_format($invoice->display_total, 2) }}</td>
                             <td class="text-end d-none d-lg-table-cell text-muted">
-                                {{ $invoice->total_cost !== null ? '$' . number_format($invoice->total_cost, 2) : '' }}
+                                {{ $invoice->display_total_cost !== null ? '$' . number_format($invoice->display_total_cost, 2) : '' }}
                             </td>
-                            <td class="text-end d-none d-lg-table-cell {{ ($invoice->margin ?? 0) >= 0 ? 'text-success' : 'text-danger' }}">
-                                {{ $invoice->margin !== null ? '$' . number_format($invoice->margin, 2) : '' }}
+                            <td class="text-end d-none d-lg-table-cell {{ ($invoice->display_margin ?? 0) >= 0 ? 'text-success' : 'text-danger' }}">
+                                {{ $invoice->display_margin !== null ? '$' . number_format($invoice->display_margin, 2) : '' }}
                             </td>
                         </tr>
                     </tfoot>
@@ -224,16 +240,19 @@
     {{-- Right column: Totals + Payment + QBO info --}}
     <div class="col-lg-4">
         @php
+            // No payment link for voided invoices — there is nothing to pay.
             $paymentUrl = null;
             $paymentProvider = null;
-            if ($invoice->stripe_invoice_url) {
-                $paymentUrl = $invoice->stripe_invoice_url;
-                $paymentProvider = 'Stripe';
-            } elseif ($invoice->qbo_invoice_id && \App\Support\PortalConfig::billingUrl()) {
-                $paymentUrl = \App\Support\PortalConfig::billingUrl() . '/portal/pay/?invoiceNumber='
-                    . urlencode($invoice->invoice_number)
-                    . '&transactionAmount=' . number_format($invoice->total, 2, '.', '');
-                $paymentProvider = \App\Support\PortalConfig::billingLabel();
+            if ($invoice->status !== \App\Enums\InvoiceStatus::Void) {
+                if ($invoice->stripe_invoice_url) {
+                    $paymentUrl = $invoice->stripe_invoice_url;
+                    $paymentProvider = 'Stripe';
+                } elseif ($invoice->qbo_invoice_id && \App\Support\PortalConfig::billingUrl()) {
+                    $paymentUrl = \App\Support\PortalConfig::billingUrl() . '/portal/pay/?invoiceNumber='
+                        . urlencode($invoice->invoice_number)
+                        . '&transactionAmount=' . number_format($invoice->total, 2, '.', '');
+                    $paymentProvider = \App\Support\PortalConfig::billingLabel();
+                }
             }
         @endphp
 
@@ -260,32 +279,42 @@
         @endif
 
         <div class="card shadow-sm mb-4">
-            <div class="card-header"><i class="bi bi-calculator me-2"></i>Totals</div>
+            <div class="card-header">
+                <i class="bi bi-calculator me-2"></i>Totals
+                @if($invoice->isVoidWithSnapshot())
+                    <span class="badge bg-danger ms-1">Pre-void</span>
+                @endif
+            </div>
             <div class="card-body">
                 <table class="table table-borderless table-sm mb-0">
                     <tr>
                         <th class="text-muted">Subtotal</th>
-                        <td class="text-end">${{ number_format($invoice->subtotal, 2) }}</td>
+                        <td class="text-end">${{ number_format($invoice->display_subtotal, 2) }}</td>
                     </tr>
                     <tr>
                         <th class="text-muted">Tax</th>
-                        <td class="text-end">${{ number_format($invoice->tax, 2) }}</td>
+                        <td class="text-end">${{ number_format($invoice->display_tax, 2) }}</td>
                     </tr>
                     <tr class="fw-bold border-top">
                         <th>Total</th>
-                        <td class="text-end">${{ number_format($invoice->total, 2) }}</td>
+                        <td class="text-end">${{ number_format($invoice->display_total, 2) }}</td>
                     </tr>
-                    @if($invoice->total_cost !== null)
+                    @if($invoice->display_total_cost !== null)
                         <tr>
                             <th class="text-muted">Cost</th>
-                            <td class="text-end">${{ number_format($invoice->total_cost, 2) }}</td>
+                            <td class="text-end">${{ number_format($invoice->display_total_cost, 2) }}</td>
                         </tr>
-                        <tr class="{{ ($invoice->margin ?? 0) >= 0 ? 'text-success' : 'text-danger' }}">
+                        <tr class="{{ ($invoice->display_margin ?? 0) >= 0 ? 'text-success' : 'text-danger' }}">
                             <th>Margin</th>
-                            <td class="text-end fw-bold">${{ number_format($invoice->margin, 2) }}</td>
+                            <td class="text-end fw-bold">${{ number_format($invoice->display_margin, 2) }}</td>
                         </tr>
                     @endif
                 </table>
+                @if($invoice->isVoidWithSnapshot())
+                    <small class="text-muted d-block mt-2">
+                        Original pre-void amounts — reportable value is $0.00.
+                    </small>
+                @endif
                 @if($invoice->status === \App\Enums\InvoiceStatus::Draft && (float) $invoice->tax === 0.0)
                     <small class="text-muted d-block mt-2">Tax calculated on push to billing provider</small>
                 @endif
