@@ -85,7 +85,10 @@ class MobileResponsiveTest extends TestCase
     public function test_alerts_index_renders_mobile_stacked_fallback(): void
     {
         $user = User::factory()->create();
-        $client = Client::factory()->create();
+        // Pin a name with HTML-special chars (& and ') so the assertion below
+        // deterministically exercises Blade escaping — a random faker name made
+        // this flaky (it only failed when the roll contained an apostrophe). psa-ha0e.
+        $client = Client::factory()->create(['name' => "Beier, Stanton & O'Reilly"]);
 
         // Active + open so it survives the index's default open() filter and the
         // acknowledge/create-ticket/resolve controls all render.
@@ -109,8 +112,10 @@ class MobileResponsiveTest extends TestCase
         $resp->assertSee('<span class="data-label">Client</span>', false);
         $resp->assertSee('<span class="data-label">Source</span>', false);
         // The operational context (affected client + alert) is present in the markup.
-        $resp->assertSee($client->name, false);
-        $resp->assertSee($alert->title, false);
+        // Default escape=true: the expected value is HTML-escaped to match Blade's
+        // {{ }} output, so names with & / ' / < compare correctly (psa-ha0e).
+        $resp->assertSee($client->name);
+        $resp->assertSee($alert->title);
     }
 
     public function test_alerts_hub_destinations_render_mobile_card_fallback(): void
