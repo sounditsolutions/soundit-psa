@@ -293,6 +293,12 @@ class CippWriteMailboxDelegateTest extends TestCase
         $this->assertStringContainsString('"delegate_person_id":'.$fixture['target']->id, $stored);
         $this->assertStringContainsString('send_on_behalf', $stored);
 
+        // The operator-facing proposal names BOTH parties by UPN so the human gate can
+        // verify who gains access to whose mailbox; the stored meta/payload stay id-only.
+        $this->assertStringContainsString('target@acme.example', $run->proposed_content);
+        $this->assertStringContainsString('alex@acme.example', $run->proposed_content);
+        $this->assertStringNotContainsString('target@acme.example', $stored);
+
         $approveClient = Mockery::mock(CippRestWriteClient::class);
         $approveClient->shouldReceive('setMailboxDelegate')
             ->once()
@@ -349,5 +355,84 @@ class CippWriteMailboxDelegateTest extends TestCase
         ]);
         $this->assertTrue((bool) $badOperation->json('result.isError'));
         $this->assertStringContainsString('operation must be one of', (string) $badOperation->json('result.content.0.text'));
+    }
+
+    public function test_delegate_rejects_self_delegation_and_cross_client_delegate(): void
+    {
+        $this->configureCipp();
+        $this->configureAiActor();
+        $fixture = $this->cippFixture();
+        $token = $this->token(['cipp_set_mailbox_delegate']);
+
+        $blocked = Mockery::mock(CippRestWriteClient::class);
+        $blocked->shouldNotReceive('setMailboxDelegate');
+        $this->app->instance(CippRestWriteClient::class, $blocked);
+
+        // Self-delegation (delegate == owner) is a no-op and rejected.
+        $selfDelegate = $this->callTool($token, 'cipp_set_mailbox_delegate', [
+            'client_id' => $fixture['client']->id,
+            'person_id' => $fixture['person']->id,
+            'delegate_person_id' => $fixture['person']->id,
+            'permission' => 'full_access',
+            'operation' => 'grant',
+            'confirm_upn' => 'alex@acme.example',
+            'reason' => 'Self-delegation should be rejected.',
+        ]);
+        $this->assertTrue((bool) $selfDelegate->json('result.isError'));
+        $this->assertStringContainsString('different person than the mailbox owner', (string) $selfDelegate->json('result.content.0.text'));
+
+        // A delegate in a DIFFERENT client cannot be targeted (server-side scope).
+        $otherClient = Client::factory()->create(['name' => 'Other', 'cipp_tenant_domain' => 'other.onmicrosoft.com']);
+        $foreignDelegate = Person::create([
+            'client_id' => $otherClient->id,
+            'person_type' => PersonType::User,
+            'first_name' => 'Eve',
+            'last_name' => 'Other',
+            'email' => 'eve@other.example',
+            'cipp_user_id' => 'other-999',
+            'cipp_upn' => 'eve@other.example',
+            'is_active' => true,
+        ]);
+
+        $crossClient = $this->callTool($token, 'cipp_set_mailbox_delegate', [
+            'client_id' => $fixture['client']->id,
+            'person_id' => $fixture['person']->id,
+            'delegate_person_id' => $foreignDelegate->id,
+            'permission' => 'full_access',
+            'operation' => 'grant',
+            'confirm_upn' => 'alex@acme.example',
+            'reason' => 'Cross-client delegate must be rejected.',
+        ]);
+        $this->assertTrue((bool) $crossClient->json('result.isError'));
+    }
+
+    public function test_direct_full_access_grant_without_automap_routes_no_automap_bucket(): void
+    {
+        $this->configureCipp();
+        $this->configureAiActor();
+        $fixture = $this->cippFixture();
+        $token = $this->token(['cipp_set_mailbox_delegate']);
+
+        $client = Mockery::mock(CippRestWriteClient::class);
+        $client->shouldReceive('setMailboxDelegate')
+            ->once()
+            ->with('acme.onmicrosoft.com', 'alex@acme.example', 'target@acme.example', 'full_access', 'grant', false)
+            ->andReturn(['success' => true, 'status' => 200]);
+        $this->app->instance(CippRestWriteClient::class, $client);
+
+        $response = $this->callTool($token, 'cipp_set_mailbox_delegate', [
+            'client_id' => $fixture['client']->id,
+            'person_id' => $fixture['person']->id,
+            'delegate_person_id' => $fixture['target']->id,
+            'permission' => 'full_access',
+            'operation' => 'grant',
+            'auto_map' => false,
+            'confirm_upn' => 'alex@acme.example',
+            'reason' => 'Grant full access without automap for a shared mailbox.',
+        ]);
+
+        $response->assertOk();
+        $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
+        $this->assertSame('CIPP action executed.', $this->decodedResult($response)['message']);
     }
 }

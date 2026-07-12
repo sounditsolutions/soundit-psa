@@ -110,6 +110,27 @@ class CippRestWriteClientTest extends TestCase
             && $request->data() === array_merge($base, ['RemoveSendOnBehalf' => $entry]));
     }
 
+    public function test_set_mailbox_delegate_rejects_empty_trustee_before_any_request(): void
+    {
+        Http::fake();
+
+        $client = new CippRestWriteClient([
+            'api_url' => 'https://cipp.example.test',
+            'tenant_id' => 'tenant-1',
+            'client_id' => 'write-client',
+            'client_secret' => 'write-secret',
+        ], Cache::store(), fn (string $host): array => ['93.184.216.34']);
+
+        $this->expectException(CippClientException::class);
+        $this->expectExceptionMessage('trustee UPN is required');
+
+        try {
+            $client->setMailboxDelegate('acme.onmicrosoft.com', 'alex@acme.example', '  ', 'full_access', 'grant', true);
+        } finally {
+            Http::assertNothingSent();
+        }
+    }
+
     public function test_posts_curated_user_lifecycle_shapes_with_redirect_refusal_and_dns_pinning(): void
     {
         Http::fake([

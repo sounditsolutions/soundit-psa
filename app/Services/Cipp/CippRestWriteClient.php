@@ -213,6 +213,10 @@ class CippRestWriteClient
      */
     public function setMailboxDelegate(string $tenantFilter, string $mailboxUserPrincipalName, string $trusteeUserPrincipalName, string $permission, string $operation, bool $autoMap): array
     {
+        if (trim($trusteeUserPrincipalName) === '') {
+            throw new CippClientException('Mailbox delegate trustee UPN is required');
+        }
+
         $body = [
             'TenantFilter' => $tenantFilter,
             'UserID' => $mailboxUserPrincipalName,
@@ -227,14 +231,16 @@ class CippRestWriteClient
 
         $entry = [['value' => $trusteeUserPrincipalName, 'label' => $trusteeUserPrincipalName]];
 
+        // Each arm gates on BOTH permission and operation so an unrecognized
+        // operation falls through to the throw rather than silently removing.
         $bucket = match (true) {
             $permission === 'full_access' && $operation === 'grant' && $autoMap => 'AddFullAccess',
             $permission === 'full_access' && $operation === 'grant' => 'AddFullAccessNoAutoMap',
-            $permission === 'full_access' => 'RemoveFullAccess',
+            $permission === 'full_access' && $operation === 'remove' => 'RemoveFullAccess',
             $permission === 'send_as' && $operation === 'grant' => 'AddSendAs',
-            $permission === 'send_as' => 'RemoveSendAs',
+            $permission === 'send_as' && $operation === 'remove' => 'RemoveSendAs',
             $permission === 'send_on_behalf' && $operation === 'grant' => 'AddSendOnBehalf',
-            $permission === 'send_on_behalf' => 'RemoveSendOnBehalf',
+            $permission === 'send_on_behalf' && $operation === 'remove' => 'RemoveSendOnBehalf',
             default => throw new CippClientException("Unsupported mailbox delegate permission/operation {$permission}/{$operation}"),
         };
 

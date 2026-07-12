@@ -133,6 +133,13 @@ class StaffCippWriteToolExecutor
         'KeepCopy',
         'HideFromGAL',
         'AutoReplyState',
+        'AddFullAccess',
+        'AddFullAccessNoAutoMap',
+        'RemoveFullAccess',
+        'AddSendAs',
+        'RemoveSendAs',
+        'AddSendOnBehalf',
+        'RemoveSendOnBehalf',
         'StartTime',
         'EndTime',
         'target_upn',
@@ -740,8 +747,21 @@ class StaffCippWriteToolExecutor
         $permission = $this->canonicalChoice($this->requiredString($arguments, 'permission'), self::DELEGATE_PERMISSIONS, 'permission');
         $operation = $this->canonicalChoice($this->requiredString($arguments, 'operation'), self::DELEGATE_OPERATIONS, 'operation');
         $delegate = $this->resolver->resolveCippPerson($clientId, $arguments['delegate_person_id'] ?? null);
-        $autoMap = array_key_exists('auto_map', $arguments)
-            ? $this->booleanValue($arguments['auto_map'], 'auto_map')
+
+        // Self-delegation is an upstream no-op that only muddies the audit trail
+        // and the held proposal. person_id is present on the initial call (direct
+        // + stage), so a self-delegation is rejected before it can ever stage;
+        // the held-approval replay carries no person_id and never sees one.
+        if (array_key_exists('person_id', $arguments) && (int) $arguments['person_id'] === (int) $delegate->person->id) {
+            throw new CippWriteScopeException('The delegate must be a different person than the mailbox owner.');
+        }
+
+        // auto_map changes the upstream call only for a FullAccess grant
+        // (AddFullAccess vs AddFullAccessNoAutoMap). Pin it to a constant for
+        // every other permission/operation so an inert auto_map value cannot
+        // fork the content hash and defeat the idempotent dedup guard.
+        $autoMap = ($permission === 'full_access' && $operation === 'grant')
+            ? (array_key_exists('auto_map', $arguments) ? $this->booleanValue($arguments['auto_map'], 'auto_map') : true)
             : true;
 
         return [
@@ -1276,10 +1296,21 @@ class StaffCippWriteToolExecutor
     {
         $operation = (string) ($mailbox['operation'] ?? '');
         $permission = (string) ($mailbox['permission'] ?? '');
+        $delegate = ($mailbox['delegate_person'] ?? null) instanceof ResolvedCippPerson ? $mailbox['delegate_person'] : null;
+
+        // A mailbox-access grant is a two-party decision, so the cockpit approver
+        // must be able to verify WHO gains access to WHOSE mailbox without leaving
+        // the queue. Name both parties by UPN (a same-client internal address, not
+        // a secret) plus the PSA id. Only the display carries the UPN — the stored
+        // encrypted payload and audit summary stay id-only.
+        $delegateLabel = $delegate !== null
+            ? $delegate->userPrincipalName.' (PSA person #'.$delegate->person->id.')'
+            : 'PSA delegate person #'.($mailbox['delegate_person_id'] ?? 'unknown');
+        $ownerLabel = $person->userPrincipalName.' (PSA person #'.$person->person->id.')';
+
         $verb = $operation === 'grant' ? 'Grant' : 'Remove';
         $preposition = $operation === 'grant' ? 'on the mailbox of' : 'from the mailbox of';
-        $display = $verb.' '.$permission.' for PSA delegate person #'.($mailbox['delegate_person_id'] ?? 'unknown')
-            .' '.$preposition.' PSA person #'.$person->person->id.'.';
+        $display = $verb.' '.$permission.' for delegate '.$delegateLabel.' '.$preposition.' '.$ownerLabel.'.';
 
         if ($permission === 'full_access' && $operation === 'grant') {
             $display .= ' auto_map='.((bool) ($mailbox['auto_map'] ?? true) ? 'true' : 'false').'.';
@@ -1757,7 +1788,7 @@ class StaffCippWriteToolExecutor
     {
         return self::tool(
             'cipp_set_mailbox_delegate',
-            'Grant or remove a Microsoft 365 mailbox delegate permission (FullAccess, Send-As, or Send-on-Behalf) immediately through CIPP for one server-derived mailbox owner (person_id) and one server-derived delegate (delegate_person_id). Delegate access exposes another user\'s mailbox and can enable impersonation or data exfiltration, so it is a sensitive write. Requires an explicit grant, reason, confirm_upn, kill-switch, cooldown, and audit.',
+            'Grant or remove a Microsoft 365 mailbox delegate permission (FullAccess, Send-As, or Send-on-Behalf) immediately through CIPP for one server-derived mailbox owner (person_id) and one server-derived delegate (delegate_person_id, a different person). Delegate access exposes another user\'s mailbox and can enable impersonation or data exfiltration, so it is a sensitive write. confirm_upn must be the mailbox OWNER\'s UPN (person_id). Requires an explicit grant, reason, confirm_upn, kill-switch, cooldown, and audit.',
             array_merge(self::personProperties(), self::delegateProperties()),
             ['person_id', 'delegate_person_id', 'permission', 'operation', 'confirm_upn', 'reason'],
         );
@@ -1768,7 +1799,7 @@ class StaffCippWriteToolExecutor
     {
         return self::tool(
             'cipp_stage_set_mailbox_delegate',
-            'Stage a Microsoft 365 mailbox delegate permission change (FullAccess, Send-As, or Send-on-Behalf) for cockpit approval. Delegate grants expose another user\'s mailbox; the held payload stores only local PSA identifiers plus the permission/operation, and approval revalidates local client/person scope before CIPP execution.',
+            'Stage a Microsoft 365 mailbox delegate permission change (FullAccess, Send-As, or Send-on-Behalf) for cockpit approval. Delegate grants expose another user\'s mailbox; the held payload stores only local PSA identifiers plus the permission/operation, and approval revalidates local client/person scope before CIPP execution. confirm_upn must be the mailbox OWNER\'s UPN (person_id); delegate_person_id is a different person in the same client.',
             array_merge(self::personProperties(ticket: true), self::delegateProperties()),
             ['person_id', 'delegate_person_id', 'permission', 'operation', 'ticket_id', 'confirm_upn', 'reason'],
         );
