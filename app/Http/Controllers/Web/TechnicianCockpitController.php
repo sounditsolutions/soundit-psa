@@ -83,7 +83,8 @@ class TechnicianCockpitController extends Controller
             'cipp_stage_set_mailbox_forwarding',
             'cipp_stage_set_mailbox_gal_visibility',
             'cipp_stage_set_mailbox_out_of_office',
-            'cipp_stage_set_mailbox_delegate' => $service->approveStagedCippWriteAction(
+            'cipp_stage_set_mailbox_delegate',
+            'cipp_stage_remove_directory_role' => $service->approveStagedCippWriteAction(
                 $run,
                 (int) auth()->id(),
                 $this->cippApprovalInputs($request, $run),
