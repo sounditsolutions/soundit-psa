@@ -39,8 +39,11 @@ class CippRestWriteClientTest extends TestCase
         $this->assertContains('setMailboxOutOfOffice', $methods);
         $this->assertContains('setMailboxDelegate', $methods);
         $this->assertContains('resetUserPassword', $methods);
+        $this->assertContains('listDirectoryRoles', $methods);
+        $this->assertContains('removeDirectoryRoleMember', $methods);
         $this->assertNotContains('post', $methods);
         $this->assertNotContains('request', $methods);
+        $this->assertNotContains('get', $methods);
     }
 
     public function test_set_mailbox_delegate_posts_exec_edit_mailbox_permissions_shape(): void
@@ -108,6 +111,138 @@ class CippRestWriteClientTest extends TestCase
 
         Http::assertSent(fn ($request) => $request->url() === 'https://cipp.example.test/api/ExecEditMailboxPermissions'
             && $request->data() === array_merge($base, ['RemoveSendOnBehalf' => $entry]));
+    }
+
+    public function test_remove_directory_role_member_posts_exec_remove_admin_role_shape(): void
+    {
+        Http::fake([
+            'login.microsoftonline.com/*' => Http::response([
+                'access_token' => 'WRITE-TOKEN',
+                'expires_in' => 3600,
+            ]),
+            'cipp.example.test/api/*' => Http::response(['Results' => ['Successfully removed the user.', 'raw' => 'not returned']]),
+        ]);
+
+        $client = new CippRestWriteClient([
+            'api_url' => 'https://cipp.example.test',
+            'tenant_id' => 'tenant-1',
+            'client_id' => 'write-client',
+            'client_secret' => 'write-secret',
+        ], Cache::store(), fn (string $host): array => ['93.184.216.34']);
+
+        $result = $client->removeDirectoryRoleMember(
+            'acme.onmicrosoft.com',
+            'role-object-1',
+            'Exchange Administrator',
+            'user-123',
+            'alex@acme.example',
+        );
+
+        // Discard-body path: the caller only learns success/status, never the upstream body.
+        $this->assertSame(['success' => true, 'status' => 200], $result);
+        $this->assertStringNotContainsString('not returned', json_encode($result));
+
+        // Source-pinned body (CIPP-API Invoke-ExecRemoveAdminRole.ps1): tenantFilter,
+        // RoleId (the tenant's ACTIVATED directoryRole object id), RoleName (label used
+        // for upstream logging), and ONE Users entry in {value,label} autocomplete shape.
+        Http::assertSent(fn ($request) => $request->url() === 'https://cipp.example.test/api/ExecRemoveAdminRole'
+            && $request->method() === 'POST'
+            && $request->hasHeader('Authorization', 'Bearer WRITE-TOKEN')
+            && $request->data() === [
+                'tenantFilter' => 'acme.onmicrosoft.com',
+                'RoleId' => 'role-object-1',
+                'RoleName' => 'Exchange Administrator',
+                'Users' => [['value' => 'user-123', 'label' => 'alex@acme.example']],
+            ]);
+    }
+
+    public function test_remove_directory_role_member_rejects_empty_role_or_user_before_any_request(): void
+    {
+        Http::fake();
+
+        $client = new CippRestWriteClient([
+            'api_url' => 'https://cipp.example.test',
+            'tenant_id' => 'tenant-1',
+            'client_id' => 'write-client',
+            'client_secret' => 'write-secret',
+        ], Cache::store(), fn (string $host): array => ['93.184.216.34']);
+
+        try {
+            $client->removeDirectoryRoleMember('acme.onmicrosoft.com', '  ', 'Exchange Administrator', 'user-123', 'alex@acme.example');
+            $this->fail('Expected CippClientException for empty role id');
+        } catch (CippClientException $e) {
+            $this->assertStringContainsString('role id is required', $e->getMessage());
+        }
+
+        try {
+            $client->removeDirectoryRoleMember('acme.onmicrosoft.com', 'role-object-1', 'Exchange Administrator', '', 'alex@acme.example');
+            $this->fail('Expected CippClientException for empty user id');
+        } catch (CippClientException $e) {
+            $this->assertStringContainsString('user id is required', $e->getMessage());
+        }
+
+        Http::assertNothingSent();
+    }
+
+    public function test_list_directory_roles_gets_list_roles_with_tenant_filter_and_returns_roles(): void
+    {
+        Http::fake([
+            'login.microsoftonline.com/*' => Http::response([
+                'access_token' => 'WRITE-TOKEN',
+                'expires_in' => 3600,
+            ]),
+            'cipp.example.test/api/ListRoles*' => Http::response([
+                [
+                    'Id' => 'role-object-1',
+                    'roleTemplateId' => '29232cdf-9323-42fd-ade2-1d097af3e4de',
+                    'DisplayName' => 'Exchange Administrator',
+                    'Description' => 'Can manage all aspects of the Exchange product.',
+                    'Members' => [['displayName' => 'Alex Acme', 'userPrincipalName' => 'alex@acme.example', 'id' => 'user-123']],
+                ],
+            ]),
+        ]);
+
+        $client = new CippRestWriteClient([
+            'api_url' => 'https://cipp.example.test',
+            'tenant_id' => 'tenant-1',
+            'client_id' => 'write-client',
+            'client_secret' => 'write-secret',
+        ], Cache::store(), fn (string $host): array => ['93.184.216.34']);
+
+        $roles = $client->listDirectoryRoles('acme.onmicrosoft.com');
+
+        $this->assertCount(1, $roles);
+        $this->assertSame('role-object-1', $roles[0]['Id']);
+        $this->assertSame('29232cdf-9323-42fd-ade2-1d097af3e4de', $roles[0]['roleTemplateId']);
+        $this->assertSame('Exchange Administrator', $roles[0]['DisplayName']);
+        $this->assertSame('user-123', $roles[0]['Members'][0]['id']);
+
+        // Source-pinned read (CIPP-API Invoke-ListRoles.ps1): GET with the tenant in the query string.
+        Http::assertSent(fn ($request) => $request->url() === 'https://cipp.example.test/api/ListRoles?tenantFilter=acme.onmicrosoft.com'
+            && $request->method() === 'GET'
+            && $request->hasHeader('Authorization', 'Bearer WRITE-TOKEN'));
+    }
+
+    public function test_list_directory_roles_unwraps_results_envelope(): void
+    {
+        Http::fake([
+            'login.microsoftonline.com/*' => Http::response(['access_token' => 'WRITE-TOKEN', 'expires_in' => 3600]),
+            'cipp.example.test/api/ListRoles*' => Http::response([
+                'Results' => [['Id' => 'role-object-2', 'roleTemplateId' => 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', 'DisplayName' => 'Helpdesk Administrator', 'Members' => []]],
+            ]),
+        ]);
+
+        $client = new CippRestWriteClient([
+            'api_url' => 'https://cipp.example.test',
+            'tenant_id' => 'tenant-1',
+            'client_id' => 'write-client',
+            'client_secret' => 'write-secret',
+        ], Cache::store(), fn (string $host): array => ['93.184.216.34']);
+
+        $roles = $client->listDirectoryRoles('acme.onmicrosoft.com');
+
+        $this->assertCount(1, $roles);
+        $this->assertSame('role-object-2', $roles[0]['Id']);
     }
 
     public function test_set_mailbox_delegate_rejects_empty_trustee_before_any_request(): void

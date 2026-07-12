@@ -250,6 +250,64 @@ class CippRestWriteClient
     }
 
     /**
+     * List the tenant's ACTIVATED Entra directory roles with their members via
+     * CIPP's ListRoles endpoint. Read support for the directory-role removal
+     * write: the caller-facing tool accepts only the universal role TEMPLATE id,
+     * and this read is how execution re-resolves it to the tenant's activated
+     * role object id (and re-verifies name + membership) at approval time.
+     *
+     * Source shape (CIPP-API Invoke-ListRoles.ps1): GET api/ListRoles?tenantFilter=X
+     * returning a bare array of {Id, roleTemplateId, DisplayName, Description,
+     * Members: [{displayName, userPrincipalName, id}], SID}.
+     *
+     * @return array<int, mixed>
+     */
+    public function listDirectoryRoles(string $tenantFilter): array
+    {
+        $body = $this->sendGet('api/ListRoles', ['tenantFilter' => $tenantFilter]);
+
+        if (array_is_list($body)) {
+            return $body;
+        }
+
+        // Defensive: some CIPP endpoints wrap list payloads as {"Results": [...]}.
+        $results = $body['Results'] ?? null;
+
+        return is_array($results) && array_is_list($results) ? $results : [];
+    }
+
+    /**
+     * Remove ONE user from ONE assigned Entra directory (admin) role via CIPP's
+     * ExecRemoveAdminRole endpoint. RoleId must be the tenant's activated
+     * directoryRole OBJECT id (from listDirectoryRoles), never a caller-supplied
+     * value; RoleName is the resolved display name CIPP uses for its own log
+     * line; the single Users entry follows the CIPP autocomplete {value,label}
+     * shape with the server-derived user object id and UPN.
+     *
+     * Source shape (CIPP-API Invoke-ExecRemoveAdminRole.ps1): per user, CIPP runs
+     * Graph DELETE /v1.0/directoryRoles/{RoleId}/members/{UserId}/$ref and
+     * returns HTTP 500 when any removal fails (send() then throws).
+     *
+     * @return array<int|string, mixed>
+     */
+    public function removeDirectoryRoleMember(string $tenantFilter, string $roleId, string $roleName, string $userId, string $userPrincipalName): array
+    {
+        if (trim($roleId) === '') {
+            throw new CippClientException('Directory role id is required');
+        }
+        if (trim($userId) === '') {
+            throw new CippClientException('Directory role member user id is required');
+        }
+
+        return $this->send('api/ExecRemoveAdminRole', [
+            'tenantFilter' => $tenantFilter,
+            'RoleId' => $roleId,
+            'RoleName' => $roleName,
+            'Users' => [['value' => $userId, 'label' => $userPrincipalName]],
+        ]);
+    }
+
+    /**
      * @param  array<int|string, mixed>  $body
      * @return array<int|string, mixed>
      */
@@ -277,6 +335,35 @@ class CippRestWriteClient
         }
 
         return ['success' => true, 'status' => $response->status()];
+    }
+
+    /**
+     * Curated GET with the same URL-safety, DNS-pinning, and token handling as
+     * send(). Returns the decoded body — used only by resolution reads that
+     * support a write (listDirectoryRoles), never exposed as a generic getter.
+     *
+     * @param  array<string, string>  $query
+     * @return array<int|string, mixed>
+     */
+    private function sendGet(string $endpoint, array $query): array
+    {
+        $url = $this->endpointUrl($endpoint);
+        $options = $this->safeRequestOptions($url);
+        $token = $this->getToken();
+
+        $response = Http::timeout(60)
+            ->acceptJson()
+            ->withOptions($options)
+            ->withToken($token)
+            ->get($url, $query);
+
+        if ($response->failed()) {
+            throw new CippClientException("CIPP read {$endpoint} failed: HTTP {$response->status()}");
+        }
+
+        $body = $response->json();
+
+        return is_array($body) ? $body : [];
     }
 
     private function getToken(): string

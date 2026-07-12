@@ -42,6 +42,7 @@
             'cipp_stage_set_mailbox_gal_visibility' => ['bg-danger text-white', 'CIPP GAL visibility', 'bi-eye'],
             'cipp_stage_set_mailbox_out_of_office' => ['bg-danger text-white', 'CIPP out of office', 'bi-calendar2-week'],
             'cipp_stage_set_mailbox_delegate' => ['bg-danger text-white', 'CIPP mailbox delegate', 'bi-people'],
+            'cipp_stage_remove_directory_role' => ['bg-danger text-white', 'CIPP directory role removal', 'bi-person-x'],
             default => ['bg-primary-subtle text-primary-emphasis border border-primary-subtle', 'Reply', 'bi-send'],
         };
     };

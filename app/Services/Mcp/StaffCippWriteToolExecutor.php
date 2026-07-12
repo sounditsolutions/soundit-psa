@@ -40,6 +40,7 @@ class StaffCippWriteToolExecutor
         'cipp_stage_set_mailbox_gal_visibility' => 'cipp_set_mailbox_gal_visibility',
         'cipp_stage_set_mailbox_out_of_office' => 'cipp_set_mailbox_out_of_office',
         'cipp_stage_set_mailbox_delegate' => 'cipp_set_mailbox_delegate',
+        'cipp_stage_remove_directory_role' => 'cipp_remove_directory_role',
     ];
 
     /** @var array<string, int> */
@@ -68,6 +69,8 @@ class StaffCippWriteToolExecutor
         'cipp_stage_set_mailbox_out_of_office' => 300,
         'cipp_set_mailbox_delegate' => 300,
         'cipp_stage_set_mailbox_delegate' => 300,
+        'cipp_remove_directory_role' => 300,
+        'cipp_stage_remove_directory_role' => 300,
         'cipp_reset_user_password' => 300,
     ];
 
@@ -90,6 +93,10 @@ class StaffCippWriteToolExecutor
 
     /** @var array<int, string> */
     private const DELEGATE_OPERATIONS = ['grant', 'remove'];
+
+    private const ROLE_TEMPLATE_ID_PATTERN = '/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i';
+
+    private const ROLE_NAME_MAX = 200;
 
     /** @var array<int, string> */
     private const UPSTREAM_IDENTIFIER_KEYS = [
@@ -140,6 +147,13 @@ class StaffCippWriteToolExecutor
         'RemoveSendAs',
         'AddSendOnBehalf',
         'RemoveSendOnBehalf',
+        'RoleId',
+        'roleId',
+        'role_id',
+        'RoleName',
+        'roleName',
+        'Users',
+        'users',
         'StartTime',
         'EndTime',
         'target_upn',
@@ -185,6 +199,8 @@ class StaffCippWriteToolExecutor
             self::stageSetMailboxOutOfOfficeTool(),
             self::setMailboxDelegateTool(),
             self::stageSetMailboxDelegateTool(),
+            self::removeDirectoryRoleTool(),
+            self::stageRemoveDirectoryRoleTool(),
             self::resetUserPasswordTool(),
         ];
     }
@@ -692,8 +708,62 @@ class StaffCippWriteToolExecutor
                 (string) ($mailbox['operation'] ?? ''),
                 (bool) ($mailbox['auto_map'] ?? true),
             ),
+            'cipp_remove_directory_role' => $this->executeDirectoryRoleRemoval($tenant, $person, $mailbox ?? []),
             default => throw new \InvalidArgumentException("Unsupported CIPP write tool {$tool}"),
         };
+    }
+
+    /**
+     * Execute an approved directory-role removal. The staged payload carries
+     * only the universal role TEMPLATE id and the typed role name, so the
+     * tenant's activated role OBJECT id is re-resolved fresh here — then the
+     * resolved display name and the target user's CURRENT membership are
+     * re-verified before the single-member removal is sent. Every guard fails
+     * closed as a CippClientException: the approval is declined and audited,
+     * and nothing upstream is changed.
+     */
+    private function executeDirectoryRoleRemoval(string $tenant, ResolvedCippPerson $person, array $params): void
+    {
+        $templateId = (string) ($params['role_template_id'] ?? '');
+        $roleName = trim((string) ($params['role_name'] ?? ''));
+        if ($templateId === '' || $roleName === '') {
+            throw new CippClientException('Directory role removal payload is incomplete; nothing was removed.');
+        }
+
+        $match = null;
+        foreach ($this->client->listDirectoryRoles($tenant) as $role) {
+            if (is_array($role) && strcasecmp(trim((string) ($role['roleTemplateId'] ?? '')), $templateId) === 0) {
+                $match = $role;
+                break;
+            }
+        }
+
+        if ($match === null) {
+            throw new CippClientException('No activated directory role in this tenant matches the approved role_template_id; nothing was removed.');
+        }
+
+        if (strcasecmp(trim((string) ($match['DisplayName'] ?? '')), $roleName) !== 0) {
+            throw new CippClientException('The resolved directory role display name does not match the approved role_name; removal refused.');
+        }
+
+        $isMember = false;
+        foreach (is_array($match['Members'] ?? null) ? $match['Members'] : [] as $member) {
+            if (is_array($member) && strcasecmp(trim((string) ($member['id'] ?? '')), $person->userId) === 0) {
+                $isMember = true;
+                break;
+            }
+        }
+
+        if (! $isMember) {
+            throw new CippClientException('The target user does not currently hold this directory role; nothing was removed.');
+        }
+
+        $roleId = trim((string) ($match['Id'] ?? ''));
+        if ($roleId === '') {
+            throw new CippClientException('The resolved directory role has no object id; nothing was removed.');
+        }
+
+        $this->client->removeDirectoryRoleMember($tenant, $roleId, trim((string) $match['DisplayName']), $person->userId, $person->userPrincipalName);
     }
 
     private function executeMailboxForwarding(string $tenant, ResolvedCippPerson $person, array $mailbox): void
@@ -728,8 +798,40 @@ class StaffCippWriteToolExecutor
             'cipp_set_mailbox_gal_visibility' => $this->mailboxGalParams($arguments),
             'cipp_set_mailbox_out_of_office' => $this->mailboxOutOfOfficeParams($arguments, $approvalInputs, $isHeld, $heldApproval),
             'cipp_set_mailbox_delegate' => $this->mailboxDelegateParams($clientId, $arguments),
+            'cipp_remove_directory_role' => $this->directoryRoleParams($arguments, $isHeld),
             default => null,
         };
+    }
+
+    /**
+     * Resolve directory-role removal params on the initial call and the held
+     * approval replay. STRUCTURALLY HELD-ONLY (external-forwarding precedent):
+     * an admin-role removal is never directly executable, whatever mode the
+     * token was granted — the non-held path throws before any state is touched,
+     * so the upstream call can only ever be reached through a cockpit approval.
+     * The role is identified by its universal Entra role TEMPLATE id (a
+     * Microsoft constant surfaced by the CIPP role reads, canonicalized to
+     * lowercase so casing cannot fork the idempotency hash) plus a typed
+     * role_name confirmation; both are safe local scalars, and execution
+     * re-resolves the tenant's activated role object from them at approval.
+     *
+     * @return array<string, mixed>
+     */
+    private function directoryRoleParams(array $arguments, bool $isHeld): array
+    {
+        if (! $isHeld) {
+            throw new CippWriteScopeException('Directory role removal is held-only; call cipp_remove_directory_role with staged=true and a ticket_id for cockpit approval.');
+        }
+
+        $templateId = $this->requiredString($arguments, 'role_template_id');
+        if ($templateId === null || preg_match(self::ROLE_TEMPLATE_ID_PATTERN, $templateId) !== 1) {
+            throw new CippWriteScopeException('role_template_id must be a well-formed Entra role template GUID (see the CIPP role reads).');
+        }
+
+        return [
+            'role_template_id' => mb_strtolower($templateId),
+            'role_name' => $this->boundedString($arguments, 'role_name', self::ROLE_NAME_MAX, required: true),
+        ];
     }
 
     /**
@@ -1176,6 +1278,8 @@ class StaffCippWriteToolExecutor
             'operation',
             'auto_map',
             'delegate_person_id',
+            'role_template_id',
+            'role_name',
         ] as $key) {
             if (array_key_exists($key, $mailbox)) {
                 $safe[$key] = $mailbox[$key];
@@ -1288,8 +1392,22 @@ class StaffCippWriteToolExecutor
             'cipp_set_mailbox_gal_visibility' => 'Set GAL visibility for PSA person #'.$person->person->id.' to '.((bool) ($mailbox['hidden'] ?? false) ? 'hidden' : 'visible').'.',
             'cipp_set_mailbox_out_of_office' => $this->mailboxOutOfOfficeDisplay($person, $mailbox ?? []),
             'cipp_set_mailbox_delegate' => $this->mailboxDelegateDisplay($person, $mailbox ?? []),
+            'cipp_remove_directory_role' => $this->directoryRoleDisplay($person, $mailbox ?? []),
             default => $directTool.' for PSA person #'.$person->person->id.'.',
         };
+    }
+
+    private function directoryRoleDisplay(ResolvedCippPerson $person, array $params): string
+    {
+        // An admin-role removal is only reviewable if the approver can see WHO
+        // loses WHICH role: name the target by UPN (a same-client internal
+        // address, not a secret) plus the PSA id, and the role by its typed
+        // name plus the universal template GUID. Only the display carries the
+        // UPN — the stored payload and audit summary stay id-only.
+        return 'Remove Entra directory role "'.($params['role_name'] ?? 'unknown').'"'
+            .' (template '.($params['role_template_id'] ?? 'unknown').')'
+            .' from '.$person->userPrincipalName.' (PSA person #'.$person->person->id.').'
+            .' Held-only: approval re-resolves the tenant role and re-verifies the user\'s membership before execution. License assignments are not touched.';
     }
 
     private function mailboxDelegateDisplay(ResolvedCippPerson $person, array $mailbox): string
@@ -1523,6 +1641,21 @@ class StaffCippWriteToolExecutor
             'auto_map' => [
                 'type' => 'boolean',
                 'description' => 'Only used when permission=full_access and operation=grant: whether the mailbox auto-maps into the delegate\'s Outlook. Defaults to true; ignored for send_as, send_on_behalf, and removals.',
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private static function directoryRoleProperties(): array
+    {
+        return [
+            'role_template_id' => [
+                'type' => 'string',
+                'description' => 'Universal Microsoft Entra role TEMPLATE GUID identifying which directory role to remove (the roleTemplateId surfaced by the CIPP role reads, e.g. cipp_list_roles). The server re-resolves the tenant\'s activated role object from it at execution; the tenant role object id is never accepted from the caller.',
+            ],
+            'role_name' => [
+                'type' => 'string',
+                'description' => 'Typed role display name confirmation (e.g. "Exchange Administrator"). Verified case-insensitively against the resolved role\'s display name at execution; a mismatch refuses the removal.',
             ],
         ];
     }
@@ -1802,6 +1935,28 @@ class StaffCippWriteToolExecutor
             'Stage a Microsoft 365 mailbox delegate permission change (FullAccess, Send-As, or Send-on-Behalf) for cockpit approval. Delegate grants expose another user\'s mailbox; the held payload stores only local PSA identifiers plus the permission/operation, and approval revalidates local client/person scope before CIPP execution. confirm_upn must be the mailbox OWNER\'s UPN (person_id); delegate_person_id is a different person in the same client.',
             array_merge(self::personProperties(ticket: true), self::delegateProperties()),
             ['person_id', 'delegate_person_id', 'permission', 'operation', 'ticket_id', 'confirm_upn', 'reason'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function removeDirectoryRoleTool(): array
+    {
+        return self::tool(
+            'cipp_remove_directory_role',
+            'Remove one Microsoft Entra directory (admin) role from one server-derived CIPP user through CIPP, WITHOUT touching license assignments — offboarding and least-privilege hygiene for stale admin roles. HELD-ONLY: this capability never executes immediately, whatever mode was granted — every call must use staged=true with a ticket_id and is held for cockpit approval; staged=false calls are refused. Identify the role by its universal Entra role_template_id (from the CIPP role reads) plus a typed role_name confirmation; approval re-resolves the tenant\'s activated role and re-verifies the user\'s current membership before execution. confirm_upn is the target user\'s UPN. Requires an explicit token grant, reason, kill-switch, cooldown, and TechnicianActionLog audit.',
+            array_merge(self::personProperties(), self::directoryRoleProperties()),
+            ['person_id', 'role_template_id', 'role_name', 'confirm_upn', 'reason'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function stageRemoveDirectoryRoleTool(): array
+    {
+        return self::tool(
+            'cipp_stage_remove_directory_role',
+            'Stage removal of one Microsoft Entra directory (admin) role from one server-derived CIPP user for cockpit approval, WITHOUT touching license assignments (offboarding / least-privilege hygiene). The MCP call makes no CIPP upstream call; the held payload stores only local identifiers plus the universal role_template_id and typed role_name, and approval re-resolves the tenant\'s activated role by template id, re-verifies the role display name and the user\'s CURRENT membership, then executes the single-member removal. This capability is held-only — there is no immediate execution path. confirm_upn is the target user\'s UPN (person_id).',
+            array_merge(self::personProperties(ticket: true), self::directoryRoleProperties()),
+            ['person_id', 'role_template_id', 'role_name', 'ticket_id', 'confirm_upn', 'reason'],
         );
     }
 
