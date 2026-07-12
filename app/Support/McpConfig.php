@@ -40,13 +40,21 @@ class McpConfig
 
         $record->forceFill(['last_used_at' => now()])->saveQuietly();
 
+        // Grant entries may carry per-tool mode suffixes (name:staged /
+        // name:immediate) and legacy staged-alias names; parse them into the
+        // plain canonical tool list plus the per-tool mode map.
+        $grants = $record->tools === null
+            ? null
+            : McpToolModes::parseGrants(self::normalizeToolList($record->tools));
+
         return new McpStaffToken(
-            allowedTools: $record->tools === null ? null : self::normalizeToolList($record->tools),
+            allowedTools: $grants === null ? null : $grants['tools'],
             label: (string) $record->label,
             id: (int) $record->id,
             directive: $record->directiveOrDefault(),
             aiActor: (bool) $record->ai_actor,
             requireExplicitClientScope: (bool) $record->require_explicit_client_scope,
+            toolModes: $grants === null ? [] : $grants['modes'],
         );
     }
 

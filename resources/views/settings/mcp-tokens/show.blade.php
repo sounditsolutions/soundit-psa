@@ -4,7 +4,9 @@
 
 @php
     $readOnly = $token->isRevoked();
-    $grantedList = collect($token->tools ?? []);
+    // Parsed grant state from the controller: plain canonical tool names plus
+    // the per-tool staged/immediate mode map for stageable capabilities.
+    $grantedList = collect($grantedTools);
     $allTools = collect($integrationGroups)->flatMap(fn ($g) => collect($g['tiers'])->flatMap(fn ($t) => $t['tools']));
     $totalCount = $allTools->count();
     $grantedCount = $grantedList->count();
@@ -291,6 +293,19 @@
                                                     <span class="badge rounded-pill bg-info-subtle text-info-emphasis border tool-instr-flag" style="font-size:.6rem; {{ $hasInstr ? '' : 'display:none;' }}"><i class="bi bi-card-text me-1"></i>instruction</span>
                                                 </div>
                                                 @if($tool['description'] !== '')<div class="tool-desc">{{ $tool['description'] }}</div>@endif
+                                                @if(!empty($tool['stageable']))
+                                                    @php $isImmediate = ($grantModes[$tool['name']] ?? null) === 'immediate'; @endphp
+                                                    <div class="mcp-mode mt-1" style="{{ $isGranted ? '' : 'display:none;' }}">
+                                                        <div class="form-check m-0">
+                                                            <input type="checkbox" class="form-check-input tool-mode-immediate" id="mode-{{ $tool['name'] }}"
+                                                                   data-tool="{{ $tool['name'] }}" @checked($isImmediate) @disabled($readOnly)>
+                                                            <label class="form-check-label small" for="mode-{{ $tool['name'] }}">
+                                                                Allow immediate execution
+                                                                <span class="text-muted">— unchecked: staged-only, every call is held for cockpit approval</span>
+                                                            </label>
+                                                        </div>
+                                                    </div>
+                                                @endif
                                                 <div class="mcp-instr" style="{{ $isGranted ? '' : 'display:none;' }}">
                                                     <button type="button" class="btn btn-link btn-sm p-0 text-decoration-none mcp-instr-toggle" style="font-size:.75rem;">
                                                         <i class="bi bi-sliders2 me-1"></i>{{ $hasInstr ? 'Edit shared instruction' : 'Add shared instruction' }}
@@ -529,7 +544,14 @@
 
     /* ---------- grants (auto-save) ---------- */
     const groupsRoot = document.getElementById('mcpGroups');
-    function grantedTools() { return [...groupsRoot.querySelectorAll('.tool-switch:checked')].map(s => s.dataset.tool); }
+    // Stageable tools save as name:staged / name:immediate per their mode
+    // checkbox; everything else saves as the plain tool name.
+    function grantedTools() {
+        return [...groupsRoot.querySelectorAll('.tool-switch:checked')].map(s => {
+            const mode = s.closest('.mcp-tool').querySelector('.tool-mode-immediate');
+            return mode ? s.dataset.tool + ':' + (mode.checked ? 'immediate' : 'staged') : s.dataset.tool;
+        });
+    }
     const saveGrants = debounce(async () => {
         const r = await api(cfg.tools, 'PATCH', { tools: grantedTools() });
         if (r.ok) toast('Tool grants saved'); else toast('Could not save grants', false);
@@ -540,8 +562,23 @@
         row.classList.toggle('granted', on);
         const instr = row.querySelector('.mcp-instr');
         if (instr) instr.style.display = on ? '' : 'none';
+        const mode = row.querySelector('.mcp-mode');
+        if (mode) mode.style.display = on ? '' : 'none';
+        if (!on) {
+            // Revoking resets the mode so a later re-grant starts staged-only.
+            const modeBox = row.querySelector('.tool-mode-immediate');
+            if (modeBox) modeBox.checked = false;
+        }
     }
     groupsRoot.addEventListener('change', (e) => {
+        const modeSw = e.target.closest('.tool-mode-immediate');
+        if (modeSw) {
+            if (modeSw.checked && !confirm('Allow IMMEDIATE execution for "' + modeSw.dataset.tool + '"?\n\nCalls with staged=false will run without human approval. Unchecked, every call is staged for cockpit approval.')) {
+                modeSw.checked = false; return;
+            }
+            saveGrants();
+            return;
+        }
         const sw = e.target.closest('.tool-switch');
         if (!sw) return;
         const row = sw.closest('.mcp-tool');

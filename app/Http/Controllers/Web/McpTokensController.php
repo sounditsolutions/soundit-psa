@@ -11,12 +11,14 @@ use App\Models\SignalDestination;
 use App\Models\SignalInboxEntry;
 use App\Support\McpConfig;
 use App\Support\McpToolInstructions;
+use App\Support\McpToolModes;
 use App\Support\McpToolRegistry;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 
 class McpTokensController extends Controller
 {
@@ -29,8 +31,15 @@ class McpTokensController extends Controller
     {
         $newToken = session('mcp_new_token');
 
+        // Stored grant entries may carry mode suffixes (name:staged /
+        // name:immediate) and legacy staged-alias names; the view renders the
+        // parsed form — plain canonical names plus the per-tool mode map.
+        $grantState = McpToolModes::parseGrants($token->tools ?? []);
+
         return view('settings.mcp-tokens.show', [
             'token' => $token,
+            'grantedTools' => $grantState['tools'],
+            'grantModes' => $grantState['modes'],
             'integrationGroups' => McpToolRegistry::integrationGroups(),
             'toolInstructions' => McpToolInstructions::all(),
             'newToken' => is_string($newToken) ? $newToken : null,
@@ -168,12 +177,23 @@ class McpTokensController extends Controller
     {
         $validated = $request->validate([
             'tools' => ['sometimes', 'array'],
-            'tools.*' => ['string', Rule::in(McpToolRegistry::allToolNames())],
+            'tools.*' => ['string', 'max:150'],
         ]);
+
+        // Entries may be plain tool names, `name:staged` / `name:immediate`
+        // mode grants for stageable capabilities, or legacy staged-alias
+        // names. Normalize to canonical storage form and reject anything that
+        // does not resolve to a grantable tool.
+        $normalized = McpToolModes::normalizeGrantEntries($validated['tools'] ?? []);
+        if ($normalized['unknown'] !== []) {
+            throw ValidationException::withMessages([
+                'tools' => 'Unknown tool grant(s): '.implode(', ', $normalized['unknown']),
+            ]);
+        }
 
         // Grants auto-save on every toggle, so an empty set is valid (a token
         // may grant nothing). Activation is a separate, deliberate flip.
-        $tools = array_values(array_unique($validated['tools'] ?? []));
+        $tools = $normalized['entries'];
         $token->forceFill(['tools' => $tools])->save();
 
         $this->audit($request, 'token/tools', $token->label, ['tools' => $tools]);

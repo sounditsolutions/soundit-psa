@@ -18,6 +18,7 @@ use App\Models\User;
 use App\Services\Tactical\TacticalClient;
 use App\Services\Technician\TechnicianApprovalService;
 use App\Support\McpConfig;
+use App\Support\McpToolModes;
 use App\Support\McpToolRegistry;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Testing\TestResponse;
@@ -184,6 +185,12 @@ class TacticalTaskCrudPhase4Test extends TestCase
         $adminNames = array_column($groups['tactical_admin']['tools'], 'name');
 
         foreach (self::TASK_TOOLS as $tool) {
+            if (($canonical = McpToolModes::canonicalForAlias($tool)) !== null) {
+                $this->assertNotContains($tool, $adminNames, "{$tool} is a retired staged alias");
+                $this->assertContains($canonical, $adminNames);
+
+                continue;
+            }
             $this->assertContains($tool, $adminNames, "{$tool} should be a sensitive Tactical admin tool");
             $this->assertContains($tool, McpToolRegistry::allToolNames(), "{$tool} should be token-grantable");
         }
@@ -208,7 +215,12 @@ class TacticalTaskCrudPhase4Test extends TestCase
         $this->assertNotContains('client_id', $scoped['tactical_create_policy_task']['inputSchema']['required'] ?? []);
         $this->assertArrayHasKey('assigned_check', $scoped['tactical_create_policy_task']['inputSchema']['properties']);
         $this->assertContains('confirm_run_all', $scoped['tactical_run_policy_task_all']['inputSchema']['required']);
-        $this->assertContains('ticket_id', $scoped['tactical_stage_run_policy_task_all']['inputSchema']['required']);
+        // Unified surface: the alias grant folds into the immediate mode
+        // grant on the canonical tool, which carries the staged parameter and
+        // a mode-conditional ticket_id.
+        $this->assertFalse($scoped->has('tactical_stage_run_policy_task_all'));
+        $this->assertArrayHasKey('staged', $scoped['tactical_run_policy_task_all']['inputSchema']['properties']);
+        $this->assertStringContainsString('Required when staged=true', $scoped['tactical_run_policy_task_all']['inputSchema']['properties']['ticket_id']['description'] ?? '');
         $this->assertStringContainsString('ALL affected agents', $scoped['tactical_run_policy_task_all']['description']);
     }
 

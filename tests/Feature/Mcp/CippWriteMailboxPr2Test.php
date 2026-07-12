@@ -14,6 +14,7 @@ use App\Models\Ticket;
 use App\Models\User;
 use App\Services\Cipp\CippRestWriteClient;
 use App\Support\McpConfig;
+use App\Support\McpToolModes;
 use App\Support\McpToolRegistry;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Testing\TestResponse;
@@ -140,6 +141,14 @@ class CippWriteMailboxPr2Test extends TestCase
 
         $writeNames = array_column($groups['cipp_write']['tools'], 'name');
         foreach (self::PR_TWO_TOOLS as $tool) {
+            if (($canonical = McpToolModes::canonicalForAlias($tool)) !== null) {
+                // Retired staged alias: callable, but the catalog carries only
+                // the canonical capability (with a staged mode grant).
+                $this->assertNotContains($tool, $writeNames, "{$tool} is a retired staged alias");
+                $this->assertContains($canonical, $writeNames);
+
+                continue;
+            }
             $this->assertContains($tool, $writeNames, "{$tool} should be in the sensitive CIPP write group");
             $this->assertContains($tool, McpToolRegistry::allToolNames(), "{$tool} should be token-grantable");
         }
@@ -158,17 +167,18 @@ class CippWriteMailboxPr2Test extends TestCase
         $this->assertArrayNotHasKey('ID', $convert['inputSchema']['properties']);
         $this->assertStringContainsString('Shared mailbox conversion can change licensing obligations', $convert['description']);
 
+        // Unified surface: one forwarding tool with a `staged` parameter. The
+        // staged-only capabilities (external mode + external_smtp) are folded
+        // in and annotated; the server still holds external forwarding to the
+        // staged path only.
+        $this->assertFalse($scopedTools->has('cipp_stage_set_mailbox_forwarding'));
         $directForward = $scopedTools['cipp_set_mailbox_forwarding'];
-        $this->assertSame(['disabled', 'internal'], $directForward['inputSchema']['properties']['mode']['enum']);
-        $this->assertArrayNotHasKey('external_smtp', $directForward['inputSchema']['properties']);
+        $this->assertArrayHasKey('staged', $directForward['inputSchema']['properties']);
+        $this->assertSame(['disabled', 'internal', 'external'], $directForward['inputSchema']['properties']['mode']['enum']);
+        $this->assertStringContainsString('Values [external] are only accepted when staged=true', $directForward['inputSchema']['properties']['mode']['description']);
+        $this->assertArrayHasKey('external_smtp', $directForward['inputSchema']['properties']);
+        $this->assertStringContainsString('Only used when staged=true', $directForward['inputSchema']['properties']['external_smtp']['description']);
         $this->assertStringContainsString('External SMTP forwarding is held-only', $directForward['description']);
-
-        $stageForward = $scopedTools['cipp_stage_set_mailbox_forwarding'];
-        $this->assertContains('ticket_id', $stageForward['inputSchema']['required']);
-        $this->assertSame(['disabled', 'internal', 'external'], $stageForward['inputSchema']['properties']['mode']['enum']);
-        $this->assertArrayHasKey('external_smtp', $stageForward['inputSchema']['properties']);
-        $this->assertStringContainsString('BEC and data-exfiltration risk', $stageForward['description']);
-        $this->assertStringContainsString('external address is re-entered at approval and is not stored', $stageForward['description']);
 
         $ooo = $scopedTools['cipp_set_mailbox_out_of_office'];
         $this->assertSame(['Disabled', 'Enabled', 'Scheduled'], $ooo['inputSchema']['properties']['state']['enum']);

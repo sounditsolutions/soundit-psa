@@ -16,6 +16,7 @@ use App\Models\Ticket;
 use App\Models\User;
 use App\Services\Cipp\CippRestWriteClient;
 use App\Support\McpConfig;
+use App\Support\McpToolModes;
 use App\Support\McpToolRegistry;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Testing\TestResponse;
@@ -154,6 +155,14 @@ class CippWriteUserLifecyclePr1Test extends TestCase
 
         $writeNames = array_column($groups['cipp_write']['tools'], 'name');
         foreach (self::PR_ONE_TOOLS as $tool) {
+            if (($canonical = McpToolModes::canonicalForAlias($tool)) !== null) {
+                // Retired staged alias: callable, but the catalog carries only
+                // the canonical capability (with a staged mode grant).
+                $this->assertNotContains($tool, $writeNames, "{$tool} is a retired staged alias");
+                $this->assertContains($canonical, $writeNames);
+
+                continue;
+            }
             $this->assertContains($tool, $writeNames, "{$tool} should be in the sensitive CIPP write group");
             $this->assertContains($tool, McpToolRegistry::allToolNames(), "{$tool} should be token-grantable");
         }
@@ -178,10 +187,16 @@ class CippWriteUserLifecyclePr1Test extends TestCase
         $this->assertStringContainsString('blocks sign-in', $disable['description']);
         $this->assertStringContainsString('Requires an explicit token grant', $disable['description']);
 
-        $stageDisable = $scopedTools['cipp_stage_disable_user_sign_in'];
-        $this->assertContains('ticket_id', $stageDisable['inputSchema']['required']);
-        $this->assertStringContainsString('cockpit approval', $stageDisable['description']);
-        $this->assertStringContainsString('encrypted at rest', $stageDisable['description']);
+        // Unified surface: the staged alias is no longer advertised — the
+        // canonical tool carries a `staged` parameter instead. Granting the
+        // alias plus the bare name resolves to the immediate mode grant.
+        $this->assertFalse($scopedTools->has('cipp_stage_disable_user_sign_in'));
+        $this->assertArrayHasKey('staged', $disable['inputSchema']['properties']);
+        $this->assertStringContainsString('cockpit approval', $disable['description']);
+        $this->assertStringContainsString(
+            'Required when staged=true',
+            $disable['inputSchema']['properties']['ticket_id']['description'] ?? '',
+        );
 
         $assign = $scopedTools['cipp_assign_user_license'];
         $this->assertStringContainsString('human-smoke-verify before first live grant', $assign['description']);

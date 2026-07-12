@@ -191,6 +191,12 @@ class StaffCippWriteToolExecutor
         return array_key_exists($actionType, self::STAGED_TO_DIRECT);
     }
 
+    /** @return array<string, string> */
+    public static function stagedToDirectMap(): array
+    {
+        return self::STAGED_TO_DIRECT;
+    }
+
     /** @return array<string, mixed> */
     public function execute(string $name, array $arguments, int $clientId, string $actorLabel): array
     {

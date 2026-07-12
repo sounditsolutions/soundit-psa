@@ -16,6 +16,7 @@ use App\Models\User;
 use App\Services\Tactical\TacticalClient;
 use App\Services\Technician\TechnicianApprovalService;
 use App\Support\McpConfig;
+use App\Support\McpToolModes;
 use App\Support\McpToolRegistry;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Testing\TestResponse;
@@ -169,10 +170,22 @@ class TacticalPatchManagementPhase4Test extends TestCase
         $adminNames = array_column($groups['tactical_admin']['tools'], 'name');
 
         foreach (self::PATCH_ACTION_TOOLS as $tool) {
+            if (($canonical = McpToolModes::canonicalForAlias($tool)) !== null) {
+                $this->assertNotContains($tool, $actionNames, "{$tool} is a retired staged alias");
+                $this->assertContains($canonical, $actionNames);
+
+                continue;
+            }
             $this->assertContains($tool, $actionNames, "{$tool} should be a sensitive Tactical action tool");
             $this->assertContains($tool, McpToolRegistry::allToolNames(), "{$tool} should be token-grantable");
         }
         foreach (self::PATCH_POLICY_TOOLS as $tool) {
+            if (($canonical = McpToolModes::canonicalForAlias($tool)) !== null) {
+                $this->assertNotContains($tool, $adminNames, "{$tool} is a retired staged alias");
+                $this->assertContains($canonical, $adminNames);
+
+                continue;
+            }
             $this->assertContains($tool, $adminNames, "{$tool} should be a sensitive Tactical admin tool");
             $this->assertContains($tool, McpToolRegistry::allToolNames(), "{$tool} should be token-grantable");
         }
@@ -189,8 +202,12 @@ class TacticalPatchManagementPhase4Test extends TestCase
 
         $this->assertStringContainsString('Approved Windows updates can reboot', $scoped['tactical_install_approved_patches']['description']);
         $this->assertContains('confirm_hostname', $scoped['tactical_install_approved_patches']['inputSchema']['required']);
-        $this->assertStringContainsString('bulk reset', $scoped['tactical_stage_reset_patch_policies']['description']);
-        $this->assertContains('ticket_id', $scoped['tactical_stage_reset_patch_policies']['inputSchema']['required']);
+        // Staged-only grant (via the legacy alias): advertised under the
+        // canonical name with the staged variant's schema.
+        $this->assertFalse($scoped->has('tactical_stage_reset_patch_policies'));
+        $this->assertStringContainsString('bulk reset', $scoped['tactical_reset_patch_policies']['description']);
+        $this->assertContains('ticket_id', $scoped['tactical_reset_patch_policies']['inputSchema']['required']);
+        $this->assertArrayHasKey('staged', $scoped['tactical_reset_patch_policies']['inputSchema']['properties']);
     }
 
     public function test_direct_patch_scan_and_action_use_server_derived_agent_and_visible_patch_scope(): void

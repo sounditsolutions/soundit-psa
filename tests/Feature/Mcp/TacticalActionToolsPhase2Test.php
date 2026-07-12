@@ -21,6 +21,7 @@ use App\Services\Tactical\TacticalClient;
 use App\Services\Tactical\TacticalDeviceSyncService;
 use App\Services\Technician\TechnicianApprovalService;
 use App\Support\McpConfig;
+use App\Support\McpToolModes;
 use App\Support\McpToolRegistry;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Testing\TestResponse;
@@ -145,6 +146,14 @@ class TacticalActionToolsPhase2Test extends TestCase
 
         $actionNames = array_column($groups['tactical_action']['tools'], 'name');
         foreach (self::PHASE_TWO_TOOLS as $tool) {
+            if (($canonical = McpToolModes::canonicalForAlias($tool)) !== null) {
+                // Retired staged alias: callable, but the catalog carries only
+                // the canonical capability (with a staged mode grant).
+                $this->assertNotContains($tool, $actionNames, "{$tool} is a retired staged alias");
+                $this->assertContains($canonical, $actionNames);
+
+                continue;
+            }
             $this->assertContains($tool, $actionNames, "{$tool} should be in the sensitive Tactical action group");
             $this->assertContains($tool, McpToolRegistry::allToolNames(), "{$tool} should be token-grantable");
         }
@@ -157,10 +166,12 @@ class TacticalActionToolsPhase2Test extends TestCase
         $scopedTools = collect($this->listTools($this->token(['tactical_run_command', 'tactical_stage_command'])))
             ->keyBy('name');
 
+        // Unified surface: one command tool with a `staged` parameter; the
+        // legacy alias grant folds into the immediate mode grant.
         $this->assertTrue($scopedTools->has('tactical_run_command'));
-        $this->assertTrue($scopedTools->has('tactical_stage_command'));
+        $this->assertFalse($scopedTools->has('tactical_stage_command'));
         $this->assertContains('client_id', $scopedTools['tactical_run_command']['inputSchema']['required']);
-        $this->assertContains('client_id', $scopedTools['tactical_stage_command']['inputSchema']['required']);
+        $this->assertArrayHasKey('staged', $scopedTools['tactical_run_command']['inputSchema']['properties']);
 
         $commandDescription = $scopedTools['tactical_run_command']['description'];
         $this->assertStringContainsString('arbitrary remote code execution', $commandDescription);
