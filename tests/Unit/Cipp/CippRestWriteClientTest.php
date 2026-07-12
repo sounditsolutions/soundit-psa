@@ -41,7 +41,11 @@ class CippRestWriteClientTest extends TestCase
         $this->assertContains('resetUserPassword', $methods);
         $this->assertContains('listDirectoryRoles', $methods);
         $this->assertContains('removeDirectoryRoleMember', $methods);
+        $this->assertContains('releaseQuarantineMessage', $methods);
+        $this->assertContains('addTenantAllowListEntry', $methods);
+        $this->assertContains('listMailQuarantine', $methods);
         $this->assertNotContains('post', $methods);
+        $this->assertNotContains('get', $methods);
         $this->assertNotContains('request', $methods);
         $this->assertNotContains('get', $methods);
     }
@@ -537,6 +541,168 @@ class CippRestWriteClientTest extends TestCase
                 'ID' => 'alex@acme.example',
                 'MustChange' => true,
             ]);
+    }
+
+    private function emailSecurityClient(): CippRestWriteClient
+    {
+        return new CippRestWriteClient([
+            'api_url' => 'https://cipp.example.test',
+            'tenant_id' => 'tenant-1',
+            'client_id' => 'write-client',
+            'client_secret' => 'write-secret',
+        ], Cache::store(), fn (string $host): array => ['93.184.216.34']);
+    }
+
+    public function test_release_quarantine_message_posts_exec_quarantine_management_release_shape(): void
+    {
+        Http::fake([
+            'login.microsoftonline.com/*' => Http::response(['access_token' => 'WRITE-TOKEN', 'expires_in' => 3600]),
+            'cipp.example.test/api/ExecQuarantineManagement' => Http::response([
+                'Results' => 'Successfully processed aaaaaaaa-1111-2222-3333-444444444444\bbbbbbbb-5555-6666-7777-888888888888',
+            ]),
+        ]);
+
+        $identity = 'aaaaaaaa-1111-2222-3333-444444444444\bbbbbbbb-5555-6666-7777-888888888888';
+        $result = $this->emailSecurityClient()->releaseQuarantineMessage('acme.onmicrosoft.com', $identity);
+
+        $this->assertSame(['success' => true, 'status' => 200], $result);
+
+        // Release only, single identity, and NEVER the AllowSender/policy keys —
+        // the tenant allow-list is its own explicit, audited capability.
+        Http::assertSent(fn ($request) => $request->url() === 'https://cipp.example.test/api/ExecQuarantineManagement'
+            && $request->method() === 'POST'
+            && $request->hasHeader('Authorization', 'Bearer WRITE-TOKEN')
+            && $request->data() === [
+                'tenantFilter' => 'acme.onmicrosoft.com',
+                'Type' => 'Release',
+                'Identity' => $identity,
+            ]);
+    }
+
+    public function test_release_quarantine_message_throws_on_reported_failure_in_200_body(): void
+    {
+        Http::fake([
+            'login.microsoftonline.com/*' => Http::response(['access_token' => 'WRITE-TOKEN', 'expires_in' => 3600]),
+            'cipp.example.test/api/ExecQuarantineManagement' => Http::response([
+                'Results' => 'Failed. The message has expired from quarantine.',
+            ]),
+        ]);
+
+        $this->expectException(CippClientException::class);
+        $this->expectExceptionMessage('reported failure');
+
+        $this->emailSecurityClient()->releaseQuarantineMessage(
+            'acme.onmicrosoft.com',
+            'aaaaaaaa-1111-2222-3333-444444444444\bbbbbbbb-5555-6666-7777-888888888888',
+        );
+    }
+
+    public function test_release_quarantine_message_rejects_empty_identity_before_any_request(): void
+    {
+        Http::fake();
+
+        $this->expectException(CippClientException::class);
+        $this->expectExceptionMessage('identity is required');
+
+        try {
+            $this->emailSecurityClient()->releaseQuarantineMessage('acme.onmicrosoft.com', '   ');
+        } finally {
+            Http::assertNothingSent();
+        }
+    }
+
+    public function test_add_tenant_allow_list_entry_posts_pinned_allow_shape(): void
+    {
+        Http::fake([
+            'login.microsoftonline.com/*' => Http::response(['access_token' => 'WRITE-TOKEN', 'expires_in' => 3600]),
+            'cipp.example.test/api/AddTenantAllowBlockList' => Http::response([
+                'Results' => ['Successfully added billing@vendor.example as type Sender to the Allow list for acme.onmicrosoft.com'],
+            ]),
+        ]);
+
+        $result = $this->emailSecurityClient()->addTenantAllowListEntry(
+            'acme.onmicrosoft.com',
+            'Sender',
+            'billing@vendor.example',
+            'Added via Sound PSA (ticket T-1001)',
+        );
+
+        $this->assertSame(['success' => true, 'status' => 200], $result);
+
+        // listMethod pinned to Allow, expiry pinned to RemoveAfter (45 days
+        // after last use) — a NoExpiration allow can never leave this client.
+        Http::assertSent(fn ($request) => $request->url() === 'https://cipp.example.test/api/AddTenantAllowBlockList'
+            && $request->method() === 'POST'
+            && $request->hasHeader('Authorization', 'Bearer WRITE-TOKEN')
+            && $request->data() === [
+                'tenantID' => 'acme.onmicrosoft.com',
+                'entries' => ['billing@vendor.example'],
+                'listType' => 'Sender',
+                'notes' => 'Added via Sound PSA (ticket T-1001)',
+                'listMethod' => 'Allow',
+                'RemoveAfter' => true,
+            ]
+            && ! array_key_exists('NoExpiration', $request->data()));
+    }
+
+    public function test_add_tenant_allow_list_entry_throws_on_reported_failure_in_200_body(): void
+    {
+        Http::fake([
+            'login.microsoftonline.com/*' => Http::response(['access_token' => 'WRITE-TOKEN', 'expires_in' => 3600]),
+            'cipp.example.test/api/AddTenantAllowBlockList' => Http::response([
+                'Results' => ['Failed to create blocklist. Error: The entry already exists.'],
+            ]),
+        ]);
+
+        $this->expectException(CippClientException::class);
+        $this->expectExceptionMessage('reported failure');
+
+        $this->emailSecurityClient()->addTenantAllowListEntry('acme.onmicrosoft.com', 'Sender', 'billing@vendor.example', 'notes');
+    }
+
+    public function test_add_tenant_allow_list_entry_guards_inputs_before_any_request(): void
+    {
+        Http::fake();
+        $client = $this->emailSecurityClient();
+
+        foreach ([
+            ['AllTenants', 'Sender', 'billing@vendor.example', 'single resolved tenant'],
+            ['acme.onmicrosoft.com', 'Sender', '   ', 'entry value is required'],
+            ['acme.onmicrosoft.com', 'FileHash', 'abc123', 'Unsupported tenant allow-list type'],
+        ] as [$tenant, $type, $entry, $expected]) {
+            try {
+                $client->addTenantAllowListEntry($tenant, $type, $entry, 'notes');
+                $this->fail('Expected CippClientException for '.$expected);
+            } catch (CippClientException $e) {
+                $this->assertStringContainsString($expected, $e->getMessage());
+            }
+        }
+
+        Http::assertNothingSent();
+    }
+
+    public function test_list_mail_quarantine_gets_the_listing_and_returns_result_rows(): void
+    {
+        Http::fake([
+            'login.microsoftonline.com/*' => Http::response(['access_token' => 'WRITE-TOKEN', 'expires_in' => 3600]),
+            'cipp.example.test/api/ListMailQuarantine*' => Http::response([
+                'Results' => [
+                    ['Identity' => 'aaaaaaaa-1111-2222-3333-444444444444\bbbbbbbb-5555-6666-7777-888888888888', 'SenderAddress' => 'billing@vendor.example'],
+                    'not-a-row',
+                ],
+                'Metadata' => null,
+            ]),
+        ]);
+
+        $rows = $this->emailSecurityClient()->listMailQuarantine('acme.onmicrosoft.com');
+
+        $this->assertCount(1, $rows);
+        $this->assertSame('billing@vendor.example', $rows[0]['SenderAddress']);
+
+        Http::assertSent(fn ($request) => str_starts_with($request->url(), 'https://cipp.example.test/api/ListMailQuarantine')
+            && $request->method() === 'GET'
+            && $request->hasHeader('Authorization', 'Bearer WRITE-TOKEN')
+            && str_contains($request->url(), 'tenantFilter=acme.onmicrosoft.com'));
     }
 
     public function test_reset_password_forwards_must_change_false_when_requested(): void

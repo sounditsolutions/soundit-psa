@@ -308,6 +308,113 @@ class CippRestWriteClient
     }
 
     /**
+     * Release one quarantined message to all its recipients via CIPP's
+     * ExecQuarantineManagement endpoint (Release-QuarantineMessage with
+     * ReleaseToAll). Only the Release action is supported — Deny/delete is not
+     * exposed. The AllowSender/SenderAddress/PolicyName keys are never sent, so
+     * this call can never piggyback a content-filter allow-sender policy write;
+     * tenant allow-list changes go through addTenantAllowListEntry explicitly.
+     * The endpoint returns HTTP 200 even when the release fails — the only
+     * failure signal is the Results text, so the body is captured and checked.
+     *
+     * @return array<int|string, mixed>
+     */
+    public function releaseQuarantineMessage(string $tenantFilter, string $identity): array
+    {
+        if (trim($identity) === '') {
+            throw new CippClientException('Quarantine message identity is required');
+        }
+
+        $response = $this->send('api/ExecQuarantineManagement', [
+            'tenantFilter' => $tenantFilter,
+            'Type' => 'Release',
+            'Identity' => $identity,
+        ], captureBody: true);
+
+        $this->guardReportedFailure('api/ExecQuarantineManagement', $response['body']['Results'] ?? null);
+
+        return ['success' => true, 'status' => $response['status']];
+    }
+
+    /**
+     * Add ONE allow entry (Sender or Url) to the tenant's M365 Tenant
+     * Allow/Block List via CIPP's AddTenantAllowBlockList endpoint. The
+     * listMethod is pinned to Allow (block adds are a different capability) and
+     * expiration is pinned to RemoveAfter — Exchange's remove-45-days-after-
+     * last-use mode, the only expiration it accepts for allow entries — so a
+     * NoExpiration allow can never be created through this wrapper. The
+     * endpoint fans out to every tenant when given 'AllTenants' and returns
+     * HTTP 200 on failure, so both are guarded here.
+     *
+     * @return array<int|string, mixed>
+     */
+    public function addTenantAllowListEntry(string $tenantFilter, string $listType, string $entry, string $notes): array
+    {
+        if (trim($tenantFilter) === '' || strcasecmp(trim($tenantFilter), 'AllTenants') === 0) {
+            throw new CippClientException('Tenant allow-list writes require a single resolved tenant');
+        }
+
+        if (trim($entry) === '') {
+            throw new CippClientException('Tenant allow-list entry value is required');
+        }
+
+        if (! in_array($listType, ['Sender', 'Url'], true)) {
+            throw new CippClientException("Unsupported tenant allow-list type {$listType}");
+        }
+
+        $response = $this->send('api/AddTenantAllowBlockList', [
+            'tenantID' => $tenantFilter,
+            'entries' => [$entry],
+            'listType' => $listType,
+            'notes' => $notes,
+            'listMethod' => 'Allow',
+            'RemoveAfter' => true,
+        ], captureBody: true);
+
+        $this->guardReportedFailure('api/AddTenantAllowBlockList', $response['body']['Results'] ?? null);
+
+        return ['success' => true, 'status' => $response['status']];
+    }
+
+    /**
+     * Verification read for the quarantine-release gate: the tenant's live
+     * quarantine listing (Get-QuarantineMessage metadata rows — identity,
+     * sender, recipients, subject, release status; never exported message
+     * content). Uses the same credential set as the write it gates, so the
+     * release tool cannot outrun its own verification.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function listMailQuarantine(string $tenantFilter): array
+    {
+        $response = $this->get('api/ListMailQuarantine', ['tenantFilter' => $tenantFilter]);
+
+        $rows = $response['body']['Results'] ?? [];
+        if (! is_array($rows)) {
+            return [];
+        }
+
+        return array_values(array_filter($rows, 'is_array'));
+    }
+
+    /**
+     * Both spam-filter endpoints report failure inside an HTTP 200 body: a
+     * Results string (quarantine) or list of strings (allow/block list) whose
+     * failing entries start with "Failed". Surface that as the same exception
+     * an HTTP failure raises so callers audit it instead of reporting success.
+     */
+    private function guardReportedFailure(string $endpoint, mixed $results): void
+    {
+        $messages = is_array($results) ? $results : [$results];
+
+        foreach ($messages as $message) {
+            if (is_string($message) && str_starts_with(mb_strtolower(ltrim($message)), 'failed')) {
+                throw new CippClientException("CIPP write {$endpoint} reported failure: ".mb_substr($message, 0, 300));
+            }
+        }
+    }
+
+    /**
      * @param  array<int|string, mixed>  $body
      * @return array<int|string, mixed>
      */
@@ -364,6 +471,29 @@ class CippRestWriteClient
         $body = $response->json();
 
         return is_array($body) ? $body : [];
+    }
+
+    /**
+     * @param  array<string, mixed>  $query
+     * @return array<int|string, mixed>
+     */
+    private function get(string $endpoint, array $query): array
+    {
+        $url = $this->endpointUrl($endpoint);
+        $options = $this->safeRequestOptions($url);
+        $token = $this->getToken();
+
+        $response = Http::timeout(60)
+            ->acceptJson()
+            ->withOptions($options)
+            ->withToken($token)
+            ->get($url, $query);
+
+        if ($response->failed()) {
+            throw new CippClientException("CIPP read {$endpoint} failed: HTTP {$response->status()}");
+        }
+
+        return ['success' => true, 'status' => $response->status(), 'body' => $response->json()];
     }
 
     private function getToken(): string

@@ -41,6 +41,23 @@ class StaffCippWriteToolExecutor
         'cipp_stage_set_mailbox_out_of_office' => 'cipp_set_mailbox_out_of_office',
         'cipp_stage_set_mailbox_delegate' => 'cipp_set_mailbox_delegate',
         'cipp_stage_remove_directory_role' => 'cipp_remove_directory_role',
+        'cipp_stage_release_quarantine_message' => 'cipp_release_quarantine_message',
+        'cipp_stage_add_tenant_allow_entry' => 'cipp_add_tenant_allow_entry',
+    ];
+
+    /**
+     * Email-security remediation writes (bead psa-t08l). These act on
+     * tenant-level Exchange objects, not on one mapped person, so they run
+     * through their own context/stage/approve path: no person_id resolution,
+     * and the quarantine release replaces it with a server-side verification
+     * read (the identity must be present in the resolved tenant's live
+     * quarantine listing before anything is staged or executed).
+     *
+     * @var array<int, string>
+     */
+    private const EMAIL_SECURITY_TOOLS = [
+        'cipp_release_quarantine_message',
+        'cipp_add_tenant_allow_entry',
     ];
 
     /** @var array<string, int> */
@@ -71,6 +88,10 @@ class StaffCippWriteToolExecutor
         'cipp_stage_set_mailbox_delegate' => 300,
         'cipp_remove_directory_role' => 300,
         'cipp_stage_remove_directory_role' => 300,
+        'cipp_release_quarantine_message' => 300,
+        'cipp_stage_release_quarantine_message' => 300,
+        'cipp_add_tenant_allow_entry' => 300,
+        'cipp_stage_add_tenant_allow_entry' => 300,
         'cipp_reset_user_password' => 300,
     ];
 
@@ -97,6 +118,15 @@ class StaffCippWriteToolExecutor
     private const ROLE_TEMPLATE_ID_PATTERN = '/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i';
 
     private const ROLE_NAME_MAX = 200;
+
+    /** @var array<int, string> */
+    private const ALLOW_LIST_TYPES = ['Sender', 'Url'];
+
+    private const ALLOW_ENTRY_MAX = 250;
+
+    private const QUARANTINE_IDENTITY_MAX = 200;
+
+    private const QUARANTINE_SUBJECT_PREVIEW_MAX = 120;
 
     /** @var array<int, string> */
     private const UPSTREAM_IDENTIFIER_KEYS = [
@@ -158,6 +188,25 @@ class StaffCippWriteToolExecutor
         'EndTime',
         'target_upn',
         'target_user_id',
+        'Identity',
+        'Identities',
+        'Type',
+        'ReleaseToAll',
+        'AllowSender',
+        'SenderAddress',
+        'RecipientAddress',
+        'PolicyName',
+        'tenantID',
+        'entries',
+        'Entries',
+        'listType',
+        'ListType',
+        'listMethod',
+        'ListMethod',
+        'NoExpiration',
+        'RemoveAfter',
+        'notes',
+        'Notes',
         'endpoint',
         'Endpoint',
         'cipp_endpoint',
@@ -201,6 +250,10 @@ class StaffCippWriteToolExecutor
             self::stageSetMailboxDelegateTool(),
             self::removeDirectoryRoleTool(),
             self::stageRemoveDirectoryRoleTool(),
+            self::releaseQuarantineMessageTool(),
+            self::stageReleaseQuarantineMessageTool(),
+            self::addTenantAllowEntryTool(),
+            self::stageAddTenantAllowEntryTool(),
             self::resetUserPasswordTool(),
         ];
     }
@@ -243,6 +296,12 @@ class StaffCippWriteToolExecutor
             return $this->executeResetPassword($name, $arguments, $clientId, $actorLabel);
         }
 
+        if (in_array(self::STAGED_TO_DIRECT[$name] ?? $name, self::EMAIL_SECURITY_TOOLS, true)) {
+            return isset(self::STAGED_TO_DIRECT[$name])
+                ? $this->stageEmailSecurityAction($name, $arguments, $clientId, $actorLabel)
+                : $this->executeEmailSecurityDirect($name, $arguments, $clientId, $actorLabel);
+        }
+
         if (isset(self::STAGED_TO_DIRECT[$name])) {
             return $this->stageAction($name, $arguments, $clientId, $actorLabel);
         }
@@ -254,6 +313,10 @@ class StaffCippWriteToolExecutor
     {
         if (! self::isStagedActionType($run->action_type) || ! $run->claimForExecution()) {
             return new TechnicianApprovalResult('already_handled');
+        }
+
+        if (in_array(self::STAGED_TO_DIRECT[$run->action_type] ?? '', self::EMAIL_SECURITY_TOOLS, true)) {
+            return $this->approveEmailSecurityStagedRun($run, $approverId);
         }
 
         try {
@@ -608,6 +671,729 @@ class StaffCippWriteToolExecutor
             'run_id' => $run->id,
             'message' => 'Staged for cockpit approval.',
         ];
+    }
+
+    /**
+     * Direct path for the email-security remediation writes. These have no
+     * person_id, so the target scope gate differs per tool: a quarantine
+     * release is only executed for an identity the SERVER finds in the
+     * resolved tenant's live quarantine listing (with the typed confirm_sender
+     * cross-checked against that verified row's real sender), and an allow
+     * entry is a validated caller value pinned to the one resolved tenant.
+     * Local guards (dedup, cooldown) run before the verification read so a
+     * refused call never reaches upstream at all.
+     *
+     * @return array<string, mixed>
+     */
+    private function executeEmailSecurityDirect(string $tool, array $arguments, int $clientId, string $actorLabel): array
+    {
+        $context = $this->emailSecurityContext($tool, $arguments, $clientId, $actorLabel, requireTicket: false);
+        if (isset($context['error'])) {
+            return ['error' => $context['error']];
+        }
+
+        /** @var Client $client */
+        $client = $context['client'];
+        /** @var string $tenant */
+        $tenant = $context['tenant'];
+        /** @var Ticket|null $ticket */
+        $ticket = $context['ticket'];
+        /** @var array<string, mixed> $params */
+        $params = $context['params'];
+        $reason = (string) $context['reason'];
+
+        $targetKey = $this->emailSecurityTargetKey($tool, $params);
+        $contentHash = $this->contentHash($tool, $client->id, null, $ticket?->id, $this->emailSecurityHashParams($params));
+
+        if ($this->alreadyExecuted($tool, $client->id, $contentHash)) {
+            $this->auditAttempt($tool, 'blocked', $client->id, $ticket, null, null, $contentHash, "{$targetKey}: Duplicate {$tool} suppressed before upstream call.", $actorLabel);
+
+            return [
+                'success' => true,
+                'idempotent' => true,
+                'message' => 'Already executed identical CIPP write recently; no upstream call was made.',
+            ];
+        }
+
+        if ($this->emailSecurityCooldownActive($tool, $client->id, $targetKey, self::COOLDOWNS[$tool] ?? 300)) {
+            $this->auditAttempt($tool, 'blocked', $client->id, $ticket, null, null, $contentHash, "{$targetKey}: {$tool} cooldown active; upstream call refused.", $actorLabel);
+
+            return ['error' => "{$tool} cooldown active for this target; no upstream call was made."];
+        }
+
+        if ($tool === 'cipp_release_quarantine_message') {
+            try {
+                $row = $this->verifiedQuarantineRow($tenant, (string) $params['quarantine_identity'], (string) $context['confirm_sender']);
+            } catch (CippWriteScopeException $e) {
+                $this->auditAttempt($tool, 'rejected', $client->id, $ticket, null, null, $contentHash, "{$targetKey}: ".$e->getMessage(), $actorLabel);
+
+                return ['error' => $e->getMessage()];
+            }
+
+            if ($this->quarantineRowReleased($row)) {
+                $this->auditAttempt($tool, 'executed', $client->id, $ticket, null, null, $contentHash, "{$targetKey}: Message already released upstream; treated as satisfied without an upstream call.", $actorLabel);
+
+                return [
+                    'success' => true,
+                    'idempotent' => true,
+                    'already_released' => true,
+                    'message' => 'Message is already released upstream; no upstream call was made.',
+                ];
+            }
+        }
+
+        try {
+            $this->executeEmailSecurityUpstream($tool, $tenant, $ticket, $params);
+        } catch (CippClientException $e) {
+            $this->auditAttempt($tool, 'error', $client->id, $ticket, null, null, $contentHash, "{$targetKey}: ".$this->safeFailureSummary($tool, $e), $actorLabel);
+
+            return ['error' => "CIPP write failed for {$tool}; no response body returned."];
+        }
+
+        $this->auditAttempt($tool, 'executed', $client->id, $ticket, null, null, $contentHash, "{$targetKey}: {$tool} executed for ".$this->emailSecurityAuditTarget($tool, $params).": {$reason}", $actorLabel);
+
+        return array_merge([
+            'success' => true,
+            'tool' => $tool,
+            'ticket_id' => $ticket?->id,
+            'message' => $tool === 'cipp_release_quarantine_message'
+                ? 'Quarantine release executed for all original recipients.'
+                : 'Tenant allow-list entry added; it expires 45 days after its last use.',
+        ], $this->emailSecurityResultEcho($tool, $params));
+    }
+
+    /**
+     * Staged twin for the email-security writes. A quarantine staging performs
+     * the same read-only verification lookup as the direct path (never the
+     * release itself) so the cockpit proposal shows the REAL sender, subject,
+     * and recipients captured server-side rather than trusting the caller's
+     * description; approval re-verifies against the live quarantine before
+     * executing. All stored payload values are validated local scalars —
+     * nothing is re-entered at approval.
+     *
+     * @return array<string, mixed>
+     */
+    private function stageEmailSecurityAction(string $tool, array $arguments, int $clientId, string $actorLabel): array
+    {
+        $context = $this->emailSecurityContext($tool, $arguments, $clientId, $actorLabel, requireTicket: true);
+        if (isset($context['error'])) {
+            return ['error' => $context['error']];
+        }
+
+        /** @var Client $client */
+        $client = $context['client'];
+        /** @var string $tenant */
+        $tenant = $context['tenant'];
+        /** @var Ticket $ticket */
+        $ticket = $context['ticket'];
+        /** @var array<string, mixed> $params */
+        $params = $context['params'];
+        $reason = (string) $context['reason'];
+        $directTool = self::STAGED_TO_DIRECT[$tool];
+
+        $targetKey = $this->emailSecurityTargetKey($directTool, $params);
+        $contentHash = $this->contentHash($tool, $client->id, null, $ticket->id, $this->emailSecurityHashParams($params));
+
+        if ($this->alreadyExecuted($tool, $client->id, $contentHash)) {
+            return [
+                'success' => true,
+                'idempotent' => true,
+                'ticket_id' => $ticket->id,
+                'ticket_display_id' => $ticket->display_id,
+                'run_id' => $this->executedRunId($tool, $client->id, $contentHash),
+                'message' => 'Already executed identical action recently; no new proposal was staged.',
+            ];
+        }
+
+        $liveAwaitingRun = $this->liveAwaitingRun($ticket->id, $tool, $contentHash);
+        if ($liveAwaitingRun !== null) {
+            return [
+                'success' => true,
+                'idempotent' => true,
+                'ticket_id' => $ticket->id,
+                'ticket_display_id' => $ticket->display_id,
+                'run_id' => $liveAwaitingRun->id,
+                'message' => 'Already staged; awaiting approval.',
+            ];
+        }
+
+        if ($this->emailSecurityProposalCooldownActive($tool, $ticket, $targetKey, self::COOLDOWNS[$tool] ?? 300)) {
+            $this->auditAttempt($tool, 'blocked', $client->id, $ticket, null, null, $contentHash, "{$targetKey}: {$tool} cooldown active; staged proposal refused.", $actorLabel);
+
+            return ['error' => "{$tool} cooldown active for this target; no proposal was staged."];
+        }
+
+        $displayFacts = null;
+        if ($directTool === 'cipp_release_quarantine_message') {
+            try {
+                $row = $this->verifiedQuarantineRow($tenant, (string) $params['quarantine_identity'], (string) $context['confirm_sender']);
+            } catch (CippWriteScopeException $e) {
+                $this->auditAttempt($tool, 'rejected', $client->id, $ticket, null, null, $contentHash, "{$targetKey}: ".$e->getMessage(), $actorLabel);
+
+                return ['error' => $e->getMessage()];
+            }
+
+            if ($this->quarantineRowReleased($row)) {
+                $this->auditAttempt($tool, 'blocked', $client->id, $ticket, null, null, $contentHash, "{$targetKey}: Message already released upstream; staging skipped.", $actorLabel);
+
+                return [
+                    'success' => true,
+                    'idempotent' => true,
+                    'already_released' => true,
+                    'ticket_id' => $ticket->id,
+                    'ticket_display_id' => $ticket->display_id,
+                    'message' => 'Message is already released upstream; nothing was staged.',
+                ];
+            }
+
+            $displayFacts = $this->quarantineDisplayFacts($row);
+        }
+
+        $meta = [
+            'drafted_by' => $actorLabel,
+            'reasons' => [$reason],
+            'direct_tool' => $directTool,
+            'redacted_params' => $this->emailSecurityHashParams($params),
+            'sensitive_inputs' => [],
+            'encrypted_payload' => Crypt::encryptString(json_encode([
+                'direct_tool' => $directTool,
+                'client_id' => $client->id,
+                'ticket_id' => $ticket->id,
+                'params' => $params,
+            ], JSON_THROW_ON_ERROR)),
+        ];
+        $proposedContent = $this->emailSecurityStagedDisplay($directTool, $params, $displayFacts)."\nReason: ".$reason;
+
+        // Same idempotency-revive contract as stageAction() (bd psa-k4s0): the
+        // DB unique key (ticket_id + action_type + content_hash) either creates
+        // a fresh run or revives the superseded/denied row it collides with.
+        $run = TechnicianRun::firstOrCreate(
+            [
+                'ticket_id' => $ticket->id,
+                'action_type' => $tool,
+                'content_hash' => $contentHash,
+            ],
+            [
+                'client_id' => $client->id,
+                'state' => TechnicianRunState::AwaitingApproval,
+                'proposed_content' => $proposedContent,
+                'proposed_meta' => $meta,
+                'confidence' => null,
+                'tokens_used' => 0,
+            ],
+        );
+
+        if (! $run->wasRecentlyCreated && $run->state !== TechnicianRunState::AwaitingApproval) {
+            $run->update([
+                'state' => TechnicianRunState::AwaitingApproval->value,
+                'proposed_content' => $proposedContent,
+                'proposed_meta' => $meta,
+                'confidence' => null,
+                'tokens_used' => 0,
+            ]);
+        } elseif (! $run->wasRecentlyCreated) {
+            return [
+                'success' => true,
+                'idempotent' => true,
+                'ticket_id' => $ticket->id,
+                'ticket_display_id' => $ticket->display_id,
+                'run_id' => $run->id,
+                'message' => 'Already staged; awaiting approval.',
+            ];
+        }
+
+        $this->auditAttempt($tool, 'awaiting_approval', $client->id, $ticket, null, null, $contentHash, "{$targetKey}: MCP staged {$tool} for ".$this->emailSecurityAuditTarget($directTool, $params).": {$reason}", $actorLabel, $run->id);
+
+        return [
+            'success' => true,
+            'ticket_id' => $ticket->id,
+            'ticket_display_id' => $ticket->display_id,
+            'run_id' => $run->id,
+            'message' => 'Staged for cockpit approval.',
+        ];
+    }
+
+    /**
+     * Approval replay for a held email-security write. The caller has already
+     * claimed the run. Everything is revalidated from the encrypted payload
+     * (tool identity, client, ticket, parameter shape); a quarantine release
+     * is additionally re-verified against the LIVE tenant quarantine — a
+     * message that has vanished refuses execution, and one already released
+     * upstream satisfies the approved intent without an upstream call.
+     */
+    private function approveEmailSecurityStagedRun(TechnicianRun $run, int $approverId): TechnicianApprovalResult
+    {
+        try {
+            $payload = $this->decryptRunPayload($run);
+            if ($payload === null) {
+                $run->releaseClaim();
+
+                return new TechnicianApprovalResult('gate_declined');
+            }
+
+            $directTool = (string) ($payload['direct_tool'] ?? '');
+            if ((self::STAGED_TO_DIRECT[$run->action_type] ?? null) !== $directTool
+                || ! in_array($directTool, self::EMAIL_SECURITY_TOOLS, true)) {
+                $run->releaseClaim();
+
+                return new TechnicianApprovalResult('gate_declined');
+            }
+
+            $client = Client::find((int) ($payload['client_id'] ?? 0));
+            if (! $client || (int) $client->id !== (int) $run->client_id) {
+                $run->releaseClaim();
+
+                return new TechnicianApprovalResult('gate_declined');
+            }
+
+            $tenant = $this->resolver->resolveCippTenant($client);
+            $ticket = $this->resolver->resolveTicketForHeldAction($client->id, $payload['ticket_id'] ?? null);
+            $params = $this->emailSecurityStoredParams($directTool, is_array($payload['params'] ?? null) ? $payload['params'] : []);
+            $targetKey = $this->emailSecurityTargetKey($directTool, $params);
+            $contentHash = $run->content_hash;
+
+            if (TechnicianConfig::killSwitchEngaged()) {
+                $this->auditAttempt($run->action_type, 'blocked', $client->id, $ticket, null, null, $contentHash, "{$targetKey}: Technician kill-switch engaged; staged CIPP write refused.", $this->approverLabel($approverId), $run->id, $approverId);
+                $run->releaseClaim();
+
+                return new TechnicianApprovalResult('gate_declined');
+            }
+
+            if ($this->emailSecurityCooldownActive($directTool, $client->id, $targetKey, self::COOLDOWNS[$directTool] ?? 300)) {
+                $this->auditAttempt($run->action_type, 'blocked', $client->id, $ticket, null, null, $contentHash, "{$targetKey}: CIPP staged action cooldown active; approval refused before upstream call.", $this->approverLabel($approverId), $run->id, $approverId);
+                $run->releaseClaim();
+
+                return new TechnicianApprovalResult('gate_declined');
+            }
+
+            if ($directTool === 'cipp_release_quarantine_message') {
+                try {
+                    $row = $this->verifiedQuarantineRow($tenant, (string) $params['quarantine_identity'], null);
+                } catch (CippWriteScopeException $e) {
+                    $this->auditAttempt($run->action_type, 'blocked', $client->id, $ticket, null, null, $contentHash, "{$targetKey}: Approval refused — ".$e->getMessage(), $this->approverLabel($approverId), $run->id, $approverId);
+                    $run->releaseClaim();
+
+                    return new TechnicianApprovalResult('gate_declined');
+                }
+
+                if ($this->quarantineRowReleased($row)) {
+                    $this->auditAttempt($run->action_type, 'executed', $client->id, $ticket, null, null, $contentHash, "{$targetKey}: Message already released upstream — approved release satisfied without an upstream call.", $this->approverLabel($approverId), $run->id, $approverId);
+                    $run->advanceTo(TechnicianRunState::Done);
+
+                    return new TechnicianApprovalResult('executed');
+                }
+            }
+
+            try {
+                $this->executeEmailSecurityUpstream($directTool, $tenant, $ticket, $params);
+            } catch (CippClientException $e) {
+                $this->auditAttempt($run->action_type, 'error', $client->id, $ticket, null, null, $contentHash, "{$targetKey}: ".$this->safeFailureSummary($run->action_type, $e), $this->approverLabel($approverId), $run->id, $approverId);
+                $run->releaseClaim();
+
+                return new TechnicianApprovalResult('gate_declined');
+            }
+
+            $this->auditAttempt($run->action_type, 'executed', $client->id, $ticket, null, null, $contentHash, "{$targetKey}: Operator-approved {$run->action_type} executed for ".$this->emailSecurityAuditTarget($directTool, $params).'.', $this->approverLabel($approverId), $run->id, $approverId);
+            $run->advanceTo(TechnicianRunState::Done);
+
+            return new TechnicianApprovalResult('executed');
+        } catch (CippWriteScopeException) {
+            $run->releaseClaim();
+
+            return new TechnicianApprovalResult('gate_declined');
+        } catch (\Throwable $e) {
+            $run->releaseClaim();
+
+            throw $e;
+        }
+    }
+
+    /**
+     * Shared front door for the email-security tools: the same caller-input
+     * gates as context() (upstream-identifier blocklist, required redacted
+     * reason, kill-switch, client + tenant + ticket resolution) with per-tool
+     * parameter validation in place of person/license resolution.
+     *
+     * @return array{client?: Client, tenant?: string, ticket?: Ticket|null, params?: array<string, mixed>, confirm_sender?: string|null, reason?: string, error?: string}
+     */
+    private function emailSecurityContext(string $tool, array $arguments, int $clientId, string $actorLabel, bool $requireTicket): array
+    {
+        $contentHash = $this->contentHash($tool, $clientId, null, null, $arguments);
+
+        if ($keys = $this->upstreamIdentifierKeys($arguments)) {
+            $this->auditAttempt($tool, 'rejected', $clientId, null, null, null, $contentHash, 'Caller-supplied upstream CIPP identifiers are not accepted: '.implode(', ', $keys).'.', $actorLabel);
+
+            return ['error' => 'Caller-supplied upstream CIPP identifiers are not accepted; provide the tool\'s own validated parameters and ticket_id only.'];
+        }
+
+        $reason = $this->requiredString($arguments, 'reason');
+        if ($reason === null) {
+            $this->auditAttempt($tool, 'rejected', $clientId, null, null, null, $contentHash, 'reason is required.', $actorLabel);
+
+            return ['error' => 'reason is required'];
+        }
+        $reason = $this->safeReason($tool, $reason, $arguments);
+
+        if (TechnicianConfig::killSwitchEngaged()) {
+            $this->auditAttempt($tool, 'blocked', $clientId, null, null, null, $contentHash, 'Technician kill-switch engaged; CIPP MCP write refused.', $actorLabel);
+
+            return ['error' => 'Technician kill-switch engaged; CIPP MCP write refused'];
+        }
+
+        $client = Client::find($clientId);
+        if (! $client) {
+            $this->auditAttempt($tool, 'rejected', $clientId, null, null, null, $contentHash, 'Client not found.', $actorLabel);
+
+            return ['error' => 'Client not found'];
+        }
+
+        $directTool = self::STAGED_TO_DIRECT[$tool] ?? $tool;
+
+        try {
+            $tenant = $this->resolver->resolveCippTenant($client);
+            $ticket = $requireTicket
+                ? $this->resolver->resolveTicketForHeldAction($client->id, $arguments['ticket_id'] ?? null)
+                : $this->resolver->resolveOptionalTicket($client->id, $arguments['ticket_id'] ?? null);
+            $params = $this->emailSecurityStoredParams($directTool, $arguments);
+            $confirmSender = $directTool === 'cipp_release_quarantine_message'
+                ? $this->validatedConfirmSender($arguments)
+                : null;
+            if ($directTool === 'cipp_add_tenant_allow_entry') {
+                $this->assertConfirmEntryMatches($arguments, (string) $params['entry']);
+            }
+        } catch (CippWriteScopeException $e) {
+            $this->auditAttempt($tool, 'rejected', $client->id, null, null, null, $contentHash, $e->getMessage(), $actorLabel);
+
+            return ['error' => $e->getMessage()];
+        }
+
+        return [
+            'client' => $client,
+            'tenant' => $tenant,
+            'ticket' => $ticket,
+            'params' => $params,
+            'confirm_sender' => $confirmSender,
+            'reason' => $reason,
+        ];
+    }
+
+    /**
+     * Validate the per-tool parameters. Runs on the initial call (against
+     * caller arguments) AND on the approval replay (against the decrypted
+     * stored payload), so a tampered or drifted payload re-fails the same
+     * gates instead of being trusted.
+     *
+     * @return array<string, mixed>
+     */
+    private function emailSecurityStoredParams(string $directTool, array $source): array
+    {
+        return match ($directTool) {
+            'cipp_release_quarantine_message' => [
+                'quarantine_identity' => $this->validatedQuarantineIdentity($source['quarantine_identity'] ?? null),
+            ],
+            'cipp_add_tenant_allow_entry' => (function () use ($source): array {
+                $listType = $this->canonicalChoice($this->requiredString($source, 'list_type'), self::ALLOW_LIST_TYPES, 'list_type');
+
+                return [
+                    'list_type' => $listType,
+                    'entry' => $this->validatedAllowEntry($listType, $source['entry'] ?? null),
+                ];
+            })(),
+            default => throw new CippWriteScopeException("Unsupported email-security tool {$directTool}"),
+        };
+    }
+
+    /**
+     * Case-normalized copy of the params for content hashing, dedup, and the
+     * stored redacted_params — so re-tries that differ only by case dedup to
+     * the same proposal while the upstream call still receives the caller's
+     * original (URL paths can be case-sensitive).
+     *
+     * @param  array<string, mixed>  $params
+     * @return array<string, mixed>
+     */
+    private function emailSecurityHashParams(array $params): array
+    {
+        $hashed = $params;
+        foreach (['quarantine_identity', 'entry'] as $key) {
+            if (isset($hashed[$key]) && is_string($hashed[$key])) {
+                $hashed[$key] = mb_strtolower($hashed[$key]);
+            }
+        }
+
+        return $hashed;
+    }
+
+    private function validatedQuarantineIdentity(mixed $value): string
+    {
+        if (! is_scalar($value) || trim((string) $value) === '') {
+            throw new CippWriteScopeException('quarantine_identity is required');
+        }
+
+        $identity = trim((string) $value);
+        if (mb_strlen($identity) > self::QUARANTINE_IDENTITY_MAX) {
+            throw new CippWriteScopeException('quarantine_identity must be '.self::QUARANTINE_IDENTITY_MAX.' characters or fewer');
+        }
+
+        if (preg_match('/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\\\\[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i', $identity) !== 1) {
+            throw new CippWriteScopeException('quarantine_identity must be the GUID\\GUID Identity value exactly as returned by cipp_list_mail_quarantine');
+        }
+
+        return $identity;
+    }
+
+    private function validatedConfirmSender(array $arguments): string
+    {
+        $typed = $this->requiredString($arguments, 'confirm_sender');
+        if ($typed === null || mb_strlen($typed) > 254 || filter_var($typed, FILTER_VALIDATE_EMAIL) === false) {
+            throw new CippWriteScopeException('confirm_sender must be the sender email address of the quarantined message as listed by cipp_list_mail_quarantine.');
+        }
+
+        return $typed;
+    }
+
+    private function assertConfirmEntryMatches(array $arguments, string $entry): void
+    {
+        $typed = $this->requiredString($arguments, 'confirm_entry');
+        if ($typed === null || strcasecmp($typed, $entry) !== 0) {
+            throw new CippWriteScopeException('The typed confirm_entry does not match entry. CIPP write cancelled.');
+        }
+    }
+
+    private function validatedAllowEntry(string $listType, mixed $value): string
+    {
+        if (! is_scalar($value) || trim((string) $value) === '') {
+            throw new CippWriteScopeException('entry is required');
+        }
+
+        $entry = trim((string) $value);
+        if (mb_strlen($entry) > self::ALLOW_ENTRY_MAX) {
+            throw new CippWriteScopeException('entry must be '.self::ALLOW_ENTRY_MAX.' characters or fewer');
+        }
+
+        if (preg_match('/\s/u', $entry) === 1) {
+            throw new CippWriteScopeException('entry must not contain whitespace');
+        }
+
+        if ($listType === 'Sender') {
+            $isEmail = filter_var($entry, FILTER_VALIDATE_EMAIL) !== false;
+            $isDomain = preg_match('/^(?=.{4,253}$)(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,63}$/i', $entry) === 1;
+            if (! $isEmail && ! $isDomain) {
+                throw new CippWriteScopeException('Sender entries must be a full email address or a bare domain (wildcards are not supported).');
+            }
+
+            return $entry;
+        }
+
+        if (str_contains($entry, '://') || str_contains($entry, '@')) {
+            throw new CippWriteScopeException('Url entries must not include a scheme or @; use host/path patterns like example.com/path/* or *.example.com');
+        }
+
+        if (! str_contains($entry, '.') || preg_match('/^[a-z0-9*][a-z0-9.\-*_~\/%?&=+#]*$/i', $entry) !== 1) {
+            throw new CippWriteScopeException('Url entries must be a hostname or URL pattern (wildcards allowed), e.g. example.com or *.example.com/path/*');
+        }
+
+        return $entry;
+    }
+
+    /**
+     * The quarantine-release scope gate: fetch the resolved tenant's LIVE
+     * quarantine listing through the same credentialed client the write would
+     * use and require the identity to be present in it. This is what converts
+     * a caller-supplied identity string into a server-verified, tenant-scoped
+     * object — a message in any other tenant (or not in quarantine at all) can
+     * never be targeted. When $expectedSender is given (initial calls), it
+     * must match the verified row's real sender.
+     *
+     * @return array<string, mixed>
+     */
+    private function verifiedQuarantineRow(string $tenant, string $identity, ?string $expectedSender): array
+    {
+        try {
+            $rows = $this->client->listMailQuarantine($tenant);
+        } catch (CippClientException) {
+            throw new CippWriteScopeException('Could not verify the message against the tenant\'s live quarantine listing; no release was performed.');
+        }
+
+        foreach ($rows as $row) {
+            $rowIdentity = (string) ($row['Identity'] ?? $row['identity'] ?? '');
+            if ($rowIdentity === '' || strcasecmp($rowIdentity, $identity) !== 0) {
+                continue;
+            }
+
+            if ($expectedSender !== null) {
+                $sender = trim((string) ($row['SenderAddress'] ?? $row['senderAddress'] ?? ''));
+                if ($sender === '' || strcasecmp($sender, $expectedSender) !== 0) {
+                    throw new CippWriteScopeException('The typed confirm_sender does not match the sender of the verified quarantine message. CIPP write cancelled.');
+                }
+            }
+
+            return $row;
+        }
+
+        throw new CippWriteScopeException('Quarantine message not found in this client tenant\'s live quarantine listing; pass the exact Identity value returned by cipp_list_mail_quarantine.');
+    }
+
+    private function quarantineRowReleased(array $row): bool
+    {
+        $status = trim((string) ($row['ReleaseStatus'] ?? $row['releaseStatus'] ?? ''));
+
+        return strcasecmp($status, 'RELEASED') === 0;
+    }
+
+    /**
+     * Human-review facts from the verified quarantine row for the cockpit
+     * display. Every field is untrusted external content: control characters
+     * are stripped, the subject passes the redactor, and everything is length-
+     * bounded. Only the operator display carries these — the encrypted payload
+     * and audit summaries stay identifier-only.
+     *
+     * @param  array<string, mixed>  $row
+     * @return array<string, string>
+     */
+    private function quarantineDisplayFacts(array $row): array
+    {
+        $clean = function (mixed $value, int $max): string {
+            $flat = is_array($value)
+                ? implode(', ', array_map(strval(...), array_filter($value, 'is_scalar')))
+                : (string) $value;
+
+            return mb_substr(trim((string) preg_replace('/[\x00-\x1F\x7F]+/u', ' ', $flat)), 0, $max);
+        };
+
+        $recipients = $row['RecipientAddress'] ?? $row['recipientAddress'] ?? '';
+        $recipientList = is_array($recipients) ? array_values(array_filter($recipients, 'is_scalar')) : [$recipients];
+        $shown = array_map(fn (mixed $recipient): string => $clean($recipient, 254), array_slice($recipientList, 0, 3));
+        $extra = count($recipientList) - count($shown);
+
+        return [
+            'sender' => $clean($row['SenderAddress'] ?? $row['senderAddress'] ?? '', 254),
+            'subject' => $clean($this->redactor->redactString((string) ($row['Subject'] ?? $row['subject'] ?? '')), self::QUARANTINE_SUBJECT_PREVIEW_MAX),
+            'received' => $clean($row['ReceivedTime'] ?? $row['receivedTime'] ?? '', 40),
+            'type' => $clean($row['QuarantineTypes'] ?? $row['quarantineTypes'] ?? $row['Type'] ?? '', 100),
+            'recipients' => implode(', ', array_filter($shown)).($extra > 0 ? " (+{$extra} more)" : ''),
+        ];
+    }
+
+    private function executeEmailSecurityUpstream(string $directTool, string $tenant, ?Ticket $ticket, array $params): void
+    {
+        match ($directTool) {
+            'cipp_release_quarantine_message' => $this->client->releaseQuarantineMessage($tenant, (string) $params['quarantine_identity']),
+            'cipp_add_tenant_allow_entry' => $this->client->addTenantAllowListEntry(
+                $tenant,
+                (string) $params['list_type'],
+                (string) $params['entry'],
+                $this->allowListNotes($ticket),
+            ),
+            default => throw new \InvalidArgumentException("Unsupported CIPP email-security tool {$directTool}"),
+        };
+    }
+
+    /**
+     * Server-built provenance for the upstream Tenant Allow/Block List Notes
+     * field — technicians looking at the entry in M365 later can trace it back
+     * here. Never caller-supplied.
+     */
+    private function allowListNotes(?Ticket $ticket): string
+    {
+        $notes = 'Added via '.config('app.name');
+
+        return $ticket ? $notes.' (ticket '.$ticket->display_id.')' : $notes;
+    }
+
+    /**
+     * Per-target cooldown/audit correlation key. Hash-based because the raw
+     * target values are unsafe inside a SQL LIKE pattern (quarantine
+     * identities contain a backslash — the LIKE escape character — and URL
+     * entries can contain % and _), which would silently break cooldown
+     * matching. The raw value still appears in the audit summary for humans.
+     */
+    private function emailSecurityTargetKey(string $tool, array $params): string
+    {
+        $directTool = self::STAGED_TO_DIRECT[$tool] ?? $tool;
+
+        return $directTool === 'cipp_release_quarantine_message'
+            ? 'quarantine #'.substr(hash('sha256', mb_strtolower((string) ($params['quarantine_identity'] ?? ''))), 0, 12)
+            : 'allow_entry #'.substr(hash('sha256', ($params['list_type'] ?? '').'|'.mb_strtolower((string) ($params['entry'] ?? ''))), 0, 12);
+    }
+
+    /**
+     * Human-readable target for audit summaries. Unlike the person-scoped
+     * tools (which audit by PSA id and keep upstream identities out), the
+     * audit here records the actual target value — a quarantine identity or
+     * an allow entry IS the tenant configuration being changed, and an audit
+     * row that hides it would be unreviewable.
+     */
+    private function emailSecurityAuditTarget(string $tool, array $params): string
+    {
+        $directTool = self::STAGED_TO_DIRECT[$tool] ?? $tool;
+
+        return $directTool === 'cipp_release_quarantine_message'
+            ? 'quarantine message '.($params['quarantine_identity'] ?? 'unknown')
+            : ($params['list_type'] ?? 'unknown').' entry "'.($params['entry'] ?? '').'"';
+    }
+
+    private function emailSecurityCooldownActive(string $tool, int $clientId, string $targetKey, int $cooldownSeconds): bool
+    {
+        if ($cooldownSeconds <= 0) {
+            return false;
+        }
+
+        return TechnicianActionLog::query()
+            ->where('action_type', $tool)
+            ->where('client_id', $clientId)
+            ->where('created_at', '>=', now()->subSeconds($cooldownSeconds))
+            ->whereIn('result_status', ['executed', 'awaiting_approval'])
+            ->where('summary', 'like', '%'.$targetKey.'%')
+            ->exists();
+    }
+
+    private function emailSecurityProposalCooldownActive(string $tool, Ticket $ticket, string $targetKey, int $cooldownSeconds): bool
+    {
+        if ($cooldownSeconds <= 0) {
+            return false;
+        }
+
+        return TechnicianActionLog::query()
+            ->where('action_type', $tool)
+            ->where('ticket_id', $ticket->id)
+            ->where('created_at', '>=', now()->subSeconds($cooldownSeconds))
+            ->whereIn('result_status', ['awaiting_approval', 'executed'])
+            ->where('summary', 'like', '%'.$targetKey.'%')
+            ->exists();
+    }
+
+    /**
+     * @param  array<string, mixed>  $params
+     * @param  array<string, string>|null  $facts
+     */
+    private function emailSecurityStagedDisplay(string $directTool, array $params, ?array $facts): string
+    {
+        if ($directTool === 'cipp_release_quarantine_message') {
+            $facts ??= [];
+
+            return 'Release quarantined message from '.($facts['sender'] ?? 'unknown sender')
+                .' to all original recipients ('.($facts['recipients'] ?? 'unknown').').'
+                .' Subject: "'.($facts['subject'] ?? '').'".'
+                .' Received '.($facts['received'] ?? 'unknown').'; quarantine type '.($facts['type'] ?? 'unknown').'.'
+                .' Identity '.$params['quarantine_identity'].'.'
+                .' Releasing delivers mail the filter judged unsafe — confirm this is a verified false positive.';
+        }
+
+        return 'Add tenant allow-list '.$params['list_type'].' entry "'.$params['entry'].'" for the WHOLE tenant'
+            .' (expires 45 days after its last use).'
+            .' Matching mail will bypass spam/phish filtering for every mailbox in this tenant.';
+    }
+
+    /**
+     * @param  array<string, mixed>  $params
+     * @return array<string, mixed>
+     */
+    private function emailSecurityResultEcho(string $tool, array $params): array
+    {
+        return $tool === 'cipp_release_quarantine_message'
+            ? ['quarantine_identity' => (string) $params['quarantine_identity']]
+            : ['list_type' => (string) $params['list_type'], 'entry' => (string) $params['entry']];
     }
 
     /**
@@ -1950,6 +2736,69 @@ class StaffCippWriteToolExecutor
     }
 
     /** @return array<string, mixed> */
+    private static function emailSecurityCommonProperties(bool $ticketRequired): array
+    {
+        return [
+            'reason' => [
+                'type' => 'string',
+                'description' => 'Specific operational reason for this CIPP write.',
+            ],
+            'ticket_id' => [
+                'type' => 'integer',
+                'description' => $ticketRequired
+                    ? 'Required ticket ID for cockpit-held actions. The server verifies it belongs to client_id.'
+                    : 'Optional ticket ID for incident attribution. The server verifies it belongs to client_id when supplied.',
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private static function quarantineReleaseProperties(): array
+    {
+        return [
+            'quarantine_identity' => [
+                'type' => 'string',
+                'description' => 'Quarantine message Identity (GUID\\GUID) exactly as returned by cipp_list_mail_quarantine. The server verifies it is present in the resolved client tenant\'s live quarantine listing before any release; identities from other tenants or expired messages are refused.',
+            ],
+            'confirm_sender' => [
+                'type' => 'string',
+                'description' => 'Typed confirmation for defense-in-depth: the quarantined message\'s sender email address. Must match the SenderAddress of the server-verified quarantine row.',
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private static function allowEntryProperties(): array
+    {
+        return [
+            'list_type' => [
+                'type' => 'string',
+                'enum' => self::ALLOW_LIST_TYPES,
+                'description' => 'Tenant Allow/Block List entry type: Sender (a full email address or bare domain) or Url (a hostname/URL pattern, wildcards allowed).',
+            ],
+            'entry' => [
+                'type' => 'string',
+                'description' => 'The value to allow. Sender: full email address or bare domain, no wildcards. Url: hostname or URL pattern without a scheme (wildcards allowed). Prefer the narrowest entry that fixes the false positive — a full address over a whole domain.',
+            ],
+            'confirm_entry' => [
+                'type' => 'string',
+                'description' => 'Typed confirmation — must exactly match entry. This value bypasses filtering tenant-wide, so it is retyped deliberately.',
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private static function releaseQuarantineMessageTool(): array
+    {
+        return self::tool(
+            'cipp_release_quarantine_message',
+            'Release one quarantined email message to ALL of its original recipients immediately through CIPP (Exchange Release-QuarantineMessage). Use only for a CONFIRMED false positive: releasing delivers mail the filter judged unsafe. The server verifies the identity against the resolved client tenant\'s live quarantine listing before calling — a message not present there is refused — and confirm_sender must match the verified message\'s real sender. The sender is NOT allow-listed for the future (that is cipp_add_tenant_allow_entry, if warranted). Requires an explicit token grant, reason, kill-switch, dedup/cooldown, and TechnicianActionLog audit.',
+            array_merge(self::quarantineReleaseProperties(), self::emailSecurityCommonProperties(ticketRequired: false)),
+            ['quarantine_identity', 'confirm_sender', 'reason'],
+        );
+    }
+
+    /** @return array<string, mixed> */
     private static function stageRemoveDirectoryRoleTool(): array
     {
         return self::tool(
@@ -1957,6 +2806,39 @@ class StaffCippWriteToolExecutor
             'Stage removal of one Microsoft Entra directory (admin) role from one server-derived CIPP user for cockpit approval, WITHOUT touching license assignments (offboarding / least-privilege hygiene). The MCP call makes no CIPP upstream call; the held payload stores only local identifiers plus the universal role_template_id and typed role_name, and approval re-resolves the tenant\'s activated role by template id, re-verifies the role display name and the user\'s CURRENT membership, then executes the single-member removal. This capability is held-only — there is no immediate execution path. confirm_upn is the target user\'s UPN (person_id).',
             array_merge(self::personProperties(ticket: true), self::directoryRoleProperties()),
             ['person_id', 'role_template_id', 'role_name', 'ticket_id', 'confirm_upn', 'reason'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function stageReleaseQuarantineMessageTool(): array
+    {
+        return self::tool(
+            'cipp_stage_release_quarantine_message',
+            'Stage a quarantined-message release for cockpit approval. Staging performs a read-only verification lookup of the tenant\'s live quarantine (never the release itself), requires the identity to be present there with confirm_sender matching its real sender, and captures the verified sender/subject/recipients server-side for the approval display. The payload is encrypted at rest; approval re-verifies the message is still in quarantine (and not already released) before executing.',
+            array_merge(self::quarantineReleaseProperties(), self::emailSecurityCommonProperties(ticketRequired: true)),
+            ['quarantine_identity', 'confirm_sender', 'ticket_id', 'reason'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function addTenantAllowEntryTool(): array
+    {
+        return self::tool(
+            'cipp_add_tenant_allow_entry',
+            'Add ONE allow entry (sender address, sender domain, or URL pattern) to the Microsoft 365 Tenant Allow/Block List of the resolved client tenant immediately through CIPP. TENANT-WIDE consequence: matching mail bypasses spam/phish filtering for every mailbox in the tenant — use only to remediate a CONFIRMED false positive, with the narrowest entry that works. The list method is pinned to Allow (no block adds) and expiry is pinned to 45 days after last use (no-expiration allows are not possible through this tool). confirm_entry must retype the exact entry. Requires an explicit token grant, reason, kill-switch, dedup/cooldown, and TechnicianActionLog audit.',
+            array_merge(self::allowEntryProperties(), self::emailSecurityCommonProperties(ticketRequired: false)),
+            ['list_type', 'entry', 'confirm_entry', 'reason'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function stageAddTenantAllowEntryTool(): array
+    {
+        return self::tool(
+            'cipp_stage_add_tenant_allow_entry',
+            'Stage a tenant allow-list entry for cockpit approval. The MCP call makes no CIPP upstream call; the validated entry is stored encrypted and shown VERBATIM to the approver (an allow entry must be reviewed as-is), and approval revalidates client, ticket, tenant, and the entry value before execution. Allow entries bypass spam/phish filtering tenant-wide; expiry is pinned to 45 days after last use.',
+            array_merge(self::allowEntryProperties(), self::emailSecurityCommonProperties(ticketRequired: true)),
+            ['list_type', 'entry', 'confirm_entry', 'ticket_id', 'reason'],
         );
     }
 
