@@ -9,6 +9,7 @@ use App\Models\QboBankAccount;
 use App\Models\QboExpense;
 use App\Models\Setting;
 use App\Models\Sku;
+use App\Services\InvoiceVoidService;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
@@ -422,15 +423,16 @@ class QboSyncService
 
         $qboInvoice = $response['Invoice'] ?? $response;
 
-        // QBO sets PrivateNote to "Voided" when an invoice is voided.
-        // Detect this before updating totals — QBO zeroes out amounts on void,
-        // and we must preserve the original totals for reporting/audit.
-        if (($qboInvoice['PrivateNote'] ?? '') === 'Voided') {
+        // Detect a QBO-side void before updating totals. The void service
+        // snapshots the original amounts into pre_void_* and zeroes the
+        // reportable money fields so aggregates exclude this invoice; the
+        // "PSA wins for void" early-return above means this fires once.
+        if ($this->qboInvoiceIsVoided($qboInvoice)) {
             Log::info('[QboSync] Void detected for invoice #'.$invoice->invoice_number, [
                 'invoice_id' => $invoice->id,
             ]);
+            app(InvoiceVoidService::class)->void($invoice);
             $invoice->update([
-                'status' => InvoiceStatus::Void,
                 'qbo_synced_at' => now(),
                 'qbo_sync_error' => null,
             ]);
@@ -460,6 +462,20 @@ class QboSyncService
 
         // Sync line item details (description, quantity, unit_price, amount)
         $this->syncLineItemsFromQbo($invoice, $qboInvoice);
+    }
+
+    /**
+     * QBO marks a voided invoice by writing "Voided" into PrivateNote —
+     * appended to any existing customer memo — and zeroing TotalAmt. An
+     * exact-string match on PrivateNote misses voids when a prior memo
+     * existed, so match on containment plus the zeroed total; requiring
+     * both signals also keeps a live invoice whose memo merely mentions
+     * "Voided" from being treated as void.
+     */
+    private function qboInvoiceIsVoided(array $qboInvoice): bool
+    {
+        return str_contains($qboInvoice['PrivateNote'] ?? '', 'Voided')
+            && (float) ($qboInvoice['TotalAmt'] ?? 0) == 0.0;
     }
 
     private function syncLineItemsFromQbo(Invoice $invoice, array $qboInvoice): void
@@ -508,7 +524,7 @@ class QboSyncService
         $qboInvoice = $response['Invoice'] ?? $response;
 
         // Idempotency: if already voided in QBO, just update sync timestamp
-        if (($qboInvoice['PrivateNote'] ?? '') === 'Voided') {
+        if ($this->qboInvoiceIsVoided($qboInvoice)) {
             $invoice->update([
                 'qbo_synced_at' => now(),
                 'qbo_sync_error' => null,

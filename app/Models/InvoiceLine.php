@@ -17,6 +17,8 @@ class InvoiceLine extends Model
         'unit_cost',
         'amount',
         'cost_amount',
+        'pre_void_amount',
+        'pre_void_cost_amount',
         'prepaid_time_minutes',
         'quantity_source',
         'is_taxable',
@@ -32,6 +34,8 @@ class InvoiceLine extends Model
             'unit_cost' => 'decimal:2',
             'amount' => 'decimal:2',
             'cost_amount' => 'decimal:2',
+            'pre_void_amount' => 'decimal:2',
+            'pre_void_cost_amount' => 'decimal:2',
             'prepaid_time_minutes' => 'integer',
             'is_taxable' => 'boolean',
             'sort_order' => 'integer',
@@ -48,5 +52,23 @@ class InvoiceLine extends Model
     public function sku(): BelongsTo
     {
         return $this->belongsTo(Sku::class);
+    }
+
+    // ── Accessors ──
+
+    /**
+     * Original pre-void amount for lines on voided invoices, live amount
+     * otherwise. pre_void_amount is only ever written when the parent
+     * invoice is voided (InvoiceVoidService), so a non-null value implies a
+     * voided invoice without loading the parent.
+     */
+    public function getDisplayAmountAttribute(): ?string
+    {
+        return $this->pre_void_amount ?? $this->amount;
+    }
+
+    public function getDisplayCostAmountAttribute(): ?string
+    {
+        return $this->pre_void_amount !== null ? $this->pre_void_cost_amount : $this->cost_amount;
     }
 }

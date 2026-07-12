@@ -12,6 +12,7 @@ use App\Models\Invoice;
 use App\Models\Setting;
 use App\Models\Sku;
 use App\Services\InvoiceService;
+use App\Services\InvoiceVoidService;
 use App\Services\Qbo\QboClientException;
 use App\Services\Qbo\QboSyncService;
 use App\Services\Stripe\StripeClient;
@@ -275,7 +276,7 @@ class InvoiceController extends Controller
             ->with('success', $msg);
     }
 
-    public function bulkAction(Request $request, QboSyncService $qboSyncService)
+    public function bulkAction(Request $request, QboSyncService $qboSyncService, InvoiceVoidService $voidService)
     {
         $request->validate([
             'action' => ['required', 'string', 'in:push,post,void'],
@@ -330,7 +331,7 @@ class InvoiceController extends Controller
 
                             continue 2;
                         }
-                        $invoice->update(['status' => InvoiceStatus::Void]);
+                        $voidService->void($invoice);
                         if ($invoice->qbo_invoice_id) {
                             $qboSyncService->voidInvoiceInQbo($invoice);
                         }
@@ -361,14 +362,14 @@ class InvoiceController extends Controller
             ->with($failed > 0 ? 'warning' : 'success', implode(', ', $parts).'.');
     }
 
-    public function void(Invoice $invoice, QboSyncService $syncService)
+    public function void(Invoice $invoice, QboSyncService $syncService, InvoiceVoidService $voidService)
     {
         if ($invoice->status === InvoiceStatus::Void) {
             return redirect()->route('invoices.show', $invoice)
                 ->with('error', 'Invoice is already voided.');
         }
 
-        $invoice->update(['status' => InvoiceStatus::Void]);
+        $voidService->void($invoice);
 
         // Push void to QBO if this invoice was synced there
         if ($invoice->qbo_invoice_id) {

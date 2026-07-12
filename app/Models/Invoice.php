@@ -26,6 +26,11 @@ class Invoice extends Model
         'total',
         'total_cost',
         'margin',
+        'pre_void_subtotal',
+        'pre_void_tax',
+        'pre_void_total',
+        'pre_void_total_cost',
+        'pre_void_margin',
         'status',
         'qbo_invoice_id',
         'qbo_doc_number',
@@ -49,6 +54,11 @@ class Invoice extends Model
             'total' => 'decimal:2',
             'total_cost' => 'decimal:2',
             'margin' => 'decimal:2',
+            'pre_void_subtotal' => 'decimal:2',
+            'pre_void_tax' => 'decimal:2',
+            'pre_void_total' => 'decimal:2',
+            'pre_void_total_cost' => 'decimal:2',
+            'pre_void_margin' => 'decimal:2',
             'qbo_synced_at' => 'datetime',
             'stripe_synced_at' => 'datetime',
         ];
@@ -143,6 +153,44 @@ class Invoice extends Model
     public function getFormattedTotalAttribute(): string
     {
         return '$'.number_format((float) $this->total, 2);
+    }
+
+    /**
+     * True when this invoice was voided and carries a pre-void snapshot of
+     * its original amounts. On void the live money fields are zeroed so
+     * aggregates exclude voided invoices structurally; the originals move to
+     * pre_void_* columns (see InvoiceVoidService). The detail view uses this
+     * to show the originals alongside an explicit "voided" banner.
+     */
+    public function isVoidWithSnapshot(): bool
+    {
+        return $this->status === InvoiceStatus::Void && $this->pre_void_total !== null;
+    }
+
+    /** Original pre-void value for voided invoices, live value otherwise. */
+    public function getDisplaySubtotalAttribute(): ?string
+    {
+        return $this->isVoidWithSnapshot() ? $this->pre_void_subtotal : $this->subtotal;
+    }
+
+    public function getDisplayTaxAttribute(): ?string
+    {
+        return $this->isVoidWithSnapshot() ? $this->pre_void_tax : $this->tax;
+    }
+
+    public function getDisplayTotalAttribute(): ?string
+    {
+        return $this->isVoidWithSnapshot() ? $this->pre_void_total : $this->total;
+    }
+
+    public function getDisplayTotalCostAttribute(): ?string
+    {
+        return $this->isVoidWithSnapshot() ? $this->pre_void_total_cost : $this->total_cost;
+    }
+
+    public function getDisplayMarginAttribute(): ?string
+    {
+        return $this->isVoidWithSnapshot() ? $this->pre_void_margin : $this->margin;
     }
 
     public function getDisplayNumberAttribute(): string

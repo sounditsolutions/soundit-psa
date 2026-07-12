@@ -8,6 +8,7 @@ use App\Models\Invoice;
 use App\Models\InvoiceLine;
 use App\Models\Setting;
 use App\Models\Sku;
+use App\Services\InvoiceVoidService;
 use App\Services\SyncResult;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
@@ -616,6 +617,14 @@ class StripeSyncService
 
         if (! empty($lines)) {
             $this->syncStripeInvoiceLines($invoice, $lines);
+        }
+
+        // Stripe keeps totals on voided/uncollectible invoices, so imported
+        // voids arrive with non-zero amounts. Snapshot + zero them so they
+        // cannot contaminate financial aggregates; also re-zeroes a re-import
+        // that rewrote the amounts above.
+        if ($invoice->status === InvoiceStatus::Void) {
+            app(InvoiceVoidService::class)->void($invoice);
         }
 
         return $invoice;
