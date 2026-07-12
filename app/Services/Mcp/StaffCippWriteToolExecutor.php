@@ -1817,13 +1817,24 @@ class StaffCippWriteToolExecutor
      * only for a FullAccess grant. Every stored value is a safe local scalar, so
      * nothing needs re-entry at approval.
      *
+     * A GRANT names the delegate as an access RECIPIENT, so they must be ACTIVE
+     * in the PSA — enforced here at staging and again on the approval replay
+     * (both calls re-resolve the delegate fresh), mirroring the OneDrive
+     * successor gate (psa-zjpd; tightened by bead psa-pgnj). A REMOVE stays on
+     * the loose resolver deliberately: revoking access FROM an already-
+     * deactivated delegate grants nothing to anyone and is routine offboarding
+     * cleanup — gating it would force reactivating a former employee just to
+     * revoke them.
+     *
      * @return array<string, mixed>
      */
     private function mailboxDelegateParams(int $clientId, array $arguments): array
     {
         $permission = $this->canonicalChoice($this->requiredString($arguments, 'permission'), self::DELEGATE_PERMISSIONS, 'permission');
         $operation = $this->canonicalChoice($this->requiredString($arguments, 'operation'), self::DELEGATE_OPERATIONS, 'operation');
-        $delegate = $this->resolver->resolveCippPerson($clientId, $arguments['delegate_person_id'] ?? null);
+        $delegate = $operation === 'grant'
+            ? $this->resolver->resolveActiveCippPerson($clientId, $arguments['delegate_person_id'] ?? null, 'delegate')
+            : $this->resolver->resolveCippPerson($clientId, $arguments['delegate_person_id'] ?? null);
 
         // Self-delegation is an upstream no-op that only muddies the audit trail
         // and the held proposal. person_id is present on the initial call (direct
@@ -1858,7 +1869,16 @@ class StaffCippWriteToolExecutor
         ];
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * The INTERNAL target deliberately stays on the loose resolver (no
+     * is_active gate): M365 shared/resource mailboxes have disabled backing
+     * accounts, so contact sync stores them as is_active = false, and
+     * forwarding a departed user's mail into a shared mailbox is a mainstream
+     * offboarding flow (psa-pgnj product decision). A recipient-type-aware
+     * guard is tracked separately as psa-24db.
+     *
+     * @return array<string, mixed>
+     */
     private function mailboxForwardingParams(int $clientId, array $arguments, array $approvalInputs, bool $isHeld, bool $heldApproval): array
     {
         $mode = mb_strtolower((string) $this->requiredString($arguments, 'mode'));
