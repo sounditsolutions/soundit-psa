@@ -106,7 +106,7 @@ class AssistantToolDefinitions
                         ],
                         'updated_since' => [
                             'type' => 'string',
-                            'description' => 'Only tickets last modified at or after this ISO-8601 timestamp (e.g. 2026-07-12T08:00:00Z). Returns them newest-touch first, so you can poll for new replies/changes without re-fetching every ticket.',
+                            'description' => 'Only tickets last modified at or after this ISO-8601 timestamp (e.g. 2026-07-12T08:00:00Z). Returns them newest-touch first, so you can poll for new replies/changes without re-fetching every ticket. Capped at limit (max 50); if a wide window may exceed that, poll more often or narrow the window.',
                         ],
                         'priority' => [
                             'type' => 'string',
