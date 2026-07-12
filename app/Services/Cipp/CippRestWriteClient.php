@@ -415,6 +415,95 @@ class CippRestWriteClient
     }
 
     /**
+     * Issue ONE Intune device lifecycle action (full wipe or retire) for one
+     * managed device via CIPP's ExecDeviceAction endpoint. The action arms are
+     * a closed allowlist — CIPP's default arm forwards the WHOLE JSON body to
+     * Graph POST /deviceManagement/managedDevices('{GUID}')/{Action}, so an
+     * uncontrolled action string would be an arbitrary Graph device call.
+     *
+     * Source shape (CIPP-API Invoke-ExecDeviceAction.ps1 + New-CIPPDeviceAction.ps1):
+     * POST api/ExecDeviceAction with tenantFilter, GUID (the Intune managedDevice
+     * id), and Action. For a full wipe the data-destroying options are pinned
+     * explicitly (keepUserData/keepEnrollmentData false) so Graph-side defaults
+     * can never soften an approved wipe; retire takes no options, matching the
+     * CIPP frontend's own Retire device action. The endpoint 500s on failure,
+     * which send() converts into a CippClientException.
+     *
+     * @param  string  $action  one of wipe|retire
+     * @return array<int|string, mixed>
+     */
+    public function wipeDevice(string $tenantFilter, string $deviceId, string $action): array
+    {
+        if (trim($deviceId) === '') {
+            throw new CippClientException('Intune device id is required');
+        }
+
+        $body = match ($action) {
+            'wipe' => [
+                'tenantFilter' => $tenantFilter,
+                'GUID' => $deviceId,
+                'Action' => 'wipe',
+                'keepUserData' => false,
+                'keepEnrollmentData' => false,
+            ],
+            'retire' => [
+                'tenantFilter' => $tenantFilter,
+                'GUID' => $deviceId,
+                'Action' => 'retire',
+            ],
+            default => throw new CippClientException("Unsupported device wipe action {$action}"),
+        };
+
+        return $this->send('api/ExecDeviceAction', $body);
+    }
+
+    /**
+     * Grant one successor owner (site admin) access to one user's OneDrive via
+     * CIPP's ExecSharePointPerms endpoint — the ownership-handover half of
+     * offboarding. UPN is the OneDrive OWNER; the successor rides in the
+     * onedriveAccessUser {value,label} autocomplete shape; RemovePermission
+     * false adds. URL is deliberately omitted: CIPP resolves the OneDrive site
+     * URL from Graph (/users/{UPN}/Drives) server-side, so no caller-supplied
+     * URL exists anywhere in this flow.
+     *
+     * Source shape (CIPP-API Invoke-ExecSharePointPerms.ps1 + Set-CIPPSharePointPerms.ps1):
+     * per-user CSOM failures are collected into Results and still return HTTP
+     * 200, so a status check alone would report success on a failed
+     * reassignment — the Results text is verified for the success marker and
+     * the call fails closed otherwise. The upstream Results line (successor +
+     * OneDrive URL) is then discarded; callers only see success/status.
+     *
+     * @return array<int|string, mixed>
+     */
+    public function reassignOneDriveOwnership(string $tenantFilter, string $ownerUserPrincipalName, string $successorUserPrincipalName): array
+    {
+        if (trim($ownerUserPrincipalName) === '') {
+            throw new CippClientException('OneDrive owner UPN is required');
+        }
+        if (trim($successorUserPrincipalName) === '') {
+            throw new CippClientException('OneDrive successor UPN is required');
+        }
+
+        $response = $this->send('api/ExecSharePointPerms', [
+            'tenantFilter' => $tenantFilter,
+            'UPN' => $ownerUserPrincipalName,
+            'RemovePermission' => false,
+            'onedriveAccessUser' => ['value' => $successorUserPrincipalName, 'label' => $successorUserPrincipalName],
+        ], captureBody: true);
+
+        $results = $response['body']['Results'] ?? null;
+        $text = is_array($results)
+            ? implode(' ', array_map(static fn (mixed $entry): string => is_scalar($entry) ? (string) $entry : (string) json_encode($entry), $results))
+            : (string) $results;
+
+        if (stripos($text, 'Successfully') === false || stripos($text, 'Failed') !== false) {
+            throw new CippClientException('CIPP did not confirm the OneDrive permission change; treat the reassignment as not applied.');
+        }
+
+        return ['success' => true, 'status' => (int) $response['status']];
+    }
+
+    /**
      * @param  array<int|string, mixed>  $body
      * @return array<int|string, mixed>
      */

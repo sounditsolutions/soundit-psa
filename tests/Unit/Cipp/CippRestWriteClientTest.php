@@ -44,6 +44,8 @@ class CippRestWriteClientTest extends TestCase
         $this->assertContains('releaseQuarantineMessage', $methods);
         $this->assertContains('addTenantAllowListEntry', $methods);
         $this->assertContains('listMailQuarantine', $methods);
+        $this->assertContains('wipeDevice', $methods);
+        $this->assertContains('reassignOneDriveOwnership', $methods);
         $this->assertNotContains('post', $methods);
         $this->assertNotContains('get', $methods);
         $this->assertNotContains('request', $methods);
@@ -727,5 +729,180 @@ class CippRestWriteClientTest extends TestCase
                 'ID' => 'alex@acme.example',
                 'MustChange' => false,
             ]);
+    }
+
+    public function test_wipe_device_posts_exec_device_action_shape(): void
+    {
+        Http::fake([
+            'login.microsoftonline.com/*' => Http::response(['access_token' => 'WRITE-TOKEN', 'expires_in' => 3600]),
+            'cipp.example.test/api/*' => Http::response(['Results' => 'Queued wipe on b7e2f9c4-3a1d-4e5b-9c8f-2d6a7b1e0f3c']),
+        ]);
+
+        $client = new CippRestWriteClient([
+            'api_url' => 'https://cipp.example.test',
+            'tenant_id' => 'tenant-1',
+            'client_id' => 'write-client',
+            'client_secret' => 'write-secret',
+        ], Cache::store(), fn (string $host): array => ['93.184.216.34']);
+
+        $result = $client->wipeDevice('acme.onmicrosoft.com', 'b7e2f9c4-3a1d-4e5b-9c8f-2d6a7b1e0f3c', 'wipe');
+        $client->wipeDevice('acme.onmicrosoft.com', 'b7e2f9c4-3a1d-4e5b-9c8f-2d6a7b1e0f3c', 'retire');
+
+        // The upstream body is discarded: nothing beyond success/status comes back.
+        $this->assertSame(['success' => true, 'status' => 200], $result);
+
+        // Source-pinned (CIPP-API Invoke-ExecDeviceAction.ps1 default arm forwards the
+        // whole JSON body to Graph POST /deviceManagement/managedDevices('{GUID}')/wipe):
+        // a full wipe pins the data-destroying options explicitly so Graph defaults can
+        // never soften the action.
+        Http::assertSent(fn ($request) => $request->url() === 'https://cipp.example.test/api/ExecDeviceAction'
+            && $request->method() === 'POST'
+            && $request->hasHeader('Authorization', 'Bearer WRITE-TOKEN')
+            && $request->data() === [
+                'tenantFilter' => 'acme.onmicrosoft.com',
+                'GUID' => 'b7e2f9c4-3a1d-4e5b-9c8f-2d6a7b1e0f3c',
+                'Action' => 'wipe',
+                'keepUserData' => false,
+                'keepEnrollmentData' => false,
+            ]);
+
+        // retire (unenroll + remove company data) carries no wipe options — the body
+        // matches what the CIPP frontend itself sends for the Retire device action.
+        Http::assertSent(fn ($request) => $request->url() === 'https://cipp.example.test/api/ExecDeviceAction'
+            && $request->data() === [
+                'tenantFilter' => 'acme.onmicrosoft.com',
+                'GUID' => 'b7e2f9c4-3a1d-4e5b-9c8f-2d6a7b1e0f3c',
+                'Action' => 'retire',
+            ]);
+    }
+
+    public function test_wipe_device_rejects_unsupported_action_or_blank_device_id_before_any_request(): void
+    {
+        Http::fake();
+
+        $client = new CippRestWriteClient([
+            'api_url' => 'https://cipp.example.test',
+            'tenant_id' => 'tenant-1',
+            'client_id' => 'write-client',
+            'client_secret' => 'write-secret',
+        ], Cache::store(), fn (string $host): array => ['93.184.216.34']);
+
+        try {
+            $client->wipeDevice('acme.onmicrosoft.com', '  ', 'wipe');
+            $this->fail('Expected CippClientException for blank device id');
+        } catch (CippClientException $e) {
+            $this->assertStringContainsString('device id is required', $e->getMessage());
+        }
+
+        // The action arms are a closed allowlist: anything else (delete, autopilot
+        // variants, arbitrary Graph actions) must throw, never fall through to a POST.
+        try {
+            $client->wipeDevice('acme.onmicrosoft.com', 'b7e2f9c4-3a1d-4e5b-9c8f-2d6a7b1e0f3c', 'delete');
+            $this->fail('Expected CippClientException for unsupported action');
+        } catch (CippClientException $e) {
+            $this->assertStringContainsString('Unsupported device wipe action', $e->getMessage());
+        }
+
+        Http::assertNothingSent();
+    }
+
+    public function test_reassign_onedrive_ownership_posts_exec_sharepoint_perms_shape(): void
+    {
+        Http::fake([
+            'login.microsoftonline.com/*' => Http::response(['access_token' => 'WRITE-TOKEN', 'expires_in' => 3600]),
+            'cipp.example.test/api/*' => Http::response([
+                'Results' => 'Successfully added sam@acme.example as an owner of https://acme-my.sharepoint.example/personal/alex_acme_example',
+            ]),
+        ]);
+
+        $client = new CippRestWriteClient([
+            'api_url' => 'https://cipp.example.test',
+            'tenant_id' => 'tenant-1',
+            'client_id' => 'write-client',
+            'client_secret' => 'write-secret',
+        ], Cache::store(), fn (string $host): array => ['93.184.216.34']);
+
+        $result = $client->reassignOneDriveOwnership('acme.onmicrosoft.com', 'alex@acme.example', 'sam@acme.example');
+
+        // The upstream Results line (successor UPN + OneDrive URL) is verified, then
+        // discarded — callers only ever see success/status.
+        $this->assertSame(['success' => true, 'status' => 200], $result);
+        $this->assertStringNotContainsString('sharepoint.example', json_encode($result));
+
+        // Source-pinned (CIPP-API Invoke-ExecSharePointPerms.ps1 + the frontend
+        // teams-share/onedrive action): UPN is the OneDrive owner, the successor rides
+        // in onedriveAccessUser {value,label}, RemovePermission=false adds the owner.
+        // URL is deliberately omitted — CIPP resolves the OneDrive URL from Graph
+        // server-side, so no caller-supplied URL ever exists in this flow.
+        Http::assertSent(fn ($request) => $request->url() === 'https://cipp.example.test/api/ExecSharePointPerms'
+            && $request->method() === 'POST'
+            && $request->hasHeader('Authorization', 'Bearer WRITE-TOKEN')
+            && $request->data() === [
+                'tenantFilter' => 'acme.onmicrosoft.com',
+                'UPN' => 'alex@acme.example',
+                'RemovePermission' => false,
+                'onedriveAccessUser' => ['value' => 'sam@acme.example', 'label' => 'sam@acme.example'],
+            ]);
+    }
+
+    public function test_reassign_onedrive_ownership_fails_closed_on_unconfirmed_or_failed_results(): void
+    {
+        // Set-CIPPSharePointPerms collects per-user CSOM failures into Results and
+        // still returns HTTP 200 — a status check alone would report success on a
+        // failed reassignment, so the wrapper must parse the Results text.
+        $bodies = [
+            ['Results' => 'Failed to change access for sam@acme.example: Access denied.'],
+            ['Results' => ['Some unrelated message']],
+            ['Results' => null],
+        ];
+
+        foreach ($bodies as $body) {
+            Http::fake([
+                'login.microsoftonline.com/*' => Http::response(['access_token' => 'WRITE-TOKEN', 'expires_in' => 3600]),
+                'cipp.example.test/api/*' => Http::response($body),
+            ]);
+
+            $client = new CippRestWriteClient([
+                'api_url' => 'https://cipp.example.test',
+                'tenant_id' => 'tenant-1',
+                'client_id' => 'write-client',
+                'client_secret' => 'write-secret',
+            ], Cache::store(), fn (string $host): array => ['93.184.216.34']);
+
+            try {
+                $client->reassignOneDriveOwnership('acme.onmicrosoft.com', 'alex@acme.example', 'sam@acme.example');
+                $this->fail('Expected CippClientException for unconfirmed Results: '.json_encode($body));
+            } catch (CippClientException $e) {
+                $this->assertStringContainsString('did not confirm the OneDrive permission change', $e->getMessage());
+            }
+        }
+    }
+
+    public function test_reassign_onedrive_ownership_rejects_blank_parties_before_any_request(): void
+    {
+        Http::fake();
+
+        $client = new CippRestWriteClient([
+            'api_url' => 'https://cipp.example.test',
+            'tenant_id' => 'tenant-1',
+            'client_id' => 'write-client',
+            'client_secret' => 'write-secret',
+        ], Cache::store(), fn (string $host): array => ['93.184.216.34']);
+
+        try {
+            $client->reassignOneDriveOwnership('acme.onmicrosoft.com', '  ', 'sam@acme.example');
+            $this->fail('Expected CippClientException for blank owner');
+        } catch (CippClientException $e) {
+            $this->assertStringContainsString('owner UPN is required', $e->getMessage());
+        }
+
+        try {
+            $client->reassignOneDriveOwnership('acme.onmicrosoft.com', 'alex@acme.example', '');
+            $this->fail('Expected CippClientException for blank successor');
+        } catch (CippClientException $e) {
+            $this->assertStringContainsString('successor UPN is required', $e->getMessage());
+        }
+
+        Http::assertNothingSent();
     }
 }
