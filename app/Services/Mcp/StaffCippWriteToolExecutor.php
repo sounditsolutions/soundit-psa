@@ -15,6 +15,7 @@ use App\Services\Cipp\CippWriteScopeException;
 use App\Services\Cipp\CippWriteScopeResolver;
 use App\Services\Cipp\ResolvedCippLicense;
 use App\Services\Cipp\ResolvedCippPerson;
+use App\Services\Cipp\ResolvedIntuneDevice;
 use App\Services\Tactical\Actions\ActionRedactor;
 use App\Services\Technician\TechnicianApprovalResult;
 use App\Support\CippConfig;
@@ -43,6 +44,8 @@ class StaffCippWriteToolExecutor
         'cipp_stage_remove_directory_role' => 'cipp_remove_directory_role',
         'cipp_stage_release_quarantine_message' => 'cipp_release_quarantine_message',
         'cipp_stage_add_tenant_allow_entry' => 'cipp_add_tenant_allow_entry',
+        'cipp_stage_wipe_device' => 'cipp_wipe_device',
+        'cipp_stage_reassign_onedrive' => 'cipp_reassign_onedrive',
     ];
 
     /**
@@ -92,6 +95,10 @@ class StaffCippWriteToolExecutor
         'cipp_stage_release_quarantine_message' => 300,
         'cipp_add_tenant_allow_entry' => 300,
         'cipp_stage_add_tenant_allow_entry' => 300,
+        'cipp_wipe_device' => 300,
+        'cipp_stage_wipe_device' => 300,
+        'cipp_reassign_onedrive' => 300,
+        'cipp_stage_reassign_onedrive' => 300,
         'cipp_reset_user_password' => 300,
     ];
 
@@ -114,6 +121,9 @@ class StaffCippWriteToolExecutor
 
     /** @var array<int, string> */
     private const DELEGATE_OPERATIONS = ['grant', 'remove'];
+
+    /** @var array<int, string> */
+    private const WIPE_ACTIONS = ['wipe', 'retire'];
 
     private const ROLE_TEMPLATE_ID_PATTERN = '/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i';
 
@@ -184,6 +194,21 @@ class StaffCippWriteToolExecutor
         'roleName',
         'Users',
         'users',
+        'GUID',
+        'guid',
+        'Action',
+        'action',
+        'device_id',
+        'm365_device_id',
+        'intune_device_id',
+        'UPN',
+        'upn',
+        'onedriveAccessUser',
+        'OnedriveAccessUser',
+        'onedrive_access_user',
+        'RemovePermission',
+        'removePermission',
+        'URL',
         'StartTime',
         'EndTime',
         'target_upn',
@@ -254,6 +279,10 @@ class StaffCippWriteToolExecutor
             self::stageReleaseQuarantineMessageTool(),
             self::addTenantAllowEntryTool(),
             self::stageAddTenantAllowEntryTool(),
+            self::wipeDeviceTool(),
+            self::stageWipeDeviceTool(),
+            self::reassignOneDriveTool(),
+            self::stageReassignOneDriveTool(),
             self::resetUserPasswordTool(),
         ];
     }
@@ -356,6 +385,23 @@ class StaffCippWriteToolExecutor
                 return new TechnicianApprovalResult('gate_declined');
             }
 
+            // A re-fired approval of an already-executed device wipe/retire is a
+            // LOGGED NO-OP, never a second upstream action (bead psa-zjpd). Keyed
+            // on the device identity rather than the content hash so a duplicate
+            // staged from a different ticket can never double-wipe. Checked before
+            // the cooldown so the duplicate leaves the queue terminally (Done)
+            // instead of bouncing back as a declined-but-still-live proposal.
+            if ($directTool === 'cipp_wipe_device' && is_array($mailbox)) {
+                $stagedDeviceId = (string) ($mailbox['staged_device_id'] ?? '');
+                $wipeAction = (string) ($mailbox['wipe_action'] ?? '');
+                if ($stagedDeviceId !== '' && $wipeAction !== '' && $this->deviceWipeAlreadyExecuted($client->id, $stagedDeviceId, $wipeAction)) {
+                    $this->auditAttempt($run->action_type, 'blocked', $client->id, $ticket, $person, $license, $run->content_hash, "Duplicate device action suppressed: device {$stagedDeviceId} ({$wipeAction}) already executed within ".self::DIRECT_DEDUP_HOURS.'h; the approval was treated as a logged no-op.', $this->approverLabel($approverId), $run->id, $approverId);
+                    $run->advanceTo(TechnicianRunState::Done);
+
+                    return new TechnicianApprovalResult('already_handled');
+                }
+            }
+
             if ($this->cooldownActive($directTool, $client->id, $person, $license, self::COOLDOWNS[$directTool] ?? 300)) {
                 $this->auditAttempt($run->action_type, 'blocked', $client->id, $ticket, $person, $license, $run->content_hash, 'CIPP staged action cooldown active; approval refused before upstream call.', $this->approverLabel($approverId), $run->id, $approverId);
                 $run->releaseClaim();
@@ -372,7 +418,7 @@ class StaffCippWriteToolExecutor
                 return new TechnicianApprovalResult('gate_declined');
             }
 
-            $this->auditAttempt($run->action_type, 'executed', $client->id, $ticket, $person, $license, $run->content_hash, "Operator-approved {$run->action_type} executed.", $this->approverLabel($approverId), $run->id, $approverId);
+            $this->auditAttempt($run->action_type, 'executed', $client->id, $ticket, $person, $license, $run->content_hash, "Operator-approved {$run->action_type} executed.".$this->executedAuditSuffix($directTool, $mailbox), $this->approverLabel($approverId), $run->id, $approverId);
             $run->advanceTo(TechnicianRunState::Done);
 
             return new TechnicianApprovalResult('executed');
@@ -1495,8 +1541,50 @@ class StaffCippWriteToolExecutor
                 (bool) ($mailbox['auto_map'] ?? true),
             ),
             'cipp_remove_directory_role' => $this->executeDirectoryRoleRemoval($tenant, $person, $mailbox ?? []),
+            'cipp_wipe_device' => $this->executeDeviceWipe($tenant, $mailbox ?? []),
+            'cipp_reassign_onedrive' => $this->client->reassignOneDriveOwnership(
+                $tenant,
+                $person->userPrincipalName,
+                ($mailbox['successor_person'] ?? null) instanceof ResolvedCippPerson ? $mailbox['successor_person']->userPrincipalName : '',
+            ),
             default => throw new \InvalidArgumentException("Unsupported CIPP write tool {$tool}"),
         };
+    }
+
+    /**
+     * Execute an approved Intune device wipe/retire. The staged payload carries
+     * only safe local scalars (PSA asset id, the action, the server-derived
+     * device id snapshot), so the asset is re-resolved fresh here — then the
+     * device identity is re-verified against the staged snapshot AND against
+     * the operator's typed confirm_device_id before the single device action is
+     * sent. Every guard fails closed as a CippClientException: the approval is
+     * declined and audited, and nothing upstream is changed.
+     */
+    private function executeDeviceWipe(string $tenant, array $params): void
+    {
+        $clientId = (int) ($params['client_id'] ?? 0);
+        $stagedDeviceId = mb_strtolower(trim((string) ($params['staged_device_id'] ?? '')));
+        $action = (string) ($params['wipe_action'] ?? '');
+        if ($clientId <= 0 || $stagedDeviceId === '' || $action === '') {
+            throw new CippClientException('Device action payload is incomplete; nothing was sent to the device.');
+        }
+
+        try {
+            $device = $this->resolver->resolveIntuneAsset($clientId, $params['asset_id'] ?? null);
+        } catch (CippWriteScopeException $e) {
+            throw new CippClientException($e->getMessage());
+        }
+
+        if (strcasecmp($device->deviceId, $stagedDeviceId) !== 0) {
+            throw new CippClientException('The asset\'s Intune device id changed after this action was staged; approval refused. Re-stage against the current device.');
+        }
+
+        $typed = trim((string) ($params['confirm_device_id'] ?? ''));
+        if ($typed === '' || strcasecmp($typed, $device->deviceId) !== 0) {
+            throw new CippClientException('The typed confirm_device_id does not match the target device; the action was refused.');
+        }
+
+        $this->client->wipeDevice($tenant, $device->deviceId, $action);
     }
 
     /**
@@ -1585,8 +1673,89 @@ class StaffCippWriteToolExecutor
             'cipp_set_mailbox_out_of_office' => $this->mailboxOutOfOfficeParams($arguments, $approvalInputs, $isHeld, $heldApproval),
             'cipp_set_mailbox_delegate' => $this->mailboxDelegateParams($clientId, $arguments),
             'cipp_remove_directory_role' => $this->directoryRoleParams($arguments, $isHeld),
+            'cipp_wipe_device' => $this->deviceWipeParams($clientId, $arguments, $approvalInputs, $isHeld, $heldApproval),
+            'cipp_reassign_onedrive' => $this->oneDriveReassignParams($clientId, $arguments, $isHeld),
             default => null,
         };
+    }
+
+    /**
+     * Resolve device-wipe params on the initial call and the held approval
+     * replay. STRUCTURALLY HELD-ONLY (directory-role precedent): an Intune
+     * wipe/retire is never directly executable, whatever mode the token was
+     * granted — the non-held path throws before any state is touched. The
+     * caller identifies the device by PSA asset_id plus a typed
+     * confirm_hostname (verified against the resolved asset); the server
+     * derives the Intune device id and stores it as a lowercase snapshot so
+     * approval can detect identity drift. At approval the operator's typed
+     * confirm_device_id rides along for executeDeviceWipe() to verify against
+     * the freshly re-resolved device.
+     *
+     * @return array<string, mixed>
+     */
+    private function deviceWipeParams(int $clientId, array $arguments, array $approvalInputs, bool $isHeld, bool $heldApproval): array
+    {
+        if (! $isHeld) {
+            throw new CippWriteScopeException('Device wipe is held-only; call cipp_wipe_device with staged=true and a ticket_id for cockpit approval.');
+        }
+
+        $action = $this->canonicalChoice($this->requiredString($arguments, 'wipe_action'), self::WIPE_ACTIONS, 'wipe_action');
+
+        if ($heldApproval) {
+            return [
+                'client_id' => $clientId,
+                'asset_id' => (int) ($arguments['asset_id'] ?? 0),
+                'wipe_action' => $action,
+                'staged_device_id' => mb_strtolower(trim((string) ($arguments['staged_device_id'] ?? ''))),
+                'confirm_device_id' => trim((string) ($approvalInputs['confirm_device_id'] ?? '')),
+            ];
+        }
+
+        $device = $this->resolver->resolveIntuneAsset($clientId, $arguments['asset_id'] ?? null);
+
+        $typedHostname = $this->requiredString($arguments, 'confirm_hostname');
+        if ($typedHostname === null || strcasecmp($typedHostname, $device->hostname) !== 0) {
+            throw new CippWriteScopeException('The typed confirm_hostname does not match the resolved asset hostname. Device wipe cancelled.');
+        }
+
+        return [
+            'asset_id' => $device->asset->id,
+            'wipe_action' => $action,
+            'staged_device_id' => $device->deviceId,
+            'device' => $device,
+        ];
+    }
+
+    /**
+     * Resolve OneDrive-reassignment params on the initial call and the held
+     * approval replay. STRUCTURALLY HELD-ONLY: granting a successor owner
+     * access to an entire OneDrive is a data-exposure write that always goes
+     * through the cockpit. The successor is a second PSA person in the same
+     * client (server-derived UPN, never caller-supplied); every stored value
+     * is a safe local scalar, and the replay re-resolves the successor fresh.
+     *
+     * @return array<string, mixed>
+     */
+    private function oneDriveReassignParams(int $clientId, array $arguments, bool $isHeld): array
+    {
+        if (! $isHeld) {
+            throw new CippWriteScopeException('OneDrive ownership reassignment is held-only; call cipp_reassign_onedrive with staged=true and a ticket_id for cockpit approval.');
+        }
+
+        $successor = $this->resolver->resolveCippPerson($clientId, $arguments['successor_person_id'] ?? null);
+
+        // A self-handover is meaningless for offboarding and would only muddy
+        // the held proposal. person_id is present on the initial call, so this
+        // rejects before staging; the held-approval replay carries no person_id
+        // and never sees one.
+        if (array_key_exists('person_id', $arguments) && (int) $arguments['person_id'] === (int) $successor->person->id) {
+            throw new CippWriteScopeException('The successor must be a different person than the OneDrive owner.');
+        }
+
+        return [
+            'successor_person_id' => $successor->person->id,
+            'successor_person' => $successor,
+        ];
     }
 
     /**
@@ -1941,6 +2110,42 @@ class StaffCippWriteToolExecutor
     }
 
     /**
+     * Whether this exact DEVICE + action already executed recently — the
+     * double-wipe rail (bead psa-zjpd). Keyed on the device identity embedded
+     * in the executed audit summary (see executedAuditSuffix), NOT the content
+     * hash, so duplicates staged from other tickets are caught too. The device
+     * id is a validated GUID and the action a closed enum, so neither can
+     * carry LIKE wildcards.
+     */
+    private function deviceWipeAlreadyExecuted(int $clientId, string $deviceId, string $action): bool
+    {
+        return TechnicianActionLog::query()
+            ->whereIn('action_type', ['cipp_wipe_device', 'cipp_stage_wipe_device'])
+            ->where('client_id', $clientId)
+            ->where('result_status', 'executed')
+            ->where('created_at', '>=', now()->subHours(self::DIRECT_DEDUP_HOURS))
+            ->where('summary', 'like', '%device '.$deviceId.' ('.$action.')%')
+            ->exists();
+    }
+
+    /**
+     * Per-tool detail appended to the approve-path "executed" audit summary.
+     * For device actions this embeds the id-only device identity + action that
+     * deviceWipeAlreadyExecuted() keys the double-wipe rail on.
+     */
+    private function executedAuditSuffix(string $directTool, ?array $params): string
+    {
+        if ($directTool === 'cipp_wipe_device' && is_array($params)) {
+            $deviceId = (string) ($params['staged_device_id'] ?? '');
+            $action = (string) ($params['wipe_action'] ?? '');
+
+            return ' device '.($deviceId !== '' ? $deviceId : 'unknown').' ('.($action !== '' ? $action : 'unknown').').';
+        }
+
+        return '';
+    }
+
+    /**
      * The single source of truth for "is there a live staged run awaiting approval right
      * now" — the runs table, NEVER the (immutable) audit log (bd psa-k4s0 Root B).
      */
@@ -2066,6 +2271,10 @@ class StaffCippWriteToolExecutor
             'delegate_person_id',
             'role_template_id',
             'role_name',
+            'asset_id',
+            'wipe_action',
+            'staged_device_id',
+            'successor_person_id',
         ] as $key) {
             if (array_key_exists($key, $mailbox)) {
                 $safe[$key] = $mailbox[$key];
@@ -2086,6 +2295,12 @@ class StaffCippWriteToolExecutor
         if ($directTool === 'cipp_set_mailbox_out_of_office' && in_array($safeParams['state'] ?? null, ['Enabled', 'Scheduled'], true)) {
             $inputs[] = 'internal_message';
             $inputs[] = 'external_message';
+        }
+
+        // The approver must re-type the exact Intune device id before a wipe or
+        // retire executes — the strictest confirm friction on the surface.
+        if ($directTool === 'cipp_wipe_device') {
+            $inputs[] = 'confirm_device_id';
         }
 
         return $inputs;
@@ -2124,7 +2339,7 @@ class StaffCippWriteToolExecutor
         foreach (self::UPSTREAM_IDENTIFIER_KEYS as $key) {
             unset($safe[$key]);
         }
-        unset($safe['confirm_upn'], $safe['reason']);
+        unset($safe['confirm_upn'], $safe['confirm_hostname'], $safe['confirm_device_id'], $safe['reason']);
 
         return $safe;
     }
@@ -2179,8 +2394,46 @@ class StaffCippWriteToolExecutor
             'cipp_set_mailbox_out_of_office' => $this->mailboxOutOfOfficeDisplay($person, $mailbox ?? []),
             'cipp_set_mailbox_delegate' => $this->mailboxDelegateDisplay($person, $mailbox ?? []),
             'cipp_remove_directory_role' => $this->directoryRoleDisplay($person, $mailbox ?? []),
+            'cipp_wipe_device' => $this->deviceWipeDisplay($person, $mailbox ?? []),
+            'cipp_reassign_onedrive' => $this->oneDriveReassignDisplay($person, $mailbox ?? []),
             default => $directTool.' for PSA person #'.$person->person->id.'.',
         };
+    }
+
+    private function deviceWipeDisplay(ResolvedCippPerson $person, array $params): string
+    {
+        // The blast radius must be unmistakable in the queue: the exact device
+        // (hostname + Intune id + PSA asset id), the action, and what it
+        // destroys. Only the display carries the hostname — the stored payload
+        // and audit summaries stay id-only.
+        $device = ($params['device'] ?? null) instanceof ResolvedIntuneDevice ? $params['device'] : null;
+        $hostname = $device?->hostname ?? 'unknown';
+        $deviceId = $device?->deviceId ?? (string) ($params['staged_device_id'] ?? 'unknown');
+        $action = (string) ($params['wipe_action'] ?? 'unknown');
+
+        $consequence = $action === 'retire'
+            ? 'Retire removes company data and unenrolls the device from Intune; personal data is kept.'
+            : 'Wipe FACTORY-RESETS the device and permanently destroys local data.';
+
+        return 'IRREVERSIBLE DEVICE '.mb_strtoupper($action).': target device hostname "'.$hostname.'" — Intune device id '.$deviceId
+            .' (PSA asset #'.($params['asset_id'] ?? 'unknown').'), user '.$person->userPrincipalName.' (PSA person #'.$person->person->id.'). '
+            .$consequence
+            .' Held-only: approval re-verifies the device identity, and the approver must type the exact Intune device id to execute. A completed action is never re-issued.';
+    }
+
+    private function oneDriveReassignDisplay(ResolvedCippPerson $person, array $params): string
+    {
+        // A OneDrive handover is a two-party decision: the approver must see WHO
+        // gains owner access to WHOSE OneDrive without leaving the queue. Name
+        // both parties by UPN plus PSA id; only the display carries the UPNs.
+        $successor = ($params['successor_person'] ?? null) instanceof ResolvedCippPerson ? $params['successor_person'] : null;
+        $successorLabel = $successor !== null
+            ? $successor->userPrincipalName.' (PSA person #'.$successor->person->id.')'
+            : 'PSA successor person #'.($params['successor_person_id'] ?? 'unknown');
+
+        return 'Reassign OneDrive ownership: grant successor '.$successorLabel.' owner (site admin) access to the entire OneDrive of '
+            .$person->userPrincipalName.' (PSA person #'.$person->person->id.').'
+            .' Held-only: approval re-resolves both identities before execution. The offboarded user\'s own access is not modified by this action.';
     }
 
     private function directoryRoleDisplay(ResolvedCippPerson $person, array $params): string
@@ -2442,6 +2695,37 @@ class StaffCippWriteToolExecutor
             'role_name' => [
                 'type' => 'string',
                 'description' => 'Typed role display name confirmation (e.g. "Exchange Administrator"). Verified case-insensitively against the resolved role\'s display name at execution; a mismatch refuses the removal.',
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private static function deviceWipeProperties(): array
+    {
+        return [
+            'asset_id' => [
+                'type' => 'integer',
+                'description' => 'PSA asset ID of the target device. The server verifies it belongs to client_id and derives the Intune (M365) managedDevice id from the synced asset record; upstream device GUIDs are never accepted from the caller.',
+            ],
+            'wipe_action' => [
+                'type' => 'string',
+                'enum' => self::WIPE_ACTIONS,
+                'description' => 'wipe FACTORY-RESETS the device and destroys local data (keepUserData/keepEnrollmentData pinned false); retire removes company data and unenrolls the device from Intune, keeping personal data.',
+            ],
+            'confirm_hostname' => [
+                'type' => 'string',
+                'description' => 'Typed hostname confirmation for defense-in-depth (read it from the PSA asset record). Verified case-insensitively against the resolved asset hostname; a mismatch cancels the call.',
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private static function successorProperties(): array
+    {
+        return [
+            'successor_person_id' => [
+                'type' => 'integer',
+                'description' => 'PSA person ID of the successor who receives owner access to the offboarded user\'s OneDrive. The server verifies it belongs to client_id and derives the successor UPN; it must be a different person than person_id.',
             ],
         ];
     }
@@ -2821,6 +3105,17 @@ class StaffCippWriteToolExecutor
     }
 
     /** @return array<string, mixed> */
+    private static function wipeDeviceTool(): array
+    {
+        return self::tool(
+            'cipp_wipe_device',
+            'Issue an IRREVERSIBLE Intune device wipe (factory reset — destroys local data) or retire (removes company data and unenrolls) for one server-derived managed device — the destructive execute half of offboarding. HELD-ONLY: this capability never executes immediately, whatever mode was granted — every call must use staged=true with a ticket_id and is held for cockpit approval, where the approver must type the exact Intune device id; staged=false calls are refused. Identify the device by PSA asset_id plus a typed confirm_hostname; the server derives the Intune device id from the synced asset and re-verifies it at approval. A completed action is never re-issued: a re-fired approval is a logged no-op. confirm_upn is the device user\'s UPN (person_id). Requires an explicit token grant, reason, kill-switch, cooldown, and TechnicianActionLog audit.',
+            array_merge(self::personProperties(), self::deviceWipeProperties()),
+            ['person_id', 'asset_id', 'wipe_action', 'confirm_hostname', 'confirm_upn', 'reason'],
+        );
+    }
+
+    /** @return array<string, mixed> */
     private static function addTenantAllowEntryTool(): array
     {
         return self::tool(
@@ -2832,6 +3127,17 @@ class StaffCippWriteToolExecutor
     }
 
     /** @return array<string, mixed> */
+    private static function stageWipeDeviceTool(): array
+    {
+        return self::tool(
+            'cipp_stage_wipe_device',
+            'Stage an IRREVERSIBLE Intune device wipe (factory reset — destroys local data) or retire (removes company data and unenrolls) for cockpit approval — the destructive execute half of offboarding. The MCP call makes no CIPP upstream call; the held payload stores only local PSA identifiers plus the server-derived device id snapshot, and approval re-resolves the asset, re-verifies the device identity, and requires the operator to TYPE the exact Intune device id before the single device action is sent. A completed action is never re-issued: a re-fired approval is a logged no-op. This capability is held-only — there is no immediate execution path. confirm_upn is the device user\'s UPN (person_id); confirm_hostname is the typed asset hostname.',
+            array_merge(self::personProperties(ticket: true), self::deviceWipeProperties()),
+            ['person_id', 'asset_id', 'wipe_action', 'confirm_hostname', 'ticket_id', 'confirm_upn', 'reason'],
+        );
+    }
+
+    /** @return array<string, mixed> */
     private static function stageAddTenantAllowEntryTool(): array
     {
         return self::tool(
@@ -2839,6 +3145,28 @@ class StaffCippWriteToolExecutor
             'Stage a tenant allow-list entry for cockpit approval. The MCP call makes no CIPP upstream call; the validated entry is stored encrypted and shown VERBATIM to the approver (an allow entry must be reviewed as-is), and approval revalidates client, ticket, tenant, and the entry value before execution. Allow entries bypass spam/phish filtering tenant-wide; expiry is pinned to 45 days after last use.',
             array_merge(self::allowEntryProperties(), self::emailSecurityCommonProperties(ticketRequired: true)),
             ['list_type', 'entry', 'confirm_entry', 'ticket_id', 'reason'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function reassignOneDriveTool(): array
+    {
+        return self::tool(
+            'cipp_reassign_onedrive',
+            'Reassign OneDrive ownership for one server-derived offboarded user: grant one server-derived successor (successor_person_id, a different person in the same client) owner/site-admin access to the user\'s entire OneDrive through CIPP — the data-handover half of offboarding. HELD-ONLY: this capability never executes immediately, whatever mode was granted — every call must use staged=true with a ticket_id and is held for cockpit approval; staged=false calls are refused. Exposes the entire OneDrive contents to the successor, so it is a sensitive data-exposure write. confirm_upn is the OneDrive OWNER\'s UPN (person_id). Requires an explicit token grant, reason, kill-switch, cooldown, and TechnicianActionLog audit.',
+            array_merge(self::personProperties(), self::successorProperties()),
+            ['person_id', 'successor_person_id', 'confirm_upn', 'reason'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function stageReassignOneDriveTool(): array
+    {
+        return self::tool(
+            'cipp_stage_reassign_onedrive',
+            'Stage a OneDrive ownership reassignment for cockpit approval: grant one server-derived successor owner/site-admin access to the offboarded user\'s entire OneDrive (data handover; exposes all OneDrive contents). The MCP call makes no CIPP upstream call; the held payload stores only local PSA identifiers, and approval re-resolves both identities before CIPP execution. This capability is held-only — there is no immediate execution path. confirm_upn is the OneDrive OWNER\'s UPN (person_id); successor_person_id is a different person in the same client.',
+            array_merge(self::personProperties(ticket: true), self::successorProperties()),
+            ['person_id', 'successor_person_id', 'ticket_id', 'confirm_upn', 'reason'],
         );
     }
 

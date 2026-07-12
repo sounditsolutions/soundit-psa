@@ -45,6 +45,8 @@
             'cipp_stage_remove_directory_role' => ['bg-danger text-white', 'CIPP directory role removal', 'bi-person-x'],
             'cipp_stage_release_quarantine_message' => ['bg-danger text-white', 'CIPP quarantine release', 'bi-envelope-check'],
             'cipp_stage_add_tenant_allow_entry' => ['bg-danger text-white', 'CIPP tenant allow-list', 'bi-shield-plus'],
+            'cipp_stage_wipe_device' => ['bg-danger text-white', 'CIPP device wipe', 'bi-device-hdd'],
+            'cipp_stage_reassign_onedrive' => ['bg-danger text-white', 'CIPP OneDrive handover', 'bi-cloud-arrow-up'],
             default => ['bg-primary-subtle text-primary-emphasis border border-primary-subtle', 'Reply', 'bi-send'],
         };
     };
@@ -344,6 +346,10 @@
                         @if(in_array('external_message', $cippInputs, true))
                             <label class="form-label small text-muted mb-1" for="external-message-{{ $run->id }}">External auto-reply message</label>
                             <textarea class="form-control mb-2" id="external-message-{{ $run->id }}" name="external_message" rows="3" maxlength="2000" form="approve-{{ $run->id }}" required></textarea>
+                        @endif
+                        @if(in_array('confirm_device_id', $cippInputs, true))
+                            <label class="form-label small text-danger-emphasis fw-semibold mb-1" for="confirm-device-id-{{ $run->id }}">Type the exact Intune device ID from the readout to confirm this device action</label>
+                            <input class="form-control mb-2" id="confirm-device-id-{{ $run->id }}" name="confirm_device_id" type="text" maxlength="64" form="approve-{{ $run->id }}" required autocomplete="off" spellcheck="false" placeholder="00000000-0000-0000-0000-000000000000">
                         @endif
 
                         @if($confidenceLabel($run))

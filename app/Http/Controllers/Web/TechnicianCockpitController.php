@@ -86,7 +86,9 @@ class TechnicianCockpitController extends Controller
             'cipp_stage_set_mailbox_delegate',
             'cipp_stage_remove_directory_role',
             'cipp_stage_release_quarantine_message',
-            'cipp_stage_add_tenant_allow_entry' => $service->approveStagedCippWriteAction(
+            'cipp_stage_add_tenant_allow_entry',
+            'cipp_stage_wipe_device',
+            'cipp_stage_reassign_onedrive' => $service->approveStagedCippWriteAction(
                 $run,
                 (int) auth()->id(),
                 $this->cippApprovalInputs($request, $run),
@@ -364,6 +366,10 @@ class TechnicianCockpitController extends Controller
 
         if (in_array('external_message', $inputs, true)) {
             $rules['external_message'] = ['required', 'string', 'max:2000'];
+        }
+
+        if (in_array('confirm_device_id', $inputs, true)) {
+            $rules['confirm_device_id'] = ['required', 'string', 'max:64'];
         }
 
         return $rules === [] ? [] : $request->validate($rules);
