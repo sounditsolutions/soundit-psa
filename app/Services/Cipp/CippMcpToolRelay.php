@@ -70,9 +70,12 @@ class CippMcpToolRelay
         'primarySmtpAddress' => ['primarySmtpAddress', 'PrimarySmtpAddress', 'mail', 'Mail'],
         'mailboxSizeBytes' => ['mailboxSizeBytes', 'MailboxSizeBytes', 'totalItemSizeBytes', 'TotalItemSizeBytes'],
         'itemCount' => ['itemCount', 'ItemCount', 'mailboxItemCount', 'MailboxItemCount'],
-        // CIPP camelCases the Exchange LitigationHoldEnabled property; the
-        // Graph/Exchange source can surface it PascalCased, so resolve both.
-        'litigationHoldEnabled' => ['litigationHoldEnabled', 'LitigationHoldEnabled', 'litigationHold', 'LitigationHold'],
+        // CIPP surfaces Exchange Get-Mailbox properties PascalCase-first — see
+        // CippContactEnrichmentService::enrichMailboxData(), which reads
+        // ForwardingSmtpAddress / ItemCount / etc. PascalCase off the same
+        // ListMailboxes payload — so resolve PascalCase first and keep the
+        // camelCase variants as a defensive fallback.
+        'litigationHoldEnabled' => ['LitigationHoldEnabled', 'litigationHoldEnabled', 'LitigationHold', 'litigationHold'],
         'skuPartNumber' => ['skuPartNumber', 'SkuPartNumber', 'sku', 'SKU'],
         'totalLicenses' => ['totalLicenses', 'TotalLicenses', 'prepaidUnitsEnabled'],
         'consumedLicenses' => ['consumedLicenses', 'ConsumedLicenses', 'consumedUnits'],

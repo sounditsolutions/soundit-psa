@@ -95,4 +95,19 @@ class CippMcpToolRelayTest extends TestCase
         $this->assertCount(1, $result);
         $this->assertTrue($result[0]['litigationHoldEnabled']);
     }
+
+    public function test_mailboxes_projection_keeps_litigation_hold_when_false(): void
+    {
+        // "Hold explicitly off" is a meaningful compliance signal, so a false
+        // value must project — the projection guard is strict `=== null`, not
+        // `empty()`, so false is kept rather than silently dropped.
+        $result = $this->relay([[
+            'userPrincipalName' => 'user@acme.example',
+            'LitigationHoldEnabled' => false,
+        ]])->execute('cipp_list_mailboxes', [], new Client(['cipp_tenant_domain' => 'acme.example']), null);
+
+        $this->assertCount(1, $result);
+        $this->assertArrayHasKey('litigationHoldEnabled', $result[0]);
+        $this->assertFalse($result[0]['litigationHoldEnabled']);
+    }
 }
