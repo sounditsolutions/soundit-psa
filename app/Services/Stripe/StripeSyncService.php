@@ -198,6 +198,27 @@ class StripeSyncService
             throw $e;
         }
 
+        $stripeStatus = $stripeInvoice['status'] ?? '';
+
+        // Detect a Stripe-side void before updating totals, mirroring the QBO
+        // void-detect block. Stripe retains the original amounts on voided /
+        // uncollectible invoices, so routing through the void service snapshots
+        // them into pre_void_* and zeroes the reportable money fields instead
+        // of copying the retained tax/total back. The "PSA wins for void"
+        // early-return above means this fires once.
+        if (in_array($stripeStatus, ['void', 'uncollectible'], true)) {
+            Log::info('[StripeSync] Void detected for invoice #'.$invoice->invoice_number, [
+                'invoice_id' => $invoice->id,
+            ]);
+            app(InvoiceVoidService::class)->void($invoice);
+            $invoice->update([
+                'stripe_synced_at' => now(),
+                'stripe_sync_error' => null,
+            ]);
+
+            return;
+        }
+
         $updates = [
             'tax' => $this->centsToDollars($stripeInvoice['tax'] ?? $this->dollarsToCents($invoice->tax)),
             'total' => $this->centsToDollars($stripeInvoice['total'] ?? $this->dollarsToCents($invoice->total)),
@@ -206,7 +227,6 @@ class StripeSyncService
         ];
 
         // Map Stripe status → PSA status
-        $stripeStatus = $stripeInvoice['status'] ?? '';
         if ($stripeStatus === 'paid' && $invoice->status !== InvoiceStatus::Paid) {
             $updates['status'] = InvoiceStatus::Paid;
         }
