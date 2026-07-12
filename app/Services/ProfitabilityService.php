@@ -120,12 +120,14 @@ class ProfitabilityService
         $margin = $revenue - $cost;
         $marginPct = $revenue > 0 ? round(($margin / $revenue) * 100, 1) : null;
 
-        // Breakdown by contract
-        $byContract = Invoice::where('client_id', $client->id)
-            ->whereNull('deleted_at')
-            ->whereNotNull('contract_id')
-            ->when($from, fn ($q) => $q->where('invoice_date', '>=', $from))
-            ->when($to, fn ($q) => $q->where('invoice_date', '<=', $to))
+        // Breakdown by contract. This joins `contracts`, which also carries
+        // `client_id` and `deleted_at`, so every invoice column must be
+        // qualified or the filters are ambiguous (MariaDB 1052 / SQLite).
+        $byContract = Invoice::where('invoices.client_id', $client->id)
+            ->whereNull('invoices.deleted_at')
+            ->whereNotNull('invoices.contract_id')
+            ->when($from, fn ($q) => $q->where('invoices.invoice_date', '>=', $from))
+            ->when($to, fn ($q) => $q->where('invoices.invoice_date', '<=', $to))
             ->join('contracts', 'contracts.id', '=', 'invoices.contract_id')
             ->groupBy('invoices.contract_id', 'contracts.name')
             ->selectRaw('
