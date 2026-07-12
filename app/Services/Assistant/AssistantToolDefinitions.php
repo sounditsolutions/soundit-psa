@@ -96,13 +96,17 @@ class AssistantToolDefinitions
             ],
             [
                 'name' => 'list_open_tickets',
-                'description' => 'List all open tickets across the board, optionally filtered. Sorted by priority then age. Use for queue overview and workload questions.',
+                'description' => 'List all open tickets across the board, optionally filtered. Sorted by priority then age. Use for queue overview and workload questions. Pass updated_since to get a recently-modified feed (newest touch first) — the scalable way to find new client replies landing on existing open tickets.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
                         'assignee' => [
                             'type' => 'string',
                             'description' => 'Filter by assignee name (partial match). Omit for all.',
+                        ],
+                        'updated_since' => [
+                            'type' => 'string',
+                            'description' => 'Only tickets last modified at or after this ISO-8601 timestamp (e.g. 2026-07-12T08:00:00Z). Returns them newest-touch first, so you can poll for new replies/changes without re-fetching every ticket.',
                         ],
                         'priority' => [
                             'type' => 'string',
