@@ -765,7 +765,9 @@ document.addEventListener('alpine:init', function () {
                     }
                     item.classList.add('is-shaking');
                     setTimeout(() => item.classList.remove('is-shaking'), 320);
-                    this.addToast('error', "Couldn't execute. Nothing ran — try again.");
+                    // The server names the recoverable cause (typed-id mismatch,
+                    // cooldown, kill-switch, …) — show it, not a generic dead end.
+                    this.addToast('error', error.message || "Couldn't execute. Nothing ran — try again.");
                 }
             },
 

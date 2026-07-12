@@ -95,6 +95,24 @@ frontend (`KelvinTegelaar/CIPP` @ HEAD) for exact request bodies:
   from `asset_id`, successor from `successor_person_id`); the upstream body
   keys (`GUID`/`Action`/`UPN`/`onedriveAccessUser`/`RemovePermission`/`URL`
   and variants) are on the caller-supplied-identifier blocklist.
+- **Person↔device binding (deep-review fix, security):** the target asset must
+  be PROVEN to belong to `person_id` before a wipe/retire can stage — an
+  explicit `asset_person` link (manual or auto) or the asset's RMM last
+  logged-on user resolving to the same person
+  (`CippWriteScopeResolver::assertIntuneAssetBelongsToPerson()`), checked at
+  staging and re-proven fresh at approval inside `executeDeviceWipe()`. A
+  person/device mismatch is refused fail-closed, so person A's offboarding can
+  never carry person B's device into the approval queue under A's name.
+  `m365_device_owner_type` is company/personal only — it carries no identity
+  and cannot bind.
+- **Decline reasons reach the operator (deep-review fix, UX):** every
+  `approveStagedRun()` gate decline carries its specific recoverable reason
+  (typed-id mismatch, identity drift, lost mapping or link, kill-switch,
+  cooldown, upstream CIPP refusal) through
+  `TechnicianApprovalResult::$message` → the cockpit `gate_declined` JSON →
+  the error toast (`error.message` in the confirmed-submit path), instead of
+  the generic "Could not send" dead end. Reasons are redacted and bounded
+  exactly like the audit summaries.
 
 ## Files
 
@@ -102,17 +120,22 @@ frontend (`KelvinTegelaar/CIPP` @ HEAD) for exact request bodies:
   allowlist, pinned wipe options), `reassignOneDriveOwnership()` (Results
   verification, fail-closed).
 - `app/Services/Cipp/CippWriteScopeResolver.php` — `resolveIntuneAsset()`
-  (client scope, active, GUID-validated Intune mapping, hostname required);
+  (client scope, active, GUID-validated Intune mapping, hostname required) +
+  `assertIntuneAssetBelongsToPerson()` (person↔device binding proof);
   `app/Services/Cipp/ResolvedIntuneDevice.php` value object.
 - `app/Services/Mcp/StaffCippWriteToolExecutor.php` — staged map + cooldowns,
-  held-only params gates, approve-time device re-verification
-  (`executeDeviceWipe`), double-wipe no-op rail (`deviceWipeAlreadyExecuted` +
-  `executedAuditSuffix`), displays, definitions, identifier-blocklist
-  additions, `confirm_device_id` sensitive input.
+  held-only params gates, staging-time person↔device binding, approve-time
+  device re-verification + binding re-proof (`executeDeviceWipe`), double-wipe
+  no-op rail (`deviceWipeAlreadyExecuted` + `executedAuditSuffix`), specific
+  decline reasons on `gate_declined` results (`declined()`), displays,
+  definitions, identifier-blocklist additions, `confirm_device_id` sensitive
+  input.
 - `app/Http/Controllers/Web/TechnicianCockpitController.php` — approve
-  dispatch arms + `confirm_device_id` validation rule.
-- `resources/views/cockpit/index.blade.php` — approval-queue badges + the
-  typed device-id input on the approve form.
+  dispatch arms, `confirm_device_id` validation rule, `gate_declined`
+  responses surface the specific decline reason.
+- `resources/views/cockpit/index.blade.php` — approval-queue badges, the
+  typed device-id input on the approve form, and the confirmed-submit error
+  toast showing the server's decline reason.
 - Tests: `tests/Unit/Cipp/CippRestWriteClientTest.php` (source-pinned bodies,
   closed allowlist, Results fail-closed),
   `tests/Feature/Mcp/CippWriteOffboardingExecuteTest.php` (schema safety,

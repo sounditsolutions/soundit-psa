@@ -34,6 +34,13 @@ use Tests\TestCase;
  * approval; approval re-resolves the device and declines on identity drift;
  * and a re-fired approval of an already-executed wipe is a logged no-op —
  * never a second upstream wipe.
+ *
+ * Deep-review additions (psa-zjpd REVISE): the target asset must be PROVEN to
+ * belong to person_id — an asset_person link or a matching RMM last
+ * logged-on user — at staging AND re-proven fresh at approval, so person A's
+ * offboarding can never wipe person B's device while the readout names A. And
+ * every approval decline carries its specific recoverable reason through the
+ * cockpit JSON to the error toast instead of a generic dead end.
  */
 class CippWriteOffboardingExecuteTest extends TestCase
 {
@@ -140,6 +147,14 @@ class CippWriteOffboardingExecuteTest extends TestCase
             'hostname' => 'FIN-LT-042',
             'm365_device_id' => $deviceId,
             'is_active' => true,
+        ]);
+
+        // A device wipe requires the asset↔person pairing to be PROVEN, so the
+        // fixture records the offboarded user as the device's assigned user.
+        $asset->users()->attach($person->id, [
+            'is_primary' => true,
+            'assignment_source' => 'manual',
+            'last_seen_at' => now(),
         ]);
 
         $ticket = Ticket::factory()->for($client)->create([
@@ -422,6 +437,142 @@ class CippWriteOffboardingExecuteTest extends TestCase
                 'run_id' => $run->id,
             ]);
         }
+    }
+
+    public function test_wipe_staging_rejects_a_person_device_mismatch(): void
+    {
+        $this->configureCipp();
+        $this->configureAiActor();
+        $fixture = $this->cippFixture();
+        $token = $this->token(['cipp_stage_wipe_device']);
+        $this->blockedClient();
+
+        // The exact vector from the security review: pair person B's identity
+        // (the successor, with their own VALID confirm_upn) with person A's
+        // device. Without the binding proof the cockpit readout would name Sam
+        // while the approval wipes Alex's laptop.
+        $response = $this->callTool($token, 'cipp_stage_wipe_device', $this->wipeArguments($fixture, [
+            'person_id' => $fixture['successor']->id,
+            'confirm_upn' => $fixture['successor']->cipp_upn,
+        ]));
+
+        $response->assertOk();
+        $this->assertTrue((bool) $response->json('result.isError'));
+        $this->assertStringContainsString('not linked to this person', (string) $response->json('result.content.0.text'));
+        $this->assertDatabaseHas('technician_action_logs', [
+            'action_type' => 'cipp_stage_wipe_device',
+            'result_status' => 'rejected',
+            'client_id' => $fixture['client']->id,
+        ]);
+        $this->assertSame(0, TechnicianRun::count());
+    }
+
+    public function test_wipe_staging_accepts_the_rmm_last_logged_on_user_as_binding_proof(): void
+    {
+        $this->configureCipp();
+        $this->configureAiActor();
+        $fixture = $this->cippFixture();
+        $token = $this->token(['cipp_stage_wipe_device']);
+        $this->blockedClient();
+
+        // No asset_person link — the RMM-reported last logged-on user resolving
+        // to the same person is the accepted second proof of the pairing.
+        $byLastUser = Asset::factory()->for($fixture['client'])->create([
+            'hostname' => 'FIN-LT-043',
+            'm365_device_id' => 'dddddddd-eeee-4fff-8aaa-000000000002',
+            'is_active' => true,
+            'last_user' => 'ACME\\alex',
+        ]);
+
+        $response = $this->callTool($token, 'cipp_stage_wipe_device', $this->wipeArguments($fixture, [
+            'asset_id' => $byLastUser->id,
+            'confirm_hostname' => 'FIN-LT-043',
+        ]));
+
+        $response->assertOk();
+        $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
+        $run = TechnicianRun::findOrFail($this->decodedResult($response)['run_id']);
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->state);
+    }
+
+    public function test_wipe_approval_declines_when_the_person_device_link_is_lost(): void
+    {
+        $this->configureCipp();
+        $actor = $this->configureAiActor();
+        $fixture = $this->cippFixture();
+        $token = $this->token(['cipp_stage_wipe_device']);
+        $this->blockedClient();
+
+        $response = $this->callTool($token, 'cipp_stage_wipe_device', $this->wipeArguments($fixture));
+        $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
+        $run = TechnicianRun::findOrFail($this->decodedResult($response)['run_id']);
+
+        // The link that proved the pairing at staging is gone by approval time
+        // (and no RMM last-user matches): the fresh re-proof must fail closed
+        // even though the typed device id is exactly right.
+        $fixture['asset']->users()->detach();
+
+        $approveClient = Mockery::mock(CippRestWriteClient::class);
+        $approveClient->shouldNotReceive('wipeDevice');
+        $this->app->instance(CippRestWriteClient::class, $approveClient);
+
+        $declined = $this->actingAs($actor)->postJson(route('cockpit.approve', $run), [
+            'confirm_device_id' => self::DEVICE_ID,
+        ]);
+
+        $declined->assertOk();
+        $this->assertFalse((bool) $declined->json('ok'));
+        $this->assertSame('gate_declined', $declined->json('status'));
+        $this->assertStringContainsString('not linked to this person', (string) $declined->json('message'));
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
+        $this->assertDatabaseHas('technician_action_logs', [
+            'action_type' => 'cipp_stage_wipe_device',
+            'result_status' => 'error',
+            'run_id' => $run->id,
+        ]);
+    }
+
+    public function test_wipe_approval_decline_reports_the_specific_reason_to_the_cockpit(): void
+    {
+        $this->configureCipp();
+        $actor = $this->configureAiActor();
+        $fixture = $this->cippFixture();
+        $token = $this->token(['cipp_stage_wipe_device']);
+        $this->blockedClient();
+
+        $response = $this->callTool($token, 'cipp_stage_wipe_device', $this->wipeArguments($fixture));
+        $run = TechnicianRun::findOrFail($this->decodedResult($response)['run_id']);
+
+        $approveClient = Mockery::mock(CippRestWriteClient::class);
+        $approveClient->shouldNotReceive('wipeDevice');
+        $this->app->instance(CippRestWriteClient::class, $approveClient);
+
+        // A recoverable decline (typed device id mismatch) must reach the
+        // cockpit as its specific reason — not the generic "Could not send"
+        // dead end (psa-zjpd deep-review finding 2).
+        $mismatch = $this->actingAs($actor)->postJson(route('cockpit.approve', $run), [
+            'confirm_device_id' => 'ffffffff-0000-0000-0000-000000000000',
+        ]);
+        $mismatch->assertOk();
+        $this->assertFalse((bool) $mismatch->json('ok'));
+        $this->assertSame('gate_declined', $mismatch->json('status'));
+        $this->assertStringContainsString('confirm_device_id does not match', (string) $mismatch->json('message'));
+
+        // Inline gate declines carry their reason too (kill-switch here).
+        Setting::setValue('technician_kill_switch', '1');
+        $killed = $this->actingAs($actor)->postJson(route('cockpit.approve', $run), [
+            'confirm_device_id' => self::DEVICE_ID,
+        ]);
+        $this->assertSame('gate_declined', $killed->json('status'));
+        $this->assertStringContainsString('kill-switch', (string) $killed->json('message'));
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
+
+        // The cockpit confirmed-submit JS surfaces the payload message in the
+        // error toast — the last hop of the propagation chain.
+        Setting::setValue('technician_kill_switch', '0');
+        $this->actingAs($actor)
+            ->get(route('cockpit.index'))
+            ->assertSee('error.message || "Couldn\'t execute. Nothing ran — try again."', false);
     }
 
     public function test_wipe_approval_declines_while_kill_switch_is_engaged(): void

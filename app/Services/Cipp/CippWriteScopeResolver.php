@@ -128,6 +128,35 @@ class CippWriteScopeResolver
         return new ResolvedIntuneDevice($asset, $deviceId, $hostname);
     }
 
+    /**
+     * PROVE the resolved device belongs to the resolved person before a
+     * device-destructive CIPP write (psa-zjpd deep-review, security finding):
+     * without this, a staged request could pair person A's identity with
+     * person B's same-client device and the approval readout would name the
+     * wrong human over an irreversible wipe. Accepted proofs — either one
+     * suffices, checked at staging and re-proven fresh at approval:
+     *
+     *   - an explicit asset↔person link (asset_person pivot, manual or auto);
+     *   - the asset's RMM last logged-on user resolving to the same person.
+     *
+     * m365_device_owner_type carries no identity (company/personal only), so
+     * it can never bind. Fails closed on any gap.
+     */
+    public function assertIntuneAssetBelongsToPerson(ResolvedIntuneDevice $device, ResolvedCippPerson $person): void
+    {
+        $personId = (int) $person->person->id;
+
+        if ($device->asset->users()->where('person_id', $personId)->exists()) {
+            return;
+        }
+
+        if ((int) $device->asset->resolveLastUserPerson()?->id === $personId) {
+            return;
+        }
+
+        throw new CippWriteScopeException('This asset is not linked to this person in the PSA (no asset-user link and the last logged-on user does not match). Link the person to the asset — or correct the target — and re-stage the device action.');
+    }
+
     public function resolveTicketForHeldAction(int $clientId, mixed $ticketIdValue): Ticket
     {
         $ticketId = $this->positiveInteger($ticketIdValue);

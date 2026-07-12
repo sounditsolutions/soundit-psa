@@ -114,6 +114,10 @@ class TechnicianCockpitController extends Controller
             'queued_offline' => 'Device offline — queued to run automatically when it comes back online.',
             'already_handled' => 'That draft was already handled.',
             'recipient_invalid' => $result->message ?? 'One or more recipients are no longer valid — re-check the To/CC and try again.',
+            // psa-zjpd deep-review: a held destructive action can decline for a
+            // specific recoverable reason (typed-id mismatch, identity drift,
+            // lost mapping, kill-switch, cooldown) — surface it when provided.
+            'gate_declined' => $result->message ?? 'Could not send — the Technician declined (it may be paused). Try again.',
             default => 'Could not send — the Technician declined (it may be paused). Try again.',
         };
 
