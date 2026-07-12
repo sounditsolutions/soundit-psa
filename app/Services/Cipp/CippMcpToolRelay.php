@@ -34,7 +34,7 @@ class CippMcpToolRelay
 
     private const DEFAULT_FIELDS = [
         'cipp_list_users' => ['id', 'displayName', 'userPrincipalName', 'accountEnabled', 'jobTitle', 'department', 'assignedLicenses'],
-        'cipp_list_mailboxes' => ['id', 'displayName', 'userPrincipalName', 'primarySmtpAddress', 'recipientTypeDetails', 'mailboxSizeBytes', 'itemCount', 'forwardingSmtpAddress', 'deliverToMailboxAndForward'],
+        'cipp_list_mailboxes' => ['id', 'displayName', 'userPrincipalName', 'primarySmtpAddress', 'recipientTypeDetails', 'mailboxSizeBytes', 'itemCount', 'forwardingSmtpAddress', 'deliverToMailboxAndForward', 'litigationHoldEnabled'],
         'cipp_list_licenses' => ['skuId', 'skuPartNumber', 'totalLicenses', 'consumedLicenses', 'assignedLicenses', 'prepaidUnits', 'capabilityStatus'],
         'cipp_list_devices' => ['id', 'deviceName', 'displayName', 'userPrincipalName', 'operatingSystem', 'osVersion', 'complianceState', 'isCompliant', 'managementAgent', 'enrolledDateTime', 'lastSyncDateTime', 'serialNumber'],
         'cipp_list_groups' => ['id', 'displayName', 'mail', 'mailEnabled', 'securityEnabled', 'groupTypes', 'description'],
@@ -70,6 +70,9 @@ class CippMcpToolRelay
         'primarySmtpAddress' => ['primarySmtpAddress', 'PrimarySmtpAddress', 'mail', 'Mail'],
         'mailboxSizeBytes' => ['mailboxSizeBytes', 'MailboxSizeBytes', 'totalItemSizeBytes', 'TotalItemSizeBytes'],
         'itemCount' => ['itemCount', 'ItemCount', 'mailboxItemCount', 'MailboxItemCount'],
+        // CIPP camelCases the Exchange LitigationHoldEnabled property; the
+        // Graph/Exchange source can surface it PascalCased, so resolve both.
+        'litigationHoldEnabled' => ['litigationHoldEnabled', 'LitigationHoldEnabled', 'litigationHold', 'LitigationHold'],
         'skuPartNumber' => ['skuPartNumber', 'SkuPartNumber', 'sku', 'SKU'],
         'totalLicenses' => ['totalLicenses', 'TotalLicenses', 'prepaidUnitsEnabled'],
         'consumedLicenses' => ['consumedLicenses', 'ConsumedLicenses', 'consumedUnits'],

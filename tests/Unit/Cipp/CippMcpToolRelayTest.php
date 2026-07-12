@@ -64,4 +64,35 @@ class CippMcpToolRelayTest extends TestCase
 
         Log::shouldNotHaveReceived('warning');
     }
+
+    public function test_mailboxes_projection_includes_litigation_hold(): void
+    {
+        // psa-zgfs: litigation-hold status is a compliance signal Chet needs
+        // when triaging offboarding / eDiscovery / mailbox requests. CIPP's
+        // ListMailboxes surfaces it camelCased, like the sibling forwarding
+        // attributes already in the projection.
+        $result = $this->relay([[
+            'userPrincipalName' => 'user@acme.example',
+            'primarySmtpAddress' => 'user@acme.example',
+            'litigationHoldEnabled' => true,
+        ]])->execute('cipp_list_mailboxes', [], new Client(['cipp_tenant_domain' => 'acme.example']), null);
+
+        $this->assertCount(1, $result);
+        $this->assertTrue($result[0]['litigationHoldEnabled']);
+    }
+
+    public function test_mailboxes_projection_resolves_pascalcase_litigation_hold(): void
+    {
+        // Exchange/Graph may surface the property PascalCased
+        // (LitigationHoldEnabled); the field alias must resolve either casing
+        // so the tool never silently drops the hold status (psa-3twu class of
+        // shape-drift false-empties).
+        $result = $this->relay([[
+            'userPrincipalName' => 'user@acme.example',
+            'LitigationHoldEnabled' => true,
+        ]])->execute('cipp_list_mailboxes', [], new Client(['cipp_tenant_domain' => 'acme.example']), null);
+
+        $this->assertCount(1, $result);
+        $this->assertTrue($result[0]['litigationHoldEnabled']);
+    }
 }
