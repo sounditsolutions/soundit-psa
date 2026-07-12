@@ -48,6 +48,27 @@ class CippWriteScopeResolver
         return new ResolvedCippPerson($person, $userId, $upn);
     }
 
+    /**
+     * Resolve a person who RECEIVES access through a CIPP write (e.g. the
+     * OneDrive handover successor). Everything resolveCippPerson() enforces,
+     * plus the person must be active in the PSA: deactivated people routinely
+     * keep their CIPP mapping, and granting company data to a former employee
+     * is exactly the mistake this gate refuses (psa-zjpd deep re-review,
+     * architecture/product finding). The offboarded OWNER of an action stays
+     * on the looser resolver deliberately — being inactive mid-offboarding is
+     * expected for them.
+     */
+    public function resolveActiveCippPerson(int $clientId, mixed $personIdValue, string $roleLabel = 'person'): ResolvedCippPerson
+    {
+        $resolved = $this->resolveCippPerson($clientId, $personIdValue);
+
+        if (! $resolved->person->is_active) {
+            throw new CippWriteScopeException(ucfirst($roleLabel).' is inactive in the PSA; access can only be granted to an active person. Choose an active '.$roleLabel.' (or reactivate this person first) and re-stage.');
+        }
+
+        return $resolved;
+    }
+
     public function resolveCippLicense(int $clientId, mixed $licenseTypeIdValue): ResolvedCippLicense
     {
         $licenseTypeId = $this->positiveInteger($licenseTypeIdValue);
@@ -137,7 +158,8 @@ class CippWriteScopeResolver
      * suffices, checked at staging and re-proven fresh at approval:
      *
      *   - an explicit asset↔person link (asset_person pivot, manual or auto);
-     *   - the asset's RMM last logged-on user resolving to the same person.
+     *   - the asset's RMM last logged-on user UNIQUELY identifying the same
+     *     person (see rmmLastUserUniquelyIdentifies() for the strict rule).
      *
      * m365_device_owner_type carries no identity (company/personal only), so
      * it can never bind. Fails closed on any gap.
@@ -150,11 +172,79 @@ class CippWriteScopeResolver
             return;
         }
 
-        if ((int) $device->asset->resolveLastUserPerson()?->id === $personId) {
+        if ($this->rmmLastUserUniquelyIdentifies($device->asset, $person->person)) {
             return;
         }
 
-        throw new CippWriteScopeException('This asset is not linked to this person in the PSA (no asset-user link and the last logged-on user does not match). Link the person to the asset — or correct the target — and re-stage the device action.');
+        throw new CippWriteScopeException('This asset is not linked to this person in the PSA (no asset-user link, and the RMM last logged-on user does not uniquely identify them). Link the person to the asset — or correct the target — and re-stage the device action.');
+    }
+
+    /**
+     * Whether the asset's RMM-reported last logged-on user IDENTIFIES this
+     * person strictly enough to authorize a device-destructive write. The
+     * loose UI helper (Asset::resolveLastUserPerson()) prefix-matches the
+     * short username and takes the first hit — fine for a display suggestion,
+     * not for a wipe proof: with duplicate local parts across domains
+     * (alex@alpha…, alex@bravo…) first-match can "prove" the wrong person
+     * (psa-zjpd deep re-review, security finding). Here the rule is
+     * deterministic and fail-closed:
+     *
+     *   - DOMAIN\user prefixes are stripped (an AzureAD-joined device may
+     *     report AZUREAD\user@tenant, which keeps its address form);
+     *   - an address-form value (contains @) must EXACTLY equal a person's
+     *     cipp_upn or email, case-insensitively;
+     *   - a bare username must equal the local part of a person's cipp_upn
+     *     or email, case-insensitively;
+     *   - display names carry no account identity and prove nothing;
+     *   - the match must be UNIQUE across the client: if any other person
+     *     also matches, the signal is ambiguous and proves nothing — the
+     *     operator must link the asset to the person explicitly instead.
+     *
+     * The candidate pool deliberately includes inactive people: the person
+     * being offboarded is routinely already deactivated, and a duplicate
+     * that was deactivated yesterday still makes the signal ambiguous.
+     */
+    private function rmmLastUserUniquelyIdentifies(Asset $asset, Person $person): bool
+    {
+        $lastUser = trim((string) $asset->last_user);
+        if ($lastUser === '' || ! $asset->client_id) {
+            return false;
+        }
+
+        if (str_contains($lastUser, '\\')) {
+            $lastUser = trim(substr($lastUser, strrpos($lastUser, '\\') + 1));
+            if ($lastUser === '') {
+                return false;
+            }
+        }
+
+        $needle = mb_strtolower($lastUser);
+
+        $matchedIds = Person::query()
+            ->where('client_id', $asset->client_id)
+            ->where(fn ($query) => $query->whereNotNull('cipp_upn')->orWhereNotNull('email'))
+            ->get(['id', 'cipp_upn', 'email'])
+            ->filter(function (Person $candidate) use ($needle): bool {
+                foreach ([$candidate->cipp_upn, $candidate->email] as $address) {
+                    $address = mb_strtolower(trim((string) $address));
+                    if ($address === '') {
+                        continue;
+                    }
+
+                    $matched = str_contains($needle, '@')
+                        ? $address === $needle
+                        : str_starts_with($address, $needle.'@');
+                    if ($matched) {
+                        return true;
+                    }
+                }
+
+                return false;
+            })
+            ->pluck('id')
+            ->unique();
+
+        return $matchedIds->count() === 1 && (int) $matchedIds->first() === (int) $person->id;
     }
 
     public function resolveTicketForHeldAction(int $clientId, mixed $ticketIdValue): Ticket

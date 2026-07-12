@@ -41,6 +41,12 @@ use Tests\TestCase;
  * offboarding can never wipe person B's device while the readout names A. And
  * every approval decline carries its specific recoverable reason through the
  * cockpit JSON to the error toast instead of a generic dead end.
+ *
+ * Deep re-review round 2 (psa-zjpd.5–.7): the RMM last-user proof is strict —
+ * an exact UPN/email match, or a short username identifying exactly ONE
+ * same-client person; duplicate local parts and display names prove nothing.
+ * And the OneDrive successor must be ACTIVE at staging and at the approval
+ * replay; the offboarded OWNER may be inactive (expected mid-offboarding).
  */
 class CippWriteOffboardingExecuteTest extends TestCase
 {
@@ -495,6 +501,118 @@ class CippWriteOffboardingExecuteTest extends TestCase
         $this->assertSame(TechnicianRunState::AwaitingApproval, $run->state);
     }
 
+    public function test_wipe_staging_rejects_an_ambiguous_rmm_last_user_short_username(): void
+    {
+        $this->configureCipp();
+        $this->configureAiActor();
+        $fixture = $this->cippFixture();
+        $token = $this->token(['cipp_stage_wipe_device']);
+        $this->blockedClient();
+
+        // A second same-client person shares the local part "alex" on another
+        // domain. A short RMM username can no longer say WHICH alex the device
+        // belongs to — first-match acceptance was the re-review vector
+        // (psa-zjpd.5): an ambiguous signal must prove nothing, even though
+        // one of its candidates IS the offboarded person.
+        Person::create([
+            'client_id' => $fixture['client']->id,
+            'person_type' => PersonType::User,
+            'first_name' => 'Alexandra',
+            'last_name' => 'Branch',
+            'email' => 'alex@branch-office.example',
+            'cipp_user_id' => 'user-branch',
+            'cipp_upn' => 'alex@branch-office.example',
+            'is_active' => true,
+        ]);
+
+        $byLastUser = Asset::factory()->for($fixture['client'])->create([
+            'hostname' => 'FIN-LT-050',
+            'm365_device_id' => 'dddddddd-eeee-4fff-8aaa-000000000003',
+            'is_active' => true,
+            'last_user' => 'ACME\\alex',
+        ]);
+
+        $response = $this->callTool($token, 'cipp_stage_wipe_device', $this->wipeArguments($fixture, [
+            'asset_id' => $byLastUser->id,
+            'confirm_hostname' => 'FIN-LT-050',
+        ]));
+
+        $response->assertOk();
+        $this->assertTrue((bool) $response->json('result.isError'));
+        $this->assertStringContainsString('not linked to this person', (string) $response->json('result.content.0.text'));
+        $this->assertSame(0, TechnicianRun::count());
+    }
+
+    public function test_wipe_staging_accepts_an_exact_address_rmm_last_user_despite_duplicate_local_parts(): void
+    {
+        $this->configureCipp();
+        $this->configureAiActor();
+        $fixture = $this->cippFixture();
+        $token = $this->token(['cipp_stage_wipe_device']);
+        $this->blockedClient();
+
+        // Same duplicate-local-part client as the ambiguity test…
+        Person::create([
+            'client_id' => $fixture['client']->id,
+            'person_type' => PersonType::User,
+            'first_name' => 'Alexandra',
+            'last_name' => 'Branch',
+            'email' => 'alex@branch-office.example',
+            'cipp_user_id' => 'user-branch',
+            'cipp_upn' => 'alex@branch-office.example',
+            'is_active' => true,
+        ]);
+
+        // …but the RMM reports the full address (an AzureAD-joined device may
+        // keep the UPN behind its domain prefix). An exact cipp_upn/email
+        // match names exactly one account, so the proof stands.
+        $byLastUser = Asset::factory()->for($fixture['client'])->create([
+            'hostname' => 'FIN-LT-051',
+            'm365_device_id' => 'dddddddd-eeee-4fff-8aaa-000000000004',
+            'is_active' => true,
+            'last_user' => 'AzureAD\\alex@acme.example',
+        ]);
+
+        $response = $this->callTool($token, 'cipp_stage_wipe_device', $this->wipeArguments($fixture, [
+            'asset_id' => $byLastUser->id,
+            'confirm_hostname' => 'FIN-LT-051',
+        ]));
+
+        $response->assertOk();
+        $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
+        $run = TechnicianRun::findOrFail($this->decodedResult($response)['run_id']);
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->state);
+    }
+
+    public function test_wipe_staging_rejects_a_display_name_rmm_last_user(): void
+    {
+        $this->configureCipp();
+        $this->configureAiActor();
+        $fixture = $this->cippFixture();
+        $token = $this->token(['cipp_stage_wipe_device']);
+        $this->blockedClient();
+
+        // 'Alex Acme' matches the person's full display name — the loose UI
+        // resolver takes it as a suggestion, but a display name carries no
+        // account identity, so the wipe proof refuses it.
+        $byLastUser = Asset::factory()->for($fixture['client'])->create([
+            'hostname' => 'FIN-LT-052',
+            'm365_device_id' => 'dddddddd-eeee-4fff-8aaa-000000000005',
+            'is_active' => true,
+            'last_user' => 'Alex Acme',
+        ]);
+
+        $response = $this->callTool($token, 'cipp_stage_wipe_device', $this->wipeArguments($fixture, [
+            'asset_id' => $byLastUser->id,
+            'confirm_hostname' => 'FIN-LT-052',
+        ]));
+
+        $response->assertOk();
+        $this->assertTrue((bool) $response->json('result.isError'));
+        $this->assertStringContainsString('not linked to this person', (string) $response->json('result.content.0.text'));
+        $this->assertSame(0, TechnicianRun::count());
+    }
+
     public function test_wipe_approval_declines_when_the_person_device_link_is_lost(): void
     {
         $this->configureCipp();
@@ -776,6 +894,94 @@ class CippWriteOffboardingExecuteTest extends TestCase
         $this->assertStringContainsString('no CIPP user mapping', (string) $noMapping->json('result.content.0.text'));
 
         $this->assertSame(0, TechnicianRun::count());
+    }
+
+    public function test_onedrive_reassign_rejects_an_inactive_successor_at_staging(): void
+    {
+        $this->configureCipp();
+        $this->configureAiActor();
+        $fixture = $this->cippFixture();
+        $token = $this->token(['cipp_stage_reassign_onedrive']);
+        $this->blockedClient();
+
+        // The re-review finding (psa-zjpd.6/.7): a deactivated person keeps
+        // their CIPP mapping, but handing them the departed user's OneDrive
+        // is refused — the recipient of a data-exposure write must be active.
+        $fixture['successor']->update(['is_active' => false]);
+
+        $response = $this->callTool($token, 'cipp_stage_reassign_onedrive', $this->reassignArguments($fixture));
+
+        $response->assertOk();
+        $this->assertTrue((bool) $response->json('result.isError'));
+        $this->assertStringContainsString('Successor is inactive', (string) $response->json('result.content.0.text'));
+        $this->assertDatabaseHas('technician_action_logs', [
+            'action_type' => 'cipp_stage_reassign_onedrive',
+            'result_status' => 'rejected',
+            'client_id' => $fixture['client']->id,
+        ]);
+        $this->assertSame(0, TechnicianRun::count());
+    }
+
+    public function test_onedrive_reassign_approval_declines_when_the_successor_was_deactivated_after_staging(): void
+    {
+        $this->configureCipp();
+        $actor = $this->configureAiActor();
+        $fixture = $this->cippFixture();
+        $token = $this->token(['cipp_stage_reassign_onedrive']);
+        $this->blockedClient();
+
+        $response = $this->callTool($token, 'cipp_stage_reassign_onedrive', $this->reassignArguments($fixture));
+        $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
+        $run = TechnicianRun::findOrFail($this->decodedResult($response)['run_id']);
+
+        // The successor was offboarded too between staging and approval: the
+        // replay re-resolves them fresh and must fail closed with the specific
+        // reason — no data handed over, no generic dead end for the operator.
+        $fixture['successor']->update(['is_active' => false]);
+
+        $approveClient = Mockery::mock(CippRestWriteClient::class);
+        $approveClient->shouldNotReceive('reassignOneDriveOwnership');
+        $this->app->instance(CippRestWriteClient::class, $approveClient);
+
+        $declined = $this->actingAs($actor)->postJson(route('cockpit.approve', $run));
+
+        $declined->assertOk();
+        $this->assertFalse((bool) $declined->json('ok'));
+        $this->assertSame('gate_declined', $declined->json('status'));
+        $this->assertStringContainsString('Successor is inactive', (string) $declined->json('message'));
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
+    }
+
+    public function test_onedrive_reassign_still_executes_when_the_offboarded_owner_is_inactive(): void
+    {
+        $this->configureCipp();
+        $actor = $this->configureAiActor();
+        $fixture = $this->cippFixture();
+        $token = $this->token(['cipp_stage_reassign_onedrive']);
+        $this->blockedClient();
+
+        // Mid-offboarding the OWNER is often already deactivated (contact
+        // sync mirrors accountEnabled). Only the RECIPIENT must be active —
+        // the owner gate must not tighten, or offboarding handovers break
+        // exactly when they are needed.
+        $fixture['person']->update(['is_active' => false]);
+
+        $response = $this->callTool($token, 'cipp_stage_reassign_onedrive', $this->reassignArguments($fixture));
+        $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
+        $run = TechnicianRun::findOrFail($this->decodedResult($response)['run_id']);
+
+        $approveClient = Mockery::mock(CippRestWriteClient::class);
+        $approveClient->shouldReceive('reassignOneDriveOwnership')
+            ->once()
+            ->with('acme.onmicrosoft.com', 'alex@acme.example', 'sam@acme.example')
+            ->andReturn(['success' => true, 'status' => 200]);
+        $this->app->instance(CippRestWriteClient::class, $approveClient);
+
+        $this->actingAs($actor)
+            ->post(route('cockpit.approve', $run))
+            ->assertRedirect(route('cockpit.index'));
+
+        $this->assertSame(TechnicianRunState::Done, $run->fresh()->state);
     }
 
     public function test_rejects_bad_inputs_and_caller_supplied_upstream_identifiers(): void

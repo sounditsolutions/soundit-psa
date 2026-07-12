@@ -1747,7 +1747,11 @@ class StaffCippWriteToolExecutor
      * approval replay. STRUCTURALLY HELD-ONLY: granting a successor owner
      * access to an entire OneDrive is a data-exposure write that always goes
      * through the cockpit. The successor is a second PSA person in the same
-     * client (server-derived UPN, never caller-supplied); every stored value
+     * client (server-derived UPN, never caller-supplied) and must be ACTIVE —
+     * enforced here at staging and again on the approval replay, so a
+     * successor deactivated after staging declines instead of receiving the
+     * departed user's data (psa-zjpd deep re-review). The offboarded owner
+     * may be inactive; that is expected mid-offboarding. Every stored value
      * is a safe local scalar, and the replay re-resolves the successor fresh.
      *
      * @return array<string, mixed>
@@ -1758,7 +1762,7 @@ class StaffCippWriteToolExecutor
             throw new CippWriteScopeException('OneDrive ownership reassignment is held-only; call cipp_reassign_onedrive with staged=true and a ticket_id for cockpit approval.');
         }
 
-        $successor = $this->resolver->resolveCippPerson($clientId, $arguments['successor_person_id'] ?? null);
+        $successor = $this->resolver->resolveActiveCippPerson($clientId, $arguments['successor_person_id'] ?? null, 'successor');
 
         // A self-handover is meaningless for offboarding and would only muddy
         // the held proposal. person_id is present on the initial call, so this
@@ -2754,7 +2758,7 @@ class StaffCippWriteToolExecutor
         return [
             'successor_person_id' => [
                 'type' => 'integer',
-                'description' => 'PSA person ID of the successor who receives owner access to the offboarded user\'s OneDrive. The server verifies it belongs to client_id and derives the successor UPN; it must be a different person than person_id.',
+                'description' => 'PSA person ID of the successor who receives owner access to the offboarded user\'s OneDrive. The server verifies it belongs to client_id and derives the successor UPN; it must be an ACTIVE person (verified at staging and again at approval) and a different person than person_id.',
             ],
         ];
     }
@@ -3182,7 +3186,7 @@ class StaffCippWriteToolExecutor
     {
         return self::tool(
             'cipp_reassign_onedrive',
-            'Reassign OneDrive ownership for one server-derived offboarded user: grant one server-derived successor (successor_person_id, a different person in the same client) owner/site-admin access to the user\'s entire OneDrive through CIPP — the data-handover half of offboarding. HELD-ONLY: this capability never executes immediately, whatever mode was granted — every call must use staged=true with a ticket_id and is held for cockpit approval; staged=false calls are refused. Exposes the entire OneDrive contents to the successor, so it is a sensitive data-exposure write. confirm_upn is the OneDrive OWNER\'s UPN (person_id). Requires an explicit token grant, reason, kill-switch, cooldown, and TechnicianActionLog audit.',
+            'Reassign OneDrive ownership for one server-derived offboarded user: grant one server-derived successor (successor_person_id, an ACTIVE and different person in the same client) owner/site-admin access to the user\'s entire OneDrive through CIPP — the data-handover half of offboarding. HELD-ONLY: this capability never executes immediately, whatever mode was granted — every call must use staged=true with a ticket_id and is held for cockpit approval; staged=false calls are refused. Exposes the entire OneDrive contents to the successor, so it is a sensitive data-exposure write. confirm_upn is the OneDrive OWNER\'s UPN (person_id). Requires an explicit token grant, reason, kill-switch, cooldown, and TechnicianActionLog audit.',
             array_merge(self::personProperties(), self::successorProperties()),
             ['person_id', 'successor_person_id', 'confirm_upn', 'reason'],
         );
@@ -3193,7 +3197,7 @@ class StaffCippWriteToolExecutor
     {
         return self::tool(
             'cipp_stage_reassign_onedrive',
-            'Stage a OneDrive ownership reassignment for cockpit approval: grant one server-derived successor owner/site-admin access to the offboarded user\'s entire OneDrive (data handover; exposes all OneDrive contents). The MCP call makes no CIPP upstream call; the held payload stores only local PSA identifiers, and approval re-resolves both identities before CIPP execution. This capability is held-only — there is no immediate execution path. confirm_upn is the OneDrive OWNER\'s UPN (person_id); successor_person_id is a different person in the same client.',
+            'Stage a OneDrive ownership reassignment for cockpit approval: grant one server-derived successor owner/site-admin access to the offboarded user\'s entire OneDrive (data handover; exposes all OneDrive contents). The MCP call makes no CIPP upstream call; the held payload stores only local PSA identifiers, and approval re-resolves both identities before CIPP execution. This capability is held-only — there is no immediate execution path. confirm_upn is the OneDrive OWNER\'s UPN (person_id); successor_person_id is an ACTIVE and different person in the same client.',
             array_merge(self::personProperties(ticket: true), self::successorProperties()),
             ['person_id', 'successor_person_id', 'ticket_id', 'confirm_upn', 'reason'],
         );
