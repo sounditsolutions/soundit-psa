@@ -255,11 +255,29 @@ class AssistantToolExecutor
             $query->where('source', '!=', 'alert');
         }
 
+        // updated_since turns this into a recently-modified feed — the scalable
+        // way to catch new client replies landing on EXISTING open tickets
+        // (psa-1f35 / triage req 148). When set, order by most-recent touch first
+        // rather than the priority-then-age queue order.
+        $recentlyModified = false;
+        if (($updatedSince = trim((string) ($input['updated_since'] ?? ''))) !== '') {
+            try {
+                $query->where('updated_at', '>=', \Carbon\Carbon::parse($updatedSince));
+            } catch (\Throwable) {
+                return ['error' => 'updated_since must be a valid ISO-8601 timestamp'];
+            }
+            $recentlyModified = true;
+        }
+
+        if ($recentlyModified) {
+            $query->orderByDesc('updated_at');
+        } else {
+            $query->orderByRaw($this->priorityOrderSql())->orderBy('created_at');
+        }
+
         $tickets = $query
-            ->orderByRaw($this->priorityOrderSql())
-            ->orderBy('created_at')
             ->limit($limit)
-            ->get(['id', 'subject', 'status', 'priority', 'client_id', 'assignee_id', 'source', 'created_at']);
+            ->get(['id', 'subject', 'status', 'priority', 'client_id', 'assignee_id', 'source', 'created_at', 'updated_at']);
 
         return $tickets->map(fn (Ticket $t) => [
             'id' => $t->id,
@@ -271,6 +289,7 @@ class AssistantToolExecutor
             'assignee' => $t->assignee?->name,
             'source' => $t->source?->value,
             'created_at' => $t->created_at?->toDateTimeString(),
+            'updated_at' => $t->updated_at?->toDateTimeString(),
             'age' => $t->created_at?->diffForHumans(),
         ])->toArray();
     }
