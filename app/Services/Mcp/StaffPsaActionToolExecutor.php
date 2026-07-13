@@ -288,6 +288,10 @@ class StaffPsaActionToolExecutor
             TechnicianConfig::requiredAiActorUserId(),
         );
 
+        if ($status === TicketStatus::Closed) {
+            $this->recordDirectCloseUndoCard($updated, (string) $reason, $actorLabel);
+        }
+
         return [
             'success' => true,
             'ticket_id' => $updated->id,
@@ -295,6 +299,52 @@ class StaffPsaActionToolExecutor
             'status' => $updated->status->value,
             'message' => "Status changed to {$status->label()}.",
         ];
+    }
+
+    /**
+     * psa-y4ft.1: an autonomous DIRECT close must be as trivially reversible as an
+     * operator-approved held close. Record the executed close as a Done direct_close
+     * run — the cockpit's "Closed directly by the agent" lane reads these and offers
+     * one-click Reopen (TechnicianCockpitController::reopenDirectClose). Anchored on
+     * the close's status-change note id: one run per physical close event, so a
+     * re-close after a human reopen gets a fresh card instead of colliding with the
+     * reversed (Denied) run, which keeps its veto signal for calibration.
+     */
+    private function recordDirectCloseUndoCard(Ticket $ticket, string $reason, string $actorLabel): void
+    {
+        $statusNoteId = TicketNote::query()
+            ->where('ticket_id', $ticket->id)
+            ->where('note_type', NoteType::StatusChange->value)
+            ->where('status_to', TicketStatus::Closed->value)
+            ->where('author_id', TechnicianConfig::requiredAiActorUserId())
+            ->latest('id')
+            ->value('id');
+
+        // changeStatus always writes the close note; without it there is nothing
+        // safe to anchor a reopen on — skip the card rather than fail a close that
+        // already executed.
+        if ($statusNoteId === null) {
+            return;
+        }
+
+        TechnicianRun::firstOrCreate(
+            [
+                'ticket_id' => $ticket->id,
+                'action_type' => 'direct_close',
+                'content_hash' => hash('sha256', 'direct_close:'.$ticket->id.':'.$statusNoteId),
+            ],
+            [
+                'client_id' => $ticket->client_id,
+                'state' => TechnicianRunState::Done,
+                'proposed_content' => $reason,
+                'proposed_meta' => [
+                    'status_note_id' => (int) $statusNoteId,
+                    'drafted_by' => $actorLabel,
+                ],
+                'confidence' => null,
+                'tokens_used' => 0,
+            ],
+        );
     }
 
     /**

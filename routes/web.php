@@ -681,6 +681,8 @@ Route::middleware('auth')->group(function () {
     Route::post('/cockpit/undo', [\App\Http\Controllers\Web\TechnicianCockpitController::class, 'undo'])->name('cockpit.undo')->middleware('throttle:60,1');
     Route::post('/cockpit/runs/{run}/approve', [\App\Http\Controllers\Web\TechnicianCockpitController::class, 'approve'])->name('cockpit.approve');
     Route::post('/cockpit/runs/{run}/deny', [\App\Http\Controllers\Web\TechnicianCockpitController::class, 'deny'])->name('cockpit.deny');
+    // psa-y4ft.1: one-click reopen for an autonomous DIRECT close (durable lane action, not the 5-min undo toast).
+    Route::post('/cockpit/runs/{run}/reopen', [\App\Http\Controllers\Web\TechnicianCockpitController::class, 'reopenDirectClose'])->name('cockpit.reopen')->middleware('throttle:60,1');
     // bd psa-xr84 — offline-script queue: cancel a queued_offline action, or re-confirm one that expired.
     Route::post('/cockpit/runs/{run}/cancel', [\App\Http\Controllers\Web\TechnicianCockpitController::class, 'cancel'])->name('cockpit.cancel');
     Route::post('/cockpit/runs/{run}/reconfirm', [\App\Http\Controllers\Web\TechnicianCockpitController::class, 'reconfirm'])->name('cockpit.reconfirm');

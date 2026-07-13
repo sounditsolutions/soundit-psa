@@ -35,6 +35,8 @@ class TechnicianCockpitController extends Controller
             'needs' => $query->needsAttention(),
             // psa-3q0c: correction-driven "left as-is" outcomes so a correction never looks silent.
             'reassessedLeftAsIs' => $query->reassessedLeftAsIs(),
+            // psa-y4ft.1: autonomous DIRECT closes still Closed — each card offers one-click Reopen.
+            'directCloses' => $query->recentDirectCloses(),
             'intake' => $query->intakeReview(),
             'intakeSpam' => $query->intakeSpamReview(),
             'queued' => $query->queuedOffline(),
@@ -315,6 +317,68 @@ class TechnicianCockpitController extends Controller
         return $this->actionResponse($request, true, 'reassessing', "Re-assessing #{$ticket->id} with your correction.");
     }
 
+    /**
+     * One-click reopen for an autonomous DIRECT close (psa-y4ft.1). The held
+     * propose_close path gets its undo as a 5-minute toast on the approve response;
+     * a direct close executes with no operator in the loop, so its undo is this
+     * durable lane action instead — same safety guards as undoApprovedClose (ticket
+     * still Closed, the agent's close is still the LATEST status change) but
+     * windowed to the lane (48h), no cache token. Done → Denied records the human
+     * reversal so calibration reads it as a veto, and the resulting InProgress
+     * status makes an immediate agent re-close ineligible (CloseAutoEligibility).
+     */
+    public function reopenDirectClose(Request $request, TechnicianRun $run)
+    {
+        $ok = DB::transaction(function () use ($run): bool {
+            $locked = TechnicianRun::query()->lockForUpdate()->find($run->id);
+
+            if (! $locked
+                || $locked->action_type !== 'direct_close'
+                || $locked->state !== TechnicianRunState::Done
+                || $locked->created_at === null
+                || $locked->created_at->lt(now()->subHours(CockpitQuery::DIRECT_CLOSE_WINDOW_HOURS))) {
+                return false;
+            }
+
+            $ticket = $locked->ticket;
+            $statusNoteId = (int) data_get($locked->proposed_meta, 'status_note_id', 0);
+            $statusNote = $statusNoteId > 0
+                ? TicketNote::query()
+                    ->whereKey($statusNoteId)
+                    ->where('ticket_id', $locked->ticket_id)
+                    ->where('note_type', NoteType::StatusChange->value)
+                    ->where('status_to', TicketStatus::Closed->value)
+                    ->first()
+                : null;
+
+            if (! $ticket || $ticket->status !== TicketStatus::Closed || ! $statusNote) {
+                return false;
+            }
+
+            if ($this->laterStatusChangeExists($statusNote)) {
+                return false;
+            }
+
+            app(TicketService::class)->changeStatus(
+                $ticket,
+                TicketStatus::InProgress,
+                (int) auth()->id(),
+                'Reopened by cockpit undo.',
+            );
+
+            $locked->advanceTo(TechnicianRunState::Denied);
+
+            return true;
+        });
+
+        return $this->actionResponse(
+            $request,
+            $ok,
+            $ok ? 'reopened' : 'already_handled',
+            $ok ? 'Ticket reopened — it’s back with your team.' : 'That close was already handled or can no longer be safely reopened.',
+        );
+    }
+
     public function undo(Request $request)
     {
         $tokens = app(CockpitUndoToken::class);
@@ -470,20 +534,7 @@ class TechnicianCockpitController extends Controller
                 return false;
             }
 
-            $laterStatusChangeExists = TicketNote::query()
-                ->where('ticket_id', $run->ticket_id)
-                ->where('note_type', NoteType::StatusChange->value)
-                ->where(function ($query) use ($statusNote) {
-                    $query->where('noted_at', '>', $statusNote->noted_at)
-                        ->orWhere(function ($sameInstant) use ($statusNote) {
-                            $sameInstant
-                                ->where('noted_at', $statusNote->noted_at)
-                                ->where('id', '>', $statusNote->id);
-                        });
-                })
-                ->exists();
-
-            if ($laterStatusChangeExists) {
+            if ($this->laterStatusChangeExists($statusNote)) {
                 return false;
             }
 
@@ -498,6 +549,28 @@ class TechnicianCockpitController extends Controller
 
             return true;
         });
+    }
+
+    /**
+     * True iff ANY status-change note postdates the given one (later noted_at, or
+     * same instant with a higher id). Shared reopen guard: if the anchor close note
+     * is no longer the ticket's latest status change, the current Closed state is
+     * someone else's transition and an undo/reopen must not clobber it.
+     */
+    private function laterStatusChangeExists(TicketNote $statusNote): bool
+    {
+        return TicketNote::query()
+            ->where('ticket_id', $statusNote->ticket_id)
+            ->where('note_type', NoteType::StatusChange->value)
+            ->where(function ($query) use ($statusNote) {
+                $query->where('noted_at', '>', $statusNote->noted_at)
+                    ->orWhere(function ($sameInstant) use ($statusNote) {
+                        $sameInstant
+                            ->where('noted_at', $statusNote->noted_at)
+                            ->where('id', '>', $statusNote->id);
+                    });
+            })
+            ->exists();
     }
 
     private function undoRunState(

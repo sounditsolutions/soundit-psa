@@ -36,6 +36,14 @@ class CockpitQuery
     /** How far back the "re-assessed → left as-is" lane looks (psa-3q0c). Self-clearing. */
     private const LEAVE_IT_WINDOW_HOURS = 48;
 
+    /**
+     * How far back the "closed directly by the agent" lane looks (psa-y4ft.1), and
+     * therefore how long the one-click reopen stays offered. Public: the reopen
+     * endpoint enforces the SAME window server-side so a stale card (or a replayed
+     * form) can never reopen an ancient close.
+     */
+    public const DIRECT_CLOSE_WINDOW_HOURS = 48;
+
     public function pendingCount(): int
     {
         // Everything the away operator should see on the nav badge: executable
@@ -214,6 +222,29 @@ class CockpitQuery
             ->where('state', TechnicianRunState::Expired->value)
             ->with(['ticket.client', 'ticket.contact'])
             ->orderBy('updated_at', 'desc')
+            ->get();
+    }
+
+    /**
+     * Autonomous DIRECT closes (set_ticket_status → Closed by the agent) within the
+     * recent window whose ticket is STILL Closed (psa-y4ft.1). The held propose_close
+     * path gets a one-click undo toast at approval time; a direct close executes with
+     * no operator present, so the same reversibility is offered here as a durable
+     * card with one-click Reopen. Self-clearing: a reopen by ANY path (cockpit,
+     * ticket UI) drops the card via the ticket-status check, a cockpit reversal also
+     * lands the run in Denied, and the rest age out of the window. Newest first.
+     * Informational lane — deliberately NOT folded into counts()/pendingCount()
+     * (the close already happened; nothing is pending). Pure query.
+     */
+    public function recentDirectCloses(): Collection
+    {
+        return TechnicianRun::query()
+            ->where('action_type', 'direct_close')
+            ->where('state', TechnicianRunState::Done->value)
+            ->where('created_at', '>=', now()->subHours(self::DIRECT_CLOSE_WINDOW_HOURS))
+            ->whereHas('ticket', fn ($q) => $q->where('status', TicketStatus::Closed->value))
+            ->with(['ticket.client'])
+            ->orderByDesc('created_at')
             ->get();
     }
 
