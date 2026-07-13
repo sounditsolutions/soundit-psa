@@ -2,30 +2,28 @@
 
 namespace App\Services\Cipp;
 
-use App\Models\Person;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Log;
 
 /**
  * The CIPP (M365) tool handlers, shared by TriageToolExecutor (auto-triage
- * agentic loop) and AssistantToolExecutor (inline ticket chat). Both surfaces
- * expose the same CIPP tool set defined once in TriageToolDefinitions::cippTools();
- * before this trait each executor carried its own copy of these method bodies and
- * they drifted (psa-202) — a new tool or bugfix landing in one and not the other.
+ * agentic loop) and AssistantToolExecutor (inline ticket chat, and Chet's staff
+ * MCP surface, which dispatches through it). Both surfaces expose the same CIPP
+ * tool set defined once in TriageToolDefinitions::cippTools(); before this trait
+ * each executor carried its own copy of these method bodies and they drifted
+ * (psa-202) — a new tool or bugfix landing in one and not the other.
  *
  * The using class must satisfy this contract:
  *   - `protected ?int $clientId` — the client scope (Triage: always set from the
- *     ticket; Assistant: nullable). Read by resolveCippUserId().
+ *     ticket; Assistant: nullable). Read by the user-id resolver.
  *   - cippTenantDomain(): the tenant filter for CIPP calls. Triage reads it from
  *     `$this->ticket->client`, the Assistant from `$this->client` — the one true
  *     divergence, abstracted here so the query bodies stay identical.
  *   - cippLogPrefix(): the log tag ("[Triage]" / "[Assistant]") so failure logs
  *     stay attributable to their surface.
  *
- * cippMcpRelay() is an opt-in hook: it returns null by default (direct CIPP HTTP,
- * the Triage path) and the Assistant overrides it to route through the CIPP MCP
- * relay first. Every dispatch entry offers the relay the call before falling back
- * to the direct CippClient path below.
+ * EVERY tool body goes through cippDispatch(). That is not a style preference —
+ * it is the only reason the fail-loud rules cannot be bypassed. See its docblock.
  *
  * @property ?int $clientId The using class must expose this.
  */
@@ -47,8 +45,35 @@ trait HandlesCippTools
         return null;
     }
 
-    private function cippQuery(string $toolName, array $input, string $endpoint): array
+    /**
+     * The single gate EVERY CIPP tool call passes through, on BOTH transports.
+     *
+     * The order matters and is the whole point of this method:
+     *
+     *   1. CippToolContract::unanswerable() — refuse questions CIPP structurally
+     *      cannot answer, BEFORE any transport is chosen and before any upstream
+     *      call is spent. This is the choke point. The fail-loud rules for per-user
+     *      Conditional Access and per-user OAuth consent were previously written
+     *      into CippMcpToolRelay alone, which left them enforced on exactly one of
+     *      the two paths that reach these tools — and NOT on the one auto-triage
+     *      always takes, nor on the one the assistant (and Chet) fall back to
+     *      whenever the MCP relay is off or unconfigured (psa-dbrw, psa-idii).
+     *      Putting the guard here means a CIPP tool cannot be dispatched, by any
+     *      caller, without passing it. The relay re-checks the same predicate as
+     *      defence in depth; it is one implementation, so the two cannot drift.
+     *   2. The MCP relay, if this executor has one and it is enabled.
+     *   3. The tenant mapping, then the direct CippClient call.
+     *
+     * @param  callable(string): array<int|string, mixed>  $direct  Receives the tenant domain.
+     * @return array<int|string, mixed>
+     */
+    private function cippDispatch(string $toolName, array $input, callable $direct): array
     {
+        $refusal = CippToolContract::unanswerable($toolName, $input);
+        if ($refusal !== null) {
+            return ['error' => $refusal];
+        }
+
         $relay = $this->cippMcpRelay($toolName, $input);
         if ($relay !== null) {
             return $relay;
@@ -59,13 +84,18 @@ trait HandlesCippTools
             return ['error' => 'Client has no CIPP tenant mapping'];
         }
 
-        try {
-            return app(CippClient::class)->get($endpoint, ['TenantFilter' => $tenantDomain]);
-        } catch (\Throwable $e) {
-            Log::warning($this->cippLogPrefix().' CIPP query failed', ['endpoint' => $endpoint, 'error' => $e->getMessage()]);
+        return $direct($tenantDomain);
+    }
 
-            return ['error' => 'CIPP query failed: '.mb_substr($e->getMessage(), 0, 200)];
-        }
+    private function cippQuery(string $toolName, array $input, string $endpoint): array
+    {
+        return $this->cippDispatch($toolName, $input, function (string $tenantDomain) use ($endpoint): array {
+            try {
+                return app(CippClient::class)->get($endpoint, ['TenantFilter' => $tenantDomain]);
+            } catch (\Throwable $e) {
+                return $this->cippFailure($endpoint, $e);
+            }
+        });
     }
 
     /**
@@ -79,344 +109,262 @@ trait HandlesCippTools
      */
     private function cippQueryWithUser(string $toolName, array $input, string $endpoint, string $userParam = 'userId'): array
     {
-        $relay = $this->cippMcpRelay($toolName, $input);
-        if ($relay !== null) {
-            return $relay;
-        }
+        return $this->cippDispatch($toolName, $input, function (string $tenantDomain) use ($input, $endpoint, $userParam): array {
+            $userId = CippToolContract::requiredUserId($input);
+            if ($userId === null) {
+                return ['error' => 'user_id is required'];
+            }
 
-        $userId = $input['user_id'] ?? null;
-        if (! $userId) {
-            return ['error' => 'user_id is required'];
-        }
+            $query = [
+                'TenantFilter' => $tenantDomain,
+                $userParam => $this->resolveCippUserId($userId),
+            ];
 
-        $tenantDomain = $this->cippTenantDomain();
-        if (! $tenantDomain) {
-            return ['error' => 'Client has no CIPP tenant mapping'];
-        }
+            // ListUserMailboxRules also accepts userEmail, which CIPP uses when it
+            // reports a failure. Cheap to send, and it keeps the request explicit.
+            if ($userParam === 'UserID' && str_contains($userId, '@')) {
+                $query['userEmail'] = $userId;
+            }
 
-        $query = [
-            'TenantFilter' => $tenantDomain,
-            $userParam => $this->resolveCippUserId($userId),
-        ];
-
-        // ListUserMailboxRules also accepts userEmail, which CIPP uses when it
-        // reports a failure. Cheap to send, and it keeps the request explicit.
-        if ($userParam === 'UserID' && str_contains((string) $userId, '@')) {
-            $query['userEmail'] = (string) $userId;
-        }
-
-        try {
-            return app(CippClient::class)->get($endpoint, $query);
-        } catch (\Throwable $e) {
-            Log::warning($this->cippLogPrefix().' CIPP query failed', ['endpoint' => $endpoint, 'error' => $e->getMessage()]);
-
-            return ['error' => 'CIPP query failed: '.mb_substr($e->getMessage(), 0, 200)];
-        }
+            try {
+                return app(CippClient::class)->get($endpoint, $query);
+            } catch (\Throwable $e) {
+                return $this->cippFailure($endpoint, $e);
+            }
+        });
     }
 
     private function cippListSignIns(array $input): array
     {
-        $relay = $this->cippMcpRelay('cipp_list_sign_ins', $input);
-        if ($relay !== null) {
-            return $relay;
-        }
+        return $this->cippDispatch('cipp_list_sign_ins', $input, function (string $tenantDomain) use ($input): array {
+            $userId = CippToolContract::optionalUserId($input);
+            $days = CippToolContract::windowDays($input['days'] ?? null);
 
-        $tenantDomain = $this->cippTenantDomain();
-        if (! $tenantDomain) {
-            return ['error' => 'Client has no CIPP tenant mapping'];
-        }
+            // CIPP has a per-user endpoint (api/ListUserSigninLogs) and a tenant-wide
+            // endpoint (api/ListSignIns). Route to the per-user one when filtering by
+            // user — it's authoritative and not subject to the tenant-wide window cap.
+            // CIPP's userId param requires an Azure AD object ID (GUID), not a UPN —
+            // translate via our synced Person record before calling.
+            $endpoint = $userId ? 'api/ListUserSigninLogs' : 'api/ListSignIns';
+            $params = ['TenantFilter' => $tenantDomain];
 
-        $userId = ! empty($input['user_id']) ? trim((string) $input['user_id']) : null;
-        $days = isset($input['days']) && is_numeric($input['days'])
-            ? (int) min(max(1, $input['days']), 30)
-            : null;
+            if ($userId) {
+                $params['userId'] = $this->resolveCippUserId($userId);
+            } elseif ($days !== null) {
+                // Invoke-ListSignIns windows SERVER-SIDE and defaults to $Days = 7, so
+                // a 30-day request only ever saw 7 days of sign-ins while the response
+                // reported filtered_by_days: 30 — "we didn't look" dressed up as "there
+                // was nothing to find" (psa-536g). The user_id path resolves to
+                // ListUserSigninLogs, which has no date filter at all ($top=50, newest
+                // first), so Days applies only to the tenant-wide endpoint.
+                $params['Days'] = $days;
+            }
 
-        // CIPP has a per-user endpoint (api/ListUserSigninLogs) and a tenant-wide
-        // endpoint (api/ListSignIns). Route to the per-user one when filtering by
-        // user — it's authoritative and not subject to the tenant-wide window cap.
-        // CIPP's userId param requires an Azure AD object ID (GUID), not a UPN —
-        // translate via our synced Person record before calling.
-        $endpoint = $userId ? 'api/ListUserSigninLogs' : 'api/ListSignIns';
-        $params = ['TenantFilter' => $tenantDomain];
-        if ($userId) {
-            $params['userId'] = $this->resolveCippUserId($userId);
-        }
+            try {
+                $events = app(CippClient::class)->get($endpoint, $params);
+            } catch (\Throwable $e) {
+                return $this->cippFailure($endpoint, $e);
+            }
 
-        try {
-            $events = app(CippClient::class)->get($endpoint, $params);
-        } catch (\Throwable $e) {
-            Log::warning($this->cippLogPrefix().' CIPP sign-in query failed', [
+            if (! is_array($events)) {
+                return ['error' => 'Unexpected CIPP response shape'];
+            }
+
+            $totalReturned = count($events);
+
+            if ($days !== null) {
+                $cutoff = now()->subDays($days);
+                $events = array_values(array_filter($events, fn ($e) => is_array($e) && $this->eventWithinCutoff($e, $cutoff, ['createdDateTime'])));
+            }
+
+            return [
+                'count' => count(array_slice($events, 0, 50)),
                 'endpoint' => $endpoint,
-                'error' => $e->getMessage(),
-            ]);
-
-            return ['error' => 'CIPP query failed: '.mb_substr($e->getMessage(), 0, 200)];
-        }
-
-        if (! is_array($events)) {
-            return ['error' => 'Unexpected CIPP response shape'];
-        }
-
-        $totalReturned = count($events);
-
-        // Days filter applied client-side — CIPP doesn't document a window param.
-        if ($days !== null) {
-            $cutoff = now()->subDays($days);
-            $events = array_values(array_filter($events, fn ($e) => $this->eventWithinCutoff($e, $cutoff, ['createdDateTime'])));
-        }
-
-        // Cap to keep the AI context window manageable.
-        $capped = array_slice($events, 0, 50);
-
-        return [
-            'count' => count($capped),
-            'endpoint' => $endpoint,
-            'filtered_by_user' => $userId,
-            'filtered_by_days' => $days,
-            'total_returned_by_cipp' => $totalReturned,
-            'events' => $capped,
-        ];
+                'filtered_by_user' => $userId,
+                'filtered_by_days' => $days,
+                'total_returned_by_cipp' => $totalReturned,
+                'events' => array_slice($events, 0, 50),
+            ];
+        });
     }
 
+    /**
+     * ListAuditLogs is shaped by the shared CippToolContract, not here — the row
+     * shape, the nested-payload filters and the projection allowlist are properties
+     * of CIPP's response, not of the transport that fetched it. The direct path used
+     * to carry its own copy of all three, reading the raw unified-audit-log keys at
+     * the TOP level (CIPP nests them two levels down under Data.RawData), so
+     * `days` or `user_id` dropped 100% of rows and the tool answered "no audit
+     * events" to every question — while an unfiltered call handed the agent CIPP's
+     * whole unbounded `Data` blob raw (psa-9d4l).
+     */
     private function cippListAuditLogs(array $input): array
     {
-        $relay = $this->cippMcpRelay('cipp_list_audit_logs', $input);
-        if ($relay !== null) {
-            return $relay;
-        }
+        return $this->cippDispatch('cipp_list_audit_logs', $input, function (string $tenantDomain) use ($input): array {
+            $params = ['TenantFilter' => $tenantDomain];
 
-        $tenantDomain = $this->cippTenantDomain();
-        if (! $tenantDomain) {
-            return ['error' => 'Client has no CIPP tenant mapping'];
-        }
+            // RelativeTime is ListAuditLogs' SERVER-SIDE window, (\d+)([dhm]); with no
+            // window it defaults to 7 days. userId is NOT a parameter of this endpoint
+            // — CIPP silently ignores it — so sending it was a false claim of a
+            // server-side user filter. The user filter is applied against the nested
+            // payload, in the contract.
+            $days = CippToolContract::windowDays($input['days'] ?? null);
+            if ($days !== null) {
+                $params['RelativeTime'] = "{$days}d";
+            }
 
-        $userId = ! empty($input['user_id']) ? trim((string) $input['user_id']) : null;
-        $days = isset($input['days']) && is_numeric($input['days'])
-            ? (int) min(max(1, $input['days']), 30)
-            : null;
+            try {
+                $events = app(CippClient::class)->get('api/ListAuditLogs', $params);
+            } catch (\Throwable $e) {
+                return $this->cippFailure('api/ListAuditLogs', $e);
+            }
 
-        $params = ['TenantFilter' => $tenantDomain];
-        if ($userId) {
-            $params['userId'] = $this->resolveCippUserId($userId);
-        }
+            if (! is_array($events)) {
+                return ['error' => 'Unexpected CIPP response shape'];
+            }
 
-        try {
-            $events = app(CippClient::class)->get('api/ListAuditLogs', $params);
-        } catch (\Throwable $e) {
-            Log::warning($this->cippLogPrefix().' CIPP ListAuditLogs failed', ['error' => $e->getMessage()]);
-
-            return ['error' => 'CIPP query failed: '.mb_substr($e->getMessage(), 0, 200)];
-        }
-
-        if (! is_array($events)) {
-            return ['error' => 'Unexpected CIPP response shape'];
-        }
-
-        $totalReturned = count($events);
-
-        if ($days !== null) {
-            $cutoff = now()->subDays($days);
-            $events = array_values(array_filter($events, fn ($e) => $this->eventWithinCutoff($e, $cutoff, ['createdDateTime', 'CreationTime', 'Date'])));
-        }
-
-        // Match the resolved object ID (CIPP was queried with it) OR the raw UPN —
-        // the events come back keyed by object ID, so filtering on the raw UPN
-        // alone would drop every row when the caller passed an email.
-        if ($userId) {
-            $resolved = $this->resolveCippUserId($userId);
-            $upnNeedle = str_contains($userId, '@') ? mb_strtolower($userId) : null;
-            $events = array_values(array_filter($events, function ($e) use ($resolved, $upnNeedle) {
-                foreach (['userId', 'UserId', 'userPrincipalName', 'UserPrincipalName', 'initiatedBy'] as $key) {
-                    if (isset($e[$key])) {
-                        $val = mb_strtolower((string) $e[$key]);
-                        if ($val === mb_strtolower($resolved)) {
-                            return true;
-                        }
-                        if ($upnNeedle && $val === $upnNeedle) {
-                            return true;
-                        }
-                    }
-                }
-
-                return false;
-            }));
-        }
-
-        return [
-            'count' => count($events),
-            'filtered_by_user' => $userId,
-            'filtered_by_days' => $days,
-            'total_returned_by_cipp' => $totalReturned,
-            'events' => array_slice($events, 0, 50),
-        ];
+            return app(CippToolContract::class)->shapeAuditLogs($events, $input, $this->clientId);
+        });
     }
 
     private function cippListMessageTrace(array $input): array
     {
-        $relay = $this->cippMcpRelay('cipp_list_message_trace', $input);
-        if ($relay !== null) {
-            return $relay;
-        }
+        return $this->cippDispatch('cipp_list_message_trace', $input, function (string $tenantDomain) use ($input): array {
+            $sender = ! empty($input['sender']) ? trim((string) $input['sender']) : null;
+            $recipient = ! empty($input['recipient']) ? trim((string) $input['recipient']) : null;
+            $days = CippToolContract::boundedDays($input['days'] ?? null, 2, 10);
 
-        $tenantDomain = $this->cippTenantDomain();
-        if (! $tenantDomain) {
-            return ['error' => 'Client has no CIPP tenant mapping'];
-        }
+            $params = ['TenantFilter' => $tenantDomain, 'days' => $days];
+            if ($sender) {
+                $params['sender'] = $sender;
+            }
+            if ($recipient) {
+                $params['recipient'] = $recipient;
+            }
 
-        $sender = ! empty($input['sender']) ? trim((string) $input['sender']) : null;
-        $recipient = ! empty($input['recipient']) ? trim((string) $input['recipient']) : null;
-        $days = isset($input['days']) && is_numeric($input['days'])
-            ? (int) min(max(1, $input['days']), 10)
-            : 2;
+            try {
+                $messages = app(CippClient::class)->get('api/ListMessageTrace', $params);
+            } catch (\Throwable $e) {
+                return $this->cippFailure('api/ListMessageTrace', $e);
+            }
 
-        $params = ['TenantFilter' => $tenantDomain, 'days' => $days];
-        if ($sender) {
-            $params['sender'] = $sender;
-        }
-        if ($recipient) {
-            $params['recipient'] = $recipient;
-        }
+            if (! is_array($messages)) {
+                return ['error' => 'Unexpected CIPP response shape'];
+            }
 
-        try {
-            $messages = app(CippClient::class)->get('api/ListMessageTrace', $params);
-        } catch (\Throwable $e) {
-            Log::warning($this->cippLogPrefix().' CIPP ListMessageTrace failed', ['error' => $e->getMessage()]);
+            $totalReturned = count($messages);
 
-            return ['error' => 'CIPP query failed: '.mb_substr($e->getMessage(), 0, 200)];
-        }
+            // Client-side filter — Message Trace upstream filtering is unreliable across CIPP versions.
+            if ($sender) {
+                $needle = mb_strtolower($sender);
+                $messages = array_values(array_filter($messages, fn ($m) => mb_strtolower((string) ($m['SenderAddress'] ?? $m['senderAddress'] ?? '')) === $needle));
+            }
+            if ($recipient) {
+                $needle = mb_strtolower($recipient);
+                $messages = array_values(array_filter($messages, fn ($m) => mb_strtolower((string) ($m['RecipientAddress'] ?? $m['recipientAddress'] ?? '')) === $needle));
+            }
 
-        if (! is_array($messages)) {
-            return ['error' => 'Unexpected CIPP response shape'];
-        }
-
-        $totalReturned = count($messages);
-
-        // Client-side filter — Message Trace upstream filtering is unreliable across CIPP versions.
-        if ($sender) {
-            $needle = mb_strtolower($sender);
-            $messages = array_values(array_filter($messages, fn ($m) => mb_strtolower((string) ($m['SenderAddress'] ?? $m['senderAddress'] ?? '')) === $needle));
-        }
-        if ($recipient) {
-            $needle = mb_strtolower($recipient);
-            $messages = array_values(array_filter($messages, fn ($m) => mb_strtolower((string) ($m['RecipientAddress'] ?? $m['recipientAddress'] ?? '')) === $needle));
-        }
-
-        return [
-            'count' => count($messages),
-            'filtered_by_sender' => $sender,
-            'filtered_by_recipient' => $recipient,
-            'window_days' => $days,
-            'total_returned_by_cipp' => $totalReturned,
-            'messages' => array_slice($messages, 0, 50),
-        ];
+            return [
+                'count' => count($messages),
+                'filtered_by_sender' => $sender,
+                'filtered_by_recipient' => $recipient,
+                'window_days' => $days,
+                'total_returned_by_cipp' => $totalReturned,
+                'messages' => array_slice($messages, 0, 50),
+            ];
+        });
     }
 
     private function cippListMailQuarantine(array $input): array
     {
-        $relay = $this->cippMcpRelay('cipp_list_mail_quarantine', $input);
-        if ($relay !== null) {
-            return $relay;
-        }
+        return $this->cippDispatch('cipp_list_mail_quarantine', $input, function (string $tenantDomain) use ($input): array {
+            $recipient = ! empty($input['recipient']) ? trim((string) $input['recipient']) : null;
 
-        $tenantDomain = $this->cippTenantDomain();
-        if (! $tenantDomain) {
-            return ['error' => 'Client has no CIPP tenant mapping'];
-        }
+            try {
+                $entries = app(CippClient::class)->get('api/ListMailQuarantine', ['TenantFilter' => $tenantDomain]);
+            } catch (\Throwable $e) {
+                return $this->cippFailure('api/ListMailQuarantine', $e);
+            }
 
-        $recipient = ! empty($input['recipient']) ? trim((string) $input['recipient']) : null;
+            if (! is_array($entries)) {
+                return ['error' => 'Unexpected CIPP response shape'];
+            }
 
-        try {
-            $entries = app(CippClient::class)->get('api/ListMailQuarantine', ['TenantFilter' => $tenantDomain]);
-        } catch (\Throwable $e) {
-            Log::warning($this->cippLogPrefix().' CIPP ListMailQuarantine failed', ['error' => $e->getMessage()]);
+            $totalReturned = count($entries);
 
-            return ['error' => 'CIPP query failed: '.mb_substr($e->getMessage(), 0, 200)];
-        }
-
-        if (! is_array($entries)) {
-            return ['error' => 'Unexpected CIPP response shape'];
-        }
-
-        $totalReturned = count($entries);
-
-        if ($recipient) {
-            $needle = mb_strtolower($recipient);
-            $entries = array_values(array_filter($entries, function ($e) use ($needle) {
-                foreach (['RecipientAddress', 'recipientAddress', 'recipients'] as $key) {
-                    $val = $e[$key] ?? null;
-                    if (is_string($val) && mb_strtolower($val) === $needle) {
-                        return true;
-                    }
-                    if (is_array($val)) {
-                        foreach ($val as $r) {
-                            if (is_string($r) && mb_strtolower($r) === $needle) {
-                                return true;
+            if ($recipient) {
+                $needle = mb_strtolower($recipient);
+                $entries = array_values(array_filter($entries, function ($e) use ($needle) {
+                    foreach (['RecipientAddress', 'recipientAddress', 'recipients'] as $key) {
+                        $val = $e[$key] ?? null;
+                        if (is_string($val) && mb_strtolower($val) === $needle) {
+                            return true;
+                        }
+                        if (is_array($val)) {
+                            foreach ($val as $r) {
+                                if (is_string($r) && mb_strtolower($r) === $needle) {
+                                    return true;
+                                }
                             }
                         }
                     }
-                }
 
-                return false;
-            }));
-        }
+                    return false;
+                }));
+            }
 
-        return [
-            'count' => count($entries),
-            'filtered_by_recipient' => $recipient,
-            'total_returned_by_cipp' => $totalReturned,
-            'entries' => array_slice($entries, 0, 50),
-        ];
+            return [
+                'count' => count($entries),
+                'filtered_by_recipient' => $recipient,
+                'total_returned_by_cipp' => $totalReturned,
+                'entries' => array_slice($entries, 0, 50),
+            ];
+        });
     }
 
     private function cippListUserMfaMethods(array $input): array
     {
-        $relay = $this->cippMcpRelay('cipp_list_user_mfa_methods', $input);
-        if ($relay !== null) {
-            return $relay;
-        }
-
-        $tenantDomain = $this->cippTenantDomain();
-        if (! $tenantDomain) {
-            return ['error' => 'Client has no CIPP tenant mapping'];
-        }
-
-        $userId = $input['user_id'] ?? null;
-        if (! $userId) {
-            return ['error' => 'user_id is required'];
-        }
-
-        // CIPP's ListMFAUsers returns the user-level MFA picture: registration
-        // status, method types, and which enforcement mechanism (CA / Security
-        // Defaults / per-user) currently covers them. ListPerUserMFA is the
-        // legacy per-user-toggle list and doesn't reflect modern MFA at all.
-        try {
-            $rows = app(CippClient::class)->get('api/ListMFAUsers', ['TenantFilter' => $tenantDomain]);
-        } catch (\Throwable $e) {
-            Log::warning($this->cippLogPrefix().' CIPP ListMFAUsers failed', ['error' => $e->getMessage()]);
-
-            return ['error' => 'CIPP query failed: '.mb_substr($e->getMessage(), 0, 200)];
-        }
-
-        if (! is_array($rows)) {
-            return ['error' => 'Unexpected CIPP response shape'];
-        }
-
-        $objectId = $this->resolveCippUserId($userId);
-        $upnNeedle = str_contains($userId, '@') ? mb_strtolower($userId) : null;
-
-        foreach ($rows as $row) {
-            $rowUpn = mb_strtolower((string) ($row['UPN'] ?? $row['userPrincipalName'] ?? ''));
-            $rowId = (string) ($row['ID'] ?? $row['Id'] ?? $row['userId'] ?? '');
-            if ($rowId === $objectId || ($upnNeedle && $rowUpn === $upnNeedle)) {
-                return self::summarizeMfaRow($row);
+        return $this->cippDispatch('cipp_list_user_mfa_methods', $input, function (string $tenantDomain) use ($input): array {
+            $userId = CippToolContract::requiredUserId($input);
+            if ($userId === null) {
+                return ['error' => 'user_id is required'];
             }
-        }
 
-        return [
-            'error' => "No MFA record found for {$userId} in this tenant",
-            'searched_user_id' => $userId,
-            'resolved_object_id' => $objectId,
-        ];
+            // CIPP's ListMFAUsers returns the user-level MFA picture: registration
+            // status, method types, and which enforcement mechanism (CA / Security
+            // Defaults / per-user) currently covers them. ListPerUserMFA is the
+            // legacy per-user-toggle list and doesn't reflect modern MFA at all.
+            try {
+                $rows = app(CippClient::class)->get('api/ListMFAUsers', ['TenantFilter' => $tenantDomain]);
+            } catch (\Throwable $e) {
+                return $this->cippFailure('api/ListMFAUsers', $e);
+            }
+
+            if (! is_array($rows)) {
+                return ['error' => 'Unexpected CIPP response shape'];
+            }
+
+            $objectId = $this->resolveCippUserId($userId);
+            $upnNeedle = str_contains($userId, '@') ? mb_strtolower($userId) : null;
+
+            foreach ($rows as $row) {
+                if (! is_array($row)) {
+                    continue;
+                }
+
+                $rowUpn = mb_strtolower((string) ($row['UPN'] ?? $row['userPrincipalName'] ?? ''));
+                $rowId = (string) ($row['ID'] ?? $row['Id'] ?? $row['userId'] ?? '');
+                if ($rowId === $objectId || ($upnNeedle && $rowUpn === $upnNeedle)) {
+                    return self::summarizeMfaRow($row);
+                }
+            }
+
+            return [
+                'error' => "No MFA record found for {$userId} in this tenant",
+                'searched_user_id' => $userId,
+                'resolved_object_id' => $objectId,
+            ];
+        });
     }
 
     /**
@@ -460,61 +408,42 @@ trait HandlesCippTools
         return $row;
     }
 
+    /**
+     * Tenant-wide only. A per-user call never reaches this closure — cippDispatch()
+     * refuses it via CippToolContract::unanswerable(), because CIPP's ListOAuthApps
+     * drops principalId and consentType and so cannot attribute a consent to a user
+     * at all. The filter that used to live here matched four keys CIPP never emits,
+     * dropped every row, and reported a confident {count: 0, apps: []} — a false
+     * negative on illicit consent grant (psa-dbrw).
+     */
     private function cippListOauthApps(array $input): array
     {
-        $relay = $this->cippMcpRelay('cipp_list_oauth_apps', $input);
-        if ($relay !== null) {
-            return $relay;
-        }
+        return $this->cippDispatch('cipp_list_oauth_apps', $input, function (string $tenantDomain): array {
+            try {
+                $apps = app(CippClient::class)->get('api/ListOAuthApps', ['TenantFilter' => $tenantDomain]);
+            } catch (\Throwable $e) {
+                return $this->cippFailure('api/ListOAuthApps', $e);
+            }
 
-        $tenantDomain = $this->cippTenantDomain();
-        if (! $tenantDomain) {
-            return ['error' => 'Client has no CIPP tenant mapping'];
-        }
+            if (! is_array($apps)) {
+                return ['error' => 'Unexpected CIPP response shape'];
+            }
 
-        try {
-            $apps = app(CippClient::class)->get('api/ListOAuthApps', ['TenantFilter' => $tenantDomain]);
-        } catch (\Throwable $e) {
-            Log::warning($this->cippLogPrefix().' CIPP ListOAuthApps failed', ['error' => $e->getMessage()]);
+            return app(CippToolContract::class)->shapeOauthApps($apps);
+        });
+    }
 
-            return ['error' => 'CIPP query failed: '.mb_substr($e->getMessage(), 0, 200)];
-        }
+    /**
+     * @return array{error: string}
+     */
+    private function cippFailure(string $endpoint, \Throwable $e): array
+    {
+        Log::warning($this->cippLogPrefix().' CIPP query failed', [
+            'endpoint' => $endpoint,
+            'error' => $e->getMessage(),
+        ]);
 
-        if (! is_array($apps)) {
-            return ['error' => 'Unexpected CIPP response shape'];
-        }
-
-        $totalReturned = count($apps);
-        $userId = ! empty($input['user_id']) ? trim((string) $input['user_id']) : null;
-
-        if ($userId) {
-            $objectId = $this->resolveCippUserId($userId);
-            $upnNeedle = str_contains($userId, '@') ? mb_strtolower($userId) : null;
-
-            $apps = array_values(array_filter($apps, function ($app) use ($objectId, $upnNeedle) {
-                // Match any field that may carry user identity for the consent grant.
-                foreach (['principalId', 'consentedBy', 'userId', 'userPrincipalName'] as $key) {
-                    $val = $app[$key] ?? null;
-                    if (is_string($val) && $val !== '') {
-                        if ($val === $objectId) {
-                            return true;
-                        }
-                        if ($upnNeedle && mb_strtolower($val) === $upnNeedle) {
-                            return true;
-                        }
-                    }
-                }
-
-                return false;
-            }));
-        }
-
-        return [
-            'count' => count($apps),
-            'filtered_by_user' => $userId,
-            'total_returned_by_cipp' => $totalReturned,
-            'apps' => array_slice($apps, 0, 50),
-        ];
+        return ['error' => 'CIPP query failed: '.mb_substr($e->getMessage(), 0, 200)];
     }
 
     private function eventWithinCutoff(array $e, Carbon $cutoff, array $dateKeys): bool
@@ -534,28 +463,12 @@ trait HandlesCippTools
 
     /**
      * Translate a UPN (email) to the Azure AD object ID expected by CIPP's
-     * per-user endpoints. Looks up the synced Person record for the current
-     * client scope. Pass-through if input already looks like a GUID, or if no
-     * Person match exists (caller will see CIPP's response on that).
+     * per-user endpoints, within the current client scope. Shared with the MCP
+     * relay via CippToolContract so the two transports resolve identities the
+     * same way.
      */
     private function resolveCippUserId(string $input): string
     {
-        // Already a GUID — pass through.
-        if (preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i', $input)) {
-            return $input;
-        }
-
-        // Looks like an email — try to resolve via Person.cipp_upn → cipp_user_id.
-        if (str_contains($input, '@') && $this->clientId) {
-            $objectId = Person::where('client_id', $this->clientId)
-                ->whereRaw('LOWER(cipp_upn) = ?', [mb_strtolower($input)])
-                ->value('cipp_user_id');
-
-            if ($objectId) {
-                return $objectId;
-            }
-        }
-
-        return $input;
+        return CippToolContract::resolveUserId($input, $this->clientId);
     }
 }

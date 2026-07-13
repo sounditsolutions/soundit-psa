@@ -132,6 +132,18 @@ class CippToolDispatchTest extends TestCase
      * object ID before filtering the returned events, because CIPP keys the events
      * by object ID. Filtering on the raw UPN alone drops every row. Both executors
      * must behave identically here — previously only the assistant carried the fix.
+     *
+     * The fixture below was FLAT — [{UserId, Operation}] at the top level — which is
+     * the shape this code wished CIPP sent, not the one it actually sends. CIPP's
+     * ListAuditLogs emits LogId / Timestamp / Tenant / Title / Data and nests the
+     * audit fields two levels down at Data.RawData.* (verified against
+     * Invoke-ListAuditLogs.ps1, psa-9d4l). So the mock confirmed the code's own
+     * mistake back to it: the test passed while the tool, in production, dropped
+     * 100% of rows and answered "no audit events" to every question asked of it.
+     *
+     * Fixture corrected to the real shape; the security property under test is
+     * unchanged — pass a UPN, match the event CIPP keyed by object ID, keep only
+     * that user's event.
      */
     public function test_audit_logs_filter_resolves_upn_to_object_id_for_both_executors(): void
     {
@@ -148,9 +160,21 @@ class CippToolDispatchTest extends TestCase
             'is_active' => true,
         ]);
 
+        $auditRow = fn (string $userId, string $operation): array => [
+            'LogId' => "log-{$operation}",
+            'Timestamp' => now()->subHour()->toIso8601String(),
+            'Tenant' => 'contoso.onmicrosoft.com',
+            'Title' => $operation,
+            'Data' => ['RawData' => [
+                'CreationTime' => now()->subHour()->toIso8601String(),
+                'Operation' => $operation,
+                'UserId' => $userId,
+            ]],
+        ];
+
         $events = [
-            ['UserId' => $objectId, 'Operation' => 'UserLoggedIn'],
-            ['UserId' => '99999999-9999-9999-9999-999999999999', 'Operation' => 'Other'],
+            $auditRow($objectId, 'UserLoggedIn'),
+            $auditRow('99999999-9999-9999-9999-999999999999', 'Other'),
         ];
 
         $cipp = Mockery::mock(CippClient::class);
@@ -169,7 +193,7 @@ class CippToolDispatchTest extends TestCase
             $result = $executor->execute('cipp_list_audit_logs', ['user_id' => 'alice@contoso.com']);
 
             $this->assertSame(1, $result['count'], "{$label} did not resolve UPN→objectID for the audit-log filter");
-            $this->assertSame($objectId, $result['events'][0]['UserId'] ?? null, "{$label} kept the wrong event");
+            $this->assertSame($objectId, $result['events'][0]['userId'] ?? null, "{$label} kept the wrong event");
         }
     }
 }
