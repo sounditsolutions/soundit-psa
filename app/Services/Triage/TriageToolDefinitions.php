@@ -583,8 +583,13 @@ class TriageToolDefinitions
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
-                        'user_id' => ['type' => 'string', 'description' => 'Optional. UPN (email) or Azure AD object ID — narrows the query to one user.'],
-                        'days' => ['type' => 'integer', 'description' => 'Optional. Time window in days (default 7, max 30).'],
+                        // The per-user endpoint filters Graph on the Azure AD OBJECT ID and
+                        // nothing else, so a UPN only works when a synced person bridges it
+                        // — and CIPP contact sync is off by default. Say so here: an agent
+                        // told "UPN or object ID" that gets refused will simply retry the
+                        // same way. The object ID is the `id` field from cipp_list_users.
+                        'user_id' => ['type' => 'string', 'description' => 'Optional. Azure AD object ID (the `id` field from cipp_list_users) — narrows the query to one user. A UPN (email) is accepted ONLY if this client has a synced contact mapping it to an object ID; otherwise the call is refused rather than answered with a misleading empty result, so prefer the object ID.'],
+                        'days' => ['type' => 'integer', 'description' => 'Optional. Time window in days (default 7, max 30). Applies to the tenant-wide query only; a user_id query returns the 50 most recent sign-ins.'],
                     ],
                 ],
             ],
@@ -647,7 +652,7 @@ class TriageToolDefinitions
             ],
             [
                 'name' => 'cipp_list_user_conditional_access',
-                'description' => 'List which Conditional Access policies apply to a specific user. Pairs with cipp_list_sign_ins for "why did this sign-in succeed/fail" investigations. Requires user_id.',
+                'description' => 'CURRENTLY UNAVAILABLE — the upstream CIPP endpoint is broken and this tool returns an error. It is listed only so its absence is explicit: previously it silently returned an empty result, which reads as "no Conditional Access policies apply to this user" and is dangerously wrong. Use cipp_list_conditional_access_policies for the tenant-wide policy set and check its include/exclude membership yourself.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -702,12 +707,10 @@ class TriageToolDefinitions
             ],
             [
                 'name' => 'cipp_list_oauth_apps',
-                'description' => 'List enterprise applications / OAuth consents granted in the client\'s tenant. Each entry shows the app, its publisher, and (when available) which user consented. Pass user_id to narrow client-side to consents involving that user — useful for compromise investigation (illicit consent attack indicators).',
+                'description' => 'List enterprise applications / OAuth consents granted in the client\'s tenant, with the SCOPES each app was granted — the key indicator for an illicit consent attack. TENANT-WIDE ONLY: CIPP does not report which user granted a consent, so this tool cannot be filtered by user and passing user_id returns an error rather than a misleading empty result. To investigate a specific user, review the tenant-wide list and correlate with cipp_list_audit_logs / cipp_list_sign_ins.',
                 'input_schema' => [
                     'type' => 'object',
-                    'properties' => [
-                        'user_id' => ['type' => 'string', 'description' => 'Optional. UPN or object ID — filters results client-side to consents by/for this user.'],
-                    ],
+                    'properties' => new \stdClass,
                 ],
             ],
         ];

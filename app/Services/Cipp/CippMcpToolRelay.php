@@ -3,16 +3,27 @@
 namespace App\Services\Cipp;
 
 use App\Models\Client;
-use App\Models\Person;
 use App\Services\Chet\ChetDataSurfaceTextSanitizer;
 use App\Services\Triage\TriageToolExecutor;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Log;
 
+/**
+ * The MCP transport for the CIPP read tools.
+ *
+ * This class owns HOW we talk to CIPP over ExecMCP — the upstream tool names and
+ * the argument names those tools actually read. It does NOT own which questions
+ * are answerable, how CIPP's rows are shaped, or how untrusted tenant text is
+ * fenced: those are properties of CIPP's API, identical no matter which transport
+ * fetched the row, and they live in the shared CippToolContract, which the direct
+ * CippClient path (HandlesCippTools) is routed through too.
+ *
+ * That split is deliberate. When the fail-loud rules lived in this class alone,
+ * they were enforced on exactly one of the two paths that reach these tools — and
+ * not on the one auto-triage always takes (psa-dbrw / psa-idii / psa-9d4l).
+ */
 class CippMcpToolRelay
 {
-    private const MAX_NESTED_ARRAY_DEPTH = 8;
-
     private const TOOL_MAP = [
         'cipp_list_users' => 'ListUsers',
         'cipp_list_mailboxes' => 'ListMailboxes',
@@ -65,10 +76,16 @@ class CippMcpToolRelay
         'cipp_list_conditional_access_policies' => ['id', 'displayName', 'state', 'createdDateTime', 'modifiedDateTime', 'conditions', 'grantControls', 'sessionControls'],
         'cipp_list_user_conditional_access' => ['id', 'displayName', 'state', 'result', 'conditions', 'grantControls', 'sessionControls'],
         'cipp_list_sign_ins' => ['id', 'createdDateTime', 'userPrincipalName', 'appDisplayName', 'ipAddress', 'clientAppUsed', 'conditionalAccessStatus', 'status', 'location', 'riskDetail', 'riskLevelAggregated', 'deviceDetail'],
-        'cipp_list_audit_logs' => ['id', 'createdDateTime', 'CreationTime', 'Operation', 'operation', 'UserId', 'userPrincipalName', 'Workload', 'ResultStatus'],
+        // No cipp_list_audit_logs entry: its real fields are nested two levels
+        // down (Data.RawData.*), which a flat field list cannot express, so it
+        // is hand-projected by shapeAuditLogs() (psa-9d4l).
         'cipp_list_message_trace' => ['MessageTraceId', 'messageTraceId', 'Received', 'received', 'SenderAddress', 'senderAddress', 'RecipientAddress', 'recipientAddress', 'Subject', 'subject', 'Status', 'status', 'FromIP', 'toIP'],
         'cipp_list_mail_quarantine' => ['Identity', 'identity', 'ReceivedTime', 'receivedTime', 'SenderAddress', 'senderAddress', 'RecipientAddress', 'recipientAddress', 'Subject', 'subject', 'QuarantineTypes', 'ReleaseStatus', 'expires'],
-        'cipp_list_oauth_apps' => ['id', 'appId', 'displayName', 'appDisplayName', 'publisherName', 'principalId', 'consentedBy', 'userPrincipalName', 'consentType', 'scopes'],
+        // No cipp_list_oauth_apps entry: shapeResult() routes that tool to
+        // CippToolContract::shapeOauthApps(), which bypasses projectRows() and
+        // names its own keys — the same treatment as audit logs and Defender
+        // state, and for the same reason. CIPP's real ListOAuthApps shape is
+        // described there, once, for both transports (psa-dbrw).
     ];
 
     private const FIELD_ALIASES = [
@@ -148,10 +165,15 @@ class CippMcpToolRelay
         'cipp_list_oauth_apps' => ['user_id'],
     ];
 
+    private readonly CippToolContract $contract;
+
     public function __construct(
         private readonly CippMcpClient $client,
         private readonly ChetDataSurfaceTextSanitizer $textSanitizer,
-    ) {}
+        ?CippToolContract $contract = null,
+    ) {
+        $this->contract = $contract ?? new CippToolContract($textSanitizer);
+    }
 
     public static function handles(string $toolName): bool
     {
@@ -212,20 +234,38 @@ class CippMcpToolRelay
             return ['error' => "Unknown CIPP tool: {$toolName}"];
         }
 
+        // Defence in depth. HandlesCippTools::cippDispatch() already refused this
+        // before it chose a transport — that is the choke point both paths pass
+        // through — but the relay must not be safe only because of who calls it.
+        // It is the SAME predicate, so the two cannot drift apart.
+        $unanswerable = CippToolContract::unanswerable($toolName, $input);
+        if ($unanswerable !== null) {
+            return ['error' => $unanswerable];
+        }
+
+        // Likewise for the identity guard: a user-scoped read whose endpoint filters on
+        // an Azure AD object ID and nothing else must not be asked with an identity we
+        // could not bridge to one. Over MCP that request would come back empty exactly
+        // as it does over REST, and an empty answer to "has this account been signed
+        // into?" is the most dangerous thing this tool can say.
+        $identityRefusal = CippToolContract::identityRefusal($toolName, $input, $clientId);
+        if ($identityRefusal !== null) {
+            return ['error' => $identityRefusal];
+        }
+
         $args = ['tenantFilter' => $tenantDomain];
 
         if (in_array($toolName, [
             'cipp_list_user_groups',
             'cipp_list_mailbox_permissions',
             'cipp_list_mailbox_rules',
-            'cipp_list_user_conditional_access',
         ], true)) {
-            $userId = $this->requiredUserId($input);
+            $userId = CippToolContract::requiredUserId($input);
             if ($userId === null) {
                 return ['error' => 'user_id is required'];
             }
 
-            $resolved = $this->resolveCippUserId($userId, $clientId);
+            $resolved = CippToolContract::resolveUserId($userId, $clientId);
 
             if ($toolName === 'cipp_list_mailbox_rules') {
                 // ListUserMailboxRules names its parameter UserID and takes an
@@ -242,12 +282,48 @@ class CippMcpToolRelay
             }
         }
 
-        if (in_array($toolName, ['cipp_list_sign_ins', 'cipp_list_audit_logs'], true) && ! empty($input['user_id'])) {
-            $args['userId'] = $this->resolveCippUserId(trim((string) $input['user_id']), $clientId);
+        // Only ListUserSigninLogs actually consumes userId. ListAuditLogs does
+        // not accept it (not a spec param) and silently ignored what we sent —
+        // that filter is applied here, against the nested payload.
+        //
+        // ListUserSigninLogs filters Graph on the signIn `userId` property, an Azure AD
+        // OBJECT ID; a UPN matches nothing and comes back empty. requireObjectId() is the
+        // same resolver the identity guard above consulted, so the value sent cannot
+        // disagree with the value that was cleared.
+        if ($toolName === 'cipp_list_sign_ins' && ! empty($input['user_id'])) {
+            $resolved = CippToolContract::requireObjectId(trim((string) $input['user_id']), $clientId);
+            if (isset($resolved['error'])) {
+                return ['error' => $resolved['error']];
+            }
+
+            $args['userId'] = $resolved['objectId'];
+        }
+
+        // Both endpoints window SERVER-SIDE and default to the last 7 days when
+        // handed no window, so a 30-day request silently saw 7 days of data
+        // while the response still reported filtered_by_days: 30 — a lying
+        // metadata field, which is worse than a missing one because it turns
+        // "we didn't look" into "there was nothing to find" (psa-9d4l/psa-536g).
+        // ListAuditLogs takes RelativeTime as (\d+)([dhm]); ListSignIns takes Days.
+        if ($toolName === 'cipp_list_audit_logs') {
+            $days = CippToolContract::windowDays($input['days'] ?? null);
+            if ($days !== null) {
+                $args['RelativeTime'] = "{$days}d";
+            }
+        }
+
+        // The user_id path resolves to ListUserSigninLogs, which has no date
+        // filter at all ($top=50, newest first) — so Days only applies to the
+        // tenant-wide ListSignIns.
+        if ($toolName === 'cipp_list_sign_ins' && empty($input['user_id'])) {
+            $days = CippToolContract::windowDays($input['days'] ?? null);
+            if ($days !== null) {
+                $args['Days'] = $days;
+            }
         }
 
         if ($toolName === 'cipp_list_message_trace') {
-            $args['days'] = $this->boundedDays($input['days'] ?? null, 2, 10);
+            $args['days'] = CippToolContract::boundedDays($input['days'] ?? null, 2, 10);
             foreach (['sender', 'recipient'] as $field) {
                 if (! empty($input[$field])) {
                     $args[$field] = trim((string) $input[$field]);
@@ -263,7 +339,7 @@ class CippMcpToolRelay
      */
     private function shapeResult(string $toolName, array $rows, array $input, array $prepared, ?int $clientId): array
     {
-        $rows = $this->normalizeRows($rows);
+        $rows = CippToolContract::normalizeRows($rows);
         $totalReturned = count($rows);
 
         return match ($toolName) {
@@ -274,16 +350,20 @@ class CippMcpToolRelay
                 ['createdDateTime'],
                 [
                     'endpoint' => $prepared['tool'] ?? null,
-                    'filtered_by_user' => ! empty($input['user_id']) ? trim((string) $input['user_id']) : null,
-                    'filtered_by_days' => $this->optionalDays($input['days'] ?? null, 30),
+                    'filtered_by_user' => CippToolContract::optionalUserId($input),
+                    'filtered_by_days' => CippToolContract::windowDays($input['days'] ?? null),
                     'total_returned_by_cipp' => $totalReturned,
                 ],
             ),
-            'cipp_list_audit_logs' => $this->shapeAuditLogs($rows, $input, $totalReturned, $clientId),
+            // Audit-log and OAuth-app rows are shaped by the shared contract, not
+            // here: their row shapes, filters and projections are properties of
+            // CIPP's API, not of this transport, and the direct CippClient path has
+            // to honour exactly the same ones.
+            'cipp_list_audit_logs' => $this->contract->shapeAuditLogs($rows, $input, $clientId),
+            'cipp_list_oauth_apps' => $this->contract->shapeOauthApps($rows),
             'cipp_list_message_trace' => $this->shapeMessageTrace($rows, $input, $totalReturned),
             'cipp_list_mail_quarantine' => $this->shapeMailQuarantine($rows, $input, $totalReturned),
             'cipp_list_user_mfa_methods' => $this->shapeUserMfaMethods($rows, $input, $clientId),
-            'cipp_list_oauth_apps' => $this->shapeOauthApps($rows, $input, $totalReturned, $clientId),
             'cipp_list_defender_state' => $this->shapeDefenderState($rows),
             'cipp_list_mailbox_rules' => $this->shapeMailboxRules($rows, $input, $clientId),
             default => $this->projectRows($toolName, $rows),
@@ -309,11 +389,11 @@ class CippMcpToolRelay
      */
     private function shapeMailboxRules(array $rules, array $input, ?int $clientId): array
     {
-        $requested = $this->requiredUserId($input);
+        $requested = CippToolContract::requiredUserId($input);
         $dropped = 0;
 
         if ($requested !== null) {
-            $needles = $this->userIdentityNeedles($requested, $clientId);
+            $needles = CippToolContract::userIdentityNeedles($requested, $clientId);
 
             $rules = array_values(array_filter($rules, function (array $rule) use ($needles, &$dropped): bool {
                 if ($this->mailboxRuleIsForeign($rule, $needles)) {
@@ -339,37 +419,6 @@ class CippMcpToolRelay
     }
 
     /**
-     * Every identity form the requested user is known by, lowercased — the
-     * caller may pass a UPN while Exchange answers with an object ID, or vice
-     * versa.
-     *
-     * @return array<int, string>
-     */
-    private function userIdentityNeedles(string $requested, ?int $clientId): array
-    {
-        $needles = [$requested, $this->resolveCippUserId($requested, $clientId)];
-
-        if ($clientId !== null) {
-            $person = Person::where('client_id', $clientId)
-                ->where(function ($query) use ($requested): void {
-                    $query->whereRaw('LOWER(cipp_upn) = ?', [mb_strtolower($requested)])
-                        ->orWhere('cipp_user_id', $requested);
-                })
-                ->first();
-
-            if ($person !== null) {
-                $needles[] = (string) $person->cipp_upn;
-                $needles[] = (string) $person->cipp_user_id;
-                $needles[] = (string) $person->email;
-            }
-        }
-
-        $needles = array_map(fn (string $needle): string => mb_strtolower(trim($needle)), $needles);
-
-        return array_values(array_unique(array_filter($needles, fn (string $needle): bool => $needle !== '')));
-    }
-
-    /**
      * @param  array<int, string>  $needles
      */
     private function mailboxRuleIsForeign(array $rule, array $needles): bool
@@ -380,7 +429,7 @@ class CippMcpToolRelay
         }
 
         $ownerIsEmail = str_contains($owner, '@');
-        $ownerIsGuid = $this->looksLikeObjectId($owner);
+        $ownerIsGuid = CippToolContract::looksLikeObjectId($owner);
 
         // A display name or legacy DN is unmatchable, not foreign.
         if (! $ownerIsEmail && ! $ownerIsGuid) {
@@ -396,7 +445,7 @@ class CippMcpToolRelay
             $needles,
             fn (string $needle): bool => $ownerIsEmail
                 ? str_contains($needle, '@')
-                : $this->looksLikeObjectId($needle)
+                : CippToolContract::looksLikeObjectId($needle)
         ));
 
         if ($comparable === []) {
@@ -404,11 +453,6 @@ class CippMcpToolRelay
         }
 
         return ! in_array($owner, $comparable, true);
-    }
-
-    private function looksLikeObjectId(string $value): bool
-    {
-        return preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i', $value) === 1;
     }
 
     private function mailboxRuleOwner(array $rule): ?string
@@ -472,24 +516,6 @@ class CippMcpToolRelay
     }
 
     /**
-     * @return array<int, array<string, mixed>>
-     */
-    private function normalizeRows(array $rows): array
-    {
-        if (array_is_list($rows)) {
-            return array_values(array_filter($rows, 'is_array'));
-        }
-
-        foreach (['Results', 'results', 'value', 'Value'] as $key) {
-            if (isset($rows[$key]) && is_array($rows[$key])) {
-                return $this->normalizeRows($rows[$key]);
-            }
-        }
-
-        return [$rows];
-    }
-
-    /**
      * @return array<int|string, mixed>
      */
     private function shapeEvents(string $toolName, array $events, array $input, array $dateKeys, array $meta): array
@@ -511,41 +537,11 @@ class CippMcpToolRelay
     /**
      * @return array<int|string, mixed>
      */
-    private function shapeAuditLogs(array $events, array $input, int $totalReturned, ?int $clientId): array
-    {
-        $userId = ! empty($input['user_id']) ? trim((string) $input['user_id']) : null;
-        $days = $this->optionalDays($input['days'] ?? null, 30);
-
-        if ($days !== null) {
-            $cutoff = now()->subDays($days);
-            $events = array_values(array_filter($events, fn (array $event): bool => $this->eventWithinCutoff($event, $cutoff, ['createdDateTime', 'CreationTime', 'Date'])));
-        }
-
-        if ($userId) {
-            $resolved = $this->resolveCippUserId($userId, $clientId);
-            $upnNeedle = str_contains($userId, '@') ? mb_strtolower($userId) : null;
-            $events = array_values(array_filter($events, fn (array $event): bool => $this->rowMatchesUser($event, $resolved, $upnNeedle)));
-        }
-
-        $projected = $this->projectRows('cipp_list_audit_logs', $events);
-
-        return [
-            'count' => count($projected),
-            'filtered_by_user' => $userId,
-            'filtered_by_days' => $days,
-            'total_returned_by_cipp' => $totalReturned,
-            'events' => array_slice($projected, 0, 50),
-        ];
-    }
-
-    /**
-     * @return array<int|string, mixed>
-     */
     private function shapeMessageTrace(array $messages, array $input, int $totalReturned): array
     {
         $sender = ! empty($input['sender']) ? trim((string) $input['sender']) : null;
         $recipient = ! empty($input['recipient']) ? trim((string) $input['recipient']) : null;
-        $days = $this->boundedDays($input['days'] ?? null, 2, 10);
+        $days = CippToolContract::boundedDays($input['days'] ?? null, 2, 10);
 
         if ($sender) {
             $needle = mb_strtolower($sender);
@@ -596,12 +592,12 @@ class CippMcpToolRelay
      */
     private function shapeUserMfaMethods(array $rows, array $input, ?int $clientId): array
     {
-        $userId = $this->requiredUserId($input);
+        $userId = CippToolContract::requiredUserId($input);
         if ($userId === null) {
             return ['error' => 'user_id is required'];
         }
 
-        $objectId = $this->resolveCippUserId($userId, $clientId);
+        $objectId = CippToolContract::resolveUserId($userId, $clientId);
         $upnNeedle = str_contains($userId, '@') ? mb_strtolower($userId) : null;
 
         foreach ($rows as $row) {
@@ -616,39 +612,6 @@ class CippMcpToolRelay
             'error' => "No MFA record found for {$userId} in this tenant",
             'searched_user_id' => $userId,
             'resolved_object_id' => $objectId,
-        ];
-    }
-
-    /**
-     * @return array<int|string, mixed>
-     */
-    private function shapeOauthApps(array $apps, array $input, int $totalReturned, ?int $clientId): array
-    {
-        $userId = ! empty($input['user_id']) ? trim((string) $input['user_id']) : null;
-
-        if ($userId) {
-            $objectId = $this->resolveCippUserId($userId, $clientId);
-            $upnNeedle = str_contains($userId, '@') ? mb_strtolower($userId) : null;
-
-            $apps = array_values(array_filter($apps, function (array $app) use ($objectId, $upnNeedle): bool {
-                foreach (['principalId', 'consentedBy', 'userId', 'userPrincipalName'] as $key) {
-                    $val = $app[$key] ?? null;
-                    if (is_string($val) && ($val === $objectId || ($upnNeedle && mb_strtolower($val) === $upnNeedle))) {
-                        return true;
-                    }
-                }
-
-                return false;
-            }));
-        }
-
-        $projected = $this->projectRows('cipp_list_oauth_apps', $apps);
-
-        return [
-            'count' => count($projected),
-            'filtered_by_user' => $userId,
-            'total_returned_by_cipp' => $totalReturned,
-            'apps' => array_slice($projected, 0, 50),
         ];
     }
 
@@ -775,28 +738,18 @@ class CippMcpToolRelay
         return $projected;
     }
 
+    /**
+     * Compact the known sign-in sub-objects to their useful keys, then hand the
+     * value to the shared fence. The compaction is a projection choice specific to
+     * this tool; the fencing is the contract's and is identical on both transports.
+     */
     private function sanitizeProjectedValue(string $toolName, string $field, mixed $value): mixed
     {
-        if (is_string($value) && $this->isFreeTextField($field)) {
-            return $this->textSanitizer->sanitize($this->fieldLabel($toolName, $field), $value, 1000);
+        if (is_array($value) && $toolName === 'cipp_list_sign_ins' && isset(self::SIGN_IN_NESTED_FIELDS[$field])) {
+            $value = $this->compactArray($value, self::SIGN_IN_NESTED_FIELDS[$field]);
         }
 
-        if (is_array($value)) {
-            if ($toolName === 'cipp_list_sign_ins' && isset(self::SIGN_IN_NESTED_FIELDS[$field])) {
-                $value = $this->compactArray($value, self::SIGN_IN_NESTED_FIELDS[$field]);
-            }
-
-            return $this->boundArray($toolName, $field, $value);
-        }
-
-        return $value;
-    }
-
-    private function valueFor(array $row, string $field): mixed
-    {
-        $key = $this->resolveKey($row, $field);
-
-        return $key === null ? null : $row[$key];
+        return $this->contract->fence($toolName, $field, $value);
     }
 
     /**
@@ -852,23 +805,6 @@ class CippMcpToolRelay
         ];
     }
 
-    private function boundArray(string $toolName, string $field, array $value, int $depth = 0): array
-    {
-        $bounded = array_slice($value, 0, 20, preserve_keys: true);
-
-        foreach ($bounded as $key => $item) {
-            if (is_string($item)) {
-                $bounded[$key] = $this->textSanitizer->sanitize($this->fieldLabel($toolName, "{$field} {$key}"), $item, 1000);
-            } elseif (is_array($item) && $depth < self::MAX_NESTED_ARRAY_DEPTH) {
-                $bounded[$key] = $this->boundArray($toolName, "{$field} {$key}", $item, $depth + 1);
-            } elseif (is_array($item)) {
-                $bounded[$key] = ['_truncated' => 'Nested array omitted'];
-            }
-        }
-
-        return $bounded;
-    }
-
     /**
      * @param  array<int, string>  $allowedKeys
      * @return array<string, mixed>
@@ -886,93 +822,6 @@ class CippMcpToolRelay
         return $compacted;
     }
 
-    private function isFreeTextField(string $field): bool
-    {
-        return in_array($field, [
-            'displayName',
-            'DisplayName',
-            'name',
-            'Name',
-            'deviceName',
-            'DeviceName',
-            'managedDeviceName',
-            'ManagedDeviceName',
-            'description',
-            'Description',
-            'jobTitle',
-            'department',
-            'officeLocation',
-            // Mailbox-permission trustees can be display names (SendOnBehalf rows),
-            // not just UPNs — treat as untrusted free text.
-            'user',
-            // An inbox rule's target folder is named by the mailbox owner (or by
-            // whoever planted the rule), so it is attacker-controlled text on the
-            // same footing as the rule's name and description. Unlike the rule's
-            // recipient lists — arrays, already fenced item-by-item by boundArray()
-            // — this one is a bare scalar and would otherwise reach the agent raw.
-            'moveToFolder',
-            'MoveToFolder',
-            'Subject',
-            'subject',
-            'appDisplayName',
-            'publisherName',
-            'Operation',
-            'operation',
-        ], true);
-    }
-
-    private function fieldLabel(string $toolName, string $field): string
-    {
-        $tool = str_replace('_', ' ', preg_replace('/^cipp_/', '', $toolName) ?? $toolName);
-
-        return "CIPP {$tool} {$field}";
-    }
-
-    private function requiredUserId(array $input): ?string
-    {
-        $userId = $input['user_id'] ?? null;
-        if (! is_string($userId) && ! is_numeric($userId)) {
-            return null;
-        }
-
-        $userId = trim((string) $userId);
-
-        return $userId !== '' ? $userId : null;
-    }
-
-    private function resolveCippUserId(string $input, ?int $clientId): string
-    {
-        if (preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i', $input)) {
-            return $input;
-        }
-
-        if (str_contains($input, '@') && $clientId) {
-            $objectId = Person::where('client_id', $clientId)
-                ->whereRaw('LOWER(cipp_upn) = ?', [mb_strtolower($input)])
-                ->value('cipp_user_id');
-
-            if ($objectId) {
-                return $objectId;
-            }
-        }
-
-        return $input;
-    }
-
-    private function optionalDays(mixed $value, int $max): ?int
-    {
-        return isset($value) && is_numeric($value)
-            ? (int) min(max(1, $value), $max)
-            : null;
-    }
-
-    private function boundedDays(mixed $value, int $default, int $max): int
-    {
-        return isset($value) && is_numeric($value)
-            ? (int) min(max(1, $value), $max)
-            : $default;
-    }
-
     private function eventWithinCutoff(array $event, Carbon $cutoff, array $dateKeys): bool
     {
         foreach ($dateKeys as $key) {
@@ -981,20 +830,6 @@ class CippMcpToolRelay
                     return Carbon::parse($event[$key])->gte($cutoff);
                 } catch (\Throwable) {
                     return false;
-                }
-            }
-        }
-
-        return false;
-    }
-
-    private function rowMatchesUser(array $event, string $resolved, ?string $upnNeedle): bool
-    {
-        foreach (['userId', 'UserId', 'userPrincipalName', 'UserPrincipalName', 'initiatedBy'] as $key) {
-            if (isset($event[$key])) {
-                $val = mb_strtolower((string) $event[$key]);
-                if ($val === mb_strtolower($resolved) || ($upnNeedle && $val === $upnNeedle)) {
-                    return true;
                 }
             }
         }

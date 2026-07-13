@@ -47,6 +47,40 @@ class CippMcpCatalogSyncTest extends TestCase
     }
 
     /**
+     * The third door onto the sign-in false clean (psa-cipp-p1).
+     *
+     * The curated cipp_list_sign_ins tool covers TWO upstream endpoints: the tenant-wide
+     * ListSignIns and the per-user ListUserSigninLogs. Only the first was in the curated
+     * SKIP list — so ListUserSigninLogs was importable, and it normalises to
+     * cipp_list_user_signin_logs, which collides with nothing and therefore sails past
+     * the shadowing guard as an ADDITIONAL tool.
+     *
+     * A dynamic row is a RAW PASSTHROUGH: it forwards whatever the model typed, with no
+     * identity bridging whatever. ListUserSigninLogs filters Microsoft Graph on the
+     * signIn `userId` property — an Azure AD object ID — so a model passing the UPN it
+     * read off the ticket gets HTTP 200 and an empty list, and reports "no sign-ins" for
+     * a possibly-compromised account. That is the exact false clean the curated tool now
+     * refuses to produce, reachable through a door the curated tool does not guard.
+     *
+     * Blocked rather than merely curated, deliberately: a tool is curated because we
+     * hand-wrote it, and blocked because it is dangerous. Conflating the two is what let
+     * ListMailboxRules become importable again (psa-7lgo.1).
+     */
+    public function test_sync_never_imports_the_per_user_signin_endpoint(): void
+    {
+        $client = Mockery::mock(CippMcpClient::class);
+        $client->shouldReceive('listTools')->once()->andReturn([
+            $this->tool('ListUserSigninLogs', category: 'Identity'),
+        ]);
+
+        app(CippMcpCatalogSyncService::class)->sync($client);
+
+        $this->assertDatabaseMissing('cipp_mcp_tools', ['upstream_name' => 'ListUserSigninLogs']);
+        $this->assertDatabaseMissing('cipp_mcp_tools', ['local_name' => 'cipp_list_user_signin_logs']);
+        $this->assertSame(0, CippMcpTool::query()->where('active', true)->count());
+    }
+
+    /**
      * The general form of the same hole: no dynamic import may ever take the name
      * of a hand-written curated tool, whatever upstream name it arrives under —
      * because the dynamic executor is a raw passthrough and it dispatches first.
@@ -69,7 +103,20 @@ class CippMcpCatalogSyncTest extends TestCase
         $this->assertSame(1, $result->active);
     }
 
-    public function test_sync_imports_dynamic_read_tools_skips_curated_tools_and_imports_user_signin_logs(): void
+    /**
+     * The three outcomes of a catalog sync, in one pass: the long tail of read tools is
+     * imported, a curated tool's upstream is skipped, and a BLOCKED upstream is refused.
+     *
+     * This test previously asserted the opposite of its third case — it was named
+     * "..._and_imports_user_signin_logs" and pinned cipp_list_user_signin_logs as an
+     * active row. That is worth saying out loud: the per-user sign-in passthrough was not
+     * an oversight in the skip list, it was a guaranteed behaviour with a green test
+     * behind it. It is a raw passthrough onto an endpoint that filters Graph on an Azure
+     * AD object ID and nothing else, so it answers a confident "no sign-ins" to any UPN
+     * it is handed — the exact false clean the curated cipp_list_sign_ins now refuses
+     * (psa-cipp-p1).
+     */
+    public function test_sync_imports_dynamic_read_tools_and_skips_curated_and_blocked_tools(): void
     {
         $client = Mockery::mock(CippMcpClient::class);
         $client->shouldReceive('listTools')->once()->andReturn([
@@ -82,20 +129,22 @@ class CippMcpCatalogSyncTest extends TestCase
 
         $this->assertInstanceOf(CippMcpCatalogSyncResult::class, $result);
         $this->assertSame(3, $result->seen);
-        $this->assertSame(2, $result->active);
-        $this->assertSame(2, $result->created);
+        $this->assertSame(1, $result->active);
+        $this->assertSame(1, $result->created);
+
+        // Curated: we hand-wrote cipp_list_users, so the raw upstream is skipped.
         $this->assertDatabaseMissing('cipp_mcp_tools', ['local_name' => 'cipp_list_users']);
+
+        // Blocked: dangerous as a raw passthrough, whatever name it arrives under.
+        $this->assertDatabaseMissing('cipp_mcp_tools', ['upstream_name' => 'ListUserSigninLogs']);
+
+        // The long tail still syncs — refusing tools must not break the rest of the catalog.
         $this->assertDatabaseHas('cipp_mcp_tools', [
             'local_name' => 'cipp_list_db_cache',
             'upstream_name' => 'ListDBCache',
             'category' => 'CIPP',
             'read_only' => true,
             'sensitive' => false,
-            'active' => true,
-        ]);
-        $this->assertDatabaseHas('cipp_mcp_tools', [
-            'local_name' => 'cipp_list_user_signin_logs',
-            'upstream_name' => 'ListUserSigninLogs',
             'active' => true,
         ]);
     }

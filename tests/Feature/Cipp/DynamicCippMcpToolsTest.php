@@ -635,6 +635,47 @@ class DynamicCippMcpToolsTest extends TestCase
     }
 
     /**
+     * psa-cipp-p1 — the same door, on the per-user sign-in endpoint.
+     *
+     * ListUserSigninLogs was importable (only the tenant-wide ListSignIns was on the
+     * curated skip list), so any environment that has run a catalog sync is carrying an
+     * ACTIVE cipp_list_user_signin_logs row right now. It collides with no curated name,
+     * so nothing shadows it and nothing refused it — it simply sits there as an extra
+     * tool that a grant can reach.
+     *
+     * As a raw passthrough it does NO identity bridging, so it forwards whatever the
+     * model supplies straight into a Graph filter that only understands Azure AD object
+     * IDs: a UPN matches nothing, comes back empty, and the agent reports "no sign-ins"
+     * for an account it was asked to clear. The curated cipp_list_sign_ins now refuses
+     * that question; this row would answer it anyway.
+     *
+     * The runtime guard is what closes this — the row must be inert the moment it is
+     * read, not whenever the optional, weekly, config-gated catalog sync next runs.
+     */
+    public function test_a_stale_dynamic_row_cannot_reach_the_per_user_signin_endpoint(): void
+    {
+        $this->configureCippMcp();
+        $this->createStalePerUserSignInRow();
+        $client = Client::factory()->create(['cipp_tenant_domain' => 'acme.example']);
+        McpToolRegistry::flushMemoized();
+
+        // Not dispatchable, and so not advertised: a token cannot reach it at all.
+        $this->assertFalse(CippMcpTool::handles('cipp_list_user_signin_logs'));
+
+        // And the object-ID-only endpoint must never be reached, whatever else happens.
+        $relay = Mockery::mock(CippMcpClient::class);
+        $relay->shouldReceive('callTool')->with('ListUserSigninLogs', Mockery::any())->never();
+        $relay->shouldReceive('callTool')->andReturn(['Results' => []]);
+        $this->app->instance(CippMcpClient::class, $relay);
+
+        $result = app(CippMcpDynamicToolExecutor::class)
+            ->execute('cipp_list_user_signin_logs', ['UserID' => 'alice@acme.example'], $client, $client->id);
+
+        $this->assertArrayHasKey('error', $result);
+        $this->assertArrayNotHasKey('count', $result);
+    }
+
+    /**
      * The general form, not just the mailbox-rules instance: any dynamic row that lands
      * on a curated tool's local name is a privilege downgrade of a reviewed tool,
      * because the raw passthrough dispatches first.
@@ -693,6 +734,25 @@ class DynamicCippMcpToolsTest extends TestCase
         ]);
     }
 
+    /**
+     * The earlier sweep is written against the policy constant, but it has already run
+     * wherever it was deployed — so growing BLOCKED_UPSTREAM_TOOLS does not retroactively
+     * re-run it, and the per-user sign-in row needs its own (psa-cipp-p1).
+     */
+    public function test_the_migration_deactivates_the_stale_per_user_signin_row(): void
+    {
+        $this->createStalePerUserSignInRow();
+
+        $migration = require database_path('migrations/2026_07_13_000002_deactivate_per_user_signin_cipp_mcp_catalog_tool.php');
+        $migration->up();
+
+        $this->assertDatabaseHas('cipp_mcp_tools', [
+            'local_name' => 'cipp_list_user_signin_logs',
+            'upstream_name' => 'ListUserSigninLogs',
+            'active' => false,
+        ]);
+    }
+
     /** @return array<int, array<string, mixed>> */
     private function listTools(string $token): array
     {
@@ -733,6 +793,35 @@ class DynamicCippMcpToolsTest extends TestCase
             'input_schema' => [
                 'type' => 'object',
                 'properties' => ['tenantFilter' => ['type' => 'string']],
+                'required' => ['tenantFilter'],
+            ],
+            'annotations' => ['readOnlyHint' => true],
+            'read_only' => true,
+            'sensitive' => false,
+            'active' => true,
+            'last_seen_at' => now(),
+        ]);
+    }
+
+    /**
+     * A row exactly as a catalog sync against the previous head would have written it:
+     * CIPP's per-user sign-in endpoint, active, read-only, under the local name its own
+     * upstream name normalises to — colliding with nothing, and so refused by nothing.
+     */
+    private function createStalePerUserSignInRow(): void
+    {
+        CippMcpTool::create([
+            'local_name' => 'cipp_list_user_signin_logs',
+            'upstream_name' => 'ListUserSigninLogs',
+            'category' => 'CIPP',
+            'description' => '[CIPP] List recent sign-in log entries for a specific Entra ID user.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'tenantFilter' => ['type' => 'string'],
+                    'UserID' => ['type' => 'string'],
+                    'top' => ['type' => 'string'],
+                ],
                 'required' => ['tenantFilter'],
             ],
             'annotations' => ['readOnlyHint' => true],
