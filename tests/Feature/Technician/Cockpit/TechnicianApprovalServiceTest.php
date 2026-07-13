@@ -361,4 +361,132 @@ class TechnicianApprovalServiceTest extends TestCase
 
         $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
     }
+
+    private function executedLogForRun(TechnicianRun $run): TechnicianActionLog
+    {
+        return TechnicianActionLog::where('run_id', $run->id)
+            ->where('result_status', 'executed')
+            ->firstOrFail();
+    }
+
+    public function test_approved_content_hash_binds_final_recipients_for_send_reply(): void
+    {
+        // psa-w4e0 revise (recipient-swap TOCTOU): the SAME approved body to a DIFFERENT
+        // final To/CC must sign + audit as a DIFFERENT action. Body-only hashes let an
+        // approved payload be recipient-swapped without changing the signed grant hash.
+        $actor = User::factory()->create(['name' => 'Chet']);
+        [$runA, $ticket] = $this->seedSendReplyRunWithThread($actor);
+        $runB = TechnicianRun::create([
+            'ticket_id' => $ticket->id, 'client_id' => $ticket->client_id, 'action_type' => 'send_reply',
+            'content_hash' => str_repeat('c', 64), 'state' => TechnicianRunState::AwaitingApproval,
+            'proposed_content' => 'Original draft.',
+        ]);
+        $this->mock(EmailService::class, fn (MockInterface $m) => $m->shouldReceive('sendTicketReplyNote')->twice()->andReturnNull());
+
+        $service = app(TechnicianApprovalService::class);
+        $this->assertSame('sent', $service->approveAndSend($runA, 'Same body.', $actor->id)->status);
+        $this->assertSame('sent', $service->approveAndSend($runB, 'Same body.', $actor->id, [], ['vendor@thread.test'])->status);
+
+        $logA = $this->executedLogForRun($runA);
+        $logB = $this->executedLogForRun($runB);
+
+        // Different final audience ⇒ different executed content hash (grant + audit bind it).
+        $this->assertNotSame($logA->content_hash, $logB->content_hash);
+
+        // Pin the canonical resolved payload (action:ticket:body|to:...|cc:...) so the
+        // approval-time format can never drift from the stage/direct idempotency keys.
+        $this->assertSame(hash('sha256', 'send_reply:'.$ticket->id.':Same body.|to:client@thread.test|cc:'), $logA->content_hash);
+        $this->assertSame(hash('sha256', 'send_reply:'.$ticket->id.':Same body.|to:client@thread.test|cc:vendor@thread.test'), $logB->content_hash);
+    }
+
+    public function test_approved_content_hash_binds_final_recipients_for_stage_email(): void
+    {
+        $actor = User::factory()->create(['name' => 'Chet']);
+        Setting::setValue('triage_system_user_id', (string) $actor->id);
+        Setting::setValue('technician_action_tiers', json_encode([]));
+        $client = Client::factory()->create();
+        $contact = Person::create([
+            'client_id' => $client->id, 'person_type' => \App\Enums\PersonType::User,
+            'first_name' => 'Test', 'last_name' => 'Contact', 'email' => 'c@example.com', 'is_active' => true,
+        ]);
+        Person::create([
+            'client_id' => $client->id, 'person_type' => \App\Enums\PersonType::User,
+            'first_name' => 'Bob', 'last_name' => 'Second', 'email' => 'bob@example.test', 'is_active' => true,
+        ]);
+        $ticket = Ticket::factory()->create([
+            'client_id' => $client->id, 'contact_id' => $contact->id,
+            'status' => TicketStatus::InProgress, 'closed_at' => null,
+        ]);
+        $makeRun = fn (string $seed) => TechnicianRun::create([
+            'ticket_id' => $ticket->id, 'client_id' => $client->id, 'action_type' => 'stage_email',
+            'content_hash' => hash('sha256', $seed), 'state' => TechnicianRunState::AwaitingApproval,
+            'proposed_content' => 'Original staged body.',
+        ]);
+        $runA = $makeRun('seed-a');
+        $runB = $makeRun('seed-b');
+        $this->mock(EmailService::class, fn (MockInterface $m) => $m->shouldReceive('sendTicketReplyNote')->twice()->andReturnNull());
+
+        $service = app(TechnicianApprovalService::class);
+        $this->assertSame('sent', $service->approveStagedEmail($runA, 'Same body.', $actor->id)->status);
+        $this->assertSame('sent', $service->approveStagedEmail($runB, 'Same body.', $actor->id, [], ['bob@example.test'])->status);
+
+        $logA = $this->executedLogForRun($runA);
+        $logB = $this->executedLogForRun($runB);
+
+        $this->assertNotSame($logA->content_hash, $logB->content_hash);
+        $this->assertSame(hash('sha256', 'stage_email:'.$ticket->id.':Same body.|to:c@example.com|cc:'), $logA->content_hash);
+        $this->assertSame(hash('sha256', 'stage_email:'.$ticket->id.':Same body.|to:c@example.com|cc:bob@example.test'), $logB->content_hash);
+    }
+
+    public function test_stage_email_approval_records_final_recipients_durably_before_send_even_on_delivery_failure(): void
+    {
+        // psa-w4e0 revise: the exact approved audience — including the operator-added
+        // custom address — must survive on the append-only audit row even when the
+        // external send fails, so exfil forensics never depend on Graph accepting.
+        $actor = User::factory()->create(['name' => 'Chet']);
+        $run = $this->heldStageRun($actor, 'stage_email');
+        Setting::setValue('allow_arbitrary_email_recipients_staged', '1');
+        $this->mock(EmailService::class, fn (MockInterface $m) => $m->shouldReceive('sendTicketReplyNote')
+            ->once()->andThrow(new \RuntimeException('graph down')));
+
+        $result = app(TechnicianApprovalService::class)
+            ->approveStagedEmail($run, 'Audit summary.', $actor->id, [], ['auditor@partner.test']);
+
+        // The note is committed and the run is Done; only delivery failed (logged).
+        $this->assertSame('sent', $result->status);
+        $this->assertSame(TechnicianRunState::Done, $run->fresh()->state);
+
+        $log = $this->executedLogForRun($run);
+        $this->assertSame(
+            ['to' => 'c@example.com', 'cc' => ['auditor@partner.test'], 'custom' => ['auditor@partner.test']],
+            $log->approved_recipients,
+        );
+        // The executed hash binds that same audience.
+        $this->assertSame(hash('sha256', 'stage_email:'.$run->ticket_id.':Audit summary.|to:c@example.com|cc:auditor@partner.test'), $log->content_hash);
+        // Counts-only summary is unchanged: addresses live in approved_recipients, never the summary.
+        $this->assertStringContainsString('To 1, CC 1', (string) $log->summary);
+        $this->assertStringContainsString('1 outside known contacts', (string) $log->summary);
+        $this->assertStringNotContainsString('auditor@partner.test', (string) $log->summary);
+    }
+
+    public function test_send_reply_approval_records_final_recipients_durably_before_send_even_on_delivery_failure(): void
+    {
+        $actor = User::factory()->create(['name' => 'Chet']);
+        [$run, $ticket] = $this->seedSendReplyRunWithThread($actor);
+        $this->mock(EmailService::class, fn (MockInterface $m) => $m->shouldReceive('sendTicketReplyNote')
+            ->once()->andThrow(new \RuntimeException('graph down')));
+
+        $result = app(TechnicianApprovalService::class)
+            ->approveAndSend($run, 'Body.', $actor->id, [], ['vendor@thread.test']);
+
+        $this->assertSame('sent', $result->status);
+
+        $log = $this->executedLogForRun($run);
+        $this->assertSame(
+            ['to' => 'client@thread.test', 'cc' => ['vendor@thread.test'], 'custom' => []],
+            $log->approved_recipients,
+        );
+        $this->assertStringNotContainsString('client@thread.test', (string) $log->summary);
+        $this->assertStringNotContainsString('vendor@thread.test', (string) $log->summary);
+    }
 }

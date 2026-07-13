@@ -19,8 +19,9 @@ use LogicException;
  * BODY is composed by the FENCED, output-scanned TechnicianReplyDrafter, never model
  * free-text. The draft is recorded as a held TechnicianRun in DraftPipeline's exact
  * shape (proposed_content = undisclosed body; proposed_meta = ['to', 'reasons'];
- * content_hash = sha256('send_reply:'.ticketId.':'.body)) so the existing
- * approveAndSend + cockpit approve arm work UNCHANGED. The disclosure is appended.
+ * content_hash = sha256('send_reply:'.ticketId.':'.body) — the DRAFT identity/dedup
+ * key; approveAndSend signs a separate approval-time hash that also binds the final
+ * resolved To/CC, psa-w4e0 revise). The disclosure is appended.
  * RECIPIENT CONTRACT (psa-kt82): recipients resolve only from server-validated sources
  * — the ticket contact (the default To), the ticket-client's contacts, and addresses
  * already on the ticket's email thread — via EmailRecipientResolver, re-resolved at

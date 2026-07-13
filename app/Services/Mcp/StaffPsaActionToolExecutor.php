@@ -1986,7 +1986,7 @@ class StaffPsaActionToolExecutor
 
         // psa-kt82: recipients are now variable, so the idempotency key includes the
         // resolved To/CC set — the same body to a different audience is a new send.
-        $contentHash = $this->contentHash('send_email', $ticket->id, $body.'|to:'.$resolved->to.'|cc:'.implode(',', $resolved->cc));
+        $contentHash = $this->contentHash('send_email', $ticket->id, $resolved->hashPayload($body));
         if ($this->alreadyExecuted('send_email', $ticket->id, $contentHash)) {
             return $this->idempotentResult('send_email', $ticket);
         }
@@ -2125,8 +2125,9 @@ class StaffPsaActionToolExecutor
             }
 
             // Same body to a different audience is a new proposal, not a replay (mirrors
-            // the direct send_email idempotency key, psa-kt82).
-            $contentHash = $this->contentHash($actionType, $ticket->id, $body.'|to:'.$proposed->to.'|cc:'.implode(',', $proposed->cc));
+            // the direct send_email idempotency key, psa-kt82, and the approval-time
+            // grant/audit hash — all three share ResolvedRecipients::hashPayload).
+            $contentHash = $this->contentHash($actionType, $ticket->id, $proposed->hashPayload($body));
             $meta['to'] = $proposed->to;
             $meta['cc'] = $proposed->cc;
             $meta['custom_recipients'] = $proposed->custom;
