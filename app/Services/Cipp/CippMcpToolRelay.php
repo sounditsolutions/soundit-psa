@@ -65,15 +65,35 @@ class CippMcpToolRelay
         'cipp_list_conditional_access_policies' => ['id', 'displayName', 'state', 'createdDateTime', 'modifiedDateTime', 'conditions', 'grantControls', 'sessionControls'],
         'cipp_list_user_conditional_access' => ['id', 'displayName', 'state', 'result', 'conditions', 'grantControls', 'sessionControls'],
         'cipp_list_sign_ins' => ['id', 'createdDateTime', 'userPrincipalName', 'appDisplayName', 'ipAddress', 'clientAppUsed', 'conditionalAccessStatus', 'status', 'location', 'riskDetail', 'riskLevelAggregated', 'deviceDetail'],
-        'cipp_list_audit_logs' => ['id', 'createdDateTime', 'CreationTime', 'Operation', 'operation', 'UserId', 'userPrincipalName', 'Workload', 'ResultStatus'],
+        // No cipp_list_audit_logs entry: its real fields are nested two levels
+        // down (Data.RawData.*), which a flat field list cannot express, so it
+        // is hand-projected by shapeAuditLogs() (psa-9d4l).
         'cipp_list_message_trace' => ['MessageTraceId', 'messageTraceId', 'Received', 'received', 'SenderAddress', 'senderAddress', 'RecipientAddress', 'recipientAddress', 'Subject', 'subject', 'Status', 'status', 'FromIP', 'toIP'],
         'cipp_list_mail_quarantine' => ['Identity', 'identity', 'ReceivedTime', 'receivedTime', 'SenderAddress', 'senderAddress', 'RecipientAddress', 'recipientAddress', 'Subject', 'subject', 'QuarantineTypes', 'ReleaseStatus', 'expires'],
-        'cipp_list_oauth_apps' => ['id', 'appId', 'displayName', 'appDisplayName', 'publisherName', 'principalId', 'consentedBy', 'userPrincipalName', 'consentType', 'scopes'],
+        // Real ListOAuthApps shape (verified against CIPP-API
+        // Invoke-ListOAuthApps.ps1 and the UseReportDB twin
+        // Get-CIPPOAuthAppsReport.ps1, which agree — psa-dbrw): CIPP does NOT
+        // return raw Graph. It joins oauth2PermissionGrants with
+        // servicePrincipals and hand-builds a PascalCase object emitting exactly
+        // Name / ApplicationID / ObjectID / Scope / StartTime. The old list named
+        // raw-Graph properties (appDisplayName, publisherName, principalId,
+        // consentedBy, consentType), so nine of ten fields projected empty and
+        // the agent saw app names with no appId, no scopes and no consent time.
+        'cipp_list_oauth_apps' => ['id', 'appId', 'displayName', 'scopes', 'startTime'],
     ];
 
     private const FIELD_ALIASES = [
-        'id' => ['id', 'Id', 'ID'],
+        // ObjectID is ListOAuthApps' identifier for the service principal; every
+        // other tool emits a native `id`, which still resolves first.
+        'id' => ['id', 'Id', 'ID', 'ObjectID', 'ObjectId'],
         'displayName' => ['displayName', 'DisplayName', 'name', 'Name'],
+
+        // ListOAuthApps (psa-dbrw). Scope is a COMMA-JOINED STRING, not an
+        // array — CIPP does `($_.scope -join ',')` — and it is the field that
+        // makes an illicit-consent triage possible at all.
+        'appId' => ['ApplicationID', 'ApplicationId', 'applicationId', 'appId'],
+        'scopes' => ['Scope', 'scopes', 'scope', 'Scopes'],
+        'startTime' => ['StartTime', 'startTime'],
         'deviceName' => ['deviceName', 'DeviceName', 'managedDeviceName', 'ManagedDeviceName'],
         'managedDeviceName' => ['managedDeviceName', 'ManagedDeviceName'],
         'managedDeviceId' => ['managedDeviceId', 'ManagedDeviceId'],
@@ -212,13 +232,17 @@ class CippMcpToolRelay
             return ['error' => "Unknown CIPP tool: {$toolName}"];
         }
 
+        $unanswerable = $this->unanswerableRequest($toolName, $input);
+        if ($unanswerable !== null) {
+            return ['error' => $unanswerable];
+        }
+
         $args = ['tenantFilter' => $tenantDomain];
 
         if (in_array($toolName, [
             'cipp_list_user_groups',
             'cipp_list_mailbox_permissions',
             'cipp_list_mailbox_rules',
-            'cipp_list_user_conditional_access',
         ], true)) {
             $userId = $this->requiredUserId($input);
             if ($userId === null) {
@@ -242,8 +266,34 @@ class CippMcpToolRelay
             }
         }
 
-        if (in_array($toolName, ['cipp_list_sign_ins', 'cipp_list_audit_logs'], true) && ! empty($input['user_id'])) {
+        // Only ListUserSigninLogs actually consumes userId. ListAuditLogs does
+        // not accept it (not a spec param) and silently ignored what we sent —
+        // that filter is applied here, against the nested payload.
+        if ($toolName === 'cipp_list_sign_ins' && ! empty($input['user_id'])) {
             $args['userId'] = $this->resolveCippUserId(trim((string) $input['user_id']), $clientId);
+        }
+
+        // Both endpoints window SERVER-SIDE and default to the last 7 days when
+        // handed no window, so a 30-day request silently saw 7 days of data
+        // while the response still reported filtered_by_days: 30 — a lying
+        // metadata field, which is worse than a missing one because it turns
+        // "we didn't look" into "there was nothing to find" (psa-9d4l/psa-536g).
+        // ListAuditLogs takes RelativeTime as (\d+)([dhm]); ListSignIns takes Days.
+        if ($toolName === 'cipp_list_audit_logs') {
+            $days = $this->optionalDays($input['days'] ?? null, 30);
+            if ($days !== null) {
+                $args['RelativeTime'] = "{$days}d";
+            }
+        }
+
+        // The user_id path resolves to ListUserSigninLogs, which has no date
+        // filter at all ($top=50, newest first) — so Days only applies to the
+        // tenant-wide ListSignIns.
+        if ($toolName === 'cipp_list_sign_ins' && empty($input['user_id'])) {
+            $days = $this->optionalDays($input['days'] ?? null, 30);
+            if ($days !== null) {
+                $args['Days'] = $days;
+            }
         }
 
         if ($toolName === 'cipp_list_message_trace') {
@@ -256,6 +306,46 @@ class CippMcpToolRelay
         }
 
         return ['tool' => $execTool, 'arguments' => $args];
+    }
+
+    /**
+     * Requests CIPP structurally cannot answer, refused BEFORE we spend an
+     * upstream call.
+     *
+     * Both of these previously returned a clean, confident, empty result — the
+     * worst possible failure for a security read, because "no malicious OAuth
+     * consent" and "no Conditional Access gaps" are exactly the answers an
+     * attacker would like the analyst to receive. A tool that cannot answer
+     * must say so out loud (psa-dbrw, psa-idii).
+     */
+    private function unanswerableRequest(string $toolName, array $input): ?string
+    {
+        // CIPP's ListUserConditionalAccessPolicies posts a stale payload to the
+        // Graph beta CA-evaluate action (parameter and type names that no longer
+        // exist in its metadata). Graph rejects it, CIPP swallows the throw and
+        // returns an empty body with HTTP 200 — so this answered "no CA policies
+        // apply to this user" for every user, forever, with no error anywhere.
+        // CIPP's own source marks the endpoint "# XXX - Unused endpoint?".
+        if ($toolName === 'cipp_list_user_conditional_access') {
+            return 'Per-user Conditional Access evaluation is UNAVAILABLE: the upstream CIPP endpoint '
+                .'(ListUserConditionalAccessPolicies) is broken and returns no data. Do NOT interpret this as '
+                .'"no policies apply to this user". Use cipp_list_conditional_access_policies for the tenant-wide '
+                .'Conditional Access policy set and check its include/exclude membership yourself.';
+        }
+
+        // CIPP drops principalId and consentType from the raw grant, so consent
+        // cannot be attributed to a user from this endpoint at all. The old
+        // filter matched four keys CIPP never emits, so every user_id call
+        // filtered out 100% of rows and reported count: 0 — a false negative on
+        // illicit consent grant, a top phishing/persistence vector.
+        if ($toolName === 'cipp_list_oauth_apps' && ! empty($input['user_id'])) {
+            return 'Per-user OAuth consent attribution is UNAVAILABLE: CIPP\'s ListOAuthApps drops principalId and '
+                .'consentType, so a consent cannot be tied to a specific user. Do NOT interpret this as "this user '
+                .'consented to no apps". Call cipp_list_oauth_apps WITHOUT user_id for the tenant-wide list of '
+                .'consented applications and their granted scopes.';
+        }
+
+        return null;
     }
 
     /**
@@ -283,7 +373,7 @@ class CippMcpToolRelay
             'cipp_list_message_trace' => $this->shapeMessageTrace($rows, $input, $totalReturned),
             'cipp_list_mail_quarantine' => $this->shapeMailQuarantine($rows, $input, $totalReturned),
             'cipp_list_user_mfa_methods' => $this->shapeUserMfaMethods($rows, $input, $clientId),
-            'cipp_list_oauth_apps' => $this->shapeOauthApps($rows, $input, $totalReturned, $clientId),
+            'cipp_list_oauth_apps' => $this->shapeOauthApps($rows, $totalReturned),
             'cipp_list_defender_state' => $this->shapeDefenderState($rows),
             'cipp_list_mailbox_rules' => $this->shapeMailboxRules($rows, $input, $clientId),
             default => $this->projectRows($toolName, $rows),
@@ -509,6 +599,28 @@ class CippMcpToolRelay
     }
 
     /**
+     * Real ListAuditLogs shape (verified against CIPP-API
+     * Invoke-ListAuditLogs.ps1, psa-9d4l). CIPP reads its audit-log STORE — an
+     * Azure Table fed by its webhook pipeline, not a live unified-audit-log
+     * search — and RENAMES on the way out:
+     *
+     *   Select-Object @{n='LogId';     exp={$_.RowKey}},
+     *
+     *                 @{n='Timestamp'; exp={$_.Data.RawData.CreationTime}},
+     *                 Tenant, Title, Data
+     *
+     * so the top-level keys are LogId / Timestamp / Tenant / Title / Data, and
+     * the actual audit fields (Operation, UserId, Workload, ResultStatus,
+     * ClientIP) sit TWO levels down at Data.RawData.*.
+     *
+     * The old projection named the raw unified-audit-log keys at the TOP level,
+     * so none of its nine fields resolved. Worse, both filters read top-level
+     * too and eventWithinCutoff() drops a row when it finds no date key at all —
+     * so passing `days` OR `user_id` dropped 100% of rows, and passing neither
+     * returned rows that all projected to `{}`. There was no input combination
+     * that returned usable data, and the tool answered "no audit events" to
+     * every question asked of it.
+     *
      * @return array<int|string, mixed>
      */
     private function shapeAuditLogs(array $events, array $input, int $totalReturned, ?int $clientId): array
@@ -518,16 +630,30 @@ class CippMcpToolRelay
 
         if ($days !== null) {
             $cutoff = now()->subDays($days);
-            $events = array_values(array_filter($events, fn (array $event): bool => $this->eventWithinCutoff($event, $cutoff, ['createdDateTime', 'CreationTime', 'Date'])));
+            $events = array_values(array_filter(
+                $events,
+                fn (array $event): bool => $this->auditEventWithinCutoff($event, $cutoff)
+            ));
         }
 
         if ($userId) {
             $resolved = $this->resolveCippUserId($userId, $clientId);
             $upnNeedle = str_contains($userId, '@') ? mb_strtolower($userId) : null;
-            $events = array_values(array_filter($events, fn (array $event): bool => $this->rowMatchesUser($event, $resolved, $upnNeedle)));
+            $events = array_values(array_filter(
+                $events,
+                fn (array $event): bool => $this->auditRowMatchesUser($event, $resolved, $upnNeedle)
+            ));
         }
 
-        $projected = $this->projectRows('cipp_list_audit_logs', $events);
+        $projected = array_map(fn (array $event): array => $this->projectAuditRow($event), $events);
+
+        if ($events !== [] && array_filter($projected) === []) {
+            Log::warning('[CippMcpToolRelay] Every audit row projected empty — CIPP audit-log shape has drifted', [
+                'tool' => 'cipp_list_audit_logs',
+                'row_count' => count($events),
+                'first_row_keys' => array_slice(array_keys($events[0]), 0, 12),
+            ]);
+        }
 
         return [
             'count' => count($projected),
@@ -536,6 +662,104 @@ class CippMcpToolRelay
             'total_returned_by_cipp' => $totalReturned,
             'events' => array_slice($projected, 0, 50),
         ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function projectAuditRow(array $event): array
+    {
+        $raw = $this->auditRawData($event);
+
+        $projected = array_filter([
+            'logId' => $event['LogId'] ?? $event['logId'] ?? null,
+            'timestamp' => $this->auditEventTimestamp($event),
+            'title' => $event['Title'] ?? $event['title'] ?? null,
+            'operation' => $raw['Operation'] ?? $raw['operation'] ?? null,
+            'userId' => $raw['UserId'] ?? $raw['UserKey'] ?? $raw['CIPPUserKey'] ?? null,
+            'workload' => $raw['Workload'] ?? $raw['workload'] ?? null,
+            'resultStatus' => $raw['ResultStatus'] ?? $raw['resultStatus'] ?? null,
+            'clientIp' => $raw['ClientIP'] ?? $raw['ClientIp'] ?? $raw['clientIp'] ?? null,
+        ], fn (mixed $value): bool => $value !== null);
+
+        foreach ($projected as $field => $value) {
+            $projected[$field] = $this->sanitizeProjectedValue('cipp_list_audit_logs', $field, $value);
+        }
+
+        return $projected;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function auditRawData(array $event): array
+    {
+        $data = $event['Data'] ?? $event['data'] ?? null;
+        if (! is_array($data)) {
+            return [];
+        }
+
+        $raw = $data['RawData'] ?? $data['rawData'] ?? null;
+
+        return is_array($raw) ? $raw : [];
+    }
+
+    private function auditEventTimestamp(array $event): ?string
+    {
+        foreach (['Timestamp', 'timestamp'] as $key) {
+            if (! empty($event[$key])) {
+                return (string) $event[$key];
+            }
+        }
+
+        $raw = $this->auditRawData($event);
+        foreach (['CreationTime', 'creationTime'] as $key) {
+            if (! empty($raw[$key])) {
+                return (string) $raw[$key];
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * An event we cannot date is KEPT, not dropped. CIPP already windows this
+     * endpoint server-side (RelativeTime), so the client-side cutoff is a
+     * secondary guard — and silently discarding an undateable security event is
+     * the fail-closed behaviour that made this tool answer "nothing found".
+     */
+    private function auditEventWithinCutoff(array $event, Carbon $cutoff): bool
+    {
+        $timestamp = $this->auditEventTimestamp($event);
+        if ($timestamp === null) {
+            return true;
+        }
+
+        try {
+            return Carbon::parse($timestamp)->gte($cutoff);
+        } catch (\Throwable) {
+            return true;
+        }
+    }
+
+    private function auditRowMatchesUser(array $event, string $resolved, ?string $upnNeedle): bool
+    {
+        $raw = $this->auditRawData($event);
+        $needle = mb_strtolower($resolved);
+
+        foreach (['UserId', 'UserKey', 'CIPPUserKey', 'UserPrincipalName', 'userId'] as $key) {
+            $value = $raw[$key] ?? null;
+            if (! is_string($value)) {
+                continue;
+            }
+
+            $value = mb_strtolower($value);
+            if ($value === $needle || ($upnNeedle !== null && $value === $upnNeedle)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -622,31 +846,17 @@ class CippMcpToolRelay
     /**
      * @return array<int|string, mixed>
      */
-    private function shapeOauthApps(array $apps, array $input, int $totalReturned, ?int $clientId): array
+    private function shapeOauthApps(array $apps, int $totalReturned): array
     {
-        $userId = ! empty($input['user_id']) ? trim((string) $input['user_id']) : null;
-
-        if ($userId) {
-            $objectId = $this->resolveCippUserId($userId, $clientId);
-            $upnNeedle = str_contains($userId, '@') ? mb_strtolower($userId) : null;
-
-            $apps = array_values(array_filter($apps, function (array $app) use ($objectId, $upnNeedle): bool {
-                foreach (['principalId', 'consentedBy', 'userId', 'userPrincipalName'] as $key) {
-                    $val = $app[$key] ?? null;
-                    if (is_string($val) && ($val === $objectId || ($upnNeedle && mb_strtolower($val) === $upnNeedle))) {
-                        return true;
-                    }
-                }
-
-                return false;
-            }));
-        }
-
+        // No user filter here any more. It matched on principalId / consentedBy
+        // / userId / userPrincipalName — four keys CIPP does not emit — so it
+        // filtered out every row and reported count: 0. Per-user attribution is
+        // now refused up front by unanswerableRequest() rather than answered
+        // wrongly (psa-dbrw).
         $projected = $this->projectRows('cipp_list_oauth_apps', $apps);
 
         return [
             'count' => count($projected),
-            'filtered_by_user' => $userId,
             'total_returned_by_cipp' => $totalReturned,
             'apps' => array_slice($projected, 0, 50),
         ];
@@ -918,6 +1128,10 @@ class CippMcpToolRelay
             'publisherName',
             'Operation',
             'operation',
+            // Audit-log titles embed user- and attacker-supplied strings (rule
+            // names, subjects), so they are untrusted free text like any other.
+            'title',
+            'Title',
         ], true);
     }
 

@@ -235,6 +235,23 @@ For deployments that want a different brand, swap the logo file, set `APP_NAME` 
 - **Pagination**: Graph returns `@odata.nextLink` absolute URLs for next pages. `getAllPages()` handles this internally — callers get a flat array.
 - **graph_mailbox NOT in singleton**: The GraphClient singleton holds only auth config. Mailbox address is read from Settings at call time by EmailService to prevent stale-mailbox bugs after config changes.
 
+## Vendor response shapes — READ THE SOURCE, and FIXTURE FROM IT (hard-won, psa-7lgo)
+
+We shipped a CIPP read surface where **six tools silently lost data and three returned nothing at all** — for months, with green tests. The AI technician was structurally blind to external mail auto-forwarding, to every inbox rule (the canonical BEC persistence mechanism), to OAuth consent grants, and to the entire audit log. Nothing failed. Nothing warned. The tools just confidently answered **"nothing found."** Three rules come out of that, and they are not optional.
+
+**1. Field names come from the vendor's source, never from a guess.** Every one of those bugs was a plausible-looking key name that the vendor does not emit. Do not infer a payload's shape from the vendor's docs, from the resource it *wraps*, or from what the field "obviously" must be called. Go read the code that builds the response, and follow it to its true producer — a `Select-Object` may **rename** properties, a cache table may hold the **raw** upstream object, an endpoint may **flatten** a nested structure, and a wrapper may re-dispatch to a completely different function. Cite the source file in a comment next to the field list, so the next person can re-verify instead of re-guessing.
+
+Casing is a trap in particular: CIPP passes Microsoft Graph through as camelCase but hands Exchange/PowerShell objects back in PascalCase, sometimes **mixing both in one payload**. Assume nothing about casing.
+
+**2. Test fixtures MUST be copied from the vendor's real payload — never from the shape our code expects.** This is the root cause, and it is the one that let everything else hide. Our tests mocked CIPP returning exactly what the projection wanted, so they asserted our assumptions against our assumptions and passed while the tool returned `{}` in production. **A mock you authored from the code under test proves nothing.** Take the fixture from a captured live response or the vendor's own projection, and it will fail loudly the moment the code is wrong — which is the entire point.
+
+**3. A degraded read must SCREAM, never return a clean empty result.** For a security surface, a confident `[]` is worse than an exception: "no malicious inbox rules", "no OAuth consents", "no CA gaps" is precisely the answer an attacker would like the analyst to receive, and an agent cannot tell it apart from a real all-clear. So:
+- Never fail **closed** into an empty list. If a filter can't find its key, that is a bug, not "no matches".
+- If a capability is structurally unavailable upstream, **hard-error with a message that says so** and names the working alternative. Do not return an empty result and let it read as an all-clear. `CippMcpToolRelay::unanswerableRequest()` is the pattern.
+- Detect drift in-band. `CippMcpToolRelay` warns when a projected field's key is absent from **every** row — distinguishing "key missing" (drift) from "key present holding null" (a genuine no-value), so partial drops surface instead of rotting silently.
+
+Applies to every vendor integration in this repo, not just CIPP.
+
 ## API documentation references
 When you need to look up API endpoints, schemas, or integration details, read from `~/repos/HaloClaude/docs/`:
 

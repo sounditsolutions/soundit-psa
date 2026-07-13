@@ -29,6 +29,18 @@ class CippMcpToolRelayTest extends TestCase
         ], $client, null);
     }
 
+    /**
+     * A relay that FAILS the test if it reaches out to CIPP at all — used for
+     * the paths that must hard-error before spending an upstream call.
+     */
+    private function relayExpectingNoCall(): CippMcpToolRelay
+    {
+        $mcp = Mockery::mock(CippMcpClient::class);
+        $mcp->shouldNotReceive('callTool');
+
+        return new CippMcpToolRelay($mcp, app(ChetDataSurfaceTextSanitizer::class));
+    }
+
     private function acme(): Client
     {
         return new Client(['cipp_tenant_domain' => 'acme.example']);
@@ -439,5 +451,185 @@ class CippMcpToolRelayTest extends TestCase
             ->execute('cipp_list_mailboxes', [], new Client(['cipp_tenant_domain' => 'acme.example']), null);
 
         Log::shouldNotHaveReceived('warning');
+    }
+
+    /**
+     * One consented-app row in CIPP's REAL ListOAuthApps shape (psa-dbrw).
+     *
+     * CIPP does NOT return raw Graph here. Invoke-ListOAuthApps.ps1 joins
+     * oauth2PermissionGrants with servicePrincipals and hand-builds a
+     * PascalCase object emitting exactly these five keys (the UseReportDB path,
+     * Get-CIPPOAuthAppsReport.ps1, emits the same reshape). The relay's field
+     * list carried raw-Graph names, so nine of ten projected empty.
+     */
+    private function realOAuthAppRow(): array
+    {
+        return [
+            'Name' => 'Totally Legit Mail Reader',
+            'ApplicationID' => 'cccccccc-1111-2222-3333-dddddddddddd',
+            'ObjectID' => 'eeeeeeee-4444-5555-6666-ffffffffffff',
+            'Scope' => 'Mail.Read,Mail.ReadWrite,offline_access',
+            'StartTime' => '2026-07-01T09:15:00Z',
+        ];
+    }
+
+    public function test_oauth_apps_projection_reads_the_real_cipp_row_shape(): void
+    {
+        $result = $this->relay([$this->realOAuthAppRow()])
+            ->execute('cipp_list_oauth_apps', [], $this->acme(), null);
+
+        $apps = $result['apps'];
+        $this->assertCount(1, $apps);
+
+        // The granted scopes are the whole point of an illicit-consent triage:
+        // without them the agent can see an app name and nothing actionable.
+        $this->assertStringContainsString('Mail.ReadWrite', $apps[0]['scopes']);
+        $this->assertSame('cccccccc-1111-2222-3333-dddddddddddd', $apps[0]['appId']);
+        $this->assertSame('eeeeeeee-4444-5555-6666-ffffffffffff', $apps[0]['id']);
+        $this->assertSame('2026-07-01T09:15:00Z', $apps[0]['startTime']);
+        $this->assertStringContainsString('Totally Legit Mail Reader', $apps[0]['displayName']);
+    }
+
+    public function test_oauth_apps_hard_errors_on_user_id_rather_than_answering_none(): void
+    {
+        // CIPP DROPS principalId/consentType from the grant, so per-user consent
+        // attribution is unanswerable from this endpoint. The old filter matched
+        // keys CIPP never emits and returned count:0 — a confident "this user
+        // consented to no apps" on illicit consent grant, the exact false-clean
+        // a security tool must never produce (psa-dbrw). Fail loud, and do not
+        // spend an upstream call to do it.
+        $result = $this->relayExpectingNoCall()->execute('cipp_list_oauth_apps', [
+            'user_id' => 'user@acme.example',
+        ], $this->acme(), null);
+
+        $this->assertArrayHasKey('error', $result);
+        $this->assertArrayNotHasKey('apps', $result);
+        $this->assertArrayNotHasKey('count', $result);
+        $this->assertStringContainsStringIgnoringCase('unavailable', $result['error']);
+    }
+
+    public function test_user_conditional_access_hard_errors_rather_than_answering_none(): void
+    {
+        // CIPP's ListUserConditionalAccessPolicies posts a stale payload to
+        // Graph (parameter names absent from the current beta metadata), Graph
+        // rejects it, and CIPP swallows the throw and returns an empty body with
+        // HTTP 200 — so the tool answered "no CA policies apply to this user"
+        // for EVERY user, with no error anywhere (psa-idii).
+        $result = $this->relayExpectingNoCall()->execute('cipp_list_user_conditional_access', [
+            'user_id' => 'user@acme.example',
+        ], $this->acme(), null);
+
+        $this->assertArrayHasKey('error', $result);
+        $this->assertStringContainsStringIgnoringCase('unavailable', $result['error']);
+        // Must point the agent at the tool that DOES work, or it just gives up.
+        $this->assertStringContainsString('cipp_list_conditional_access_policies', $result['error']);
+    }
+
+    /**
+     * One audit row in CIPP's REAL ListAuditLogs shape (psa-9d4l).
+     *
+     * Invoke-ListAuditLogs.ps1 reads CIPP's audit-log STORE (an Azure Table fed
+     * by its webhook pipeline — not a live unified-audit-log search) and renames
+     * on the way out:
+     *   Select-Object @{n='LogId';exp={$_.RowKey}},
+     *
+     *                 @{n='Timestamp';exp={$_.Data.RawData.CreationTime}},
+     *                 Tenant, Title, Data
+     * The real audit fields sit TWO levels down at Data.RawData.*. The relay
+     * named the raw unified-audit-log keys at the TOP level, so none of its nine
+     * fields resolved — and both filters, which also read top-level, dropped
+     * every row. No input combination returned data.
+     */
+    private function realAuditLogRow(array $rawOverrides = []): array
+    {
+        return [
+            'LogId' => '99999999-aaaa-bbbb-cccc-dddddddddddd',
+            'Timestamp' => now()->subDay()->toIso8601String(),
+            'Tenant' => 'acme.example',
+            'Title' => 'New inbox rule created',
+            'Data' => [
+                'RawData' => array_merge([
+                    'CreationTime' => now()->subDay()->toIso8601String(),
+                    'Operation' => 'New-InboxRule',
+                    'UserId' => 'user@acme.example',
+                    'Workload' => 'Exchange',
+                    'ResultStatus' => 'Succeeded',
+                    'ClientIP' => '203.0.113.7',
+                ], $rawOverrides),
+            ],
+        ];
+    }
+
+    public function test_audit_logs_projection_reads_the_nested_raw_data(): void
+    {
+        $result = $this->relay([$this->realAuditLogRow()])
+            ->execute('cipp_list_audit_logs', [], $this->acme(), null);
+
+        $events = $result['events'];
+        $this->assertCount(1, $events);
+        $this->assertNotSame([], $events[0], 'audit row projected empty — every field missed');
+
+        $this->assertStringContainsString('New-InboxRule', $events[0]['operation']);
+        $this->assertSame('user@acme.example', $events[0]['userId']);
+        $this->assertSame('Exchange', $events[0]['workload']);
+        $this->assertSame('Succeeded', $events[0]['resultStatus']);
+        $this->assertSame('203.0.113.7', $events[0]['clientIp']);
+    }
+
+    public function test_audit_logs_day_filter_no_longer_drops_every_row(): void
+    {
+        // eventWithinCutoff() returns FALSE when none of its date keys are
+        // present, and its keys were createdDateTime/CreationTime/Date while the
+        // row carries `Timestamp` — so passing `days` dropped 100% of rows and
+        // the tool answered "no audit events". Fail-closed on a security read.
+        $result = $this->relay([$this->realAuditLogRow()])
+            ->execute('cipp_list_audit_logs', ['days' => 7], $this->acme(), null);
+
+        $this->assertSame(1, $result['count']);
+        $this->assertCount(1, $result['events']);
+    }
+
+    public function test_audit_logs_user_filter_matches_the_nested_user_id(): void
+    {
+        // rowMatchesUser() read userId/UserId top-level; the real UserId is at
+        // Data.RawData.UserId, so filtering by user dropped every row too.
+        $result = $this->relay([$this->realAuditLogRow()])
+            ->execute('cipp_list_audit_logs', ['user_id' => 'user@acme.example'], $this->acme(), null);
+
+        $this->assertSame(1, $result['count']);
+        $this->assertSame('user@acme.example', $result['events'][0]['userId']);
+    }
+
+    public function test_audit_logs_user_filter_still_excludes_a_different_user(): void
+    {
+        $result = $this->relay([$this->realAuditLogRow()])
+            ->execute('cipp_list_audit_logs', ['user_id' => 'someone-else@acme.example'], $this->acme(), null);
+
+        $this->assertSame(0, $result['count']);
+    }
+
+    public function test_audit_logs_forwards_the_requested_window_upstream(): void
+    {
+        // CIPP windows server-side and defaults to the last 7 DAYS when given no
+        // StartDate/EndDate/RelativeTime. The relay never sent one, so a 30-day
+        // request only ever saw 7 days of data while being told it saw 30.
+        // RelativeTime accepts (\d+)([dhm]) — verified in Invoke-ListAuditLogs.
+        $captured = null;
+        $this->relayCapturingCall([$this->realAuditLogRow()], $captured)
+            ->execute('cipp_list_audit_logs', ['days' => 30], $this->acme(), null);
+
+        $this->assertSame('30d', $captured['arguments']['RelativeTime'] ?? null);
+    }
+
+    public function test_sign_ins_forwards_the_requested_window_upstream(): void
+    {
+        // Same lying-metadata bug: Invoke-ListSignIns defaults to $Days = 7
+        // server-side, so a 30-day request saw 7 days while shapeEvents reported
+        // filtered_by_days: 30 (psa-536g).
+        $captured = null;
+        $this->relayCapturingCall([], $captured)
+            ->execute('cipp_list_sign_ins', ['days' => 30], $this->acme(), null);
+
+        $this->assertSame(30, $captured['arguments']['Days'] ?? null);
     }
 }
