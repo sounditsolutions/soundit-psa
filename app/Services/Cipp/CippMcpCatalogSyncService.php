@@ -16,7 +16,9 @@ class CippMcpCatalogSyncService
         'ListGroups',
         'ListUserGroups',
         'ListmailboxPermissions',
-        'ListMailboxRules',
+        // The USER-scoped endpoint. ListMailboxRules takes no user parameter
+        // and returns every mailbox's rules in the tenant (psa-7lgo.1).
+        'ListUserMailboxRules',
         'ListDefenderState',
         'ListConditionalAccessPolicies',
         'ListUserConditionalAccessPolicies',

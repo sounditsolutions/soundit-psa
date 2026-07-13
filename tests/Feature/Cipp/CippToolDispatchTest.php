@@ -70,6 +70,64 @@ class CippToolDispatchTest extends TestCase
     }
 
     /**
+     * cipp_list_mailbox_rules promises ONE user's inbox rules, and the DIRECT
+     * (non-relay) path must keep that promise (psa-7lgo.1).
+     *
+     * It used to call api/ListMailboxRules, whose only CIPP parameters are
+     * tenantFilter and UseReportDB. It takes no user parameter at all, so the
+     * userId we sent was silently discarded and CIPP returned EVERY mailbox's
+     * cached rules in the tenant — one user's compromise investigation answered
+     * with every other user's inbox rules. CIPP does not error on an unknown
+     * query parameter, so a user-scoped request quietly became a tenant-wide one
+     * with nothing to notice.
+     *
+     * This path is not a corner case: the triage executor ALWAYS takes it (it has
+     * no MCP relay), and the assistant falls back to it whenever the CIPP MCP
+     * relay is disabled or unconfigured.
+     */
+    public function test_both_executors_scope_mailbox_rules_to_the_requested_user(): void
+    {
+        $client = Client::factory()->create(['cipp_tenant_domain' => 'contoso.onmicrosoft.com']);
+        $objectId = '11111111-1111-1111-1111-111111111111';
+        Person::create([
+            'client_id' => $client->id,
+            'person_type' => PersonType::User,
+            'first_name' => 'Alice',
+            'last_name' => 'Example',
+            'email' => 'alice@contoso.com',
+            'cipp_upn' => 'alice@contoso.com',
+            'cipp_user_id' => $objectId,
+            'is_active' => true,
+        ]);
+
+        $cipp = Mockery::mock(CippClient::class);
+        // The tenant-wide endpoint must never be reached again, by either executor.
+        $cipp->shouldNotReceive('get')->with('api/ListMailboxRules', Mockery::any());
+        $cipp->shouldReceive('get')
+            ->twice()
+            ->with('api/ListUserMailboxRules', Mockery::on(
+                fn (array $query): bool => ($query['UserID'] ?? null) === $objectId
+                    && ($query['userEmail'] ?? null) === 'alice@contoso.com'
+                    && ($query['TenantFilter'] ?? null) === 'contoso.onmicrosoft.com'
+            ))
+            ->andReturn([]);
+        $this->app->instance(CippClient::class, $cipp);
+
+        $ticket = Ticket::factory()->create(['client_id' => $client->id]);
+        $executors = [
+            'triage' => new TriageToolExecutor($ticket),
+            'assistant' => new AssistantToolExecutor(null, $client->id, null),
+        ];
+
+        foreach ($executors as $label => $executor) {
+            $result = $executor->execute('cipp_list_mailbox_rules', ['user_id' => 'alice@contoso.com']);
+
+            $this->assertIsArray($result, "{$label} returned a non-array");
+            $this->assertArrayNotHasKey('error', $result, "{$label}: ".(string) ($result['error'] ?? ''));
+        }
+    }
+
+    /**
      * Shared behaviour: cipp_list_audit_logs must translate a UPN to its Azure AD
      * object ID before filtering the returned events, because CIPP keys the events
      * by object ID. Filtering on the raw UPN alone drops every row. Both executors
