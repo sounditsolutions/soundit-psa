@@ -639,7 +639,7 @@ class TriageToolDefinitions
             ],
             [
                 'name' => 'cipp_list_conditional_access_policies',
-                'description' => 'List Conditional Access policies for the client\'s tenant. Useful for access issues or security reviews.',
+                'description' => 'List Conditional Access policies for the client\'s tenant, with targeting resolved to display names: included/excluded users, groups, roles, platforms, locations, applications, plus grant controls (e.g. MFA). Session controls are not included. Useful for access issues or security reviews. Caution: an empty result can also mean the upstream Graph query failed (e.g. permissions) — treat an empty list as unverified, not as proof the tenant has no CA policies.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => (object) [],

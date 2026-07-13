@@ -110,4 +110,154 @@ class CippMcpToolRelayTest extends TestCase
         $this->assertArrayHasKey('litigationHoldEnabled', $result[0]);
         $this->assertFalse($result[0]['litigationHoldEnabled']);
     }
+
+    private function executeConditionalAccess(array $upstreamRows): array
+    {
+        return $this->relay($upstreamRows)->execute(
+            'cipp_list_conditional_access_policies',
+            [],
+            new Client(['cipp_tenant_domain' => 'acme.example']),
+            null,
+        );
+    }
+
+    public function test_conditional_access_projects_real_flattened_cipp_shape(): void
+    {
+        Log::spy();
+
+        // REAL shape verified against CIPP-API Invoke-ListConditionalAccessPolicies.ps1
+        // (psa-mybo): flattened rows with GUIDs resolved to display names. The
+        // include*/exclude* user/group/role fields are Out-String output — newline-
+        // joined with a trailing newline; the rest are comma-joined single lines.
+        $result = $this->executeConditionalAccess([[
+            'id' => 'policy-1',
+            'displayName' => 'Block legacy auth',
+            'customer' => null,
+            'Tenant' => 'acme.example',
+            'createdDateTime' => '2025-11-02T10:15:00',
+            'modifiedDateTime' => '2026-03-18T08:00:00',
+            'state' => 'enabled',
+            'clientAppTypes' => 'exchangeActiveSync,other',
+            'includePlatforms' => '',
+            'excludePlatforms' => '',
+            'includeLocations' => 'All',
+            'excludeLocations' => 'Trusted HQ Network',
+            'includeApplications' => 'All',
+            'excludeApplications' => '',
+            'includeUserActions' => '',
+            'includeAuthenticationContextClassReferences' => '',
+            'includeUsers' => "All\r\n",
+            'excludeUsers' => "BreakGlass Admin\r\nsvc-scanner\r\n",
+            'includeGroups' => "\r\n",
+            'excludeGroups' => '',
+            'includeRoles' => '',
+            'excludeRoles' => "Global Administrator\r\n",
+            'grantControlsOperator' => 'OR',
+            'builtInControls' => 'block',
+            'customAuthenticationFactors' => '',
+            'termsOfUse' => '',
+            'rawjson' => '{"sessionControls":{"signInFrequency":{"value":1}}}',
+        ]]);
+
+        $this->assertSame(1, $result['count']);
+        $this->assertSame(1, $result['total_returned_by_cipp']);
+        $policy = $result['policies'][0];
+
+        $this->assertSame('policy-1', $policy['id']);
+        $this->assertSame('enabled', $policy['state']);
+        $this->assertSame('2025-11-02T10:15:00', $policy['createdDateTime']);
+        $this->assertStringContainsString('Block legacy auth', $policy['displayName']);
+
+        // Enum/ID fields pass through as plain trimmed strings.
+        $this->assertSame('exchangeActiveSync,other', $policy['clientAppTypes']);
+        $this->assertSame('OR', $policy['grantControlsOperator']);
+        $this->assertSame('block', $policy['builtInControls']);
+        $this->assertSame('', $policy['includePlatforms']);
+
+        // Resolved display names are untrusted free text — fenced when non-empty,
+        // an explicit '' when empty.
+        $this->assertStringContainsString('Trusted HQ Network', $policy['excludeLocations']);
+        $this->assertStringContainsString('UNTRUSTED CIPP LIST CONDITIONAL ACCESS POLICIES EXCLUDELOCATIONS', $policy['excludeLocations']);
+        $this->assertSame('', $policy['excludeApplications']);
+
+        // Out-String fields split into one entry per name; whitespace-only
+        // values become an explicit empty list, not a phantom entry.
+        $this->assertCount(1, $policy['includeUsers']);
+        $this->assertStringContainsString('All', $policy['includeUsers'][0]);
+        $this->assertCount(2, $policy['excludeUsers']);
+        $this->assertStringContainsString('BreakGlass Admin', $policy['excludeUsers'][0]);
+        $this->assertStringContainsString('svc-scanner', $policy['excludeUsers'][1]);
+        $this->assertSame([], $policy['includeGroups']);
+        $this->assertSame([], $policy['excludeGroups']);
+        $this->assertStringContainsString('Global Administrator', $policy['excludeRoles'][0]);
+
+        // rawjson (full raw policy blob) and the raw Graph nested keys must
+        // never appear.
+        $this->assertArrayNotHasKey('rawjson', $policy);
+        $this->assertArrayNotHasKey('Tenant', $policy);
+        $this->assertArrayNotHasKey('customer', $policy);
+        $this->assertArrayNotHasKey('conditions', $policy);
+        $this->assertArrayNotHasKey('grantControls', $policy);
+        $this->assertArrayNotHasKey('sessionControls', $policy);
+
+        $this->assertStringContainsString('Session controls', $result['note']);
+        $this->assertArrayNotHasKey('warning', $result);
+        Log::shouldNotHaveReceived('warning');
+    }
+
+    public function test_conditional_access_empty_result_carries_unverified_warning(): void
+    {
+        // CIPP's error path is overwritten before return (its catch sets
+        // Forbidden, then an unconditional `if (!$Body)` resets the status to
+        // OK and filters the error string out), so a failed Graph query also
+        // comes back HTTP 200 with empty Results. An empty list must carry an
+        // explicit "unverified" warning, never read as authoritative.
+        $result = $this->executeConditionalAccess([]);
+
+        $this->assertSame(0, $result['count']);
+        $this->assertSame([], $result['policies']);
+        $this->assertStringContainsString('Graph query fails', $result['warning']);
+    }
+
+    public function test_conditional_access_truncates_long_name_lists_explicitly(): void
+    {
+        $names = array_map(fn (int $i): string => "User {$i}", range(1, 27));
+
+        $result = $this->executeConditionalAccess([[
+            'id' => 'policy-1',
+            'displayName' => 'Scoped policy',
+            'state' => 'enabled',
+            'excludeUsers' => implode("\r\n", $names)."\r\n",
+        ]]);
+
+        // Silently dropping excludeUsers entries would recreate the exact
+        // blind spot this projection fixes — truncation must be explicit.
+        $excluded = $result['policies'][0]['excludeUsers'];
+        $this->assertCount(21, $excluded);
+        $this->assertStringContainsString('User 20', $excluded[19]);
+        $this->assertSame('(+7 more not shown)', $excluded[20]);
+    }
+
+    public function test_conditional_access_warns_when_targeting_fields_vanish(): void
+    {
+        Log::spy();
+
+        // The insidious drift mode (psa-mybo): scalar fields still resolve so
+        // the projection looks healthy, but every flattened targeting/control
+        // key is gone — CA posture would be silently invisible again.
+        $result = $this->executeConditionalAccess([[
+            'id' => 'policy-1',
+            'displayName' => 'Require MFA',
+            'state' => 'enabled',
+        ]]);
+
+        $this->assertSame(1, $result['count']);
+
+        Log::shouldHaveReceived('warning')
+            ->once()
+            ->withArgs(fn (string $message, array $context = []): bool => str_contains($message, 'shape drift')
+                && ($context['tool'] ?? null) === 'cipp_list_conditional_access_policies'
+                && ($context['row_count'] ?? null) === 1
+                && ($context['first_row_keys'] ?? null) === ['id', 'displayName', 'state']);
+    }
 }
