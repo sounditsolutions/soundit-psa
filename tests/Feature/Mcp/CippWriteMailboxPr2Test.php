@@ -21,6 +21,15 @@ use Illuminate\Testing\TestResponse;
 use Mockery;
 use Tests\TestCase;
 
+/**
+ * PR-2 mailbox tools (convert / forwarding / GAL / out-of-office).
+ *
+ * The INTERNAL forwarding target is deliberately NOT gated on is_active:
+ * shared/resource mailboxes sync as inactive (disabled backing account) and
+ * are mainstream forwarding targets (psa-pgnj product decision; the
+ * recipient-type-aware guard is tracked separately as psa-24db). Owner and
+ * target may both be inactive — pinned below.
+ */
 class CippWriteMailboxPr2Test extends TestCase
 {
     use RefreshDatabase;
@@ -350,6 +359,95 @@ class CippWriteMailboxPr2Test extends TestCase
 
         $this->assertStringNotContainsString('forward@example.net', TechnicianActionLog::latest('id')->firstOrFail()->summary);
         $this->assertStringNotContainsString('forward@example.net', json_encode(McpAuditLog::where('tool_name', 'cipp_stage_set_mailbox_forwarding')->latest('id')->firstOrFail()->arguments));
+    }
+
+    public function test_internal_forwarding_still_executes_when_the_target_is_inactive(): void
+    {
+        $this->configureCipp();
+        $actor = $this->configureAiActor();
+        $fixture = $this->cippFixture();
+        $token = $this->token(['cipp_stage_set_mailbox_forwarding']);
+
+        $stageClient = Mockery::mock(CippRestWriteClient::class);
+        $stageClient->shouldNotReceive('setMailboxForwardingInternal');
+        $this->app->instance(CippRestWriteClient::class, $stageClient);
+
+        // Shared/resource mailboxes have disabled backing accounts, so contact
+        // sync stores them as is_active = false — yet forwarding a departed
+        // user's mail into a team shared mailbox is a mainstream offboarding
+        // flow. An inactive target therefore stages AND executes (psa-pgnj
+        // product decision; the type-aware guard is psa-24db).
+        $fixture['target']->update(['is_active' => false]);
+
+        $response = $this->callTool($token, 'cipp_stage_set_mailbox_forwarding', [
+            'client_id' => $fixture['client']->id,
+            'person_id' => $fixture['person']->id,
+            'ticket_id' => $fixture['ticket']->id,
+            'mode' => 'internal',
+            'target_person_id' => $fixture['target']->id,
+            'keep_copy' => true,
+            'confirm_upn' => 'alex@acme.example',
+            'reason' => 'Forward the departed user\'s mail into the team shared mailbox.',
+        ]);
+        $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
+        $run = TechnicianRun::findOrFail($this->decodedResult($response)['run_id']);
+
+        $approveClient = Mockery::mock(CippRestWriteClient::class);
+        $approveClient->shouldReceive('setMailboxForwardingInternal')
+            ->once()
+            ->with('acme.onmicrosoft.com', 'alex@acme.example', 'target@acme.example', true)
+            ->andReturn(['success' => true, 'status' => 200]);
+        $this->app->instance(CippRestWriteClient::class, $approveClient);
+
+        $this->actingAs($actor)
+            ->post(route('cockpit.approve', $run))
+            ->assertRedirect(route('cockpit.index'));
+
+        $this->assertSame(TechnicianRunState::Done, $run->fresh()->state);
+    }
+
+    public function test_internal_forwarding_still_executes_when_the_mailbox_owner_is_inactive(): void
+    {
+        $this->configureCipp();
+        $actor = $this->configureAiActor();
+        $fixture = $this->cippFixture();
+        $token = $this->token(['cipp_stage_set_mailbox_forwarding']);
+
+        $stageClient = Mockery::mock(CippRestWriteClient::class);
+        $stageClient->shouldNotReceive('setMailboxForwardingInternal');
+        $this->app->instance(CippRestWriteClient::class, $stageClient);
+
+        // Mid-offboarding the mailbox OWNER is often already deactivated
+        // (contact sync mirrors accountEnabled). Only the RECIPIENT must be
+        // active — forwarding the departed user's mail to an active colleague
+        // is exactly the coverage flow this tool exists for.
+        $fixture['person']->update(['is_active' => false]);
+
+        $response = $this->callTool($token, 'cipp_stage_set_mailbox_forwarding', [
+            'client_id' => $fixture['client']->id,
+            'person_id' => $fixture['person']->id,
+            'ticket_id' => $fixture['ticket']->id,
+            'mode' => 'internal',
+            'target_person_id' => $fixture['target']->id,
+            'keep_copy' => false,
+            'confirm_upn' => 'alex@acme.example',
+            'reason' => 'Offboarding coverage: forward the departed user\'s mail to a colleague.',
+        ]);
+        $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
+        $run = TechnicianRun::findOrFail($this->decodedResult($response)['run_id']);
+
+        $approveClient = Mockery::mock(CippRestWriteClient::class);
+        $approveClient->shouldReceive('setMailboxForwardingInternal')
+            ->once()
+            ->with('acme.onmicrosoft.com', 'alex@acme.example', 'target@acme.example', false)
+            ->andReturn(['success' => true, 'status' => 200]);
+        $this->app->instance(CippRestWriteClient::class, $approveClient);
+
+        $this->actingAs($actor)
+            ->post(route('cockpit.approve', $run))
+            ->assertRedirect(route('cockpit.index'));
+
+        $this->assertSame(TechnicianRunState::Done, $run->fresh()->state);
     }
 
     public function test_staged_out_of_office_reenters_messages_at_approval_without_storing_bodies(): void

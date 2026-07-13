@@ -26,6 +26,13 @@ use Tests\TestCase;
  * (auto-map/no-auto-map), Send-As, and Send-on-Behalf across grant + remove.
  * Ships behind an explicit sensitive token grant; held-only in practice by
  * granting the :staged mode.
+ *
+ * Inactive-recipient gate (bead psa-pgnj, OneDrive-successor precedent): a
+ * GRANT names the delegate as an access recipient, so an inactive delegate is
+ * refused at staging AND declines fresh on the approval replay. A REMOVE is
+ * the opposite flow — revoking access from an already-deactivated delegate is
+ * routine offboarding cleanup and stays allowed. The mailbox OWNER may be
+ * inactive on either operation (expected mid-offboarding).
  */
 class CippWriteMailboxDelegateTest extends TestCase
 {
@@ -404,6 +411,178 @@ class CippWriteMailboxDelegateTest extends TestCase
             'reason' => 'Cross-client delegate must be rejected.',
         ]);
         $this->assertTrue((bool) $crossClient->json('result.isError'));
+    }
+
+    public function test_delegate_grant_rejects_an_inactive_delegate_at_staging(): void
+    {
+        $this->configureCipp();
+        $this->configureAiActor();
+        $fixture = $this->cippFixture();
+        $token = $this->token(['cipp_set_mailbox_delegate', 'cipp_stage_set_mailbox_delegate']);
+
+        $blocked = Mockery::mock(CippRestWriteClient::class);
+        $blocked->shouldNotReceive('setMailboxDelegate');
+        $this->app->instance(CippRestWriteClient::class, $blocked);
+
+        // Same gap class as the OneDrive successor (psa-zjpd .6/.7): a
+        // deactivated person routinely keeps their CIPP mapping, but a GRANT
+        // would hand mailbox access to a former employee — refused before
+        // anything is staged.
+        $fixture['target']->update(['is_active' => false]);
+
+        $staged = $this->callTool($token, 'cipp_stage_set_mailbox_delegate', [
+            'client_id' => $fixture['client']->id,
+            'person_id' => $fixture['person']->id,
+            'delegate_person_id' => $fixture['target']->id,
+            'permission' => 'full_access',
+            'operation' => 'grant',
+            'ticket_id' => $fixture['ticket']->id,
+            'confirm_upn' => 'alex@acme.example',
+            'reason' => 'Coverage grant to a deactivated delegate must be refused.',
+        ]);
+        $this->assertTrue((bool) $staged->json('result.isError'));
+        $this->assertStringContainsString('Delegate is inactive', (string) $staged->json('result.content.0.text'));
+        $this->assertDatabaseHas('technician_action_logs', [
+            'action_type' => 'cipp_stage_set_mailbox_delegate',
+            'result_status' => 'rejected',
+            'client_id' => $fixture['client']->id,
+        ]);
+
+        // The direct path runs the same params gate.
+        $direct = $this->callTool($token, 'cipp_set_mailbox_delegate', [
+            'client_id' => $fixture['client']->id,
+            'person_id' => $fixture['person']->id,
+            'delegate_person_id' => $fixture['target']->id,
+            'permission' => 'send_as',
+            'operation' => 'grant',
+            'confirm_upn' => 'alex@acme.example',
+            'reason' => 'Direct grant to a deactivated delegate must be refused.',
+        ]);
+        $this->assertTrue((bool) $direct->json('result.isError'));
+        $this->assertStringContainsString('Delegate is inactive', (string) $direct->json('result.content.0.text'));
+
+        $this->assertSame(0, TechnicianRun::count());
+    }
+
+    public function test_delegate_approval_declines_when_the_delegate_was_deactivated_after_staging(): void
+    {
+        $this->configureCipp();
+        $actor = $this->configureAiActor();
+        $fixture = $this->cippFixture();
+        $token = $this->token(['cipp_stage_set_mailbox_delegate']);
+
+        $stageClient = Mockery::mock(CippRestWriteClient::class);
+        $stageClient->shouldNotReceive('setMailboxDelegate');
+        $this->app->instance(CippRestWriteClient::class, $stageClient);
+
+        $response = $this->callTool($token, 'cipp_stage_set_mailbox_delegate', [
+            'client_id' => $fixture['client']->id,
+            'person_id' => $fixture['person']->id,
+            'delegate_person_id' => $fixture['target']->id,
+            'permission' => 'full_access',
+            'operation' => 'grant',
+            'ticket_id' => $fixture['ticket']->id,
+            'confirm_upn' => 'alex@acme.example',
+            'reason' => 'Grant full access for coverage; the delegate offboards before approval.',
+        ]);
+        $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
+        $run = TechnicianRun::findOrFail($this->decodedResult($response)['run_id']);
+
+        // The delegate was offboarded between staging and approval: the replay
+        // re-resolves them fresh and must fail closed with the specific reason
+        // — no access handed over, no generic dead end for the operator.
+        $fixture['target']->update(['is_active' => false]);
+
+        $approveClient = Mockery::mock(CippRestWriteClient::class);
+        $approveClient->shouldNotReceive('setMailboxDelegate');
+        $this->app->instance(CippRestWriteClient::class, $approveClient);
+
+        $declined = $this->actingAs($actor)->postJson(route('cockpit.approve', $run));
+
+        $declined->assertOk();
+        $this->assertFalse((bool) $declined->json('ok'));
+        $this->assertSame('gate_declined', $declined->json('status'));
+        $this->assertStringContainsString('Delegate is inactive', (string) $declined->json('message'));
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
+    }
+
+    public function test_delegate_remove_still_works_for_an_inactive_delegate(): void
+    {
+        $this->configureCipp();
+        $this->configureAiActor();
+        $fixture = $this->cippFixture();
+        $token = $this->token(['cipp_set_mailbox_delegate']);
+
+        // The inverse flow of the grant gate: REMOVING access from an already-
+        // deactivated delegate is routine offboarding cleanup (nothing is
+        // granted to anyone), so the recipient gate must not block it — or the
+        // operator would have to reactivate a former employee to revoke them.
+        $fixture['target']->update(['is_active' => false]);
+
+        $client = Mockery::mock(CippRestWriteClient::class);
+        $client->shouldReceive('setMailboxDelegate')
+            ->once()
+            ->with('acme.onmicrosoft.com', 'alex@acme.example', 'target@acme.example', 'full_access', 'remove', true)
+            ->andReturn(['success' => true, 'status' => 200]);
+        $this->app->instance(CippRestWriteClient::class, $client);
+
+        $response = $this->callTool($token, 'cipp_set_mailbox_delegate', [
+            'client_id' => $fixture['client']->id,
+            'person_id' => $fixture['person']->id,
+            'delegate_person_id' => $fixture['target']->id,
+            'permission' => 'full_access',
+            'operation' => 'remove',
+            'confirm_upn' => 'alex@acme.example',
+            'reason' => 'Offboarding cleanup: revoke the departed delegate\'s mailbox access.',
+        ]);
+
+        $response->assertOk();
+        $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
+        $this->assertSame('CIPP action executed.', $this->decodedResult($response)['message']);
+    }
+
+    public function test_delegate_grant_still_executes_when_the_mailbox_owner_is_inactive(): void
+    {
+        $this->configureCipp();
+        $actor = $this->configureAiActor();
+        $fixture = $this->cippFixture();
+        $token = $this->token(['cipp_stage_set_mailbox_delegate']);
+
+        $stageClient = Mockery::mock(CippRestWriteClient::class);
+        $stageClient->shouldNotReceive('setMailboxDelegate');
+        $this->app->instance(CippRestWriteClient::class, $stageClient);
+
+        // Mid-offboarding the mailbox OWNER is often already deactivated
+        // (contact sync mirrors accountEnabled). Only the RECIPIENT must be
+        // active — delegating the departed user's mailbox to an active
+        // colleague is exactly the coverage flow this tool exists for.
+        $fixture['person']->update(['is_active' => false]);
+
+        $response = $this->callTool($token, 'cipp_stage_set_mailbox_delegate', [
+            'client_id' => $fixture['client']->id,
+            'person_id' => $fixture['person']->id,
+            'delegate_person_id' => $fixture['target']->id,
+            'permission' => 'full_access',
+            'operation' => 'grant',
+            'ticket_id' => $fixture['ticket']->id,
+            'confirm_upn' => 'alex@acme.example',
+            'reason' => 'Offboarding coverage: delegate the departed user\'s mailbox to a colleague.',
+        ]);
+        $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
+        $run = TechnicianRun::findOrFail($this->decodedResult($response)['run_id']);
+
+        $approveClient = Mockery::mock(CippRestWriteClient::class);
+        $approveClient->shouldReceive('setMailboxDelegate')
+            ->once()
+            ->with('acme.onmicrosoft.com', 'alex@acme.example', 'target@acme.example', 'full_access', 'grant', true)
+            ->andReturn(['success' => true, 'status' => 200]);
+        $this->app->instance(CippRestWriteClient::class, $approveClient);
+
+        $this->actingAs($actor)
+            ->post(route('cockpit.approve', $run))
+            ->assertRedirect(route('cockpit.index'));
+
+        $this->assertSame(TechnicianRunState::Done, $run->fresh()->state);
     }
 
     public function test_direct_full_access_grant_without_automap_routes_no_automap_bucket(): void
