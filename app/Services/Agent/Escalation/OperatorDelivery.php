@@ -73,13 +73,14 @@ class OperatorDelivery
      * Do NOT "fix" this by flipping teams_bot_enabled back on — that resurrects the
      * deprecated bot. The toggle is off on purpose; honour chetRoutingEnabled instead.
      *
-     * NOTE for whoever picks up the inbound side: the symmetry is still incomplete.
-     * TeamsMessagesController::routedToPersona() honours chetRoutingEnabled, so an
-     * inbound turn is correctly RECOGNISED as Chet's — but handle()'s enclosing
-     * enablement check is still the old two-way ($personaActive || enabled()), so at
-     * this same production config the recognised turn is then discarded ("Chet-routed
-     * turn ignored because Teams bot is disabled", at info level). Chet does not in
-     * fact listen yet either. Out of scope here; tracked as follow-up.
+     * The INBOUND half had the identical bug one gate deeper and was fixed alongside
+     * this one: TeamsMessagesController::handle() recognised a Chet-routed turn and
+     * then discarded it against the same legacy toggle, so Chet could not hear either.
+     * Both directions are now anchored by tests at the REAL production config
+     * (teams_bot_enabled=0, zero personas, chet_routing_enabled=1) — see
+     * OperatorDeliveryTest and ChetRoutingTest. Keep them that way: every bot-branch
+     * test that predates this fix pins teams_bot_enabled='1', a config that does not
+     * run in production, which is exactly how both halves shipped broken and green.
      */
     public function send(
         ?User $recipient,
