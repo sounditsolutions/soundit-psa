@@ -48,6 +48,17 @@ class CippToolContract
      *
      * @var array<string, array<int, string>>
      */
+    /**
+     * The user fields an audit row may carry, under Data.RawData. Named once because
+     * two things read it — the per-user filter, and the check for whether the payload
+     * can be attributed AT ALL — and if those two ever disagreed, the tool would go
+     * back to answering a confident "this user did nothing" on rows it simply could
+     * not read.
+     *
+     * @var array<int, string>
+     */
+    private const AUDIT_USER_KEYS = ['UserId', 'UserKey', 'CIPPUserKey', 'UserPrincipalName', 'userId'];
+
     private const OAUTH_APP_FIELDS = [
         'id' => ['ObjectID', 'ObjectId', 'id', 'Id'],
         'appId' => ['ApplicationID', 'ApplicationId', 'applicationId', 'appId'],
@@ -159,6 +170,40 @@ class CippToolContract
             ]);
         }
 
+        // "This user did nothing" and "I cannot tell who did any of this" are
+        // different answers, and only one of them may be reported as count: 0.
+        //
+        // The drift guard above cannot catch this on its own: LogId / Timestamp /
+        // Title live at the TOP level and keep resolving, so if CIPP's nested
+        // Data.RawData block is ever moved or renamed, rows still project non-empty,
+        // the guard stays quiet, and a user-filtered query matches nothing and
+        // returns a clean, confident "no audit events for this user" — the exact
+        // false negative this contract exists to prevent, back through the side door.
+        //
+        // So: if a user filter was asked for and NOT ONE row in a non-empty payload
+        // carries a user key we know how to read, the filter is meaningless and its
+        // zero is not evidence of absence. Fail loud instead.
+        //
+        // An empty payload is a different thing and stays a normal empty result —
+        // CIPP genuinely returned nothing in the window, and saying so is honest.
+        if ($userId !== null && $rows !== [] && ! $this->anyRowCarriesAUser($rows)) {
+            Log::warning('[CippTools] Audit rows carry no readable user key — cannot attribute events to a user', [
+                'tool' => 'cipp_list_audit_logs',
+                'row_count' => $totalReturned,
+                'first_row_keys' => array_slice(array_keys($rows[0]), 0, 12),
+            ]);
+
+            return [
+                'error' => "Audit events CANNOT be attributed to a user right now: CIPP returned {$totalReturned} event(s), "
+                    .'but not one of them carries a readable user field (expected at Data.RawData.UserId), so filtering by '
+                    ."user is meaningless. Do NOT interpret this as \"{$userId} did nothing\". Re-run "
+                    .'cipp_list_audit_logs WITHOUT user_id to see the unattributed events, and treat the CIPP audit-log '
+                    .'shape as suspect.',
+                'total_returned_by_cipp' => $totalReturned,
+                'filtered_by_user' => $userId,
+            ];
+        }
+
         $cutoff = $days !== null ? now()->subDays($days) : null;
         $resolved = $userId !== null ? self::resolveUserId($userId, $clientId) : null;
         $upnNeedle = ($userId !== null && str_contains($userId, '@')) ? mb_strtolower($userId) : null;
@@ -267,12 +312,35 @@ class CippToolContract
         }
     }
 
+    /**
+     * Does ANY row carry a user field we know how to read? One is enough: a payload
+     * where some events are attributable and others are not is normal (system events
+     * have no actor), and the filter works correctly on it. It is the payload where
+     * NONE of them are that we cannot answer a per-user question from.
+     *
+     * @param  array<int, array<string, mixed>>  $rows
+     */
+    private function anyRowCarriesAUser(array $rows): bool
+    {
+        foreach ($rows as $row) {
+            $raw = $this->auditRawData($row);
+
+            foreach (self::AUDIT_USER_KEYS as $key) {
+                if (is_string($raw[$key] ?? null) && $raw[$key] !== '') {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
     private function auditRowMatchesUser(array $event, string $resolved, ?string $upnNeedle): bool
     {
         $raw = $this->auditRawData($event);
         $needle = mb_strtolower($resolved);
 
-        foreach (['UserId', 'UserKey', 'CIPPUserKey', 'UserPrincipalName', 'userId'] as $key) {
+        foreach (self::AUDIT_USER_KEYS as $key) {
             $value = $raw[$key] ?? null;
             if (! is_string($value)) {
                 continue;

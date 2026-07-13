@@ -375,6 +375,57 @@ class CippDirectPathFailLoudTest extends TestCase
         }
     }
 
+    /**
+     * "This user did nothing" and "I cannot tell who did any of this" are different
+     * answers, and only one of them is safe to report as count: 0.
+     *
+     * The all-rows-projected-empty drift guard does NOT catch this case: LogId,
+     * Timestamp and Title sit at the TOP level and keep resolving, so if CIPP's
+     * nested Data.RawData block ever moves or is renamed, rows still project
+     * non-empty, the guard stays quiet — and a user-filtered query silently matches
+     * nothing and reports a confident, clean "no audit events for this user". That
+     * is the exact false negative this whole series exists to kill, reintroduced
+     * through the back door.
+     *
+     * If NOT ONE row in a non-empty payload carries any user key we know how to
+     * read, the filter is meaningless and its zero is not evidence of absence. Say
+     * so. (An empty payload is different and stays a normal empty result: CIPP
+     * genuinely returned nothing in the window.)
+     */
+    public function test_audit_logs_fail_loud_when_no_row_can_be_attributed_to_a_user(): void
+    {
+        $this->alice();
+
+        // Real top-level shape, but the nested user keys are gone — the payload
+        // cannot be attributed to anyone.
+        $this->cippReturning('api/ListAuditLogs', [
+            $this->realAuditLogRow(['UserId' => null, 'Operation' => 'New-InboxRule']),
+            $this->realAuditLogRow(['UserId' => null, 'Operation' => 'Set-Mailbox']),
+        ]);
+
+        foreach ($this->executors() as $label => $executor) {
+            $result = $executor->execute('cipp_list_audit_logs', ['user_id' => 'alice@contoso.com']);
+
+            $this->assertArrayHasKey('error', $result, "{$label} reported a clean zero for an unattributable payload");
+            $this->assertStringContainsStringIgnoringCase('attribute', $result['error'], "{$label}");
+            $this->assertArrayNotHasKey('count', $result, "{$label} still answered with a count");
+        }
+    }
+
+    /** The honest empty: CIPP returned nothing at all, so nothing is all there is to say. */
+    public function test_audit_logs_still_report_a_clean_empty_when_cipp_returns_no_rows(): void
+    {
+        $this->alice();
+        $this->cippReturning('api/ListAuditLogs', []);
+
+        foreach ($this->executors() as $label => $executor) {
+            $result = $executor->execute('cipp_list_audit_logs', ['user_id' => 'alice@contoso.com']);
+
+            $this->assertArrayNotHasKey('error', $result, "{$label} errored on a genuinely empty payload");
+            $this->assertSame(0, $result['count'], "{$label}");
+        }
+    }
+
     // ── The other half of the matrix: the guard is a property of the tool, not of the transport ──
 
     /**
