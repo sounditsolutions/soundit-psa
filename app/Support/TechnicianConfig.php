@@ -71,17 +71,16 @@ class TechnicianConfig
 
     /**
      * The reused "System User (AI Actor)" id (spec §3/§4.6). Same selection as
-     * TriageConfig::systemUserId(): the configured setting, else the first user.
+     * TriageConfig::systemUserId() — both delegate to the one validated resolver.
+     *
+     * psa-3s7a: the returned id is guaranteed to EXIST in `users` (or be null). This value
+     * lands in FK columns (technician_action_logs.actor_id via TechnicianActionGate::audit(),
+     * ticket_notes.author_id via the AI-authored note paths); returning a stale configured id
+     * violated the FK and 500'd the entire approval surface. See AiActorResolver.
      */
     public static function aiActorUserId(): ?int
     {
-        $configured = Setting::getValue('triage_system_user_id');
-
-        if ($configured) {
-            return (int) $configured;
-        }
-
-        return User::orderBy('id')->value('id');
+        return AiActorResolver::resolve();
     }
 
     /**

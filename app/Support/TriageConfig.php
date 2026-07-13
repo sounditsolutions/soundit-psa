@@ -3,7 +3,6 @@
 namespace App\Support;
 
 use App\Models\Setting;
-use App\Models\User;
 
 class TriageConfig
 {
@@ -54,17 +53,16 @@ class TriageConfig
 
     /**
      * Get the user ID for audit trail attribution on triage-created actions.
-     * Follows T2TConfig::systemUserId() pattern exactly.
+     *
+     * psa-3s7a: reads the SAME setting as TechnicianConfig::aiActorUserId(), so it shares the
+     * one validated resolver — the id is guaranteed to exist in `users`, or is null. It feeds
+     * FK columns (ticket_notes.author_id, tickets.created_by), and a stale configured id
+     * violated those FKs. Callers that need a real actor already guard on null and skip;
+     * callers that write it store null. See AiActorResolver.
      */
     public static function systemUserId(): ?int
     {
-        $configured = Setting::getValue('triage_system_user_id');
-
-        if ($configured) {
-            return (int) $configured;
-        }
-
-        return User::orderBy('id')->value('id');
+        return AiActorResolver::resolve();
     }
 
     /**

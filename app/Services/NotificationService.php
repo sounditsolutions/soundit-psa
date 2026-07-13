@@ -166,8 +166,12 @@ class NotificationService
 
     /**
      * Notify the ticket assignee that status changed.
+     *
+     * @param  ?int  $changedByUserId  null = an unattributable system/AI actor (psa-3s7a — see
+     *                                 TicketService::changeStatus). SendTicketNotification already
+     *                                 accepts a nullable actor.
      */
-    public function notifyStatusChanged(Ticket $ticket, TicketStatus $oldStatus, TicketStatus $newStatus, int $changedByUserId): void
+    public function notifyStatusChanged(Ticket $ticket, TicketStatus $oldStatus, TicketStatus $newStatus, ?int $changedByUserId): void
     {
         // Staff notification
         if ($ticket->assignee_id && $ticket->assignee_id !== $changedByUserId && ! $this->isTriageUser($changedByUserId)) {
@@ -462,7 +466,13 @@ class NotificationService
         }
     }
 
-    private function isTriageUser(int $userId): bool
+    /**
+     * psa-3s7a: nullable actor. Both sides resolve through the same AiActorResolver, so when the
+     * configured AI actor is stale BOTH are null and an AI-driven status change stays correctly
+     * suppressed (null === null) — the notification behaviour does not change just because the
+     * attribution degraded. A human actor is always a real id and never matches.
+     */
+    private function isTriageUser(?int $userId): bool
     {
         return $userId === TriageConfig::systemUserId();
     }

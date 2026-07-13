@@ -97,10 +97,14 @@ class TriageReviewOpen extends Command
             ->filter(function (Ticket $ticket) use ($systemUserId) {
                 // Skip if a human touched it in the last 4 hours
                 $fourHoursAgo = now()->subHours(4);
+                // psa-3s7a: guard the AI-actor exclusion — with no resolvable AI actor
+                // ($systemUserId null), every authored note is a human's, and a bare
+                // `author_id != NULL` is never true in SQL (it would match nothing and
+                // make the cron review tickets a human just touched).
                 $recentHumanNote = $ticket->notes()
                     ->where('noted_at', '>=', $fourHoursAgo)
                     ->whereNotNull('author_id')
-                    ->where('author_id', '!=', $systemUserId)
+                    ->when($systemUserId !== null, fn ($q) => $q->where('author_id', '!=', $systemUserId))
                     ->whereNotIn('note_type', [
                         \App\Enums\NoteType::AiTriage->value,
                         \App\Enums\NoteType::System->value,
