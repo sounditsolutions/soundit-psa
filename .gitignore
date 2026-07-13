@@ -53,3 +53,11 @@ Thumbs.db
 *.bak
 !.env.example
 .env.rotate-bak*
+
+# Gas City
+.mcp.json
+.gemini/settings.json
+.codex/config.toml
+.cursor/mcp.json
+opencode.json
+mimocode.json

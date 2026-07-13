@@ -3,7 +3,9 @@
 namespace App\Services\Cipp;
 
 use App\Models\CippMcpTool;
+use App\Support\CippMcpToolPolicy;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class CippMcpCatalogSyncService
 {
@@ -16,7 +18,7 @@ class CippMcpCatalogSyncService
         'ListGroups',
         'ListUserGroups',
         'ListmailboxPermissions',
-        'ListMailboxRules',
+        'ListUserMailboxRules',
         'ListDefenderState',
         'ListConditionalAccessPolicies',
         'ListUserConditionalAccessPolicies',
@@ -101,10 +103,28 @@ class CippMcpCatalogSyncService
                 continue;
             }
 
+            $localName = self::localNameFor($upstreamName);
+
+            // The same policy the runtime enforces, applied here so an offending row is
+            // never written in the first place. Skipped rather than thrown: refusing one
+            // tool keeps the rest of the catalog syncing and the safe implementation live.
+            // But it is logged loudly — it means CIPP has grown a tool that collides with
+            // our surface, and somebody needs to look.
+            $refusal = CippMcpToolPolicy::refusalReason($localName, $upstreamName);
+            if ($refusal !== null) {
+                Log::warning('[CippMcpCatalogSync] Refused a dynamic CIPP tool', [
+                    'upstream_name' => $upstreamName,
+                    'local_name' => $localName,
+                    'reason' => $refusal,
+                ]);
+
+                continue;
+            }
+
             $readOnly = ($tool['annotations']['readOnlyHint'] ?? null) === true;
 
             $rows[] = [
-                'local_name' => self::localNameFor($upstreamName),
+                'local_name' => $localName,
                 'upstream_name' => $upstreamName,
                 'category' => $this->categoryFor($tool),
                 'description' => $this->descriptionFor($tool, $upstreamName),

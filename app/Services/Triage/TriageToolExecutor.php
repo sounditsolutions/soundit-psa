@@ -101,7 +101,9 @@ class TriageToolExecutor
             'cipp_list_groups' => $this->cippQuery('cipp_list_groups', $input, 'api/ListGroups'),
             'cipp_list_user_groups' => $this->cippQueryWithUser('cipp_list_user_groups', $input, 'api/ListUserGroups'),
             'cipp_list_mailbox_permissions' => $this->cippQueryWithUser('cipp_list_mailbox_permissions', $input, 'api/ListmailboxPermissions'),
-            'cipp_list_mailbox_rules' => $this->cippQueryWithUser('cipp_list_mailbox_rules', $input, 'api/ListMailboxRules'),
+            // ListUserMailboxRules, NOT ListMailboxRules: the latter takes no user
+            // parameter and returns EVERY mailbox's rules in the tenant (psa-7lgo.1).
+            'cipp_list_mailbox_rules' => $this->cippQueryWithUser('cipp_list_mailbox_rules', $input, 'api/ListUserMailboxRules', 'UserID'),
             'cipp_list_defender_state' => $this->cippQuery('cipp_list_defender_state', $input, 'api/ListDefenderState'),
             'cipp_list_conditional_access_policies' => $this->cippQuery('cipp_list_conditional_access_policies', $input, 'api/ListConditionalAccessPolicies'),
             'cipp_list_user_conditional_access' => $this->cippQueryWithUser('cipp_list_user_conditional_access', $input, 'api/ListUserConditionalAccessPolicies'),

@@ -68,7 +68,16 @@ trait HandlesCippTools
         }
     }
 
-    private function cippQueryWithUser(string $toolName, array $input, string $endpoint): array
+    /**
+     * The direct (non-relay) path for a user-scoped CIPP tool.
+     *
+     * $userParam MUST be the parameter name the target endpoint actually reads.
+     * Getting that wrong is not a no-op: CIPP silently ignores an unknown query
+     * parameter, so a user-scoped request quietly becomes a TENANT-WIDE one and
+     * the caller is handed every user's data without any error (psa-7lgo.1).
+     * Most endpoints take camelCase `userId`; ListUserMailboxRules takes `UserID`.
+     */
+    private function cippQueryWithUser(string $toolName, array $input, string $endpoint, string $userParam = 'userId'): array
     {
         $relay = $this->cippMcpRelay($toolName, $input);
         if ($relay !== null) {
@@ -85,11 +94,19 @@ trait HandlesCippTools
             return ['error' => 'Client has no CIPP tenant mapping'];
         }
 
+        $query = [
+            'TenantFilter' => $tenantDomain,
+            $userParam => $this->resolveCippUserId($userId),
+        ];
+
+        // ListUserMailboxRules also accepts userEmail, which CIPP uses when it
+        // reports a failure. Cheap to send, and it keeps the request explicit.
+        if ($userParam === 'UserID' && str_contains((string) $userId, '@')) {
+            $query['userEmail'] = (string) $userId;
+        }
+
         try {
-            return app(CippClient::class)->get($endpoint, [
-                'TenantFilter' => $tenantDomain,
-                'userId' => $this->resolveCippUserId($userId),
-            ]);
+            return app(CippClient::class)->get($endpoint, $query);
         } catch (\Throwable $e) {
             Log::warning($this->cippLogPrefix().' CIPP query failed', ['endpoint' => $endpoint, 'error' => $e->getMessage()]);
 
