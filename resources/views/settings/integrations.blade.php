@@ -3432,6 +3432,62 @@
             </div>
         </div>
 
+        {{-- AI Intake (front door) Card — psa-28j4 §3.2 --}}
+        <div class="card shadow-sm mb-4">
+            <div class="card-header d-flex align-items-center">
+                <span>
+                    <i class="bi bi-door-open me-2"></i>AI Intake
+                    @if($intakeCallEnabled && $intakeEmailEnabled)
+                        <span class="badge bg-success ms-2">Calls + Email</span>
+                    @elseif($intakeEmailEnabled)
+                        <span class="badge bg-success ms-2">Email only</span>
+                    @elseif($intakeCallEnabled)
+                        <span class="badge bg-success ms-2">Calls only</span>
+                    @else
+                        <span class="badge bg-secondary ms-2">Disabled</span>
+                    @endif
+                </span>
+            </div>
+            <div class="card-body">
+                <p class="text-muted small">
+                    The intake front door decides what an inbound <strong>call</strong> or <strong>email</strong> becomes — a brand-new ticket, or a reply attached to the existing ticket it belongs to. Each channel is switched independently.
+                </p>
+                <div class="alert alert-info small d-flex gap-2 mb-3">
+                    <i class="bi bi-info-circle mt-1"></i>
+                    <div>
+                        <strong>Turn calls off if GC Chet is handling call&rarr;ticket.</strong> Two systems ticketing the same call produces duplicates and messy merges. Switching <em>calls</em> off leaves PSA-native call ticketing out of the race entirely — while inbound <em>email</em> intake keeps working exactly as before.
+                    </div>
+                </div>
+
+                <form method="POST" action="{{ route('settings.integrations.intake.update') }}">
+                    @csrf
+                    <div class="form-check form-switch mb-2">
+                        <input class="form-check-input" type="checkbox" id="intake_call_enabled" name="intake_call_enabled" {{ $intakeCallEnabled ? 'checked' : '' }}>
+                        <label class="form-check-label" for="intake_call_enabled">
+                            <strong>Create tickets from inbound calls</strong>
+                            <span class="d-block text-muted small">Off &rarr; a transcribed call never creates a PSA ticket. The call is still recorded, transcribed and shown in Calls; ticketing is left to your agent or a technician.</span>
+                        </label>
+                    </div>
+
+                    <div class="form-check form-switch mb-3">
+                        <input class="form-check-input" type="checkbox" id="intake_email_enabled" name="intake_email_enabled" {{ $intakeEmailEnabled ? 'checked' : '' }}>
+                        <label class="form-check-label" for="intake_email_enabled">
+                            <strong>Route inbound email to the right ticket</strong>
+                            <span class="d-block text-muted small">Off &rarr; inbound email skips the attach-vs-create router and always auto-creates, as it did before intake existed. (Whether email creates tickets at all is set by <em>Auto-create tickets from email</em>.)</span>
+                        </label>
+                    </div>
+
+                    <p class="text-muted small mb-3">
+                        <i class="bi bi-shield-check me-1"></i>These are switches only. Intake stays <strong>held-first</strong>: a suggested attach is surfaced for review, never applied automatically.
+                    </p>
+
+                    <button type="submit" class="btn btn-primary btn-sm">
+                        <i class="bi bi-save me-1"></i>Save AI Intake settings
+                    </button>
+                </form>
+            </div>
+        </div>
+
         {{-- AI Technician Card --}}
         <div class="card shadow-sm mb-4">
             <div class="card-header d-flex align-items-center">

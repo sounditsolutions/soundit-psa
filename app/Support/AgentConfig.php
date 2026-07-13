@@ -118,12 +118,65 @@ class AgentConfig
     // ── Intake front-door ─────────────────────────────────────────────────────
 
     /**
-     * Intake front-door dormancy gate. Off (default) → email ingestion behaves exactly
-     * as today. Setting: intake_enabled.
+     * LEGACY master intake gate. Retained for backward compatibility: it is now the
+     * FALLBACK that each per-channel gate inherits when its own key is unset, and is
+     * no longer read directly by any intake call site.
+     *
+     * Setting: intake_enabled.
      */
     public static function intakeEnabled(): bool
     {
         return Setting::getValue('intake_enabled') === '1';
+    }
+
+    /**
+     * CALL-channel intake gate (psa-28j4 §3.2). Governs the two call-intake gates:
+     * the CallIntakeJob dispatch in TranscriptionService and the dormancy re-check in
+     * CallIntakePipeline. Closed ⇒ an inbound call creates NO ticket, leaving the
+     * call→ticket decision to the external agent (no duplicate-ticket race).
+     *
+     * Setting: intake_call_enabled. ABSENT ⇒ inherits intake_enabled.
+     */
+    public static function intakeCallEnabled(): bool
+    {
+        return self::channelIntakeEnabled('intake_call_enabled');
+    }
+
+    /**
+     * EMAIL-channel intake gate (psa-28j4 §3.2). Governs the attach-vs-create router in
+     * EmailService::routeInboundEmail. Closed ⇒ the router is not consulted and inbound
+     * email falls back to autoCreateTicketFromEmail exactly as before (email ticketing
+     * itself is governed by the separate, older email_auto_ticket setting).
+     *
+     * Setting: intake_email_enabled. ABSENT ⇒ inherits intake_enabled.
+     */
+    public static function intakeEmailEnabled(): bool
+    {
+        return self::channelIntakeEnabled('intake_email_enabled');
+    }
+
+    /**
+     * Shared reader for the per-channel intake gates.
+     *
+     * The ABSENT ⇒ inherit-legacy fallback is load-bearing: it is what lets a deployment
+     * that carries only the old intake_enabled key keep TODAY'S EXACT BEHAVIOUR the moment
+     * this ships — no surprise flip in either direction, on either channel.
+     *
+     * SAFETY: the fallback must trigger on ABSENT only — never on a present-but-'0'.
+     * Do NOT collapse this to `Setting::getValue($key) === '1' || self::intakeEnabled()`:
+     * that reads an explicit OFF as "unset" whenever the legacy master is on, making the
+     * channel gate impossible to close — precisely the bug this split exists to fix.
+     * A blank string is treated as absent (a cleared row is not a decision).
+     */
+    private static function channelIntakeEnabled(string $key): bool
+    {
+        $raw = Setting::getValue($key);
+
+        if ($raw === null || trim((string) $raw) === '') {
+            return self::intakeEnabled(); // unset ⇒ inherit the legacy master gate
+        }
+
+        return $raw === '1';
     }
 
     /**

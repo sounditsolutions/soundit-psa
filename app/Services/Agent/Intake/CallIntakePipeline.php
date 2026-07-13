@@ -47,7 +47,10 @@ class CallIntakePipeline
     {
         try {
             // ── Stage 1: dormant gate (defence in depth) ─────────────────────
-            if (! AgentConfig::intakeEnabled()) {
+            // psa-28j4 §3.2: the CALL-channel gate. The dispatch site (TranscriptionService)
+            // is gated on the same key, so a disabled call channel queues no job at all —
+            // this second read closes the other route in (a manual/replayed dispatch).
+            if (! AgentConfig::intakeCallEnabled()) {
                 return;
             }
 

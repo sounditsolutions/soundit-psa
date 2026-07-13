@@ -830,6 +830,26 @@ php artisan tickets:recalculate-sla --clear-missing
 
 Tickets without a contract, or whose contract carries no `sla_terms`, are skipped. The command is idempotent — re-running it without changing terms reports `updated=0`.
 
+### AI Intake (front door)
+
+The intake front door decides what an inbound **call** or **email** becomes: a brand-new ticket, or a reply attached to the ticket it belongs to. **Each channel is gated independently**, so you can hand one channel to an external agent without disturbing the other.
+
+Settings > Integrations > **AI Intake**.
+
+| Setting key | Default | What it gates |
+|---|---|---|
+| `intake_call_enabled` | *unset* → inherits `intake_enabled` | Call intake. Off ⇒ a transcribed call **never creates a PSA ticket** (`TranscriptionService` queues no `CallIntakeJob`, and `CallIntakePipeline` no-ops). The call is still recorded, transcribed and listed under Calls. |
+| `intake_email_enabled` | *unset* → inherits `intake_enabled` | Email intake. Off ⇒ inbound email skips the attach-vs-create router and auto-creates a ticket exactly as it did before intake existed. |
+| `intake_enabled` | *unset* (off) | **Legacy master.** Retained for backward compatibility only: it is the fallback a channel inherits when its own key has never been set. Once a channel key exists, that key wins for that channel. |
+
+**Turn calls off when an external agent owns call→ticket.** If a Gas City / Chet-style agent is creating tickets from calls, leaving PSA-native call intake on means two systems ticket the same call — duplicates and manual merges. Switching *calls* off removes PSA from that race while inbound *email* intake keeps working.
+
+**Upgrading an existing deployment:** nothing changes on deploy. A box that only has `intake_enabled` set keeps its exact current behaviour on both channels, because each per-channel gate inherits it while unset. The moment you press **Save** on the AI Intake card, both per-channel keys are written explicitly (an unchecked box persists `0`, not "absent"), and they take precedence from then on. `intake_enabled` is never rewritten by the card.
+
+> **Note:** whether inbound email creates tickets *at all* is governed by the separate **Auto-create tickets from email** setting (`email_auto_ticket`), not by `intake_email_enabled`.
+
+**Held-first:** these are enable/disable switches only. Intake never auto-acts on its own — a suggested attach is surfaced for operator review unless you separately set the (default-null) `intake_attach_auto_threshold` / `intake_spam_block_auto_threshold` thresholds.
+
 ### Daily Technician Briefing
 
 Emails each active technician a personalized start-of-day digest: their open tickets (with age + priority), tickets at risk of an SLA breach today, alerts on their clients that broke overnight, voicemails still awaiting a callback, and one or two AI-suggested next actions. The `briefing:send-daily` command runs every minute and self-gates to fire once per operator-local day; per-technician idempotency is enforced by the `daily_briefings` table (unique per user + date), so a re-run never double-sends.

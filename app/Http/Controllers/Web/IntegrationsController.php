@@ -264,6 +264,15 @@ class IntegrationsController extends Controller
         $assistantMaxMessages = Setting::getValue('assistant_max_messages') ?? 50;
         $assistantDailyTokens = Setting::getValue('assistant_daily_token_limit') ?? 500000;
 
+        // AI Intake front-door settings (psa-28j4 §3.2) — the two per-channel gates.
+        // These read the EFFECTIVE value (AgentConfig, which inherits the legacy
+        // intake_enabled when a channel key is unset), NOT the raw Setting rows. That is
+        // load-bearing: on a box carrying only the legacy key the boxes must render in
+        // their true current state, or an operator pressing Save without touching anything
+        // would silently flip intake off.
+        $intakeCallEnabled = \App\Support\AgentConfig::intakeCallEnabled();
+        $intakeEmailEnabled = \App\Support\AgentConfig::intakeEmailEnabled();
+
         // AI Technician settings
         $technicianEnabled = \App\Support\TechnicianConfig::enabled();
         $technicianEmergencyEnabled = \App\Support\TechnicianConfig::emergencyEnabled();
@@ -375,6 +384,7 @@ class IntegrationsController extends Controller
             'triageEnabled', 'triageAutoNew', 'triageAutoReview', 'triageReviewFrequency', 'triageReviewAutoClose', 'triageReviewThreshold',
             'triageDefaultAssignee', 'triageSystemUser', 'triageModel', 'triageMaxTokens', 'triageDailyTokens', 'triageBatchSize', 'triageStages',
             'assistantEnabled', 'assistantMaxMessages', 'assistantDailyTokens',
+            'intakeCallEnabled', 'intakeEmailEnabled',
             'technicianEnabled', 'technicianEmergencyEnabled', 'technicianAutoAck',
             'technicianTeamsWebhookSet', 'technicianNotifyEmail', 'technicianDigestEnabled', 'technicianDigestTime', 'technicianHeartbeatInterval',
             'allowArbitraryEmailRecipients', 'allowArbitraryEmailRecipientsStaged', 'directEmailNewRecipients',
@@ -1749,6 +1759,29 @@ class IntegrationsController extends Controller
 
         return redirect()->route('settings.integrations')
             ->with('success', 'AI Assistant settings saved.');
+    }
+
+    // --- AI Intake front door (psa-28j4 §3.2) ---
+
+    /**
+     * The two per-channel intake gates. ENABLE/DISABLE only — this card deliberately
+     * exposes no auto-act thresholds (intake_attach_auto_threshold and
+     * intake_spam_block_auto_threshold stay unset/null, i.e. held-first).
+     *
+     * Both keys are ALWAYS written, so an unchecked box persists an explicit '0' rather
+     * than leaving the key absent — an absent key inherits the legacy intake_enabled
+     * master, which would make the operator's "off" fail to stick on a box where the
+     * legacy key is on. The legacy key itself is deliberately left untouched: once a
+     * channel key exists it takes precedence, so intake_enabled simply becomes the
+     * fallback for any channel that has never been set.
+     */
+    public function updateIntake(Request $request)
+    {
+        Setting::setValue('intake_call_enabled', $request->has('intake_call_enabled') ? '1' : '0');
+        Setting::setValue('intake_email_enabled', $request->has('intake_email_enabled') ? '1' : '0');
+
+        return redirect()->route('settings.integrations')
+            ->with('success', 'AI Intake settings saved.');
     }
 
     // --- Teams Bot (Bot Framework) credentials (Teams bridge E1) ---
