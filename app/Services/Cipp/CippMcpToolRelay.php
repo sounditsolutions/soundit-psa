@@ -729,7 +729,23 @@ class CippMcpToolRelay
         // because CIPP cases its key differently. That silently stripped
         // ForwardingSmtpAddress and every Get-InboxRule property from the
         // agent's view of a tenant — security signal lost with no error.
-        $missing = array_keys(array_filter($keyResolved, fn (bool $resolved): bool => ! $resolved));
+        // Some tools still hedge by declaring BOTH casings of a field as separate
+        // DEFAULT_FIELDS entries (MessageTraceId *and* messageTraceId, Identity
+        // *and* identity). Exactly one of those can ever resolve, so a healthy
+        // row would report its twin as drift and the guard would cry wolf on
+        // every call — and a noisy guard gets ignored, which would defeat the
+        // whole point of having one. If a case-insensitive twin resolved, the
+        // concept IS present and this is a hedge, not drift.
+        $resolvedInsensitively = array_map(
+            fn (string $field): string => mb_strtolower($field),
+            array_keys(array_filter($keyResolved))
+        );
+
+        $missing = array_values(array_filter(
+            array_keys(array_filter($keyResolved, fn (bool $resolved): bool => ! $resolved)),
+            fn (string $field): bool => ! in_array(mb_strtolower($field), $resolvedInsensitively, true)
+        ));
+
         if ($missing === []) {
             return;
         }
@@ -889,6 +905,13 @@ class CippMcpToolRelay
             // Mailbox-permission trustees can be display names (SendOnBehalf rows),
             // not just UPNs — treat as untrusted free text.
             'user',
+            // An inbox rule's target folder is named by the mailbox owner (or by
+            // whoever planted the rule), so it is attacker-controlled text on the
+            // same footing as the rule's name and description. Unlike the rule's
+            // recipient lists — arrays, already fenced item-by-item by boundArray()
+            // — this one is a bare scalar and would otherwise reach the agent raw.
+            'moveToFolder',
+            'MoveToFolder',
             'Subject',
             'subject',
             'appDisplayName',
