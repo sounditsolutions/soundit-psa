@@ -46,6 +46,22 @@ class StaffCippWriteToolExecutor
         'cipp_stage_add_tenant_allow_entry' => 'cipp_add_tenant_allow_entry',
         'cipp_stage_wipe_device' => 'cipp_wipe_device',
         'cipp_stage_reassign_onedrive' => 'cipp_reassign_onedrive',
+        'cipp_stage_create_user' => 'cipp_create_user',
+    ];
+
+    /**
+     * Provisioning writes (bead psa-pbvy.1). These create a NEW upstream
+     * identity, so there is no person_id to resolve — they run through their
+     * own context/stage/approve path where the tenant AND the new UPN's
+     * domain are both server-derived from the client's CIPP tenant mapping,
+     * and the CIPP-generated temp password is delivered exactly once (tool
+     * result on the immediate path, cockpit approval response on the staged
+     * path) and never stored or audited.
+     *
+     * @var array<int, string>
+     */
+    private const PROVISIONING_TOOLS = [
+        'cipp_create_user',
     ];
 
     /**
@@ -100,6 +116,8 @@ class StaffCippWriteToolExecutor
         'cipp_reassign_onedrive' => 300,
         'cipp_stage_reassign_onedrive' => 300,
         'cipp_reset_user_password' => 300,
+        'cipp_create_user' => 300,
+        'cipp_stage_create_user' => 300,
     ];
 
     private const OOO_MESSAGE_MAX = 2000;
@@ -137,6 +155,23 @@ class StaffCippWriteToolExecutor
     private const QUARANTINE_IDENTITY_MAX = 200;
 
     private const QUARANTINE_SUBJECT_PREVIEW_MAX = 120;
+
+    /** Entra UPN limits: local part ≤ 64 chars, whole UPN ≤ 113 chars. */
+    private const CREATE_USERNAME_MAX = 64;
+
+    private const CREATE_UPN_MAX = 113;
+
+    private const CREATE_DISPLAY_NAME_MAX = 256;
+
+    private const CREATE_NAME_MAX = 64;
+
+    /**
+     * Conservative UPN-local-part / mailNickname allowlist: alphanumeric with
+     * interior dots, underscores, and hyphens, never leading/trailing a
+     * separator. CIPP reuses the username as BOTH the UPN local part and the
+     * Exchange mailNickname, so this stays inside the stricter alias rules.
+     */
+    private const CREATE_USERNAME_PATTERN = '/^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/i';
 
     /** @var array<int, string> */
     private const UPSTREAM_IDENTIFIER_KEYS = [
@@ -232,6 +267,32 @@ class StaffCippWriteToolExecutor
         'RemoveAfter',
         'notes',
         'Notes',
+        'Domain',
+        'PrimDomain',
+        'displayName',
+        'DisplayName',
+        'givenName',
+        'GivenName',
+        'usageLocation',
+        'UsageLocation',
+        'mailNickname',
+        'MustChangePass',
+        'mustChangePass',
+        'password',
+        'Password',
+        'licenses',
+        'AddedAliases',
+        'copyFrom',
+        'CopyFrom',
+        'AddToGroups',
+        'setManager',
+        'setSponsor',
+        'Scheduled',
+        'otherMails',
+        'sherwebLicense',
+        'defaultAttributes',
+        'customData',
+        'PostExecution',
         'endpoint',
         'Endpoint',
         'cipp_endpoint',
@@ -284,6 +345,8 @@ class StaffCippWriteToolExecutor
             self::reassignOneDriveTool(),
             self::stageReassignOneDriveTool(),
             self::resetUserPasswordTool(),
+            self::createUserTool(),
+            self::stageCreateUserTool(),
         ];
     }
 
@@ -325,6 +388,12 @@ class StaffCippWriteToolExecutor
             return $this->executeResetPassword($name, $arguments, $clientId, $actorLabel);
         }
 
+        if (in_array(self::STAGED_TO_DIRECT[$name] ?? $name, self::PROVISIONING_TOOLS, true)) {
+            return isset(self::STAGED_TO_DIRECT[$name])
+                ? $this->stageCreateUserAction($name, $arguments, $clientId, $actorLabel)
+                : $this->executeCreateUserDirect($name, $arguments, $clientId, $actorLabel);
+        }
+
         if (in_array(self::STAGED_TO_DIRECT[$name] ?? $name, self::EMAIL_SECURITY_TOOLS, true)) {
             return isset(self::STAGED_TO_DIRECT[$name])
                 ? $this->stageEmailSecurityAction($name, $arguments, $clientId, $actorLabel)
@@ -342,6 +411,10 @@ class StaffCippWriteToolExecutor
     {
         if (! self::isStagedActionType($run->action_type) || ! $run->claimForExecution()) {
             return new TechnicianApprovalResult('already_handled');
+        }
+
+        if (in_array(self::STAGED_TO_DIRECT[$run->action_type] ?? '', self::PROVISIONING_TOOLS, true)) {
+            return $this->approveCreateUserStagedRun($run, $approverId);
         }
 
         if (in_array(self::STAGED_TO_DIRECT[$run->action_type] ?? '', self::EMAIL_SECURITY_TOOLS, true)) {
@@ -1440,6 +1513,601 @@ class StaffCippWriteToolExecutor
         return $tool === 'cipp_release_quarantine_message'
             ? ['quarantine_identity' => (string) $params['quarantine_identity']]
             : ['list_type' => (string) $params['list_type'], 'entry' => (string) $params['entry']];
+    }
+
+    /**
+     * Direct path for the provisioning create-user write (immediate mode
+     * grant only — grants start staged-only). Mirrors executeResetPassword's
+     * credential contract: the CIPP-generated temp password exists ONLY in
+     * the returned result; auditAttempt() records the created UPN, never the
+     * password. The idempotent short-circuit cannot return the credential
+     * (it was never stored), so it points at the password reset tool instead.
+     *
+     * @return array<string, mixed>
+     */
+    private function executeCreateUserDirect(string $tool, array $arguments, int $clientId, string $actorLabel): array
+    {
+        $context = $this->createUserContext($tool, $arguments, $clientId, $actorLabel, requireTicket: false);
+        if (isset($context['error'])) {
+            return ['error' => $context['error']];
+        }
+
+        /** @var Client $client */
+        $client = $context['client'];
+        /** @var string $tenant */
+        $tenant = $context['tenant'];
+        /** @var Ticket|null $ticket */
+        $ticket = $context['ticket'];
+        /** @var array<string, mixed> $params */
+        $params = $context['params'];
+        /** @var ResolvedCippLicense|null $license */
+        $license = $context['license'];
+        $reason = (string) $context['reason'];
+
+        $targetKey = $this->createUserTargetKey((string) $params['staged_upn']);
+        $contentHash = $this->contentHash($tool, $client->id, null, $ticket?->id, $params);
+
+        // Both rails: the exact-content dedup AND the identity-keyed
+        // double-create rail (a same-UPN create with different names is still
+        // the same account being created twice).
+        if ($this->alreadyExecuted($tool, $client->id, $contentHash) || $this->createUserAlreadyExecuted($client->id, $targetKey)) {
+            $this->auditAttempt($tool, 'blocked', $client->id, $ticket, null, null, $contentHash, "{$targetKey}: Duplicate {$tool} suppressed before upstream call.", $actorLabel);
+
+            return [
+                'success' => true,
+                'idempotent' => true,
+                'message' => 'An identical user creation already executed recently; no upstream call was made. The temporary password was returned once at creation — use cipp_reset_user_password if a new credential is needed.',
+            ];
+        }
+
+        // Shared targetKey-in-summary cooldown helper (same semantics as the
+        // email-security non-person targets).
+        if ($this->emailSecurityCooldownActive($tool, $client->id, $targetKey, self::COOLDOWNS[$tool] ?? 300)) {
+            $this->auditAttempt($tool, 'blocked', $client->id, $ticket, null, null, $contentHash, "{$targetKey}: {$tool} cooldown active; upstream call refused.", $actorLabel);
+
+            return ['error' => "{$tool} cooldown active for this target; no upstream call was made."];
+        }
+
+        try {
+            $upstream = $this->client->createUser(
+                $tenant,
+                (string) $params['username'],
+                $tenant,
+                (string) $params['display_name'],
+                (string) $params['given_name'],
+                (string) $params['surname'],
+                $params['usage_location'] ?? null,
+                $license?->skuId,
+            );
+        } catch (CippClientException $e) {
+            $this->auditAttempt($tool, 'error', $client->id, $ticket, null, null, $contentHash, "{$targetKey}: ".$this->safeFailureSummary($tool, $e), $actorLabel);
+
+            return ['error' => "CIPP user creation failed for {$tool}; no account was reported created."];
+        }
+
+        $parsed = $this->parseCreateUserResponse($upstream);
+        $createdUpn = $parsed['upn'] ?? (string) $params['staged_upn'];
+
+        $this->auditAttempt($tool, 'executed', $client->id, $ticket, null, null, $contentHash, "{$targetKey}: {$tool} executed — created M365 user {$createdUpn}".($license !== null ? ' with license_type #'.$license->licenseType->id : '').': '.$reason, $actorLabel);
+
+        $result = [
+            'success' => true,
+            'tool' => $tool,
+            'ticket_id' => $ticket?->id,
+            'user_principal_name' => $createdUpn,
+            'must_change_at_next_logon' => true,
+            'license_type_id' => $license?->licenseType->id,
+        ];
+
+        if ($parsed['warnings'] !== []) {
+            $result['post_create_warnings'] = $parsed['warnings'];
+        }
+
+        if ($parsed['password'] === null) {
+            $result['password_returned'] = false;
+            $result['message'] = 'CIPP reported the user was created but returned no password value. Verify in CIPP; if PwPush is configured the credential may be delivered as a link instead.';
+
+            return $result;
+        }
+
+        $result['temporary_password'] = $parsed['password'];
+        $result['message'] = 'New Microsoft 365 user created. Relay the temporary password over a secure channel; the user must change it at first sign-in. It is returned only in this result and never stored.';
+        $result['guidance'] = 'If your CIPP instance has PwPush enabled, the temporary_password value may be a one-time secure link rather than the literal password.';
+
+        return $result;
+    }
+
+    /**
+     * Staged twin for the provisioning create-user write — the DEFAULT path
+     * (grants start staged-only). The MCP call makes no CIPP upstream call;
+     * the held payload stores only validated safe scalars (username, the
+     * server-composed staged_upn snapshot, names, usage location, local
+     * license_type_id), and the cockpit proposal names the exact identity
+     * being created plus the one-time password delivery contract. Approval
+     * re-derives the tenant scope fresh and refuses on drift.
+     *
+     * @return array<string, mixed>
+     */
+    private function stageCreateUserAction(string $tool, array $arguments, int $clientId, string $actorLabel): array
+    {
+        $context = $this->createUserContext($tool, $arguments, $clientId, $actorLabel, requireTicket: true);
+        if (isset($context['error'])) {
+            return ['error' => $context['error']];
+        }
+
+        /** @var Client $client */
+        $client = $context['client'];
+        /** @var Ticket $ticket */
+        $ticket = $context['ticket'];
+        /** @var array<string, mixed> $params */
+        $params = $context['params'];
+        /** @var ResolvedCippLicense|null $license */
+        $license = $context['license'];
+        $reason = (string) $context['reason'];
+        $directTool = self::STAGED_TO_DIRECT[$tool];
+
+        $targetKey = $this->createUserTargetKey((string) $params['staged_upn']);
+        $contentHash = $this->contentHash($tool, $client->id, null, $ticket->id, $params);
+
+        if ($this->alreadyExecuted($tool, $client->id, $contentHash)) {
+            return [
+                'success' => true,
+                'idempotent' => true,
+                'ticket_id' => $ticket->id,
+                'ticket_display_id' => $ticket->display_id,
+                'run_id' => $this->executedRunId($tool, $client->id, $contentHash),
+                'message' => 'Already executed identical action recently; no new proposal was staged.',
+            ];
+        }
+
+        $liveAwaitingRun = $this->liveAwaitingRun($ticket->id, $tool, $contentHash);
+        if ($liveAwaitingRun !== null) {
+            return [
+                'success' => true,
+                'idempotent' => true,
+                'ticket_id' => $ticket->id,
+                'ticket_display_id' => $ticket->display_id,
+                'run_id' => $liveAwaitingRun->id,
+                'message' => 'Already staged; awaiting approval.',
+            ];
+        }
+
+        if ($this->emailSecurityProposalCooldownActive($tool, $ticket, $targetKey, self::COOLDOWNS[$tool] ?? 300)) {
+            $this->auditAttempt($tool, 'blocked', $client->id, $ticket, null, null, $contentHash, "{$targetKey}: {$tool} cooldown active; staged proposal refused.", $actorLabel);
+
+            return ['error' => "{$tool} cooldown active for this target; no proposal was staged."];
+        }
+
+        $meta = [
+            'drafted_by' => $actorLabel,
+            'reasons' => [$reason],
+            'direct_tool' => $directTool,
+            'license_type_id' => $license?->licenseType->id,
+            'redacted_params' => $params,
+            'sensitive_inputs' => [],
+            'encrypted_payload' => Crypt::encryptString(json_encode([
+                'direct_tool' => $directTool,
+                'client_id' => $client->id,
+                'ticket_id' => $ticket->id,
+                'params' => $params,
+            ], JSON_THROW_ON_ERROR)),
+        ];
+        $proposedContent = $this->createUserStagedDisplay($params, $license)."\nReason: ".$reason;
+
+        // Same idempotency-revive contract as stageAction() (bd psa-k4s0): the
+        // DB unique key (ticket_id + action_type + content_hash) either creates
+        // a fresh run or revives the superseded/denied row it collides with.
+        $run = TechnicianRun::firstOrCreate(
+            [
+                'ticket_id' => $ticket->id,
+                'action_type' => $tool,
+                'content_hash' => $contentHash,
+            ],
+            [
+                'client_id' => $client->id,
+                'state' => TechnicianRunState::AwaitingApproval,
+                'proposed_content' => $proposedContent,
+                'proposed_meta' => $meta,
+                'confidence' => null,
+                'tokens_used' => 0,
+            ],
+        );
+
+        if (! $run->wasRecentlyCreated && $run->state !== TechnicianRunState::AwaitingApproval) {
+            $run->update([
+                'state' => TechnicianRunState::AwaitingApproval->value,
+                'proposed_content' => $proposedContent,
+                'proposed_meta' => $meta,
+                'confidence' => null,
+                'tokens_used' => 0,
+            ]);
+        } elseif (! $run->wasRecentlyCreated) {
+            return [
+                'success' => true,
+                'idempotent' => true,
+                'ticket_id' => $ticket->id,
+                'ticket_display_id' => $ticket->display_id,
+                'run_id' => $run->id,
+                'message' => 'Already staged; awaiting approval.',
+            ];
+        }
+
+        $this->auditAttempt($tool, 'awaiting_approval', $client->id, $ticket, null, null, $contentHash, "{$targetKey}: MCP staged {$tool} for new user {$params['staged_upn']}: {$reason}", $actorLabel, $run->id);
+
+        return [
+            'success' => true,
+            'ticket_id' => $ticket->id,
+            'ticket_display_id' => $ticket->display_id,
+            'run_id' => $run->id,
+            'message' => 'Staged for cockpit approval.',
+        ];
+    }
+
+    /**
+     * Approval replay for a held create-user write. The caller has already
+     * claimed the run. Everything is revalidated from the encrypted payload
+     * through the same gates as the initial call; the tenant scope is
+     * re-derived FRESH and compared against the staged UPN snapshot, so a
+     * client whose CIPP tenant mapping changed after staging declines instead
+     * of creating an identity the operator never reviewed. The CIPP-generated
+     * temp password rides back once on the approval result's secret field
+     * (shown to the approver, never stored, never audited); a re-approval for
+     * an identity that already executed — from this ticket or any other — is
+     * a LOGGED NO-OP, never a second upstream call.
+     */
+    private function approveCreateUserStagedRun(TechnicianRun $run, int $approverId): TechnicianApprovalResult
+    {
+        try {
+            $payload = $this->decryptRunPayload($run);
+            if ($payload === null) {
+                $run->releaseClaim();
+
+                return $this->declined('The held payload could not be read; deny this proposal and re-stage it.');
+            }
+
+            $directTool = (string) ($payload['direct_tool'] ?? '');
+            if ((self::STAGED_TO_DIRECT[$run->action_type] ?? null) !== $directTool
+                || ! in_array($directTool, self::PROVISIONING_TOOLS, true)) {
+                $run->releaseClaim();
+
+                return $this->declined('The held payload does not match this action type; deny this proposal and re-stage it.');
+            }
+
+            $client = Client::find((int) ($payload['client_id'] ?? 0));
+            if (! $client || (int) $client->id !== (int) $run->client_id) {
+                $run->releaseClaim();
+
+                return $this->declined('The proposal\'s client could not be re-verified; deny this proposal and re-stage it.');
+            }
+
+            $tenant = $this->resolver->resolveCippTenant($client);
+            $ticket = $this->resolver->resolveTicketForHeldAction($client->id, $payload['ticket_id'] ?? null);
+            $stored = is_array($payload['params'] ?? null) ? $payload['params'] : [];
+            $params = $this->createUserParams($tenant, $stored);
+
+            // Tenant-mapping drift rail: the freshly composed UPN must equal
+            // the snapshot the operator reviewed at staging.
+            $stagedUpn = trim((string) ($stored['staged_upn'] ?? ''));
+            if ($stagedUpn === '' || strcasecmp((string) $params['staged_upn'], $stagedUpn) !== 0) {
+                $run->releaseClaim();
+
+                return $this->declined('The client\'s CIPP tenant mapping changed after this action was staged; deny this proposal and re-stage it against the current tenant.');
+            }
+
+            $license = isset($params['license_type_id'])
+                ? $this->resolver->resolveCippLicense($client->id, $params['license_type_id'])
+                : null;
+
+            $targetKey = $this->createUserTargetKey((string) $params['staged_upn']);
+            $contentHash = $run->content_hash;
+
+            if (TechnicianConfig::killSwitchEngaged()) {
+                $this->auditAttempt($run->action_type, 'blocked', $client->id, $ticket, null, null, $contentHash, "{$targetKey}: Technician kill-switch engaged; staged CIPP write refused.", $this->approverLabel($approverId), $run->id, $approverId);
+                $run->releaseClaim();
+
+                return $this->declined('Technician kill-switch engaged; the staged CIPP write was refused.');
+            }
+
+            // Double-create rail (device-wipe precedent): an identity that
+            // already executed leaves the queue terminally as a logged no-op.
+            if ($this->createUserAlreadyExecuted($client->id, $targetKey)) {
+                $this->auditAttempt($run->action_type, 'blocked', $client->id, $ticket, null, null, $contentHash, "{$targetKey}: Duplicate user creation suppressed: {$params['staged_upn']} already created within ".self::DIRECT_DEDUP_HOURS.'h; the approval was treated as a logged no-op.', $this->approverLabel($approverId), $run->id, $approverId);
+                $run->advanceTo(TechnicianRunState::Done);
+
+                return new TechnicianApprovalResult('already_handled');
+            }
+
+            if ($this->emailSecurityCooldownActive($directTool, $client->id, $targetKey, self::COOLDOWNS[$directTool] ?? 300)) {
+                $this->auditAttempt($run->action_type, 'blocked', $client->id, $ticket, null, null, $contentHash, "{$targetKey}: CIPP staged action cooldown active; approval refused before upstream call.", $this->approverLabel($approverId), $run->id, $approverId);
+                $run->releaseClaim();
+
+                return $this->declined('A recent action for this target is still in cooldown; wait a few minutes and approve again.');
+            }
+
+            try {
+                $upstream = $this->client->createUser(
+                    $tenant,
+                    (string) $params['username'],
+                    $tenant,
+                    (string) $params['display_name'],
+                    (string) $params['given_name'],
+                    (string) $params['surname'],
+                    $params['usage_location'] ?? null,
+                    $license?->skuId,
+                );
+            } catch (CippClientException $e) {
+                $this->auditAttempt($run->action_type, 'error', $client->id, $ticket, null, null, $contentHash, "{$targetKey}: ".$this->safeFailureSummary($run->action_type, $e), $this->approverLabel($approverId), $run->id, $approverId);
+                $run->releaseClaim();
+
+                return $this->declined($e->getMessage());
+            }
+
+            $parsed = $this->parseCreateUserResponse($upstream);
+            $createdUpn = $parsed['upn'] ?? (string) $params['staged_upn'];
+
+            $this->auditAttempt($run->action_type, 'executed', $client->id, $ticket, null, null, $contentHash, "{$targetKey}: Operator-approved {$run->action_type} executed — created M365 user {$createdUpn}".($license !== null ? ' with license_type #'.$license->licenseType->id : '').'. Temp password delivered once to the approver; never stored.', $this->approverLabel($approverId), $run->id, $approverId);
+            $run->advanceTo(TechnicianRunState::Done);
+
+            $message = 'Created Microsoft 365 user '.$createdUpn.'.';
+            if ($parsed['warnings'] !== []) {
+                $message .= ' Post-create warning: '.implode(' ', $parsed['warnings']);
+            }
+            $message .= $parsed['password'] !== null
+                ? ' The temporary password is shown once here and never stored — relay it over a secure channel; the user must change it at first sign-in.'
+                : ' CIPP returned no password value; if PwPush is configured the credential may be delivered as a link — verify in CIPP, or use the password reset tool.';
+
+            return new TechnicianApprovalResult(
+                'executed',
+                message: mb_substr($this->redactor->redactString($message), 0, 500),
+                secret: $parsed['password'],
+            );
+        } catch (CippWriteScopeException $e) {
+            $run->releaseClaim();
+
+            return $this->declined($e->getMessage());
+        } catch (\Throwable $e) {
+            $run->releaseClaim();
+
+            throw $e;
+        }
+    }
+
+    /**
+     * Shared front door for the provisioning create-user write: the same
+     * caller-input gates as context() (upstream-identifier blocklist, required
+     * redacted reason, kill-switch, client + tenant + ticket resolution) with
+     * new-identity parameter validation in place of person resolution. The
+     * typed confirm_upn must match the SERVER-composed UPN
+     * (username@<mapped tenant domain>) — a wrong client_id or a guessed
+     * domain cancels before anything is staged or executed.
+     *
+     * @return array{client?: Client, tenant?: string, ticket?: Ticket|null, params?: array<string, mixed>, license?: ResolvedCippLicense|null, reason?: string, error?: string}
+     */
+    private function createUserContext(string $tool, array $arguments, int $clientId, string $actorLabel, bool $requireTicket): array
+    {
+        $contentHash = $this->contentHash($tool, $clientId, null, null, $arguments);
+
+        if ($keys = $this->upstreamIdentifierKeys($arguments)) {
+            $this->auditAttempt($tool, 'rejected', $clientId, null, null, null, $contentHash, 'Caller-supplied upstream CIPP identifiers are not accepted: '.implode(', ', $keys).'.', $actorLabel);
+
+            return ['error' => 'Caller-supplied upstream CIPP identifiers are not accepted; provide the tool\'s own validated parameters and ticket_id only.'];
+        }
+
+        $reason = $this->requiredString($arguments, 'reason');
+        if ($reason === null) {
+            $this->auditAttempt($tool, 'rejected', $clientId, null, null, null, $contentHash, 'reason is required.', $actorLabel);
+
+            return ['error' => 'reason is required'];
+        }
+        $reason = $this->safeReason($tool, $reason, $arguments);
+
+        if (TechnicianConfig::killSwitchEngaged()) {
+            $this->auditAttempt($tool, 'blocked', $clientId, null, null, null, $contentHash, 'Technician kill-switch engaged; CIPP MCP write refused.', $actorLabel);
+
+            return ['error' => 'Technician kill-switch engaged; CIPP MCP write refused'];
+        }
+
+        $client = Client::find($clientId);
+        if (! $client) {
+            $this->auditAttempt($tool, 'rejected', $clientId, null, null, null, $contentHash, 'Client not found.', $actorLabel);
+
+            return ['error' => 'Client not found'];
+        }
+
+        try {
+            $tenant = $this->resolver->resolveCippTenant($client);
+            $ticket = $requireTicket
+                ? $this->resolver->resolveTicketForHeldAction($client->id, $arguments['ticket_id'] ?? null)
+                : $this->resolver->resolveOptionalTicket($client->id, $arguments['ticket_id'] ?? null);
+            $params = $this->createUserParams($tenant, $arguments);
+            $license = isset($params['license_type_id'])
+                ? $this->resolver->resolveCippLicense($client->id, $params['license_type_id'])
+                : null;
+
+            $typed = $this->requiredString($arguments, 'confirm_upn');
+            if ($typed === null || strcasecmp($typed, (string) $params['staged_upn']) !== 0) {
+                throw new CippWriteScopeException('The typed confirm_upn does not match the server-composed UPN for the new user ('.$params['staged_upn'].'). CIPP write cancelled.');
+            }
+        } catch (CippWriteScopeException $e) {
+            $this->auditAttempt($tool, 'rejected', $client->id, null, null, null, $contentHash, $e->getMessage(), $actorLabel);
+
+            return ['error' => $e->getMessage()];
+        }
+
+        return [
+            'client' => $client,
+            'tenant' => $tenant,
+            'ticket' => $ticket,
+            'params' => $params,
+            'license' => $license,
+            'reason' => $reason,
+        ];
+    }
+
+    /**
+     * Validate the new-identity parameters. Runs on the initial call (against
+     * caller arguments) AND on the approval replay (against the decrypted
+     * stored payload), so a tampered or drifted payload re-fails the same
+     * gates instead of being trusted. Every returned value is a safe local
+     * scalar; staged_upn is the server-composed identity
+     * (username@<resolved tenant domain>) the approval replay re-derives and
+     * compares against.
+     *
+     * @return array<string, mixed>
+     */
+    private function createUserParams(string $tenant, array $source): array
+    {
+        $username = $this->requiredString($source, 'username');
+        if ($username === null || mb_strlen($username) > self::CREATE_USERNAME_MAX || preg_match(self::CREATE_USERNAME_PATTERN, $username) !== 1) {
+            throw new CippWriteScopeException('username must be a plain UPN local part (letters/digits with interior . _ -, max '.self::CREATE_USERNAME_MAX.' characters) — the server appends the client\'s mapped tenant domain.');
+        }
+
+        $username = mb_strtolower($username);
+        $upn = $username.'@'.mb_strtolower(trim($tenant));
+        if (mb_strlen($upn) > self::CREATE_UPN_MAX || filter_var($upn, FILTER_VALIDATE_EMAIL) === false) {
+            throw new CippWriteScopeException('The composed UPN ('.$upn.') is not a valid user principal name; shorten the username or fix the client CIPP tenant mapping.');
+        }
+
+        $params = [
+            'username' => $username,
+            'staged_upn' => $upn,
+            'display_name' => $this->createUserNameField($source, 'display_name', self::CREATE_DISPLAY_NAME_MAX),
+            'given_name' => $this->createUserNameField($source, 'given_name', self::CREATE_NAME_MAX),
+            'surname' => $this->createUserNameField($source, 'surname', self::CREATE_NAME_MAX),
+        ];
+
+        $usageLocation = $this->requiredString($source, 'usage_location');
+        if ($usageLocation !== null) {
+            if (preg_match('/^[a-z]{2}$/i', $usageLocation) !== 1) {
+                throw new CippWriteScopeException('usage_location must be a 2-letter ISO 3166-1 country code (e.g. US)');
+            }
+            $params['usage_location'] = strtoupper($usageLocation);
+        }
+
+        if (array_key_exists('license_type_id', $source) && $source['license_type_id'] !== null && $source['license_type_id'] !== '') {
+            $licenseTypeId = $source['license_type_id'];
+            if (! is_int($licenseTypeId) && ! (is_string($licenseTypeId) && preg_match('/^[1-9][0-9]*$/', $licenseTypeId) === 1)) {
+                throw new CippWriteScopeException('license_type_id must be a positive integer');
+            }
+            if (! isset($params['usage_location'])) {
+                throw new CippWriteScopeException('usage_location is required when license_type_id is provided — Microsoft 365 refuses license assignment for a user without a usage location.');
+            }
+            $params['license_type_id'] = (int) $licenseTypeId;
+        }
+
+        return $params;
+    }
+
+    /** A required upstream directory name field: bounded, control-character free. */
+    private function createUserNameField(array $source, string $field, int $maxLength): string
+    {
+        $value = (string) $this->boundedString($source, $field, $maxLength, required: true);
+        if (preg_match('/[\x00-\x1F\x7F]/u', $value) === 1) {
+            throw new CippWriteScopeException("{$field} must not contain control characters");
+        }
+
+        return $value;
+    }
+
+    /**
+     * Read the created UPN, the one-time temp password, and any post-create
+     * step warnings out of a captured AddUser response body. Source shape
+     * (Invoke-AddUser.ps1): Results is a mixed list — string status lines
+     * plus two {resultText, copyField} objects carrying the username and the
+     * password; post-create steps (license, aliases, groups) append plain
+     * strings, and a failed step reports a "Failed …" line while the create
+     * itself already succeeded. Warning strings are length-bounded,
+     * control-stripped, and dropped entirely if they somehow embed the
+     * credential.
+     *
+     * @param  array<int|string, mixed>  $response
+     * @return array{upn: string|null, password: string|null, warnings: array<int, string>}
+     */
+    private function parseCreateUserResponse(array $response): array
+    {
+        $results = $response['body']['Results'] ?? null;
+        $results = is_array($results) ? array_values($results) : [];
+
+        $upn = null;
+        $password = null;
+        $warnings = [];
+        $copyFields = [];
+
+        foreach ($results as $entry) {
+            if (is_array($entry)) {
+                $text = trim((string) ($entry['resultText'] ?? ''));
+                $copy = isset($entry['copyField']) && is_string($entry['copyField']) && $entry['copyField'] !== '' ? $entry['copyField'] : null;
+                if ($copy !== null) {
+                    $copyFields[] = $copy;
+                }
+                if ($upn === null && str_starts_with($text, 'Username:')) {
+                    $upn = $copy;
+                } elseif ($password === null && str_starts_with($text, 'Password:')) {
+                    $password = $copy;
+                }
+
+                continue;
+            }
+
+            if (is_string($entry) && stripos($entry, 'failed') !== false) {
+                $warnings[] = mb_substr(trim((string) preg_replace('/[\x00-\x1F\x7F]+/u', ' ', $entry)), 0, 300);
+            }
+        }
+
+        // Positional fallback for a response without the labeled resultText
+        // lines: Invoke-AddUser emits the username object first, password second.
+        if ($upn === null && $password === null && count($copyFields) >= 2) {
+            [$upn, $password] = [$copyFields[0], $copyFields[1]];
+        }
+
+        if ($password !== null) {
+            $warnings = array_values(array_filter($warnings, fn (string $warning): bool => ! str_contains($warning, $password)));
+        }
+
+        return ['upn' => $upn, 'password' => $password, 'warnings' => $warnings];
+    }
+
+    /**
+     * Per-target cooldown/audit correlation key for a created identity —
+     * hash-based like the email-security keys so the audit LIKE matching can
+     * never be confused by pattern characters. The raw UPN still appears in
+     * the audit summary for humans.
+     */
+    private function createUserTargetKey(string $upn): string
+    {
+        return 'new_user #'.substr(hash('sha256', mb_strtolower($upn)), 0, 12);
+    }
+
+    /**
+     * Whether this exact identity was already created recently — the
+     * double-create rail (device-wipe precedent, bead psa-zjpd). Keyed on the
+     * identity embedded in the executed audit summary, NOT the content hash,
+     * so a duplicate staged from a different ticket (or with different
+     * display names) is caught too.
+     */
+    private function createUserAlreadyExecuted(int $clientId, string $targetKey): bool
+    {
+        return TechnicianActionLog::query()
+            ->whereIn('action_type', ['cipp_create_user', 'cipp_stage_create_user'])
+            ->where('client_id', $clientId)
+            ->where('result_status', 'executed')
+            ->where('created_at', '>=', now()->subHours(self::DIRECT_DEDUP_HOURS))
+            ->where('summary', 'like', '%'.$targetKey.'%')
+            ->exists();
+    }
+
+    /** @param  array<string, mixed>  $params */
+    private function createUserStagedDisplay(array $params, ?ResolvedCippLicense $license): string
+    {
+        return 'Create NEW Microsoft 365 user "'.$params['display_name'].'" — UPN '.$params['staged_upn']
+            .' (given name "'.$params['given_name'].'", surname "'.$params['surname'].'"'
+            .(isset($params['usage_location']) ? ', usage location '.$params['usage_location'] : '')
+            .($license !== null ? ', initial license license_type #'.$license->licenseType->id.' "'.$license->licenseType->name.'"' : ', no initial license')
+            .').'
+            .' The UPN domain is the client\'s mapped CIPP tenant domain (server-derived).'
+            .' The account is created enabled, with a CIPP-generated temporary password that must be changed at first sign-in;'
+            .' the password is shown once to the approver after execution and is never stored.'
+            .' Approval re-derives the tenant scope and refuses if the mapping changed after staging.';
     }
 
     /**
@@ -3231,6 +3899,73 @@ class StaffCippWriteToolExecutor
             'Reset the Microsoft 365 password for one server-derived CIPP user and return a newly generated temporary password. The password is generated by CIPP/Microsoft and returned only in this tool result — it is never written to any log or audit record. Defaults to must-change-at-next-sign-in. Relay the password to the user over a secure channel and have them change it at first sign-in. Requires an explicit token grant, reason, confirm_upn friction, kill-switch, cooldown, and TechnicianActionLog audit. Consequential: performs a live credential reset immediately.',
             array_merge(self::personProperties(), self::resetUserPasswordProperties()),
             ['person_id', 'confirm_upn', 'reason'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function createUserProperties(bool $ticket = false): array
+    {
+        return [
+            'username' => [
+                'type' => 'string',
+                'description' => 'UPN local part for the NEW user (letters/digits with interior dots, underscores, or hyphens; max 64 characters). The server composes the sign-in UPN as username@<the client\'s mapped CIPP tenant domain> — the domain is never caller-supplied.',
+            ],
+            'display_name' => [
+                'type' => 'string',
+                'description' => 'Display name for the new user (max 256 characters).',
+            ],
+            'given_name' => [
+                'type' => 'string',
+                'description' => 'Given (first) name for the new user (max 64 characters).',
+            ],
+            'surname' => [
+                'type' => 'string',
+                'description' => 'Surname (last name) for the new user (max 64 characters).',
+            ],
+            'usage_location' => [
+                'type' => 'string',
+                'description' => 'Optional 2-letter ISO 3166-1 usage location country code (e.g. US). Required when license_type_id is provided — Microsoft 365 refuses license assignment for a user without one.',
+            ],
+            'license_type_id' => [
+                'type' => 'integer',
+                'description' => 'Optional local PSA license_types.id for a CIPP M365 SKU to assign after creation. The server derives the upstream SKU from synced license rows; providing this makes usage_location required.',
+            ],
+            'confirm_upn' => [
+                'type' => 'string',
+                'description' => 'Typed confirmation of the FULL new UPN (username@<the client\'s mapped CIPP tenant domain>) for defense-in-depth. A mismatch — including a wrong tenant domain — cancels the call.',
+            ],
+            'reason' => [
+                'type' => 'string',
+                'description' => 'Specific operational reason for this CIPP write.',
+            ],
+            'ticket_id' => [
+                'type' => 'integer',
+                'description' => $ticket
+                    ? 'Required ticket ID for cockpit-held actions. The server verifies it belongs to client_id.'
+                    : 'Optional ticket ID for incident attribution. The server verifies it belongs to client_id when supplied.',
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private static function createUserTool(): array
+    {
+        return self::tool(
+            'cipp_create_user',
+            'Create a NEW Microsoft 365 user in the resolved client tenant immediately through CIPP — privileged provisioning. The sign-in UPN domain is ALWAYS the client\'s mapped CIPP tenant domain (server-derived; upstream domains, passwords, and license SKUs are never accepted from the caller). The account is created enabled, with a CIPP-generated temporary password that must be changed at first sign-in; the password is returned only in this tool result — never stored, never audited — so relay it over a secure channel. Optionally assigns one local CIPP M365 license SKU (usage_location required with it). Requires an explicit token grant (grants start staged-only; immediate execution needs the immediate mode grant), reason, confirm_upn friction, kill-switch, dedup/cooldown, and TechnicianActionLog audit.',
+            self::createUserProperties(),
+            ['username', 'display_name', 'given_name', 'surname', 'confirm_upn', 'reason'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function stageCreateUserTool(): array
+    {
+        return self::tool(
+            'cipp_stage_create_user',
+            'Stage creation of a NEW Microsoft 365 user for cockpit approval — the default path for this privileged provisioning capability. The MCP call makes no CIPP upstream call; the held payload stores only validated safe scalars (username, the server-composed UPN snapshot, names, usage location, local license_type_id), and approval re-derives the client\'s mapped CIPP tenant domain fresh — a changed tenant mapping refuses execution. The CIPP-generated temporary password is shown ONCE to the approving operator and is never stored or audited. confirm_upn is the full new UPN (username@<the client\'s mapped CIPP tenant domain>).',
+            self::createUserProperties(ticket: true),
+            ['username', 'display_name', 'given_name', 'surname', 'ticket_id', 'confirm_upn', 'reason'],
         );
     }
 }

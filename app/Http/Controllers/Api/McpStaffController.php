@@ -907,7 +907,7 @@ class McpStaffController extends Controller
                 ],
             ]);
 
-            if (in_array((string) $name, ['tactical_open_remote_control', 'tactical_get_or_create_installer', 'tactical_generate_installer', 'cipp_reset_user_password'], true) && ! $isError) {
+            if (in_array((string) $name, ['tactical_open_remote_control', 'tactical_get_or_create_installer', 'tactical_generate_installer', 'cipp_reset_user_password', 'cipp_create_user'], true) && ! $isError) {
                 $response->headers->set('Cache-Control', 'no-store');
             }
 

@@ -165,6 +165,71 @@ class CippRestWriteClient
         ], captureBody: true);
     }
 
+    /**
+     * Create ONE new M365 user via CIPP's AddUser endpoint and return the
+     * captured response body so the caller can read the created UPN and the
+     * CIPP-generated temp password from the Results copyField entries.
+     *
+     * Source shape (CIPP-API Invoke-AddUser.ps1 → New-CIPPUserTask.ps1 →
+     * New-CippUser.ps1): POST api/AddUser with a UserObj body; the UPN is
+     * composed upstream as "{username}@{Domain}" (a plain Domain string wins
+     * over the frontend's PrimDomain.value autocomplete shape), so both the
+     * tenantFilter AND the UPN domain here are the server-resolved tenant —
+     * a caller can never plant an identity in another domain. The password
+     * key is deliberately omitted: CIPP generates one (New-passwordString,
+     * PwPush-aware) and returns it once in Results[].copyField. MustChangePass
+     * is pinned true (passwordProfile.forceChangePasswordNextSignIn) — every
+     * account is born with a must-change temp credential. An optional single
+     * license rides as the licenses [{value}] autocomplete shape and is
+     * assigned post-create by CIPP (Set-CIPPUserLicense); a failed license
+     * step reports a "Failed …" Results string while the create itself has
+     * already succeeded (HTTP 200), so reported-failure guarding is left to
+     * the caller, which must still deliver the password. A failed CREATE
+     * returns HTTP 500 and send() throws.
+     *
+     * @return array<int|string, mixed>
+     */
+    public function createUser(
+        string $tenantFilter,
+        string $username,
+        string $domain,
+        string $displayName,
+        string $givenName,
+        string $surname,
+        ?string $usageLocation,
+        ?string $licenseSkuId,
+    ): array {
+        if (trim($username) === '') {
+            throw new CippClientException('New user username (UPN local part) is required');
+        }
+        if (trim($domain) === '') {
+            throw new CippClientException('New user UPN domain is required');
+        }
+        if (trim($displayName) === '') {
+            throw new CippClientException('New user display name is required');
+        }
+
+        $body = [
+            'tenantFilter' => $tenantFilter,
+            'username' => $username,
+            'Domain' => $domain,
+            'displayName' => $displayName,
+            'givenName' => $givenName,
+            'surname' => $surname,
+            'MustChangePass' => true,
+        ];
+
+        if ($usageLocation !== null && trim($usageLocation) !== '') {
+            $body['usageLocation'] = $usageLocation;
+        }
+
+        if ($licenseSkuId !== null && trim($licenseSkuId) !== '') {
+            $body['licenses'] = [['value' => $licenseSkuId]];
+        }
+
+        return $this->send('api/AddUser', $body, captureBody: true);
+    }
+
     /** @return array<int|string, mixed> */
     public function setMailboxOutOfOffice(
         string $tenantFilter,
