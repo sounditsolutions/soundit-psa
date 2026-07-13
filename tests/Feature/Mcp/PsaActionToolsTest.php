@@ -1211,6 +1211,128 @@ class PsaActionToolsTest extends TestCase
         $this->assertSame(TicketStatus::PendingClient, $ticket->fresh()->status);
     }
 
+    // psa-y4ft.1: an autonomous DIRECT close (set_ticket_status → Closed) must be as
+    // trivially reversible as an operator-approved held close. Each executed direct
+    // close records a Done direct_close run anchored on its status-change note id;
+    // the cockpit reads these into a one-click Reopen lane. Only ->Closed records a
+    // card — resolve and non-terminal transitions are everyday actions, and a
+    // refused close must leave nothing behind.
+
+    public function test_direct_close_records_a_done_direct_close_run_for_one_click_reopen(): void
+    {
+        $actor = $this->configureAiActor();
+        $token = $this->token(['set_ticket_status'], 'chet');
+        $ticket = $this->ticketWithContact();
+        $ticket->update(['status' => TicketStatus::PendingClient]); // eligible + quiet
+
+        $response = $this->callTool($token, 'set_ticket_status', [
+            'ticket_id' => $ticket->id,
+            'status' => TicketStatus::Closed->value,
+            'confirm_status' => 'closed',
+            'reason' => 'No client reply in weeks; closing.',
+        ]);
+
+        $response->assertOk();
+        $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
+
+        $statusNoteId = TicketNote::query()
+            ->where('ticket_id', $ticket->id)
+            ->where('note_type', NoteType::StatusChange->value)
+            ->where('status_to', TicketStatus::Closed->value)
+            ->where('author_id', $actor->id)
+            ->latest('id')
+            ->value('id');
+        $this->assertNotNull($statusNoteId, 'the direct close must have written a status-change note to anchor the undo on');
+
+        $run = TechnicianRun::query()->where('action_type', 'direct_close')->sole();
+        $this->assertSame($ticket->id, $run->ticket_id);
+        $this->assertSame($ticket->client_id, $run->client_id);
+        $this->assertSame(TechnicianRunState::Done, $run->state);
+        $this->assertSame('No client reply in weeks; closing.', $run->proposed_content);
+        $this->assertSame((int) $statusNoteId, (int) data_get($run->proposed_meta, 'status_note_id'));
+        $this->assertSame('mcp-staff:chet', data_get($run->proposed_meta, 'drafted_by'));
+        $this->assertSame(hash('sha256', 'direct_close:'.$ticket->id.':'.$statusNoteId), $run->content_hash);
+    }
+
+    public function test_direct_resolve_records_no_direct_close_run(): void
+    {
+        $this->configureAiActor();
+        $token = $this->token(['set_ticket_status'], 'chet');
+        $ticket = $this->ticketWithContact(); // InProgress — resolve is ungated
+
+        $response = $this->callTool($token, 'set_ticket_status', [
+            'ticket_id' => $ticket->id,
+            'status' => TicketStatus::Resolved->value,
+            'confirm_status' => 'resolved',
+            'reason' => 'Fixed; resolving.',
+        ]);
+
+        $response->assertOk();
+        $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
+        $this->assertSame(0, TechnicianRun::query()->where('action_type', 'direct_close')->count());
+    }
+
+    public function test_blocked_direct_close_records_no_direct_close_run(): void
+    {
+        $this->configureAiActor();
+        $token = $this->token(['set_ticket_status'], 'chet');
+        $ticket = $this->ticketWithContact(); // InProgress = awaiting us → refused
+
+        $response = $this->callTool($token, 'set_ticket_status', [
+            'ticket_id' => $ticket->id,
+            'status' => TicketStatus::Closed->value,
+            'confirm_status' => 'closed',
+            'reason' => 'Looks done to me.',
+        ]);
+
+        $response->assertOk();
+        $this->assertTrue((bool) $response->json('result.isError'));
+        $this->assertSame(0, TechnicianRun::query()->where('action_type', 'direct_close')->count());
+    }
+
+    public function test_direct_close_after_cockpit_reopen_is_blocked_and_does_not_resurrect_the_undo_card(): void
+    {
+        // The undo must STICK: a cockpit reopen lands the ticket InProgress, which the
+        // eligibility backstop reads as awaiting-us — so the agent cannot immediately
+        // re-close over the human's reversal, and the reversed (Denied) run keeps its
+        // veto signal instead of being resurrected.
+        $this->configureAiActor();
+        $token = $this->token(['set_ticket_status'], 'chet');
+        $ticket = $this->ticketWithContact();
+        $ticket->update(['status' => TicketStatus::PendingClient]);
+
+        $close = $this->callTool($token, 'set_ticket_status', [
+            'ticket_id' => $ticket->id,
+            'status' => TicketStatus::Closed->value,
+            'confirm_status' => 'closed',
+            'reason' => 'No client reply in weeks; closing.',
+        ]);
+        $this->assertFalse((bool) $close->json('result.isError'), (string) $close->json('result.content.0.text'));
+
+        $run = TechnicianRun::query()->where('action_type', 'direct_close')->sole();
+        $operator = User::factory()->create();
+        $this->actingAs($operator)
+            ->postJson(route('cockpit.reopen', $run))
+            ->assertOk()
+            ->assertJsonPath('ok', true);
+
+        $this->assertSame(TicketStatus::InProgress, $ticket->fresh()->status);
+        $this->assertSame(TechnicianRunState::Denied, $run->fresh()->state);
+
+        $reclose = $this->callTool($token, 'set_ticket_status', [
+            'ticket_id' => $ticket->id,
+            'status' => TicketStatus::Closed->value,
+            'confirm_status' => 'closed',
+            'reason' => 'Closing it again.',
+        ]);
+
+        $reclose->assertOk();
+        $this->assertTrue((bool) $reclose->json('result.isError'), 'a direct re-close over a human reopen must be refused by eligibility');
+        $this->assertStringContainsString('awaiting us', strtolower((string) $reclose->json('result.content.0.text')));
+        $this->assertSame(1, TechnicianRun::query()->where('action_type', 'direct_close')->count());
+        $this->assertSame(TechnicianRunState::Denied, $run->fresh()->state);
+    }
+
     public function test_move_ticket_to_client_requires_typed_confirm_and_rehomes_assets(): void
     {
         $this->configureAiActor();

@@ -48,6 +48,7 @@
             'cipp_stage_wipe_device' => ['bg-danger text-white', 'CIPP device wipe', 'bi-device-hdd'],
             'cipp_stage_reassign_onedrive' => ['bg-danger text-white', 'CIPP OneDrive handover', 'bi-cloud-arrow-up'],
             'cipp_stage_create_user' => ['bg-danger text-white', 'CIPP create user', 'bi-person-plus'],
+            'direct_close' => ['bg-warning-subtle text-warning-emphasis border border-warning-subtle', 'Closed directly', 'bi-archive'],
             default => ['bg-primary-subtle text-primary-emphasis border border-primary-subtle', 'Reply', 'bi-send'],
         };
     };
@@ -139,6 +140,52 @@
                             <div class="text-muted">{{ $outcome->note }}</div>
                         </div>
                     </a>
+                @endforeach
+            </div>
+        </section>
+    @endif
+
+    {{-- psa-y4ft.1: autonomous DIRECT closes (set_ticket_status → Closed by the agent).
+         The held propose_close path gets a one-click undo toast at approval time; a
+         direct close executes with no operator present, so the SAME reversibility is
+         offered here as a durable card instead — one-click Reopen while the ticket is
+         still Closed. Self-clearing: any reopen drops the card, and the rest age out
+         after 48h. Informational: sits outside the counts-driven filter strip. --}}
+    @if($directCloses->isNotEmpty())
+        <section class="cockpit-section mb-4" data-section-key="direct-closes">
+            <div class="cockpit-section-head">
+                <h2><i class="bi bi-archive me-2"></i>Closed directly by the agent</h2>
+                <span class="badge rounded-pill text-bg-light border">{{ $directCloses->count() }}</span>
+            </div>
+            <div class="vstack gap-2">
+                @foreach ($directCloses as $run)
+                    @php($badge = $badgeFor($run))
+                    <article class="card cockpit-item cockpit-row">
+                        <div class="card-body py-2">
+                            <div class="d-flex flex-wrap align-items-center gap-3">
+                                <div class="flex-grow-1 min-w-0">
+                                    <div class="d-flex flex-wrap align-items-center gap-2 small mb-1">
+                                        <a href="{{ route('tickets.show', $run->ticket_id) }}" class="fw-semibold text-decoration-none">
+                                            {{ optional($run->ticket)->subject ?? 'Ticket #'.$run->ticket_id }}
+                                        </a>
+                                        @if($run->ticket?->client)
+                                            <span class="badge rounded-pill bg-light text-dark border">{{ $run->ticket->client->name }}</span>
+                                        @endif
+                                        <span class="badge rounded-pill {{ $badge[0] }}"><i class="bi {{ $badge[2] }} me-1"></i>{{ $badge[1] }}</span>
+                                        <span class="ms-auto text-muted">{{ optional($run->created_at)->diffForHumans() }}</span>
+                                    </div>
+                                    <div class="text-muted small text-truncate">
+                                        {{ $run->proposed_content }}
+                                        @if(!empty($run->proposed_meta['drafted_by'])) · {{ $run->proposed_meta['drafted_by'] }}@endif
+                                    </div>
+                                </div>
+                                <form method="POST" action="{{ route('cockpit.reopen', $run) }}">
+                                    @csrf
+                                    <button type="submit" class="btn btn-sm btn-outline-primary"><i class="bi bi-arrow-counterclockwise me-1"></i>Reopen</button>
+                                </form>
+                            </div>
+                        </div>
+                    </article>
                 @endforeach
             </div>
         </section>
