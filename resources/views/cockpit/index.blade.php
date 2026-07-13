@@ -48,6 +48,7 @@
             'cipp_stage_wipe_device' => ['bg-danger text-white', 'CIPP device wipe', 'bi-device-hdd'],
             'cipp_stage_reassign_onedrive' => ['bg-danger text-white', 'CIPP OneDrive handover', 'bi-cloud-arrow-up'],
             'cipp_stage_create_user' => ['bg-danger text-white', 'CIPP create user', 'bi-person-plus'],
+            'cipp_stage_set_group_membership' => ['bg-danger text-white', 'CIPP group membership', 'bi-people-fill'],
             'direct_close' => ['bg-warning-subtle text-warning-emphasis border border-warning-subtle', 'Closed directly', 'bi-archive'],
             default => ['bg-primary-subtle text-primary-emphasis border border-primary-subtle', 'Reply', 'bi-send'],
         };
