@@ -243,6 +243,16 @@ class CippMcpToolRelay
             return ['error' => $unanswerable];
         }
 
+        // Likewise for the identity guard: a user-scoped read whose endpoint filters on
+        // an Azure AD object ID and nothing else must not be asked with an identity we
+        // could not bridge to one. Over MCP that request would come back empty exactly
+        // as it does over REST, and an empty answer to "has this account been signed
+        // into?" is the most dangerous thing this tool can say.
+        $identityRefusal = CippToolContract::identityRefusal($toolName, $input, $clientId);
+        if ($identityRefusal !== null) {
+            return ['error' => $identityRefusal];
+        }
+
         $args = ['tenantFilter' => $tenantDomain];
 
         if (in_array($toolName, [
@@ -275,8 +285,18 @@ class CippMcpToolRelay
         // Only ListUserSigninLogs actually consumes userId. ListAuditLogs does
         // not accept it (not a spec param) and silently ignored what we sent —
         // that filter is applied here, against the nested payload.
+        //
+        // ListUserSigninLogs filters Graph on the signIn `userId` property, an Azure AD
+        // OBJECT ID; a UPN matches nothing and comes back empty. requireObjectId() is the
+        // same resolver the identity guard above consulted, so the value sent cannot
+        // disagree with the value that was cleared.
         if ($toolName === 'cipp_list_sign_ins' && ! empty($input['user_id'])) {
-            $args['userId'] = CippToolContract::resolveUserId(trim((string) $input['user_id']), $clientId);
+            $resolved = CippToolContract::requireObjectId(trim((string) $input['user_id']), $clientId);
+            if (isset($resolved['error'])) {
+                return ['error' => $resolved['error']];
+            }
+
+            $args['userId'] = $resolved['objectId'];
         }
 
         // Both endpoints window SERVER-SIDE and default to the last 7 days when

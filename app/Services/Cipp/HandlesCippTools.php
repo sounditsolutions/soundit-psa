@@ -61,8 +61,15 @@ trait HandlesCippTools
      *      Putting the guard here means a CIPP tool cannot be dispatched, by any
      *      caller, without passing it. The relay re-checks the same predicate as
      *      defence in depth; it is one implementation, so the two cannot drift.
-     *   2. The MCP relay, if this executor has one and it is enabled.
-     *   3. The tenant mapping, then the direct CippClient call.
+     *   2. CippToolContract::identityRefusal() — refuse questions THIS CALLER cannot
+     *      ask: a user-scoped read whose endpoint filters on an Azure AD object ID
+     *      and nothing else, for an identity this client's synced people cannot
+     *      bridge to one. Sent as-is, such a request matches nothing upstream and
+     *      the tool answers a clean "no sign-ins" (psa-cipp-p1). Same reasoning as
+     *      (1): it is enforced here, before a transport is chosen, so no caller can
+     *      reach CIPP without passing it.
+     *   3. The MCP relay, if this executor has one and it is enabled.
+     *   4. The tenant mapping, then the direct CippClient call.
      *
      * @param  callable(string): array<int|string, mixed>  $direct  Receives the tenant domain.
      * @return array<int|string, mixed>
@@ -72,6 +79,11 @@ trait HandlesCippTools
         $refusal = CippToolContract::unanswerable($toolName, $input);
         if ($refusal !== null) {
             return ['error' => $refusal];
+        }
+
+        $identityRefusal = CippToolContract::identityRefusal($toolName, $input, $this->clientId);
+        if ($identityRefusal !== null) {
+            return ['error' => $identityRefusal];
         }
 
         $relay = $this->cippMcpRelay($toolName, $input);
@@ -143,13 +155,25 @@ trait HandlesCippTools
             // CIPP has a per-user endpoint (api/ListUserSigninLogs) and a tenant-wide
             // endpoint (api/ListSignIns). Route to the per-user one when filtering by
             // user — it's authoritative and not subject to the tenant-wide window cap.
-            // CIPP's userId param requires an Azure AD object ID (GUID), not a UPN —
-            // translate via our synced Person record before calling.
+            //
+            // ListUserSigninLogs filters Graph on the signIn `userId` property, which is
+            // an Azure AD OBJECT ID and nothing else. A UPN there matches zero rows and
+            // returns an empty 200 — so the identity is resolved through the contract's
+            // requireObjectId(), which refuses rather than guess. cippDispatch() has
+            // ALREADY run that same guard before choosing a transport, so an error here
+            // is unreachable in practice; it is honoured rather than assumed away,
+            // because "the caller checked" is exactly the assumption this series keeps
+            // being punished for.
             $endpoint = $userId ? 'api/ListUserSigninLogs' : 'api/ListSignIns';
             $params = ['TenantFilter' => $tenantDomain];
 
             if ($userId) {
-                $params['userId'] = $this->resolveCippUserId($userId);
+                $resolved = CippToolContract::requireObjectId($userId, $this->clientId);
+                if (isset($resolved['error'])) {
+                    return ['error' => $resolved['error']];
+                }
+
+                $params['userId'] = $resolved['objectId'];
             } elseif ($days !== null) {
                 // Invoke-ListSignIns windows SERVER-SIDE and defaults to $Days = 7, so
                 // a 30-day request only ever saw 7 days of sign-ins while the response

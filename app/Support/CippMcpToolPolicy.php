@@ -25,19 +25,39 @@ final class CippMcpToolPolicy
     /**
      * Upstream tools that must never reach the agent — not curated, not dynamic.
      *
+     * A dynamic catalog row is executed as a RAW PASSTHROUGH: whatever parameters the
+     * model supplies, plus the tenant. Both entries below are tools where that is not a
+     * missing feature but a security failure, and where a hand-written curated tool
+     * already provides the same capability safely.
+     *
      * ListMailboxRules takes NO user parameter (its only CIPP parameters are tenantFilter
      * and UseReportDB) and returns EVERY mailbox's rules in the tenant. The curated
      * cipp_list_mailbox_rules exists precisely to scope that read to one mailbox.
+     *
+     * ListUserSigninLogs filters Microsoft Graph on the signIn `userId` property — an
+     * Azure AD OBJECT ID and nothing else (CIPP-API dev, Invoke-ListUserSigninLogs.ps1
+     * lines 17-18). A raw passthrough cannot bridge a UPN to an object ID, so a model
+     * passing the address it read off a ticket gets a valid filter that matches zero rows:
+     * HTTP 200, empty body, and a confident "this account has no sign-ins" during
+     * compromise triage. The curated cipp_list_sign_ins now refuses that question rather
+     * than answer it falsely (CippToolContract::identityRefusal), and this row would
+     * cheerfully answer it anyway. It is reachable in the wild: it is not the tenant-wide
+     * ListSignIns the curated skip list names, and it normalises to
+     * cipp_list_user_signin_logs, which collides with no curated name — so nothing
+     * refused it and any environment that has run a catalog sync is carrying an active
+     * row for it today (psa-cipp-p1).
      *
      * This list is separate from the curated list on purpose. A tool is curated because we
      * hand-wrote it; a tool is blocked because it is dangerous. Conflating those two
      * reasons is what let ListMailboxRules be dropped from the curated list during an
      * earlier fix — which silently made it importable again, and re-opened the very
      * cross-mailbox disclosure that fix was closing (psa-7lgo.1). Naming the reason is the
-     * fix.
+     * fix, and it is why blocking is enforced at RUNTIME (CippMcpTool::scopeDispatchable)
+     * and not merely at import.
      */
     public const BLOCKED_UPSTREAM_TOOLS = [
         'ListMailboxRules',
+        'ListUserSigninLogs',
     ];
 
     /**

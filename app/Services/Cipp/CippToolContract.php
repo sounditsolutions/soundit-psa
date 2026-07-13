@@ -127,6 +127,134 @@ class CippToolContract
         return null;
     }
 
+    // ── Identity: the questions we cannot ASK ──
+
+    /**
+     * Tools whose upstream endpoint can filter by an Azure AD OBJECT ID and nothing
+     * else. Handed any other identity form, the endpoint does not fail — it MATCHES
+     * NOTHING, and the tool reports a clean, confident zero.
+     *
+     * cipp_list_sign_ins routes a user-filtered request to CIPP's ListUserSigninLogs,
+     * which builds a Microsoft Graph filter on the signIn resource's `userId` property
+     * (verified against CIPP-API dev, Invoke-ListUserSigninLogs.ps1 lines 17-18):
+     *
+     *     $UserID = $Request.Query.UserID
+     *     $URI = ".../auditLogs/signIns?`$filter=(userId eq '$UserID')&$top=$top..."
+     *
+     * On a signIn, `userId` (an object ID) and `userPrincipalName` (a UPN) are two
+     * SEPARATE properties — CIPP's own Invoke-ListBasicAuth.ps1 selects
+     * userPrincipalName explicitly, and its BEC runbook (Push-BECRun.ps1 line 59) feeds
+     * this same filter the object ID it got from ExecDismissRiskyUser. So `userId eq
+     * '<upn>'` is a perfectly valid string comparison that matches zero rows: HTTP 200,
+     * empty body, no error anywhere.
+     *
+     * This is NOT a list of endpoints that merely PREFER an object ID. The sibling
+     * user-scoped CIPP reads all tolerate a UPN and are deliberately absent:
+     *
+     *   - ListUserGroups addresses Graph as /users/{id | userPrincipalName}/memberOf,
+     *     which accepts either form (Invoke-ListUserGroups.ps1 line 15);
+     *   - ListmailboxPermissions passes the identity to Exchange's Get-Mailbox /
+     *     Get-MailboxPermission / Get-RecipientPermission -Identity
+     *     (Invoke-ListmailboxPermissions.ps1 lines 50-69);
+     *   - ListUserMailboxRules passes it to Get-InboxRule -Mailbox
+     *     (Invoke-ListUserMailboxRules.ps1 line 22).
+     *
+     * Exchange's -Identity/-Mailbox and Graph's user addressing both resolve a UPN
+     * natively, and both THROW on an identity they cannot resolve — which surfaces as
+     * an error, not as an empty result. Adding them here would hard-error paths that
+     * work today, and a tool that refuses constantly is a tool that gets ignored.
+     *
+     * @var array<int, string>
+     */
+    private const OBJECT_ID_ONLY_TOOLS = ['cipp_list_sign_ins'];
+
+    /**
+     * The second gate, and the reason it is separate from unanswerable().
+     *
+     * unanswerable() is a pure function of (tool, input): it refuses questions CIPP
+     * structurally cannot answer, for anyone, always. This one is about the questions
+     * THIS CALLER cannot ask RIGHT NOW — it depends on whether the client's own synced
+     * people can bridge the identity to the form the endpoint requires, so it needs the
+     * client scope and it touches the database.
+     *
+     * Both transports pass through it before spending an upstream call, for the same
+     * reason unanswerable() lives where it does: a guard written at one call site is a
+     * guard the next call site does not have, which is the failure this whole series
+     * keeps re-learning.
+     */
+    public static function identityRefusal(string $toolName, array $input, ?int $clientId): ?string
+    {
+        if (! in_array($toolName, self::OBJECT_ID_ONLY_TOOLS, true)) {
+            return null;
+        }
+
+        // No user filter is a tenant-wide question — there is no identity to bridge, and
+        // cipp_list_sign_ins routes it to a different endpoint (ListSignIns) entirely.
+        $requested = self::optionalUserId($input);
+        if ($requested === null) {
+            return null;
+        }
+
+        $resolved = self::requireObjectId($requested, $clientId);
+        if (! isset($resolved['error'])) {
+            return null;
+        }
+
+        Log::warning('[CippTools] User-scoped CIPP read refused: the requested identity cannot be resolved to an Azure AD object ID', [
+            'tool' => $toolName,
+            'has_client_scope' => $clientId !== null,
+            'requested_is_object_id' => self::looksLikeObjectId($requested),
+        ]);
+
+        return $resolved['error'];
+    }
+
+    /**
+     * The Azure AD object ID for a user-scoped read that accepts nothing else — or an
+     * explicit refusal, which the caller MUST return instead of calling CIPP.
+     *
+     * An input that already IS an object ID passes straight through: it needs no bridge,
+     * no client scope and no lookup, and refusing it would be crying wolf on the agent's
+     * normal path (cipp_list_users hands the agent `id`, an object ID). Anything else —
+     * a UPN, a display name, a bare alias — must be bridged by a Person in the REQUESTING
+     * CLIENT, via the one client-scoped resolver, or the question is refused.
+     *
+     * The bridge is frequently absent, and that is precisely the point: CIPP contact sync
+     * is opt-in and OFF by default, so for most tenants no Person carries a cipp_user_id
+     * at all. Before this guard, that meant the UPN went upstream unchanged, Graph matched
+     * nothing, and the agent was told `count: 0` — "this user has no sign-ins" — while
+     * investigating a possible account compromise.
+     *
+     * Note what is NOT done here: an UNSCOPED people lookup. people.cipp_user_id is
+     * globally unique, which makes `where('cipp_user_id', $id)` look unambiguous while
+     * letting it resolve into whatever client happens to hold that GUID — answering this
+     * tenant's security question with another tenant's identity. That is a disclosure,
+     * and strictly worse than the false negative it would be fixing.
+     *
+     * @return array{objectId?: string, error?: string}
+     */
+    public static function requireObjectId(string $requested, ?int $clientId): array
+    {
+        // The single client-scoped resolver. With no client id there is no bridge to
+        // build, so this returns the input unchanged and an identity that is not already
+        // an object ID falls through to the refusal below — which is the correct outcome,
+        // not an accident.
+        $resolved = self::resolveUserId($requested, $clientId);
+
+        if (self::looksLikeObjectId($resolved)) {
+            return ['objectId' => $resolved];
+        }
+
+        return [
+            'error' => "Sign-in activity CANNOT be looked up for {$requested} right now: CIPP's per-user sign-in endpoint "
+                .'(ListUserSigninLogs) filters Microsoft Graph on the Azure AD OBJECT ID, and no synced person in this client '
+                ."maps {$requested} to one. Sent as-is it would match nothing and come back empty. Do NOT interpret this as "
+                ."\"{$requested} has no sign-ins\" — the query was never run. Call cipp_list_users, take the `id` field for "
+                .'this user (that is the object ID), and re-run cipp_list_sign_ins with it. To sweep the whole tenant instead, '
+                .'call cipp_list_sign_ins WITHOUT user_id.',
+        ];
+    }
+
     // ── Audit logs ──
 
     /**

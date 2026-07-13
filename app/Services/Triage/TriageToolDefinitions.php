@@ -583,8 +583,13 @@ class TriageToolDefinitions
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
-                        'user_id' => ['type' => 'string', 'description' => 'Optional. UPN (email) or Azure AD object ID — narrows the query to one user.'],
-                        'days' => ['type' => 'integer', 'description' => 'Optional. Time window in days (default 7, max 30).'],
+                        // The per-user endpoint filters Graph on the Azure AD OBJECT ID and
+                        // nothing else, so a UPN only works when a synced person bridges it
+                        // — and CIPP contact sync is off by default. Say so here: an agent
+                        // told "UPN or object ID" that gets refused will simply retry the
+                        // same way. The object ID is the `id` field from cipp_list_users.
+                        'user_id' => ['type' => 'string', 'description' => 'Optional. Azure AD object ID (the `id` field from cipp_list_users) — narrows the query to one user. A UPN (email) is accepted ONLY if this client has a synced contact mapping it to an object ID; otherwise the call is refused rather than answered with a misleading empty result, so prefer the object ID.'],
+                        'days' => ['type' => 'integer', 'description' => 'Optional. Time window in days (default 7, max 30). Applies to the tenant-wide query only; a user_id query returns the 50 most recent sign-ins.'],
                     ],
                 ],
             ],

@@ -147,6 +147,28 @@ class CippDirectPathFailLoudTest extends TestCase
     }
 
     /**
+     * Replaces setUp()'s refuse-everything MCP mock with one that ANSWERS and records
+     * the upstream tool name and arguments it was called with, so the relay's wire
+     * format can be asserted (and its call COUNT, for the same reason the direct mock
+     * counts).
+     *
+     * @param  array<int, array<string, mixed>>  $rows
+     */
+    private function cippMcpCapturingCall(array $rows, ?array &$captured = null, ?int &$calls = null): void
+    {
+        $calls = 0;
+
+        $mcp = Mockery::mock(CippMcpClient::class);
+        $mcp->shouldReceive('callTool')->andReturnUsing(function (string $tool, array $arguments) use ($rows, &$captured, &$calls): array {
+            $calls++;
+            $captured = ['tool' => $tool, 'arguments' => $arguments];
+
+            return $rows;
+        });
+        $this->app->instance(CippMcpClient::class, $mcp);
+    }
+
+    /**
      * A CippClient that COUNTS upstream calls rather than refusing them.
      *
      * A mock that throws would be caught by the handlers' own `catch (\Throwable)`
@@ -786,5 +808,210 @@ class CippDirectPathFailLoudTest extends TestCase
 
             $this->assertSame(30, $captured['Days'] ?? null, "{$label} did not window the sign-in query upstream");
         }
+    }
+
+    // ── Sign-ins: an identity we cannot turn into an object ID is not a question we can ask ──
+
+    /**
+     * One sign-in in CIPP's REAL ListUserSigninLogs shape.
+     *
+     * Invoke-ListUserSigninLogs.ps1 hands New-GraphGetRequest's result straight back
+     * with no Select-Object projection, so a row IS a raw Microsoft Graph `signIn`
+     * object. Note that it carries `userId` (the Azure AD object ID) and
+     * `userPrincipalName` (the UPN) as two SEPARATE properties — which is the whole
+     * reason the request-side filter cannot take a UPN.
+     */
+    private function realSignInRow(array $overrides = []): array
+    {
+        return array_merge([
+            'id' => 'aaaaaaaa-0000-1111-2222-bbbbbbbbbbbb',
+            'createdDateTime' => now()->subHours(3)->toIso8601String(),
+            'userId' => '11111111-1111-1111-1111-111111111111',
+            'userPrincipalName' => 'alice@contoso.com',
+            'userDisplayName' => 'Alice Example',
+            'appDisplayName' => 'Microsoft Office 365 Portal',
+            'ipAddress' => '198.51.100.24',
+            'clientAppUsed' => 'Browser',
+            'conditionalAccessStatus' => 'success',
+            'riskDetail' => 'none',
+            'riskLevelAggregated' => 'none',
+            'status' => ['errorCode' => 0, 'failureReason' => 'Other.', 'additionalDetails' => null],
+            'location' => ['city' => 'Vancouver', 'state' => 'BC', 'countryOrRegion' => 'CA'],
+            'deviceDetail' => ['displayName' => 'ALICE-LT', 'operatingSystem' => 'Windows 11', 'browser' => 'Edge 126'],
+        ], $overrides);
+    }
+
+    /**
+     * THE blocking finding: a confident false clean on an account-compromise question.
+     *
+     * A user-filtered sign-in request routes to CIPP's api/ListUserSigninLogs, whose
+     * source builds a Microsoft Graph filter on the signIn resource's `userId`
+     * property — an Azure AD OBJECT ID:
+     *
+     *     $UserID = $Request.Query.UserID
+     *     $URI = ".../auditLogs/signIns?`$filter=(userId eq '$UserID')&..."
+     *
+     * (CIPP-API dev, Invoke-ListUserSigninLogs.ps1 lines 17-18. `userId` and
+     * `userPrincipalName` are two different properties on a signIn — see
+     * Invoke-ListBasicAuth.ps1, which selects userPrincipalName explicitly.)
+     *
+     * CippToolContract::resolveUserId() returns the ORIGINAL UPN unchanged when no
+     * client-scoped Person bridges it to an object ID — and that bridge is absent far
+     * more often than not, because CIPP contact sync is opt-in and OFF by default
+     * (CippConfig::contactSyncEnabled()).
+     *
+     * So an unresolved UPN was sent into an object-ID-only filter, Graph matched
+     * nothing, and the tool reported `count: 0` — "this user has no sign-ins". During
+     * account-compromise triage that is the exact false clean this whole contract
+     * exists to eliminate: a question we could not ask, answered as an absence.
+     *
+     * Fail loud instead, BEFORE the upstream call is spent.
+     */
+    public function test_per_user_sign_ins_fail_loud_when_a_upn_cannot_be_bridged_to_an_object_id(): void
+    {
+        // No Person at all in this client: nothing maps alice@contoso.com to an object ID.
+        $calls = 0;
+        $this->cippCountingCalls($calls);
+
+        foreach ($this->executors() as $label => $executor) {
+            $result = $executor->execute('cipp_list_sign_ins', ['user_id' => 'alice@contoso.com']);
+
+            $this->assertSame(0, $calls, "{$label} asked CIPP a question it could not have answered — an unresolved UPN in an object-ID-only Graph filter");
+            $this->assertArrayHasKey('error', $result, "{$label} reported a clean zero for a user it could not identify");
+            $this->assertArrayNotHasKey('count', $result, "{$label} still answered with a count");
+            $this->assertArrayNotHasKey('events', $result, "{$label} still answered with an event list");
+            // The refusal has to route the agent to the remedy, or it just gives up.
+            $this->assertStringContainsString('cipp_list_users', $result['error'], "{$label} did not tell the agent how to get an object ID");
+            $this->assertStringContainsStringIgnoringCase('no sign-ins', $result['error'], "{$label} did not warn against reading this as an absence");
+        }
+    }
+
+    /**
+     * Don't cry wolf. An input that ALREADY IS an object ID needs no bridge and must
+     * pass straight through — with no Person record anywhere. A tool that errors on
+     * the agent's normal path (cipp_list_users hands it `id`, an object ID) would be
+     * ignored, and an ignored fail-loud regime protects nobody.
+     */
+    public function test_per_user_sign_ins_pass_a_raw_object_id_straight_through_on_both_executors(): void
+    {
+        $objectId = '11111111-1111-1111-1111-111111111111';
+        $captured = null;
+        $this->cippReturning('api/ListUserSigninLogs', [$this->realSignInRow()], $captured);
+
+        foreach ($this->executors() as $label => $executor) {
+            $result = $executor->execute('cipp_list_sign_ins', ['user_id' => $objectId]);
+
+            $this->assertArrayNotHasKey('error', $result, "{$label} refused an object ID that needed no bridging");
+            $this->assertSame($objectId, $captured['userId'] ?? null, "{$label} did not send the object ID upstream");
+            $this->assertSame(1, $result['count'], "{$label} lost the sign-in");
+        }
+    }
+
+    /**
+     * The positive half of the guard: a UPN the client's own synced Person DOES bridge
+     * resolves to an object ID, and THAT is what goes upstream — never the UPN.
+     */
+    public function test_per_user_sign_ins_send_the_bridged_object_id_upstream_on_both_executors(): void
+    {
+        $objectId = $this->alice();
+        $captured = null;
+        $this->cippReturning('api/ListUserSigninLogs', [$this->realSignInRow()], $captured);
+
+        foreach ($this->executors() as $label => $executor) {
+            $result = $executor->execute('cipp_list_sign_ins', ['user_id' => 'alice@contoso.com']);
+
+            $this->assertArrayNotHasKey('error', $result, "{$label} refused a UPN it could bridge");
+            $this->assertSame($objectId, $captured['userId'] ?? null, "{$label} sent a UPN into an object-ID-only Graph filter");
+            $this->assertSame(1, $result['count'], "{$label} lost the sign-in");
+        }
+    }
+
+    /**
+     * The bridge is built from the REQUESTING CLIENT's people and nobody else's.
+     *
+     * people.cipp_user_id is globally unique and cipp_upn is not scoped by anything but
+     * the row's client_id, so an unscoped lookup would happily bridge THIS client's
+     * question through a STRANGER's person — sending another tenant's object ID into
+     * this tenant's sign-in query. That is a cross-client disclosure and false
+     * investigation context, strictly worse than the false negative being fixed.
+     *
+     * Here the only person who could bridge alice@contoso.com lives in another client.
+     * Scoped correctly there is no bridge, so the question is refused.
+     */
+    public function test_per_user_sign_ins_never_bridge_through_another_clients_person(): void
+    {
+        $strangerObjectId = '99999999-9999-9999-9999-999999999999';
+        $stranger = Client::factory()->create(['cipp_tenant_domain' => 'evil.onmicrosoft.com']);
+        Person::create([
+            'client_id' => $stranger->id,
+            'person_type' => PersonType::User,
+            'first_name' => 'Mallory',
+            'last_name' => 'Stranger',
+            'email' => 'alice@contoso.com',
+            'cipp_upn' => 'alice@contoso.com',
+            'cipp_user_id' => $strangerObjectId,
+            'is_active' => true,
+        ]);
+
+        $calls = 0;
+        $this->cippCountingCalls($calls);
+
+        foreach ($this->executors() as $label => $executor) {
+            $result = $executor->execute('cipp_list_sign_ins', ['user_id' => 'alice@contoso.com']);
+
+            $this->assertSame(0, $calls, "{$label} bridged through another client's person and called CIPP");
+            $this->assertArrayHasKey('error', $result, "{$label} did not refuse an identity it could not bridge within its own client");
+            $this->assertStringNotContainsString($strangerObjectId, (string) json_encode($result), "{$label} leaked another client's object ID");
+        }
+    }
+
+    /**
+     * …and the same guard on the RELAY transport, which reaches the identical CIPP
+     * endpoint over ExecMCP. Every previous round of this series fixed one path and
+     * left the other open; a false clean over MCP is exactly as dangerous as one over
+     * REST.
+     */
+    public function test_per_user_sign_ins_fail_loud_on_an_unbridgeable_upn_on_the_relay_transport(): void
+    {
+        $this->enableMcpRelay();
+
+        $mcpCalls = 0;
+        $this->cippMcpCapturingCall([$this->realSignInRow()], $captured, $mcpCalls);
+
+        $directCalls = 0;
+        $this->cippCountingCalls($directCalls);
+
+        // Only the assistant carries a relay; triage is direct by construction.
+        $result = (new AssistantToolExecutor(null, $this->client->id, null))
+            ->execute('cipp_list_sign_ins', ['user_id' => 'alice@contoso.com']);
+
+        $this->assertSame(0, $mcpCalls, 'the relay asked CIPP a question it could not have answered');
+        $this->assertSame(0, $directCalls, 'the call fell through to the direct transport');
+        $this->assertArrayHasKey('error', $result, 'the relay reported a clean zero for a user it could not identify');
+        $this->assertArrayNotHasKey('count', $result);
+        $this->assertArrayNotHasKey('events', $result);
+    }
+
+    /** The relay's positive half: a bridged UPN reaches ListUserSigninLogs as an object ID. */
+    public function test_per_user_sign_ins_send_the_bridged_object_id_over_the_relay_transport(): void
+    {
+        $objectId = $this->alice();
+        $this->enableMcpRelay();
+
+        $mcpCalls = 0;
+        $this->cippMcpCapturingCall([$this->realSignInRow()], $captured, $mcpCalls);
+
+        $directCalls = 0;
+        $this->cippCountingCalls($directCalls);
+
+        $result = (new AssistantToolExecutor(null, $this->client->id, null))
+            ->execute('cipp_list_sign_ins', ['user_id' => 'alice@contoso.com']);
+
+        $this->assertSame(1, $mcpCalls, 'the relay transport was not the one exercised');
+        $this->assertSame(0, $directCalls, 'the call fell back to the direct transport');
+        $this->assertSame('ListUserSigninLogs', $captured['tool'] ?? null);
+        $this->assertSame($objectId, $captured['arguments']['userId'] ?? null, 'the relay sent a UPN into an object-ID-only Graph filter');
+        $this->assertArrayNotHasKey('error', $result);
+        $this->assertSame(1, $result['count']);
     }
 }
