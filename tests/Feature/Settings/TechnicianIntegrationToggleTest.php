@@ -224,6 +224,31 @@ class TechnicianIntegrationToggleTest extends TestCase
         $this->assertFalse(TechnicianConfig::directEmailNewRecipients());
     }
 
+    // --- staged custom-recipient knob (psa-w4e0) ---
+
+    public function test_staged_custom_recipient_knob_saves_and_renders(): void
+    {
+        $this->actingAs($this->user)
+            ->get(route('settings.integrations'))
+            ->assertOk()
+            ->assertSee('staged (human-approved) emails');
+
+        // Checked → staged policy on, immediate/global knob untouched.
+        $this->actingAs($this->user)
+            ->post(route('settings.integrations.technician.update'), [
+                'allow_arbitrary_email_recipients_staged' => '1',
+            ])
+            ->assertRedirect(route('settings.integrations'));
+        $this->assertTrue(TechnicianConfig::allowArbitraryEmailRecipientsStaged());
+        $this->assertFalse(TechnicianConfig::allowArbitraryEmailRecipients());
+
+        // Absent (unchecked) → off again.
+        $this->actingAs($this->user)
+            ->post(route('settings.integrations.technician.update'), [])
+            ->assertRedirect(route('settings.integrations'));
+        $this->assertFalse(TechnicianConfig::allowArbitraryEmailRecipientsStaged());
+    }
+
     // --- page renders the card ---
 
     public function test_integrations_page_renders_ai_technician_card(): void

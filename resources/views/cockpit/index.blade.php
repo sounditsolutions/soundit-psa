@@ -233,6 +233,16 @@
                         @php($rv = $recipientViews[$run->id] ?? null)
                         @if($rv && in_array($run->action_type, ['send_reply', 'stage_email', 'propose_resolution'], true))
                             <div class="border rounded p-2 mb-2 bg-body-tertiary" x-data="cockpitRecipients(@js($rv))">
+                                {{-- psa-w4e0: exfil-catch readout — any To/CC outside the client's known
+                                     contacts/thread (agent-proposed or typed here) is flagged loudly. --}}
+                                <div class="alert alert-warning d-flex align-items-start gap-2 py-2 px-3 mb-2 small" x-cloak x-show="customRecipients().length > 0">
+                                    <i class="bi bi-exclamation-triangle-fill"></i>
+                                    <div>
+                                        <strong>Sends outside this client’s known contacts:</strong>
+                                        <span class="fw-semibold" x-text="customRecipients().join(', ')"></span>
+                                        <br>Verify these addresses are intended before approving.
+                                    </div>
+                                </div>
                                 <div class="input-group input-group-sm mb-2">
                                     <span class="input-group-text">To</span>
                                     <input type="text" class="form-control" x-model="to" aria-label="To recipient">
@@ -241,10 +251,10 @@
                                 <div class="d-flex flex-wrap gap-1 align-items-center mb-2">
                                     <span class="text-muted small me-1">Cc:</span>
                                     <template x-for="(addr, i) in cc" :key="i">
-                                        <span class="badge text-bg-secondary d-inline-flex align-items-center gap-1">
+                                        <span class="badge d-inline-flex align-items-center gap-1" :class="isCustom(addr) ? 'text-bg-warning' : 'text-bg-secondary'">
                                             <span x-text="addr"></span>
                                             <input type="hidden" name="cc[]" :value="addr" form="approve-{{ $run->id }}">
-                                            <button type="button" class="btn-close btn-close-white" style="font-size:.5rem" @click="cc.splice(i, 1)" aria-label="Remove"></button>
+                                            <button type="button" class="btn-close" :class="isCustom(addr) ? '' : 'btn-close-white'" style="font-size:.5rem" @click="cc.splice(i, 1)" aria-label="Remove"></button>
                                         </span>
                                     </template>
                                     <button type="button" class="btn btn-sm btn-outline-primary py-0" @click="cc = [...replyAll]">
@@ -260,7 +270,15 @@
                                     </select>
                                     <button type="button" class="btn btn-outline-secondary" @click="addCc($refs.pick.value); $refs.pick.value = ''">Add Cc</button>
                                 </div>
-                                <p class="text-muted mb-0 mt-1" style="font-size:.75rem"><i class="bi bi-shield-check me-1"></i>Only contacts and people already on this email thread can be added; recipients are re-checked when you approve.</p>
+                                @if($rv['arbitrary_allowed'] ?? false)
+                                    <div class="input-group input-group-sm mt-1">
+                                        <input type="text" class="form-control" placeholder="Custom address…" x-ref="custom" @keydown.enter.prevent="addCc($refs.custom.value); $refs.custom.value = ''" aria-label="Add a custom recipient">
+                                        <button type="button" class="btn btn-outline-secondary" @click="addCc($refs.custom.value); $refs.custom.value = ''">Add Cc</button>
+                                    </div>
+                                    <p class="text-muted mb-0 mt-1" style="font-size:.75rem"><i class="bi bi-shield-exclamation me-1"></i>Custom addresses are allowed and re-checked when you approve; anything outside known contacts is highlighted above.</p>
+                                @else
+                                    <p class="text-muted mb-0 mt-1" style="font-size:.75rem"><i class="bi bi-shield-check me-1"></i>Only contacts and people already on this email thread can be added; recipients are re-checked when you approve.</p>
+                                @endif
                             </div>
                         @endif
 
@@ -716,16 +734,29 @@
 <script>
 document.addEventListener('alpine:init', function () {
     // psa-kt82 PR B: recipient block for send_reply/stage_email approval cards.
+    // psa-w4e0: prefills from an agent-proposed staged To/CC set and computes the
+    // live "outside known contacts" highlight for proposed AND operator-typed entries.
     Alpine.data('cockpitRecipients', function (rv) {
+        var proposed = rv && rv.proposed ? rv.proposed : null;
         return {
-            to: (rv && rv.to && rv.to.email) ? rv.to.email : '',
-            cc: [],
+            to: proposed && proposed.to ? proposed.to : ((rv && rv.to && rv.to.email) ? rv.to.email : ''),
+            cc: proposed && Array.isArray(proposed.cc) ? proposed.cc.slice() : [],
             replyAll: (rv && rv.reply_all) ? rv.reply_all : [],
+            candidates: (rv && rv.candidate_emails) ? rv.candidate_emails : [],
             addCc(addr) {
                 addr = (addr || '').trim();
                 if (addr && addr !== this.to && !this.cc.includes(addr)) {
                     this.cc.push(addr);
                 }
+            },
+            isCustom(addr) {
+                addr = (addr || '').trim().toLowerCase();
+                // Numeric refs are person_ids (they resolve to known contacts server-side).
+                return addr !== '' && !/^\d+$/.test(addr) && !this.candidates.includes(addr);
+            },
+            customRecipients() {
+                var self = this;
+                return [this.to].concat(this.cc).filter(function (addr) { return self.isCustom(addr); });
             },
         };
     });

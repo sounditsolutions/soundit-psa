@@ -768,6 +768,206 @@ class PsaActionToolsTest extends TestCase
         $this->assertSame(2, TechnicianRun::where('ticket_id', $ticket->id)->where('action_type', 'stage_email')->count());
     }
 
+    public function test_staged_email_rejects_custom_recipient_when_staged_arbitrary_off(): void
+    {
+        // psa-w4e0 default-off: without the staged-arbitrary knob, stage_email keeps
+        // rejecting addresses outside known contacts / thread participants at stage time.
+        $token = $this->token(['stage_email']);
+        $ticket = $this->ticketWithContact();
+
+        $response = $this->callTool($token, 'stage_email', [
+            'client_id' => $ticket->client_id,
+            'ticket_id' => $ticket->id,
+            'reason' => 'Loop in the external consultant.',
+            'body' => 'Held draft.',
+            'cc' => ['outsider@partner.test'],
+        ]);
+
+        $response->assertOk();
+        $this->assertTrue((bool) $response->json('result.isError'));
+        $this->assertStringContainsString('not a known contact or thread participant', (string) $response->json('result.content.0.text'));
+        $this->assertSame(0, TechnicianRun::where('ticket_id', $ticket->id)->count());
+        $this->assertSame(0, TechnicianActionLog::where('ticket_id', $ticket->id)->count());
+    }
+
+    public function test_staged_email_accepts_custom_recipients_when_staged_knob_on_and_direct_stays_locked(): void
+    {
+        // psa-w4e0: the staged knob admits syntax-valid custom To/CC on the HELD path
+        // (human approval is the safeguard) and must NOT widen the immediate path.
+        Setting::setValue('allow_arbitrary_email_recipients_staged', '1');
+        $token = $this->token(['stage_email', 'send_email']);
+        $ticket = $this->ticketWithContact(); // contact = client@example.test
+        $this->mock(EmailService::class, fn (MockInterface $mock) => $mock->shouldReceive('sendTicketReplyNote')->never());
+
+        $staged = $this->callTool($token, 'stage_email', [
+            'client_id' => $ticket->client_id,
+            'ticket_id' => $ticket->id,
+            'reason' => 'Send the audit summary to the external auditor.',
+            'body' => 'Audit summary attached below.',
+            'to' => ['auditor@partner.test'],
+            'cc' => ['client@example.test'],
+        ]);
+
+        $staged->assertOk();
+        $this->assertFalse((bool) $staged->json('result.isError'), (string) $staged->json('result.content.0.text'));
+
+        $run = TechnicianRun::where('ticket_id', $ticket->id)->where('action_type', 'stage_email')->firstOrFail();
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->state);
+        // The resolved proposal is durably recorded for the approval card + audit trail,
+        // with the outside-known-contacts subset called out for the exfil readout.
+        $this->assertSame('auditor@partner.test', $run->proposed_meta['to']);
+        $this->assertSame(['client@example.test'], $run->proposed_meta['cc']);
+        $this->assertSame(['auditor@partner.test'], $run->proposed_meta['custom_recipients']);
+
+        // Action-log summary carries counts + the outside-known-contacts flag, never addresses.
+        $log = TechnicianActionLog::where('ticket_id', $ticket->id)->where('action_type', 'stage_email')->firstOrFail();
+        $this->assertStringContainsString('To 1, CC 1', (string) $log->summary);
+        $this->assertStringContainsString('1 outside known contacts', (string) $log->summary);
+        $this->assertStringNotContainsString('auditor@partner.test', (string) $log->summary);
+
+        // MCP audit records recipient counts only (psa-kt82 convention).
+        $audit = McpAuditLog::where('tool_name', 'stage_email')->firstOrFail();
+        $this->assertSame(1, $audit->arguments['to_count']);
+        $this->assertSame(1, $audit->arguments['cc_count']);
+        $this->assertStringNotContainsString('auditor@partner.test', (string) json_encode($audit->arguments));
+
+        // Nothing sent, nothing written to the ticket — held only.
+        $this->assertSame(0, TicketNote::where('ticket_id', $ticket->id)->count());
+
+        // INDEPENDENCE (load-bearing): the staged knob must not open the immediate path.
+        $direct = $this->callTool($token, 'send_email', [
+            'client_id' => $ticket->client_id,
+            'ticket_id' => $ticket->id,
+            'reason' => 'Try the same custom address immediately.',
+            'body' => 'Should not send.',
+            'cc' => ['outsider2@partner.test'],
+        ]);
+        $this->assertTrue((bool) $direct->json('result.isError'));
+        $this->assertStringContainsString('not a known contact or thread participant', (string) $direct->json('result.content.0.text'));
+        $this->assertSame(0, TicketNote::where('ticket_id', $ticket->id)->count());
+    }
+
+    public function test_staged_email_rejects_invalid_email_syntax_even_when_staged_knob_on(): void
+    {
+        Setting::setValue('allow_arbitrary_email_recipients_staged', '1');
+        $token = $this->token(['stage_email']);
+        $ticket = $this->ticketWithContact();
+
+        $response = $this->callTool($token, 'stage_email', [
+            'client_id' => $ticket->client_id,
+            'ticket_id' => $ticket->id,
+            'reason' => 'Custom address with a typo.',
+            'body' => 'Held draft.',
+            'to' => ['not-an-email'],
+        ]);
+
+        $this->assertTrue((bool) $response->json('result.isError'));
+        $this->assertStringContainsString('not a valid email address', (string) $response->json('result.content.0.text'));
+        $this->assertSame(0, TechnicianRun::where('ticket_id', $ticket->id)->count());
+    }
+
+    public function test_staged_email_person_id_refs_still_resolve_with_staged_knob_off(): void
+    {
+        // Known-source references keep working without any knob: person_ids resolve
+        // against the ticket client's contacts exactly as before.
+        $token = $this->token(['stage_email']);
+        $ticket = $this->ticketWithContact();
+        $bob = Person::create([
+            'client_id' => $ticket->client_id,
+            'person_type' => PersonType::User,
+            'first_name' => 'Bob',
+            'last_name' => 'Second',
+            'email' => 'bob@example.test',
+            'is_active' => true,
+        ]);
+
+        $response = $this->callTool($token, 'stage_email', [
+            'client_id' => $ticket->client_id,
+            'ticket_id' => $ticket->id,
+            'reason' => 'CC the second site contact.',
+            'body' => 'Held draft.',
+            'cc' => [$bob->id],
+        ]);
+
+        $response->assertOk();
+        $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
+        $run = TechnicianRun::where('ticket_id', $ticket->id)->where('action_type', 'stage_email')->firstOrFail();
+        $this->assertSame('client@example.test', $run->proposed_meta['to']); // contact default
+        $this->assertSame(['bob@example.test'], $run->proposed_meta['cc']);
+        $this->assertSame([], $run->proposed_meta['custom_recipients']);
+    }
+
+    public function test_staged_email_content_hash_distinguishes_recipient_sets(): void
+    {
+        // Same body to a DIFFERENT audience is a new staged proposal (latest wins),
+        // not a false idempotent replay of the earlier recipient set.
+        Setting::setValue('allow_arbitrary_email_recipients_staged', '1');
+        $token = $this->token(['stage_email']);
+        $ticket = $this->ticketWithContact();
+
+        $this->callTool($token, 'stage_email', [
+            'client_id' => $ticket->client_id,
+            'ticket_id' => $ticket->id,
+            'reason' => 'Draft to the contact.',
+            'body' => 'Same body.',
+        ]);
+        $this->callTool($token, 'stage_email', [
+            'client_id' => $ticket->client_id,
+            'ticket_id' => $ticket->id,
+            'reason' => 'Same body, now also to the auditor.',
+            'body' => 'Same body.',
+            'cc' => ['auditor@partner.test'],
+        ]);
+
+        $runs = TechnicianRun::where('ticket_id', $ticket->id)->where('action_type', 'stage_email')->get();
+        $this->assertSame(2, $runs->count());
+        $live = $runs->firstWhere('state', TechnicianRunState::AwaitingApproval);
+        $this->assertNotNull($live);
+        $this->assertSame(['auditor@partner.test'], $live->proposed_meta['cc']);
+        $this->assertSame(1, $runs->where('state', TechnicianRunState::Superseded)->count());
+
+        // An exact replay (same body + same recipients) is still idempotent.
+        $replay = $this->callTool($token, 'stage_email', [
+            'client_id' => $ticket->client_id,
+            'ticket_id' => $ticket->id,
+            'reason' => 'Replay.',
+            'body' => 'Same body.',
+            'cc' => ['auditor@partner.test'],
+        ]);
+        $this->assertFalse((bool) $replay->json('result.isError'));
+        $this->assertSame(2, TechnicianRun::where('ticket_id', $ticket->id)->where('action_type', 'stage_email')->count());
+    }
+
+    public function test_staged_email_contactless_ticket_errors_without_to_but_accepts_custom_to_when_knob_on(): void
+    {
+        $token = $this->token(['stage_email']);
+        $ticket = $this->ticketWithContact(email: null);
+
+        // No To and no contact email — same guard as before this feature.
+        $bare = $this->callTool($token, 'stage_email', [
+            'client_id' => $ticket->client_id,
+            'ticket_id' => $ticket->id,
+            'reason' => 'No recipient available.',
+            'body' => 'Held draft.',
+        ]);
+        $this->assertTrue((bool) $bare->json('result.isError'));
+        $this->assertStringContainsString('contact email', (string) $bare->json('result.content.0.text'));
+
+        // With the staged knob on, an explicit custom To makes the draft stageable.
+        Setting::setValue('allow_arbitrary_email_recipients_staged', '1');
+        $custom = $this->callTool($token, 'stage_email', [
+            'client_id' => $ticket->client_id,
+            'ticket_id' => $ticket->id,
+            'reason' => 'Reach the requester at their personal address.',
+            'body' => 'Held draft.',
+            'to' => ['requester@personal.test'],
+        ]);
+        $this->assertFalse((bool) $custom->json('result.isError'), (string) $custom->json('result.content.0.text'));
+        $run = TechnicianRun::where('ticket_id', $ticket->id)->where('action_type', 'stage_email')->firstOrFail();
+        $this->assertSame('requester@personal.test', $run->proposed_meta['to']);
+        $this->assertSame(['requester@personal.test'], $run->proposed_meta['custom_recipients']);
+    }
+
     public function test_propose_merge_stages_without_mutating_and_validates_ticket_pair(): void
     {
         $token = $this->token(['propose_merge']);

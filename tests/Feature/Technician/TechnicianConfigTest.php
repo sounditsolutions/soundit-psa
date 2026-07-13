@@ -40,6 +40,24 @@ class TechnicianConfigTest extends TestCase
         $this->assertTrue(TechnicianConfig::directEmailNewRecipients());
     }
 
+    public function test_staged_arbitrary_recipient_knob_defaults_off_and_never_widens_immediate(): void
+    {
+        // psa-w4e0: ships dormant — both the staged policy and the global knob are off.
+        $this->assertFalse(TechnicianConfig::allowArbitraryEmailRecipientsStaged());
+
+        // Staged-only knob ON opens the staged (human-approved) path ONLY: the global
+        // knob the immediate/direct path reads stays off (exfil guard independence).
+        Setting::setValue('allow_arbitrary_email_recipients_staged', '1');
+        $this->assertTrue(TechnicianConfig::allowArbitraryEmailRecipientsStaged());
+        $this->assertFalse(TechnicianConfig::allowArbitraryEmailRecipients());
+
+        // The global knob implies the staged policy (its pre-existing semantics
+        // covered both paths), so flipping it on keeps staged working too.
+        Setting::setValue('allow_arbitrary_email_recipients_staged', '0');
+        Setting::setValue('allow_arbitrary_email_recipients', '1');
+        $this->assertTrue(TechnicianConfig::allowArbitraryEmailRecipientsStaged());
+    }
+
     public function test_ai_actor_falls_back_to_first_user_then_honours_setting(): void
     {
         $first = User::factory()->create();

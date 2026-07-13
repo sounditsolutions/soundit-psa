@@ -757,7 +757,7 @@ class McpToolRegistry
     {
         return [
             'name' => 'stage_email',
-            'description' => 'Stage a proactive client-facing ticket email draft in the cockpit for human approval. The call does not send email directly. The server derives recipient and subject from the ticket; the supplied body is held verbatim for review.',
+            'description' => 'Stage a proactive client-facing ticket email draft in the cockpit for human approval. The call does not send email directly. The server derives the subject from the ticket and defaults the recipient to the ticket contact; the supplied body is held verbatim for review. Optional to/cc may propose recipients — PSA person_ids, known contact/thread addresses, or (only when the operator has enabled staged custom recipients) other syntactically valid addresses. The approver sees the full proposed To/CC list, with anything outside the client\'s known contacts highlighted, before the email can send.',
             'input_schema' => [
                 'type' => 'object',
                 'properties' => [
@@ -772,6 +772,16 @@ class McpToolRegistry
                     'body' => [
                         'type' => 'string',
                         'description' => 'Proposed client-facing email body. It is held verbatim for cockpit review.',
+                    ],
+                    'to' => [
+                        'type' => 'array',
+                        'items' => ['type' => ['integer', 'string']],
+                        'description' => 'Optional proposed To recipient — a PSA person_id or an email address. Addresses outside the client\'s known contacts and this ticket\'s email thread are accepted only when the staged custom-recipients setting is enabled; they are validated for syntax, held for human approval, and highlighted to the approver. Omit to use the ticket contact.',
+                    ],
+                    'cc' => [
+                        'type' => 'array',
+                        'items' => ['type' => ['integer', 'string']],
+                        'description' => 'Optional proposed CC recipients — PSA person_ids or email addresses, under the same staged custom-recipients rules as to.',
                     ],
                 ],
                 'required' => ['ticket_id', 'reason', 'body'],

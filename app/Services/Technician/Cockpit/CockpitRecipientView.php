@@ -4,12 +4,19 @@ namespace App\Services\Technician\Cockpit;
 
 use App\Models\TechnicianRun;
 use App\Services\Email\EmailRecipientResolver;
+use App\Support\TechnicianConfig;
 
 /**
  * Builds the cockpit approval card's recipient block data (psa-kt82 PR B, gate 4):
  * the fully RESOLVED default To, the reply-all CC set, and the pickable candidate
  * addresses (ticket contact, client contacts, thread participants) — all real
  * addresses as they would send, never labels or references. Read-only.
+ *
+ * psa-w4e0 adds the staged proposal: a stage_email run may carry an agent-proposed
+ * To/CC set in proposed_meta (resolved at stage time). It prefills the card so the
+ * approver reviews exactly what was staged, and the flat candidate list powers the
+ * live "outside known contacts" highlight for both proposed and operator-typed
+ * custom addresses.
  */
 class CockpitRecipientView
 {
@@ -22,7 +29,10 @@ class CockpitRecipientView
      * @return array{
      *   to: array{email: ?string, name: ?string},
      *   reply_all: array<int,string>,
-     *   candidates: array<int,array{email:string,name:?string,source:string}>
+     *   candidates: array<int,array{email:string,name:?string,source:string}>,
+     *   candidate_emails: array<int,string>,
+     *   proposed: array{to: string, cc: array<int,string>}|null,
+     *   arbitrary_allowed: bool
      * }|null
      */
     public function for(TechnicianRun $run): ?array
@@ -54,6 +64,38 @@ class CockpitRecipientView
             'to' => ['email' => $candidates->contactEmail, 'name' => $candidates->contactName],
             'reply_all' => $replyAll['cc'],
             'candidates' => array_values($rows),
+            'candidate_emails' => $candidates->allEmails(),
+            'proposed' => $this->proposedRecipients($run),
+            'arbitrary_allowed' => TechnicianConfig::allowArbitraryEmailRecipientsStaged(),
         ];
+    }
+
+    /**
+     * The stage-time resolved To/CC a stage_email run proposed, if any. Meta is
+     * tolerated loosely (older runs have no recipient keys) — anything malformed
+     * collapses to null and the card falls back to the contact default.
+     *
+     * @return array{to: string, cc: array<int,string>}|null
+     */
+    private function proposedRecipients(TechnicianRun $run): ?array
+    {
+        if ($run->action_type !== 'stage_email') {
+            return null;
+        }
+
+        $meta = $run->proposed_meta ?? [];
+        $to = $meta['to'] ?? null;
+        if (! is_string($to) || trim($to) === '') {
+            return null;
+        }
+
+        $cc = [];
+        foreach ((array) ($meta['cc'] ?? []) as $addr) {
+            if (is_string($addr) && trim($addr) !== '') {
+                $cc[] = strtolower(trim($addr));
+            }
+        }
+
+        return ['to' => strtolower(trim($to)), 'cc' => $cc];
     }
 }

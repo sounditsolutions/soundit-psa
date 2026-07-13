@@ -105,7 +105,11 @@ class EmailRecipientResolver
             $ccAddresses[] = $addr;
         }
 
-        return new ResolvedRecipients($toAddress, $candidates->nameFor($toAddress), array_values($ccAddresses));
+        // Addresses outside sources a/b/c can only be present when $allowArbitrary let
+        // them through; surface them so approval readouts and audits can flag them.
+        $custom = array_values(array_diff([$toAddress, ...$ccAddresses], $candidates->allEmails()));
+
+        return new ResolvedRecipients($toAddress, $candidates->nameFor($toAddress), array_values($ccAddresses), $custom);
     }
 
     private function resolveRef(mixed $ref, RecipientCandidates $candidates, RecipientContext $context, bool $allowArbitrary, bool $directAllowNew): string

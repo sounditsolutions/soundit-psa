@@ -3483,9 +3483,14 @@
                         <label class="form-check-label" for="direct_email_new_recipients">Allow the direct email path to add recipients not already on the thread <span class="text-muted">(default off — staged-only)</span></label>
                     </div>
 
+                    <div class="form-check form-switch mb-2">
+                        <input class="form-check-input" type="checkbox" id="allow_arbitrary_email_recipients_staged" name="allow_arbitrary_email_recipients_staged" {{ $allowArbitraryEmailRecipientsStaged ? 'checked' : '' }}>
+                        <label class="form-check-label" for="allow_arbitrary_email_recipients_staged">Allow custom email recipients on staged (human-approved) emails only <span class="text-muted">(default off — the cockpit approver sees the full To/CC list, with outside addresses highlighted, before anything sends)</span></label>
+                    </div>
+
                     <div class="form-check form-switch mb-3">
                         <input class="form-check-input" type="checkbox" id="allow_arbitrary_email_recipients" name="allow_arbitrary_email_recipients" {{ $allowArbitraryEmailRecipients ? 'checked' : '' }}>
-                        <label class="form-check-label" for="allow_arbitrary_email_recipients">Allow arbitrary email recipients outside known contacts and thread participants <span class="text-muted">(default off — exfil guard)</span></label>
+                        <label class="form-check-label" for="allow_arbitrary_email_recipients">Allow arbitrary email recipients everywhere, including immediate sends <span class="text-muted">(default off — exfil guard; prefer the staged-only switch above)</span></label>
                     </div>
 
                     <hr class="my-3">

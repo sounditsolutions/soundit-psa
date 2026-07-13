@@ -44,6 +44,20 @@ class TechnicianConfig
         return (bool) Setting::getValue('allow_arbitrary_email_recipients');
     }
 
+    /**
+     * Effective policy for the STAGED (human-approved) email path: may To/CC include
+     * addresses outside sources a/b/c? True when the staged-only knob
+     * (allow_arbitrary_email_recipients_staged, default OFF) or the global knob above
+     * is on — the global knob always covered both paths, so it implies this. The
+     * staged-only knob never widens the IMMEDIATE path: the cockpit approver reviewing
+     * the full To/CC list is the exfil safeguard, and only the staged path has one.
+     */
+    public static function allowArbitraryEmailRecipientsStaged(): bool
+    {
+        return self::allowArbitraryEmailRecipients()
+            || (bool) Setting::getValue('allow_arbitrary_email_recipients_staged');
+    }
+
     /** When ON, the DIRECT send_email path may add recipients not already on the thread (default OFF — staged-only). */
     public static function directEmailNewRecipients(): bool
     {

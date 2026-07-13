@@ -30,8 +30,11 @@ use Illuminate\Support\Facades\Log;
  * addresses already on the ticket's email thread) via EmailRecipientResolver,
  * re-resolved at approval time (gate 3): the model/operator supply REFERENCES, never
  * free-text. Arbitrary addresses (not a known contact or thread participant) are
- * rejected unless allow_arbitrary_email_recipients is on (default off). The email is
- * sent AFTER the gate transaction, never inside it.
+ * rejected unless the STAGED arbitrary-recipients policy is on (psa-w4e0:
+ * allow_arbitrary_email_recipients_staged, or the global knob — both default off);
+ * when admitted they are syntax-validated, prefilled + highlighted on the approval
+ * card, and counted in the audit summary. The email is sent AFTER the gate
+ * transaction, never inside it.
  */
 class TechnicianApprovalService
 {
@@ -46,9 +49,12 @@ class TechnicianApprovalService
 
     private function resolveRecipients(Ticket $ticket, array $to, array $cc): ResolvedRecipients
     {
+        // Every send below is operator-approved from the cockpit (the recipient list is
+        // on the card), so the STAGED arbitrary-recipients policy applies — never the
+        // immediate path's global-only knob.
         return $this->recipients->resolve(
             $ticket, $to, $cc, RecipientContext::Staged,
-            TechnicianConfig::allowArbitraryEmailRecipients(),
+            TechnicianConfig::allowArbitraryEmailRecipientsStaged(),
             TechnicianConfig::directEmailNewRecipients(),
         );
     }
@@ -103,7 +109,7 @@ class TechnicianApprovalService
                 ticketId: $run->ticket_id,
                 clientId: $run->client_id,
                 contentHash: $hash,
-                summary: 'Operator-approved client reply.',
+                summary: 'Operator-approved client reply. ['.$resolved->auditDescriptor().']',
                 runId: $run->id,
                 executor: function () use ($ticket, $actorId, $actorName, $disclosed, $run, &$createdNote): void {
                     $createdNote = TicketNote::create([
@@ -391,7 +397,9 @@ class TechnicianApprovalService
                 ticketId: $run->ticket_id,
                 clientId: $run->client_id,
                 contentHash: $hash,
-                summary: $summary,
+                // Counts-only recipient descriptor (never addresses) — flags approvals
+                // that included recipients outside the client's known contacts.
+                summary: $resolved !== null ? $summary.' ['.$resolved->auditDescriptor().']' : $summary,
                 runId: $run->id,
                 executor: function () use ($ticket, $actorId, $actorName, $disclosed, $noteType, $run, &$createdNote): void {
                     $createdNote = TicketNote::create([

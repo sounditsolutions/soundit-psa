@@ -127,4 +127,143 @@ class CockpitRecipientCardTest extends TestCase
         $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
         $this->assertSame(0, TicketNote::where('ticket_id', $ticket->id)->where('ai_authored', true)->count());
     }
+
+    // ── psa-w4e0: staged custom To/CC (agent-proposed, knob-gated, exfil-safe readout) ──
+
+    /** @return array{0: TechnicianRun, 1: Ticket} */
+    private function seedStagedEmailRunWithCustomProposal(User $actor): array
+    {
+        [$sendReplyRun, $ticket] = $this->seedSendReplyRunWithThread($actor);
+        $sendReplyRun->delete(); // keep only the stage_email card for these tests
+
+        $run = TechnicianRun::create([
+            'ticket_id' => $ticket->id, 'client_id' => $ticket->client_id, 'action_type' => 'stage_email',
+            'content_hash' => str_repeat('d', 64), 'state' => TechnicianRunState::AwaitingApproval,
+            'proposed_content' => 'Audit summary draft.',
+            'proposed_meta' => [
+                'reasons' => ['Send the audit summary to the external auditor.'],
+                'drafted_by' => 'mcp-staff:chet',
+                'to' => 'auditor@partner.test',
+                'cc' => ['vendor@thread.test'],
+                'custom_recipients' => ['auditor@partner.test'],
+            ],
+        ]);
+
+        return [$run, $ticket];
+    }
+
+    public function test_recipient_view_exposes_staged_proposal_candidate_emails_and_policy(): void
+    {
+        $actor = User::factory()->create();
+        [$run] = $this->seedStagedEmailRunWithCustomProposal($actor);
+
+        $view = app(CockpitRecipientView::class)->for($run);
+        // The agent's proposed set prefills the card so the approver reviews exactly
+        // what was staged — including the outside-known-contacts To.
+        $this->assertSame('auditor@partner.test', $view['proposed']['to']);
+        $this->assertSame(['vendor@thread.test'], $view['proposed']['cc']);
+        // The flat candidate list feeds the live "outside known contacts" highlight.
+        $this->assertContains('client@thread.test', $view['candidate_emails']);
+        $this->assertNotContains('auditor@partner.test', $view['candidate_emails']);
+        $this->assertFalse($view['arbitrary_allowed']);
+
+        Setting::setValue('allow_arbitrary_email_recipients_staged', '1');
+        $this->assertTrue(app(CockpitRecipientView::class)->for($run)['arbitrary_allowed']);
+    }
+
+    public function test_recipient_view_has_no_proposal_for_send_reply_runs(): void
+    {
+        $actor = User::factory()->create();
+        [$run] = $this->seedSendReplyRunWithThread($actor);
+
+        $view = app(CockpitRecipientView::class)->for($run);
+        $this->assertNull($view['proposed']);
+    }
+
+    public function test_cockpit_renders_staged_custom_recipient_and_warning_copy(): void
+    {
+        $actor = User::factory()->create();
+        $this->seedStagedEmailRunWithCustomProposal($actor);
+
+        $page = $this->actingAs($actor)->get(route('cockpit.index'))->assertOk();
+        // The proposed custom address reaches the card data (prefill + highlight)…
+        $page->assertSee('auditor@partner.test', false);
+        // …and the prominent outside-known-contacts warning block is present.
+        $page->assertSee('outside this client', false);
+    }
+
+    public function test_approving_staged_email_with_custom_recipients_sends_and_audits_when_knob_on(): void
+    {
+        Setting::setValue('allow_arbitrary_email_recipients_staged', '1');
+        $actor = User::factory()->create();
+        [$run, $ticket] = $this->seedStagedEmailRunWithCustomProposal($actor);
+
+        $captured = null;
+        $this->mock(EmailService::class, function (MockInterface $m) use (&$captured) {
+            $m->shouldReceive('sendTicketReplyNote')->once()->andReturnUsing(
+                function ($t, $n, $to, $cc) use (&$captured) {
+                    $captured = [$to, $cc];
+
+                    return null;
+                });
+        });
+
+        $this->actingAs($actor)->post(route('cockpit.approve', $run), [
+            'body' => 'Audit summary draft.',
+            'to' => ['auditor@partner.test'],
+            'cc' => ['vendor@thread.test'],
+        ])->assertRedirect();
+
+        $this->assertSame(['auditor@partner.test', ['vendor@thread.test']], $captured);
+        $this->assertSame(TechnicianRunState::Done, $run->fresh()->state);
+
+        // The executed action log flags the custom recipient by count, never by address.
+        $log = \App\Models\TechnicianActionLog::where('ticket_id', $ticket->id)
+            ->where('action_type', 'stage_email')->where('result_status', 'executed')->firstOrFail();
+        $this->assertStringContainsString('1 outside known contacts', (string) $log->summary);
+        $this->assertStringNotContainsString('auditor@partner.test', (string) $log->summary);
+    }
+
+    public function test_approving_staged_email_with_custom_recipient_fails_closed_when_knob_off(): void
+    {
+        // Gate 3: the knob is re-checked at approval — staged-then-disabled proposals
+        // (or tampered posts) are refused; the run stays approvable, nothing sends.
+        $actor = User::factory()->create();
+        [$run, $ticket] = $this->seedStagedEmailRunWithCustomProposal($actor);
+        $this->mock(EmailService::class, fn (MockInterface $m) => $m->shouldReceive('sendTicketReplyNote')->never());
+
+        $this->actingAs($actor)->post(route('cockpit.approve', $run), [
+            'body' => 'Audit summary draft.',
+            'to' => ['auditor@partner.test'],
+        ])->assertRedirect();
+
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
+        $this->assertSame(0, TicketNote::where('ticket_id', $ticket->id)->where('ai_authored', true)->count());
+    }
+
+    public function test_approving_send_reply_with_custom_cc_honours_the_staged_knob(): void
+    {
+        // The staged knob governs the shared human-approved path: send_reply approval
+        // cards accept an operator-added custom CC under the same policy.
+        Setting::setValue('allow_arbitrary_email_recipients_staged', '1');
+        $actor = User::factory()->create();
+        [$run] = $this->seedSendReplyRunWithThread($actor);
+
+        $captured = null;
+        $this->mock(EmailService::class, function (MockInterface $m) use (&$captured) {
+            $m->shouldReceive('sendTicketReplyNote')->once()->andReturnUsing(
+                function ($t, $n, $to, $cc) use (&$captured) {
+                    $captured = [$to, $cc];
+
+                    return null;
+                });
+        });
+
+        $this->actingAs($actor)->post(route('cockpit.approve', $run), [
+            'body' => 'Ok.', 'to' => ['client@thread.test'], 'cc' => ['consultant@partner.test'],
+        ])->assertRedirect();
+
+        $this->assertSame(['client@thread.test', ['consultant@partner.test']], $captured);
+        $this->assertSame(TechnicianRunState::Done, $run->fresh()->state);
+    }
 }

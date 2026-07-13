@@ -291,13 +291,16 @@ class McpStagedModeUnificationTest extends TestCase
         $ticket = $this->ticketWithContact();
 
         // Staged-only grant: the canonical tool is advertised with the staged
-        // variant's schema — ticket_id required, no immediate-only recipient
-        // overrides — plus the staged marker.
+        // variant's schema — ticket_id required — plus the staged marker. Since
+        // psa-w4e0 the staged variant carries its own optional to/cc (held
+        // proposals may name recipients, knob-gated server-side).
         $stagedTools = collect($this->listTools($this->token(['send_email:staged'], 'stager')))->keyBy('name');
         $this->assertFalse($stagedTools->has('stage_email'));
         $sendEmail = $stagedTools['send_email'];
         $this->assertContains('ticket_id', $sendEmail['inputSchema']['required']);
-        $this->assertArrayNotHasKey('to', $sendEmail['inputSchema']['properties']);
+        $this->assertArrayHasKey('to', $sendEmail['inputSchema']['properties']);
+        $this->assertArrayHasKey('cc', $sendEmail['inputSchema']['properties']);
+        $this->assertNotContains('to', $sendEmail['inputSchema']['required'] ?? []);
         $this->assertArrayHasKey('staged', $sendEmail['inputSchema']['properties']);
         $this->assertStringContainsString('staged mode only', $sendEmail['description']);
 

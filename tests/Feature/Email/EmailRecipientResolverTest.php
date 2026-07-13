@@ -215,4 +215,27 @@ class EmailRecipientResolverTest extends TestCase
             $ticket, [], [['address' => 'x@evil.test']], \App\Services\Email\RecipientContext::Staged, false, false,
         );
     }
+
+    public function test_resolve_surfaces_custom_recipients_outside_known_sources(): void
+    {
+        // psa-w4e0: when arbitrary addresses are allowed, the resolved set names which
+        // of them sit OUTSIDE sources a/b/c so approval readouts and audits can flag them.
+        $ticket = $this->seedThreadTicket();
+        $resolver = app(\App\Services\Email\EmailRecipientResolver::class);
+
+        $r = $resolver->resolve(
+            $ticket, ['outsider@partner.test'], ['carl@acme.test', 'second@partner.test'],
+            \App\Services\Email\RecipientContext::Staged, true, false,
+        );
+        $this->assertSame('outsider@partner.test', $r->to);
+        $this->assertEqualsCanonicalizing(['outsider@partner.test', 'second@partner.test'], $r->custom);
+        $this->assertSame('To 1, CC 2, 2 outside known contacts', $r->auditDescriptor());
+
+        // A known-sources-only resolution carries no customs; the descriptor is unchanged.
+        $known = $resolver->resolve(
+            $ticket, [], ['carl@acme.test'], \App\Services\Email\RecipientContext::Staged, false, false,
+        );
+        $this->assertSame([], $known->custom);
+        $this->assertSame('To 1, CC 1', $known->auditDescriptor());
+    }
 }

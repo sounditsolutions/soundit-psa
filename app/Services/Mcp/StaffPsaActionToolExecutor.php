@@ -64,8 +64,8 @@ class StaffPsaActionToolExecutor
             'create_ticket' => $this->createTicket($arguments, $clientId, $actorLabel),
             'send_email' => $this->sendEmail($arguments, $clientId, $actorLabel),
             'write_public_note' => $this->writePublicNote($arguments, $clientId, $actorLabel),
-            'stage_email' => $this->stageTicketAction('stage_email', $arguments, $clientId, $actorLabel, requiresContactEmail: true),
-            'stage_public_note' => $this->stageTicketAction('stage_public_note', $arguments, $clientId, $actorLabel, requiresContactEmail: false),
+            'stage_email' => $this->stageTicketAction('stage_email', $arguments, $clientId, $actorLabel, sendsEmail: true),
+            'stage_public_note' => $this->stageTicketAction('stage_public_note', $arguments, $clientId, $actorLabel, sendsEmail: false),
             'propose_merge' => $this->proposeMerge($arguments, $clientId, $actorLabel),
             'update_ticket' => $this->updateTicket($arguments, $clientId, $actorLabel),
             'set_ticket_status' => $this->setTicketStatus($arguments, $clientId, $actorLabel),
@@ -2075,7 +2075,7 @@ class StaffPsaActionToolExecutor
     }
 
     /** @return array<string, mixed> */
-    private function stageTicketAction(string $actionType, array $arguments, int $clientId, string $actorLabel, bool $requiresContactEmail): array
+    private function stageTicketAction(string $actionType, array $arguments, int $clientId, string $actorLabel, bool $sendsEmail): array
     {
         $reason = $this->requiredString($arguments, 'reason');
         if ($reason === null) {
@@ -2092,10 +2092,6 @@ class StaffPsaActionToolExecutor
             return $ticket;
         }
 
-        if ($requiresContactEmail && trim((string) $ticket->contact?->email) === '') {
-            return ['error' => 'Ticket has no contact email'];
-        }
-
         $contentHash = $this->contentHash($actionType, $ticket->id, $body);
         $meta = [
             'reasons' => [$reason],
@@ -2103,6 +2099,37 @@ class StaffPsaActionToolExecutor
             'contact_email' => $ticket->contact?->email,
             'contact_name' => $ticket->contact?->fullName,
         ];
+
+        $summary = "MCP staged {$actionType} for ticket #{$ticket->id}: {$reason}";
+
+        // psa-w4e0: the email-sending staged action accepts proposed To/CC (person_ids
+        // or addresses). Resolving here fails fast for the agent (bad person ref, bad
+        // syntax, custom address while the staged knob is off — it also subsumes the
+        // old "Ticket has no contact email" guard) and records the resolved set for
+        // the approval card. Approval re-resolves from the operator's form (gate 3);
+        // this preview is prefill + audit, never what actually sends.
+        if ($sendsEmail) {
+            try {
+                $proposed = $this->recipients->resolve(
+                    $ticket,
+                    (array) ($arguments['to'] ?? []),
+                    (array) ($arguments['cc'] ?? []),
+                    RecipientContext::Staged,
+                    TechnicianConfig::allowArbitraryEmailRecipientsStaged(),
+                    TechnicianConfig::directEmailNewRecipients(),
+                );
+            } catch (RecipientValidationException $e) {
+                return ['error' => $e->getMessage()];
+            }
+
+            // Same body to a different audience is a new proposal, not a replay (mirrors
+            // the direct send_email idempotency key, psa-kt82).
+            $contentHash = $this->contentHash($actionType, $ticket->id, $body.'|to:'.$proposed->to.'|cc:'.implode(',', $proposed->cc));
+            $meta['to'] = $proposed->to;
+            $meta['cc'] = $proposed->cc;
+            $meta['custom_recipients'] = $proposed->custom;
+            $summary .= ' ['.$proposed->auditDescriptor().']';
+        }
 
         $run = TechnicianRun::firstOrCreate(
             [
@@ -2153,7 +2180,7 @@ class StaffPsaActionToolExecutor
             ticketId: $ticket->id,
             clientId: $ticket->client_id,
             contentHash: $contentHash,
-            summary: "MCP staged {$actionType} for ticket #{$ticket->id}: {$reason}",
+            summary: $summary,
             runId: $run->id,
             executor: static function () use ($actionType): void {
                 throw new \LogicException("Held-only MCP {$actionType} path must not execute directly.");
