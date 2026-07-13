@@ -946,6 +946,10 @@ class CippToolContract
             'MoveToFolder',
             'Subject',
             'subject',
+            // Quarantine policy names are admin-chosen display text; Message-ID
+            // headers are arbitrary sender-controlled strings — fence both.
+            'PolicyName',
+            'MessageId',
             // An OAuth application's display name is chosen by whoever registered
             // it, and a sign-in row names the app it was made against — so both are
             // attacker-controlled in exactly the scenarios these tools exist for

@@ -51,16 +51,33 @@ class CippMcpToolRelay
     ];
 
     private const DEFAULT_FIELDS = [
-        'cipp_list_users' => ['id', 'displayName', 'userPrincipalName', 'accountEnabled', 'jobTitle', 'department', 'assignedLicenses'],
+        // Graph assignedLicenses entries carry no skuPartNumber, so the license
+        // summary can never surface friendly names — CIPP has already resolved
+        // them into top-level LicJoined (comma-joined product names, psa-zw1j).
+        'cipp_list_users' => ['id', 'displayName', 'userPrincipalName', 'accountEnabled', 'jobTitle', 'department', 'assignedLicenses', 'licJoined'],
         // No mailboxSizeBytes / itemCount here: CIPP's ListMailboxes runs
         // Get-Mailbox, which has no size or item-count properties at all (those
         // live on Get-MailboxStatistics), so they never resolved under ANY
         // casing and were dead advertised fields (psa-7lgo).
         'cipp_list_mailboxes' => ['id', 'displayName', 'userPrincipalName', 'primarySmtpAddress', 'recipientTypeDetails', 'forwardingSmtpAddress', 'deliverToMailboxAndForward', 'litigationHoldEnabled'],
-        'cipp_list_licenses' => ['skuId', 'skuPartNumber', 'totalLicenses', 'consumedLicenses', 'assignedLicenses', 'prepaidUnits', 'capabilityStatus'],
-        'cipp_list_devices' => ['id', 'deviceName', 'displayName', 'userPrincipalName', 'operatingSystem', 'osVersion', 'complianceState', 'isCompliant', 'managementAgent', 'enrolledDateTime', 'lastSyncDateTime', 'serialNumber'],
+        // Real ListLicenses shape (verified against CIPP-API Get-CIPPLicenseOverview,
+        // psa-zw1j): hand-built rows, NOT raw Graph subscribedSkus. Seat counts are
+        // CountUsed / CountAvailable / TotalLicenses (strings), the display name is
+        // License; upstream skuPartNumber duplicates License (a pretty name, not a
+        // real part number) so it is deliberately not projected. consumedLicenses /
+        // assignedLicenses / prepaidUnits / capabilityStatus are never emitted.
+        'cipp_list_licenses' => ['skuId', 'license', 'totalLicenses', 'countUsed', 'countAvailable', 'termInfo'],
+        // Graph managedDevice has no displayName / isCompliant — their resolving
+        // siblings deviceName / complianceState carry the same signal (psa-zw1j).
+        'cipp_list_devices' => ['id', 'deviceName', 'userPrincipalName', 'operatingSystem', 'osVersion', 'complianceState', 'managementAgent', 'enrolledDateTime', 'lastSyncDateTime', 'serialNumber'],
         'cipp_list_groups' => ['id', 'displayName', 'mail', 'mailEnabled', 'securityEnabled', 'groupTypes', 'description'],
-        'cipp_list_user_groups' => ['id', 'displayName', 'mail', 'mailEnabled', 'securityEnabled', 'groupTypes', 'description'],
+        // Real ListUserGroups shape (Invoke-ListUserGroups renames everything via
+        // Select-Object, psa-zw1j): Mail / MailEnabled / SecurityGroup / GroupTypes
+        // (a comma-joined STRING, not an array) plus camelCase groupType /
+        // calculatedGroupType — the discriminators that tell a security group from
+        // a distribution list from an M365 group. No description key is emitted
+        // under any casing, so it is omitted here (unlike cipp_list_groups).
+        'cipp_list_user_groups' => ['id', 'displayName', 'mail', 'mailEnabled', 'securityEnabled', 'groupTypes', 'groupType', 'calculatedGroupType', 'onPremisesSync', 'isAssignableToRole'],
         // Real ListmailboxPermissions shape (verified against CIPP-API
         // Invoke-ListmailboxPermissions.ps1, psa-3twu): CIPP collapses
         // Get-MailboxPermission / Get-RecipientPermission / GrantSendOnBehalfTo
@@ -83,8 +100,13 @@ class CippMcpToolRelay
         // No cipp_list_audit_logs entry: its real fields are nested two levels
         // down (Data.RawData.*), which a flat field list cannot express, so it
         // is hand-projected by shapeAuditLogs() (psa-9d4l).
-        'cipp_list_message_trace' => ['MessageTraceId', 'messageTraceId', 'Received', 'received', 'SenderAddress', 'senderAddress', 'RecipientAddress', 'recipientAddress', 'Subject', 'subject', 'Status', 'status', 'FromIP', 'toIP'],
-        'cipp_list_mail_quarantine' => ['Identity', 'identity', 'ReceivedTime', 'receivedTime', 'SenderAddress', 'senderAddress', 'RecipientAddress', 'recipientAddress', 'Subject', 'subject', 'QuarantineTypes', 'ReleaseStatus', 'expires'],
+        // Get-MessageTrace responses carry PascalCase FromIP / ToIP — toIP is the
+        // REQUEST-parameter casing and never appears as a row key (psa-zw1j).
+        'cipp_list_message_trace' => ['MessageTraceId', 'messageTraceId', 'Received', 'received', 'SenderAddress', 'senderAddress', 'RecipientAddress', 'recipientAddress', 'Subject', 'subject', 'Status', 'status', 'FromIP', 'fromIP', 'ToIP', 'toIP'],
+        // Get-QuarantineMessage rows carry the quarantine reason in Type and the
+        // expiry in Expires; QuarantineTypes is a request parameter that never
+        // appears as a row key (psa-zw1j). PolicyName / MessageId / Size ride along.
+        'cipp_list_mail_quarantine' => ['Identity', 'identity', 'ReceivedTime', 'receivedTime', 'SenderAddress', 'senderAddress', 'RecipientAddress', 'recipientAddress', 'Subject', 'subject', 'Type', 'type', 'PolicyName', 'MessageId', 'Size', 'ReleaseStatus', 'Expires', 'expires'],
         // No cipp_list_oauth_apps entry: shapeResult() routes that tool to
         // CippToolContract::shapeOauthApps(), which bypasses projectRows() and
         // names its own keys — the same treatment as audit logs and Defender
@@ -136,9 +158,22 @@ class CippMcpToolRelay
         'moveToFolder' => ['MoveToFolder', 'moveToFolder'],
 
         'skuPartNumber' => ['skuPartNumber', 'SkuPartNumber', 'sku', 'SKU'],
+        'license' => ['License', 'license'],
         'totalLicenses' => ['totalLicenses', 'TotalLicenses', 'prepaidUnitsEnabled'],
-        'consumedLicenses' => ['consumedLicenses', 'ConsumedLicenses', 'consumedUnits'],
+        'countUsed' => ['CountUsed', 'countUsed'],
+        'countAvailable' => ['CountAvailable', 'countAvailable', 'availableUnits'],
+        'termInfo' => ['TermInfo', 'termInfo'],
         'assignedLicenses' => ['assignedLicenses', 'AssignedLicenses', 'licenses', 'Licenses'],
+        'licJoined' => ['LicJoined', 'licJoined'],
+        'mail' => ['mail', 'Mail'],
+        'mailEnabled' => ['mailEnabled', 'MailEnabled'],
+        // Invoke-ListUserGroups renames securityEnabled to SecurityGroup (psa-zw1j).
+        'securityEnabled' => ['securityEnabled', 'SecurityEnabled', 'SecurityGroup'],
+        'groupTypes' => ['groupTypes', 'GroupTypes'],
+        'groupType' => ['groupType', 'GroupType'],
+        'calculatedGroupType' => ['calculatedGroupType', 'CalculatedGroupType'],
+        'onPremisesSync' => ['onPremisesSync', 'OnPremisesSync', 'onPremisesSyncEnabled'],
+        'isAssignableToRole' => ['isAssignableToRole', 'IsAssignableToRole'],
         'operatingSystem' => ['operatingSystem', 'OperatingSystem', 'os'],
         'osVersion' => ['osVersion', 'OSVersion', 'operatingSystemVersion'],
         'complianceState' => ['complianceState', 'ComplianceState'],
