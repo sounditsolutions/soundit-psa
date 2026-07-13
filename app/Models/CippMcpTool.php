@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Support\CippMcpToolPolicy;
 use App\Support\McpInputSchema;
 use App\Support\McpToolRegistry;
 use Illuminate\Database\Eloquent\Builder;
@@ -45,10 +46,31 @@ class CippMcpTool extends Model
         });
     }
 
+    /**
+     * Rows the policy forbids from ever being a dynamic tool — a blocked upstream
+     * endpoint, or a row squatting on a curated tool's local name.
+     *
+     * This is applied to the scopes below rather than to each call site, so that the
+     * whole runtime surface — what tools/list advertises, what handles() claims, and what
+     * the dynamic executor will look up — is safe BY CONSTRUCTION. An offending row that
+     * is already in the table is inert on read, which is what makes the guard immediate at
+     * deploy instead of eventual at the next catalog sync (psa-7lgo.7).
+     *
+     * Deliberately NOT a global scope: CippMcpCatalogSyncService must still be able to SEE
+     * these rows in order to deactivate them, and it queries without the scopes.
+     *
+     * @param  Builder<CippMcpTool>  $query
+     */
+    public function scopeDispatchable(Builder $query): void
+    {
+        $query->whereNotIn('upstream_name', CippMcpToolPolicy::BLOCKED_UPSTREAM_TOOLS)
+            ->whereNotIn('local_name', CippMcpToolPolicy::curatedLocalToolNames());
+    }
+
     /** @param  Builder<CippMcpTool>  $query */
     public function scopeActive(Builder $query): void
     {
-        $query->where('active', true);
+        $query->where('active', true)->dispatchable();
     }
 
     /** @param  Builder<CippMcpTool>  $query */
@@ -56,7 +78,8 @@ class CippMcpTool extends Model
     {
         $query->where('active', true)
             ->where('read_only', true)
-            ->where('sensitive', false);
+            ->where('sensitive', false)
+            ->dispatchable();
     }
 
     public static function handles(string $toolName): bool

@@ -3,7 +3,7 @@
 namespace App\Services\Cipp;
 
 use App\Models\CippMcpTool;
-use App\Services\Triage\TriageToolDefinitions;
+use App\Support\CippMcpToolPolicy;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -27,25 +27,6 @@ class CippMcpCatalogSyncService
         'ListMailQuarantine',
         'ListMFAUsers',
         'ListOAuthApps',
-    ];
-
-    /**
-     * Upstream tools that must NEVER reach the agent — not curated, not dynamic.
-     *
-     * ListMailboxRules takes NO user parameter (its only CIPP parameters are
-     * tenantFilter and UseReportDB) and returns EVERY mailbox's rules in the
-     * tenant. It also maps to the SAME local name as our user-scoped
-     * cipp_list_mailbox_rules, and McpStaffController dispatches dynamic catalog
-     * tools BEFORE the curated executor — so importing it would SHADOW the fixed
-     * tool and silently re-open the cross-mailbox disclosure (psa-7lgo.1).
-     *
-     * It is listed HERE rather than merely left out of the curated list because
-     * those are different reasons. Conflating "we hand-wrote this one" with "this
-     * one is dangerous" is precisely what let it be deleted from the curated list
-     * during the fix, which re-opened the hole the fix was closing.
-     */
-    private const BLOCKED_UPSTREAM_TOOLS = [
-        'ListMailboxRules',
     ];
 
     public function __construct(
@@ -116,34 +97,25 @@ class CippMcpCatalogSyncService
     {
         $rows = [];
 
-        $curatedLocalNames = self::curatedLocalToolNames();
-
         foreach ($tools as $tool) {
             $upstreamName = trim((string) ($tool['name'] ?? ''));
-            if ($upstreamName === ''
-                || in_array($upstreamName, self::CURATED_UPSTREAM_TOOLS, true)
-                || in_array($upstreamName, self::BLOCKED_UPSTREAM_TOOLS, true)) {
+            if ($upstreamName === '' || in_array($upstreamName, self::CURATED_UPSTREAM_TOOLS, true)) {
                 continue;
             }
 
             $localName = self::localNameFor($upstreamName);
 
-            // A dynamic import must never take the name of a hand-written curated
-            // tool. McpStaffController dispatches dynamic catalog tools BEFORE the
-            // curated executor, so the import would SHADOW the reviewed, scoped
-            // implementation with a raw passthrough to whatever upstream endpoint
-            // happens to share the name. That is exactly how the tenant-wide
-            // ListMailboxRules could re-enter under the user-scoped
-            // cipp_list_mailbox_rules (psa-7lgo.1). The curated one always wins.
-            //
-            // Skipped rather than thrown: refusing one tool keeps the catalog
-            // syncing, and the safe implementation stays live. But it is logged
-            // loudly, because it means CIPP has grown a tool that collides with
-            // our surface and somebody needs to look.
-            if (in_array($localName, $curatedLocalNames, true)) {
-                Log::warning('[CippMcpCatalogSync] Refused a dynamic CIPP tool that would shadow a curated tool', [
+            // The same policy the runtime enforces, applied here so an offending row is
+            // never written in the first place. Skipped rather than thrown: refusing one
+            // tool keeps the rest of the catalog syncing and the safe implementation live.
+            // But it is logged loudly — it means CIPP has grown a tool that collides with
+            // our surface, and somebody needs to look.
+            $refusal = CippMcpToolPolicy::refusalReason($localName, $upstreamName);
+            if ($refusal !== null) {
+                Log::warning('[CippMcpCatalogSync] Refused a dynamic CIPP tool', [
                     'upstream_name' => $upstreamName,
                     'local_name' => $localName,
+                    'reason' => $refusal,
                 ]);
 
                 continue;
@@ -164,17 +136,6 @@ class CippMcpCatalogSyncService
         }
 
         return $rows;
-    }
-
-    /**
-     * The local names of the hand-written CIPP tools, which a dynamic import may
-     * never take.
-     *
-     * @return array<int, string>
-     */
-    private static function curatedLocalToolNames(): array
-    {
-        return array_column(TriageToolDefinitions::cippTools(), 'name');
     }
 
     public static function localNameFor(string $upstreamName): string

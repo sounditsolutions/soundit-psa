@@ -9,6 +9,7 @@ use App\Models\Client;
 use App\Models\ToolingGap;
 use App\Services\Chet\ChetDataSurfaceTextSanitizer;
 use App\Support\CippConfig;
+use App\Support\CippMcpToolPolicy;
 use Illuminate\Support\Facades\Log;
 
 class CippMcpDynamicToolExecutor
@@ -34,6 +35,21 @@ class CippMcpDynamicToolExecutor
         $tool = CippMcpTool::query()->active()->where('local_name', $toolName)->first();
         if (! $tool) {
             return ['error' => "Unknown CIPP MCP catalog tool: {$toolName}"];
+        }
+
+        // The active() scope already excludes these, so reaching here means the row was
+        // fetched some other way. Refuse anyway and say so loudly: this executor is a raw
+        // passthrough, and the rows the policy forbids are exactly the ones where a
+        // passthrough is a disclosure (psa-7lgo.7).
+        $refusal = CippMcpToolPolicy::refusalReason($tool->local_name, $tool->upstream_name);
+        if ($refusal !== null) {
+            Log::warning('[CippMcpDynamicToolExecutor] Refused a forbidden dynamic CIPP tool', [
+                'tool' => $toolName,
+                'upstream_tool' => $tool->upstream_name,
+                'reason' => $refusal,
+            ]);
+
+            return ['error' => "Refused CIPP MCP catalog tool ({$refusal}): {$toolName}"];
         }
 
         if (! $tool->read_only || $tool->sensitive) {

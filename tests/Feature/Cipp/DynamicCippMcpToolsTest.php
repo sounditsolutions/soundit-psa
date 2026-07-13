@@ -10,7 +10,9 @@ use App\Models\McpAuditLog;
 use App\Models\Setting;
 use App\Models\ToolingGap;
 use App\Services\Cipp\CippMcpClient;
+use App\Services\Cipp\CippMcpDynamicToolExecutor;
 use App\Support\McpConfig;
+use App\Support\McpToolRegistry;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Testing\TestResponse;
 use Mockery;
@@ -567,6 +569,130 @@ class DynamicCippMcpToolsTest extends TestCase
         ]);
     }
 
+    /**
+     * psa-7lgo.7 — the fourth door.
+     *
+     * A previous head briefly left the tenant-wide ListMailboxRules importable, so a
+     * catalog sync run against it can have left an ACTIVE row behind. That row lands on
+     * the curated tool's own local name, and McpStaffController dispatches dynamic
+     * catalog tools BEFORE the curated executor — so it would shadow the user-scoped
+     * implementation with a raw passthrough that sends no user parameter at all, and
+     * read every mailbox's rules in the tenant. A token already holding
+     * cipp_list_mailbox_rules needs no new grant to reach it.
+     *
+     * The next catalog sync does deactivate the row, but that sync is optional, weekly
+     * and config-gated, so it cannot be what closes this. The row has to be inert the
+     * moment it is read.
+     */
+    public function test_a_stale_dynamic_row_cannot_shadow_the_curated_mailbox_rules_tool(): void
+    {
+        $this->configureCippMcp();
+        // The curated CIPP tools publish only when the REST side is configured too, and
+        // this test is about which of the two definitions wins the name.
+        Setting::setValue('cipp_client_id', 'rest-client');
+        Setting::setEncrypted('cipp_client_secret', 'rest-secret');
+        $this->createStaleTenantWideMailboxRulesRow();
+        $client = Client::factory()->create(['cipp_tenant_domain' => 'acme.example']);
+        McpToolRegistry::flushMemoized();
+
+        // The dynamic surface must not claim the curated name, or dispatch never reaches
+        // the scoped implementation.
+        $this->assertFalse(CippMcpTool::handles('cipp_list_mailbox_rules'));
+
+        // The tenant-wide endpoint must never be reached, whatever else happens.
+        $relay = Mockery::mock(CippMcpClient::class);
+        $relay->shouldReceive('callTool')->with('ListMailboxRules', Mockery::any())->never();
+        $relay->shouldReceive('callTool')->andReturn(['Results' => []]);
+        $this->app->instance(CippMcpClient::class, $relay);
+
+        $token = McpConfig::rotateStaffToken(['cipp_list_mailbox_rules'], 'catalog');
+
+        // What is advertised is the curated tool, which requires the user to scope to —
+        // not the stale row's raw passthrough, whose only parameter is the tenant.
+        $listed = collect($this->listTools($token))->firstWhere('name', 'cipp_list_mailbox_rules');
+        $this->assertIsArray($listed);
+        $this->assertArrayHasKey('user_id', $listed['inputSchema']['properties']);
+        $this->assertArrayNotHasKey('tenantFilter', $listed['inputSchema']['properties']);
+
+        $this->callTool($token, 'cipp_list_mailbox_rules', ['client_id' => $client->id])->assertOk();
+    }
+
+    public function test_the_dynamic_executor_refuses_a_blocked_upstream_tool_it_is_handed_directly(): void
+    {
+        $this->configureCippMcp();
+        $this->createStaleTenantWideMailboxRulesRow();
+        $client = Client::factory()->create(['cipp_tenant_domain' => 'acme.example']);
+        McpToolRegistry::flushMemoized();
+
+        $relay = Mockery::mock(CippMcpClient::class);
+        $relay->shouldReceive('callTool')->never();
+        $this->app->instance(CippMcpClient::class, $relay);
+
+        $result = app(CippMcpDynamicToolExecutor::class)
+            ->execute('cipp_list_mailbox_rules', [], $client, $client->id);
+
+        $this->assertArrayHasKey('error', $result);
+    }
+
+    /**
+     * The general form, not just the mailbox-rules instance: any dynamic row that lands
+     * on a curated tool's local name is a privilege downgrade of a reviewed tool,
+     * because the raw passthrough dispatches first.
+     */
+    public function test_a_dynamic_row_that_collides_with_any_curated_tool_name_is_inert(): void
+    {
+        $this->configureCippMcp();
+        CippMcpTool::create([
+            'local_name' => 'cipp_list_users',
+            'upstream_name' => 'SomeUpstreamToolThatNormalisesOntoACuratedName',
+            'category' => 'CIPP',
+            'description' => '[CIPP] Collides with a curated tool.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => ['tenantFilter' => ['type' => 'string']],
+            ],
+            'annotations' => ['readOnlyHint' => true],
+            'read_only' => true,
+            'sensitive' => false,
+            'active' => true,
+            'last_seen_at' => now(),
+        ]);
+        $client = Client::factory()->create(['cipp_tenant_domain' => 'acme.example']);
+        McpToolRegistry::flushMemoized();
+
+        $this->assertFalse(CippMcpTool::handles('cipp_list_users'));
+
+        $relay = Mockery::mock(CippMcpClient::class);
+        $relay->shouldReceive('callTool')
+            ->with('SomeUpstreamToolThatNormalisesOntoACuratedName', Mockery::any())
+            ->never();
+        $this->app->instance(CippMcpClient::class, $relay);
+
+        $result = app(CippMcpDynamicToolExecutor::class)
+            ->execute('cipp_list_users', [], $client, $client->id);
+
+        $this->assertArrayHasKey('error', $result);
+    }
+
+    /**
+     * The runtime guard is what closes the hole; this migration is what stops the stale
+     * row sitting in the table looking live, on the deploy rather than on whenever the
+     * optional weekly catalog sync next happens to run.
+     */
+    public function test_the_migration_deactivates_a_forbidden_row_already_in_the_table(): void
+    {
+        $this->createStaleTenantWideMailboxRulesRow();
+
+        $migration = require database_path('migrations/2026_07_13_000001_deactivate_forbidden_cipp_mcp_catalog_tools.php');
+        $migration->up();
+
+        $this->assertDatabaseHas('cipp_mcp_tools', [
+            'local_name' => 'cipp_list_mailbox_rules',
+            'upstream_name' => 'ListMailboxRules',
+            'active' => false,
+        ]);
+    }
+
     /** @return array<int, array<string, mixed>> */
     private function listTools(string $token): array
     {
@@ -590,5 +716,30 @@ class DynamicCippMcpToolsTest extends TestCase
                 'method' => 'tools/call',
                 'params' => ['name' => $name, 'arguments' => $arguments],
             ]);
+    }
+
+    /**
+     * A row exactly as a catalog sync against the previous head would have written it:
+     * the tenant-wide endpoint, active, read-only, normalised onto the curated tool's
+     * own local name.
+     */
+    private function createStaleTenantWideMailboxRulesRow(): void
+    {
+        CippMcpTool::create([
+            'local_name' => 'cipp_list_mailbox_rules',
+            'upstream_name' => 'ListMailboxRules',
+            'category' => 'CIPP',
+            'description' => '[CIPP] List mailbox rules.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => ['tenantFilter' => ['type' => 'string']],
+                'required' => ['tenantFilter'],
+            ],
+            'annotations' => ['readOnlyHint' => true],
+            'read_only' => true,
+            'sensitive' => false,
+            'active' => true,
+            'last_seen_at' => now(),
+        ]);
     }
 }
