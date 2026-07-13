@@ -47,6 +47,7 @@ class StaffCippWriteToolExecutor
         'cipp_stage_wipe_device' => 'cipp_wipe_device',
         'cipp_stage_reassign_onedrive' => 'cipp_reassign_onedrive',
         'cipp_stage_create_user' => 'cipp_create_user',
+        'cipp_stage_edit_user' => 'cipp_edit_user',
     ];
 
     /**
@@ -118,6 +119,8 @@ class StaffCippWriteToolExecutor
         'cipp_reset_user_password' => 300,
         'cipp_create_user' => 300,
         'cipp_stage_create_user' => 300,
+        'cipp_edit_user' => 300,
+        'cipp_stage_edit_user' => 300,
     ];
 
     private const OOO_MESSAGE_MAX = 2000;
@@ -172,6 +175,59 @@ class StaffCippWriteToolExecutor
      * Exchange mailNickname, so this stays inside the stricter alias rules.
      */
     private const CREATE_USERNAME_PATTERN = '/^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/i';
+
+    /**
+     * Editable profile / directory attribute allowlist for cipp_edit_user —
+     * tool argument (snake_case) → [upstream UserObj key, max length]. Settled
+     * from the CIPP edit-user form (CIPP src/components/CippFormPages/
+     * CippAddEditUser.jsx validators) intersected with the Graph PATCH body
+     * Set-CIPPUser.ps1 actually builds; country has no form bound, so it takes
+     * Graph's own 128 limit. officeLocation is absent DELIBERATELY — the CIPP
+     * edit path does not carry it at all. otherMails and aliases are excluded
+     * from this AI-facing surface (account-recovery / mail-routing adjacent);
+     * passwords, licenses, and group membership have their own curated tools.
+     *
+     * @var array<string, array{0: string, 1: int}>
+     */
+    private const EDIT_FIELDS = [
+        'display_name' => ['displayName', 256],
+        'given_name' => ['givenName', 64],
+        'surname' => ['surname', 64],
+        'job_title' => ['jobTitle', 128],
+        'department' => ['department', 64],
+        'company_name' => ['companyName', 64],
+        'street_address' => ['streetAddress', 1024],
+        'city' => ['city', 128],
+        'state' => ['state', 128],
+        'postal_code' => ['postalCode', 40],
+        'country' => ['country', 128],
+        'mobile_phone' => ['mobilePhone', 64],
+        'business_phone' => ['businessPhones', 64],
+        'usage_location' => ['usageLocation', 2],
+    ];
+
+    /**
+     * Fields an edit may explicitly CLEAR — the intersection of EDIT_FIELDS
+     * with Set-CIPPUser.ps1's own $ClearableFields whitelist. display_name is
+     * upstream-refused (Graph rejects a null display name) and usage_location
+     * is not clearable through the vendor path at all.
+     *
+     * @var array<int, string>
+     */
+    private const EDIT_CLEARABLE = [
+        'given_name',
+        'surname',
+        'job_title',
+        'department',
+        'company_name',
+        'street_address',
+        'city',
+        'state',
+        'postal_code',
+        'country',
+        'mobile_phone',
+        'business_phone',
+    ];
 
     /** @var array<int, string> */
     private const UPSTREAM_IDENTIFIER_KEYS = [
@@ -293,6 +349,15 @@ class StaffCippWriteToolExecutor
         'defaultAttributes',
         'customData',
         'PostExecution',
+        'jobTitle',
+        'mobilePhone',
+        'streetAddress',
+        'postalCode',
+        'companyName',
+        'businessPhones',
+        'clearProperties',
+        'removeLicenses',
+        'RemoveFromGroups',
         'endpoint',
         'Endpoint',
         'cipp_endpoint',
@@ -347,6 +412,8 @@ class StaffCippWriteToolExecutor
             self::resetUserPasswordTool(),
             self::createUserTool(),
             self::stageCreateUserTool(),
+            self::editUserTool(),
+            self::stageEditUserTool(),
         ];
     }
 
@@ -2215,6 +2282,14 @@ class StaffCippWriteToolExecutor
                 $person->userPrincipalName,
                 ($mailbox['successor_person'] ?? null) instanceof ResolvedCippPerson ? $mailbox['successor_person']->userPrincipalName : '',
             ),
+            'cipp_edit_user' => $this->client->editUser(
+                $tenant,
+                $person->userId,
+                $person->userPrincipalName,
+                $this->editUserSetFields($mailbox ?? []),
+                $this->editUserClearProperties($mailbox ?? []),
+                ($mailbox['manager_person'] ?? null) instanceof ResolvedCippPerson ? $mailbox['manager_person']->userPrincipalName : null,
+            ),
             default => throw new \InvalidArgumentException("Unsupported CIPP write tool {$tool}"),
         };
     }
@@ -2349,8 +2424,131 @@ class StaffCippWriteToolExecutor
             'cipp_remove_directory_role' => $this->directoryRoleParams($arguments, $isHeld),
             'cipp_wipe_device' => $this->deviceWipeParams($clientId, $arguments, $approvalInputs, $isHeld, $heldApproval, $person),
             'cipp_reassign_onedrive' => $this->oneDriveReassignParams($clientId, $arguments, $isHeld),
+            'cipp_edit_user' => $this->editUserParams($clientId, $arguments, $person),
             default => null,
         };
+    }
+
+    /**
+     * Resolve edit-user params on the initial call AND the held approval
+     * replay — the same gates both directions, so a tampered or drifted
+     * payload re-fails instead of being trusted. Every returned value is a
+     * safe local scalar: bounded, control-character-free field values from
+     * the CIPP-form allowlist (EDIT_FIELDS), a validated clear list from the
+     * vendor's own clearProperties whitelist (EDIT_CLEARABLE), and the local
+     * manager person id. The manager is re-resolved FRESH on each call —
+     * ACTIVE-gated (assigning a manager shapes an org relationship, mirroring
+     * the delegate/successor gates) and never the target person themself. An
+     * empty or non-scalar set-value is refused loudly rather than forwarded:
+     * the vendor body-builder silently DROPS empty values, so accepting one
+     * would silently no-op — explicit blanking must ride clear_fields.
+     * (Through the HTTP layer an empty string already arrives as null —
+     * ConvertEmptyStringsToNull — and is treated as omitted; this rail guards
+     * the held-replay and any non-HTTP invocation path.)
+     *
+     * @return array<string, mixed>
+     */
+    private function editUserParams(int $clientId, array $arguments, ?ResolvedCippPerson $person): array
+    {
+        $params = [];
+
+        foreach (self::EDIT_FIELDS as $field => [$upstreamKey, $maxLength]) {
+            if (! array_key_exists($field, $arguments) || $arguments[$field] === null) {
+                continue;
+            }
+
+            $value = $this->boundedString($arguments, $field, $maxLength, required: false);
+            if ($value === null) {
+                throw new CippWriteScopeException("{$field} must be a non-empty string when provided; to blank a field, list it in clear_fields instead.");
+            }
+            if (preg_match('/[\x00-\x1F\x7F]/u', $value) === 1) {
+                throw new CippWriteScopeException("{$field} must not contain control characters");
+            }
+            if ($field === 'usage_location') {
+                if (preg_match('/^[a-z]{2}$/i', $value) !== 1) {
+                    throw new CippWriteScopeException('usage_location must be a 2-letter ISO 3166-1 country code (e.g. US)');
+                }
+                $value = strtoupper($value);
+            }
+
+            $params[$field] = $value;
+        }
+
+        $clears = [];
+        if (array_key_exists('clear_fields', $arguments) && $arguments['clear_fields'] !== null && $arguments['clear_fields'] !== []) {
+            if (! is_array($arguments['clear_fields']) || ! array_is_list($arguments['clear_fields'])) {
+                throw new CippWriteScopeException('clear_fields must be a list of field names');
+            }
+            foreach ($arguments['clear_fields'] as $field) {
+                if (! is_string($field) || ! in_array($field, self::EDIT_CLEARABLE, true)) {
+                    throw new CippWriteScopeException('clear_fields entries must be one of: '.implode(', ', self::EDIT_CLEARABLE));
+                }
+                if (array_key_exists($field, $params)) {
+                    throw new CippWriteScopeException("{$field} cannot be both set and cleared in the same call");
+                }
+                $clears[] = $field;
+            }
+            // Canonical order so retries that differ only in list order dedup
+            // to the same content hash.
+            $clears = array_values(array_unique($clears));
+            sort($clears);
+            $params['clear_fields'] = $clears;
+        }
+
+        if (array_key_exists('manager_person_id', $arguments) && $arguments['manager_person_id'] !== null && $arguments['manager_person_id'] !== '') {
+            $manager = $this->resolver->resolveActiveCippPerson($clientId, $arguments['manager_person_id'], 'manager');
+            if ($person !== null && (int) $manager->person->id === (int) $person->person->id) {
+                throw new CippWriteScopeException('The manager must be a different person than the user being edited.');
+            }
+            $params['manager_person_id'] = $manager->person->id;
+            $params['manager_person'] = $manager;
+        }
+
+        if ($params === []) {
+            throw new CippWriteScopeException('No changes provided. Supply at least one profile field, a clear_fields entry, or manager_person_id.');
+        }
+
+        return $params;
+    }
+
+    /**
+     * Map the validated snake_case set-values onto the upstream UserObj keys
+     * for the curated EditUser wrapper. business_phone rides as the single
+     * businessPhones entry (Set-CIPPUser wraps it with @(...); the CIPP form
+     * itself edits businessPhones[0] only).
+     *
+     * @param  array<string, mixed>  $params
+     * @return array<string, mixed>
+     */
+    private function editUserSetFields(array $params): array
+    {
+        $set = [];
+        foreach (self::EDIT_FIELDS as $field => [$upstreamKey, $maxLength]) {
+            if (! array_key_exists($field, $params)) {
+                continue;
+            }
+
+            $value = (string) $params[$field];
+            $set[$upstreamKey] = $field === 'business_phone' ? [$value] : $value;
+        }
+
+        return $set;
+    }
+
+    /**
+     * @param  array<string, mixed>  $params
+     * @return array<int, string>
+     */
+    private function editUserClearProperties(array $params): array
+    {
+        $clears = [];
+        foreach ((array) ($params['clear_fields'] ?? []) as $field) {
+            if (is_string($field) && isset(self::EDIT_FIELDS[$field])) {
+                $clears[] = self::EDIT_FIELDS[$field][0];
+            }
+        }
+
+        return $clears;
     }
 
     /**
@@ -2983,6 +3181,21 @@ class StaffCippWriteToolExecutor
             'wipe_action',
             'staged_device_id',
             'successor_person_id',
+            'display_name',
+            'given_name',
+            'surname',
+            'job_title',
+            'department',
+            'company_name',
+            'street_address',
+            'city',
+            'postal_code',
+            'country',
+            'mobile_phone',
+            'business_phone',
+            'usage_location',
+            'clear_fields',
+            'manager_person_id',
         ] as $key) {
             if (array_key_exists($key, $mailbox)) {
                 $safe[$key] = $mailbox[$key];
@@ -3104,8 +3317,48 @@ class StaffCippWriteToolExecutor
             'cipp_remove_directory_role' => $this->directoryRoleDisplay($person, $mailbox ?? []),
             'cipp_wipe_device' => $this->deviceWipeDisplay($person, $mailbox ?? []),
             'cipp_reassign_onedrive' => $this->oneDriveReassignDisplay($person, $mailbox ?? []),
+            'cipp_edit_user' => $this->editUserDisplay($person, $mailbox ?? []),
             default => $directTool.' for PSA person #'.$person->person->id.'.',
         };
+    }
+
+    /**
+     * The approver reviews EXACTLY what will be written: every set-value
+     * verbatim (validated, bounded, control-character-free), every explicit
+     * clear, and the manager by UPN plus PSA id (two-party display, mirroring
+     * the delegate/successor readouts — only the display carries UPNs; the
+     * stored payload and audit summaries stay id-only). Hybrid users get the
+     * CIPP form's own on-prem warning: Entra edits to an AD-synced user can
+     * be overwritten by (or conflict with) the on-prem sync.
+     */
+    private function editUserDisplay(ResolvedCippPerson $person, array $params): string
+    {
+        $changes = [];
+        foreach (self::EDIT_FIELDS as $field => [$upstreamKey, $maxLength]) {
+            if (array_key_exists($field, $params)) {
+                $changes[] = 'set '.$field.' = "'.$params[$field].'"';
+            }
+        }
+        foreach ((array) ($params['clear_fields'] ?? []) as $field) {
+            $changes[] = 'clear '.(is_scalar($field) ? (string) $field : '');
+        }
+
+        $manager = ($params['manager_person'] ?? null) instanceof ResolvedCippPerson ? $params['manager_person'] : null;
+        if ($manager !== null) {
+            $changes[] = 'set manager = '.$manager->userPrincipalName.' (PSA person #'.$manager->person->id.')';
+        } elseif (isset($params['manager_person_id'])) {
+            $changes[] = 'set manager = PSA person #'.$params['manager_person_id'];
+        }
+
+        $display = 'Edit the Microsoft 365 profile of '.$person->userPrincipalName.' (PSA person #'.$person->person->id.'): '
+            .implode('; ', $changes).'.'
+            .' Null-safe partial update — only the listed fields change; everything else is left untouched, and the sign-in UPN stays pinned to the current value.';
+
+        if ($person->person->is_hybrid) {
+            $display .= ' WARNING: this user appears to be synced from on-premises Active Directory — Entra profile edits may be overwritten by (or conflict with) the on-prem sync; prefer editing in on-prem AD.';
+        }
+
+        return $display;
     }
 
     private function deviceWipeDisplay(ResolvedCippPerson $person, array $params): string
@@ -3966,6 +4219,71 @@ class StaffCippWriteToolExecutor
             'Stage creation of a NEW Microsoft 365 user for cockpit approval — the default path for this privileged provisioning capability. The MCP call makes no CIPP upstream call; the held payload stores only validated safe scalars (username, the server-composed UPN snapshot, names, usage location, local license_type_id), and approval re-derives the client\'s mapped CIPP tenant domain fresh — a changed tenant mapping refuses execution. The CIPP-generated temporary password is shown ONCE to the approving operator and is never stored or audited. confirm_upn is the full new UPN (username@<the client\'s mapped CIPP tenant domain>).',
             self::createUserProperties(ticket: true),
             ['username', 'display_name', 'given_name', 'surname', 'ticket_id', 'confirm_upn', 'reason'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function editUserProperties(bool $ticket = false): array
+    {
+        $properties = self::personProperties(ticket: $ticket);
+
+        $fieldDescriptions = [
+            'display_name' => 'New display name (max 256 characters). Not clearable.',
+            'given_name' => 'New given (first) name (max 64 characters).',
+            'surname' => 'New surname / last name (max 64 characters).',
+            'job_title' => 'New job title (max 128 characters).',
+            'department' => 'New department (max 64 characters).',
+            'company_name' => 'New company name (max 64 characters).',
+            'street_address' => 'New street address (max 1024 characters).',
+            'city' => 'New city (max 128 characters).',
+            'state' => 'New state or province (max 128 characters).',
+            'postal_code' => 'New postal code (max 40 characters).',
+            'country' => 'New country (max 128 characters).',
+            'mobile_phone' => 'New mobile phone number (max 64 characters).',
+            'business_phone' => 'New business phone number (max 64 characters; stored as the user\'s single business phone entry).',
+            'usage_location' => 'New 2-letter ISO 3166-1 usage location country code (e.g. US). Not clearable.',
+        ];
+
+        foreach ($fieldDescriptions as $field => $description) {
+            $properties[$field] = [
+                'type' => 'string',
+                'description' => $description.' Omit to leave unchanged.',
+            ];
+        }
+
+        $properties['clear_fields'] = [
+            'type' => 'array',
+            'items' => ['type' => 'string', 'enum' => self::EDIT_CLEARABLE],
+            'description' => 'Profile fields to explicitly BLANK upstream (the vendor-whitelisted clear list). display_name and usage_location are not clearable, and a field cannot be both set and cleared in the same call. Omitted fields are never cleared.',
+        ];
+
+        $properties['manager_person_id'] = [
+            'type' => 'integer',
+            'description' => 'PSA person ID of the NEW manager. The server verifies it belongs to client_id, requires an ACTIVE person with a CIPP user mapping, derives the manager UPN, and refuses self-management. Omit to leave the manager unchanged; removing an existing manager is not supported here.',
+        ];
+
+        return $properties;
+    }
+
+    /** @return array<string, mixed> */
+    private static function editUserTool(): array
+    {
+        return self::tool(
+            'cipp_edit_user',
+            'Edit an existing Microsoft 365 user\'s profile and directory attributes immediately through CIPP for one server-derived user — a null-safe PARTIAL update: only the fields you provide change, omitted fields are left untouched, and explicit blanking goes through clear_fields (the vendor\'s own clear whitelist). The editable surface matches the CIPP edit-user form: names, job title, department, company, address, phones, usage location, and manager (a server-derived ACTIVE person in the same client). The sign-in UPN is pinned server-side to the user\'s current UPN — this tool cannot rename an account — and passwords, licenses, aliases, and group membership are NOT accepted here (dedicated tools exist). On-prem-AD-synced (hybrid) users should be edited on-prem instead: Entra changes can be overwritten by the sync. Requires an explicit token grant (grants start staged-only; immediate execution needs the immediate mode grant), reason, confirm_upn friction, kill-switch, dedup/cooldown, and TechnicianActionLog audit.',
+            self::editUserProperties(),
+            ['person_id', 'confirm_upn', 'reason'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function stageEditUserTool(): array
+    {
+        return self::tool(
+            'cipp_stage_edit_user',
+            'Stage an edit of an existing Microsoft 365 user\'s profile and directory attributes for cockpit approval — the default path for this capability. The MCP call makes no CIPP upstream call; the held payload stores only validated safe scalars (the field values, the clear list, and the local manager person id), the cockpit proposal lists every proposed change verbatim for review, and approval re-resolves the target user AND the manager fresh — a target that lost its CIPP mapping or a manager deactivated after staging refuses execution. Null-safe partial update: only the listed fields change and the sign-in UPN stays pinned to the current value. confirm_upn is the CURRENT UPN of the user being edited.',
+            self::editUserProperties(ticket: true),
+            ['person_id', 'ticket_id', 'confirm_upn', 'reason'],
         );
     }
 }

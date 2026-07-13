@@ -91,7 +91,8 @@ class TechnicianCockpitController extends Controller
             'cipp_stage_add_tenant_allow_entry',
             'cipp_stage_wipe_device',
             'cipp_stage_reassign_onedrive',
-            'cipp_stage_create_user' => $service->approveStagedCippWriteAction(
+            'cipp_stage_create_user',
+            'cipp_stage_edit_user' => $service->approveStagedCippWriteAction(
                 $run,
                 (int) auth()->id(),
                 $this->cippApprovalInputs($request, $run),
