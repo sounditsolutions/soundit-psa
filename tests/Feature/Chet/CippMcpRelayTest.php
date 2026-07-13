@@ -363,8 +363,13 @@ class CippMcpRelayTest extends TestCase
         $relay = Mockery::mock(CippMcpClient::class);
         $relay->shouldReceive('callTool')
             ->once()
-            ->with('ListMailboxRules', Mockery::on(fn (array $args): bool => ($args['tenantFilter'] ?? null) === 'acme.example'
-                && ($args['userId'] ?? null) === '11111111-1111-1111-1111-111111111111'))
+            // ListUserMailboxRules, not ListMailboxRules — the latter takes no
+            // user parameter and returns every mailbox's rules in the tenant
+            // (psa-7lgo.1). Asserting the upstream tool + argument names here is
+            // the point: the previous test asserted projection only, which is
+            // exactly why the scoping lie survived.
+            ->with('ListUserMailboxRules', Mockery::on(fn (array $args): bool => ($args['tenantFilter'] ?? null) === 'acme.example'
+                && ($args['UserID'] ?? null) === '11111111-1111-1111-1111-111111111111'))
             ->andReturn([
                 [
                     'name' => 'Forward invoices',
