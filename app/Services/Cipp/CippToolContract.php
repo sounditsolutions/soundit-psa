@@ -59,6 +59,15 @@ class CippToolContract
      */
     private const AUDIT_USER_KEYS = ['UserId', 'UserKey', 'CIPPUserKey', 'UserPrincipalName', 'userId'];
 
+    /** The row is the requested user's. */
+    private const ROW_MATCH = 'match';
+
+    /** The row is provably somebody else's — a comparable identity that isn't theirs, or an actor no user is named by. */
+    private const ROW_OTHER_ACTOR = 'other_actor';
+
+    /** The row names an actor we could not compare to the requested user at all. Excluding it proves nothing. */
+    private const ROW_UNATTRIBUTABLE = 'unattributable';
+
     private const OAUTH_APP_FIELDS = [
         'id' => ['ObjectID', 'ObjectId', 'id', 'Id'],
         'appId' => ['ApplicationID', 'ApplicationId', 'applicationId', 'appId'],
@@ -152,6 +161,40 @@ class CippToolContract
         $userId = self::optionalUserId($input);
         $days = self::windowDays($input['days'] ?? null);
 
+        // A per-user question with no client scope is not answerable, and the two ways
+        // of answering it anyway are both worse than saying so:
+        //
+        //   - look the identity up UNSCOPED. people.cipp_user_id is globally unique, so
+        //     such a lookup LOOKS unambiguous — and that is the trap: it resolves to
+        //     whichever client happens to hold that object ID, so it will happily answer
+        //     THIS tenant's question with ANOTHER client's person. That is a
+        //     cross-client disclosure AND false investigation context, strictly worse
+        //     than the false negative it would be fixing; or
+        //   - filter anyway with a half-built needle set — which is how this tool came
+        //     to answer "this user did nothing" in the first place.
+        //
+        // Neither executor can reach this state (both derive the CIPP tenant filter
+        // from the client, so a clientless call is refused before dispatch). It is
+        // enforced here because this is the layer that would do the lookup, and a
+        // guard that lives only at the call site is a guard that a future call site
+        // does not have — the recurring failure this whole contract exists to end.
+        if ($userId !== null && $clientId === null) {
+            Log::warning('[CippTools] Audit user filter requested with no client scope — refusing rather than looking an identity up across tenants', [
+                'tool' => 'cipp_list_audit_logs',
+                'row_count' => $totalReturned,
+            ]);
+
+            return [
+                'error' => 'Audit events CANNOT be filtered by user right now: this CIPP call carries no client scope, so '
+                    ."{$userId} cannot be resolved to the user's other identity forms. A CIPP audit row names the actor by UPN "
+                    .'OR by Azure AD object ID, and the mapping between the two lives on the requesting client\'s synced people '
+                    ."— which cannot be read across tenants. Do NOT interpret this as \"{$userId} did nothing\". Re-run "
+                    .'cipp_list_audit_logs WITHOUT user_id and read the actors yourself.',
+                'total_returned_by_cipp' => $totalReturned,
+                'filtered_by_user' => $userId,
+            ];
+        }
+
         // Project EVERY row before filtering, so the drift guard below sees the
         // whole upstream payload. Projecting only the survivors would go quiet in
         // exactly the case that matters: if CIPP's shape drifts, the date and user
@@ -205,29 +248,102 @@ class CippToolContract
         }
 
         $cutoff = $days !== null ? now()->subDays($days) : null;
-        $resolved = $userId !== null ? self::resolveUserId($userId, $clientId) : null;
-        $upnNeedle = ($userId !== null && str_contains($userId, '@')) ? mb_strtolower($userId) : null;
+
+        // The identity the caller asks WITH is not the identity CIPP answers WITH.
+        //
+        // The advertised schema says user_id may be a UPN or an Azure AD object ID,
+        // and cipp_list_users hands the agent an object ID — so that is what it passes
+        // here. But ListAuditLogs returns `Data` untouched from CIPP's audit-log store
+        // and does NOT normalize Data.RawData.UserId to an object ID: for a user
+        // action it carries whatever the M365 audit event carried, which is the UPN.
+        //
+        // Resolving to a SINGLE value handled only one direction of that (UPN → object
+        // ID, plus the UPN itself when the input contained '@'). Handed an object ID
+        // there was no reverse lookup, every UPN-keyed row was dropped, and the tool
+        // answered a clean count: 0 — "this user did nothing" — on the normal agent
+        // path. So: a needle SET, holding every identity form we know the user by.
+        $needles = $userId !== null ? self::userIdentityNeedles($userId, $clientId) : [];
 
         $events = [];
+        $unattributable = 0;
+
         foreach ($rows as $index => $row) {
             if ($cutoff !== null && ! $this->auditEventWithinCutoff($row, $cutoff)) {
                 continue;
             }
 
-            if ($resolved !== null && ! $this->auditRowMatchesUser($row, $resolved, $upnNeedle)) {
-                continue;
+            // Gated on the REQUEST, never on the needle set. Skipping the filter when
+            // the needle set came back empty would hand the caller every actor's events
+            // as if they were the requested user's — a fail-OPEN disclosure bolted onto
+            // a fail-closed bug. An empty needle set means we can adjudicate nothing, so
+            // every row lands as unattributable and the query fails loud below.
+            if ($userId !== null) {
+                $verdict = $this->classifyAuditRow($row, $needles);
+
+                if ($verdict === self::ROW_UNATTRIBUTABLE) {
+                    // NOT silently dropped: this row names an actor we could never
+                    // have compared to the requested user, so excluding it is not a
+                    // finding — it is a hole in the answer, and it gets counted out
+                    // loud below.
+                    $unattributable++;
+
+                    continue;
+                }
+
+                if ($verdict === self::ROW_OTHER_ACTOR) {
+                    continue;
+                }
             }
 
             $events[] = $projected[$index];
         }
 
-        return [
+        // Nothing matched, and at least one event was unreadable to the filter: the
+        // zero is an artefact of the filter, not a fact about the user. This is the
+        // same false-clean as before, one layer deeper — it is what an object-ID
+        // request against UPN-keyed rows degrades to when NO synced person in this
+        // client maps the two (CIPP contact sync is opt-in and off by default, so
+        // that is the common case, not an exotic one).
+        if ($userId !== null && $events === [] && $unattributable > 0) {
+            Log::warning('[CippTools] Audit user filter could not be compared to any event actor — a zero here would be an artefact of the filter', [
+                'tool' => 'cipp_list_audit_logs',
+                'row_count' => $totalReturned,
+                'unattributable' => $unattributable,
+                'requested_is_object_id' => self::looksLikeObjectId($userId),
+            ]);
+
+            return [
+                'error' => "Audit events CANNOT be attributed to {$userId} right now: CIPP returned {$totalReturned} event(s), "
+                    ."{$unattributable} of which name an actor that cannot be compared to {$userId} — the audit rows identify "
+                    .'the actor in a different identity form (UPN vs Azure AD object ID) and no synced person in this client '
+                    .'maps the two. NOTHING matched, so a zero here would be an artefact of the filter, NOT evidence that '
+                    ."{$userId} did nothing. Re-run cipp_list_audit_logs WITHOUT user_id and read the actors yourself, or retry "
+                    .'with the user\'s other identity form (the UPN if you passed an object ID, or the object ID if you passed a UPN).',
+                'total_returned_by_cipp' => $totalReturned,
+                'unattributable_events' => $unattributable,
+                'filtered_by_user' => $userId,
+            ];
+        }
+
+        $result = [
             'count' => count($events),
             'filtered_by_user' => $userId,
             'filtered_by_days' => $days,
             'total_returned_by_cipp' => $totalReturned,
             'events' => array_slice($events, 0, 50),
         ];
+
+        // A partial answer must arrive labelled as one. "Here are Alice's 3 events"
+        // reads as the whole picture, and the agent has no other way to learn that a
+        // fourth event existed and could not be read.
+        if ($unattributable > 0) {
+            $result['unattributable_events'] = $unattributable;
+            $result['warning'] = "{$unattributable} of the {$totalReturned} event(s) CIPP returned name an actor that could not be "
+                ."compared to {$userId} (a different identity form, or no readable actor at all). They are NOT in the list above. "
+                .'Re-run cipp_list_audit_logs WITHOUT user_id to read them before concluding anything about what this user did.';
+        }
+
+        return $result;
     }
 
     /**
@@ -323,31 +439,107 @@ class CippToolContract
     private function anyRowCarriesAUser(array $rows): bool
     {
         foreach ($rows as $row) {
-            $raw = $this->auditRawData($row);
-
-            foreach (self::AUDIT_USER_KEYS as $key) {
-                if (is_string($raw[$key] ?? null) && $raw[$key] !== '') {
-                    return true;
-                }
+            if ($this->auditRowActors($row) !== []) {
+                return true;
             }
         }
 
         return false;
     }
 
-    private function auditRowMatchesUser(array $event, string $resolved, ?string $upnNeedle): bool
+    /**
+     * Every actor identity this row names, lowercased. The single place the audit
+     * user keys are read: the per-user filter, the attributability check and the
+     * shape-drift guard all come through here, so they cannot disagree about what
+     * counts as "this row names a user".
+     *
+     * @return array<int, string>
+     */
+    private function auditRowActors(array $row): array
     {
-        $raw = $this->auditRawData($event);
-        $needle = mb_strtolower($resolved);
+        $raw = $this->auditRawData($row);
+        $actors = [];
 
         foreach (self::AUDIT_USER_KEYS as $key) {
             $value = $raw[$key] ?? null;
-            if (! is_string($value)) {
+            if (is_string($value) && trim($value) !== '') {
+                $actors[] = mb_strtolower(trim($value));
+            }
+        }
+
+        return array_values(array_unique($actors));
+    }
+
+    /**
+     * Compare LIKE WITH LIKE, and never silently drop a row you could not compare.
+     *
+     * A row is only EXCLUDED when we can show it is somebody else — either its actor
+     * is an identity of the same FORM as one of our needles and does not equal any of
+     * them (a real, provable mismatch), or its actor is not a user identity at all
+     * (a service principal, a SID, "Microsoft Substrate Management"), a form no human
+     * user is ever named by, so the requested user cannot be hiding behind it.
+     *
+     * A row whose actor IS a user identity (a UPN or an object ID) but of a form we
+     * hold no needle for is UNATTRIBUTABLE: we could never have matched it, so its
+     * exclusion is not evidence of anything and must not be laundered into a count of
+     * zero. That is the whole failure this method exists to prevent.
+     *
+     * @param  array<int, string>  $needles  lowercased, non-empty
+     */
+    private function classifyAuditRow(array $row, array $needles): string
+    {
+        $actors = $this->auditRowActors($row);
+        if ($actors === []) {
+            return self::ROW_UNATTRIBUTABLE;
+        }
+
+        $sawComparable = false;
+        $sawUserIdentity = false;
+
+        foreach ($actors as $actor) {
+            if (in_array($actor, $needles, true)) {
+                return self::ROW_MATCH;
+            }
+
+            $form = self::identityForm($actor);
+            if ($form === null) {
                 continue;
             }
 
-            $value = mb_strtolower($value);
-            if ($value === $needle || ($upnNeedle !== null && $value === $upnNeedle)) {
+            $sawUserIdentity = true;
+            if (self::hasNeedleOfForm($needles, $form)) {
+                $sawComparable = true;
+            }
+        }
+
+        if ($sawComparable) {
+            return self::ROW_OTHER_ACTOR;
+        }
+
+        return $sawUserIdentity ? self::ROW_UNATTRIBUTABLE : self::ROW_OTHER_ACTOR;
+    }
+
+    /**
+     * The identity FORMS a user can be named by — the two the CIPP tool schema itself
+     * advertises for user_id, and the two an audit row's actor can carry. Anything
+     * else (a SID, a service string) names something that is not a user.
+     */
+    private static function identityForm(string $value): ?string
+    {
+        if (self::looksLikeObjectId($value)) {
+            return 'objectId';
+        }
+
+        return str_contains($value, '@') ? 'upn' : null;
+    }
+
+    /**
+     * @param  array<int, string>  $needles
+     */
+    private static function hasNeedleOfForm(array $needles, string $form): bool
+    {
+        foreach ($needles as $needle) {
+            if (self::identityForm($needle) === $form) {
                 return true;
             }
         }
@@ -430,6 +622,10 @@ class CippToolContract
      * Translate a UPN (email) to the Azure AD object ID that CIPP's per-user
      * endpoints expect. Pass-through when the input already looks like a GUID, or
      * when no synced Person matches (the caller then sees CIPP's own answer).
+     *
+     * This resolves ONE WAY, because that is all a request parameter needs. Anything
+     * that has to recognise the user in CIPP's ANSWER needs every form the user is
+     * known by — userIdentityNeedles() below, not this.
      */
     public static function resolveUserId(string $input, ?int $clientId): string
     {
@@ -448,6 +644,62 @@ class CippToolContract
         }
 
         return $input;
+    }
+
+    /**
+     * Every identity form the requested user is known by, lowercased.
+     *
+     * CIPP takes an object ID on the way IN and hands back a UPN on the way OUT (and
+     * on other endpoints, the reverse), so anything that has to recognise a user in a
+     * CIPP row must hold BOTH — plus whatever the caller actually asked with. Matching
+     * on a single resolved value is how cipp_list_audit_logs came to answer "this user
+     * did nothing" to an object-ID request, and how cipp_list_mailbox_rules could have
+     * discarded the rules of the very mailbox it was asked about (psa-7lgo.1).
+     *
+     * The people lookup is ALWAYS scoped to the requesting client, and there is no
+     * unscoped branch to fall into. A CIPP tool call must never cross a client boundary
+     * (see TriageToolExecutor's constructor-bound clientId invariant), and the fact that
+     * people.cipp_user_id is globally UNIQUE is a trap rather than a licence: it makes
+     * an unscoped `where('cipp_user_id', $id)` look unambiguous while letting it resolve
+     * into whatever client happens to hold that object ID — answering this client's
+     * question with a stranger's identity. That is a disclosure, and worse than the
+     * false negative it would be fixing. With no client id there is simply no bridge to
+     * build, and the caller must decide what that means: for a filter over CIPP's
+     * answers, it means fail loud (shapeAuditLogs); for a defence-in-depth scope check
+     * over an already mailbox-scoped answer, it means keep the row (mailboxRuleIsForeign).
+     *
+     * Comparison is case-insensitive throughout — UPNs are case-insensitive, and the
+     * object ID we hold and the one CIPP echoes back need not agree on hex casing.
+     *
+     * @return array<int, string>
+     */
+    public static function userIdentityNeedles(string $requested, ?int $clientId): array
+    {
+        $needles = [$requested, self::resolveUserId($requested, $clientId)];
+
+        if ($clientId !== null) {
+            $lowered = mb_strtolower(trim($requested));
+
+            $person = Person::where('client_id', $clientId)
+                ->where(function ($query) use ($lowered): void {
+                    $query->whereRaw('LOWER(cipp_upn) = ?', [$lowered])
+                        ->orWhereRaw('LOWER(cipp_user_id) = ?', [$lowered]);
+                })
+                ->first();
+
+            if ($person !== null) {
+                $needles[] = (string) $person->cipp_upn;
+                $needles[] = (string) $person->cipp_user_id;
+                $needles[] = (string) $person->email;
+            }
+        }
+
+        $needles = array_map(fn (string $needle): string => mb_strtolower(trim($needle)), $needles);
+
+        // An empty needle would match every row that carries an empty field — the
+        // filter would stop filtering and start attributing other people's events to
+        // this user.
+        return array_values(array_unique(array_filter($needles, fn (string $needle): bool => $needle !== '')));
     }
 
     public static function looksLikeObjectId(string $value): bool

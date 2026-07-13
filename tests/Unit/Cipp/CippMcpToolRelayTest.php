@@ -2,16 +2,26 @@
 
 namespace Tests\Unit\Cipp;
 
+use App\Enums\PersonType;
 use App\Models\Client;
+use App\Models\Person;
 use App\Services\Chet\ChetDataSurfaceTextSanitizer;
 use App\Services\Cipp\CippMcpClient;
 use App\Services\Cipp\CippMcpToolRelay;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Log;
 use Mockery;
 use Tests\TestCase;
 
 class CippMcpToolRelayTest extends TestCase
 {
+    // A per-user CIPP question is only answerable within a client scope: the bridge
+    // between the object ID CIPP takes on the way IN and the UPN it answers with on
+    // the way OUT is the client's own synced people, and there is no safe way to look
+    // one up across tenants. The audit-log tests below supply the scope production
+    // always has.
+    use RefreshDatabase;
+
     private function relay(array $upstreamRows): CippMcpToolRelay
     {
         $mcp = Mockery::mock(CippMcpClient::class);
@@ -44,6 +54,29 @@ class CippMcpToolRelayTest extends TestCase
     private function acme(): Client
     {
         return new Client(['cipp_tenant_domain' => 'acme.example']);
+    }
+
+    /**
+     * A SAVED acme, with its M365 user synced — i.e. a client SCOPE, which every
+     * production caller of a user-filtered CIPP tool has (both executors derive the
+     * tenant filter from the client, so there is no clientless path to these tools).
+     */
+    private function syncedAcme(): Client
+    {
+        $client = Client::factory()->create(['cipp_tenant_domain' => 'acme.example']);
+
+        Person::create([
+            'client_id' => $client->id,
+            'person_type' => PersonType::User,
+            'first_name' => 'Acme',
+            'last_name' => 'User',
+            'email' => 'user@acme.example',
+            'cipp_upn' => 'user@acme.example',
+            'cipp_user_id' => '22222222-2222-2222-2222-222222222222',
+            'is_active' => true,
+        ]);
+
+        return $client;
     }
 
     public function test_warns_when_every_upstream_row_projects_empty(): void
@@ -593,17 +626,38 @@ class CippMcpToolRelayTest extends TestCase
     {
         // rowMatchesUser() read userId/UserId top-level; the real UserId is at
         // Data.RawData.UserId, so filtering by user dropped every row too.
+        $acme = $this->syncedAcme();
+
         $result = $this->relay([$this->realAuditLogRow()])
-            ->execute('cipp_list_audit_logs', ['user_id' => 'user@acme.example'], $this->acme(), null);
+            ->execute('cipp_list_audit_logs', ['user_id' => 'user@acme.example'], $acme, $acme->id);
 
         $this->assertSame(1, $result['count']);
         $this->assertSame('user@acme.example', $result['events'][0]['userId']);
     }
 
+    /**
+     * The same user, asked for by the OBJECT ID cipp_list_users hands the agent, while
+     * the audit row carries the UPN. CIPP does not normalize Data.RawData.UserId, so
+     * this is the normal agent path — and it answered a confident count: 0 until the
+     * filter started matching on an identity needle SET (psa-9d4l follow-up).
+     */
+    public function test_audit_logs_user_filter_matches_an_object_id_against_a_upn_keyed_row(): void
+    {
+        $acme = $this->syncedAcme();
+
+        $result = $this->relay([$this->realAuditLogRow()])
+            ->execute('cipp_list_audit_logs', ['user_id' => '22222222-2222-2222-2222-222222222222'], $acme, $acme->id);
+
+        $this->assertSame(1, $result['count'], 'the relay answered "this user did nothing" for an object-ID request against a UPN-keyed row');
+        $this->assertSame('user@acme.example', $result['events'][0]['userId']);
+    }
+
     public function test_audit_logs_user_filter_still_excludes_a_different_user(): void
     {
+        $acme = $this->syncedAcme();
+
         $result = $this->relay([$this->realAuditLogRow()])
-            ->execute('cipp_list_audit_logs', ['user_id' => 'someone-else@acme.example'], $this->acme(), null);
+            ->execute('cipp_list_audit_logs', ['user_id' => 'someone-else@acme.example'], $acme, $acme->id);
 
         $this->assertSame(0, $result['count']);
     }

@@ -3,7 +3,6 @@
 namespace App\Services\Cipp;
 
 use App\Models\Client;
-use App\Models\Person;
 use App\Services\Chet\ChetDataSurfaceTextSanitizer;
 use App\Services\Triage\TriageToolExecutor;
 use Illuminate\Support\Carbon;
@@ -374,7 +373,7 @@ class CippMcpToolRelay
         $dropped = 0;
 
         if ($requested !== null) {
-            $needles = $this->userIdentityNeedles($requested, $clientId);
+            $needles = CippToolContract::userIdentityNeedles($requested, $clientId);
 
             $rules = array_values(array_filter($rules, function (array $rule) use ($needles, &$dropped): bool {
                 if ($this->mailboxRuleIsForeign($rule, $needles)) {
@@ -397,37 +396,6 @@ class CippMcpToolRelay
         }
 
         return $this->projectRows('cipp_list_mailbox_rules', $rules);
-    }
-
-    /**
-     * Every identity form the requested user is known by, lowercased — the
-     * caller may pass a UPN while Exchange answers with an object ID, or vice
-     * versa.
-     *
-     * @return array<int, string>
-     */
-    private function userIdentityNeedles(string $requested, ?int $clientId): array
-    {
-        $needles = [$requested, CippToolContract::resolveUserId($requested, $clientId)];
-
-        if ($clientId !== null) {
-            $person = Person::where('client_id', $clientId)
-                ->where(function ($query) use ($requested): void {
-                    $query->whereRaw('LOWER(cipp_upn) = ?', [mb_strtolower($requested)])
-                        ->orWhere('cipp_user_id', $requested);
-                })
-                ->first();
-
-            if ($person !== null) {
-                $needles[] = (string) $person->cipp_upn;
-                $needles[] = (string) $person->cipp_user_id;
-                $needles[] = (string) $person->email;
-            }
-        }
-
-        $needles = array_map(fn (string $needle): string => mb_strtolower(trim($needle)), $needles);
-
-        return array_values(array_unique(array_filter($needles, fn (string $needle): bool => $needle !== '')));
     }
 
     /**

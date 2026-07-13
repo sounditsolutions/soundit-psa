@@ -10,6 +10,7 @@ use App\Models\Ticket;
 use App\Services\Assistant\AssistantToolExecutor;
 use App\Services\Cipp\CippClient;
 use App\Services\Cipp\CippMcpClient;
+use App\Services\Cipp\CippToolContract;
 use App\Services\Triage\TriageToolExecutor;
 use App\Support\CippConfig;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -85,6 +86,64 @@ class CippDirectPathFailLoudTest extends TestCase
         ]);
 
         return $objectId;
+    }
+
+    /**
+     * A Person in a DIFFERENT client, holding the Azure AD object ID our client is
+     * about to ask about.
+     *
+     * A CIPP tool call must never cross a client boundary, and an identity lookup that
+     * forgot its client scope would build this stranger's UPN and email into the needle
+     * set for OUR client's request — turning a false-negative bug into a cross-client
+     * disclosure, which is strictly worse than the thing being fixed. This is the
+     * bait: any test that ends up naming Mallory has crossed the boundary.
+     */
+    private function mallory(string $objectId): Person
+    {
+        $stranger = Client::factory()->create(['cipp_tenant_domain' => 'evil.onmicrosoft.com']);
+
+        return Person::create([
+            'client_id' => $stranger->id,
+            'person_type' => PersonType::User,
+            'first_name' => 'Mallory',
+            'last_name' => 'Stranger',
+            'email' => 'mallory@evil.example',
+            'cipp_upn' => 'mallory@evil.example',
+            'cipp_user_id' => $objectId,
+            'is_active' => true,
+        ]);
+    }
+
+    private function enableMcpRelay(): void
+    {
+        Setting::setValue('cipp_api_url', 'https://cipp.example.test');
+        Setting::setValue('cipp_tenant_id', 'tenant-1');
+        Setting::setValue('cipp_mcp_client_id', 'mcp-client');
+        Setting::setEncrypted('cipp_mcp_client_secret', 'mcp-secret');
+        Setting::setValue('cipp_mcp_enabled', '1');
+
+        $this->assertTrue(CippConfig::isMcpRelayEnabled(), 'this test must exercise the RELAY path');
+    }
+
+    /**
+     * Replaces setUp()'s refuse-everything MCP mock with one that ANSWERS, so the
+     * relay transport can be driven end to end (AssistantToolExecutor →
+     * CippMcpToolRelay → CippMcpClient). Counts calls for the same reason the direct
+     * mock does.
+     *
+     * @param  array<int, array<string, mixed>>  $rows
+     */
+    private function cippMcpReturning(array $rows, ?int &$calls = null): void
+    {
+        $calls = 0;
+
+        $mcp = Mockery::mock(CippMcpClient::class);
+        $mcp->shouldReceive('callTool')->andReturnUsing(function () use ($rows, &$calls): array {
+            $calls++;
+
+            return $rows;
+        });
+        $this->app->instance(CippMcpClient::class, $mcp);
     }
 
     /**
@@ -426,6 +485,200 @@ class CippDirectPathFailLoudTest extends TestCase
         }
     }
 
+    // ── Audit logs: the identity the caller asks WITH is not the identity CIPP answers WITH ──
+
+    /**
+     * THE normal agent path, and it produced a clean, confident false zero.
+     *
+     * The advertised schema says user_id may be a UPN *or* an Azure AD object ID.
+     * cipp_list_users hands the agent `id` — an object ID — so that is what it passes
+     * on to cipp_list_audit_logs. But CIPP's ListAuditLogs returns `Data` untouched
+     * from its audit-log store and does NOT normalize Data.RawData.UserId to an
+     * object ID: for a user action it carries whatever the M365 audit event carried,
+     * which is the UPN.
+     *
+     * The old filter resolved the requested identity ONE WAY (UPN → object ID) and
+     * compared only that plus, when the input contained '@', the UPN itself. Handed an
+     * object ID there was no reverse lookup, so every UPN-keyed row was dropped and
+     * the tool answered `count: 0` — "this user did nothing" — to a live security
+     * question. That is the exact class of false-clean this whole series exists to
+     * eliminate.
+     */
+    public function test_audit_logs_match_an_object_id_request_against_upn_keyed_rows_on_both_executors(): void
+    {
+        $objectId = $this->alice();
+
+        $this->cippReturning('api/ListAuditLogs', [
+            $this->realAuditLogRow(),
+            $this->realAuditLogRow(['UserId' => 'someone-else@contoso.com'], ['LogId' => 'other']),
+        ]);
+
+        foreach ($this->executors() as $label => $executor) {
+            $result = $executor->execute('cipp_list_audit_logs', ['user_id' => $objectId]);
+
+            $this->assertArrayNotHasKey('error', $result, "{$label}");
+            $this->assertSame(1, $result['count'], "{$label} answered \"this user did nothing\" for an object-ID request against UPN-keyed audit rows");
+            $this->assertSame('alice@contoso.com', $result['events'][0]['userId'], "{$label} matched the wrong actor");
+        }
+    }
+
+    /**
+     * The needle set is built from the REQUESTING CLIENT's people and nobody else's.
+     *
+     * The lookup that turns an object ID into a UPN reads people.cipp_user_id. That
+     * column is globally unique (Azure AD object IDs are globally unique GUIDs, so the
+     * constraint is sound) — which is exactly what makes an UNSCOPED lookup so easy to
+     * write and so dangerous: `Person::where('cipp_user_id', $id)->first()` looks
+     * unambiguous, and it happily reaches into ANOTHER client to answer it.
+     *
+     * Here the only person holding the requested object ID belongs to a different
+     * client. Scoped correctly, we have no bridge and the question is refused. Unscoped,
+     * the stranger's UPN becomes a needle, the row below MATCHES, and this client's
+     * agent is handed another client's identity as its own user's activity — a
+     * cross-client disclosure AND false investigation context, i.e. strictly worse than
+     * the false negative being fixed.
+     */
+    public function test_audit_logs_never_build_needles_from_another_clients_person(): void
+    {
+        $objectId = '11111111-1111-1111-1111-111111111111';
+        $this->mallory($objectId);
+
+        $this->cippReturning('api/ListAuditLogs', [
+            $this->realAuditLogRow(['UserId' => 'mallory@evil.example'], ['LogId' => 'foreign']),
+        ]);
+
+        foreach ($this->executors() as $label => $executor) {
+            $result = $executor->execute('cipp_list_audit_logs', ['user_id' => $objectId]);
+
+            $this->assertArrayHasKey('error', $result, "{$label} matched a row using another client's identity");
+            $this->assertArrayNotHasKey('events', $result, "{$label} answered with events it could not have attributed");
+            $this->assertStringNotContainsString('mallory@evil.example', (string) json_encode($result), "{$label} leaked another client's identity");
+        }
+    }
+
+    /**
+     * …and the positive half of the same invariant: the requesting client's OWN person
+     * is found and used. Together with the test above, this pins the lookup to exactly
+     * one client — the one whose tenant the question is about.
+     */
+    public function test_audit_logs_build_needles_from_the_requesting_clients_person(): void
+    {
+        $objectId = $this->alice();
+
+        $this->cippReturning('api/ListAuditLogs', [$this->realAuditLogRow()]);
+
+        foreach ($this->executors() as $label => $executor) {
+            $result = $executor->execute('cipp_list_audit_logs', ['user_id' => $objectId]);
+
+            $this->assertSame(1, $result['count'], "{$label} did not use its own client's person to bridge the object ID");
+            $this->assertSame('alice@contoso.com', $result['events'][0]['userId'], "{$label}");
+        }
+    }
+
+    /**
+     * The residual false-clean, closed: an object ID we cannot bridge to a UPN.
+     *
+     * CIPP contact sync is opt-in (cipp_contact_sync_enabled, default OFF), so for
+     * many tenants NO person carries a cipp_user_id at all — the agent still gets an
+     * object ID from cipp_list_users, and there is nothing in this client to map it to
+     * the UPN the audit rows carry. Filtering then compares an object ID against
+     * UPN-keyed rows: it can never match, and its zero is not evidence of absence.
+     *
+     * Fail loud. A zero that could not possibly have been anything else is a lie.
+     */
+    public function test_audit_logs_fail_loud_when_an_object_id_cannot_be_compared_to_upn_keyed_rows(): void
+    {
+        $objectId = '11111111-1111-1111-1111-111111111111';
+        $this->mallory($objectId);
+
+        $this->cippReturning('api/ListAuditLogs', [$this->realAuditLogRow()]);
+
+        foreach ($this->executors() as $label => $executor) {
+            $result = $executor->execute('cipp_list_audit_logs', ['user_id' => $objectId]);
+
+            $this->assertArrayHasKey('error', $result, "{$label} reported a zero it could not possibly have earned");
+            $this->assertArrayNotHasKey('count', $result, "{$label} still answered with a count");
+            $this->assertArrayNotHasKey('events', $result, "{$label} still answered with an event list");
+            $this->assertStringContainsStringIgnoringCase('attribut', $result['error'], "{$label}");
+            $this->assertStringContainsStringIgnoringCase('did nothing', $result['error'], "{$label} did not warn against reading this as an absence");
+            $this->assertStringNotContainsString('mallory', (string) json_encode($result), "{$label} leaked another client's identity");
+        }
+    }
+
+    /**
+     * The guard must not cry wolf. An actor that IS readable and IS comparable — a UPN
+     * that simply isn't the requested user's — is a real exclusion, and so is a system
+     * actor ("Microsoft Substrate Management", a service principal, a SID): the audit
+     * store names those in a form no human user is ever identified by, so the
+     * requested user cannot be hiding behind one. A zero built from those is evidence
+     * of absence and must be reported cleanly.
+     */
+    public function test_audit_logs_still_report_an_honest_zero_when_every_actor_is_readable_and_none_is_the_user(): void
+    {
+        $this->alice();
+
+        $this->cippReturning('api/ListAuditLogs', [
+            $this->realAuditLogRow(['UserId' => 'someone-else@contoso.com']),
+            $this->realAuditLogRow(['UserId' => 'Microsoft Substrate Management'], ['LogId' => 'system']),
+        ]);
+
+        foreach ($this->executors() as $label => $executor) {
+            $result = $executor->execute('cipp_list_audit_logs', ['user_id' => 'alice@contoso.com']);
+
+            $this->assertArrayNotHasKey('error', $result, "{$label} cried wolf on a payload it could adjudicate");
+            $this->assertSame(0, $result['count'], "{$label}");
+            $this->assertArrayNotHasKey('unattributable_events', $result, "{$label}");
+        }
+    }
+
+    /**
+     * A partial answer is reported as a partial answer. Events we DID attribute come
+     * back; events we could not are counted out loud instead of being silently
+     * dropped, because "here are Alice's 3 events" reads as a complete picture and the
+     * agent has no other way to learn that a fourth event existed and was unreadable.
+     */
+    public function test_audit_logs_count_out_loud_the_events_they_could_not_attribute(): void
+    {
+        $objectId = $this->alice();
+
+        $this->cippReturning('api/ListAuditLogs', [
+            $this->realAuditLogRow(),
+            $this->realAuditLogRow(['UserId' => null], ['LogId' => 'headless']),
+        ]);
+
+        foreach ($this->executors() as $label => $executor) {
+            $result = $executor->execute('cipp_list_audit_logs', ['user_id' => $objectId]);
+
+            $this->assertSame(1, $result['count'], "{$label}");
+            $this->assertSame(1, $result['unattributable_events'] ?? 0, "{$label} silently dropped an event it could not attribute");
+            $this->assertArrayHasKey('warning', $result, "{$label} did not say the answer was partial");
+        }
+    }
+
+    /**
+     * The last line of defence, asserted on the contract itself.
+     *
+     * Neither executor can reach this state — both derive the CIPP tenant filter from
+     * the client, so a clientless call is refused ("Client has no CIPP tenant mapping")
+     * before dispatch. It is asserted directly because the alternatives, if the
+     * invariant ever broke, are both unacceptable: an UNSCOPED people lookup (a
+     * cross-client disclosure) or a quiet filter against a half-built needle set (a
+     * false "this user did nothing"). With no client id there is no safe lookup to
+     * make, so the question is refused instead.
+     */
+    public function test_a_user_filtered_audit_query_without_a_client_scope_fails_loud(): void
+    {
+        $result = app(CippToolContract::class)->shapeAuditLogs(
+            [$this->realAuditLogRow()],
+            ['user_id' => '11111111-1111-1111-1111-111111111111'],
+            null,
+        );
+
+        $this->assertArrayHasKey('error', $result);
+        $this->assertArrayNotHasKey('count', $result);
+        $this->assertStringContainsStringIgnoringCase('client scope', $result['error']);
+    }
+
     // ── The other half of the matrix: the guard is a property of the tool, not of the transport ──
 
     /**
@@ -441,13 +694,7 @@ class CippDirectPathFailLoudTest extends TestCase
      */
     public function test_the_refusal_holds_on_the_relay_transport_too(): void
     {
-        Setting::setValue('cipp_api_url', 'https://cipp.example.test');
-        Setting::setValue('cipp_tenant_id', 'tenant-1');
-        Setting::setValue('cipp_mcp_client_id', 'mcp-client');
-        Setting::setEncrypted('cipp_mcp_client_secret', 'mcp-secret');
-        Setting::setValue('cipp_mcp_enabled', '1');
-
-        $this->assertTrue(CippConfig::isMcpRelayEnabled(), 'this test must exercise the RELAY path');
+        $this->enableMcpRelay();
 
         // The MCP client is already mocked in setUp() with shouldNotReceive('callTool'),
         // so reaching upstream over the relay transport fails the test too.
@@ -464,6 +711,62 @@ class CippDirectPathFailLoudTest extends TestCase
             $this->assertArrayHasKey('error', $result, "{$tool} did not fail loud on the relay transport");
             $this->assertStringContainsStringIgnoringCase('unavailable', $result['error'], $tool);
         }
+    }
+
+    /**
+     * The identity needle set is a property of the TOOL, not of the transport.
+     *
+     * The relay reaches the same CIPP audit store over ExecMCP and gets the same rows
+     * back, so an object-ID request must resolve against UPN-keyed rows here too.
+     * Every previous round of this series fixed one path and left the other open;
+     * this asserts the fix on the transport the direct-path tests above cannot see.
+     */
+    public function test_audit_logs_match_an_object_id_request_against_upn_keyed_rows_on_the_relay_transport(): void
+    {
+        $objectId = $this->alice();
+        $this->enableMcpRelay();
+
+        $mcpCalls = 0;
+        $this->cippMcpReturning([
+            $this->realAuditLogRow(),
+            $this->realAuditLogRow(['UserId' => 'someone-else@contoso.com'], ['LogId' => 'other']),
+        ], $mcpCalls);
+
+        // The direct CippClient must never be touched on this path.
+        $directCalls = 0;
+        $this->cippCountingCalls($directCalls);
+
+        // Only the assistant carries a relay; triage is direct by construction.
+        $result = (new AssistantToolExecutor(null, $this->client->id, null))
+            ->execute('cipp_list_audit_logs', ['user_id' => $objectId]);
+
+        $this->assertSame(1, $mcpCalls, 'the relay transport was not the one exercised');
+        $this->assertSame(0, $directCalls, 'the call fell back to the direct transport');
+
+        $this->assertArrayNotHasKey('error', $result);
+        $this->assertSame(1, $result['count'], 'the relay answered "this user did nothing" for an object-ID request against UPN-keyed audit rows');
+        $this->assertSame('alice@contoso.com', $result['events'][0]['userId']);
+    }
+
+    /**
+     * …and so is the refusal when the identity cannot be bridged at all. A false clean
+     * over the relay is exactly as dangerous as a false clean over REST.
+     */
+    public function test_audit_logs_fail_loud_on_an_uncomparable_identity_on_the_relay_transport(): void
+    {
+        $objectId = '11111111-1111-1111-1111-111111111111';
+        $this->mallory($objectId);
+        $this->enableMcpRelay();
+
+        $this->cippMcpReturning([$this->realAuditLogRow()]);
+
+        $result = (new AssistantToolExecutor(null, $this->client->id, null))
+            ->execute('cipp_list_audit_logs', ['user_id' => $objectId]);
+
+        $this->assertArrayHasKey('error', $result, 'the relay reported a zero it could not possibly have earned');
+        $this->assertArrayNotHasKey('count', $result);
+        $this->assertStringContainsStringIgnoringCase('attribut', $result['error']);
+        $this->assertStringNotContainsString('mallory', (string) json_encode($result), 'the relay leaked another client\'s identity');
     }
 
     // ── Sign-ins: the same lying-window bug, same file, same class of failure ──
