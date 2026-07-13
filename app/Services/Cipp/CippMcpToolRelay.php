@@ -51,16 +51,33 @@ class CippMcpToolRelay
     ];
 
     private const DEFAULT_FIELDS = [
-        'cipp_list_users' => ['id', 'displayName', 'userPrincipalName', 'accountEnabled', 'jobTitle', 'department', 'assignedLicenses'],
+        // Graph assignedLicenses entries carry no skuPartNumber, so the license
+        // summary can never surface friendly names — CIPP has already resolved
+        // them into top-level LicJoined (comma-joined product names, psa-zw1j).
+        'cipp_list_users' => ['id', 'displayName', 'userPrincipalName', 'accountEnabled', 'jobTitle', 'department', 'assignedLicenses', 'licJoined'],
         // No mailboxSizeBytes / itemCount here: CIPP's ListMailboxes runs
         // Get-Mailbox, which has no size or item-count properties at all (those
         // live on Get-MailboxStatistics), so they never resolved under ANY
         // casing and were dead advertised fields (psa-7lgo).
         'cipp_list_mailboxes' => ['id', 'displayName', 'userPrincipalName', 'primarySmtpAddress', 'recipientTypeDetails', 'forwardingSmtpAddress', 'deliverToMailboxAndForward', 'litigationHoldEnabled'],
-        'cipp_list_licenses' => ['skuId', 'skuPartNumber', 'totalLicenses', 'consumedLicenses', 'assignedLicenses', 'prepaidUnits', 'capabilityStatus'],
-        'cipp_list_devices' => ['id', 'deviceName', 'displayName', 'userPrincipalName', 'operatingSystem', 'osVersion', 'complianceState', 'isCompliant', 'managementAgent', 'enrolledDateTime', 'lastSyncDateTime', 'serialNumber'],
+        // Real ListLicenses shape (verified against CIPP-API Get-CIPPLicenseOverview,
+        // psa-zw1j): hand-built rows, NOT raw Graph subscribedSkus. Seat counts are
+        // CountUsed / CountAvailable / TotalLicenses (strings), the display name is
+        // License; upstream skuPartNumber duplicates License (a pretty name, not a
+        // real part number) so it is deliberately not projected. consumedLicenses /
+        // assignedLicenses / prepaidUnits / capabilityStatus are never emitted.
+        'cipp_list_licenses' => ['skuId', 'license', 'totalLicenses', 'countUsed', 'countAvailable', 'termInfo'],
+        // Graph managedDevice has no displayName / isCompliant — their resolving
+        // siblings deviceName / complianceState carry the same signal (psa-zw1j).
+        'cipp_list_devices' => ['id', 'deviceName', 'userPrincipalName', 'operatingSystem', 'osVersion', 'complianceState', 'managementAgent', 'enrolledDateTime', 'lastSyncDateTime', 'serialNumber'],
         'cipp_list_groups' => ['id', 'displayName', 'mail', 'mailEnabled', 'securityEnabled', 'groupTypes', 'description'],
-        'cipp_list_user_groups' => ['id', 'displayName', 'mail', 'mailEnabled', 'securityEnabled', 'groupTypes', 'description'],
+        // Real ListUserGroups shape (Invoke-ListUserGroups renames everything via
+        // Select-Object, psa-zw1j): Mail / MailEnabled / SecurityGroup / GroupTypes
+        // (a comma-joined STRING, not an array) plus camelCase groupType /
+        // calculatedGroupType — the discriminators that tell a security group from
+        // a distribution list from an M365 group. No description key is emitted
+        // under any casing, so it is omitted here (unlike cipp_list_groups).
+        'cipp_list_user_groups' => ['id', 'displayName', 'mail', 'mailEnabled', 'securityEnabled', 'groupTypes', 'groupType', 'calculatedGroupType', 'onPremisesSync', 'isAssignableToRole'],
         // Real ListmailboxPermissions shape (verified against CIPP-API
         // Invoke-ListmailboxPermissions.ps1, psa-3twu): CIPP collapses
         // Get-MailboxPermission / Get-RecipientPermission / GrantSendOnBehalfTo
@@ -73,14 +90,23 @@ class CippMcpToolRelay
         // shapeDefenderState(), which bypasses projectRows() and names its own
         // keys. The DEFAULT_FIELDS list that used to sit here was never read
         // and described a shape CIPP does not emit (psa-7lgo).
-        'cipp_list_conditional_access_policies' => ['id', 'displayName', 'state', 'createdDateTime', 'modifiedDateTime', 'conditions', 'grantControls', 'sessionControls'],
+        //
+        // No cipp_list_conditional_access_policies entry either, for the same
+        // reason: CIPP FLATTENS each policy, so the raw-Graph nested names
+        // (conditions / grantControls / sessionControls) match nothing at all.
+        // Hand-projected by shapeConditionalAccessPolicies() (psa-mybo).
         'cipp_list_user_conditional_access' => ['id', 'displayName', 'state', 'result', 'conditions', 'grantControls', 'sessionControls'],
         'cipp_list_sign_ins' => ['id', 'createdDateTime', 'userPrincipalName', 'appDisplayName', 'ipAddress', 'clientAppUsed', 'conditionalAccessStatus', 'status', 'location', 'riskDetail', 'riskLevelAggregated', 'deviceDetail'],
         // No cipp_list_audit_logs entry: its real fields are nested two levels
         // down (Data.RawData.*), which a flat field list cannot express, so it
         // is hand-projected by shapeAuditLogs() (psa-9d4l).
-        'cipp_list_message_trace' => ['MessageTraceId', 'messageTraceId', 'Received', 'received', 'SenderAddress', 'senderAddress', 'RecipientAddress', 'recipientAddress', 'Subject', 'subject', 'Status', 'status', 'FromIP', 'toIP'],
-        'cipp_list_mail_quarantine' => ['Identity', 'identity', 'ReceivedTime', 'receivedTime', 'SenderAddress', 'senderAddress', 'RecipientAddress', 'recipientAddress', 'Subject', 'subject', 'QuarantineTypes', 'ReleaseStatus', 'expires'],
+        // Get-MessageTrace responses carry PascalCase FromIP / ToIP — toIP is the
+        // REQUEST-parameter casing and never appears as a row key (psa-zw1j).
+        'cipp_list_message_trace' => ['MessageTraceId', 'messageTraceId', 'Received', 'received', 'SenderAddress', 'senderAddress', 'RecipientAddress', 'recipientAddress', 'Subject', 'subject', 'Status', 'status', 'FromIP', 'fromIP', 'ToIP', 'toIP'],
+        // Get-QuarantineMessage rows carry the quarantine reason in Type and the
+        // expiry in Expires; QuarantineTypes is a request parameter that never
+        // appears as a row key (psa-zw1j). PolicyName / MessageId / Size ride along.
+        'cipp_list_mail_quarantine' => ['Identity', 'identity', 'ReceivedTime', 'receivedTime', 'SenderAddress', 'senderAddress', 'RecipientAddress', 'recipientAddress', 'Subject', 'subject', 'Type', 'type', 'PolicyName', 'MessageId', 'Size', 'ReleaseStatus', 'Expires', 'expires'],
         // No cipp_list_oauth_apps entry: shapeResult() routes that tool to
         // CippToolContract::shapeOauthApps(), which bypasses projectRows() and
         // names its own keys — the same treatment as audit logs and Defender
@@ -132,9 +158,22 @@ class CippMcpToolRelay
         'moveToFolder' => ['MoveToFolder', 'moveToFolder'],
 
         'skuPartNumber' => ['skuPartNumber', 'SkuPartNumber', 'sku', 'SKU'],
+        'license' => ['License', 'license'],
         'totalLicenses' => ['totalLicenses', 'TotalLicenses', 'prepaidUnitsEnabled'],
-        'consumedLicenses' => ['consumedLicenses', 'ConsumedLicenses', 'consumedUnits'],
+        'countUsed' => ['CountUsed', 'countUsed'],
+        'countAvailable' => ['CountAvailable', 'countAvailable', 'availableUnits'],
+        'termInfo' => ['TermInfo', 'termInfo'],
         'assignedLicenses' => ['assignedLicenses', 'AssignedLicenses', 'licenses', 'Licenses'],
+        'licJoined' => ['LicJoined', 'licJoined'],
+        'mail' => ['mail', 'Mail'],
+        'mailEnabled' => ['mailEnabled', 'MailEnabled'],
+        // Invoke-ListUserGroups renames securityEnabled to SecurityGroup (psa-zw1j).
+        'securityEnabled' => ['securityEnabled', 'SecurityEnabled', 'SecurityGroup'],
+        'groupTypes' => ['groupTypes', 'GroupTypes'],
+        'groupType' => ['groupType', 'GroupType'],
+        'calculatedGroupType' => ['calculatedGroupType', 'CalculatedGroupType'],
+        'onPremisesSync' => ['onPremisesSync', 'OnPremisesSync', 'onPremisesSyncEnabled'],
+        'isAssignableToRole' => ['isAssignableToRole', 'IsAssignableToRole'],
         'operatingSystem' => ['operatingSystem', 'OperatingSystem', 'os'],
         'osVersion' => ['osVersion', 'OSVersion', 'operatingSystemVersion'],
         'complianceState' => ['complianceState', 'ComplianceState'],
@@ -150,6 +189,40 @@ class CippMcpToolRelay
         'status' => ['errorCode', 'failureReason', 'additionalDetails'],
         'location' => ['city', 'state', 'countryOrRegion'],
         'deviceDetail' => ['displayName', 'operatingSystem', 'browser'],
+    ];
+
+    /**
+     * Real ListConditionalAccessPolicies shape (verified against CIPP-API
+     * Invoke-ListConditionalAccessPolicies.ps1, psa-mybo): CIPP does NOT return
+     * raw Graph policies — it flattens each policy into a wide row with GUIDs
+     * resolved to display names. The raw Graph nested keys (conditions /
+     * grantControls / sessionControls) never exist on these rows; session
+     * controls survive only inside `rawjson`, which is the full policy as a
+     * JSON blob — large untrusted tenant data, deliberately never projected.
+     */
+    private const CA_POLICY_SCALAR_FIELDS = ['id', 'state', 'createdDateTime', 'modifiedDateTime'];
+
+    /** Comma-joined Graph enum/ID values — single-line, fixed vocabulary. */
+    private const CA_POLICY_ENUM_FIELDS = [
+        'clientAppTypes', 'includePlatforms', 'excludePlatforms',
+        'grantControlsOperator', 'builtInControls', 'termsOfUse',
+    ];
+
+    /** Comma-joined resolved display names — untrusted tenant free text. */
+    private const CA_POLICY_NAME_FIELDS = [
+        'includeLocations', 'excludeLocations',
+        'includeApplications', 'excludeApplications',
+        'customAuthenticationFactors',
+    ];
+
+    /**
+     * Built with PowerShell Out-String: newline-joined display names with a
+     * trailing newline. Split into lists, trimmed, and fenced per item.
+     */
+    private const CA_POLICY_NAME_LIST_FIELDS = [
+        'includeUsers', 'excludeUsers', 'includeGroups', 'excludeGroups',
+        'includeRoles', 'excludeRoles', 'includeUserActions',
+        'includeAuthenticationContextClassReferences',
     ];
 
     private const ALLOWED_ARGUMENTS = [
@@ -366,6 +439,7 @@ class CippMcpToolRelay
             'cipp_list_user_mfa_methods' => $this->shapeUserMfaMethods($rows, $input, $clientId),
             'cipp_list_defender_state' => $this->shapeDefenderState($rows),
             'cipp_list_mailbox_rules' => $this->shapeMailboxRules($rows, $input, $clientId),
+            'cipp_list_conditional_access_policies' => $this->shapeConditionalAccessPolicies($rows),
             default => $this->projectRows($toolName, $rows),
         };
     }
@@ -513,6 +587,131 @@ class CippMcpToolRelay
                 'protection' => $protection,
             ];
         }, array_slice($rows, 0, 50));
+    }
+
+    /**
+     * Real ListConditionalAccessPolicies shape (psa-mybo): the flattened rows
+     * documented on the CA_POLICY_* consts. Projecting the raw Graph nested
+     * names (conditions / grantControls / sessionControls) matched nothing —
+     * every policy shrank to id/name/state and the agent was structurally
+     * blind to who a policy targets (especially excludeUsers) and what it
+     * enforces, while the output still looked healthy. Targeting and control
+     * fields are projected from CIPP's actual flattened keys instead.
+     *
+     * An empty upstream list is genuinely ambiguous: CIPP's error path is
+     * overwritten before return, so a failed Graph query (e.g. permissions)
+     * also comes back HTTP 200 with empty Results — hence the warning.
+     *
+     * @return array<string, mixed>
+     */
+    private function shapeConditionalAccessPolicies(array $rows): array
+    {
+        $toolName = 'cipp_list_conditional_access_policies';
+
+        $policies = array_map(function (array $row) use ($toolName): array {
+            $policy = [];
+
+            foreach (self::CA_POLICY_SCALAR_FIELDS as $field) {
+                if (array_key_exists($field, $row)) {
+                    $policy[$field] = $row[$field];
+                }
+            }
+
+            if (array_key_exists('displayName', $row)) {
+                $policy['displayName'] = $this->sanitizeProjectedValue($toolName, 'displayName', $row['displayName']);
+            }
+
+            foreach (self::CA_POLICY_ENUM_FIELDS as $field) {
+                if (array_key_exists($field, $row)) {
+                    $policy[$field] = is_string($row[$field]) ? trim($row[$field]) : $row[$field];
+                }
+            }
+
+            foreach (self::CA_POLICY_NAME_FIELDS as $field) {
+                if (! array_key_exists($field, $row)) {
+                    continue;
+                }
+                $value = is_string($row[$field]) ? trim($row[$field]) : $row[$field];
+                // '' stays '' — an explicit "none" beats a fence around nothing.
+                $policy[$field] = (is_string($value) && $value !== '')
+                    ? $this->textSanitizer->sanitize($this->contract->fieldLabel($toolName, $field), $value, 1000)
+                    : $value;
+            }
+
+            foreach (self::CA_POLICY_NAME_LIST_FIELDS as $field) {
+                if (array_key_exists($field, $row)) {
+                    $policy[$field] = $this->caNameList($toolName, $field, $row[$field]);
+                }
+            }
+
+            return $policy;
+        }, array_slice($rows, 0, 50));
+
+        // Sharpened drift guard: scalar fields resolving while every flattened
+        // targeting/control key is absent LOOKS healthy but leaves CA posture
+        // invisible — the exact failure this shaper fixes. Row keys are schema
+        // names and safe to log; row values are untrusted tenant data, never logged.
+        $shapeFields = array_flip(array_merge(self::CA_POLICY_ENUM_FIELDS, self::CA_POLICY_NAME_FIELDS, self::CA_POLICY_NAME_LIST_FIELDS));
+        $sawShapeField = false;
+        foreach ($rows as $row) {
+            if (array_intersect_key($row, $shapeFields) !== []) {
+                $sawShapeField = true;
+                break;
+            }
+        }
+        if ($rows !== [] && ! $sawShapeField) {
+            Log::warning('[CippMcpToolRelay] No ListConditionalAccessPolicies row carries any flattened targeting/control field — shape drift, CA posture would be invisible', [
+                'tool' => $toolName,
+                'row_count' => count($rows),
+                'first_row_keys' => array_slice(array_keys($rows[0]), 0, 12),
+            ]);
+        }
+
+        $result = [
+            'count' => count($policies),
+            'total_returned_by_cipp' => count($rows),
+            'note' => 'Session controls (sign-in frequency, persistent browser, app-enforced restrictions) are not included — CIPP does not surface them in this list.',
+            'policies' => $policies,
+        ];
+
+        if ($policies === []) {
+            $result['warning'] = 'CIPP returns an empty result BOTH when the tenant has no Conditional Access policies AND when the upstream Graph query fails (e.g. missing permissions) — failures still come back as HTTP 200 with empty Results. Treat this as "no data", not as proof that the tenant has no CA policies.';
+        }
+
+        return $result;
+    }
+
+    /**
+     * Split one of CIPP's Out-String fields (newline-joined display names with
+     * a trailing newline) into a bounded list of fenced names. Truncation is
+     * explicit — silently dropping excludeUsers entries would recreate the
+     * blind spot this shaper exists to fix.
+     *
+     * @return array<int, mixed>
+     */
+    private function caNameList(string $toolName, string $field, mixed $value): array
+    {
+        if (is_array($value)) {
+            return $this->contract->boundArray($toolName, $field, $value);
+        }
+
+        if (! is_scalar($value)) {
+            return [];
+        }
+
+        $names = preg_split('/\R/', (string) $value) ?: [];
+        $names = array_values(array_filter(array_map('trim', $names), fn (string $name): bool => $name !== ''));
+
+        $shown = array_map(
+            fn (string $name): string => $this->textSanitizer->sanitize($this->contract->fieldLabel($toolName, $field), $name, 1000),
+            array_slice($names, 0, 20),
+        );
+
+        if (count($names) > 20) {
+            $shown[] = '(+'.(count($names) - 20).' more not shown)';
+        }
+
+        return $shown;
     }
 
     /**
