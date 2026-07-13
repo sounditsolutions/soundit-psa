@@ -47,6 +47,7 @@
             'cipp_stage_add_tenant_allow_entry' => ['bg-danger text-white', 'CIPP tenant allow-list', 'bi-shield-plus'],
             'cipp_stage_wipe_device' => ['bg-danger text-white', 'CIPP device wipe', 'bi-device-hdd'],
             'cipp_stage_reassign_onedrive' => ['bg-danger text-white', 'CIPP OneDrive handover', 'bi-cloud-arrow-up'],
+            'cipp_stage_create_user' => ['bg-danger text-white', 'CIPP create user', 'bi-person-plus'],
             default => ['bg-primary-subtle text-primary-emphasis border border-primary-subtle', 'Reply', 'bi-send'],
         };
     };
@@ -587,7 +588,16 @@
         <template x-for="toast in toasts" :key="toast.id">
             <div class="cockpit-toast" :class="'cockpit-toast-' + toast.kind">
                 <i class="bi" :class="toast.kind === 'error' ? 'bi-exclamation-triangle' : (toast.kind === 'info' ? 'bi-arrow-repeat' : 'bi-check2-circle')"></i>
-                <span class="flex-grow-1" x-text="toast.message"></span>
+                <div class="flex-grow-1">
+                    <span x-text="toast.message"></span>
+                    {{-- One-time secret readout (e.g. a created user's temp password): shown
+                         exactly once, never persisted anywhere — so this toast never
+                         auto-dismisses and offers a copy affordance. --}}
+                    <div x-show="!!toast.secret" class="d-flex align-items-center gap-2 mt-2">
+                        <code class="cockpit-toast-secret user-select-all" x-text="toast.secret"></code>
+                        <button type="button" class="btn btn-sm btn-light" @click="copyToastSecret(toast, $event)">Copy</button>
+                    </div>
+                </div>
                 <button x-show="!!toast.undo" type="button" class="btn btn-sm btn-light" @click="toast.undo()">Undo</button>
                 <button type="button" class="btn btn-sm btn-link text-white p-0" @click="dismissToast(toast.id)" aria-label="Dismiss"><i class="bi bi-x-lg"></i></button>
             </div>
@@ -644,6 +654,7 @@
 .cockpit-toast { display: flex; align-items: center; gap: .75rem; padding: .75rem .9rem; border-radius: 10px; color: #fff; background: var(--primary); box-shadow: 0 8px 28px rgba(15, 36, 64, .22); }
 .cockpit-toast-error { background: var(--bs-danger); }
 .cockpit-toast-info { background: var(--primary-light); }
+.cockpit-toast-secret { background: rgba(255, 255, 255, .18); color: #fff; padding: .15rem .45rem; border-radius: 6px; word-break: break-all; }
 .btn.is-loading { pointer-events: none; opacity: .72; }
 .btn.is-armed { background: var(--bs-danger) !important; border-color: var(--bs-danger) !important; color: #fff !important; }
 @keyframes cockpit-enter { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
@@ -756,7 +767,7 @@ document.addEventListener('alpine:init', function () {
                     if (!payload.ok) throw new Error(payload.message || 'Action failed');
                     this.applyCounts(payload.counts);
                     this.removeItem(item);
-                    this.addToast('success', payload.message || 'Done.');
+                    this.addToast('success', payload.message || 'Done.', null, payload.secret || null);
                 } catch (error) {
                     this.setBusy(item, false);
                     if (button) {
@@ -836,15 +847,33 @@ document.addEventListener('alpine:init', function () {
                 };
             },
 
-            addToast(kind, message, undo) {
+            addToast(kind, message, undo, secret) {
                 const id = this.toastId++;
-                const toast = { id, kind: kind === 'error' ? 'error' : kind, message, undo: undo || null };
+                const toast = { id, kind: kind === 'error' ? 'error' : kind, message, undo: undo || null, secret: secret || null };
                 this.toasts.push(toast);
                 if (undo) {
                     this.lastUndoId = id;
                     this.lastUndo = () => { undo(); this.dismissToast(id); };
                 }
-                setTimeout(() => this.dismissToast(id), undo ? 7000 : 4200);
+                // A one-time secret readout must never vanish on a timer — the
+                // operator dismisses it after relaying the credential.
+                if (!toast.secret) {
+                    setTimeout(() => this.dismissToast(id), undo ? 7000 : 4200);
+                }
+            },
+
+            async copyToastSecret(toast, event) {
+                try {
+                    await navigator.clipboard.writeText(toast.secret);
+                    const button = event?.target?.closest('button');
+                    if (button) {
+                        button.textContent = 'Copied';
+                        setTimeout(() => { button.textContent = 'Copy'; }, 1500);
+                    }
+                } catch (error) {
+                    // Clipboard unavailable (permissions/insecure context): the
+                    // readout is user-select-all, so manual copy still works.
+                }
             },
 
             dismissToast(id) {

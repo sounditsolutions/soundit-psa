@@ -88,7 +88,8 @@ class TechnicianCockpitController extends Controller
             'cipp_stage_release_quarantine_message',
             'cipp_stage_add_tenant_allow_entry',
             'cipp_stage_wipe_device',
-            'cipp_stage_reassign_onedrive' => $service->approveStagedCippWriteAction(
+            'cipp_stage_reassign_onedrive',
+            'cipp_stage_create_user' => $service->approveStagedCippWriteAction(
                 $run,
                 (int) auth()->id(),
                 $this->cippApprovalInputs($request, $run),
@@ -109,7 +110,9 @@ class TechnicianCockpitController extends Controller
             'closed' => 'Ticket closed.',
             'published' => 'Public note published.',
             'merged' => 'Tickets merged.',
-            'executed' => 'Held action approved and executed.',
+            // An executed action may carry its own operator-facing summary
+            // (e.g. the created UPN + one-time password contract).
+            'executed' => $result->message ?? 'Held action approved and executed.',
             // bd psa-xr84: approved but the device was offline — parked to auto-run on reconnect.
             'queued_offline' => 'Device offline — queued to run automatically when it comes back online.',
             'already_handled' => 'That draft was already handled.',
@@ -129,6 +132,7 @@ class TechnicianCockpitController extends Controller
             undo: $ok && $run->action_type === 'propose_close'
                 ? $this->runUndoPayload($run, 'approve-close', ['status_note_id' => $result->noteId])
                 : null,
+            secret: $ok ? $result->secret : null,
         );
     }
 
@@ -405,6 +409,7 @@ class TechnicianCockpitController extends Controller
         ?string $flashKey = null,
         int $httpStatus = 200,
         ?array $undo = null,
+        ?string $secret = null,
     ) {
         if ($request->expectsJson()) {
             $payload = [
@@ -416,6 +421,18 @@ class TechnicianCockpitController extends Controller
 
             if ($ok && $undo !== null) {
                 $payload['undo'] = $undo;
+            }
+
+            // One-time credential delivery (e.g. the CIPP create-user temp
+            // password): JSON response only, marked no-store. It is NEVER
+            // flashed to the session on the non-JS fallback below — a session
+            // file is still storage — so a JS-less approval loses it by design
+            // (the remedy is a password reset, not a persisted secret).
+            if ($ok && $secret !== null) {
+                $payload['secret'] = $secret;
+
+                return response()->json($payload, $httpStatus)
+                    ->header('Cache-Control', 'no-store');
             }
 
             return response()->json($payload, $httpStatus);
