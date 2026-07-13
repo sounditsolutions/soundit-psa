@@ -92,7 +92,17 @@ class TicketService
         return $ticket->fresh();
     }
 
-    public function changeStatus(Ticket $ticket, TicketStatus $newStatus, int $changedByUserId, ?string $note = null, ?string $resolution = null): Ticket
+    /**
+     * @param  ?int  $changedByUserId  null = an unattributable system/AI actor. psa-3s7a: the AI
+     *                                 paths (ProposeCloseTool, TechnicianApprovalService::approveClose)
+     *                                 pass TechnicianConfig::aiActorUserId(), which is null when the
+     *                                 configured AI actor no longer exists. ticket_notes.author_id is
+     *                                 nullable, so the status note is authored by NOBODY rather than by
+     *                                 a stale id (which would violate the FK) or by an arbitrary
+     *                                 substitute user (which would corrupt attribution). Human callers
+     *                                 always pass a real auth()->id().
+     */
+    public function changeStatus(Ticket $ticket, TicketStatus $newStatus, ?int $changedByUserId, ?string $note = null, ?string $resolution = null): Ticket
     {
         $oldStatus = $ticket->status;
 

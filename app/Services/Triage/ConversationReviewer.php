@@ -201,8 +201,12 @@ class ConversationReviewer
             ])
             ->where(function ($q) use ($systemUserId) {
                 $q->where(function ($q2) use ($systemUserId) {
+                    // psa-3s7a: when no AI actor resolves ($systemUserId is null), EVERY authored
+                    // note is by definition a human's. Guard the exclusion — a bare
+                    // `author_id != NULL` is never true in SQL, which would silently make this
+                    // match nothing and stop the reviewer skipping human-touched tickets.
                     $q2->whereNotNull('author_id')
-                        ->where('author_id', '!=', $systemUserId);
+                        ->when($systemUserId !== null, fn ($q3) => $q3->where('author_id', '!=', $systemUserId));
                 })->orWhere('who_type', \App\Enums\WhoType::EndUser);
             })
             ->exists();
