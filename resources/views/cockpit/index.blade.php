@@ -232,29 +232,35 @@
 
                         @php($rv = $recipientViews[$run->id] ?? null)
                         @if($rv && in_array($run->action_type, ['send_reply', 'stage_email', 'propose_resolution'], true))
-                            <div class="border rounded p-2 mb-2 bg-body-tertiary" x-data="cockpitRecipients(@js($rv))">
+                            <div class="border rounded p-2 mb-2 bg-body-tertiary" x-data="cockpitRecipients(@js($rv), 'approve-{{ $run->id }}')" x-effect="syncArm(customRecipients().length)">
                                 {{-- psa-w4e0: exfil-catch readout — any To/CC outside the client's known
-                                     contacts/thread (agent-proposed or typed here) is flagged loudly. --}}
-                                <div class="alert alert-warning d-flex align-items-start gap-2 py-2 px-3 mb-2 small" x-cloak x-show="customRecipients().length > 0">
+                                     contacts/thread (agent-proposed or typed here) is flagged loudly and
+                                     arms the approve button (a second press is required to send). --}}
+                                <div class="alert alert-danger d-flex align-items-start gap-2 py-2 px-3 mb-2 small cockpit-recipient-warning" role="alert" x-cloak x-show="customRecipients().length > 0">
                                     <i class="bi bi-exclamation-triangle-fill"></i>
                                     <div>
-                                        <strong>Sends outside this client’s known contacts:</strong>
+                                        <strong>Sends outside this client’s contacts and this ticket’s thread:</strong>
                                         <span class="fw-semibold" x-text="customRecipients().join(', ')"></span>
-                                        <br>Verify these addresses are intended before approving.
+                                        <br>Verify these addresses are intended before approving. Remove one with its ×, or edit the To.
+                                        @if(!($rv['arbitrary_allowed'] ?? false))
+                                            <br><strong>Custom recipients are currently disabled in Settings</strong> — these will be rejected when you approve. Remove them, or enable staged custom recipients.
+                                        @endif
                                     </div>
                                 </div>
                                 <div class="input-group input-group-sm mb-2">
                                     <span class="input-group-text">To</span>
-                                    <input type="text" class="form-control" x-model="to" aria-label="To recipient">
+                                    <input type="text" class="form-control" x-model="to" :class="isCustom(to) ? 'border-warning bg-warning-subtle' : ''" aria-label="To recipient">
+                                    <button type="button" class="btn btn-outline-secondary" x-cloak x-show="defaultTo && to !== defaultTo" @click="to = defaultTo">Use ticket contact</button>
                                     <input type="hidden" name="to[]" :value="to" form="approve-{{ $run->id }}">
                                 </div>
                                 <div class="d-flex flex-wrap gap-1 align-items-center mb-2">
                                     <span class="text-muted small me-1">Cc:</span>
                                     <template x-for="(addr, i) in cc" :key="i">
-                                        <span class="badge d-inline-flex align-items-center gap-1" :class="isCustom(addr) ? 'text-bg-warning' : 'text-bg-secondary'">
+                                        <span class="badge d-inline-flex align-items-center gap-1 cockpit-recipient-badge" :class="isCustom(addr) ? 'text-bg-warning' : 'text-bg-secondary'">
+                                            <i class="bi bi-exclamation-triangle" x-show="isCustom(addr)"></i>
                                             <span x-text="addr"></span>
                                             <input type="hidden" name="cc[]" :value="addr" form="approve-{{ $run->id }}">
-                                            <button type="button" class="btn-close" :class="isCustom(addr) ? '' : 'btn-close-white'" style="font-size:.5rem" @click="cc.splice(i, 1)" aria-label="Remove"></button>
+                                            <button type="button" class="btn-close" :class="isCustom(addr) ? '' : 'btn-close-white'" style="font-size:.5rem" @click="cc.splice(i, 1)" :aria-label="'Remove ' + addr"></button>
                                         </span>
                                     </template>
                                     <button type="button" class="btn btn-sm btn-outline-primary py-0" @click="cc = [...replyAll]">
@@ -273,7 +279,7 @@
                                 @if($rv['arbitrary_allowed'] ?? false)
                                     <div class="input-group input-group-sm mt-1">
                                         <input type="text" class="form-control" placeholder="Custom address…" x-ref="custom" @keydown.enter.prevent="addCc($refs.custom.value); $refs.custom.value = ''" aria-label="Add a custom recipient">
-                                        <button type="button" class="btn btn-outline-secondary" @click="addCc($refs.custom.value); $refs.custom.value = ''">Add Cc</button>
+                                        <button type="button" class="btn btn-outline-secondary" @click="addCc($refs.custom.value); $refs.custom.value = ''">Add custom Cc</button>
                                     </div>
                                     <p class="text-muted mb-0 mt-1" style="font-size:.75rem"><i class="bi bi-shield-exclamation me-1"></i>Custom addresses are allowed and re-checked when you approve; anything outside known contacts is highlighted above.</p>
                                 @else
@@ -722,6 +728,9 @@
 .cockpit-toast-secret { background: rgba(255, 255, 255, .18); color: #fff; padding: .15rem .45rem; border-radius: 6px; word-break: break-all; }
 .btn.is-loading { pointer-events: none; opacity: .72; }
 .btn.is-armed { background: var(--bs-danger) !important; border-color: var(--bs-danger) !important; color: #fff !important; }
+/* psa-w4e0: attacker-length addresses must never clip — the domain tail is the tell. */
+.cockpit-recipient-warning { overflow-wrap: anywhere; }
+.cockpit-recipient-badge { white-space: normal; overflow-wrap: anywhere; text-align: left; }
 @keyframes cockpit-enter { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
 @keyframes cockpit-shake { 0%, 100% { transform: none; } 25% { transform: translateX(-4px); } 75% { transform: translateX(4px); } }
 @media (prefers-reduced-motion: reduce) {
@@ -734,18 +743,24 @@
 <script>
 document.addEventListener('alpine:init', function () {
     // psa-kt82 PR B: recipient block for send_reply/stage_email approval cards.
-    // psa-w4e0: prefills from an agent-proposed staged To/CC set and computes the
-    // live "outside known contacts" highlight for proposed AND operator-typed entries.
-    Alpine.data('cockpitRecipients', function (rv) {
+    // psa-w4e0: prefills from an agent-proposed staged To/CC set, computes the live
+    // "outside known contacts" highlight for proposed AND operator-typed entries, and
+    // arms the linked approve form whenever a custom recipient is present (the send
+    // then needs a second confirming press — see cockpitQueue.submit).
+    Alpine.data('cockpitRecipients', function (rv, formId) {
         var proposed = rv && rv.proposed ? rv.proposed : null;
         return {
             to: proposed && proposed.to ? proposed.to : ((rv && rv.to && rv.to.email) ? rv.to.email : ''),
+            defaultTo: (rv && rv.to && rv.to.email) ? rv.to.email : '',
             cc: proposed && Array.isArray(proposed.cc) ? proposed.cc.slice() : [],
             replyAll: (rv && rv.reply_all) ? rv.reply_all : [],
-            candidates: (rv && rv.candidate_emails) ? rv.candidate_emails : [],
+            candidates: (rv && rv.candidates ? rv.candidates : []).map(function (c) { return c.email; }),
             addCc(addr) {
                 addr = (addr || '').trim();
-                if (addr && addr !== this.to && !this.cc.includes(addr)) {
+                var lower = addr.toLowerCase();
+                var taken = lower === this.to.trim().toLowerCase()
+                    || this.cc.some(function (c) { return c.trim().toLowerCase() === lower; });
+                if (addr && !taken) {
                     this.cc.push(addr);
                 }
             },
@@ -757,6 +772,10 @@ document.addEventListener('alpine:init', function () {
             customRecipients() {
                 var self = this;
                 return [this.to].concat(this.cc).filter(function (addr) { return self.isCustom(addr); });
+            },
+            syncArm(customCount) {
+                var form = formId ? document.getElementById(formId) : null;
+                if (form) form.dataset.arm = customCount > 0 ? 'true' : 'false';
             },
         };
     });
@@ -980,6 +999,9 @@ document.addEventListener('alpine:init', function () {
                 button.dataset.originalText = button.innerHTML;
                 button.classList.add('is-armed');
                 button.innerHTML = '<i class="bi bi-exclamation-triangle me-1"></i>Confirm: run now';
+                // A keyboard approve may arm with the card only partially scrolled in —
+                // bring the confirm button (and the recipient block above it) into view.
+                button.scrollIntoView({ block: 'nearest' });
                 this.armedTimer = setTimeout(() => this.disarm(), 3000);
             },
 
@@ -1051,7 +1073,7 @@ document.addEventListener('alpine:init', function () {
                     return;
                 }
                 const target = event.target;
-                const typing = target && ['TEXTAREA', 'INPUT'].includes(target.tagName);
+                const typing = target && ['TEXTAREA', 'INPUT', 'SELECT'].includes(target.tagName);
                 if (typing) {
                     if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
                         target.form?.requestSubmit();

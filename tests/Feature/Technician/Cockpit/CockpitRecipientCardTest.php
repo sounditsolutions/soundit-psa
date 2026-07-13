@@ -162,9 +162,11 @@ class CockpitRecipientCardTest extends TestCase
         // what was staged — including the outside-known-contacts To.
         $this->assertSame('auditor@partner.test', $view['proposed']['to']);
         $this->assertSame(['vendor@thread.test'], $view['proposed']['cc']);
-        // The flat candidate list feeds the live "outside known contacts" highlight.
-        $this->assertContains('client@thread.test', $view['candidate_emails']);
-        $this->assertNotContains('auditor@partner.test', $view['candidate_emails']);
+        // The candidate rows feed the live "outside known contacts" highlight (the
+        // Alpine component derives its flat email list from them).
+        $candidateEmails = array_column($view['candidates'], 'email');
+        $this->assertContains('client@thread.test', $candidateEmails);
+        $this->assertNotContains('auditor@partner.test', $candidateEmails);
         $this->assertFalse($view['arbitrary_allowed']);
 
         Setting::setValue('allow_arbitrary_email_recipients_staged', '1');
@@ -178,6 +180,37 @@ class CockpitRecipientCardTest extends TestCase
 
         $view = app(CockpitRecipientView::class)->for($run);
         $this->assertNull($view['proposed']);
+    }
+
+    public function test_recipient_view_tolerates_legacy_stage_email_meta_without_recipient_keys(): void
+    {
+        // Runs staged before psa-w4e0 carry no to/cc meta — the card must fall back
+        // to the contact default, never error or fabricate a proposal.
+        $actor = User::factory()->create();
+        [$run] = $this->seedStagedEmailRunWithCustomProposal($actor);
+        $run->update(['proposed_meta' => ['reasons' => ['Old draft.'], 'drafted_by' => 'mcp-staff:chet']]);
+
+        $view = app(CockpitRecipientView::class)->for($run->fresh());
+        $this->assertNull($view['proposed']);
+
+        // Malformed meta shapes collapse the same way.
+        $run->update(['proposed_meta' => ['to' => ['not-a-string'], 'cc' => 'not-an-array']]);
+        $this->assertNull(app(CockpitRecipientView::class)->for($run->fresh())['proposed']);
+    }
+
+    public function test_cockpit_arms_the_approve_form_data_for_staged_custom_proposals(): void
+    {
+        // The approve form's arming is driven client-side from the same live custom
+        // computation as the warning (x-effect syncArm) — server-side we can assert
+        // the pieces it consumes are all on the page: the component receives the form
+        // id and the proposal, and the submit handler honours dataset.arm.
+        $actor = User::factory()->create();
+        [$run] = $this->seedStagedEmailRunWithCustomProposal($actor);
+
+        $page = $this->actingAs($actor)->get(route('cockpit.index'))->assertOk();
+        $page->assertSee('syncArm(customRecipients().length)', false);
+        $page->assertSee('cockpitRecipients(', false);
+        $page->assertSee('approve-'.$run->id, false);
     }
 
     public function test_cockpit_renders_staged_custom_recipient_and_warning_copy(): void

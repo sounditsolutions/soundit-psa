@@ -802,7 +802,9 @@ class PsaActionToolsTest extends TestCase
         $staged = $this->callTool($token, 'stage_email', [
             'client_id' => $ticket->client_id,
             'ticket_id' => $ticket->id,
-            'reason' => 'Send the audit summary to the external auditor.',
+            // The reason names the address — the summary must redact it (the counts
+            // descriptor is the only recipient signal an action-log summary carries).
+            'reason' => 'Send the audit summary to auditor@partner.test as requested.',
             'body' => 'Audit summary attached below.',
             'to' => ['auditor@partner.test'],
             'cc' => ['client@example.test'],
@@ -936,6 +938,28 @@ class PsaActionToolsTest extends TestCase
         ]);
         $this->assertFalse((bool) $replay->json('result.isError'));
         $this->assertSame(2, TechnicianRun::where('ticket_id', $ticket->id)->where('action_type', 'stage_email')->count());
+    }
+
+    public function test_stage_public_note_never_resolves_recipients_and_stages_on_contactless_tickets(): void
+    {
+        // Guards the sendsEmail:false leg: a note stages fine with no contact email
+        // and ignores stray to/cc arguments (it sends nothing).
+        $token = $this->token(['stage_public_note']);
+        $ticket = $this->ticketWithContact(email: null);
+
+        $response = $this->callTool($token, 'stage_public_note', [
+            'client_id' => $ticket->client_id,
+            'ticket_id' => $ticket->id,
+            'reason' => 'Post a visible status note.',
+            'body' => 'Note body.',
+            'to' => ['stray@partner.test'],
+        ]);
+
+        $response->assertOk();
+        $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
+        $run = TechnicianRun::where('ticket_id', $ticket->id)->where('action_type', 'stage_public_note')->firstOrFail();
+        $this->assertArrayNotHasKey('to', $run->proposed_meta);
+        $this->assertArrayNotHasKey('custom_recipients', $run->proposed_meta);
     }
 
     public function test_staged_email_contactless_ticket_errors_without_to_but_accepts_custom_to_when_knob_on(): void

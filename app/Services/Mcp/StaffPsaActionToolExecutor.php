@@ -2100,7 +2100,9 @@ class StaffPsaActionToolExecutor
             'contact_name' => $ticket->contact?->fullName,
         ];
 
-        $summary = "MCP staged {$actionType} for ticket #{$ticket->id}: {$reason}";
+        // Reason is agent free text and may name an address — redact, matching the
+        // direct path's summary (the descriptor below stays counts-only by design).
+        $summary = "MCP staged {$actionType} for ticket #{$ticket->id}: ".EmailRedactor::redact($reason);
 
         // psa-w4e0: the email-sending staged action accepts proposed To/CC (person_ids
         // or addresses). Resolving here fails fast for the agent (bad person ref, bad
@@ -2115,7 +2117,7 @@ class StaffPsaActionToolExecutor
                     (array) ($arguments['to'] ?? []),
                     (array) ($arguments['cc'] ?? []),
                     RecipientContext::Staged,
-                    TechnicianConfig::allowArbitraryEmailRecipientsStaged(),
+                    TechnicianConfig::stagedSendsAllowArbitraryRecipients(),
                     TechnicianConfig::directEmailNewRecipients(),
                 );
             } catch (RecipientValidationException $e) {

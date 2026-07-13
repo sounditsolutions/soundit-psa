@@ -312,5 +312,10 @@ class McpStagedModeUnificationTest extends TestCase
         $this->assertArrayHasKey('to', $sendEmail['inputSchema']['properties']);
         $this->assertArrayHasKey('staged', $sendEmail['inputSchema']['properties']);
         $this->assertStringContainsString('Supports staged=true', $sendEmail['description']);
+        // psa-w4e0: the direct to/cc descriptions win the unification fold, so they
+        // must describe BOTH modes — immediate rejection and the staged knob-gated
+        // acceptance — or the advertised contract lies to immediate-granted tokens.
+        $this->assertStringContainsString('staged custom recipients', $sendEmail['inputSchema']['properties']['to']['description']);
+        $this->assertStringContainsString('staged=true', $sendEmail['inputSchema']['properties']['cc']['description']);
     }
 }

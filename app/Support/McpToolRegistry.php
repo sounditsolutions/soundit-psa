@@ -739,12 +739,12 @@ class McpToolRegistry
                     'to' => [
                         'type' => 'array',
                         'items' => ['type' => ['integer', 'string']],
-                        'description' => 'Optional To recipient — a PSA person_id or an address already on this ticket\'s email thread. Arbitrary addresses are rejected. Omit to use the ticket contact.',
+                        'description' => 'Optional To recipient — a PSA person_id or an address already on this ticket\'s email thread. Arbitrary addresses are rejected on immediate sends; with staged=true they are accepted only when the operator has enabled staged custom recipients, and are always held for human approval with the full list shown. Omit to use the ticket contact.',
                     ],
                     'cc' => [
                         'type' => 'array',
                         'items' => ['type' => ['integer', 'string']],
-                        'description' => 'Optional CC recipients — PSA person_ids or addresses already on this ticket\'s email thread (reply-all). Arbitrary addresses are rejected; adding someone not already on the thread requires stage_email.',
+                        'description' => 'Optional CC recipients — PSA person_ids or addresses already on this ticket\'s email thread (reply-all). Arbitrary addresses are rejected on immediate sends (staged=true follows the staged custom-recipients setting); adding someone not already on the thread requires staging for review.',
                     ],
                 ],
                 'required' => ['ticket_id', 'reason', 'body'],

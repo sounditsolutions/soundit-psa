@@ -23,6 +23,9 @@ class CockpitRecipientView
     /** Only the email-sending reply cards carry a recipient block. */
     private const EMAIL_ACTIONS = ['send_reply', 'stage_email', 'propose_resolution'];
 
+    /** Per-instance memo — Setting reads are DB queries and for() runs once per card. */
+    private ?bool $arbitraryAllowed = null;
+
     public function __construct(private readonly EmailRecipientResolver $resolver) {}
 
     /**
@@ -64,9 +67,8 @@ class CockpitRecipientView
             'to' => ['email' => $candidates->contactEmail, 'name' => $candidates->contactName],
             'reply_all' => $replyAll['cc'],
             'candidates' => array_values($rows),
-            'candidate_emails' => $candidates->allEmails(),
             'proposed' => $this->proposedRecipients($run),
-            'arbitrary_allowed' => TechnicianConfig::allowArbitraryEmailRecipientsStaged(),
+            'arbitrary_allowed' => $this->arbitraryAllowed ??= TechnicianConfig::stagedSendsAllowArbitraryRecipients(),
         ];
     }
 

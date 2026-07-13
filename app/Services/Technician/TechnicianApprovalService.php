@@ -54,7 +54,7 @@ class TechnicianApprovalService
         // immediate path's global-only knob.
         return $this->recipients->resolve(
             $ticket, $to, $cc, RecipientContext::Staged,
-            TechnicianConfig::allowArbitraryEmailRecipientsStaged(),
+            TechnicianConfig::stagedSendsAllowArbitraryRecipients(),
             TechnicianConfig::directEmailNewRecipients(),
         );
     }

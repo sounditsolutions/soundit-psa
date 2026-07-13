@@ -3490,7 +3490,7 @@
 
                     <div class="form-check form-switch mb-3">
                         <input class="form-check-input" type="checkbox" id="allow_arbitrary_email_recipients" name="allow_arbitrary_email_recipients" {{ $allowArbitraryEmailRecipients ? 'checked' : '' }}>
-                        <label class="form-check-label" for="allow_arbitrary_email_recipients">Allow arbitrary email recipients everywhere, including immediate sends <span class="text-muted">(default off — exfil guard; prefer the staged-only switch above)</span></label>
+                        <label class="form-check-label" for="allow_arbitrary_email_recipients">Allow arbitrary email recipients on all paths <span class="text-muted">(default off — exfil guard; immediate off-thread sends also need the direct-path toggle above; prefer the staged-only switch)</span></label>
                     </div>
 
                     <hr class="my-3">

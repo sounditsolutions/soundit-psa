@@ -276,9 +276,7 @@ class IntegrationsController extends Controller
         $technicianDigestTime = \App\Support\TechnicianConfig::digestTimeLocal();
         $technicianHeartbeatInterval = \App\Support\TechnicianConfig::heartbeatIntervalMinutes();
         $allowArbitraryEmailRecipients = \App\Support\TechnicianConfig::allowArbitraryEmailRecipients();
-        // psa-w4e0: the checkbox reflects the RAW staged-only knob — the config method
-        // ORs in the global knob (effective policy), which would misrender the toggle.
-        $allowArbitraryEmailRecipientsStaged = (bool) Setting::getValue('allow_arbitrary_email_recipients_staged');
+        $allowArbitraryEmailRecipientsStaged = \App\Support\TechnicianConfig::allowArbitraryEmailRecipientsStaged();
         $directEmailNewRecipients = \App\Support\TechnicianConfig::directEmailNewRecipients();
 
         // Teams bot (Bot Framework) credentials — App ID + tenant are plain; the Entra
