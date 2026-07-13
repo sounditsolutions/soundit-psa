@@ -457,6 +457,9 @@ Route::middleware('auth')->group(function () {
     // Settings — AI Assistant
     Route::post('/settings/integrations/assistant', [IntegrationsController::class, 'updateAssistant'])->name('settings.integrations.assistant.update');
 
+    // Settings — AI Intake (per-channel front-door gates)
+    Route::post('/settings/integrations/intake', [IntegrationsController::class, 'updateIntake'])->name('settings.integrations.intake.update');
+
     // Settings — AI Technician
     Route::post('/settings/integrations/technician', [IntegrationsController::class, 'updateTechnician'])->name('settings.integrations.technician.update');
     Route::post('/settings/integrations/teams-bot', [IntegrationsController::class, 'updateTeamsBot'])->name('settings.integrations.teams-bot.update');

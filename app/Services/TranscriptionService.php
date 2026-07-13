@@ -328,11 +328,13 @@ TEMPLATE;
             ]);
         }
 
-        // AI call-intake front-door (psa-xcyo): unchanged — dispatch only when intake enabled.
-        // Gating the dispatch on intakeEnabled keeps transcription byte-identical when intake
-        // is off (no job churn); the pipeline re-checks dormancy as defence in depth.
+        // AI call-intake front-door (psa-xcyo): dispatch only when CALL intake is enabled.
+        // psa-28j4 §3.2: this reads the per-channel intakeCallEnabled() gate, NOT the shared
+        // master — closing the call door must not touch inbound email. Gating the dispatch
+        // here keeps transcription byte-identical when call intake is off (no job churn); the
+        // pipeline re-checks the same gate as defence in depth.
         // afterCommit() so the queued job sees the completed row.
-        if (\App\Support\AgentConfig::intakeEnabled()) {
+        if (\App\Support\AgentConfig::intakeCallEnabled()) {
             \App\Jobs\CallIntakeJob::dispatch($call->id)->afterCommit();
         }
     }

@@ -66,8 +66,15 @@ class DigestBuilder
             $escalationCount = $escalations->count();
         }
 
-        // Intake front-door counts — gated on intakeEnabled so digest is byte-identical when off.
-        $intakeEnabled = AgentConfig::intakeEnabled();
+        // Intake front-door counts — gated so the digest is byte-identical when intake is off.
+        // psa-28j4 §3.2: intake is now gated PER CHANNEL, so each line follows the channel that
+        // actually feeds it. intake_route runs come from BOTH channels (EmailService and the
+        // CallIntakePipeline), so the routed line shows whenever EITHER door is open; the
+        // suspected-spam count is scored only on the call leg, so it follows the call gate alone.
+        // Under a legacy-only config both gates inherit intake_enabled, so this is unchanged.
+        $intakeCallEnabled = AgentConfig::intakeCallEnabled();
+        $intakeEmailEnabled = AgentConfig::intakeEmailEnabled();
+        $intakeEnabled = $intakeCallEnabled || $intakeEmailEnabled;
         $intakeCount = 0;
         $intakeAutoCount = 0;
         $intakeSuggestedCount = 0;
@@ -85,6 +92,9 @@ class DigestBuilder
             $intakeSuggestedCount = $intakeRuns->filter(
                 fn ($r) => $r->state === TechnicianRunState::AwaitingApproval
             )->count();
+        }
+
+        if ($intakeCallEnabled) {
             $spamSuggestedCount = \App\Models\PhoneCall::whereNotNull('intake_spam_score')
                 ->where('created_at', '>=', now()->subDay())
                 ->count();
@@ -108,6 +118,9 @@ class DigestBuilder
 
         if ($intakeEnabled) {
             $lines[] = "Intake routed (last 24h): {$intakeCount} ({$intakeAutoCount} auto-attached, {$intakeSuggestedCount} flagged for review)";
+        }
+
+        if ($intakeCallEnabled) {
             $lines[] = "Suspected-spam calls flagged (last 24h): {$spamSuggestedCount}";
         }
 

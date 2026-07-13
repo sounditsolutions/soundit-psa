@@ -283,7 +283,7 @@ class EmailService
         // ticket now exists. NOTE: a non-null ticket_id is labeled "created", but the dormant
         // intake-router attach sub-path (routeInboundEmail) could also produce a non-null
         // ticket_id via *attach* — accurate today because that path is off by default
-        // (AgentConfig::intakeEnabled()). Revisit this label if intake routing is enabled.
+        // (AgentConfig::intakeEmailEnabled()). Revisit this label if intake routing is enabled.
         $outcome = $email->ticket_id !== null ? 'ticket created' : 'unresolved (no ticket)';
         $this->emitIntakeSignal('intake.email_received', $email, 'inbound email received — '.$outcome);
     }
@@ -723,7 +723,7 @@ PROMPT;
      * (create). DORMANT → calls autoCreateTicketFromEmail exactly as before.
      *
      * Behaviour:
-     *  - DORMANT (intake_enabled off): autoCreateTicketFromEmail — byte-identical.
+     *  - DORMANT (intake_email_enabled off): autoCreateTicketFromEmail — byte-identical.
      *  - enabled + create decision: autoCreateTicketFromEmail, no intake_route record.
      *  - enabled + attach, conf >= threshold (set): linkEmailToTicket (no new ticket) + Done record.
      *  - enabled + attach, threshold null / below threshold (held-first): autoCreate + AwaitingApproval record.
@@ -738,7 +738,9 @@ PROMPT;
      */
     private function routeInboundEmail(Email $email): void
     {
-        if (! AgentConfig::intakeEnabled()) {
+        // psa-28j4 §3.2: the EMAIL-channel gate. Previously this read the shared master
+        // gate, so disabling PSA-native call intake silently knee-capped email intake too.
+        if (! AgentConfig::intakeEmailEnabled()) {
             $this->autoCreateTicketFromEmail($email);
 
             return;
