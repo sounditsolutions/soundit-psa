@@ -2326,6 +2326,26 @@
                         </div>
                     </div>
 
+                    {{-- psa-28j4.3: an unwatched support inbox looks exactly like a quiet one. Say so. --}}
+                    @if ($emailTriageUnwatched)
+                        <div class="alert alert-warning d-flex gap-2 mt-3 mb-0" role="alert">
+                            <i class="bi bi-exclamation-triangle-fill flex-shrink-0 mt-1"></i>
+                            <div>
+                                <strong>Nobody is triaging inbound email.</strong>
+                                Auto-ticketing is off, and no AI technician is being notified about emails that
+                                arrive. Inbound support email still lands in PSA, but it creates no ticket and
+                                reaches no agent — it will sit unhandled until someone goes looking for it.
+                                <div class="mt-2">
+                                    Fix this by either re-enabling <em>Auto-create tickets from inbound emails</em>
+                                    above, or — to have the AI technician triage each email and decide whether to
+                                    open a new ticket or attach it to an existing one — sending the
+                                    <code>intake.email_unresolved</code> signal to an MCP destination in
+                                    <a href="{{ route('settings.alerts.index') }}" class="alert-link">Settings &rsaquo; Alerts</a>.
+                                </div>
+                            </div>
+                        </div>
+                    @endif
+
                     <button type="submit" class="btn btn-primary mt-3">
                         <i class="bi bi-check-lg me-1"></i>Save Signature
                     </button>

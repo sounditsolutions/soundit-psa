@@ -61,6 +61,50 @@ class SignalRouter
         CheckSignalStepAcks::scheduleIfNeeded($route, $event, $stepOrder);
     }
 
+    /**
+     * Would an event of $typeKey carrying $context actually be DELIVERED to an enabled
+     * MCP destination — i.e. land in an inbox an agent can poll?
+     *
+     * This exists so "nobody is watching the support inbox" can be DETECTED and shouted
+     * about instead of silently entered (psa-28j4.3). It deliberately reuses matches()
+     * and mcpDeliveryBlockReason() rather than re-deriving them, because a second copy
+     * of the filter semantics WOULD drift — and the traps here are precisely the ones a
+     * naive re-implementation misses:
+     *   - types are EXACT-match; "intake.*" matches nothing (only the literal "all" wildcards);
+     *   - a route carrying min_priority or categories matches NO intake event at all,
+     *     because the intake emissions carry neither (only client_id) and matches() hard-
+     *     fails a null context key. Such a route looks correct and delivers zero emails.
+     * Asking the real matcher is the only answer that cannot rot.
+     *
+     * Scope: this answers "is a path WIRED", not "will this one event survive the rate
+     * limit / cooldown" — those are runtime and are reported at the point of suppression.
+     *
+     * Conservative by construction: it inspects firstSteps() — the steps that actually fire
+     * when the event lands — so it can never return a false all-clear. An MCP destination
+     * parked on a later escalation tier reads as unwatched, which is the safe direction to
+     * be wrong in: a spurious warning is an annoyance, a false all-clear loses the inbox.
+     */
+    public function wouldReachMcpDestination(string $typeKey, array $context = []): bool
+    {
+        if (! SignalEventTypes::routable($typeKey)) {
+            return false;
+        }
+
+        $probe = new SignalEvent(['type_key' => $typeKey, 'context' => $context]);
+
+        return SignalRoute::query()
+            ->where('enabled', true)
+            ->with('steps.destination')
+            ->get()
+            ->contains(fn (SignalRoute $route): bool => $this->matches($route, $probe)
+                && $this->firstSteps($route)->contains(
+                    fn (SignalRouteStep $step): bool => (bool) $step->destination?->enabled
+                        && $step->destination->type === 'mcp'
+                        && $this->mcpDeliveryBlockReason($step->destination) === null
+                )
+            );
+    }
+
     private function matches(SignalRoute $route, SignalEvent $event): bool
     {
         $filter = $route->event_filter ?? [];
