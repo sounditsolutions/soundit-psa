@@ -34,7 +34,11 @@ class CippMcpToolRelay
 
     private const DEFAULT_FIELDS = [
         'cipp_list_users' => ['id', 'displayName', 'userPrincipalName', 'accountEnabled', 'jobTitle', 'department', 'assignedLicenses'],
-        'cipp_list_mailboxes' => ['id', 'displayName', 'userPrincipalName', 'primarySmtpAddress', 'recipientTypeDetails', 'mailboxSizeBytes', 'itemCount', 'forwardingSmtpAddress', 'deliverToMailboxAndForward', 'litigationHoldEnabled'],
+        // No mailboxSizeBytes / itemCount here: CIPP's ListMailboxes runs
+        // Get-Mailbox, which has no size or item-count properties at all (those
+        // live on Get-MailboxStatistics), so they never resolved under ANY
+        // casing and were dead advertised fields (psa-7lgo).
+        'cipp_list_mailboxes' => ['id', 'displayName', 'userPrincipalName', 'primarySmtpAddress', 'recipientTypeDetails', 'forwardingSmtpAddress', 'deliverToMailboxAndForward', 'litigationHoldEnabled'],
         'cipp_list_licenses' => ['skuId', 'skuPartNumber', 'totalLicenses', 'consumedLicenses', 'assignedLicenses', 'prepaidUnits', 'capabilityStatus'],
         'cipp_list_devices' => ['id', 'deviceName', 'displayName', 'userPrincipalName', 'operatingSystem', 'osVersion', 'complianceState', 'isCompliant', 'managementAgent', 'enrolledDateTime', 'lastSyncDateTime', 'serialNumber'],
         'cipp_list_groups' => ['id', 'displayName', 'mail', 'mailEnabled', 'securityEnabled', 'groupTypes', 'description'],
@@ -47,7 +51,10 @@ class CippMcpToolRelay
         // SendAs rows; SendOnBehalf rows carry display names in User.
         'cipp_list_mailbox_permissions' => ['user', 'permissions'],
         'cipp_list_mailbox_rules' => ['name', 'enabled', 'priority', 'description', 'from', 'sentTo', 'forwardTo', 'redirectTo', 'deleteMessage', 'moveToFolder'],
-        'cipp_list_defender_state' => ['managedDeviceId', 'azureADDeviceId', 'deviceName', 'managedDeviceName', 'userPrincipalName', 'antiVirusStatus', 'realTimeProtectionEnabled', 'antivirusEnabled', 'antiVirusSignatureVersion', 'antiMalwareVersion', 'signatureVersion', 'lastFullScanDateTime', 'lastQuickScanDateTime'],
+        // No cipp_list_defender_state entry: shapeResult() routes that tool to
+        // shapeDefenderState(), which bypasses projectRows() and names its own
+        // keys. The DEFAULT_FIELDS list that used to sit here was never read
+        // and described a shape CIPP does not emit (psa-7lgo).
         'cipp_list_conditional_access_policies' => ['id', 'displayName', 'state', 'createdDateTime', 'modifiedDateTime', 'conditions', 'grantControls', 'sessionControls'],
         'cipp_list_user_conditional_access' => ['id', 'displayName', 'state', 'result', 'conditions', 'grantControls', 'sessionControls'],
         'cipp_list_sign_ins' => ['id', 'createdDateTime', 'userPrincipalName', 'appDisplayName', 'ipAddress', 'clientAppUsed', 'conditionalAccessStatus', 'status', 'location', 'riskDetail', 'riskLevelAggregated', 'deviceDetail'],
@@ -68,14 +75,38 @@ class CippMcpToolRelay
         'user' => ['user', 'User'],
         'permissions' => ['permissions', 'Permissions'],
         'primarySmtpAddress' => ['primarySmtpAddress', 'PrimarySmtpAddress', 'mail', 'Mail'],
-        'mailboxSizeBytes' => ['mailboxSizeBytes', 'MailboxSizeBytes', 'totalItemSizeBytes', 'TotalItemSizeBytes'],
-        'itemCount' => ['itemCount', 'ItemCount', 'mailboxItemCount', 'MailboxItemCount'],
-        // CIPP surfaces Exchange Get-Mailbox properties PascalCase-first — see
-        // CippContactEnrichmentService::enrichMailboxData(), which reads
-        // ForwardingSmtpAddress / ItemCount / etc. PascalCase off the same
-        // ListMailboxes payload — so resolve PascalCase first and keep the
-        // camelCase variants as a defensive fallback.
+
+        // ListMailboxes (Exchange Get-Mailbox). CIPP's Select-Object renames
+        // SOME properties to camelCase and leaves Exchange's PascalCase on the
+        // rest, so the payload is deliberately MIXED-CASE. Verified against
+        // CIPP-API Invoke-ListMailboxes.ps1 (psa-7lgo) — ExecMCP re-dispatches
+        // through the same API function and serializes its body verbatim, so
+        // the MCP relay sees exactly these key names. Resolve the casing CIPP
+        // actually emits first, and keep the other as a defensive fallback.
+        'recipientTypeDetails' => ['recipientTypeDetails', 'RecipientTypeDetails'],
+        'forwardingSmtpAddress' => ['ForwardingSmtpAddress', 'forwardingSmtpAddress'],
+        'deliverToMailboxAndForward' => ['DeliverToMailboxAndForward', 'deliverToMailboxAndForward'],
         'litigationHoldEnabled' => ['LitigationHoldEnabled', 'litigationHoldEnabled', 'LitigationHold', 'litigationHold'],
+
+        // ListMailboxRules. CIPP caches the RAW Get-InboxRule object
+        // (Push-ListMailboxRulesQueue.ps1: `Rules = [string]($Rule |
+        // ConvertTo-Json)`) and Invoke-ListMailboxRules.ps1 hands those rows
+        // straight back — so every property keeps Exchange's PascalCase. The
+        // relay previously declared all ten fields camel/lowercase with no
+        // aliases, so every key missed and every rule row projected to `{}`:
+        // the malicious-inbox-rule signal (forward-to-external + delete) was
+        // structurally invisible to the agent (psa-7lgo).
+        'name' => ['Name', 'name'],
+        'enabled' => ['Enabled', 'enabled'],
+        'priority' => ['Priority', 'priority'],
+        'description' => ['Description', 'description'],
+        'from' => ['From', 'from'],
+        'sentTo' => ['SentTo', 'sentTo'],
+        'forwardTo' => ['ForwardTo', 'forwardTo'],
+        'redirectTo' => ['RedirectTo', 'redirectTo'],
+        'deleteMessage' => ['DeleteMessage', 'deleteMessage'],
+        'moveToFolder' => ['MoveToFolder', 'moveToFolder'],
+
         'skuPartNumber' => ['skuPartNumber', 'SkuPartNumber', 'sku', 'SKU'],
         'totalLicenses' => ['totalLicenses', 'TotalLicenses', 'prepaidUnitsEnabled'],
         'consumedLicenses' => ['consumedLicenses', 'ConsumedLicenses', 'consumedUnits'],
@@ -466,21 +497,31 @@ class CippMcpToolRelay
     {
         $fields = self::DEFAULT_FIELDS[$toolName] ?? [];
 
-        $projected = array_map(function (array $row) use ($toolName, $fields): array {
+        // Tracks whether each field's key was ever FOUND upstream, independent
+        // of its value. "Key absent from every row" is schema drift; "key
+        // present holding null" is a genuine no-value (an unset Exchange
+        // property serializes as null) and must not be mistaken for drift.
+        $keyResolved = array_fill_keys($fields, false);
+
+        $projected = array_map(function (array $row) use ($toolName, $fields, &$keyResolved): array {
             $projected = [];
 
             foreach ($fields as $field) {
-                if ($field === 'assignedLicenses') {
-                    $value = $this->valueFor($row, $field);
-                    if ($value !== null) {
-                        $projected[$field] = $this->summarizeAssignedLicenses($value);
-                    }
-
+                $key = $this->resolveKey($row, $field);
+                if ($key === null) {
                     continue;
                 }
 
-                $value = $this->valueFor($row, $field);
+                $keyResolved[$field] = true;
+
+                $value = $row[$key];
                 if ($value === null) {
+                    continue;
+                }
+
+                if ($field === 'assignedLicenses') {
+                    $projected[$field] = $this->summarizeAssignedLicenses($value);
+
                     continue;
                 }
 
@@ -490,19 +531,53 @@ class CippMcpToolRelay
             return $projected;
         }, $rows);
 
-        // Non-empty upstream rows that all project to {} mean DEFAULT_FIELDS has
-        // drifted from the live CIPP response shape, and the tool would report a
-        // false "no results" (psa-3twu). Row keys are schema names and safe to
-        // log; row values are untrusted tenant data and never logged.
-        if ($rows !== [] && array_filter($projected) === []) {
+        if ($rows !== []) {
+            $this->warnOnShapeDrift($toolName, $rows, $projected, $keyResolved);
+        }
+
+        return $projected;
+    }
+
+    /**
+     * Row keys are schema names and safe to log; row values are untrusted
+     * tenant data and are never logged.
+     *
+     * @param  array<int, array<string, mixed>>  $rows
+     * @param  array<int, array<string, mixed>>  $projected
+     * @param  array<string, bool>  $keyResolved
+     */
+    private function warnOnShapeDrift(string $toolName, array $rows, array $projected, array $keyResolved): void
+    {
+        // Every row projecting to {} means DEFAULT_FIELDS has drifted wholesale
+        // from the live CIPP response shape, and the tool reports a false "no
+        // results" (psa-3twu).
+        if (array_filter($projected) === []) {
             Log::warning('[CippMcpToolRelay] Every row projected empty — DEFAULT_FIELDS out of sync with CIPP response shape', [
                 'tool' => $toolName,
                 'row_count' => count($rows),
                 'first_row_keys' => array_slice(array_keys($rows[0]), 0, 12),
             ]);
+
+            return;
         }
 
-        return $projected;
+        // A PARTIAL drop is the invisible failure this guard exists for
+        // (psa-7lgo): the row still projects id/displayName/UPN, so the
+        // all-empty check above stays quiet while an individual field vanishes
+        // because CIPP cases its key differently. That silently stripped
+        // ForwardingSmtpAddress and every Get-InboxRule property from the
+        // agent's view of a tenant — security signal lost with no error.
+        $missing = array_keys(array_filter($keyResolved, fn (bool $resolved): bool => ! $resolved));
+        if ($missing === []) {
+            return;
+        }
+
+        Log::warning('[CippMcpToolRelay] Field(s) never resolved in any row — DEFAULT_FIELDS/FIELD_ALIASES out of sync with CIPP response shape', [
+            'tool' => $toolName,
+            'row_count' => count($rows),
+            'missing_fields' => array_values($missing),
+            'first_row_keys' => array_slice(array_keys($rows[0]), 0, 12),
+        ]);
     }
 
     /**
@@ -541,9 +616,23 @@ class CippMcpToolRelay
 
     private function valueFor(array $row, string $field): mixed
     {
+        $key = $this->resolveKey($row, $field);
+
+        return $key === null ? null : $row[$key];
+    }
+
+    /**
+     * The upstream key this field resolves to, or null when no candidate key
+     * exists on the row at all. Matching is case-sensitive by design: the
+     * alias lists carry the exact casings CIPP emits (verified against
+     * CIPP-API source), so a miss is real schema drift worth reporting rather
+     * than something to paper over with a fuzzy match.
+     */
+    private function resolveKey(array $row, string $field): ?string
+    {
         foreach (self::FIELD_ALIASES[$field] ?? [$field] as $candidate) {
             if (array_key_exists($candidate, $row)) {
-                return $row[$candidate];
+                return $candidate;
             }
         }
 
