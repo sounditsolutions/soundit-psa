@@ -21,7 +21,14 @@ class CippMcpToolRelay
         'cipp_list_groups' => 'ListGroups',
         'cipp_list_user_groups' => 'ListUserGroups',
         'cipp_list_mailbox_permissions' => 'ListmailboxPermissions',
-        'cipp_list_mailbox_rules' => 'ListMailboxRules',
+        // ListUserMailboxRules, NOT ListMailboxRules. The latter accepts no user
+        // parameter at all (its only OpenAPI params are tenantFilter and
+        // UseReportDB) and returns EVERY mailbox's cached rules in the tenant,
+        // silently ignoring the userId we sent — while this tool's own contract
+        // requires user_id and promises one mailbox. ListUserMailboxRules reads
+        // UserID and runs Get-InboxRule -Mailbox $UserID, so Exchange enforces
+        // the scope server-side (psa-7lgo.1).
+        'cipp_list_mailbox_rules' => 'ListUserMailboxRules',
         'cipp_list_defender_state' => 'ListDefenderState',
         'cipp_list_conditional_access_policies' => 'ListConditionalAccessPolicies',
         'cipp_list_user_conditional_access' => 'ListUserConditionalAccessPolicies',
@@ -217,7 +224,22 @@ class CippMcpToolRelay
             if ($userId === null) {
                 return ['error' => 'user_id is required'];
             }
-            $args['userId'] = $this->resolveCippUserId($userId, $clientId);
+
+            $resolved = $this->resolveCippUserId($userId, $clientId);
+
+            if ($toolName === 'cipp_list_mailbox_rules') {
+                // ListUserMailboxRules names its parameter UserID and takes an
+                // optional userEmail. The sibling user-scoped tools
+                // (ListUserGroups, ListmailboxPermissions) genuinely honour
+                // camelCase userId — verified in CIPP source — so only this one
+                // differs.
+                $args['UserID'] = $resolved;
+                if (str_contains($userId, '@')) {
+                    $args['userEmail'] = $userId;
+                }
+            } else {
+                $args['userId'] = $resolved;
+            }
         }
 
         if (in_array($toolName, ['cipp_list_sign_ins', 'cipp_list_audit_logs'], true) && ! empty($input['user_id'])) {
@@ -263,8 +285,148 @@ class CippMcpToolRelay
             'cipp_list_user_mfa_methods' => $this->shapeUserMfaMethods($rows, $input, $clientId),
             'cipp_list_oauth_apps' => $this->shapeOauthApps($rows, $input, $totalReturned, $clientId),
             'cipp_list_defender_state' => $this->shapeDefenderState($rows),
+            'cipp_list_mailbox_rules' => $this->shapeMailboxRules($rows, $input, $clientId),
             default => $this->projectRows($toolName, $rows),
         };
+    }
+
+    /**
+     * Defence in depth behind the ListUserMailboxRules routing.
+     *
+     * Exchange already scopes the upstream call to one mailbox, so this should
+     * never drop anything. It exists because the disclosure it guards against —
+     * one user's inbox rules answered with another user's — is both a data leak
+     * AND false investigation context, and because the previous endpoint made
+     * exactly that mistake silently. If someone ever re-points this tool at a
+     * tenant-wide endpoint, the leak fails loudly here instead of shipping.
+     *
+     * Only rules we can PROVE belong to another mailbox are dropped. An owner we
+     * cannot compare (a display name, a legacy DN) is kept: dropping on "cannot
+     * compare" would fail CLOSED and hide the requested user's own rules, which
+     * is the very failure this series exists to kill.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private function shapeMailboxRules(array $rules, array $input, ?int $clientId): array
+    {
+        $requested = $this->requiredUserId($input);
+        $dropped = 0;
+
+        if ($requested !== null) {
+            $needles = $this->userIdentityNeedles($requested, $clientId);
+
+            $rules = array_values(array_filter($rules, function (array $rule) use ($needles, &$dropped): bool {
+                if ($this->mailboxRuleIsForeign($rule, $needles)) {
+                    $dropped++;
+
+                    return false;
+                }
+
+                return true;
+            }));
+        }
+
+        if ($dropped > 0) {
+            // Rule content is untrusted tenant data and is never logged — only
+            // the fact that upstream handed us somebody else's mailbox.
+            Log::warning('[CippMcpToolRelay] Dropped mailbox rules belonging to another mailbox — upstream returned rules outside the requested scope', [
+                'tool' => 'cipp_list_mailbox_rules',
+                'dropped' => $dropped,
+            ]);
+        }
+
+        return $this->projectRows('cipp_list_mailbox_rules', $rules);
+    }
+
+    /**
+     * Every identity form the requested user is known by, lowercased — the
+     * caller may pass a UPN while Exchange answers with an object ID, or vice
+     * versa.
+     *
+     * @return array<int, string>
+     */
+    private function userIdentityNeedles(string $requested, ?int $clientId): array
+    {
+        $needles = [$requested, $this->resolveCippUserId($requested, $clientId)];
+
+        if ($clientId !== null) {
+            $person = Person::where('client_id', $clientId)
+                ->where(function ($query) use ($requested): void {
+                    $query->whereRaw('LOWER(cipp_upn) = ?', [mb_strtolower($requested)])
+                        ->orWhere('cipp_user_id', $requested);
+                })
+                ->first();
+
+            if ($person !== null) {
+                $needles[] = (string) $person->cipp_upn;
+                $needles[] = (string) $person->cipp_user_id;
+                $needles[] = (string) $person->email;
+            }
+        }
+
+        $needles = array_map(fn (string $needle): string => mb_strtolower(trim($needle)), $needles);
+
+        return array_values(array_unique(array_filter($needles, fn (string $needle): bool => $needle !== '')));
+    }
+
+    /**
+     * @param  array<int, string>  $needles
+     */
+    private function mailboxRuleIsForeign(array $rule, array $needles): bool
+    {
+        $owner = $this->mailboxRuleOwner($rule);
+        if ($owner === null) {
+            return false;
+        }
+
+        $ownerIsEmail = str_contains($owner, '@');
+        $ownerIsGuid = $this->looksLikeObjectId($owner);
+
+        // A display name or legacy DN is unmatchable, not foreign.
+        if (! $ownerIsEmail && ! $ownerIsGuid) {
+            return false;
+        }
+
+        // Compare LIKE WITH LIKE. The caller may pass an object ID while Exchange
+        // answers with a UPN (or the reverse), and a GUID cannot adjudicate an
+        // address. Without a needle of the same form we cannot PROVE the rule is
+        // someone else's — and guessing would fail CLOSED, silently hiding the
+        // requested user's own rules. Drop only on a real, comparable mismatch.
+        $comparable = array_values(array_filter(
+            $needles,
+            fn (string $needle): bool => $ownerIsEmail
+                ? str_contains($needle, '@')
+                : $this->looksLikeObjectId($needle)
+        ));
+
+        if ($comparable === []) {
+            return false;
+        }
+
+        return ! in_array($owner, $comparable, true);
+    }
+
+    private function looksLikeObjectId(string $value): bool
+    {
+        return preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i', $value) === 1;
+    }
+
+    private function mailboxRuleOwner(array $rule): ?string
+    {
+        foreach (['MailboxOwnerId', 'mailboxOwnerId'] as $key) {
+            if (! empty($rule[$key]) && is_string($rule[$key])) {
+                return mb_strtolower(trim($rule[$key]));
+            }
+        }
+
+        // Get-InboxRule's Identity is "<mailbox>\<ruleId>".
+        foreach (['Identity', 'identity'] as $key) {
+            if (! empty($rule[$key]) && is_string($rule[$key])) {
+                return mb_strtolower(trim(explode('\\', $rule[$key])[0]));
+            }
+        }
+
+        return null;
     }
 
     /**

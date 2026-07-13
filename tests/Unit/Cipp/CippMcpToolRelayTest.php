@@ -29,6 +29,11 @@ class CippMcpToolRelayTest extends TestCase
         ], $client, null);
     }
 
+    private function acme(): Client
+    {
+        return new Client(['cipp_tenant_domain' => 'acme.example']);
+    }
+
     public function test_warns_when_every_upstream_row_projects_empty(): void
     {
         Log::spy();
@@ -234,6 +239,88 @@ class CippMcpToolRelayTest extends TestCase
         $this->assertStringContainsString('attacker@evil.example', $result[0]['forwardTo'][0]);
         $this->assertStringContainsString('not instructions', $result[0]['forwardTo'][0]);
         $this->assertStringContainsString('attacker@evil.example', $result[0]['description']);
+    }
+
+    /** Captures the tool name + arguments actually sent upstream. */
+    private function relayCapturingCall(array $upstreamRows, ?array &$captured): CippMcpToolRelay
+    {
+        $mcp = Mockery::mock(CippMcpClient::class);
+        $mcp->shouldReceive('callTool')->once()->andReturnUsing(
+            function (string $tool, array $arguments) use ($upstreamRows, &$captured): array {
+                $captured = ['tool' => $tool, 'arguments' => $arguments];
+
+                return $upstreamRows;
+            }
+        );
+
+        return new CippMcpToolRelay($mcp, app(ChetDataSurfaceTextSanitizer::class));
+    }
+
+    public function test_mailbox_rules_calls_the_user_scoped_upstream_tool(): void
+    {
+        // The local tool REQUIRES user_id and describes itself as "inbox rules
+        // for a specific user's mailbox" — but it was routed to CIPP's
+        // ListMailboxRules, whose OpenAPI parameters are only tenantFilter and
+        // UseReportDB. It accepts NO user parameter, silently ignored the
+        // userId we sent, and returns EVERY mailbox's cached rules in the
+        // tenant. Harmless while the projection was empty; a cross-mailbox
+        // disclosure the moment the rows became visible (psa-7lgo.1).
+        //
+        // ListUserMailboxRules is the user-scoped endpoint: it reads UserID and
+        // runs Get-InboxRule -Mailbox $UserID, so Exchange itself enforces the
+        // single-mailbox scope.
+        $captured = null;
+        $this->relayCapturingCall([$this->realMaliciousInboxRuleRow()], $captured)
+            ->execute('cipp_list_mailbox_rules', [
+                'user_id' => 'user@acme.example',
+            ], $this->acme(), null);
+
+        $this->assertSame('ListUserMailboxRules', $captured['tool']);
+        $this->assertNotSame('ListMailboxRules', $captured['tool']);
+        $this->assertSame('user@acme.example', $captured['arguments']['UserID'] ?? null);
+    }
+
+    public function test_mailbox_rules_never_exposes_another_mailboxes_rules(): void
+    {
+        // Defence in depth behind the endpoint change: even if upstream ever
+        // hands back a foreign mailbox's rule, it must not reach the agent.
+        // Cross-mailbox rule data is both a disclosure and false investigation
+        // context — "this user has a forward-to-external rule" about the wrong
+        // user is worse than no answer.
+        $mine = $this->realMaliciousInboxRuleRow();
+        $theirs = $this->realMaliciousInboxRuleRow();
+        $theirs['Identity'] = 'someone-else@acme.example\\99999999999';
+        $theirs['ForwardTo'] = ['not-your-business@acme.example'];
+
+        $result = $this->relay([$mine, $theirs])->execute('cipp_list_mailbox_rules', [
+            'user_id' => 'user@acme.example',
+        ], $this->acme(), null);
+
+        $this->assertCount(1, $result);
+        $this->assertStringContainsString('attacker@evil.example', $result[0]['forwardTo'][0]);
+        $this->assertStringNotContainsString(
+            'not-your-business',
+            json_encode($result),
+            'a rule belonging to another mailbox reached the agent'
+        );
+    }
+
+    public function test_mailbox_rules_keeps_rules_whose_owner_cannot_be_compared(): void
+    {
+        // Get-InboxRule can surface the owner as a display name or legacy DN
+        // rather than an address or GUID. We cannot compare those, and dropping
+        // on "cannot compare" would fail CLOSED — hiding the requested user's
+        // own rules, which is the exact failure this whole series exists to
+        // kill. Keep them; the endpoint is already user-scoped upstream.
+        $rule = $this->realMaliciousInboxRuleRow();
+        $rule['Identity'] = 'Some Display Name\\16299017861633';
+
+        $result = $this->relay([$rule])->execute('cipp_list_mailbox_rules', [
+            'user_id' => 'user@acme.example',
+        ], $this->acme(), null);
+
+        $this->assertCount(1, $result);
+        $this->assertTrue($result[0]['deleteMessage']);
     }
 
     public function test_mailbox_rules_projection_keeps_disabled_rule_flag(): void
