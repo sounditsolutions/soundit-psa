@@ -856,7 +856,25 @@ class CippMcpToolRelayTest extends TestCase
             'skuId' => 'cbdc14ab-d96c-4c30-b9f4-6ada7cdc1d46',
             'skuPartNumber' => 'Microsoft 365 Business Premium',
             'availableUnits' => '2',
-            'TermInfo' => 'Annual term, renews 2027-03-01',
+            // TermInfo is an ARRAY of subscription rows, not a string:
+            // Get-CIPPLicenseOverview builds it with `foreach ($Subscription in
+            // $sku.subscriptionIds) { [PSCustomObject]@{ Status; Term; ... } }`
+            // and assigns `TermInfo = @($TermInfo)`. An earlier version of this
+            // fixture used a scalar summary string — a shape CIPP never emits —
+            // which is the self-confirming-mock trap this whole series exists to
+            // kill, relocated one level down (caught by the psa-mybo.2 lane).
+            'TermInfo' => [[
+                'Status' => 'Enabled',
+                'Term' => 'Yearly',
+                'TotalLicenses' => 20,
+                'DaysUntilRenew' => 231,
+                'NextLifecycle' => '2027-03-01T00:00:00Z',
+                'CreatedDateTime' => '2026-03-01T00:00:00Z',
+                'IsTrial' => false,
+                'SubscriptionId' => '44444444-4444-4444-4444-444444444444',
+                'CSPSubscriptionId' => 'CSP-1',
+                'OCPSubscriptionId' => 'OCP-1',
+            ]],
             'AssignedUsers' => 'user1@acme.example, user2@acme.example',
             'AssignedGroups' => '',
             'ServicePlans' => [['servicePlanId' => '9aaf7827-d63c-4b61-89c3-182f06f82e5c', 'servicePlanName' => 'EXCHANGE_S_STANDARD']],
@@ -869,7 +887,15 @@ class CippMcpToolRelayTest extends TestCase
         $this->assertSame('20', $row['totalLicenses']);
         $this->assertSame('Microsoft 365 Business Premium', $row['license']);
         $this->assertSame('cbdc14ab-d96c-4c30-b9f4-6ada7cdc1d46', $row['skuId']);
-        $this->assertSame('Annual term, renews 2027-03-01', $row['termInfo']);
+
+        // TermInfo projects as the bounded ARRAY it really is. Its string leaves
+        // are tenant data and arrive fenced via boundArray(); its scalars pass
+        // through, so renewal maths still works for the agent.
+        $this->assertIsArray($row['termInfo']);
+        $this->assertCount(1, $row['termInfo']);
+        $this->assertStringContainsString('Yearly', $row['termInfo'][0]['Term']);
+        $this->assertSame(231, $row['termInfo'][0]['DaysUntilRenew']);
+        $this->assertFalse($row['termInfo'][0]['IsTrial']);
 
         // Never-emitted legacy fields must not reappear, the misleading upstream
         // skuPartNumber (a display name) is deliberately unprojected, and the
@@ -886,7 +912,10 @@ class CippMcpToolRelayTest extends TestCase
         // Fixture mirrors Invoke-ListUserGroups (psa-zw1j), which renames every
         // Graph field via Select-Object: Mail / MailEnabled / SecurityGroup /
         // GroupTypes (a comma-joined string, not an array) plus camelCase
-        // groupType / calculatedGroupType. The old projection expected raw Graph
+        // groupType (DISPLAY LABEL: "Microsoft 365" / "Security") and
+        // calculatedGroupType (COMPACT: m365 / security / generic /
+        // distributionList) — verified against the vendor Select-Object, not
+        // guessed. The old projection expected raw Graph
         // camelCase names, so every row collapsed to {id, displayName} and the
         // agent could not tell a security group from a distribution list.
         $result = $this->relay([
@@ -899,7 +928,7 @@ class CippMcpToolRelayTest extends TestCase
                 'GroupTypes' => 'Unified',
                 'OnPremisesSync' => false,
                 'IsAssignableToRole' => false,
-                'calculatedGroupType' => 'Microsoft 365',
+                'calculatedGroupType' => 'm365',
                 'groupType' => 'Microsoft 365',
             ],
             [
@@ -911,7 +940,12 @@ class CippMcpToolRelayTest extends TestCase
                 'GroupTypes' => '',
                 'OnPremisesSync' => true,
                 'IsAssignableToRole' => true,
-                'calculatedGroupType' => 'Security',
+                // A pure security group (not mail-enabled) gets the COMPACT value
+                // 'generic' — CIPP reserves 'security' for MAIL-ENABLED security
+                // groups — while the display label lands in groupType. Counter-
+                // intuitive, but it is what the vendor emits, and inventing a
+                // tidier value here is exactly the self-confirming fixture trap.
+                'calculatedGroupType' => 'generic',
                 'groupType' => 'Security',
             ],
         ])->execute('cipp_list_user_groups', [
@@ -928,13 +962,15 @@ class CippMcpToolRelayTest extends TestCase
         // discriminator is signal, not absence.
         $this->assertFalse($m365Group['securityEnabled']);
         $this->assertSame('Unified', $m365Group['groupTypes']);
-        $this->assertSame('Microsoft 365', $m365Group['calculatedGroupType']);
+        $this->assertSame('m365', $m365Group['calculatedGroupType']);
+        $this->assertSame('Microsoft 365', $m365Group['groupType']);
         $this->assertFalse($m365Group['onPremisesSync']);
 
         $this->assertTrue($securityGroup['securityEnabled']);
         $this->assertTrue($securityGroup['isAssignableToRole']);
         $this->assertTrue($securityGroup['onPremisesSync']);
-        $this->assertSame('Security', $securityGroup['calculatedGroupType']);
+        $this->assertSame('generic', $securityGroup['calculatedGroupType']);
+        $this->assertSame('Security', $securityGroup['groupType']);
         // Invoke-ListUserGroups never emits description under any casing, and a
         // null Mail drops rather than projecting as an empty value.
         $this->assertArrayNotHasKey('description', $securityGroup);
