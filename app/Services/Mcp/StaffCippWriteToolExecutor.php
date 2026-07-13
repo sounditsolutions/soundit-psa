@@ -48,6 +48,7 @@ class StaffCippWriteToolExecutor
         'cipp_stage_reassign_onedrive' => 'cipp_reassign_onedrive',
         'cipp_stage_create_user' => 'cipp_create_user',
         'cipp_stage_edit_user' => 'cipp_edit_user',
+        'cipp_stage_set_group_membership' => 'cipp_set_group_membership',
     ];
 
     /**
@@ -78,6 +79,22 @@ class StaffCippWriteToolExecutor
     private const EMAIL_SECURITY_TOOLS = [
         'cipp_release_quarantine_message',
         'cipp_add_tenant_allow_entry',
+    ];
+
+    /**
+     * Group-membership writes (bead psa-pbvy.3). Person-scoped like the
+     * delegate tool, but the GROUP half of the target lives upstream only, so
+     * these run through their own context/stage/approve path: the group is
+     * verified against the resolved tenant's LIVE CIPP group listing
+     * (quarantine-release precedent) on the direct path, at staging, and
+     * again fresh at approval — deriving the group name and type server-side
+     * and refusing dynamic-membership, on-prem-synced, and unrecognized-type
+     * groups before anything reaches upstream.
+     *
+     * @var array<int, string>
+     */
+    private const GROUP_MEMBERSHIP_TOOLS = [
+        'cipp_set_group_membership',
     ];
 
     /** @var array<string, int> */
@@ -121,6 +138,8 @@ class StaffCippWriteToolExecutor
         'cipp_stage_create_user' => 300,
         'cipp_edit_user' => 300,
         'cipp_stage_edit_user' => 300,
+        'cipp_set_group_membership' => 300,
+        'cipp_stage_set_group_membership' => 300,
     ];
 
     private const OOO_MESSAGE_MAX = 2000;
@@ -142,6 +161,23 @@ class StaffCippWriteToolExecutor
 
     /** @var array<int, string> */
     private const DELEGATE_OPERATIONS = ['grant', 'remove'];
+
+    /** @var array<int, string> */
+    private const GROUP_MEMBERSHIP_OPERATIONS = ['add', 'remove'];
+
+    /**
+     * The group types CIPP's own ListGroups projection derives (source:
+     * CIPP-API Invoke-ListGroups.ps1 groupType expression). These exact
+     * strings route Invoke-EditGroup's Exchange-vs-Graph arms, so anything
+     * else fails closed rather than guessing an upstream routing arm.
+     *
+     * @var array<int, string>
+     */
+    private const GROUP_TYPES = ['Microsoft 365', 'Mail-Enabled Security', 'Security', 'Distribution List'];
+
+    private const GROUP_ID_PATTERN = '/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i';
+
+    private const GROUP_NAME_MAX = 256;
 
     /** @var array<int, string> */
     private const WIPE_ACTIONS = ['wipe', 'retire'];
@@ -358,6 +394,23 @@ class StaffCippWriteToolExecutor
         'clearProperties',
         'removeLicenses',
         'RemoveFromGroups',
+        'groupId',
+        'GroupId',
+        'groupID',
+        'groupType',
+        'GroupType',
+        'groupName',
+        'GroupName',
+        'AddMember',
+        'RemoveMember',
+        'AddOwner',
+        'RemoveOwner',
+        'AddContact',
+        'RemoveContact',
+        'Member',
+        'Members',
+        'membershipRules',
+        'tenantId',
         'endpoint',
         'Endpoint',
         'cipp_endpoint',
@@ -414,6 +467,8 @@ class StaffCippWriteToolExecutor
             self::stageCreateUserTool(),
             self::editUserTool(),
             self::stageEditUserTool(),
+            self::setGroupMembershipTool(),
+            self::stageSetGroupMembershipTool(),
         ];
     }
 
@@ -467,6 +522,12 @@ class StaffCippWriteToolExecutor
                 : $this->executeEmailSecurityDirect($name, $arguments, $clientId, $actorLabel);
         }
 
+        if (in_array(self::STAGED_TO_DIRECT[$name] ?? $name, self::GROUP_MEMBERSHIP_TOOLS, true)) {
+            return isset(self::STAGED_TO_DIRECT[$name])
+                ? $this->stageGroupMembershipAction($name, $arguments, $clientId, $actorLabel)
+                : $this->executeGroupMembershipDirect($name, $arguments, $clientId, $actorLabel);
+        }
+
         if (isset(self::STAGED_TO_DIRECT[$name])) {
             return $this->stageAction($name, $arguments, $clientId, $actorLabel);
         }
@@ -486,6 +547,10 @@ class StaffCippWriteToolExecutor
 
         if (in_array(self::STAGED_TO_DIRECT[$run->action_type] ?? '', self::EMAIL_SECURITY_TOOLS, true)) {
             return $this->approveEmailSecurityStagedRun($run, $approverId);
+        }
+
+        if (in_array(self::STAGED_TO_DIRECT[$run->action_type] ?? '', self::GROUP_MEMBERSHIP_TOOLS, true)) {
+            return $this->approveGroupMembershipStagedRun($run, $approverId);
         }
 
         try {
@@ -2175,6 +2240,632 @@ class StaffCippWriteToolExecutor
             .' The account is created enabled, with a CIPP-generated temporary password that must be changed at first sign-in;'
             .' the password is shown once to the approver after execution and is never stored.'
             .' Approval re-derives the tenant scope and refuses if the mapping changed after staging.';
+    }
+
+    /**
+     * Direct path for the group-membership write (immediate mode grant only —
+     * grants start staged-only). The target user is a server-resolved PSA
+     * person (ACTIVE required for an add — the psa-pgnj recipient gate; loose
+     * for a remove so offboarding cleanup stays possible), and the group is
+     * verified against the resolved tenant's live CIPP group listing before
+     * the single write is sent with the VERIFIED name and type. Local rails
+     * (dedup, cooldown) run before the verification read so a refused call
+     * never reaches upstream at all.
+     *
+     * @return array<string, mixed>
+     */
+    private function executeGroupMembershipDirect(string $tool, array $arguments, int $clientId, string $actorLabel): array
+    {
+        $context = $this->groupMembershipContext($tool, $arguments, $clientId, $actorLabel, requireTicket: false);
+        if (isset($context['error'])) {
+            return ['error' => $context['error']];
+        }
+
+        /** @var Client $client */
+        $client = $context['client'];
+        /** @var string $tenant */
+        $tenant = $context['tenant'];
+        /** @var ResolvedCippPerson $person */
+        $person = $context['person'];
+        /** @var Ticket|null $ticket */
+        $ticket = $context['ticket'];
+        /** @var array<string, mixed> $params */
+        $params = $context['params'];
+        $reason = (string) $context['reason'];
+
+        $targetKey = $this->groupMembershipTargetKey($person, $params);
+        $contentHash = $this->contentHash($tool, $client->id, $person->person->id, $ticket?->id, $params);
+
+        // Both rails: the exact-content dedup AND the identity-keyed rail (the
+        // same user + group + operation staged from a different ticket is
+        // still the same membership change being executed twice).
+        if ($this->alreadyExecuted($tool, $client->id, $contentHash) || $this->groupMembershipAlreadyExecuted($client->id, $targetKey)) {
+            $this->auditAttempt($tool, 'blocked', $client->id, $ticket, $person, null, $contentHash, "{$targetKey}: Duplicate {$tool} suppressed before upstream call.", $actorLabel);
+
+            return [
+                'success' => true,
+                'idempotent' => true,
+                'message' => 'Already executed identical CIPP write recently; no upstream call was made.',
+            ];
+        }
+
+        // Shared targetKey-in-summary cooldown helper (same semantics as the
+        // email-security and create-user non-person-only targets).
+        if ($this->emailSecurityCooldownActive($tool, $client->id, $targetKey, self::COOLDOWNS[$tool] ?? 300)) {
+            $this->auditAttempt($tool, 'blocked', $client->id, $ticket, $person, null, $contentHash, "{$targetKey}: {$tool} cooldown active; upstream call refused.", $actorLabel);
+
+            return ['error' => "{$tool} cooldown active for this target; no upstream call was made."];
+        }
+
+        try {
+            $group = $this->groupFactsFromRow($this->verifiedGroupRow($tenant, (string) $params['group_id'], (string) $context['confirm_group_name']));
+        } catch (CippWriteScopeException $e) {
+            $this->auditAttempt($tool, 'rejected', $client->id, $ticket, $person, null, $contentHash, "{$targetKey}: ".$e->getMessage(), $actorLabel);
+
+            return ['error' => $e->getMessage()];
+        }
+
+        try {
+            $this->client->setGroupMembership($tenant, (string) $params['group_id'], $group['name'], $group['type'], $person->userId, $person->userPrincipalName, (string) $params['operation']);
+        } catch (CippClientException $e) {
+            $this->auditAttempt($tool, 'error', $client->id, $ticket, $person, null, $contentHash, "{$targetKey}: ".$this->safeFailureSummary($tool, $e), $actorLabel);
+
+            return ['error' => "CIPP write failed for {$tool}; treat the membership change as not applied."];
+        }
+
+        $this->auditAttempt($tool, 'executed', $client->id, $ticket, $person, null, $contentHash, "{$targetKey}: {$tool} executed — ".$this->groupMembershipAuditDetail((string) $params['operation'], $group['name'], (string) $params['group_id']).": {$reason}", $actorLabel);
+
+        return [
+            'success' => true,
+            'tool' => $tool,
+            'person_id' => $person->person->id,
+            'ticket_id' => $ticket?->id,
+            'group_id' => (string) $params['group_id'],
+            'operation' => (string) $params['operation'],
+            'message' => 'CIPP group membership change executed.',
+        ];
+    }
+
+    /**
+     * Staged twin for the group-membership write — the DEFAULT path (grants
+     * start staged-only). Staging performs the same read-only verification
+     * lookup as the direct path (never the write itself) so the cockpit
+     * proposal shows the group's REAL server-verified display name and type
+     * rather than trusting the caller's description; the held payload stores
+     * only safe local scalars plus that verified snapshot, and approval
+     * re-verifies everything fresh (see approveGroupMembershipStagedRun).
+     *
+     * @return array<string, mixed>
+     */
+    private function stageGroupMembershipAction(string $tool, array $arguments, int $clientId, string $actorLabel): array
+    {
+        $context = $this->groupMembershipContext($tool, $arguments, $clientId, $actorLabel, requireTicket: true);
+        if (isset($context['error'])) {
+            return ['error' => $context['error']];
+        }
+
+        /** @var Client $client */
+        $client = $context['client'];
+        /** @var string $tenant */
+        $tenant = $context['tenant'];
+        /** @var ResolvedCippPerson $person */
+        $person = $context['person'];
+        /** @var Ticket $ticket */
+        $ticket = $context['ticket'];
+        /** @var array<string, mixed> $params */
+        $params = $context['params'];
+        $reason = (string) $context['reason'];
+        $directTool = self::STAGED_TO_DIRECT[$tool];
+
+        $targetKey = $this->groupMembershipTargetKey($person, $params);
+        $contentHash = $this->contentHash($tool, $client->id, $person->person->id, $ticket->id, $params);
+
+        if ($this->alreadyExecuted($tool, $client->id, $contentHash)) {
+            return [
+                'success' => true,
+                'idempotent' => true,
+                'ticket_id' => $ticket->id,
+                'ticket_display_id' => $ticket->display_id,
+                'run_id' => $this->executedRunId($tool, $client->id, $contentHash),
+                'message' => 'Already executed identical action recently; no new proposal was staged.',
+            ];
+        }
+
+        $liveAwaitingRun = $this->liveAwaitingRun($ticket->id, $tool, $contentHash);
+        if ($liveAwaitingRun !== null) {
+            return [
+                'success' => true,
+                'idempotent' => true,
+                'ticket_id' => $ticket->id,
+                'ticket_display_id' => $ticket->display_id,
+                'run_id' => $liveAwaitingRun->id,
+                'message' => 'Already staged; awaiting approval.',
+            ];
+        }
+
+        if ($this->emailSecurityProposalCooldownActive($tool, $ticket, $targetKey, self::COOLDOWNS[$tool] ?? 300)) {
+            $this->auditAttempt($tool, 'blocked', $client->id, $ticket, $person, null, $contentHash, "{$targetKey}: {$tool} cooldown active; staged proposal refused.", $actorLabel);
+
+            return ['error' => "{$tool} cooldown active for this target; no proposal was staged."];
+        }
+
+        try {
+            $group = $this->groupFactsFromRow($this->verifiedGroupRow($tenant, (string) $params['group_id'], (string) $context['confirm_group_name']));
+        } catch (CippWriteScopeException $e) {
+            $this->auditAttempt($tool, 'rejected', $client->id, $ticket, $person, null, $contentHash, "{$targetKey}: ".$e->getMessage(), $actorLabel);
+
+            return ['error' => $e->getMessage()];
+        }
+
+        // The stored params carry the verified name/type SNAPSHOT so approval
+        // can detect drift (rename, type change) against the fresh listing.
+        $storedParams = array_merge($params, ['group_name' => $group['name'], 'group_type' => $group['type']]);
+
+        $meta = [
+            'drafted_by' => $actorLabel,
+            'reasons' => [$reason],
+            'direct_tool' => $directTool,
+            'person_id' => $person->person->id,
+            'redacted_params' => $storedParams,
+            'sensitive_inputs' => [],
+            'encrypted_payload' => Crypt::encryptString(json_encode([
+                'direct_tool' => $directTool,
+                'client_id' => $client->id,
+                'person_id' => $person->person->id,
+                'ticket_id' => $ticket->id,
+                'params' => $storedParams,
+            ], JSON_THROW_ON_ERROR)),
+        ];
+        $proposedContent = $this->groupMembershipStagedDisplay($person, (string) $params['operation'], $group, (string) $params['group_id'])."\nReason: ".$reason;
+
+        // Same idempotency-revive contract as stageAction() (bd psa-k4s0): the
+        // DB unique key (ticket_id + action_type + content_hash) either creates
+        // a fresh run or revives the superseded/denied row it collides with.
+        $run = TechnicianRun::firstOrCreate(
+            [
+                'ticket_id' => $ticket->id,
+                'action_type' => $tool,
+                'content_hash' => $contentHash,
+            ],
+            [
+                'client_id' => $client->id,
+                'state' => TechnicianRunState::AwaitingApproval,
+                'proposed_content' => $proposedContent,
+                'proposed_meta' => $meta,
+                'confidence' => null,
+                'tokens_used' => 0,
+            ],
+        );
+
+        if (! $run->wasRecentlyCreated && $run->state !== TechnicianRunState::AwaitingApproval) {
+            $run->update([
+                'state' => TechnicianRunState::AwaitingApproval->value,
+                'proposed_content' => $proposedContent,
+                'proposed_meta' => $meta,
+                'confidence' => null,
+                'tokens_used' => 0,
+            ]);
+        } elseif (! $run->wasRecentlyCreated) {
+            return [
+                'success' => true,
+                'idempotent' => true,
+                'ticket_id' => $ticket->id,
+                'ticket_display_id' => $ticket->display_id,
+                'run_id' => $run->id,
+                'message' => 'Already staged; awaiting approval.',
+            ];
+        }
+
+        $this->auditAttempt($tool, 'awaiting_approval', $client->id, $ticket, $person, null, $contentHash, "{$targetKey}: MCP staged {$tool} — ".$this->groupMembershipAuditDetail((string) $params['operation'], $group['name'], (string) $params['group_id']).": {$reason}", $actorLabel, $run->id);
+
+        return [
+            'success' => true,
+            'ticket_id' => $ticket->id,
+            'ticket_display_id' => $ticket->display_id,
+            'run_id' => $run->id,
+            'message' => 'Staged for cockpit approval.',
+        ];
+    }
+
+    /**
+     * Approval replay for a held group-membership write. The caller has
+     * already claimed the run. Everything is revalidated from the encrypted
+     * payload through the same gates as the initial call; the target user is
+     * re-resolved fresh (an ADD re-runs the ACTIVE gate, so a person
+     * deactivated after staging declines instead of being granted group
+     * access — psa-pgnj), and the group is re-verified against the LIVE
+     * tenant listing with the staged name/type snapshot compared against the
+     * fresh row — a renamed, re-typed, or vanished group declines instead of
+     * executing against something the operator never reviewed. A re-fired
+     * approval of an already-executed identical change — from this ticket or
+     * any other — is a LOGGED NO-OP, never a second upstream call.
+     */
+    private function approveGroupMembershipStagedRun(TechnicianRun $run, int $approverId): TechnicianApprovalResult
+    {
+        try {
+            $payload = $this->decryptRunPayload($run);
+            if ($payload === null) {
+                $run->releaseClaim();
+
+                return $this->declined('The held payload could not be read; deny this proposal and re-stage it.');
+            }
+
+            $directTool = (string) ($payload['direct_tool'] ?? '');
+            if ((self::STAGED_TO_DIRECT[$run->action_type] ?? null) !== $directTool
+                || ! in_array($directTool, self::GROUP_MEMBERSHIP_TOOLS, true)) {
+                $run->releaseClaim();
+
+                return $this->declined('The held payload does not match this action type; deny this proposal and re-stage it.');
+            }
+
+            $client = Client::find((int) ($payload['client_id'] ?? 0));
+            if (! $client || (int) $client->id !== (int) $run->client_id) {
+                $run->releaseClaim();
+
+                return $this->declined('The proposal\'s client could not be re-verified; deny this proposal and re-stage it.');
+            }
+
+            $tenant = $this->resolver->resolveCippTenant($client);
+            $ticket = $this->resolver->resolveTicketForHeldAction($client->id, $payload['ticket_id'] ?? null);
+            $stored = is_array($payload['params'] ?? null) ? $payload['params'] : [];
+            $params = $this->groupMembershipParams($stored);
+
+            $person = $this->resolver->resolveCippPerson($client->id, $payload['person_id'] ?? null);
+            if ($params['operation'] === 'add') {
+                // Fresh ACTIVE re-gate: adding grants access, and the person
+                // may have been offboarded between staging and approval.
+                $person = $this->resolver->resolveActiveCippPerson($client->id, $person->person->id, 'user');
+            }
+
+            $targetKey = $this->groupMembershipTargetKey($person, $params);
+            $contentHash = $run->content_hash;
+
+            if (TechnicianConfig::killSwitchEngaged()) {
+                $this->auditAttempt($run->action_type, 'blocked', $client->id, $ticket, $person, null, $contentHash, "{$targetKey}: Technician kill-switch engaged; staged CIPP write refused.", $this->approverLabel($approverId), $run->id, $approverId);
+                $run->releaseClaim();
+
+                return $this->declined('Technician kill-switch engaged; the staged CIPP write was refused.');
+            }
+
+            // Duplicate rail (device-wipe / create-user precedent): an
+            // identical user+group+operation that already executed leaves the
+            // queue terminally as a logged no-op.
+            if ($this->groupMembershipAlreadyExecuted($client->id, $targetKey)) {
+                $this->auditAttempt($run->action_type, 'blocked', $client->id, $ticket, $person, null, $contentHash, "{$targetKey}: Duplicate group membership change suppressed: identical user/group/operation already executed within ".self::DIRECT_DEDUP_HOURS.'h; the approval was treated as a logged no-op.', $this->approverLabel($approverId), $run->id, $approverId);
+                $run->advanceTo(TechnicianRunState::Done);
+
+                return new TechnicianApprovalResult('already_handled');
+            }
+
+            if ($this->emailSecurityCooldownActive($directTool, $client->id, $targetKey, self::COOLDOWNS[$directTool] ?? 300)) {
+                $this->auditAttempt($run->action_type, 'blocked', $client->id, $ticket, $person, null, $contentHash, "{$targetKey}: CIPP staged action cooldown active; approval refused before upstream call.", $this->approverLabel($approverId), $run->id, $approverId);
+                $run->releaseClaim();
+
+                return $this->declined('A recent action for this target is still in cooldown; wait a few minutes and approve again.');
+            }
+
+            $group = $this->groupFactsFromRow($this->verifiedGroupRow($tenant, (string) $params['group_id'], null));
+
+            // Drift rails: the operator approved a proposal naming a specific
+            // group; a changed type or name means they reviewed something else.
+            $stagedType = trim((string) ($stored['group_type'] ?? ''));
+            if ($stagedType === '' || strcasecmp($group['type'], $stagedType) !== 0) {
+                $run->releaseClaim();
+
+                return $this->declined('The group type changed after this action was staged; deny this proposal and re-stage it against the current group.');
+            }
+
+            $stagedName = trim((string) ($stored['group_name'] ?? ''));
+            if ($stagedName === '' || strcasecmp($group['name'], $stagedName) !== 0) {
+                $run->releaseClaim();
+
+                return $this->declined('The group display name changed after this action was staged; deny this proposal and re-stage it against the current group.');
+            }
+
+            try {
+                $this->client->setGroupMembership($tenant, (string) $params['group_id'], $group['name'], $group['type'], $person->userId, $person->userPrincipalName, (string) $params['operation']);
+            } catch (CippClientException $e) {
+                $this->auditAttempt($run->action_type, 'error', $client->id, $ticket, $person, null, $contentHash, "{$targetKey}: ".$this->safeFailureSummary($run->action_type, $e), $this->approverLabel($approverId), $run->id, $approverId);
+                $run->releaseClaim();
+
+                return $this->declined($e->getMessage());
+            }
+
+            $this->auditAttempt($run->action_type, 'executed', $client->id, $ticket, $person, null, $contentHash, "{$targetKey}: Operator-approved {$run->action_type} executed — ".$this->groupMembershipAuditDetail((string) $params['operation'], $group['name'], (string) $params['group_id']).'.', $this->approverLabel($approverId), $run->id, $approverId);
+            $run->advanceTo(TechnicianRunState::Done);
+
+            return new TechnicianApprovalResult('executed');
+        } catch (CippWriteScopeException $e) {
+            $run->releaseClaim();
+
+            return $this->declined($e->getMessage());
+        } catch (\Throwable $e) {
+            $run->releaseClaim();
+
+            throw $e;
+        }
+    }
+
+    /**
+     * Shared front door for the group-membership write: the same caller-input
+     * gates as context() (upstream-identifier blocklist, required redacted
+     * reason, kill-switch, client + tenant + person + ticket resolution,
+     * confirm_upn friction) with group-membership parameter validation in
+     * place of license/state/mailbox resolution. An ADD re-resolves the
+     * target person through the ACTIVE gate (psa-pgnj): group membership
+     * grants access to whatever the group carries, and a deactivated person
+     * must never be added; a REMOVE deliberately stays on the loose resolver
+     * (revoking an already-deactivated user's membership is routine
+     * offboarding cleanup). The group itself is NOT resolved here — the live
+     * verification read runs after the local dedup/cooldown rails so a
+     * refused call never reaches upstream at all.
+     *
+     * @return array{client?: Client, tenant?: string, person?: ResolvedCippPerson, ticket?: Ticket|null, params?: array<string, mixed>, confirm_group_name?: string, reason?: string, error?: string}
+     */
+    private function groupMembershipContext(string $tool, array $arguments, int $clientId, string $actorLabel, bool $requireTicket): array
+    {
+        $contentHash = $this->contentHash($tool, $clientId, null, null, $arguments);
+
+        if ($keys = $this->upstreamIdentifierKeys($arguments)) {
+            $this->auditAttempt($tool, 'rejected', $clientId, null, null, null, $contentHash, 'Caller-supplied upstream CIPP identifiers are not accepted: '.implode(', ', $keys).'.', $actorLabel);
+
+            return ['error' => 'Caller-supplied upstream CIPP identifiers are not accepted; provide PSA person_id, the tool\'s own validated parameters, and ticket_id only.'];
+        }
+
+        $reason = $this->requiredString($arguments, 'reason');
+        if ($reason === null) {
+            $this->auditAttempt($tool, 'rejected', $clientId, null, null, null, $contentHash, 'reason is required.', $actorLabel);
+
+            return ['error' => 'reason is required'];
+        }
+        $reason = $this->safeReason($tool, $reason, $arguments);
+
+        if (TechnicianConfig::killSwitchEngaged()) {
+            $this->auditAttempt($tool, 'blocked', $clientId, null, null, null, $contentHash, 'Technician kill-switch engaged; CIPP MCP write refused.', $actorLabel);
+
+            return ['error' => 'Technician kill-switch engaged; CIPP MCP write refused'];
+        }
+
+        $client = Client::find($clientId);
+        if (! $client) {
+            $this->auditAttempt($tool, 'rejected', $clientId, null, null, null, $contentHash, 'Client not found.', $actorLabel);
+
+            return ['error' => 'Client not found'];
+        }
+
+        try {
+            $tenant = $this->resolver->resolveCippTenant($client);
+            $person = $this->resolver->resolveCippPerson($client->id, $arguments['person_id'] ?? null);
+            $ticket = $requireTicket
+                ? $this->resolver->resolveTicketForHeldAction($client->id, $arguments['ticket_id'] ?? null)
+                : $this->resolver->resolveOptionalTicket($client->id, $arguments['ticket_id'] ?? null);
+            $params = $this->groupMembershipParams($arguments);
+            if ($params['operation'] === 'add') {
+                // Re-resolve through the ACTIVE gate, fresh on every path.
+                $person = $this->resolver->resolveActiveCippPerson($client->id, $person->person->id, 'user');
+            }
+            $confirmGroupName = (string) $this->boundedString($arguments, 'confirm_group_name', self::GROUP_NAME_MAX, required: true);
+        } catch (CippWriteScopeException $e) {
+            $this->auditAttempt($tool, 'rejected', $client->id, null, null, null, $contentHash, $e->getMessage(), $actorLabel);
+
+            return ['error' => $e->getMessage()];
+        }
+
+        if ($error = $this->confirmUpnError($arguments, $person)) {
+            $this->auditAttempt($tool, 'rejected', $client->id, $ticket, $person, null, $this->contentHash($tool, $client->id, $person->person->id, $ticket?->id, $params), $error, $actorLabel);
+
+            return ['error' => $error];
+        }
+
+        return [
+            'client' => $client,
+            'tenant' => $tenant,
+            'person' => $person,
+            'ticket' => $ticket,
+            'params' => $params,
+            'confirm_group_name' => $confirmGroupName,
+            'reason' => $reason,
+        ];
+    }
+
+    /**
+     * Validate the group-membership scalar params. Runs on the initial call
+     * (against caller arguments) AND on the approval replay (against the
+     * decrypted stored payload), so a tampered or drifted payload re-fails
+     * the same gates instead of being trusted. group_id is pinned to GUID
+     * shape — mail addresses and display names are refused so the
+     * verification read can never be fed an ambiguous Exchange identity —
+     * and canonicalized to lowercase so casing can never fork the
+     * idempotency hash or the dedup/cooldown keys.
+     *
+     * @return array<string, mixed>
+     */
+    private function groupMembershipParams(array $source): array
+    {
+        $operation = $this->canonicalChoice($this->requiredString($source, 'operation'), self::GROUP_MEMBERSHIP_OPERATIONS, 'operation');
+
+        $groupId = $this->requiredString($source, 'group_id');
+        if ($groupId === null || preg_match(self::GROUP_ID_PATTERN, $groupId) !== 1) {
+            throw new CippWriteScopeException('group_id must be the Microsoft 365 group id (GUID) exactly as returned by the CIPP group reads (e.g. cipp_list_groups).');
+        }
+
+        return [
+            'operation' => $operation,
+            'group_id' => mb_strtolower($groupId),
+        ];
+    }
+
+    /**
+     * The group-membership scope gate: fetch the resolved tenant's LIVE group
+     * listing through the same credentialed client the write would use and
+     * require the group id to be present in it (quarantine-release
+     * precedent). This converts a caller-supplied GUID into a
+     * server-verified, tenant-scoped object — a group in any other tenant
+     * can never be targeted — and every membership guard reads the VERIFIED
+     * row (field names from CIPP-API Invoke-ListGroups.ps1):
+     *
+     *   - dynamic-membership groups are refused (members are managed by the
+     *     membership rule; the manual change would be rejected upstream) —
+     *     detected by ANY of dynamicGroupBool, a DynamicMembership
+     *     groupTypes entry, or a non-empty membershipRule, so projection
+     *     drift cannot fail open;
+     *   - on-premises-synced groups are refused (membership is mastered in
+     *     AD; Microsoft 365 refuses cloud-side changes);
+     *   - the group TYPE must be one CIPP's own projection derives — an
+     *     absent or unrecognized type fails closed rather than guessing
+     *     which upstream routing arm (Graph vs Exchange) would apply.
+     *
+     * When $expectedName is given (initial calls), it must match the
+     * verified row's displayName.
+     *
+     * @return array<string, mixed>
+     */
+    private function verifiedGroupRow(string $tenant, string $groupId, ?string $expectedName): array
+    {
+        try {
+            $rows = $this->client->listGroups($tenant);
+        } catch (CippClientException) {
+            throw new CippWriteScopeException('Could not verify the group against the tenant\'s live group listing; no membership change was made.');
+        }
+
+        foreach ($rows as $row) {
+            if (! is_array($row) || strcasecmp(trim((string) ($row['id'] ?? '')), $groupId) !== 0) {
+                continue;
+            }
+
+            $groupTypes = array_values(array_filter(is_array($row['groupTypes'] ?? null) ? $row['groupTypes'] : [], 'is_string'));
+            $isDynamic = (bool) ($row['dynamicGroupBool'] ?? false)
+                || in_array('DynamicMembership', $groupTypes, true)
+                || trim((string) ($row['membershipRule'] ?? '')) !== '';
+            if ($isDynamic) {
+                throw new CippWriteScopeException('This group uses dynamic membership; its members are managed by the membership rule, not manually. Adjust the rule in Entra (or pick a non-dynamic group) instead.');
+            }
+
+            if (($row['onPremisesSyncEnabled'] ?? null) === true) {
+                throw new CippWriteScopeException('This group is synced from on-premises Active Directory; change its membership in AD — cloud-side changes are refused by Microsoft 365.');
+            }
+
+            $type = trim((string) ($row['groupType'] ?? ''));
+            $recognized = false;
+            foreach (self::GROUP_TYPES as $known) {
+                if (strcasecmp($type, $known) === 0) {
+                    $recognized = true;
+                    break;
+                }
+            }
+            if (! $recognized) {
+                throw new CippWriteScopeException('The group type could not be determined from the CIPP group listing; membership changes are refused for unrecognized group types.');
+            }
+
+            if (trim((string) ($row['displayName'] ?? '')) === '') {
+                throw new CippWriteScopeException('The verified group has no display name in the CIPP group listing; refresh the CIPP group reads and retry.');
+            }
+
+            if ($expectedName !== null && strcasecmp(trim((string) $row['displayName']), $expectedName) !== 0) {
+                throw new CippWriteScopeException('The typed confirm_group_name does not match the verified group display name. CIPP write cancelled.');
+            }
+
+            return $row;
+        }
+
+        throw new CippWriteScopeException('Group not found in this client tenant\'s live group listing; pass the exact group id returned by the CIPP group reads (e.g. cipp_list_groups).');
+    }
+
+    /**
+     * Verified-row facts for the upstream body, audit summaries, and the
+     * cockpit display. Untrusted external content: control characters are
+     * stripped and every value is length-bounded. The type is canonicalized
+     * to CIPP's own projection strings so the upstream routing arm can never
+     * be forked by casing.
+     *
+     * @param  array<string, mixed>  $row
+     * @return array{name: string, type: string, mail: string}
+     */
+    private function groupFactsFromRow(array $row): array
+    {
+        $clean = fn (mixed $value, int $max): string => mb_substr(trim((string) preg_replace('/[\x00-\x1F\x7F]+/u', ' ', is_scalar($value) ? (string) $value : '')), 0, $max);
+
+        $type = trim((string) ($row['groupType'] ?? ''));
+        foreach (self::GROUP_TYPES as $known) {
+            if (strcasecmp($type, $known) === 0) {
+                $type = $known;
+                break;
+            }
+        }
+
+        return [
+            'name' => $clean($row['displayName'] ?? '', self::GROUP_NAME_MAX),
+            'type' => $type,
+            'mail' => $clean($row['mail'] ?? '', 254),
+        ];
+    }
+
+    /**
+     * Per-target cooldown/audit correlation key — hash-based like the other
+     * non-person-only targets so the audit LIKE matching can never be
+     * confused by pattern characters. Keyed on user + group + operation so
+     * bulk onboarding (one user into several groups) and offboarding group
+     * cleanup (one user out of several groups) are never serialized by the
+     * cooldown, and a deliberate add→remove correction is not blocked —
+     * while same-operation repeats on the same pair are.
+     */
+    private function groupMembershipTargetKey(ResolvedCippPerson $person, array $params): string
+    {
+        return 'group_member #'.substr(hash('sha256', mb_strtolower((string) ($params['group_id'] ?? '')).'|'.$person->person->id.'|'.(string) ($params['operation'] ?? '')), 0, 12);
+    }
+
+    /**
+     * Whether this exact user + group + operation already executed recently —
+     * the double-execution rail (create-user / device-wipe precedent). Keyed
+     * on the identity embedded in the executed audit summary, NOT the content
+     * hash, so a duplicate staged from a different ticket is caught too.
+     */
+    private function groupMembershipAlreadyExecuted(int $clientId, string $targetKey): bool
+    {
+        return TechnicianActionLog::query()
+            ->whereIn('action_type', ['cipp_set_group_membership', 'cipp_stage_set_group_membership'])
+            ->where('client_id', $clientId)
+            ->where('result_status', 'executed')
+            ->where('created_at', '>=', now()->subHours(self::DIRECT_DEDUP_HOURS))
+            ->where('summary', 'like', '%'.$targetKey.'%')
+            ->exists();
+    }
+
+    /** Group identity detail for audit summaries: the group name and id ARE the tenant object being changed — an audit row that hides them would be unreviewable. The person stays a PSA id via the summary prefix. */
+    private function groupMembershipAuditDetail(string $operation, string $groupName, string $groupId): string
+    {
+        return ($operation === 'add' ? 'added to' : 'removed from').' group "'.$groupName.'" (id '.$groupId.')';
+    }
+
+    /**
+     * @param  array{name: string, type: string, mail: string}  $group
+     */
+    private function groupMembershipStagedDisplay(ResolvedCippPerson $person, string $operation, array $group, string $groupId): string
+    {
+        // A membership change is a two-party decision: the approver must see
+        // WHO is added to / removed from WHICH group without leaving the
+        // queue. The user is named by UPN (a same-client internal address,
+        // not a secret) plus PSA id; the group by its server-VERIFIED display
+        // name, type, mail, and id — never the caller's description. Only the
+        // display carries the UPN; the stored payload and audit stay id-only
+        // for the person.
+        $userLabel = $person->userPrincipalName.' (PSA person #'.$person->person->id.')';
+        $groupLabel = '"'.$group['name'].'" ('.$group['type'].($group['mail'] !== '' ? ', mail '.$group['mail'] : '').', id '.$groupId.')';
+
+        if ($operation === 'add') {
+            $privilegeNote = in_array($group['type'], ['Security', 'Mail-Enabled Security'], true)
+                ? ' This is a SECURITY group: membership can carry access-controlled resources or elevated privileges — verify what this group grants before approving.'
+                : '';
+
+            return 'Add user '.$userLabel.' to group '.$groupLabel.'.'
+                .' Membership grants the user whatever the group carries (shared data, resources, mail).'
+                .$privilegeNote
+                .' Approval re-verifies the group and the user\'s active status fresh before execution.';
+        }
+
+        return 'Remove user '.$userLabel.' from group '.$groupLabel.'.'
+            .' The user loses whatever access the group carries.'
+            .' Approval re-verifies the group fresh before execution.';
     }
 
     /**
@@ -4277,6 +4968,37 @@ class StaffCippWriteToolExecutor
     }
 
     /** @return array<string, mixed> */
+    private static function groupMembershipProperties(): array
+    {
+        return [
+            'group_id' => [
+                'type' => 'string',
+                'description' => 'Microsoft 365 group id (GUID) exactly as returned by the CIPP group reads (e.g. cipp_list_groups). The server verifies it against the resolved client tenant\'s live group listing and derives the group name and type from the verified row; groups in other tenants, dynamic-membership groups, and on-premises-synced groups are refused. Mail addresses and display names are not accepted as the group identity.',
+            ],
+            'operation' => [
+                'type' => 'string',
+                'enum' => self::GROUP_MEMBERSHIP_OPERATIONS,
+                'description' => 'add to add the user to the group; remove to remove them. Adding requires the user to be ACTIVE in the PSA; removing stays possible for deactivated users (offboarding cleanup).',
+            ],
+            'confirm_group_name' => [
+                'type' => 'string',
+                'description' => 'Typed group display name confirmation for defense-in-depth. Verified case-insensitively against the server-verified group\'s displayName; a mismatch cancels the call.',
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private static function setGroupMembershipTool(): array
+    {
+        return self::tool(
+            'cipp_set_group_membership',
+            'Add one server-derived CIPP user to — or remove them from — one Microsoft 365 group (Security, Microsoft 365, Distribution List, or Mail-Enabled Security) in the resolved client tenant immediately through CIPP. The group is verified against the tenant\'s LIVE group listing and its name and type are derived server-side from the verified row; dynamic-membership groups and on-premises-synced groups are refused (their membership is rule- or AD-managed). ADD grants the user whatever access the group carries — shared data, resources, mail, and for security groups possibly privileged access — so the target user must be ACTIVE in the PSA; REMOVE stays possible for deactivated users (offboarding cleanup). confirm_upn is the target USER\'s UPN (person_id); confirm_group_name is the group\'s display name. Requires an explicit token grant (grants start staged-only; immediate execution needs the immediate mode grant), reason, kill-switch, dedup/cooldown, and TechnicianActionLog audit.',
+            array_merge(self::personProperties(), self::groupMembershipProperties()),
+            ['person_id', 'group_id', 'operation', 'confirm_group_name', 'confirm_upn', 'reason'],
+        );
+    }
+
+    /** @return array<string, mixed> */
     private static function stageEditUserTool(): array
     {
         return self::tool(
@@ -4284,6 +5006,17 @@ class StaffCippWriteToolExecutor
             'Stage an edit of an existing Microsoft 365 user\'s profile and directory attributes for cockpit approval — the default path for this capability. The MCP call makes no CIPP upstream call; the held payload stores only validated safe scalars (the field values, the clear list, and the local manager person id), the cockpit proposal lists every proposed change verbatim for review, and approval re-resolves the target user AND the manager fresh — a target that lost its CIPP mapping or a manager deactivated after staging refuses execution. Null-safe partial update: only the listed fields change and the sign-in UPN stays pinned to the current value. confirm_upn is the CURRENT UPN of the user being edited.',
             self::editUserProperties(ticket: true),
             ['person_id', 'ticket_id', 'confirm_upn', 'reason'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function stageSetGroupMembershipTool(): array
+    {
+        return self::tool(
+            'cipp_stage_set_group_membership',
+            'Stage a Microsoft 365 group membership change (add or remove one server-derived CIPP user) for cockpit approval — the default path for this capability. Staging verifies the group against the resolved client tenant\'s live group listing (a read, never the write itself) so the proposal shows the VERIFIED group name and type; the held payload stores only safe local scalars plus that verified snapshot, and approval re-verifies the user\'s active status (for adds) and the group\'s existence, name, and type FRESH — any drift declines instead of executing against a group the operator never reviewed. Dynamic-membership and on-premises-synced groups are refused at staging. confirm_upn is the target USER\'s UPN (person_id); confirm_group_name is the group\'s display name.',
+            array_merge(self::personProperties(ticket: true), self::groupMembershipProperties()),
+            ['person_id', 'group_id', 'operation', 'confirm_group_name', 'ticket_id', 'confirm_upn', 'reason'],
         );
     }
 }
