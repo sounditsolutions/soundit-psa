@@ -18,6 +18,22 @@
     </div>
 </div>
 
+{{-- Line-level errors (e.g. a graduated/volume pricing-model conflict) key off
+     `lines.N.*`, which no per-field @error on this page renders. Without this
+     summary the refusal would be silent — and a silent refusal on a billing form
+     is exactly the failure the guard exists to prevent. --}}
+@if($errors->any())
+    <div class="alert alert-danger alert-dismissible fade show">
+        <strong>Please fix the following errors:</strong>
+        <ul class="mb-0 mt-1">
+            @foreach($errors->all() as $error)
+                <li>{{ $error }}</li>
+            @endforeach
+        </ul>
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    </div>
+@endif
+
 <div class="row">
     <div class="col-lg-10">
         <form method="POST" action="{{ route('profiles.store', $contract) }}" id="profileForm">
@@ -211,6 +227,8 @@
                             <div class="tier-config-panel mt-2 p-2 border rounded bg-light" data-tier-seq="0" style="display:none">
                                 <div class="small text-muted mb-2">
                                     <i class="bi bi-bar-chart-steps me-1"></i>Graduated pricing — each band prices only the units that fall in its range (first N @ $X, next M @ $Y). Leave the last "Up to" blank; it covers everything above. The unit price above is taken from the first band.
+                                    <br>
+                                    <i class="bi bi-exclamation-triangle me-1"></i>A "Backup Storage (GB)" line whose SKU already carries <em>volume</em> storage tiers cannot also be graduated — the two bill different amounts for the same usage, so you will be asked to pick one.
                                 </div>
                                 <div class="tier-rows"></div>
                                 <button type="button" class="btn btn-outline-secondary btn-sm mt-1 add-tier-btn" onclick="addTier(this)">

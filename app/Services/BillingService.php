@@ -12,6 +12,7 @@ use App\Models\InvoiceLine;
 use App\Models\RecurringInvoiceProfile;
 use App\Models\RecurringInvoiceProfileLine;
 use App\Models\Setting;
+use App\Support\PricingModelConflict;
 use App\Support\TieredPricing;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
@@ -274,7 +275,13 @@ class BillingService
      * `prepaid_time_override ?? sku->prepaid_time_minutes`). The alternative
      * fails worse: a SKU rate card silently overriding bands the operator
      * explicitly put on the line would bill a pricing model nobody configured.
-     * The combination is unusual enough to log, though — see below.
+     *
+     * That combination is now REFUSED at every door that can create it
+     * ({@see \App\Support\PricingModelConflict}) — but this precedence stays, as
+     * defence in depth. Validation stops new conflicts; it cannot un-write a row
+     * that predates it. So if one still reaches billing, it must bill
+     * deterministically and say so: loudly in the log, and by name in the invoice
+     * line's `quantity_source`.
      *
      * Every segment carries `amount = round(quantity × unit_price, 2)`,
      * whichever model priced it, so that invariant holds for every invoice line
@@ -305,13 +312,20 @@ class BillingService
             ]];
         }
 
-        if ($this->hasVolumeRateCard($line)) {
+        // A row that got in before the guard existed. Bill it deterministically,
+        // and do not let it pass quietly.
+        if (PricingModelConflict::onLine($line)) {
             Log::warning('[Billing] Profile line {line} carries graduated tiers and its SKU carries a volume rate card; the line\'s graduated tiers win.', [
                 'line' => $line->id,
                 'profile_id' => $line->profile_id,
                 'sku_id' => $line->sku_id,
             ]);
         }
+
+        // The client reads these band labels on the invoice, so name what is
+        // being counted where the quantity type knows ("1–100 GB", "1–3
+        // workstations"); "units" only where it genuinely does not.
+        $noun = $line->quantity_type->unitNoun();
 
         $rows = [];
 
@@ -323,25 +337,12 @@ class BillingService
                 // Annotate the band range onto the invoice line description.
                 // Skipped for the zero-quantity placeholder segment.
                 'label' => $quantity > 0
-                    ? "units {$segment['from']}\u{2013}{$segment['to']} @ \$".number_format($segment['unit_price'], 2)
+                    ? "{$segment['from']}\u{2013}{$segment['to']} {$noun} @ \$".number_format($segment['unit_price'], 2)
                     : null,
             ];
         }
 
         return $rows;
-    }
-
-    /**
-     * Whether the line's SKU carries a volume rate card — i.e. whether the
-     * line's own graduated tiers, if any, are overriding one.
-     */
-    private function hasVolumeRateCard(RecurringInvoiceProfileLine $line): bool
-    {
-        if ($line->quantity_type !== QuantityType::PerBackupStorageGb || ! $line->sku) {
-            return false;
-        }
-
-        return $line->sku->backupStorageTiers->isNotEmpty();
     }
 
     public function generateInvoicesForDueProfiles(): array
@@ -634,13 +635,21 @@ class BillingService
     }
 
     /**
-     * The audit snapshot stored on each generated invoice line: how the
-     * quantity was measured, plus which rate card actually priced it.
+     * The audit snapshot stored on each generated invoice line: how the quantity
+     * was measured, and which rate card actually priced it.
      *
-     * Null for Fixed quantities — the operator typed the number, there is
-     * nothing to audit. (A Fixed line can still be graduated; its bands are
-     * recorded in the invoice line description, which is where every graduated
-     * line records them.)
+     * The two halves are independent, and either can be empty:
+     *
+     *  - A Fixed line records no *quantity* source. The operator typed the
+     *    number; there is nothing to audit about how much.
+     *  - A flat line records no *pricing* marker. There is no rate card to name.
+     *
+     * A Fixed + graduated line therefore still gets a quantity_source — just the
+     * pricing half. It has to: Fixed + graduated is the commonest graduated
+     * config there is ("first 10 @ $10, the rest @ $8" on a typed quantity), and
+     * an audit record silent about the model that priced it is the exact failure
+     * this feature is supposed to prevent. Only a plain flat Fixed line records
+     * nothing at all — unchanged from before graduated pricing existed.
      */
     private function buildQuantitySource(
         QuantityType $type,
@@ -651,8 +660,13 @@ class BillingService
         ?RecurringInvoiceProfileLine $line = null,
     ): ?string {
         $source = $this->describeQuantity($type, $quantity, $date, $contract, $licenseTypeId, $line);
+        $pricing = $this->describePricing($line, $quantity);
 
-        return $source === null ? null : $source.$this->describePricing($line, $quantity);
+        if ($source === null) {
+            return $pricing === '' ? null : ltrim($pricing);
+        }
+
+        return $source.$pricing;
     }
 
     /**

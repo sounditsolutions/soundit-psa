@@ -12,12 +12,14 @@ use App\Services\Qbo\QboSyncService;
 use App\Services\SkuService;
 use App\Services\Stripe\StripeClientException;
 use App\Services\Stripe\StripeSyncService;
+use App\Support\PricingModelConflict;
 use App\Support\StripeConfig;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\Rules\Enum;
+use Illuminate\Validation\ValidationException;
 
 class SkuController extends Controller
 {
@@ -248,33 +250,80 @@ class SkuController extends Controller
     }
 
     /**
-     * Replace a SKU's backup-storage tier rate card from submitted rows.
+     * Replace a SKU's backup-storage VOLUME tier rate card from submitted rows.
      * Fully-empty template rows are ignored; a blank `up_to_gb` marks the
      * unbounded catch-all tier.
+     *
+     * This is the only path in the app that creates a volume rate card, so the
+     * conflict guard lives HERE rather than at the call sites — store() and
+     * update() both get it, and no future caller can forget to ask. (A brand-new
+     * SKU has no profile lines, so store() can never actually trip it. It asks
+     * anyway: the invariant should hold structurally, not because today's call
+     * graph happens to make it moot.)
+     *
+     * @throws ValidationException when a recurring profile line already prices
+     *                             this SKU with graduated tiers
      */
     private function syncBackupStorageTiers(Sku $sku, array $tiers): void
     {
+        $rows = $this->submittedStorageTiers($tiers);
+
+        // The other direction of the same real-money ambiguity the profile-line
+        // form refuses: this product is about to gain a VOLUME rate card while a
+        // recurring line already prices it with GRADUATED bands, which would make
+        // the invoice bill a model nobody chose. Refuse, and name the profiles.
+        //
+        // Note this only fires when tiers are actually being *written*. Clearing
+        // them ($rows === []) is always allowed — it is one of the two documented
+        // ways out of a conflict that already exists in the database, and
+        // refusing it would strand the operator with no way to fix their data.
+        if ($rows !== []) {
+            $conflicting = PricingModelConflict::graduatedBackupLinesForSku($sku);
+
+            if ($conflicting->isNotEmpty()) {
+                throw ValidationException::withMessages([
+                    'tiers' => PricingModelConflict::skuMessage($conflicting),
+                ]);
+            }
+        }
+
         $sku->backupStorageTiers()->delete();
 
-        $order = 0;
-        foreach ($tiers as $tier) {
+        foreach ($rows as $order => $tier) {
             $upTo = $tier['up_to_gb'] ?? null;
             $price = $tier['unit_price'] ?? null;
 
-            $upTo = ($upTo === '' || $upTo === null) ? null : (int) $upTo;
-            $priceBlank = ($price === '' || $price === null);
-
-            // Skip rows with no data at all (leftover add-row templates).
-            if ($upTo === null && $priceBlank) {
-                continue;
-            }
-
             $sku->backupStorageTiers()->create([
-                'up_to_gb' => $upTo,
-                'unit_price' => $priceBlank ? 0 : $price,
-                'sort_order' => $order++,
+                'up_to_gb' => ($upTo === '' || $upTo === null) ? null : (int) $upTo,
+                'unit_price' => ($price === '' || $price === null) ? 0 : $price,
+                'sort_order' => $order,
             ]);
         }
+    }
+
+    /**
+     * The tier rows a submitted form actually asks us to persist — leftover
+     * add-row templates (no bound AND no price) are not tiers.
+     *
+     * The guard and the writer must agree exactly on this set. If they did not,
+     * the guard could refuse over a blank template row that would never have been
+     * written, or wave through one that would.
+     *
+     * @param  array<int, mixed>  $tiers
+     * @return array<int, array<string, mixed>>
+     */
+    private function submittedStorageTiers(array $tiers): array
+    {
+        return array_values(array_filter($tiers, function ($tier): bool {
+            if (! is_array($tier)) {
+                return false;
+            }
+
+            $upTo = $tier['up_to_gb'] ?? null;
+            $price = $tier['unit_price'] ?? null;
+
+            return ! (($upTo === '' || $upTo === null) && ($price === '' || $price === null));
+        }));
     }
 
     public function destroy(Sku $sku)

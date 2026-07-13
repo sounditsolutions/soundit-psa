@@ -285,16 +285,46 @@
                                         </button>
                                     </div>
                                 </div>
-                                @php $lineTiers = $line->pricingTiers(); @endphp
-                                <div class="mt-2">
-                                    <div class="form-check form-check-inline">
+                                @php
+                                    $lineTiers = $line->pricingTiers();
+                                    // Which rate card will actually price this line — and whether two
+                                    // of them are fighting over it. Reviewing a profile before you
+                                    // press Generate is exactly when you need to know this; a server
+                                    // log is no use to the person making the billing decision.
+                                    $lineHasVolumeCard = \App\Support\PricingModelConflict::volumeRateCardApplies($line->quantity_type, $line->sku);
+                                    $lineConflict = \App\Support\PricingModelConflict::onLine($line);
+                                @endphp
+                                <div class="mt-2 d-flex align-items-center gap-2 flex-wrap">
+                                    <div class="form-check form-check-inline mb-0">
                                         <input type="checkbox" class="form-check-input tiered-toggle" id="tiered-{{ $i }}" onchange="toggleTiered(this)" {{ $lineTiers ? 'checked' : '' }}>
                                         <label class="form-check-label small" for="tiered-{{ $i }}">Tiered pricing (graduated)</label>
                                     </div>
+                                    @if($lineTiers)
+                                        <span class="badge bg-info-subtle text-info-emphasis border border-info-subtle">
+                                            <i class="bi bi-bar-chart-steps me-1"></i>Graduated &middot; {{ count($lineTiers) }} {{ \Illuminate\Support\Str::plural('band', count($lineTiers)) }}
+                                        </span>
+                                    @elseif($lineHasVolumeCard)
+                                        <span class="badge bg-secondary-subtle text-secondary-emphasis border border-secondary-subtle">
+                                            <i class="bi bi-layers me-1"></i>Volume tiers (from SKU)
+                                        </span>
+                                    @endif
                                 </div>
+                                @if($lineConflict)
+                                    <div class="alert alert-warning py-2 px-3 mt-2 mb-0 small">
+                                        <i class="bi bi-exclamation-triangle-fill me-1"></i>
+                                        <strong>Two pricing models on this line.</strong>
+                                        It carries graduated tiers, and its SKU
+                                        (<span class="fw-semibold">{{ $line->sku->name }}</span>) also carries backup storage
+                                        <span class="fw-semibold">volume tiers</span>. The two bill different amounts for the same
+                                        usage. <strong>Graduated pricing wins</strong> — the bands below are what the invoice will
+                                        charge. To settle it, remove the SKU's volume tiers or turn graduated pricing off here.
+                                    </div>
+                                @endif
                                 <div class="tier-config-panel mt-2 p-2 border rounded bg-light" data-tier-seq="{{ count($lineTiers) }}" style="{{ $lineTiers ? '' : 'display:none' }}">
                                     <div class="small text-muted mb-2">
                                         <i class="bi bi-bar-chart-steps me-1"></i>Graduated pricing — each band prices only the units that fall in its range (first N @ $X, next M @ $Y). Leave the last "Up to" blank; it covers everything above. The Price above is taken from the first band.
+                                        <br>
+                                        <i class="bi bi-exclamation-triangle me-1"></i>A "Backup Storage (GB)" line whose SKU already carries <em>volume</em> storage tiers cannot also be graduated — the two bill different amounts for the same usage, so you will be asked to pick one.
                                     </div>
                                     <div class="tier-rows">
                                         @foreach($lineTiers as $ti => $tier)
@@ -740,11 +770,21 @@ function previewInvoice() {
                 return `${m}m`;
             };
 
+            const esc = s => String(s ?? '').replace(/[&<>"']/g, c =>
+                ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+            // quantity_source names the rate card that priced the line
+            // ("[graduated: 3 bands]" / "[volume tier rate $0.80/GB]"). This is
+            // the last screen before Generate, so it says so here rather than
+            // only in the invoice after the money is committed.
             let rows = data.lines.map(l =>
                 `<tr>
-                    <td>${l.description}</td>
+                    <td>${esc(l.description)}</td>
                     <td class="text-end">${l.quantity}</td>
-                    <td class="small text-muted">${l.quantity_type}</td>
+                    <td class="small text-muted">
+                        ${esc(l.quantity_type)}
+                        ${l.quantity_source ? `<div class="text-muted">${esc(l.quantity_source)}</div>` : ''}
+                    </td>
                     <td class="text-end">$${Number(l.unit_price).toFixed(2)}</td>
                     <td class="text-end fw-semibold">$${Number(l.amount).toFixed(2)}</td>
                     <td class="text-end small text-muted">${l.prepaid_time_minutes ? formatHours(l.prepaid_time_minutes) : '—'}</td>

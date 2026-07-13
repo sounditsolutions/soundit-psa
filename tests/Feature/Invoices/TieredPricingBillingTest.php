@@ -188,7 +188,7 @@ class TieredPricingBillingTest extends TestCase
         $first = $invoice->lines->firstWhere('quantity', 10);
         $this->assertNotNull($first);
         $this->assertEqualsWithDelta(100.0, (float) $first->amount, 0.001);
-        $this->assertStringContainsString('units 1', $first->description);
+        $this->assertStringContainsString('1'."\u{2013}".'10 units', $first->description);
         $this->assertStringContainsString('@ $10.00', $first->description);
 
         $second = $invoice->lines->firstWhere('quantity', 15);
@@ -631,5 +631,140 @@ class TieredPricingBillingTest extends TestCase
         $this->assertSame(410.00, round((float) $invoice->subtotal, 2)); // 100 + 310
 
         $this->assertLineInvariant($invoice);
+    }
+
+    // ── Band labels ──
+
+    /**
+     * Band labels land on a CLIENT-FACING invoice. Where the quantity type knows
+     * what it is counting, the label says so ("1–100 GB", "1–3 workstations")
+     * rather than making the client guess at a generic "units". Where it does not
+     * (Fixed), "units" remains the honest fallback.
+     */
+    public function test_band_labels_name_the_quantity_domain_where_it_is_known(): void
+    {
+        $client = Client::factory()->create();
+        // The backup host is a Server, so it is not also counted as a workstation.
+        Asset::factory()->create(['client_id' => $client->id, 'asset_type' => 'Server', 'backup_cloud_bytes' => 300 * self::GB]);
+        Asset::factory()->count(3)->create(['client_id' => $client->id, 'asset_type' => 'Workstation', 'is_active' => true]);
+
+        $profile = $this->profile($this->contract($client));
+
+        // 300 GB: 100 @ $1.00 + 200 @ $0.80 = $260. No SKU, so no volume card is in play.
+        RecurringInvoiceProfileLine::create([
+            'profile_id' => $profile->id,
+            'description' => 'Cloud backup storage',
+            'unit_price' => 1.00,
+            'pricing_tiers' => [
+                ['up_to' => 100, 'unit_price' => 1.00],
+                ['up_to' => null, 'unit_price' => 0.80],
+            ],
+            'quantity_type' => QuantityType::PerBackupStorageGb,
+            'is_taxable' => true,
+            'sort_order' => 0,
+        ]);
+
+        // 3 workstations, all in the first band: 3 @ $50 = $150.
+        RecurringInvoiceProfileLine::create([
+            'profile_id' => $profile->id,
+            'description' => 'Managed workstation',
+            'unit_price' => 50,
+            'pricing_tiers' => [
+                ['up_to' => 10, 'unit_price' => 50],
+                ['up_to' => null, 'unit_price' => 40],
+            ],
+            'quantity_type' => QuantityType::PerWorkstation,
+            'is_taxable' => true,
+            'sort_order' => 1,
+        ]);
+
+        // Fixed has no known domain: 12 of *something*. 5 @ $9 + 7 @ $6 = $87.
+        RecurringInvoiceProfileLine::create([
+            'profile_id' => $profile->id,
+            'description' => 'Widgets',
+            'unit_price' => 9,
+            'pricing_tiers' => [
+                ['up_to' => 5, 'unit_price' => 9],
+                ['up_to' => null, 'unit_price' => 6],
+            ],
+            'quantity_type' => QuantityType::Fixed,
+            'fixed_quantity' => 12,
+            'is_taxable' => true,
+            'sort_order' => 2,
+        ]);
+
+        $invoice = app(BillingService::class)->generateInvoice($profile->fresh())['invoice'];
+
+        $descriptions = $invoice->lines->map(fn ($l) => $l->description)->all();
+
+        $this->assertSame([
+            'Cloud backup storage (1'."\u{2013}".'100 GB @ $1.00)',
+            'Cloud backup storage (101'."\u{2013}".'300 GB @ $0.80)',
+            'Managed workstation (1'."\u{2013}".'3 workstations @ $50.00)',
+            'Widgets (1'."\u{2013}".'5 units @ $9.00)',
+            'Widgets (6'."\u{2013}".'12 units @ $6.00)',
+        ], $descriptions);
+
+        // The labels describe money that was actually billed.
+        $this->assertSame(
+            [100.00, 160.00, 150.00, 45.00, 42.00],
+            $invoice->lines->map(fn ($l) => round((float) $l->amount, 2))->all(),
+        );
+        $this->assertSame(497.00, round((float) $invoice->subtotal, 2));
+        $this->assertLineInvariant($invoice);
+    }
+
+    /**
+     * A Fixed-quantity line records no quantity_source — the operator typed the
+     * number, there is nothing to audit about *how much*. But Fixed + graduated
+     * is the commonest graduated config there is, and the audit record must not
+     * be silent about the rate card that priced it.
+     */
+    public function test_a_fixed_graduated_line_still_records_the_rate_card_that_priced_it(): void
+    {
+        $profile = $this->profile($this->contract());
+
+        RecurringInvoiceProfileLine::create([
+            'profile_id' => $profile->id,
+            'description' => 'Managed Services',
+            'unit_price' => 10,
+            'pricing_tiers' => [
+                ['up_to' => 10, 'unit_price' => 10],
+                ['up_to' => null, 'unit_price' => 8],
+            ],
+            'quantity_type' => 'fixed',
+            'fixed_quantity' => 25,
+            'is_taxable' => true,
+            'sort_order' => 0,
+        ]);
+
+        $invoice = app(BillingService::class)->generateInvoice($profile->fresh())['invoice'];
+
+        $this->assertSame(220.00, round((float) $invoice->subtotal, 2));
+
+        foreach ($invoice->lines as $line) {
+            $this->assertSame('[graduated: 2 bands]', $line->quantity_source);
+        }
+    }
+
+    /** A Fixed line priced flat still records nothing — main's behaviour, unchanged. */
+    public function test_a_fixed_flat_line_records_no_quantity_source(): void
+    {
+        $profile = $this->profile($this->contract());
+
+        RecurringInvoiceProfileLine::create([
+            'profile_id' => $profile->id,
+            'description' => 'Flat service',
+            'unit_price' => 50,
+            'quantity_type' => 'fixed',
+            'fixed_quantity' => 3,
+            'is_taxable' => true,
+            'sort_order' => 0,
+        ]);
+
+        $invoice = app(BillingService::class)->generateInvoice($profile->fresh())['invoice'];
+
+        $this->assertSame(150.00, round((float) $invoice->subtotal, 2));
+        $this->assertNull($invoice->lines->first()->quantity_source);
     }
 }

@@ -12,12 +12,14 @@ use App\Models\RecurringInvoiceProfile;
 use App\Models\RecurringInvoiceProfileLine;
 use App\Models\Sku;
 use App\Services\BillingService;
+use App\Support\PricingModelConflict;
 use App\Support\TieredPricing;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rules\Enum;
+use Illuminate\Validation\ValidationException;
 
 class RecurringProfileController extends Controller
 {
@@ -138,8 +140,30 @@ class RecurringProfileController extends Controller
                     'new_quantity_type' => ['required', new Enum(QuantityType::class)],
                 ]);
                 $newQtyType = QuantityType::from($request->input('new_quantity_type'));
+                $targetSkuId = (int) $request->input('target_sku_id');
+
+                $targetLines = RecurringInvoiceProfileLine::with('profile.contract.client')
+                    ->whereIn('profile_id', $profileIds)
+                    ->where('sku_id', $targetSkuId)
+                    ->get();
+
+                // The door the profile form does not cover. Flipping a graduated
+                // line onto Backup Storage (GB) is what puts the SKU's volume
+                // rate card in play — the same real-money ambiguity as the form,
+                // reached without ever touching it. Same predicate, same refusal.
+                $targetSku = Sku::with('backupStorageTiers')->find($targetSkuId);
+
+                $conflicting = $targetLines->filter(fn (RecurringInvoiceProfileLine $line) => PricingModelConflict::exists(
+                    $newQtyType, $line->pricing_tiers ?? [], $targetSku,
+                ))->values();
+
+                if ($conflicting->isNotEmpty()) {
+                    return redirect()->route('profiles.index')
+                        ->with('error', PricingModelConflict::bulkMessage($conflicting));
+                }
+
                 $affected = RecurringInvoiceProfileLine::whereIn('profile_id', $profileIds)
-                    ->where('sku_id', $request->input('target_sku_id'))
+                    ->where('sku_id', $targetSkuId)
                     ->update(['quantity_type' => $newQtyType->value]);
                 $message = "{$affected} line(s) updated to {$newQtyType->label()}.";
                 break;
@@ -235,6 +259,8 @@ class RecurringProfileController extends Controller
             'auto_push_mode' => ['nullable', 'in:push,push_and_send'],
         ]);
 
+        $this->assertNoPricingModelConflicts($validated['lines']);
+
         // Convert empty string to null for three-state boolean
         $skipZero = $validated['skip_zero_invoices'] ?? null;
         $skipZero = $skipZero === '' || $skipZero === null ? null : (bool) $skipZero;
@@ -268,7 +294,16 @@ class RecurringProfileController extends Controller
 
     public function show(RecurringInvoiceProfile $profile)
     {
-        $profile->load(['contract.client', 'lines.sku', 'lines.licenseType', 'lines.usageLicenseType', 'lines.baseLicenseType']);
+        // `lines.sku.backupStorageTiers` feeds the per-line rate-card badge and
+        // the conflict warning (PricingModelConflict) — eager-loaded so the view
+        // does not fire a query per line to work out what will price it.
+        $profile->load([
+            'contract.client',
+            'lines.sku.backupStorageTiers',
+            'lines.licenseType',
+            'lines.usageLicenseType',
+            'lines.baseLicenseType',
+        ]);
 
         $invoices = $profile->invoices()
             ->with('lines.sku')
@@ -351,6 +386,10 @@ class RecurringProfileController extends Controller
             'auto_push_mode' => ['nullable', 'in:push,push_and_send'],
         ]);
 
+        // Refuse BEFORE the transaction: update() replaces every line, so a
+        // refusal that landed inside it would already have deleted them.
+        $this->assertNoPricingModelConflicts($validated['lines'] ?? []);
+
         // Convert empty string to null for three-state boolean
         $skipZero = $validated['skip_zero_invoices'] ?? null;
         $skipZero = $skipZero === '' || $skipZero === null ? null : (bool) $skipZero;
@@ -381,6 +420,55 @@ class RecurringProfileController extends Controller
 
         return redirect()->route('profiles.show', $profile)
             ->with('success', 'Profile updated.');
+    }
+
+    /**
+     * Refuse any submitted line that would put GRADUATED bands and its SKU's
+     * VOLUME rate card in play at the same time.
+     *
+     * The two models bill different money from the same numbers (300 GB over
+     * 1.00/0.80/0.60 is $260 graduated, $240 volume), so the choice cannot be
+     * made silently by a precedence rule the operator never sees. Both ways out
+     * are named in the message, and neither is ever itself refused: clearing the
+     * SKU's tiers, or turning off graduated pricing on the line.
+     *
+     * Shared by store() and update() — and the predicate itself is shared with
+     * the bulk action, the SKU form, and the billing runtime.
+     * {@see \App\Support\PricingModelConflict}
+     *
+     * @param  array<int, array<string, mixed>>  $lines
+     *
+     * @throws ValidationException
+     */
+    private function assertNoPricingModelConflicts(array $lines): void
+    {
+        $skuIds = collect($lines)->pluck('sku_id')->filter()->unique()->all();
+
+        if ($skuIds === []) {
+            return;
+        }
+
+        $skus = Sku::with('backupStorageTiers')->whereIn('id', $skuIds)->get()->keyBy('id');
+
+        $errors = [];
+
+        foreach ($lines as $index => $lineData) {
+            $sku = empty($lineData['sku_id']) ? null : $skus->get((int) $lineData['sku_id']);
+
+            $conflicts = PricingModelConflict::exists(
+                QuantityType::tryFrom((string) ($lineData['quantity_type'] ?? '')),
+                $lineData['pricing_tiers'] ?? [],
+                $sku,
+            );
+
+            if ($conflicts) {
+                $errors["lines.{$index}.pricing_tiers"] = PricingModelConflict::MESSAGE;
+            }
+        }
+
+        if ($errors !== []) {
+            throw ValidationException::withMessages($errors);
+        }
     }
 
     /**
