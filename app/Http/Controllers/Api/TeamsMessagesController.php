@@ -66,11 +66,26 @@ class TeamsMessagesController extends Controller
         $personaActive = $sender?->personaKey !== null;
 
         if ($this->routedToPersona($sender, $activity)) {
-            if (! ($personaActive || TeamsBotConfig::enabled())) {
-                Log::info('[Teams Bot] Chet-routed turn ignored because Teams bot is disabled', [
-                    'conversation_id' => $activity['conversation']['id'] ?? null,
-                ]);
-            } elseif ($sender === null) {
+            // A ROUTED TURN IS BY CONSTRUCTION ALREADY ON AN ENABLED LANE, so there is
+            // deliberately no enablement gate here. routedToPersona() returns true only
+            // via (a) an ACTIVE persona whose own conversation_refs match — persona is
+            // its own gate — or (b) chetRoutingEnabled() && the conversation IS Chet's.
+            // So `$personaActive || TeamsBotConfig::chetRoutingEnabled()` is a tautology
+            // inside this block. The old guard here instead demanded the LEGACY toggle
+            // (`$personaActive || TeamsBotConfig::enabled()`), which is off in production
+            // because the PSA-native bot is SUPERSEDED — so every Chet turn was
+            // recognised and then binned at info level, and Chet could not hear a word.
+            // Re-adding an enablement check here would only reintroduce that bug: to turn
+            // this lane off, turn OFF teams_chet_routing_enabled. (The legacy teammate
+            // reply loop below is a different lane and stays gated by the legacy toggle —
+            // honouring chet routing there would resurrect the deprecated bot.)
+            //
+            // Every remaining exit is a LOST OPERATOR TURN, and each already warns:
+            // the unresolved sender below, and the serviceUrl pin inside
+            // serviceUrlPinned() itself. Deleting the bogus "bot is disabled" info
+            // branch is what makes them reachable — at the production config it
+            // short-circuited first, so a dropped turn was only ever whispered.
+            if ($sender === null) {
                 Log::warning('[Teams Bot] Chet-routed turn from unresolved sender dropped', [
                     'conversation_id' => $activity['conversation']['id'] ?? null,
                 ]);

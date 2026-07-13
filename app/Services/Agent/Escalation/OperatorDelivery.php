@@ -58,9 +58,29 @@ class OperatorDelivery
      * — and its mere presence is its own enabled-gate (the only two sources that
      * ever produce a non-null $persona here — TeamsPersonaConfig::byTokenLabel()/
      * byKey() — already filter to enabled()=true rows), independent of the global
-     * teams_bot_enabled toggle. Callers that omit $persona (the pre-P1 call
-     * sites) are completely unaffected: null is the default and the legacy
-     * TeamsBotConfig::enabled() gate still applies exactly as before.
+     * teams_bot_enabled toggle.
+     *
+     * THE BOT LANE IS ENABLED BY ANY OF THREE INDEPENDENT SOURCES — a persona, the
+     * legacy teams_bot_enabled toggle, or teams_chet_routing_enabled. That third one
+     * was missing, and it is the one production actually runs: the PSA-native bot is
+     * SUPERSEDED (teams_bot_enabled=0 deliberately) with ZERO personas, and Chet owns
+     * its conversation via teams_chet_routing_enabled=1. So this gate was false for
+     * every outbound post — post_to_operator, EscalationNotifier's flag_attention,
+     * OperatorNotifier — which then fell through to an unconfigured webhook and
+     * returned posted:false. In silence: no error, no warning, it just stopped doing
+     * its job. Hence the fail-soft alarm in the else branch below.
+     *
+     * Do NOT "fix" this by flipping teams_bot_enabled back on — that resurrects the
+     * deprecated bot. The toggle is off on purpose; honour chetRoutingEnabled instead.
+     *
+     * The INBOUND half had the identical bug one gate deeper and was fixed alongside
+     * this one: TeamsMessagesController::handle() recognised a Chet-routed turn and
+     * then discarded it against the same legacy toggle, so Chet could not hear either.
+     * Both directions are now anchored by tests at the REAL production config
+     * (teams_bot_enabled=0, zero personas, chet_routing_enabled=1) — see
+     * OperatorDeliveryTest and ChetRoutingTest. Keep them that way: every bot-branch
+     * test that predates this fix pins teams_bot_enabled='1', a config that does not
+     * run in production, which is exactly how both halves shipped broken and green.
      */
     public function send(
         ?User $recipient,
@@ -81,7 +101,7 @@ class OperatorDelivery
             Log::warning('[OperatorDelivery] Persona enabled but conversation_refs incomplete - message dropped', [
                 'persona_key' => $persona->persona_key,
             ]);
-        } elseif (($persona !== null || TeamsBotConfig::enabled()) && $conversationId !== null && $serviceUrl !== null) {
+        } elseif (($persona !== null || TeamsBotConfig::enabled() || TeamsBotConfig::chetRoutingEnabled()) && $conversationId !== null && $serviceUrl !== null) {
             try {
                 // Conditional (rather than an unconditional ->forPersona($persona) call)
                 // so the null-persona path never even touches forPersona() — byte-identical
@@ -108,6 +128,27 @@ class OperatorDelivery
                 ]);
             }
         } else {
+            // FAIL-SOFT ALARM: we are declining to use a conversation we actually HAVE.
+            // This branch dropping every operator post silently — no error, just
+            // posted:false — is exactly how the outbound Chet lane stayed dead in
+            // production. If a conversation is configured, saying nothing is not an
+            // option: log which gate condition failed, loudly enough to diagnose.
+            // (No conversation at all is a legitimate webhook-only deployment, not a
+            // fault — hence the guard, so this never becomes background noise.)
+            // NOTE: $persona is necessarily null here — a non-null persona is fully
+            // handled by the two branches above — so the only gates left to report
+            // are the two global toggles and the completeness of the target.
+            if ($conversationId !== null) {
+                Log::warning('[OperatorDelivery] Teams bot post skipped despite a configured conversation - falling back to the webhook', [
+                    'reason' => $serviceUrl === null ? 'service_url_missing' : 'no_enabled_bot_lane',
+                    'conversation_id' => $conversationId,
+                    'has_service_url' => $serviceUrl !== null,
+                    'teams_bot_enabled' => TeamsBotConfig::enabled(),
+                    'chet_routing_enabled' => TeamsBotConfig::chetRoutingEnabled(),
+                    'bot_configured' => TeamsBotConfig::configured(),
+                ]);
+            }
+
             try {
                 $posted = $this->sendWebhookChunks($subject, $body);
             } catch (\Throwable $e) {
