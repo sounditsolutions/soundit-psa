@@ -47,6 +47,8 @@ class CippRestWriteClientTest extends TestCase
         $this->assertContains('wipeDevice', $methods);
         $this->assertContains('reassignOneDriveOwnership', $methods);
         $this->assertContains('editUser', $methods);
+        $this->assertContains('listGroups', $methods);
+        $this->assertContains('setGroupMembership', $methods);
         $this->assertNotContains('post', $methods);
         $this->assertNotContains('get', $methods);
         $this->assertNotContains('request', $methods);
@@ -877,6 +879,169 @@ class CippRestWriteClientTest extends TestCase
                 $this->assertStringContainsString('did not confirm the OneDrive permission change', $e->getMessage());
             }
         }
+    }
+
+    public function test_set_group_membership_posts_edit_group_shape(): void
+    {
+        Http::fake([
+            'login.microsoftonline.com/*' => Http::response(['access_token' => 'WRITE-TOKEN', 'expires_in' => 3600]),
+            'cipp.example.test/api/*' => Http::response([
+                'Results' => ['Success - Added member alex@acme.example to Sales Team group'],
+            ]),
+        ]);
+
+        $client = $this->emailSecurityClient();
+
+        $result = $client->setGroupMembership('acme.onmicrosoft.com', '3f2504e0-4f89-11d3-9a0c-0305e82c3301', 'Sales Team', 'Microsoft 365', 'user-123', 'alex@acme.example', 'add');
+        $client->setGroupMembership('acme.onmicrosoft.com', '9b2a4c31-77aa-42dd-8be2-11d2aa8bc102', 'VPN Users', 'Security', 'user-123', 'alex@acme.example', 'remove');
+        $client->setGroupMembership('acme.onmicrosoft.com', '3f2504e0-4f89-11d3-9a0c-0305e82c3301', 'All Staff DL', 'Distribution List', 'user-123', 'alex@acme.example', 'add');
+
+        // The upstream body is verified, then discarded — success/status only.
+        $this->assertSame(['success' => true, 'status' => 200], $result);
+
+        // Source-pinned body (CIPP-API Invoke-EditGroup.ps1): groupId is the plain
+        // GUID ($UserObj.groupId.value ?? $UserObj.groupId), groupType routes the
+        // Exchange-vs-Graph arm, groupName is the label used for upstream logging
+        // (displayName is NEVER sent — it would trigger the property-edit branch),
+        // and each member entry carries value (Graph object id, used by the Graph
+        // PATCH/DELETE arms) plus addedFields.userPrincipalName (used by the
+        // Exchange Add/Remove-DistributionGroupMember arm and log lines).
+        $member = [['value' => 'user-123', 'label' => 'alex@acme.example', 'addedFields' => ['userPrincipalName' => 'alex@acme.example']]];
+
+        Http::assertSent(fn ($request) => $request->url() === 'https://cipp.example.test/api/EditGroup'
+            && $request->method() === 'POST'
+            && $request->hasHeader('Authorization', 'Bearer WRITE-TOKEN')
+            && $request->data() === [
+                'tenantFilter' => 'acme.onmicrosoft.com',
+                'groupId' => '3f2504e0-4f89-11d3-9a0c-0305e82c3301',
+                'groupType' => 'Microsoft 365',
+                'groupName' => 'Sales Team',
+                'AddMember' => $member,
+            ]
+            && ! array_key_exists('displayName', $request->data())
+            && ! array_key_exists('RemoveMember', $request->data()));
+
+        Http::assertSent(fn ($request) => $request->url() === 'https://cipp.example.test/api/EditGroup'
+            && $request->data() === [
+                'tenantFilter' => 'acme.onmicrosoft.com',
+                'groupId' => '9b2a4c31-77aa-42dd-8be2-11d2aa8bc102',
+                'groupType' => 'Security',
+                'groupName' => 'VPN Users',
+                'RemoveMember' => $member,
+            ]
+            && ! array_key_exists('AddMember', $request->data()));
+
+        Http::assertSent(fn ($request) => $request->url() === 'https://cipp.example.test/api/EditGroup'
+            && $request->data() === [
+                'tenantFilter' => 'acme.onmicrosoft.com',
+                'groupId' => '3f2504e0-4f89-11d3-9a0c-0305e82c3301',
+                'groupType' => 'Distribution List',
+                'groupName' => 'All Staff DL',
+                'AddMember' => $member,
+            ]);
+    }
+
+    public function test_set_group_membership_fails_closed_when_cipp_reports_failure_or_silence(): void
+    {
+        // Invoke-EditGroup returns HTTP 200 unconditionally; per-member failures
+        // surface only as "Error - …" Results strings, and a member the endpoint
+        // silently dropped (its AddMembers try/catch) produces NO line at all.
+        // Both must fail closed — a confident success on a failed membership
+        // change is exactly the psa-7lgo bug class.
+        $bodies = [
+            ['Results' => ['Error - One or more added object references already exist for the following modified properties: \'members\'.']],
+            ['Results' => ['Success - Added member alex@acme.example to Sales Team group', 'Error - Failed to remove member. Insufficient privileges.']],
+            ['Results' => []],
+            ['Results' => ['Something unrecognized happened']],
+            [],
+        ];
+
+        foreach ($bodies as $body) {
+            Http::fake([
+                'login.microsoftonline.com/*' => Http::response(['access_token' => 'WRITE-TOKEN', 'expires_in' => 3600]),
+                'cipp.example.test/api/*' => Http::response($body),
+            ]);
+
+            try {
+                $this->emailSecurityClient()->setGroupMembership('acme.onmicrosoft.com', '3f2504e0-4f89-11d3-9a0c-0305e82c3301', 'Sales Team', 'Microsoft 365', 'user-123', 'alex@acme.example', 'add');
+                $this->fail('Expected CippClientException for body: '.json_encode($body));
+            } catch (CippClientException $e) {
+                $this->assertStringContainsString('did not confirm the group membership change', $e->getMessage());
+            }
+        }
+    }
+
+    public function test_set_group_membership_guards_inputs_before_any_request(): void
+    {
+        Http::fake();
+        $client = $this->emailSecurityClient();
+
+        foreach ([
+            ['acme.onmicrosoft.com', '  ', 'Sales Team', 'Microsoft 365', 'user-123', 'alex@acme.example', 'add', 'group id is required'],
+            ['acme.onmicrosoft.com', '3f2504e0-4f89-11d3-9a0c-0305e82c3301', 'Sales Team', 'Microsoft 365', '', 'alex@acme.example', 'add', 'user id is required'],
+            ['acme.onmicrosoft.com', '3f2504e0-4f89-11d3-9a0c-0305e82c3301', 'Sales Team', 'Microsoft 365', 'user-123', ' ', 'add', 'UPN is required'],
+            ['acme.onmicrosoft.com', '3f2504e0-4f89-11d3-9a0c-0305e82c3301', 'Sales Team', 'Microsoft 365', 'user-123', 'alex@acme.example', 'replace', 'Unsupported group membership operation'],
+            ['acme.onmicrosoft.com', '3f2504e0-4f89-11d3-9a0c-0305e82c3301', 'Sales Team', 'Dynamic', 'user-123', 'alex@acme.example', 'add', 'Unsupported group type'],
+        ] as [$tenant, $groupId, $groupName, $groupType, $userId, $upn, $operation, $expected]) {
+            try {
+                $client->setGroupMembership($tenant, $groupId, $groupName, $groupType, $userId, $upn, $operation);
+                $this->fail('Expected CippClientException for '.$expected);
+            } catch (CippClientException $e) {
+                $this->assertStringContainsString($expected, $e->getMessage());
+            }
+        }
+
+        Http::assertNothingSent();
+    }
+
+    public function test_list_groups_gets_the_tenant_listing_and_returns_rows(): void
+    {
+        Http::fake([
+            'login.microsoftonline.com/*' => Http::response(['access_token' => 'WRITE-TOKEN', 'expires_in' => 3600]),
+            'cipp.example.test/api/ListGroups*' => Http::response([
+                // Shape from CIPP-API Invoke-ListGroups.ps1 (list view): Graph
+                // fields plus the projection's computed keys.
+                [
+                    'id' => '3f2504e0-4f89-11d3-9a0c-0305e82c3301',
+                    'displayName' => 'Sales Team',
+                    'mail' => 'sales@acme.example',
+                    'mailEnabled' => true,
+                    'securityEnabled' => false,
+                    'groupTypes' => ['Unified'],
+                    'onPremisesSyncEnabled' => null,
+                    'membershipRule' => null,
+                    'groupType' => 'Microsoft 365',
+                    'calculatedGroupType' => 'm365',
+                    'dynamicGroupBool' => false,
+                ],
+                'not-a-row',
+            ]),
+        ]);
+
+        $rows = $this->emailSecurityClient()->listGroups('acme.onmicrosoft.com');
+
+        $this->assertCount(1, $rows);
+        $this->assertSame('Sales Team', $rows[0]['displayName']);
+
+        Http::assertSent(fn ($request) => str_starts_with($request->url(), 'https://cipp.example.test/api/ListGroups')
+            && $request->method() === 'GET'
+            && $request->hasHeader('Authorization', 'Bearer WRITE-TOKEN')
+            && str_contains($request->url(), 'tenantFilter=acme.onmicrosoft.com'));
+    }
+
+    public function test_list_groups_unwraps_results_envelope(): void
+    {
+        Http::fake([
+            'login.microsoftonline.com/*' => Http::response(['access_token' => 'WRITE-TOKEN', 'expires_in' => 3600]),
+            'cipp.example.test/api/ListGroups*' => Http::response([
+                'Results' => [['id' => '9b2a4c31-77aa-42dd-8be2-11d2aa8bc102', 'displayName' => 'VPN Users', 'groupType' => 'Security']],
+            ]),
+        ]);
+
+        $rows = $this->emailSecurityClient()->listGroups('acme.onmicrosoft.com');
+
+        $this->assertCount(1, $rows);
+        $this->assertSame('VPN Users', $rows[0]['displayName']);
     }
 
     public function test_reassign_onedrive_ownership_rejects_blank_parties_before_any_request(): void
