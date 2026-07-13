@@ -12,6 +12,14 @@ class CippRestWriteClient
 {
     private const TOKEN_CACHE_KEY = 'cipp_rest_write_oauth_token';
 
+    /**
+     * The group types CIPP's ListGroups projection derives — these exact
+     * strings route Invoke-EditGroup's Exchange-vs-Graph arms.
+     *
+     * @var array<int, string>
+     */
+    private const GROUP_MEMBERSHIP_TYPES = ['Microsoft 365', 'Mail-Enabled Security', 'Security', 'Distribution List'];
+
     /** @var callable */
     private $resolver;
 
@@ -460,6 +468,126 @@ class CippRestWriteClient
         }
 
         return array_values(array_filter($rows, 'is_array'));
+    }
+
+    /**
+     * Verification read for the group-membership write gate: the tenant's
+     * live group listing exactly as CIPP projects it. Uses the same
+     * credential set as the write it gates, so the membership tool cannot
+     * outrun its own verification.
+     *
+     * Source shape (CIPP-API Invoke-ListGroups.ps1, list view): a bare array
+     * of Graph group rows (camelCase $select fields — id, displayName, mail,
+     * mailEnabled, securityEnabled, groupTypes, onPremisesSyncEnabled,
+     * membershipRule, …) plus the projection's computed keys (groupType,
+     * calculatedGroupType, dynamicGroupBool, teamsEnabled, primDomain, SID).
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function listGroups(string $tenantFilter): array
+    {
+        $body = $this->sendGet('api/ListGroups', ['tenantFilter' => $tenantFilter]);
+
+        if (array_is_list($body)) {
+            return array_values(array_filter($body, 'is_array'));
+        }
+
+        // Defensive: some CIPP endpoints wrap list payloads as {"Results": [...]}.
+        $results = $body['Results'] ?? null;
+
+        return is_array($results) && array_is_list($results)
+            ? array_values(array_filter($results, 'is_array'))
+            : [];
+    }
+
+    /**
+     * Add ONE user to — or remove them from — ONE M365 group via CIPP's
+     * EditGroup endpoint (the same endpoint the CIPP frontend's Edit Group
+     * page and "Add to group" user action use; no narrower membership
+     * endpoint exists). Exactly one member bucket is sent per call.
+     *
+     * Source shape (CIPP-API Invoke-EditGroup.ps1): groupId is the plain
+     * group GUID ($UserObj.groupId.value ?? $UserObj.groupId); groupType —
+     * one of the strings the ListGroups projection derives — routes the arm:
+     * 'Distribution List' and 'Mail-Enabled Security' run Exchange
+     * Add/Remove-DistributionGroupMember, everything else runs Graph (PATCH
+     * groups/{id} members@odata.bind for add, DELETE
+     * groups/{id}/members/{memberId}/$ref for remove). The type strings are
+     * a closed allowlist because an uncontrolled groupType would pick the
+     * routing arm. groupName is only the label CIPP uses for its log lines —
+     * displayName is deliberately NEVER sent, because a displayName key
+     * flips the endpoint into its property-EDIT branch. Each member entry
+     * carries value (the Graph object id both Graph arms require — the
+     * remove arm has NO lookup fallback) plus addedFields.userPrincipalName
+     * (what the Exchange arm and the log lines read).
+     *
+     * The endpoint returns HTTP 200 unconditionally: failures surface only
+     * as "Error - …" Results strings, and a member the endpoint silently
+     * dropped produces no line at all — so the body is captured and a
+     * "Success - …" marker is REQUIRED, failing closed on anything else.
+     *
+     * @param  string  $operation  one of add|remove
+     * @return array<int|string, mixed>
+     */
+    public function setGroupMembership(
+        string $tenantFilter,
+        string $groupId,
+        string $groupName,
+        string $groupType,
+        string $userId,
+        string $userPrincipalName,
+        string $operation,
+    ): array {
+        if (trim($groupId) === '') {
+            throw new CippClientException('Group membership group id is required');
+        }
+        if (trim($userId) === '') {
+            throw new CippClientException('Group membership user id is required');
+        }
+        if (trim($userPrincipalName) === '') {
+            throw new CippClientException('Group membership user UPN is required');
+        }
+        if (! in_array($operation, ['add', 'remove'], true)) {
+            throw new CippClientException("Unsupported group membership operation {$operation}");
+        }
+        if (! in_array($groupType, self::GROUP_MEMBERSHIP_TYPES, true)) {
+            throw new CippClientException("Unsupported group type {$groupType}");
+        }
+
+        $response = $this->send('api/EditGroup', [
+            'tenantFilter' => $tenantFilter,
+            'groupId' => $groupId,
+            'groupType' => $groupType,
+            'groupName' => $groupName,
+            ($operation === 'add' ? 'AddMember' : 'RemoveMember') => [[
+                'value' => $userId,
+                'label' => $userPrincipalName,
+                'addedFields' => ['userPrincipalName' => $userPrincipalName],
+            ]],
+        ], captureBody: true);
+
+        $results = $response['body']['Results'] ?? null;
+        $lines = array_values(array_filter(is_array($results) ? $results : [$results], 'is_string'));
+
+        $hasSuccess = false;
+        $failure = null;
+        foreach ($lines as $line) {
+            $trimmed = ltrim($line);
+            if (stripos($trimmed, 'Success - ') === 0) {
+                $hasSuccess = true;
+            } elseif (stripos($trimmed, 'Error - ') === 0 && $failure === null) {
+                $failure = $trimmed;
+            }
+        }
+
+        if (! $hasSuccess || $failure !== null) {
+            throw new CippClientException(
+                'CIPP did not confirm the group membership change; treat it as not applied.'
+                .($failure !== null ? ' Upstream: '.mb_substr($failure, 0, 300) : '')
+            );
+        }
+
+        return ['success' => true, 'status' => (int) $response['status']];
     }
 
     /**
