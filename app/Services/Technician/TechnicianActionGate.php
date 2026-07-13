@@ -47,6 +47,10 @@ class TechnicianActionGate
 
     /**
      * @param  callable():void  $executor  the side effect, run ONLY if the gate clears it
+     * @param  array|null  $approvedRecipients  the FINAL resolved email audience
+     *                                          ({to, cc, custom} — psa-w4e0 revise), recorded on
+     *                                          EVERY audit row of this dispatch so even a held or
+     *                                          declined attempt leaves the audience on record
      */
     public function dispatch(
         string $actionType,
@@ -59,6 +63,7 @@ class TechnicianActionGate
         ?string $approvalToken = null,
         ?int $approverUserId = null,
         ?float $confidence = null,
+        ?array $approvedRecipients = null,
     ): TechnicianActionResult {
         $correlationId = (string) Str::uuid();
 
@@ -69,17 +74,17 @@ class TechnicianActionGate
 
         // Kill-switch (pre-execution barrier) — fail-closed.
         if (TechnicianConfig::killSwitchEngaged()) {
-            return $this->result('held', $tier, $this->audit($actionType, $tier, 'held', $ticketId, $clientId, $runId, $contentHash, $summary, $correlationId));
+            return $this->result('held', $tier, $this->audit($actionType, $tier, 'held', $ticketId, $clientId, $runId, $contentHash, $summary, $correlationId, approvedRecipients: $approvedRecipients));
         }
 
         // Per-client exclusion — fail-closed.
         if ($clientId !== null && TechnicianConfig::clientExcluded($clientId)) {
-            return $this->result('held', $tier, $this->audit($actionType, $tier, 'held', $ticketId, $clientId, $runId, $contentHash, $summary, $correlationId));
+            return $this->result('held', $tier, $this->audit($actionType, $tier, 'held', $ticketId, $clientId, $runId, $contentHash, $summary, $correlationId, approvedRecipients: $approvedRecipients));
         }
 
         // BLOCK denylist — server-enforced.
         if ($tier === TechnicianTier::Block) {
-            return $this->result('blocked', $tier, $this->audit($actionType, $tier, 'blocked', $ticketId, $clientId, $runId, $contentHash, $summary, $correlationId));
+            return $this->result('blocked', $tier, $this->audit($actionType, $tier, 'blocked', $ticketId, $clientId, $runId, $contentHash, $summary, $correlationId, approvedRecipients: $approvedRecipients));
         }
 
         // Non-AUTO (Approve, or an always-human client) requires a valid grant.
@@ -101,7 +106,7 @@ class TechnicianActionGate
             );
 
             if (! $granted) {
-                return $this->result('awaiting_approval', $tier, $this->audit($actionType, $tier, 'awaiting_approval', $ticketId, $clientId, $runId, $contentHash, $summary, $correlationId));
+                return $this->result('awaiting_approval', $tier, $this->audit($actionType, $tier, 'awaiting_approval', $ticketId, $clientId, $runId, $contentHash, $summary, $correlationId, approvedRecipients: $approvedRecipients));
             }
 
             // Grant verified against $approverUserId — bind that identity to the audit row.
@@ -110,7 +115,7 @@ class TechnicianActionGate
 
         // In-flight kill-switch re-check immediately before execution — fail-closed.
         if (TechnicianConfig::killSwitchEngaged()) {
-            return $this->result('held', $tier, $this->audit($actionType, $tier, 'held', $ticketId, $clientId, $runId, $contentHash, $summary, $correlationId));
+            return $this->result('held', $tier, $this->audit($actionType, $tier, 'held', $ticketId, $clientId, $runId, $contentHash, $summary, $correlationId, approvedRecipients: $approvedRecipients));
         }
 
         // Atomic: the executor's DB side effects and the append-only 'executed'
@@ -118,10 +123,10 @@ class TechnicianActionGate
         // effect with no audit row would re-send on retry). Any external send
         // (e.g. the acknowledgment email) is performed by the caller AFTER this
         // returns 'executed', never inside this transaction.
-        $log = DB::transaction(function () use ($executor, $actionType, $tier, $ticketId, $clientId, $runId, $contentHash, $summary, $correlationId, $attributedApproverId): TechnicianActionLog {
+        $log = DB::transaction(function () use ($executor, $actionType, $tier, $ticketId, $clientId, $runId, $contentHash, $summary, $correlationId, $attributedApproverId, $approvedRecipients): TechnicianActionLog {
             $executor();
 
-            return $this->audit($actionType, $tier, 'executed', $ticketId, $clientId, $runId, $contentHash, $summary, $correlationId, $attributedApproverId);
+            return $this->audit($actionType, $tier, 'executed', $ticketId, $clientId, $runId, $contentHash, $summary, $correlationId, $attributedApproverId, $approvedRecipients);
         });
 
         return $this->result('executed', $tier, $log);
@@ -143,6 +148,7 @@ class TechnicianActionGate
         string $summary,
         string $correlationId,
         ?int $approverUserId = null,
+        ?array $approvedRecipients = null,
     ): TechnicianActionLog {
         return TechnicianActionLog::create([
             'actor_id' => TechnicianConfig::aiActorUserId(),
@@ -156,6 +162,7 @@ class TechnicianActionGate
             'run_id' => $runId,
             'content_hash' => $contentHash,
             'summary' => $summary,
+            'approved_recipients' => $approvedRecipients,
             'correlation_id' => $correlationId,
         ]);
     }

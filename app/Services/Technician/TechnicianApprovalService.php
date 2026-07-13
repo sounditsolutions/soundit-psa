@@ -30,8 +30,16 @@ use Illuminate\Support\Facades\Log;
  * addresses already on the ticket's email thread) via EmailRecipientResolver,
  * re-resolved at approval time (gate 3): the model/operator supply REFERENCES, never
  * free-text. Arbitrary addresses (not a known contact or thread participant) are
- * rejected unless allow_arbitrary_email_recipients is on (default off). The email is
- * sent AFTER the gate transaction, never inside it.
+ * rejected unless the STAGED arbitrary-recipients policy is on (psa-w4e0:
+ * allow_arbitrary_email_recipients_staged, or the global knob — both default off);
+ * when admitted they are syntax-validated, prefilled + highlighted on the approval
+ * card, and counted in the audit summary. The approval-time grant + audit hash binds
+ * the CANONICAL RESOLVED PAYLOAD — body AND final To/CC (ResolvedRecipients::
+ * hashPayload) — and the full resolved audience is persisted on the append-only
+ * audit row (approved_recipients) inside the gate transaction, so the approved
+ * recipient set can neither be swapped under the signed hash nor lost when delivery
+ * fails (psa-w4e0 revise). The email is sent AFTER the gate transaction, never
+ * inside it.
  */
 class TechnicianApprovalService
 {
@@ -46,9 +54,12 @@ class TechnicianApprovalService
 
     private function resolveRecipients(Ticket $ticket, array $to, array $cc): ResolvedRecipients
     {
+        // Every send below is operator-approved from the cockpit (the recipient list is
+        // on the card), so the STAGED arbitrary-recipients policy applies — never the
+        // immediate path's global-only knob.
         return $this->recipients->resolve(
             $ticket, $to, $cc, RecipientContext::Staged,
-            TechnicianConfig::allowArbitraryEmailRecipients(),
+            TechnicianConfig::stagedSendsAllowArbitraryRecipients(),
             TechnicianConfig::directEmailNewRecipients(),
         );
     }
@@ -89,8 +100,10 @@ class TechnicianApprovalService
         }
 
         try {
-            // The grant binds the EXACT (possibly edited) body the operator approved.
-            $hash = hash('sha256', 'send_reply:'.$run->ticket_id.':'.$body);
+            // The grant binds the EXACT (possibly edited) body the operator approved AND
+            // the final resolved To/CC — a recipient swap is a different action (psa-w4e0
+            // revise; same canonical payload as the stage/direct keys).
+            $hash = hash('sha256', 'send_reply:'.$run->ticket_id.':'.$resolved->hashPayload($body));
             $token = TechnicianApprovalGrant::issue('send_reply', $run->ticket_id, $hash, $approverId);
 
             $disclosed = $this->disclosure->withDisclosure($body, $actorName);
@@ -103,7 +116,7 @@ class TechnicianApprovalService
                 ticketId: $run->ticket_id,
                 clientId: $run->client_id,
                 contentHash: $hash,
-                summary: 'Operator-approved client reply.',
+                summary: 'Operator-approved client reply. ['.$resolved->auditDescriptor().']',
                 runId: $run->id,
                 executor: function () use ($ticket, $actorId, $actorName, $disclosed, $run, &$createdNote): void {
                     $createdNote = TicketNote::create([
@@ -121,6 +134,10 @@ class TechnicianApprovalService
                 },
                 approvalToken: $token,
                 approverUserId: $approverId,
+                // Durable pre-send record: the exact approved audience lands on the
+                // append-only audit row inside the gate transaction — a failed delivery
+                // still leaves the attempted recipients on record.
+                approvedRecipients: $resolved->toAuditArray(),
             );
         } catch (\Throwable $e) {
             // Unexpected throw between claim and email send — revert so the operator can retry.
@@ -378,7 +395,10 @@ class TechnicianApprovalService
         $actorName = TechnicianConfig::aiActorName();
 
         try {
-            $hash = hash('sha256', $actionType.':'.$run->ticket_id.':'.$body);
+            // Email-sending action: the grant + audit hash binds body AND the final
+            // resolved To/CC (psa-w4e0 revise — recipient swap ⇒ different hash). The
+            // no-email action (stage_public_note) has no audience, so body-only stands.
+            $hash = hash('sha256', $actionType.':'.$run->ticket_id.':'.($resolved !== null ? $resolved->hashPayload($body) : $body));
             $token = TechnicianApprovalGrant::issue($actionType, $run->ticket_id, $hash, $approverId);
 
             $disclosed = $this->disclosure->withDisclosure($body, $actorName);
@@ -391,7 +411,9 @@ class TechnicianApprovalService
                 ticketId: $run->ticket_id,
                 clientId: $run->client_id,
                 contentHash: $hash,
-                summary: $summary,
+                // Counts-only recipient descriptor (never addresses) — flags approvals
+                // that included recipients outside the client's known contacts.
+                summary: $resolved !== null ? $summary.' ['.$resolved->auditDescriptor().']' : $summary,
                 runId: $run->id,
                 executor: function () use ($ticket, $actorId, $actorName, $disclosed, $noteType, $run, &$createdNote): void {
                     $createdNote = TicketNote::create([
@@ -410,6 +432,9 @@ class TechnicianApprovalService
                 approvalToken: $token,
                 approverUserId: $approverId,
                 confidence: null,
+                // Durable pre-send record (email path only): the exact approved audience
+                // is committed on the append-only audit row before the external send.
+                approvedRecipients: $resolved?->toAuditArray(),
             );
         } catch (\Throwable $e) {
             $run->releaseClaim();

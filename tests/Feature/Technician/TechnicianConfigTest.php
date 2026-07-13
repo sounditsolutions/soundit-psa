@@ -40,6 +40,28 @@ class TechnicianConfigTest extends TestCase
         $this->assertTrue(TechnicianConfig::directEmailNewRecipients());
     }
 
+    public function test_staged_arbitrary_recipient_knob_defaults_off_and_never_widens_immediate(): void
+    {
+        // psa-w4e0: ships dormant — raw knob and effective staged policy both off.
+        $this->assertFalse(TechnicianConfig::allowArbitraryEmailRecipientsStaged());
+        $this->assertFalse(TechnicianConfig::stagedSendsAllowArbitraryRecipients());
+
+        // Staged-only knob ON opens the staged (human-approved) path ONLY: the global
+        // knob the immediate/direct path reads stays off (exfil guard independence).
+        Setting::setValue('allow_arbitrary_email_recipients_staged', '1');
+        $this->assertTrue(TechnicianConfig::allowArbitraryEmailRecipientsStaged());
+        $this->assertTrue(TechnicianConfig::stagedSendsAllowArbitraryRecipients());
+        $this->assertFalse(TechnicianConfig::allowArbitraryEmailRecipients());
+
+        // The global knob implies the staged POLICY (its pre-existing semantics
+        // covered both paths) while the raw staged knob — what the settings
+        // checkbox renders — stays honest about its own stored value.
+        Setting::setValue('allow_arbitrary_email_recipients_staged', '0');
+        Setting::setValue('allow_arbitrary_email_recipients', '1');
+        $this->assertFalse(TechnicianConfig::allowArbitraryEmailRecipientsStaged());
+        $this->assertTrue(TechnicianConfig::stagedSendsAllowArbitraryRecipients());
+    }
+
     public function test_ai_actor_falls_back_to_first_user_then_honours_setting(): void
     {
         $first = User::factory()->create();

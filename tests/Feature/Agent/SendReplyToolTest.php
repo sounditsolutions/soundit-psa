@@ -89,7 +89,8 @@ class SendReplyToolTest extends TestCase
         $this->assertSame(['The client asked for an update.'], $run->proposed_meta['reasons']);
         $this->assertSame('technician-drafter', $run->proposed_meta['drafted_by']);
 
-        // content_hash is exactly what approveAndSend recomputes: sha256('send_reply:'.id.':'.body).
+        // content_hash is the DRAFT identity/dedup key: sha256('send_reply:'.id.':'.body).
+        // (approveAndSend signs a separate approval-time hash binding body + final To/CC.)
         $this->assertSame(
             hash('sha256', 'send_reply:'.$ticket->id.':Thanks — here are the next steps.'),
             $run->content_hash,

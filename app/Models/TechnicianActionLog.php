@@ -25,6 +25,7 @@ use LogicException;
  * @property int|null $run_id
  * @property string $content_hash
  * @property string $summary
+ * @property array|null $approved_recipients
  * @property string $correlation_id
  * @property \Illuminate\Support\Carbon|null $created_at
  */
@@ -45,6 +46,7 @@ class TechnicianActionLog extends Model
         'run_id',
         'content_hash',
         'summary',
+        'approved_recipients',
         'correlation_id',
     ];
 
@@ -52,6 +54,7 @@ class TechnicianActionLog extends Model
     {
         return [
             'created_at' => 'datetime',
+            'approved_recipients' => 'array',
         ];
     }
 

@@ -276,6 +276,7 @@ class IntegrationsController extends Controller
         $technicianDigestTime = \App\Support\TechnicianConfig::digestTimeLocal();
         $technicianHeartbeatInterval = \App\Support\TechnicianConfig::heartbeatIntervalMinutes();
         $allowArbitraryEmailRecipients = \App\Support\TechnicianConfig::allowArbitraryEmailRecipients();
+        $allowArbitraryEmailRecipientsStaged = \App\Support\TechnicianConfig::allowArbitraryEmailRecipientsStaged();
         $directEmailNewRecipients = \App\Support\TechnicianConfig::directEmailNewRecipients();
 
         // Teams bot (Bot Framework) credentials — App ID + tenant are plain; the Entra
@@ -376,7 +377,7 @@ class IntegrationsController extends Controller
             'assistantEnabled', 'assistantMaxMessages', 'assistantDailyTokens',
             'technicianEnabled', 'technicianEmergencyEnabled', 'technicianAutoAck',
             'technicianTeamsWebhookSet', 'technicianNotifyEmail', 'technicianDigestEnabled', 'technicianDigestTime', 'technicianHeartbeatInterval',
-            'allowArbitraryEmailRecipients', 'directEmailNewRecipients',
+            'allowArbitraryEmailRecipients', 'allowArbitraryEmailRecipientsStaged', 'directEmailNewRecipients',
             'technicianEscalationChain', 'technicianEscalationTimeout', 'technicianEmergencyReping', 'technicianStormWindow',
             'technicianMaxHoldMessage', 'technicianMaxHoldAuto', 'technicianEmergencyKeywords', 'technicianEmergencyAge',
             'technicianAvailability', 'technicianOperatorPhones', 'activeUsers',
@@ -1909,6 +1910,8 @@ class IntegrationsController extends Controller
         Setting::setValue('technician_digest_enabled', $request->has('technician_digest_enabled') ? '1' : '0');
         // psa-kt82: email recipient policy knobs (default off).
         Setting::setValue('allow_arbitrary_email_recipients', $request->has('allow_arbitrary_email_recipients') ? '1' : '0');
+        // psa-w4e0: staged-only variant — custom To/CC on human-approved sends.
+        Setting::setValue('allow_arbitrary_email_recipients_staged', $request->has('allow_arbitrary_email_recipients_staged') ? '1' : '0');
         Setting::setValue('direct_email_new_recipients', $request->has('direct_email_new_recipients') ? '1' : '0');
         $time = (string) $request->input('technician_digest_time', '08:00');
         Setting::setValue('technician_digest_time', preg_match('/^\d{2}:\d{2}$/', $time) ? $time : '08:00');

@@ -739,12 +739,12 @@ class McpToolRegistry
                     'to' => [
                         'type' => 'array',
                         'items' => ['type' => ['integer', 'string']],
-                        'description' => 'Optional To recipient — a PSA person_id or an address already on this ticket\'s email thread. Arbitrary addresses are rejected. Omit to use the ticket contact.',
+                        'description' => 'Optional To recipient — a PSA person_id or an address already on this ticket\'s email thread. Arbitrary addresses are rejected on immediate sends; with staged=true they are accepted only when the operator has enabled staged custom recipients, and are always held for human approval with the full list shown. Omit to use the ticket contact.',
                     ],
                     'cc' => [
                         'type' => 'array',
                         'items' => ['type' => ['integer', 'string']],
-                        'description' => 'Optional CC recipients — PSA person_ids or addresses already on this ticket\'s email thread (reply-all). Arbitrary addresses are rejected; adding someone not already on the thread requires stage_email.',
+                        'description' => 'Optional CC recipients — PSA person_ids or addresses already on this ticket\'s email thread (reply-all). Arbitrary addresses are rejected on immediate sends (staged=true follows the staged custom-recipients setting); adding someone not already on the thread requires staging for review.',
                     ],
                 ],
                 'required' => ['ticket_id', 'reason', 'body'],
@@ -757,7 +757,7 @@ class McpToolRegistry
     {
         return [
             'name' => 'stage_email',
-            'description' => 'Stage a proactive client-facing ticket email draft in the cockpit for human approval. The call does not send email directly. The server derives recipient and subject from the ticket; the supplied body is held verbatim for review.',
+            'description' => 'Stage a proactive client-facing ticket email draft in the cockpit for human approval. The call does not send email directly. The server derives the subject from the ticket and defaults the recipient to the ticket contact; the supplied body is held verbatim for review. Optional to/cc may propose recipients — PSA person_ids, known contact/thread addresses, or (only when the operator has enabled staged custom recipients) other syntactically valid addresses. The approver sees the full proposed To/CC list, with anything outside the client\'s known contacts highlighted, before the email can send.',
             'input_schema' => [
                 'type' => 'object',
                 'properties' => [
@@ -772,6 +772,16 @@ class McpToolRegistry
                     'body' => [
                         'type' => 'string',
                         'description' => 'Proposed client-facing email body. It is held verbatim for cockpit review.',
+                    ],
+                    'to' => [
+                        'type' => 'array',
+                        'items' => ['type' => ['integer', 'string']],
+                        'description' => 'Optional proposed To recipient — a PSA person_id or an email address. Addresses outside the client\'s known contacts and this ticket\'s email thread are accepted only when the staged custom-recipients setting is enabled; they are validated for syntax, held for human approval, and highlighted to the approver. Omit to use the ticket contact.',
+                    ],
+                    'cc' => [
+                        'type' => 'array',
+                        'items' => ['type' => ['integer', 'string']],
+                        'description' => 'Optional proposed CC recipients — PSA person_ids or email addresses, under the same staged custom-recipients rules as to.',
                     ],
                 ],
                 'required' => ['ticket_id', 'reason', 'body'],
