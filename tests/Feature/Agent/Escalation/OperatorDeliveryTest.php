@@ -2,13 +2,17 @@
 
 namespace Tests\Feature\Agent\Escalation;
 
+use App\Models\Email;
 use App\Models\Setting;
+use App\Models\TeamsPersona;
 use App\Models\User;
 use App\Services\Agent\Escalation\OperatorDelivery;
 use App\Services\EmailService;
 use App\Services\Teams\TeamsBotClient;
 use App\Services\Technician\Notify\TeamsNotifier;
+use App\Support\TeamsBotConfig;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Log;
 use Mockery;
 use Mockery\MockInterface;
 use Tests\TestCase;
@@ -16,6 +20,8 @@ use Tests\TestCase;
 class OperatorDeliveryTest extends TestCase
 {
     use RefreshDatabase;
+
+    private const SERVICE_URL = 'https://smba.trafficmanager.net/amer/';
 
     public function test_sanitize_defangs_markdown_control_characters(): void
     {
@@ -211,5 +217,188 @@ class OperatorDeliveryTest extends TestCase
         $result = app(OperatorDelivery::class)->send($charlie, 'conv-x', 'https://smba.trafficmanager.net/amer/', 'Subject', 'Body');
 
         $this->assertFalse($result->postedToChat);
+    }
+
+    // ── The outbound Chet gate (psa-teams-outbound-gate) ─────────────────────
+    //
+    // The PSA-native Teams bot is SUPERSEDED: production runs teams_bot_enabled=0
+    // deliberately, with ZERO personas, and routes Chet via teams_chet_routing_enabled=1.
+    // Inbound (TeamsMessagesController::routedToPersona) honours chetRoutingEnabled, so
+    // Chet was recognised as owning its conversation — but this outbound gate did not,
+    // so every operator post fell through to an unconfigured webhook and returned
+    // posted:false. Silently. Note that EVERY pre-existing bot-branch test above sets
+    // teams_bot_enabled='1' — a config that does not run in production — which is
+    // exactly how the suite stayed green while the escalation path was dead.
+
+    /**
+     * THE HEADLINE. Anchored at the EXACT production config — legacy toggle OFF,
+     * zero personas, Chet routing ON — and asserts the Teams client is ACTUALLY
+     * called. Flipping teams_bot_enabled to '1' would make this pass without the
+     * fix, which is why the preconditions below are pinned as assertions.
+     */
+    public function test_send_posts_to_the_bot_chat_at_the_production_config_bot_disabled_no_persona_chet_routing_on(): void
+    {
+        Setting::setValue('teams_bot_enabled', '0');
+        Setting::setValue('teams_chet_routing_enabled', '1');
+
+        // Pin the config so this test can never quietly drift onto the legacy path.
+        $this->assertFalse(TeamsBotConfig::enabled(), 'production runs the superseded legacy bot OFF');
+        $this->assertTrue(TeamsBotConfig::chetRoutingEnabled(), 'production routes Chet via chet_routing_enabled');
+        $this->assertSame(0, TeamsPersona::count(), 'production has zero personas');
+
+        $charlie = User::factory()->create(['name' => 'Charlie', 'email' => 'charlie@soundit.co', 'microsoft_id' => 'oid-charlie']);
+
+        $this->mock(TeamsBotClient::class, function (MockInterface $m) {
+            $m->shouldReceive('getConversationMember')->once()
+                ->with(self::SERVICE_URL, 'conv-chet', 'oid-charlie')
+                ->andReturn(['id' => '29:abc', 'name' => 'Charlie']);
+            $m->shouldReceive('sendMessageWithMentions')->once()
+                ->with(
+                    self::SERVICE_URL,
+                    'conv-chet',
+                    Mockery::on(fn ($t) => str_contains($t, 'Body') && str_contains($t, '<at>Charlie</at>')),
+                    [['mentionId' => '29:abc', 'name' => 'Charlie']],
+                )
+                ->andReturnTrue();
+        });
+        // It must post to the CHAT — never silently divert to the unconfigured webhook.
+        $this->mock(TeamsNotifier::class, fn (MockInterface $m) => $m->shouldReceive('post')->never());
+        $this->mock(EmailService::class, fn (MockInterface $m) => $m->shouldReceive('sendNew')->once()->andReturn(new Email));
+
+        $result = app(OperatorDelivery::class)->send($charlie, 'conv-chet', self::SERVICE_URL, 'Subject', 'Body');
+
+        $this->assertTrue($result->postedToChat, 'Chet must actually reach Teams at the real production config');
+        $this->assertTrue($result->posted);
+    }
+
+    /** Regression guard: the legacy toggle is an independent OR, not newly dependent on chet routing. */
+    public function test_send_still_posts_on_the_legacy_bot_toggle_when_chet_routing_is_off(): void
+    {
+        Setting::setValue('teams_bot_enabled', '1');
+        Setting::setValue('teams_chet_routing_enabled', '0');
+
+        $this->assertFalse(TeamsBotConfig::chetRoutingEnabled());
+
+        $charlie = User::factory()->create(['name' => 'Charlie', 'email' => 'charlie@soundit.co', 'microsoft_id' => 'oid-charlie']);
+
+        $this->mock(TeamsBotClient::class, function (MockInterface $m) {
+            $m->shouldReceive('getConversationMember')->once()->andReturn(['id' => '29:abc', 'name' => 'Charlie']);
+            $m->shouldReceive('sendMessageWithMentions')->once()
+                ->with(self::SERVICE_URL, 'conv-x', Mockery::type('string'), Mockery::type('array'))
+                ->andReturnTrue();
+        });
+        $this->mock(TeamsNotifier::class, fn (MockInterface $m) => $m->shouldReceive('post')->never());
+        $this->mock(EmailService::class, fn (MockInterface $m) => $m->shouldReceive('sendNew')->once()->andReturn(new Email));
+
+        $result = app(OperatorDelivery::class)->send($charlie, 'conv-x', self::SERVICE_URL, 'Subject', 'Body');
+
+        $this->assertTrue($result->postedToChat);
+        $this->assertTrue($result->posted);
+    }
+
+    /** Regression guard: an enabled persona remains its own gate with every global toggle off. */
+    public function test_send_posts_for_an_enabled_persona_even_with_every_global_toggle_off(): void
+    {
+        Setting::setValue('teams_bot_enabled', '0');
+        Setting::setValue('teams_chet_routing_enabled', '0');
+
+        $persona = TeamsPersona::create([
+            'persona_key' => 'gus',
+            'display_name' => 'Gus',
+            'bot_app_id' => 'persona-app-id',
+            'tenant_id' => 'persona-tenant-id',
+            'bot_client_secret' => 'persona-secret',
+            'enabled' => true,
+        ]);
+
+        $charlie = User::factory()->create(['name' => 'Charlie', 'email' => 'charlie@soundit.co', 'microsoft_id' => 'oid-charlie']);
+
+        $this->mock(TeamsBotClient::class, function (MockInterface $m) use ($persona) {
+            $m->shouldReceive('forPersona')->once()
+                ->with(Mockery::on(fn ($p) => $p instanceof TeamsPersona && $p->is($persona)))
+                ->andReturnSelf();
+            $m->shouldReceive('getConversationMember')->once()->andReturn(['id' => '29:abc', 'name' => 'Charlie']);
+            $m->shouldReceive('sendMessageWithMentions')->once()
+                ->with(self::SERVICE_URL, 'conv-gus', Mockery::type('string'), Mockery::type('array'))
+                ->andReturnTrue();
+        });
+        $this->mock(TeamsNotifier::class, fn (MockInterface $m) => $m->shouldReceive('post')->never());
+        $this->mock(EmailService::class, fn (MockInterface $m) => $m->shouldReceive('sendNew')->once()->andReturn(new Email));
+
+        $result = app(OperatorDelivery::class)->send($charlie, 'conv-gus', self::SERVICE_URL, 'Subject', 'Body', $persona);
+
+        $this->assertTrue($result->postedToChat);
+        $this->assertTrue($result->posted);
+    }
+
+    /**
+     * THE REASON NOBODY NOTICED. Declining to post to a conversation we DO have must
+     * never be silent — that is precisely how this path stayed dead in production.
+     */
+    public function test_send_warns_loudly_when_a_conversation_is_configured_but_every_bot_gate_is_off(): void
+    {
+        Setting::setValue('teams_bot_enabled', '0');
+        Setting::setValue('teams_chet_routing_enabled', '0');
+        Log::spy();
+
+        $charlie = User::factory()->create(['email' => 'charlie@soundit.co']);
+
+        $this->mock(TeamsBotClient::class, fn (MockInterface $m) => $m->shouldReceive('sendMessageWithMentions')->never());
+        $this->mock(TeamsNotifier::class, fn (MockInterface $m) => $m->shouldReceive('post')->once()->andReturnTrue());
+        $this->mock(EmailService::class, fn (MockInterface $m) => $m->shouldReceive('sendNew')->once()->andReturn(new Email));
+
+        $result = app(OperatorDelivery::class)->send($charlie, 'conv-chet', self::SERVICE_URL, 'Subject', 'Body');
+
+        // The alarm fires, and it says WHICH gate condition failed.
+        Log::shouldHaveReceived('warning')
+            ->withArgs(fn (string $message, array $context): bool => str_contains($message, 'bot post skipped')
+                && ($context['reason'] ?? null) === 'no_enabled_bot_lane'
+                && ($context['teams_bot_enabled'] ?? null) === false
+                && ($context['chet_routing_enabled'] ?? null) === false
+                && ($context['conversation_id'] ?? null) === 'conv-chet')
+            ->once();
+
+        // Still fail-soft: the warning does not make delivery worse.
+        $this->assertTrue($result->posted);
+        $this->assertFalse($result->postedToChat);
+    }
+
+    /** The warning must name the ACTUAL failing condition, not a generic "disabled". */
+    public function test_send_warning_distinguishes_a_missing_service_url_from_a_disabled_bot(): void
+    {
+        Setting::setValue('teams_bot_enabled', '1');
+        Log::spy();
+
+        $charlie = User::factory()->create(['email' => 'charlie@soundit.co']);
+
+        $this->mock(TeamsBotClient::class, fn (MockInterface $m) => $m->shouldReceive('sendMessageWithMentions')->never());
+        $this->mock(TeamsNotifier::class, fn (MockInterface $m) => $m->shouldReceive('post')->once()->andReturnTrue());
+        $this->mock(EmailService::class, fn (MockInterface $m) => $m->shouldReceive('sendNew')->once()->andReturn(new Email));
+
+        app(OperatorDelivery::class)->send($charlie, 'conv-chet', null, 'Subject', 'Body');
+
+        Log::shouldHaveReceived('warning')
+            ->withArgs(fn (string $message, array $context): bool => str_contains($message, 'bot post skipped')
+                && ($context['reason'] ?? null) === 'service_url_missing'
+                && ($context['has_service_url'] ?? null) === false)
+            ->once();
+    }
+
+    /** No false alarms: a webhook-only deployment has no conversation, and that is not a fault. */
+    public function test_send_does_not_warn_when_no_conversation_is_configured_at_all(): void
+    {
+        Setting::setValue('teams_bot_enabled', '0');
+        Log::spy();
+
+        $charlie = User::factory()->create(['email' => 'charlie@soundit.co']);
+
+        $this->mock(TeamsBotClient::class, fn (MockInterface $m) => $m->shouldReceive('sendMessageWithMentions')->never());
+        $this->mock(TeamsNotifier::class, fn (MockInterface $m) => $m->shouldReceive('post')->once()->andReturnTrue());
+        $this->mock(EmailService::class, fn (MockInterface $m) => $m->shouldReceive('sendNew')->once()->andReturn(new Email));
+
+        $result = app(OperatorDelivery::class)->send($charlie, null, null, 'Subject', 'Body');
+
+        Log::shouldNotHaveReceived('warning');
+        $this->assertTrue($result->posted);
     }
 }
