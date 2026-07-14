@@ -89,7 +89,8 @@ class StaffCippWriteToolExecutor
      * (quarantine-release precedent) on the direct path, at staging, and
      * again fresh at approval — deriving the group name and type server-side
      * and refusing dynamic-membership, on-prem-synced, and unrecognized-type
-     * groups before anything reaches upstream.
+     * groups before anything reaches upstream. Adds to security-privileged
+     * types (PRIVILEGED_GROUP_TYPES) are held-only on top of that.
      *
      * @var array<int, string>
      */
@@ -174,6 +175,21 @@ class StaffCippWriteToolExecutor
      * @var array<int, string>
      */
     private const GROUP_TYPES = ['Microsoft 365', 'Mail-Enabled Security', 'Security', 'Distribution List'];
+
+    /**
+     * Group types whose ADD is structurally held-only (external-forwarding /
+     * device-wipe precedent): security-enabled membership is an access grant
+     * to whatever the group gates, and CIPP's ListGroups projection carries
+     * no isAssignableToRole — an add to a role-assignable group (an Entra
+     * ADMIN ROLE grant) is indistinguishable from an ordinary security-group
+     * add at verification time. So adds to these VERIFIED types never execute
+     * immediately, whatever mode was granted; only the staged path (a human
+     * cockpit approval) reaches upstream. REMOVES are revocation and stay
+     * immediate-capable, as do adds to the remaining (collaboration) types.
+     *
+     * @var array<int, string>
+     */
+    private const PRIVILEGED_GROUP_TYPES = ['Security', 'Mail-Enabled Security'];
 
     private const GROUP_ID_PATTERN = '/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i';
 
@@ -2248,9 +2264,12 @@ class StaffCippWriteToolExecutor
      * person (ACTIVE required for an add — the psa-pgnj recipient gate; loose
      * for a remove so offboarding cleanup stays possible), and the group is
      * verified against the resolved tenant's live CIPP group listing before
-     * the single write is sent with the VERIFIED name and type. Local rails
-     * (dedup, cooldown) run before the verification read so a refused call
-     * never reaches upstream at all.
+     * the single write is sent with the VERIFIED name and type. Adds to
+     * security-privileged types refuse here outright — held-only, whatever
+     * mode was granted (PRIVILEGED_GROUP_TYPES) — so the immediate grant
+     * covers collaboration-type adds and all removes. Local rails (dedup,
+     * cooldown) run before the verification read so a refused call never
+     * reaches upstream at all.
      *
      * @return array<string, mixed>
      */
@@ -2299,6 +2318,14 @@ class StaffCippWriteToolExecutor
 
         try {
             $group = $this->groupFactsFromRow($this->verifiedGroupRow($tenant, (string) $params['group_id'], (string) $context['confirm_group_name']));
+
+            // Security-privileged ADDs are held-only whatever mode was granted
+            // — the VERIFIED type decides, never the caller's description, and
+            // only a cockpit approval can reach upstream (see
+            // PRIVILEGED_GROUP_TYPES for why role-assignability forces this).
+            if ((string) $params['operation'] === 'add' && in_array($group['type'], self::PRIVILEGED_GROUP_TYPES, true)) {
+                throw new CippWriteScopeException('Adding a user to a '.$group['type'].' group is held-only — security-privileged membership can gate resources or admin roles and never executes immediately, whatever mode was granted; call cipp_set_group_membership with staged=true and a ticket_id for cockpit approval.');
+            }
         } catch (CippWriteScopeException $e) {
             $this->auditAttempt($tool, 'rejected', $client->id, $ticket, $person, null, $contentHash, "{$targetKey}: ".$e->getMessage(), $actorLabel);
 
@@ -2853,8 +2880,8 @@ class StaffCippWriteToolExecutor
         $groupLabel = '"'.$group['name'].'" ('.$group['type'].($group['mail'] !== '' ? ', mail '.$group['mail'] : '').', id '.$groupId.')';
 
         if ($operation === 'add') {
-            $privilegeNote = in_array($group['type'], ['Security', 'Mail-Enabled Security'], true)
-                ? ' This is a SECURITY group: membership can carry access-controlled resources or elevated privileges — verify what this group grants before approving.'
+            $privilegeNote = in_array($group['type'], self::PRIVILEGED_GROUP_TYPES, true)
+                ? ' This is a SECURITY group: membership can carry access-controlled resources or elevated privileges (role-assignability is not visible in the group listing) — verify what this group grants before approving. This approval is the ONLY path for security-group adds; they never execute immediately.'
                 : '';
 
             return 'Add user '.$userLabel.' to group '.$groupLabel.'.'
@@ -4992,7 +5019,7 @@ class StaffCippWriteToolExecutor
     {
         return self::tool(
             'cipp_set_group_membership',
-            'Add one server-derived CIPP user to — or remove them from — one Microsoft 365 group (Security, Microsoft 365, Distribution List, or Mail-Enabled Security) in the resolved client tenant immediately through CIPP. The group is verified against the tenant\'s LIVE group listing and its name and type are derived server-side from the verified row; dynamic-membership groups and on-premises-synced groups are refused (their membership is rule- or AD-managed). ADD grants the user whatever access the group carries — shared data, resources, mail, and for security groups possibly privileged access — so the target user must be ACTIVE in the PSA; REMOVE stays possible for deactivated users (offboarding cleanup). confirm_upn is the target USER\'s UPN (person_id); confirm_group_name is the group\'s display name. Requires an explicit token grant (grants start staged-only; immediate execution needs the immediate mode grant), reason, kill-switch, dedup/cooldown, and TechnicianActionLog audit.',
+            'Add one server-derived CIPP user to — or remove them from — one Microsoft 365 group (Security, Microsoft 365, Distribution List, or Mail-Enabled Security) in the resolved client tenant immediately through CIPP. The group is verified against the tenant\'s LIVE group listing and its name and type are derived server-side from the verified row; dynamic-membership groups and on-premises-synced groups are refused (their membership is rule- or AD-managed). ADD grants the user whatever access the group carries — shared data, resources, mail, and for security groups possibly privileged access — so the target user must be ACTIVE in the PSA; REMOVE stays possible for deactivated users (offboarding cleanup). Adds to Security and Mail-Enabled Security groups are HELD-ONLY: they never execute immediately, whatever mode was granted — call with staged=true and a ticket_id for cockpit approval. Immediate execution (with the immediate mode grant; grants start staged-only) covers Microsoft 365 and Distribution List adds and all removes. Requires an explicit token grant, reason, kill-switch, dedup/cooldown, and TechnicianActionLog audit. confirm_upn is the target USER\'s UPN (person_id); confirm_group_name is the group\'s display name.',
             array_merge(self::personProperties(), self::groupMembershipProperties()),
             ['person_id', 'group_id', 'operation', 'confirm_group_name', 'confirm_upn', 'reason'],
         );
@@ -5014,7 +5041,7 @@ class StaffCippWriteToolExecutor
     {
         return self::tool(
             'cipp_stage_set_group_membership',
-            'Stage a Microsoft 365 group membership change (add or remove one server-derived CIPP user) for cockpit approval — the default path for this capability. Staging verifies the group against the resolved client tenant\'s live group listing (a read, never the write itself) so the proposal shows the VERIFIED group name and type; the held payload stores only safe local scalars plus that verified snapshot, and approval re-verifies the user\'s active status (for adds) and the group\'s existence, name, and type FRESH — any drift declines instead of executing against a group the operator never reviewed. Dynamic-membership and on-premises-synced groups are refused at staging. confirm_upn is the target USER\'s UPN (person_id); confirm_group_name is the group\'s display name.',
+            'Stage a Microsoft 365 group membership change (add or remove one server-derived CIPP user) for cockpit approval — the default path for this capability, and the ONLY path for adds to Security and Mail-Enabled Security groups (those are held-only and never execute immediately). Staging verifies the group against the resolved client tenant\'s live group listing (a read, never the write itself) so the proposal shows the VERIFIED group name and type; the held payload stores only safe local scalars plus that verified snapshot, and approval re-verifies the user\'s active status (for adds) and the group\'s existence, name, and type FRESH — any drift declines instead of executing against a group the operator never reviewed. Dynamic-membership and on-premises-synced groups are refused at staging. confirm_upn is the target USER\'s UPN (person_id); confirm_group_name is the group\'s display name.',
             array_merge(self::personProperties(ticket: true), self::groupMembershipProperties()),
             ['person_id', 'group_id', 'operation', 'confirm_group_name', 'ticket_id', 'confirm_upn', 'reason'],
         );

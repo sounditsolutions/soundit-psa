@@ -350,6 +350,68 @@ class CippWriteGroupMembershipTest extends TestCase
         $this->assertStringNotContainsString('alex@acme.example', $summary);
     }
 
+    public function test_direct_add_to_a_security_group_is_held_only_whatever_mode_was_granted(): void
+    {
+        $this->configureCipp();
+        $this->configureAiActor();
+        $fixture = $this->cippFixture();
+        // Bare grant = the legacy immediate mode — the STRONGEST grant this
+        // tool can hold. Security-privileged adds must still refuse: the
+        // ListGroups projection carries no isAssignableToRole, so an add to a
+        // role-assignable group (an Entra admin role grant) would be
+        // indistinguishable from an ordinary security-group add. Only the
+        // staged path (a human approval) may reach upstream.
+        $token = $this->token(['cipp_set_group_membership']);
+
+        $cases = [
+            // [listing rows, group id, typed confirm name]
+            'security' => [
+                [$this->securityGroupRow()],
+                self::GROUP_ID_2,
+                'VPN Users',
+            ],
+            'mail-enabled-security' => [
+                [$this->groupRow([
+                    'displayName' => 'Compliance Broadcast',
+                    'mail' => 'compliance@acme.example',
+                    'securityEnabled' => true,
+                    'groupTypes' => [],
+                    'groupType' => 'Mail-Enabled Security',
+                    'calculatedGroupType' => 'security',
+                ])],
+                self::GROUP_ID,
+                'Compliance Broadcast',
+            ],
+        ];
+
+        foreach ($cases as $label => [$rows, $groupId, $confirmName]) {
+            $client = Mockery::mock(CippRestWriteClient::class);
+            $client->shouldReceive('listGroups')->once()->andReturn($rows);
+            $client->shouldNotReceive('setGroupMembership');
+            $this->app->instance(CippRestWriteClient::class, $client);
+
+            $response = $this->callTool($token, 'cipp_set_group_membership', [
+                'client_id' => $fixture['client']->id,
+                'person_id' => $fixture['person']->id,
+                'group_id' => $groupId,
+                'operation' => 'add',
+                'confirm_group_name' => $confirmName,
+                'confirm_upn' => 'alex@acme.example',
+                'reason' => "Immediate add to a privileged group must be refused ({$label}).",
+            ]);
+
+            $this->assertTrue((bool) $response->json('result.isError'), "{$label} add should be held-only");
+            $this->assertStringContainsString('held-only', (string) $response->json('result.content.0.text'), $label);
+            $this->assertStringContainsString('staged=true', (string) $response->json('result.content.0.text'), $label);
+        }
+
+        // Refused, audited, and nothing staged or executed as a side effect.
+        $this->assertSame(2, TechnicianActionLog::where('action_type', 'cipp_set_group_membership')
+            ->where('result_status', 'rejected')->count());
+        $this->assertSame(0, TechnicianActionLog::where('result_status', 'executed')->count());
+        $this->assertSame(0, TechnicianRun::count());
+    }
+
     public function test_group_verification_refuses_missing_dynamic_onprem_and_unknown_type_groups(): void
     {
         $this->configureCipp();
@@ -472,6 +534,55 @@ class CippWriteGroupMembershipTest extends TestCase
             'run_id' => $run->id,
             'approver_user_id' => $actor->id,
         ]);
+    }
+
+    public function test_staged_add_to_a_security_group_warns_the_approver_and_executes_after_approval(): void
+    {
+        $this->configureCipp();
+        $actor = $this->configureAiActor();
+        $fixture = $this->cippFixture();
+        $token = $this->token(['cipp_stage_set_group_membership']);
+
+        // The staged path is the ONLY route for a security-group add — it must
+        // stay open, and the proposal must carry the privilege warning so the
+        // approver knows this membership can gate resources or admin roles.
+        $stageClient = Mockery::mock(CippRestWriteClient::class);
+        $stageClient->shouldReceive('listGroups')->once()
+            ->with('acme.onmicrosoft.com')
+            ->andReturn([$this->securityGroupRow()]);
+        $stageClient->shouldNotReceive('setGroupMembership');
+        $this->app->instance(CippRestWriteClient::class, $stageClient);
+
+        $response = $this->callTool($token, 'cipp_stage_set_group_membership', [
+            'client_id' => $fixture['client']->id,
+            'person_id' => $fixture['person']->id,
+            'group_id' => self::GROUP_ID_2,
+            'operation' => 'add',
+            'ticket_id' => $fixture['ticket']->id,
+            'confirm_group_name' => 'VPN Users',
+            'confirm_upn' => 'alex@acme.example',
+            'reason' => 'Grant VPN access for the new remote-work arrangement.',
+        ]);
+        $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
+        $run = TechnicianRun::findOrFail($this->decodedResult($response)['run_id']);
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->state);
+        $this->assertStringContainsString('SECURITY group', $run->proposed_content);
+        $this->assertStringContainsString('VPN Users', $run->proposed_content);
+
+        $approveClient = Mockery::mock(CippRestWriteClient::class);
+        $approveClient->shouldReceive('listGroups')->once()
+            ->with('acme.onmicrosoft.com')
+            ->andReturn([$this->securityGroupRow()]);
+        $approveClient->shouldReceive('setGroupMembership')->once()
+            ->with('acme.onmicrosoft.com', self::GROUP_ID_2, 'VPN Users', 'Security', 'user-123', 'alex@acme.example', 'add')
+            ->andReturn(['success' => true, 'status' => 200]);
+        $this->app->instance(CippRestWriteClient::class, $approveClient);
+
+        $this->actingAs($actor)
+            ->post(route('cockpit.approve', $run))
+            ->assertRedirect(route('cockpit.index'));
+
+        $this->assertSame(TechnicianRunState::Done, $run->fresh()->state);
     }
 
     public function test_add_rejects_an_inactive_user_at_staging_and_direct(): void
