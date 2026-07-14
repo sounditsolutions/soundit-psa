@@ -46,6 +46,7 @@ class CippRestWriteClientTest extends TestCase
         $this->assertContains('listMailQuarantine', $methods);
         $this->assertContains('wipeDevice', $methods);
         $this->assertContains('reassignOneDriveOwnership', $methods);
+        $this->assertContains('editUser', $methods);
         $this->assertNotContains('post', $methods);
         $this->assertNotContains('get', $methods);
         $this->assertNotContains('request', $methods);
@@ -901,6 +902,197 @@ class CippRestWriteClientTest extends TestCase
             $this->fail('Expected CippClientException for blank successor');
         } catch (CippClientException $e) {
             $this->assertStringContainsString('successor UPN is required', $e->getMessage());
+        }
+
+        Http::assertNothingSent();
+    }
+
+    private function editUserClient(): CippRestWriteClient
+    {
+        return new CippRestWriteClient([
+            'api_url' => 'https://cipp.example.test',
+            'tenant_id' => 'tenant-1',
+            'client_id' => 'write-client',
+            'client_secret' => 'write-secret',
+        ], Cache::store(), fn (string $host): array => ['93.184.216.34']);
+    }
+
+    public function test_edit_user_posts_edit_user_shape_with_pinned_upn_halves(): void
+    {
+        Http::fake([
+            'login.microsoftonline.com/*' => Http::response(['access_token' => 'WRITE-TOKEN', 'expires_in' => 3600]),
+            // Fixture from the vendor source (Set-CIPPUser.ps1): the edit's own
+            // positive marker plus Set-CIPPManager's success line.
+            'cipp.example.test/api/*' => Http::response(['Results' => [
+                'Success. The user has been edited.',
+                "Set alex@acme.example's manager to boss@acme.example",
+            ]]),
+        ]);
+
+        $result = $this->editUserClient()->editUser(
+            'acme.onmicrosoft.com',
+            'user-123',
+            'alex@acme.example',
+            ['jobTitle' => 'Operations Manager', 'businessPhones' => ['555 0100']],
+            ['department'],
+            'boss@acme.example',
+        );
+
+        $this->assertSame(['success' => true, 'status' => 200], $result);
+
+        // Source-pinned body (CIPP-API Invoke-EditUser.ps1 → Set-CIPPUser.ps1):
+        // id is the Graph user object id; username + Domain are the CURRENT
+        // UPN halves (Set-CIPPUser recomposes userPrincipalName from them on
+        // every edit, so omitting them would ship the literal UPN "@");
+        // clearProperties carries explicit blanks; setManager rides the
+        // {value,label} autocomplete shape with the server-resolved UPN.
+        Http::assertSent(fn ($request) => $request->url() === 'https://cipp.example.test/api/EditUser'
+            && $request->method() === 'POST'
+            && $request->hasHeader('Authorization', 'Bearer WRITE-TOKEN')
+            && $request->data() === [
+                'tenantFilter' => 'acme.onmicrosoft.com',
+                'id' => 'user-123',
+                'username' => 'alex',
+                'Domain' => 'acme.example',
+                'jobTitle' => 'Operations Manager',
+                'businessPhones' => ['555 0100'],
+                'clearProperties' => ['department'],
+                'setManager' => ['value' => 'boss@acme.example', 'label' => 'boss@acme.example'],
+            ]);
+    }
+
+    public function test_edit_user_omits_clear_and_manager_keys_and_never_sends_extra_action_keys(): void
+    {
+        Http::fake([
+            'login.microsoftonline.com/*' => Http::response(['access_token' => 'WRITE-TOKEN', 'expires_in' => 3600]),
+            'cipp.example.test/api/*' => Http::response(['Results' => ['Success. The user has been edited.']]),
+        ]);
+
+        $result = $this->editUserClient()->editUser(
+            'acme.onmicrosoft.com',
+            'user-123',
+            'alex@acme.example',
+            ['displayName' => 'Alex A. Acme'],
+            [],
+            null,
+        );
+
+        $this->assertSame(['success' => true, 'status' => 200], $result);
+
+        // A minimal set-only edit carries NOTHING beyond the identity pins and
+        // the provided field: no clearProperties, no setManager, and never a
+        // key that would trigger Set-CIPPUser's other action arms (password
+        // echoes into the Results text; licenses/groups/aliases have their
+        // own tools; MustChangePass is deliberately omitted so the vendor's
+        // always-sent forceChangePasswordNextSignIn rides as false, exactly
+        // like CIPP's own edit form defaults).
+        Http::assertSent(function ($request) {
+            if ($request->url() !== 'https://cipp.example.test/api/EditUser') {
+                return false;
+            }
+
+            $data = $request->data();
+            foreach (['clearProperties', 'setManager', 'password', 'MustChangePass', 'licenses', 'removeLicenses', 'AddedAliases', 'AddToGroups', 'RemoveFromGroups', 'CopyFrom', 'copyFrom', 'setSponsor', 'defaultAttributes', 'customData', 'Scheduled', 'userPrincipalName', 'mailNickname'] as $forbidden) {
+                if (array_key_exists($forbidden, $data)) {
+                    return false;
+                }
+            }
+
+            return $data === [
+                'tenantFilter' => 'acme.onmicrosoft.com',
+                'id' => 'user-123',
+                'username' => 'alex',
+                'Domain' => 'acme.example',
+                'displayName' => 'Alex A. Acme',
+            ];
+        });
+    }
+
+    public function test_edit_user_throws_on_reported_failure_inside_http_200(): void
+    {
+        // Set-CIPPUser catches its own Graph errors into Results strings and
+        // Invoke-EditUser still returns HTTP 200 — the Results text is the
+        // ONLY failure signal.
+        $cases = [
+            // Full failure: the Graph PATCH itself failed.
+            [
+                'body' => ['Results' => ['Failed to edit user. Insufficient privileges to complete the operation.']],
+                'expect' => 'Failed to edit user',
+            ],
+            // Partial: the edit applied but the manager step failed — the
+            // error must say the profile PATCH itself already applied.
+            [
+                'body' => ['Results' => [
+                    'Success. The user has been edited.',
+                    "Failed to set alex@acme.example's manager: Resource 'boss@acme.example' does not exist.",
+                ]],
+                'expect' => 'already reported applied',
+            ],
+            // No positive marker at all: fail closed rather than assume.
+            [
+                'body' => ['Results' => []],
+                'expect' => 'did not confirm the user edit',
+            ],
+        ];
+
+        // One fake with a response SEQUENCE: Http::fake() inside a loop stacks
+        // stubs (first registered wins), which would silently replay case 1's
+        // body for every case.
+        $sequence = Http::sequence();
+        foreach ($cases as $case) {
+            $sequence->push($case['body']);
+        }
+        Http::fake([
+            'login.microsoftonline.com/*' => Http::response(['access_token' => 'WRITE-TOKEN', 'expires_in' => 3600]),
+            'cipp.example.test/api/*' => $sequence,
+        ]);
+
+        $client = $this->editUserClient();
+
+        foreach ($cases as $case) {
+            try {
+                $client->editUser(
+                    'acme.onmicrosoft.com',
+                    'user-123',
+                    'alex@acme.example',
+                    ['jobTitle' => 'Operations Manager'],
+                    [],
+                    'boss@acme.example',
+                );
+                $this->fail('Expected CippClientException for body: '.json_encode($case['body']));
+            } catch (CippClientException $e) {
+                $this->assertStringContainsString($case['expect'], $e->getMessage(), json_encode($case['body']));
+            }
+        }
+    }
+
+    public function test_edit_user_rejects_malformed_target_identity_or_empty_change_before_any_request(): void
+    {
+        Http::fake();
+
+        $client = $this->editUserClient();
+
+        try {
+            $client->editUser('acme.onmicrosoft.com', '  ', 'alex@acme.example', ['jobTitle' => 'X'], [], null);
+            $this->fail('Expected CippClientException for empty user id');
+        } catch (CippClientException $e) {
+            $this->assertStringContainsString('user object id is required', $e->getMessage());
+        }
+
+        foreach (['no-at-sign', '@acme.example', 'alex@'] as $badUpn) {
+            try {
+                $client->editUser('acme.onmicrosoft.com', 'user-123', $badUpn, ['jobTitle' => 'X'], [], null);
+                $this->fail("Expected CippClientException for UPN '{$badUpn}'");
+            } catch (CippClientException $e) {
+                $this->assertStringContainsString('UPN', $e->getMessage());
+            }
+        }
+
+        try {
+            $client->editUser('acme.onmicrosoft.com', 'user-123', 'alex@acme.example', [], [], null);
+            $this->fail('Expected CippClientException for a no-change edit');
+        } catch (CippClientException $e) {
+            $this->assertStringContainsString('at least one change', $e->getMessage());
         }
 
         Http::assertNothingSent();

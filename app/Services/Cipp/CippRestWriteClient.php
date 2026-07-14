@@ -569,6 +569,120 @@ class CippRestWriteClient
     }
 
     /**
+     * Edit ONE existing M365 user's profile / directory attributes via CIPP's
+     * EditUser endpoint — a null-safe PARTIAL update.
+     *
+     * Source shape (CIPP-API Invoke-EditUser.ps1 → Set-CIPPUser.ps1): POST
+     * api/EditUser with a flat UserObj body; id is the Graph user OBJECT id
+     * and is required (the endpoint 400s without it). Set-CIPPUser builds a
+     * Graph PATCH from a fixed field list and DROPS every null/whitespace
+     * value, so a field omitted here is left untouched upstream; explicit
+     * blanking rides the vendor's own clearProperties whitelist instead
+     * (scalars → null, businessPhones/otherMails → []), and displayName is
+     * never clearable (Graph rejects it). userPrincipalName is ALWAYS
+     * recomposed upstream as "{username}@{Domain}" — omitting them would ship
+     * the literal UPN "@" — so both halves are pinned here to the resolved
+     * person's CURRENT UPN: this wrapper cannot rename an account, and
+     * mailNickname (which CIPP syncs to username on every edit, matching its
+     * own form behavior) stays on the current local part. The vendor's
+     * passwordProfile.forceChangePasswordNextSignIn always rides the PATCH
+     * ([bool]$UserObj.MustChangePass — the hashtable survives the empty-value
+     * filter); MustChangePass is deliberately never sent, so it rides false
+     * exactly like CIPP's own edit form default. The password key is NEVER
+     * sent — a set password would echo verbatim into the Results text — and
+     * neither are the license/alias/group/copyFrom/sponsor/custom-attribute
+     * action keys, which have (or will have) their own curated capabilities.
+     * setManager (when given) is the CIPP autocomplete {value,label} shape
+     * carrying the server-resolved manager UPN, executed upstream as Graph
+     * PUT /users/{upn}/manager/$ref via Set-CIPPManager.ps1.
+     *
+     * The endpoint reports failure inside HTTP 200: Set-CIPPUser catches its
+     * own Graph errors into Results strings ("Failed to edit user. …",
+     * "Failed to set X's manager: …"), so the body is captured, any
+     * Failed-prefixed line throws, and the edit's own positive marker
+     * ("Success. The user has been edited.") is required — a missing marker
+     * fails closed. A manager failure after a successful profile PATCH is
+     * surfaced as a partial-application error telling the caller to verify
+     * the user's current state in CIPP before retrying.
+     *
+     * @param  array<string, mixed>  $setFields  upstream-keyed UserObj fields to set
+     * @param  array<int, string>  $clearProperties  upstream-keyed fields to blank
+     * @return array<int|string, mixed>
+     */
+    public function editUser(
+        string $tenantFilter,
+        string $userId,
+        string $userPrincipalName,
+        array $setFields,
+        array $clearProperties,
+        ?string $managerUserPrincipalName,
+    ): array {
+        if (trim($userId) === '') {
+            throw new CippClientException('Target CIPP user object id is required');
+        }
+
+        $upn = trim($userPrincipalName);
+        $at = strrpos($upn, '@');
+        $localPart = $at === false ? '' : substr($upn, 0, $at);
+        $domain = $at === false ? '' : substr($upn, $at + 1);
+        if ($localPart === '' || $domain === '') {
+            throw new CippClientException('Target UPN is malformed; refresh the CIPP contact sync before editing this user.');
+        }
+
+        if ($setFields === [] && $clearProperties === [] && ($managerUserPrincipalName === null || trim($managerUserPrincipalName) === '')) {
+            throw new CippClientException('User edit requires at least one change');
+        }
+
+        $body = [
+            'tenantFilter' => $tenantFilter,
+            'id' => $userId,
+            'username' => $localPart,
+            'Domain' => $domain,
+        ];
+
+        foreach ($setFields as $key => $value) {
+            $body[$key] = $value;
+        }
+
+        if ($clearProperties !== []) {
+            $body['clearProperties'] = array_values($clearProperties);
+        }
+
+        if ($managerUserPrincipalName !== null && trim($managerUserPrincipalName) !== '') {
+            $body['setManager'] = ['value' => $managerUserPrincipalName, 'label' => $managerUserPrincipalName];
+        }
+
+        $response = $this->send('api/EditUser', $body, captureBody: true);
+
+        $results = $response['body']['Results'] ?? null;
+        $messages = array_values(array_filter(is_array($results) ? $results : [$results], 'is_string'));
+
+        $editConfirmed = false;
+        $failure = null;
+        foreach ($messages as $message) {
+            if (stripos($message, 'Success. The user has been edited.') !== false) {
+                $editConfirmed = true;
+            }
+            if ($failure === null && str_starts_with(mb_strtolower(ltrim($message)), 'failed')) {
+                $failure = mb_substr($message, 0, 300);
+            }
+        }
+
+        if ($failure !== null) {
+            throw new CippClientException(
+                "CIPP write api/EditUser reported failure: {$failure}"
+                .($editConfirmed ? ' The profile edit itself was already reported applied — verify the user\'s current state in CIPP before retrying.' : '')
+            );
+        }
+
+        if (! $editConfirmed) {
+            throw new CippClientException('CIPP did not confirm the user edit; treat the change as not applied and verify in CIPP.');
+        }
+
+        return ['success' => true, 'status' => (int) $response['status']];
+    }
+
+    /**
      * @param  array<int|string, mixed>  $body
      * @return array<int|string, mixed>
      */
