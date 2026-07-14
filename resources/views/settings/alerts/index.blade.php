@@ -3,9 +3,14 @@
 @section('title', 'Alerts Hub')
 
 @section('content')
-<div class="row mb-3">
+<div class="row mb-3 align-items-center">
     <div class="col">
         <h4 class="section-title mb-0">Alerts Hub</h4>
+    </div>
+    <div class="col-auto">
+        <a class="btn btn-primary btn-sm" href="{{ route('settings.alerts.matrix') }}">
+            <i class="bi bi-grid-3x3-gap me-1"></i>Relay Matrix
+        </a>
     </div>
 </div>
 

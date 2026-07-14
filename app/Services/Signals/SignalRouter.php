@@ -8,6 +8,7 @@ use App\Models\McpToken;
 use App\Models\SignalDelivery;
 use App\Models\SignalDestination;
 use App\Models\SignalEvent;
+use App\Models\SignalEventTypeSetting;
 use App\Models\SignalRoute;
 use App\Models\SignalRouteStep;
 use App\Support\McpConfig;
@@ -27,6 +28,14 @@ class SignalRouter
     public function route(SignalEvent $event): void
     {
         if (! SignalEventTypes::routable($event->type_key)) {
+            return;
+        }
+
+        // D4 global per-type master gate (psa-0j6i): a globally-disabled type delivers
+        // through NO route. Default-safe — with no overlay row every type is enabled, so
+        // this is a no-op and existing routing is byte-identical. Non-lossy: per-route
+        // config is untouched, so re-enabling restores delivery.
+        if (! SignalEventTypeSetting::isTypeGloballyEnabled($event->type_key)) {
             return;
         }
 
@@ -103,6 +112,11 @@ class SignalRouter
     public function wouldReachMcpDestination(string $typeKey, array $context = []): bool
     {
         if (! SignalEventTypes::routable($typeKey)) {
+            return false;
+        }
+
+        // Honor the D4 master gate: a globally-disabled type reaches nobody (psa-0j6i).
+        if (! SignalEventTypeSetting::isTypeGloballyEnabled($typeKey)) {
             return false;
         }
 

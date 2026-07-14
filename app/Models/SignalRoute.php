@@ -9,6 +9,7 @@ class SignalRoute extends Model
 {
     protected $fillable = [
         'label',
+        'managed_token_label',
         'event_filter',
         'enabled',
         'cooldown_seconds',
