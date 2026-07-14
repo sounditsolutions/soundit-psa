@@ -71,10 +71,15 @@ class McpConfig
      * inbox, so a token that cannot call it can never read the queued rows — the destination
      * is a black hole no matter how live its label is (psa-28j4.3 review gate).
      *
-     * Liveness matches McpToken::hasLiveLabel() (draft/paused count — they can be activated to
-     * drain a backlog; only revocation is terminal), so this composes cleanly with the
-     * delivery-side mcpDeliveryBlockReason() check rather than contradicting it. The grant
-     * projection is a faithful copy of resolveStaffToken() above, so the two cannot drift.
+     * Liveness matches resolveStaffToken()'s authenticatable() gate — only an ACTIVE token
+     * (activated, not paused, not revoked) can authenticate to call poll_signals NOW, so that
+     * is the same auth the real poll path enforces. A draft or paused token is a promise, not a
+     * watcher: the operator must finish activating it, so it reads as UNWATCHED and the guard
+     * keeps screaming until they do. This deliberately does NOT match the delivery-side
+     * hasLiveLabel() liveness (which counts draft/paused, because a queued backlog drains once
+     * the token activates): delivery HOLDS the signal, the watch says nobody is reading it YET —
+     * both correct. The grant projection is a faithful copy of resolveStaffToken() above, so the
+     * two cannot drift.
      */
     public static function labelCanUseBridgeTool(?string $label, string $toolName): bool
     {
@@ -84,8 +89,8 @@ class McpConfig
         }
 
         return McpToken::query()
+            ->authenticatable()
             ->where('label', $label)
-            ->whereNull('revoked_at')
             ->get()
             ->contains(function (McpToken $record) use ($toolName): bool {
                 $allowedTools = $record->tools === null

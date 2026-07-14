@@ -77,7 +77,14 @@ class EmailIntakeNotifyTest extends TestCase
         // $tokenTools mirrors McpToken::$tools: null = legacy full-surface token, an array =
         // scoped grant list. poll_signals is the tool Chet uses to drain the signal inbox, so
         // it is what makes this destination genuinely consumable (see the grant regressions).
-        McpToken::create(['label' => 'chet', 'token_hash' => 'h1', 'tools' => $tokenTools]);
+        // activated_at = now(): a real working Chet token is ACTIVE. A draft/paused token cannot
+        // authenticate to poll, so it is not a watcher (see the lifecycle regressions).
+        McpToken::create([
+            'label' => 'chet',
+            'token_hash' => 'h1',
+            'tools' => $tokenTools,
+            'activated_at' => now(),
+        ]);
 
         $destination = SignalDestination::create([
             'label' => 'Chet inbox',
@@ -304,6 +311,40 @@ class EmailIntakeNotifyTest extends TestCase
             $this->unwatchedAlarms($warnings),
             'a live token that cannot poll_signals is still an unwatched inbox — it must SCREAM'
         );
+    }
+
+    /**
+     * REGRESSION (psa-28j4.3.1 ARCH / .3.2 SECURITY re-review): a non-revoked LABEL is not
+     * enough. A DRAFT token (never activated) cannot AUTHENTICATE — resolveStaffToken() gates
+     * on authenticatable() (activated, not paused, not revoked) — so it cannot poll_signals
+     * right now. It is a promise, not a watcher, and the inbox is unwatched until the operator
+     * finishes activating it. The watch must use that same auth gate, not merely "non-revoked".
+     */
+    public function test_a_route_whose_mcp_token_is_only_a_draft_is_unwatched(): void
+    {
+        $this->autoTicketOff();
+        $this->wireChetsInbox();
+        McpToken::where('label', 'chet')->update(['activated_at' => null]); // active -> draft
+
+        $this->assertFalse(
+            $this->watch()->isWatchedByAgent(),
+            'a draft token cannot authenticate to poll_signals — the inbox is not watched yet'
+        );
+        $this->assertTrue($this->watch()->isPileUpRisk());
+    }
+
+    /** Same gate from the other side: a PAUSED token cannot authenticate either. */
+    public function test_a_route_whose_mcp_token_is_paused_is_unwatched(): void
+    {
+        $this->autoTicketOff();
+        $this->wireChetsInbox();
+        McpToken::where('label', 'chet')->update(['paused_at' => now()]); // active -> paused
+
+        $this->assertFalse(
+            $this->watch()->isWatchedByAgent(),
+            'a paused token cannot authenticate to poll_signals — the inbox is not being watched'
+        );
+        $this->assertTrue($this->watch()->isPileUpRisk());
     }
 
     /** A disabled route is not a notify path, however correct its filter looks. */
