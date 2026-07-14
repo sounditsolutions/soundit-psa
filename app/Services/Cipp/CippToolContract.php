@@ -964,4 +964,874 @@ class CippToolContract
             'Title',
         ], true);
     }
+
+    // ── Row shaping: projection + prompt-fencing, shared by both transports ──
+    //
+    // Everything below moved out of CippMcpToolRelay (psa-d2hj). HOW CIPP's rows are
+    // projected to an allowlist and how untrusted tenant text is fenced are properties
+    // of CIPP's response — identical no matter which transport fetched the row — so they
+    // belong here beside unanswerable()/identityRefusal()/shapeAuditLogs(), and the
+    // direct CippClient path (HandlesCippTools) is routed through shape() too. When this
+    // lived in the relay alone, the direct path — the one auto-triage ALWAYS takes, and
+    // the assistant/Chet fall back to whenever the MCP relay is off — returned CIPP's raw
+    // rows straight through: unbounded vendor blobs, and attacker-controlled tenant text
+    // (a malicious inbox-rule name, an OAuth/app display name, a quarantined subject)
+    // reaching the agent UNFENCED.
+
+    /**
+     * The per-tool projection allowlists. Field names verified against CIPP-API source,
+     * not guessed — casing is deliberately mixed because CIPP passes Graph through
+     * camelCase but hands Exchange/PowerShell objects back PascalCase (psa-7lgo/psa-zw1j).
+     *
+     * @var array<string, array<int, string>>
+     */
+    private const DEFAULT_FIELDS = [
+        // Graph assignedLicenses entries carry no skuPartNumber, so the license
+        // summary can never surface friendly names — CIPP has already resolved
+        // them into top-level LicJoined (comma-joined product names, psa-zw1j).
+        'cipp_list_users' => ['id', 'displayName', 'userPrincipalName', 'accountEnabled', 'jobTitle', 'department', 'assignedLicenses', 'licJoined'],
+        // No mailboxSizeBytes / itemCount here: CIPP's ListMailboxes runs
+        // Get-Mailbox, which has no size or item-count properties at all (those
+        // live on Get-MailboxStatistics), so they never resolved under ANY
+        // casing and were dead advertised fields (psa-7lgo).
+        'cipp_list_mailboxes' => ['id', 'displayName', 'userPrincipalName', 'primarySmtpAddress', 'recipientTypeDetails', 'forwardingSmtpAddress', 'deliverToMailboxAndForward', 'litigationHoldEnabled'],
+        // Real ListLicenses shape (verified against CIPP-API Get-CIPPLicenseOverview,
+        // psa-zw1j): hand-built rows, NOT raw Graph subscribedSkus. Seat counts are
+        // CountUsed / CountAvailable / TotalLicenses (strings), the display name is
+        // License; upstream skuPartNumber duplicates License (a pretty name, not a
+        // real part number) so it is deliberately not projected. consumedLicenses /
+        // assignedLicenses / prepaidUnits / capabilityStatus are never emitted.
+        'cipp_list_licenses' => ['skuId', 'license', 'totalLicenses', 'countUsed', 'countAvailable', 'termInfo'],
+        // Graph managedDevice has no displayName / isCompliant — their resolving
+        // siblings deviceName / complianceState carry the same signal (psa-zw1j).
+        'cipp_list_devices' => ['id', 'deviceName', 'userPrincipalName', 'operatingSystem', 'osVersion', 'complianceState', 'managementAgent', 'enrolledDateTime', 'lastSyncDateTime', 'serialNumber'],
+        'cipp_list_groups' => ['id', 'displayName', 'mail', 'mailEnabled', 'securityEnabled', 'groupTypes', 'description'],
+        // Real ListUserGroups shape (Invoke-ListUserGroups renames everything via
+        // Select-Object, psa-zw1j): Mail / MailEnabled / SecurityGroup / GroupTypes
+        // (a comma-joined STRING, not an array) plus camelCase groupType /
+        // calculatedGroupType — the discriminators that tell a security group from
+        // a distribution list from an M365 group. No description key is emitted
+        // under any casing, so it is omitted here (unlike cipp_list_groups).
+        'cipp_list_user_groups' => ['id', 'displayName', 'mail', 'mailEnabled', 'securityEnabled', 'groupTypes', 'groupType', 'calculatedGroupType', 'onPremisesSync', 'isAssignableToRole'],
+        // Real ListmailboxPermissions shape (verified against CIPP-API
+        // Invoke-ListmailboxPermissions.ps1, psa-3twu): CIPP collapses
+        // Get-MailboxPermission / Get-RecipientPermission / GrantSendOnBehalfTo
+        // into two-key {User, Permissions} rows server-side. Permissions is a
+        // joined string on FullAccess rows but a raw accessRights ARRAY on
+        // SendAs rows; SendOnBehalf rows carry display names in User.
+        'cipp_list_mailbox_permissions' => ['user', 'permissions'],
+        'cipp_list_mailbox_rules' => ['name', 'enabled', 'priority', 'description', 'from', 'sentTo', 'forwardTo', 'redirectTo', 'deleteMessage', 'moveToFolder'],
+        // No cipp_list_defender_state entry: shape() routes that tool to
+        // shapeDefenderState(), which bypasses projectRows() and names its own
+        // keys. The DEFAULT_FIELDS list that used to sit here was never read
+        // and described a shape CIPP does not emit (psa-7lgo).
+        //
+        // No cipp_list_conditional_access_policies entry either, for the same
+        // reason: CIPP FLATTENS each policy, so the raw-Graph nested names
+        // (conditions / grantControls / sessionControls) match nothing at all.
+        // Hand-projected by shapeConditionalAccessPolicies() (psa-mybo).
+        'cipp_list_user_conditional_access' => ['id', 'displayName', 'state', 'result', 'conditions', 'grantControls', 'sessionControls'],
+        'cipp_list_sign_ins' => ['id', 'createdDateTime', 'userPrincipalName', 'appDisplayName', 'ipAddress', 'clientAppUsed', 'conditionalAccessStatus', 'status', 'location', 'riskDetail', 'riskLevelAggregated', 'deviceDetail'],
+        // No cipp_list_audit_logs entry: its real fields are nested two levels
+        // down (Data.RawData.*), which a flat field list cannot express, so it
+        // is hand-projected by shapeAuditLogs() (psa-9d4l).
+        // Get-MessageTrace responses carry PascalCase FromIP / ToIP — toIP is the
+        // REQUEST-parameter casing and never appears as a row key (psa-zw1j).
+        'cipp_list_message_trace' => ['MessageTraceId', 'messageTraceId', 'Received', 'received', 'SenderAddress', 'senderAddress', 'RecipientAddress', 'recipientAddress', 'Subject', 'subject', 'Status', 'status', 'FromIP', 'fromIP', 'ToIP', 'toIP'],
+        // Get-QuarantineMessage rows carry the quarantine reason in Type and the
+        // expiry in Expires; QuarantineTypes is a request parameter that never
+        // appears as a row key (psa-zw1j). PolicyName / MessageId / Size ride along.
+        'cipp_list_mail_quarantine' => ['Identity', 'identity', 'ReceivedTime', 'receivedTime', 'SenderAddress', 'senderAddress', 'RecipientAddress', 'recipientAddress', 'Subject', 'subject', 'Type', 'type', 'PolicyName', 'MessageId', 'Size', 'ReleaseStatus', 'Expires', 'expires'],
+        // No cipp_list_oauth_apps entry: shape() routes that tool to
+        // shapeOauthApps(), which bypasses projectRows() and names its own keys —
+        // the same treatment as audit logs and Defender state, and for the same
+        // reason. CIPP's real ListOAuthApps shape is described there (psa-dbrw).
+    ];
+
+    /** @var array<string, array<int, string>> */
+    private const FIELD_ALIASES = [
+        'id' => ['id', 'Id', 'ID'],
+        'displayName' => ['displayName', 'DisplayName', 'name', 'Name'],
+        'deviceName' => ['deviceName', 'DeviceName', 'managedDeviceName', 'ManagedDeviceName'],
+        'managedDeviceName' => ['managedDeviceName', 'ManagedDeviceName'],
+        'managedDeviceId' => ['managedDeviceId', 'ManagedDeviceId'],
+        'azureADDeviceId' => ['azureADDeviceId', 'AzureADDeviceId', 'azureAdDeviceId', 'AzureAdDeviceId'],
+        'userPrincipalName' => ['userPrincipalName', 'UserPrincipalName', 'UPN', 'upn'],
+        'user' => ['user', 'User'],
+        'permissions' => ['permissions', 'Permissions'],
+        'primarySmtpAddress' => ['primarySmtpAddress', 'PrimarySmtpAddress', 'mail', 'Mail'],
+
+        // ListMailboxes (Exchange Get-Mailbox). CIPP's Select-Object renames
+        // SOME properties to camelCase and leaves Exchange's PascalCase on the
+        // rest, so the payload is deliberately MIXED-CASE. Verified against
+        // CIPP-API Invoke-ListMailboxes.ps1 (psa-7lgo). Resolve the casing CIPP
+        // actually emits first, and keep the other as a defensive fallback.
+        'recipientTypeDetails' => ['recipientTypeDetails', 'RecipientTypeDetails'],
+        'forwardingSmtpAddress' => ['ForwardingSmtpAddress', 'forwardingSmtpAddress'],
+        'deliverToMailboxAndForward' => ['DeliverToMailboxAndForward', 'deliverToMailboxAndForward'],
+        'litigationHoldEnabled' => ['LitigationHoldEnabled', 'litigationHoldEnabled', 'LitigationHold', 'litigationHold'],
+
+        // ListMailboxRules. CIPP caches the RAW Get-InboxRule object
+        // (Push-ListMailboxRulesQueue.ps1: `Rules = [string]($Rule |
+        // ConvertTo-Json)`) and hands those rows straight back — so every
+        // property keeps Exchange's PascalCase. Declaring these camel/lowercase
+        // with no aliases made every key miss and every rule row project to `{}`:
+        // the malicious-inbox-rule signal (forward-to-external + delete) was
+        // structurally invisible to the agent (psa-7lgo).
+        'name' => ['Name', 'name'],
+        'enabled' => ['Enabled', 'enabled'],
+        'priority' => ['Priority', 'priority'],
+        'description' => ['Description', 'description'],
+        'from' => ['From', 'from'],
+        'sentTo' => ['SentTo', 'sentTo'],
+        'forwardTo' => ['ForwardTo', 'forwardTo'],
+        'redirectTo' => ['RedirectTo', 'redirectTo'],
+        'deleteMessage' => ['DeleteMessage', 'deleteMessage'],
+        'moveToFolder' => ['MoveToFolder', 'moveToFolder'],
+
+        'skuPartNumber' => ['skuPartNumber', 'SkuPartNumber', 'sku', 'SKU'],
+        'license' => ['License', 'license'],
+        'totalLicenses' => ['totalLicenses', 'TotalLicenses', 'prepaidUnitsEnabled'],
+        'countUsed' => ['CountUsed', 'countUsed'],
+        'countAvailable' => ['CountAvailable', 'countAvailable', 'availableUnits'],
+        'termInfo' => ['TermInfo', 'termInfo'],
+        'assignedLicenses' => ['assignedLicenses', 'AssignedLicenses', 'licenses', 'Licenses'],
+        'licJoined' => ['LicJoined', 'licJoined'],
+        'mail' => ['mail', 'Mail'],
+        'mailEnabled' => ['mailEnabled', 'MailEnabled'],
+        // Invoke-ListUserGroups renames securityEnabled to SecurityGroup (psa-zw1j).
+        'securityEnabled' => ['securityEnabled', 'SecurityEnabled', 'SecurityGroup'],
+        'groupTypes' => ['groupTypes', 'GroupTypes'],
+        'groupType' => ['groupType', 'GroupType'],
+        'calculatedGroupType' => ['calculatedGroupType', 'CalculatedGroupType'],
+        'onPremisesSync' => ['onPremisesSync', 'OnPremisesSync', 'onPremisesSyncEnabled'],
+        'isAssignableToRole' => ['isAssignableToRole', 'IsAssignableToRole'],
+        'operatingSystem' => ['operatingSystem', 'OperatingSystem', 'os'],
+        'osVersion' => ['osVersion', 'OSVersion', 'operatingSystemVersion'],
+        'complianceState' => ['complianceState', 'ComplianceState'],
+        'isCompliant' => ['isCompliant', 'IsCompliant'],
+        'lastSyncDateTime' => ['lastSyncDateTime', 'LastSyncDateTime', 'lastSync'],
+        'antiVirusStatus' => ['antiVirusStatus', 'AntiVirusStatus', 'antivirusStatus'],
+        'antiVirusSignatureVersion' => ['antiVirusSignatureVersion', 'AntiVirusSignatureVersion', 'avSignatureVersion'],
+        'lastFullScanDateTime' => ['lastFullScanDateTime', 'LastFullScanDateTime'],
+        'lastQuickScanDateTime' => ['lastQuickScanDateTime', 'LastQuickScanDateTime'],
+    ];
+
+    /** @var array<string, array<int, string>> */
+    private const SIGN_IN_NESTED_FIELDS = [
+        'status' => ['errorCode', 'failureReason', 'additionalDetails'],
+        'location' => ['city', 'state', 'countryOrRegion'],
+        'deviceDetail' => ['displayName', 'operatingSystem', 'browser'],
+    ];
+
+    /**
+     * Real ListConditionalAccessPolicies shape (verified against CIPP-API
+     * Invoke-ListConditionalAccessPolicies.ps1, psa-mybo): CIPP does NOT return
+     * raw Graph policies — it flattens each policy into a wide row with GUIDs
+     * resolved to display names. The raw Graph nested keys (conditions /
+     * grantControls / sessionControls) never exist on these rows; session
+     * controls survive only inside `rawjson`, which is the full policy as a
+     * JSON blob — large untrusted tenant data, deliberately never projected.
+     */
+    private const CA_POLICY_SCALAR_FIELDS = ['id', 'state', 'createdDateTime', 'modifiedDateTime'];
+
+    /** Comma-joined Graph enum/ID values — single-line, fixed vocabulary. */
+    private const CA_POLICY_ENUM_FIELDS = [
+        'clientAppTypes', 'includePlatforms', 'excludePlatforms',
+        'grantControlsOperator', 'builtInControls', 'termsOfUse',
+    ];
+
+    /** Comma-joined resolved display names — untrusted tenant free text. */
+    private const CA_POLICY_NAME_FIELDS = [
+        'includeLocations', 'excludeLocations',
+        'includeApplications', 'excludeApplications',
+        'customAuthenticationFactors',
+    ];
+
+    /**
+     * Built with PowerShell Out-String: newline-joined display names with a
+     * trailing newline. Split into lists, trimmed, and fenced per item.
+     */
+    private const CA_POLICY_NAME_LIST_FIELDS = [
+        'includeUsers', 'excludeUsers', 'includeGroups', 'excludeGroups',
+        'includeRoles', 'excludeRoles', 'includeUserActions',
+        'includeAuthenticationContextClassReferences',
+    ];
+
+    /**
+     * The single row-shaping entry point, called by BOTH transports after each has
+     * fetched raw rows over its own wire format. Normalizes, then routes every tool to
+     * its projection: a bespoke shaper where CIPP's row needs one, the generic allowlist
+     * projectRows() otherwise. Refusals and window/identity WIRE concerns are handled
+     * upstream (unanswerable()/identityRefusal() at the choke point, window/user
+     * parameters per transport); this owns only the shape of the answer.
+     *
+     * @param  array<int|string, mixed>  $rows
+     * @return array<int|string, mixed>
+     */
+    public function shape(string $toolName, array $rows, array $input, ?int $clientId): array
+    {
+        $rows = self::normalizeRows($rows);
+        $totalReturned = count($rows);
+
+        return match ($toolName) {
+            'cipp_list_sign_ins' => $this->shapeEvents(
+                $toolName,
+                $rows,
+                $input,
+                ['createdDateTime'],
+                [
+                    // The upstream endpoint that answered — derived from input so it is
+                    // the same on both transports (the REST route just adds an api/ prefix).
+                    'endpoint' => empty($input['user_id']) ? 'ListSignIns' : 'ListUserSigninLogs',
+                    'filtered_by_user' => self::optionalUserId($input),
+                    'filtered_by_days' => self::windowDays($input['days'] ?? null),
+                    'total_returned_by_cipp' => $totalReturned,
+                ],
+            ),
+            'cipp_list_audit_logs' => $this->shapeAuditLogs($rows, $input, $clientId),
+            'cipp_list_oauth_apps' => $this->shapeOauthApps($rows),
+            'cipp_list_message_trace' => $this->shapeMessageTrace($rows, $input, $totalReturned),
+            'cipp_list_mail_quarantine' => $this->shapeMailQuarantine($rows, $input, $totalReturned),
+            'cipp_list_user_mfa_methods' => $this->shapeUserMfaMethods($rows, $input, $clientId),
+            'cipp_list_defender_state' => $this->shapeDefenderState($rows),
+            'cipp_list_mailbox_rules' => $this->shapeMailboxRules($rows, $input, $clientId),
+            'cipp_list_conditional_access_policies' => $this->shapeConditionalAccessPolicies($rows),
+            default => $this->projectRows($toolName, $rows),
+        };
+    }
+
+    /**
+     * Defence in depth behind the ListUserMailboxRules routing.
+     *
+     * Exchange already scopes the upstream call to one mailbox, so this should
+     * never drop anything. It exists because the disclosure it guards against —
+     * one user's inbox rules answered with another user's — is both a data leak
+     * AND false investigation context, and because the previous endpoint made
+     * exactly that mistake silently. Only rules we can PROVE belong to another
+     * mailbox are dropped; an owner we cannot compare is kept (dropping on
+     * "cannot compare" fails CLOSED and hides the requested user's own rules).
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private function shapeMailboxRules(array $rules, array $input, ?int $clientId): array
+    {
+        $requested = self::requiredUserId($input);
+        $dropped = 0;
+
+        if ($requested !== null) {
+            $needles = self::userIdentityNeedles($requested, $clientId);
+
+            $rules = array_values(array_filter($rules, function (array $rule) use ($needles, &$dropped): bool {
+                if ($this->mailboxRuleIsForeign($rule, $needles)) {
+                    $dropped++;
+
+                    return false;
+                }
+
+                return true;
+            }));
+        }
+
+        if ($dropped > 0) {
+            // Rule content is untrusted tenant data and is never logged — only
+            // the fact that upstream handed us somebody else's mailbox.
+            Log::warning('[CippTools] Dropped mailbox rules belonging to another mailbox — upstream returned rules outside the requested scope', [
+                'tool' => 'cipp_list_mailbox_rules',
+                'dropped' => $dropped,
+            ]);
+        }
+
+        return $this->projectRows('cipp_list_mailbox_rules', $rules);
+    }
+
+    /**
+     * @param  array<int, string>  $needles
+     */
+    private function mailboxRuleIsForeign(array $rule, array $needles): bool
+    {
+        $owner = $this->mailboxRuleOwner($rule);
+        if ($owner === null) {
+            return false;
+        }
+
+        $ownerIsEmail = str_contains($owner, '@');
+        $ownerIsGuid = self::looksLikeObjectId($owner);
+
+        // A display name or legacy DN is unmatchable, not foreign.
+        if (! $ownerIsEmail && ! $ownerIsGuid) {
+            return false;
+        }
+
+        // Compare LIKE WITH LIKE. The caller may pass an object ID while Exchange
+        // answers with a UPN (or the reverse), and a GUID cannot adjudicate an
+        // address. Without a needle of the same form we cannot PROVE the rule is
+        // someone else's — and guessing would fail CLOSED, silently hiding the
+        // requested user's own rules. Drop only on a real, comparable mismatch.
+        $comparable = array_values(array_filter(
+            $needles,
+            fn (string $needle): bool => $ownerIsEmail
+                ? str_contains($needle, '@')
+                : self::looksLikeObjectId($needle)
+        ));
+
+        if ($comparable === []) {
+            return false;
+        }
+
+        return ! in_array($owner, $comparable, true);
+    }
+
+    private function mailboxRuleOwner(array $rule): ?string
+    {
+        foreach (['MailboxOwnerId', 'mailboxOwnerId'] as $key) {
+            if (! empty($rule[$key]) && is_string($rule[$key])) {
+                return mb_strtolower(trim($rule[$key]));
+            }
+        }
+
+        // Get-InboxRule's Identity is "<mailbox>\<ruleId>".
+        foreach (['Identity', 'identity'] as $key) {
+            if (! empty($rule[$key]) && is_string($rule[$key])) {
+                return mb_strtolower(trim(explode('\\', $rule[$key])[0]));
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Real ListDefenderState shape (captured live, psa-tpzr follow-up): Intune
+     * managedDevice stubs — id/deviceName/deviceType/operatingSystem — with the AV
+     * state in a NESTED, NULLABLE windowsProtectionState object (null for macOS and
+     * other unsupported devices). Flatten the useful inner keys under `protection`;
+     * a null stays null so "no Defender telemetry" is explicit, not absent.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private function shapeDefenderState(array $rows): array
+    {
+        $innerFields = [
+            'deviceState', 'productStatus',
+            'malwareProtectionEnabled', 'realTimeProtectionEnabled', 'tamperProtectionEnabled',
+            'quickScanOverdue', 'fullScanOverdue', 'signatureUpdateOverdue', 'rebootRequired',
+            'signatureVersion', 'antiMalwareVersion',
+            'lastQuickScanDateTime', 'lastFullScanDateTime', 'lastReportedDateTime',
+        ];
+
+        return array_map(function (array $row) use ($innerFields): array {
+            $state = $row['windowsProtectionState'] ?? null;
+
+            $protection = null;
+            if (is_array($state)) {
+                $protection = [];
+                foreach ($innerFields as $field) {
+                    if (array_key_exists($field, $state)) {
+                        $protection[$field] = $this->sanitizeProjectedValue('cipp_list_defender_state', $field, $state[$field]);
+                    }
+                }
+            }
+
+            return [
+                'id' => $row['id'] ?? null,
+                'deviceName' => $this->sanitizeProjectedValue('cipp_list_defender_state', 'deviceName', $row['deviceName'] ?? null),
+                'deviceType' => $row['deviceType'] ?? null,
+                'operatingSystem' => $row['operatingSystem'] ?? null,
+                'protection' => $protection,
+            ];
+        }, array_slice($rows, 0, 50));
+    }
+
+    /**
+     * Real ListConditionalAccessPolicies shape (psa-mybo): the flattened rows
+     * documented on the CA_POLICY_* consts. Projecting the raw Graph nested
+     * names matched nothing — every policy shrank to id/name/state and the agent
+     * was structurally blind to who a policy targets (especially excludeUsers)
+     * and what it enforces, while the output still looked healthy. Targeting and
+     * control fields are projected from CIPP's actual flattened keys instead.
+     *
+     * An empty upstream list is genuinely ambiguous: CIPP's error path is
+     * overwritten before return, so a failed Graph query (e.g. permissions)
+     * also comes back HTTP 200 with empty Results — hence the warning.
+     *
+     * @return array<string, mixed>
+     */
+    private function shapeConditionalAccessPolicies(array $rows): array
+    {
+        $toolName = 'cipp_list_conditional_access_policies';
+
+        $policies = array_map(function (array $row) use ($toolName): array {
+            $policy = [];
+
+            foreach (self::CA_POLICY_SCALAR_FIELDS as $field) {
+                if (array_key_exists($field, $row)) {
+                    $policy[$field] = $row[$field];
+                }
+            }
+
+            if (array_key_exists('displayName', $row)) {
+                $policy['displayName'] = $this->sanitizeProjectedValue($toolName, 'displayName', $row['displayName']);
+            }
+
+            foreach (self::CA_POLICY_ENUM_FIELDS as $field) {
+                if (array_key_exists($field, $row)) {
+                    $policy[$field] = is_string($row[$field]) ? trim($row[$field]) : $row[$field];
+                }
+            }
+
+            foreach (self::CA_POLICY_NAME_FIELDS as $field) {
+                if (! array_key_exists($field, $row)) {
+                    continue;
+                }
+                $value = is_string($row[$field]) ? trim($row[$field]) : $row[$field];
+                // '' stays '' — an explicit "none" beats a fence around nothing.
+                $policy[$field] = (is_string($value) && $value !== '')
+                    ? $this->textSanitizer->sanitize($this->fieldLabel($toolName, $field), $value, 1000)
+                    : $value;
+            }
+
+            foreach (self::CA_POLICY_NAME_LIST_FIELDS as $field) {
+                if (array_key_exists($field, $row)) {
+                    $policy[$field] = $this->caNameList($toolName, $field, $row[$field]);
+                }
+            }
+
+            return $policy;
+        }, array_slice($rows, 0, 50));
+
+        // Sharpened drift guard: scalar fields resolving while every flattened
+        // targeting/control key is absent LOOKS healthy but leaves CA posture
+        // invisible — the exact failure this shaper fixes. Row keys are schema
+        // names and safe to log; row values are untrusted tenant data, never logged.
+        $shapeFields = array_flip(array_merge(self::CA_POLICY_ENUM_FIELDS, self::CA_POLICY_NAME_FIELDS, self::CA_POLICY_NAME_LIST_FIELDS));
+        $sawShapeField = false;
+        foreach ($rows as $row) {
+            if (array_intersect_key($row, $shapeFields) !== []) {
+                $sawShapeField = true;
+                break;
+            }
+        }
+        if ($rows !== [] && ! $sawShapeField) {
+            Log::warning('[CippTools] No ListConditionalAccessPolicies row carries any flattened targeting/control field — shape drift, CA posture would be invisible', [
+                'tool' => $toolName,
+                'row_count' => count($rows),
+                'first_row_keys' => array_slice(array_keys($rows[0]), 0, 12),
+            ]);
+        }
+
+        $result = [
+            'count' => count($policies),
+            'total_returned_by_cipp' => count($rows),
+            'note' => 'Session controls (sign-in frequency, persistent browser, app-enforced restrictions) are not included — CIPP does not surface them in this list.',
+            'policies' => $policies,
+        ];
+
+        if ($policies === []) {
+            $result['warning'] = 'CIPP returns an empty result BOTH when the tenant has no Conditional Access policies AND when the upstream Graph query fails (e.g. missing permissions) — failures still come back as HTTP 200 with empty Results. Treat this as "no data", not as proof that the tenant has no CA policies.';
+        }
+
+        return $result;
+    }
+
+    /**
+     * Split one of CIPP's Out-String fields (newline-joined display names with
+     * a trailing newline) into a bounded list of fenced names. Truncation is
+     * explicit — silently dropping excludeUsers entries would recreate the
+     * blind spot this shaper exists to fix.
+     *
+     * @return array<int, mixed>
+     */
+    private function caNameList(string $toolName, string $field, mixed $value): array
+    {
+        if (is_array($value)) {
+            return $this->boundArray($toolName, $field, $value);
+        }
+
+        if (! is_scalar($value)) {
+            return [];
+        }
+
+        $names = preg_split('/\R/', (string) $value) ?: [];
+        $names = array_values(array_filter(array_map('trim', $names), fn (string $name): bool => $name !== ''));
+
+        $shown = array_map(
+            fn (string $name): string => $this->textSanitizer->sanitize($this->fieldLabel($toolName, $field), $name, 1000),
+            array_slice($names, 0, 20),
+        );
+
+        if (count($names) > 20) {
+            $shown[] = '(+'.(count($names) - 20).' more not shown)';
+        }
+
+        return $shown;
+    }
+
+    /**
+     * @return array<int|string, mixed>
+     */
+    private function shapeEvents(string $toolName, array $events, array $input, array $dateKeys, array $meta): array
+    {
+        $days = $meta['filtered_by_days'] ?? null;
+        if (is_int($days)) {
+            $cutoff = now()->subDays($days);
+            $events = array_values(array_filter($events, fn (array $event): bool => $this->eventWithinCutoff($event, $cutoff, $dateKeys)));
+        }
+
+        $projected = $this->projectRows($toolName, $events);
+
+        return array_merge($meta, [
+            'count' => count(array_slice($projected, 0, 50)),
+            'events' => array_slice($projected, 0, 50),
+        ]);
+    }
+
+    /**
+     * @return array<int|string, mixed>
+     */
+    private function shapeMessageTrace(array $messages, array $input, int $totalReturned): array
+    {
+        $sender = ! empty($input['sender']) ? trim((string) $input['sender']) : null;
+        $recipient = ! empty($input['recipient']) ? trim((string) $input['recipient']) : null;
+        $days = self::boundedDays($input['days'] ?? null, 2, 10);
+
+        if ($sender) {
+            $needle = mb_strtolower($sender);
+            $messages = array_values(array_filter($messages, fn (array $message): bool => mb_strtolower((string) ($message['SenderAddress'] ?? $message['senderAddress'] ?? '')) === $needle));
+        }
+
+        if ($recipient) {
+            $needle = mb_strtolower($recipient);
+            $messages = array_values(array_filter($messages, fn (array $message): bool => mb_strtolower((string) ($message['RecipientAddress'] ?? $message['recipientAddress'] ?? '')) === $needle));
+        }
+
+        $projected = $this->projectRows('cipp_list_message_trace', $messages);
+
+        return [
+            'count' => count($projected),
+            'filtered_by_sender' => $sender,
+            'filtered_by_recipient' => $recipient,
+            'window_days' => $days,
+            'total_returned_by_cipp' => $totalReturned,
+            'messages' => array_slice($projected, 0, 50),
+        ];
+    }
+
+    /**
+     * @return array<int|string, mixed>
+     */
+    private function shapeMailQuarantine(array $entries, array $input, int $totalReturned): array
+    {
+        $recipient = ! empty($input['recipient']) ? trim((string) $input['recipient']) : null;
+
+        if ($recipient) {
+            $needle = mb_strtolower($recipient);
+            $entries = array_values(array_filter($entries, fn (array $entry): bool => $this->rowContainsRecipient($entry, $needle)));
+        }
+
+        $projected = $this->projectRows('cipp_list_mail_quarantine', $entries);
+
+        return [
+            'count' => count($projected),
+            'filtered_by_recipient' => $recipient,
+            'total_returned_by_cipp' => $totalReturned,
+            'entries' => array_slice($projected, 0, 50),
+        ];
+    }
+
+    /**
+     * @return array<int|string, mixed>
+     */
+    private function shapeUserMfaMethods(array $rows, array $input, ?int $clientId): array
+    {
+        $userId = self::requiredUserId($input);
+        if ($userId === null) {
+            return ['error' => 'user_id is required'];
+        }
+
+        $objectId = self::resolveUserId($userId, $clientId);
+        $upnNeedle = str_contains($userId, '@') ? mb_strtolower($userId) : null;
+
+        foreach ($rows as $row) {
+            $rowUpn = mb_strtolower((string) ($row['UPN'] ?? $row['userPrincipalName'] ?? ''));
+            $rowId = (string) ($row['ID'] ?? $row['Id'] ?? $row['userId'] ?? '');
+            if ($rowId === $objectId || ($upnNeedle && $rowUpn === $upnNeedle)) {
+                return self::summarizeMfaRow($this->projectMfaRow($row));
+            }
+        }
+
+        return [
+            'error' => "No MFA record found for {$userId} in this tenant",
+            'searched_user_id' => $userId,
+            'resolved_object_id' => $objectId,
+        ];
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    private function projectRows(string $toolName, array $rows): array
+    {
+        $fields = self::DEFAULT_FIELDS[$toolName] ?? [];
+
+        // Tracks whether each field's key was ever FOUND upstream, independent
+        // of its value. "Key absent from every row" is schema drift; "key
+        // present holding null" is a genuine no-value (an unset Exchange
+        // property serializes as null) and must not be mistaken for drift.
+        $keyResolved = array_fill_keys($fields, false);
+
+        $projected = array_map(function (array $row) use ($toolName, $fields, &$keyResolved): array {
+            $projected = [];
+
+            foreach ($fields as $field) {
+                $key = $this->resolveKey($row, $field);
+                if ($key === null) {
+                    continue;
+                }
+
+                $keyResolved[$field] = true;
+
+                $value = $row[$key];
+                if ($value === null) {
+                    continue;
+                }
+
+                if ($field === 'assignedLicenses') {
+                    $projected[$field] = $this->summarizeAssignedLicenses($value);
+
+                    continue;
+                }
+
+                $projected[$field] = $this->sanitizeProjectedValue($toolName, $field, $value);
+            }
+
+            return $projected;
+        }, $rows);
+
+        if ($rows !== []) {
+            $this->warnOnShapeDrift($toolName, $rows, $projected, $keyResolved);
+        }
+
+        return $projected;
+    }
+
+    /**
+     * Row keys are schema names and safe to log; row values are untrusted
+     * tenant data and are never logged.
+     *
+     * @param  array<int, array<string, mixed>>  $rows
+     * @param  array<int, array<string, mixed>>  $projected
+     * @param  array<string, bool>  $keyResolved
+     */
+    private function warnOnShapeDrift(string $toolName, array $rows, array $projected, array $keyResolved): void
+    {
+        // Every row projecting to {} means DEFAULT_FIELDS has drifted wholesale
+        // from the live CIPP response shape, and the tool reports a false "no
+        // results" (psa-3twu).
+        if (array_filter($projected) === []) {
+            Log::warning('[CippTools] Every row projected empty — DEFAULT_FIELDS out of sync with CIPP response shape', [
+                'tool' => $toolName,
+                'row_count' => count($rows),
+                'first_row_keys' => array_slice(array_keys($rows[0]), 0, 12),
+            ]);
+
+            return;
+        }
+
+        // A PARTIAL drop is the invisible failure this guard exists for
+        // (psa-7lgo): the row still projects id/displayName/UPN, so the
+        // all-empty check above stays quiet while an individual field vanishes
+        // because CIPP cases its key differently. Some tools still hedge by
+        // declaring BOTH casings of a field as separate DEFAULT_FIELDS entries
+        // (MessageTraceId *and* messageTraceId, Identity *and* identity). Exactly
+        // one of those can ever resolve, so a healthy row would report its twin
+        // as drift and the guard would cry wolf on every call — and a noisy guard
+        // gets ignored. If a case-insensitive twin resolved, the concept IS
+        // present and this is a hedge, not drift.
+        $resolvedInsensitively = array_map(
+            fn (string $field): string => mb_strtolower($field),
+            array_keys(array_filter($keyResolved))
+        );
+
+        $missing = array_values(array_filter(
+            array_keys(array_filter($keyResolved, fn (bool $resolved): bool => ! $resolved)),
+            fn (string $field): bool => ! in_array(mb_strtolower($field), $resolvedInsensitively, true)
+        ));
+
+        if ($missing === []) {
+            return;
+        }
+
+        Log::warning('[CippTools] Field(s) never resolved in any row — DEFAULT_FIELDS/FIELD_ALIASES out of sync with CIPP response shape', [
+            'tool' => $toolName,
+            'row_count' => count($rows),
+            'missing_fields' => array_values($missing),
+            'first_row_keys' => array_slice(array_keys($rows[0]), 0, 12),
+        ]);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function projectMfaRow(array $row): array
+    {
+        $fields = ['ID', 'UPN', 'DisplayName', 'MFARegistration', 'MFAMethods', 'PerUser', 'CoveredByCA', 'CoveredBySD', 'CAPolicies'];
+        $projected = [];
+
+        foreach ($fields as $field) {
+            if (array_key_exists($field, $row)) {
+                $projected[$field] = $this->sanitizeProjectedValue('cipp_list_user_mfa_methods', $field, $row[$field]);
+            }
+        }
+
+        return $projected;
+    }
+
+    /**
+     * Add a derived `enforcement` summary to a raw CIPP ListMFAUsers row so
+     * downstream consumers (AI tools) don't have to interpret PerUser/SD/CA
+     * fields, which are easy to misread. Returns the row unchanged when an
+     * existing `enforcement` key is present.
+     *
+     * Enforcement values: "conditional_access", "security_defaults",
+     * "per_user_legacy", "none".
+     */
+    public static function summarizeMfaRow(array $row): array
+    {
+        $caState = mb_strtolower((string) ($row['CoveredByCA'] ?? ''));
+        $sd = (bool) ($row['CoveredBySD'] ?? false);
+        $perUser = mb_strtolower((string) ($row['PerUser'] ?? 'disabled'));
+
+        $sources = [];
+        if ($caState !== '' && $caState !== 'not enforced') {
+            $sources[] = 'conditional_access';
+        }
+        if ($sd) {
+            $sources[] = 'security_defaults';
+        }
+        if (in_array($perUser, ['enabled', 'enforced'], true)) {
+            $sources[] = 'per_user_legacy';
+        }
+
+        $row['enforcement'] = [
+            'sources' => $sources ?: ['none'],
+            'primary' => $sources[0] ?? 'none',
+            'note' => match (true) {
+                $sources === [] => 'No MFA enforcement detected. User can sign in without MFA.',
+                $sources === ['security_defaults'] => 'Protected by Security Defaults (tenant-wide). Cannot be tuned per-user or per-app.',
+                in_array('conditional_access', $sources, true) => 'Protected by Conditional Access. Check CoveredByCA / CAPolicies for which policy.',
+                $sources === ['per_user_legacy'] => 'On the legacy per-user MFA toggle. Modern tenants should migrate to Conditional Access.',
+                default => 'Multiple enforcement sources — see sources array.',
+            },
+        ];
+
+        return $row;
+    }
+
+    /**
+     * Compact the known sign-in sub-objects to their useful keys, then hand the
+     * value to the shared fence. The compaction is a projection choice specific to
+     * this tool; the fencing is identical on both transports.
+     */
+    private function sanitizeProjectedValue(string $toolName, string $field, mixed $value): mixed
+    {
+        if (is_array($value) && $toolName === 'cipp_list_sign_ins' && isset(self::SIGN_IN_NESTED_FIELDS[$field])) {
+            $value = $this->compactArray($value, self::SIGN_IN_NESTED_FIELDS[$field]);
+        }
+
+        return $this->fence($toolName, $field, $value);
+    }
+
+    /**
+     * The upstream key this field resolves to, or null when no candidate key
+     * exists on the row at all. Matching is case-sensitive by design: the
+     * alias lists carry the exact casings CIPP emits (verified against
+     * CIPP-API source), so a miss is real schema drift worth reporting rather
+     * than something to paper over with a fuzzy match.
+     */
+    private function resolveKey(array $row, string $field): ?string
+    {
+        foreach (self::FIELD_ALIASES[$field] ?? [$field] as $candidate) {
+            if (array_key_exists($candidate, $row)) {
+                return $candidate;
+            }
+        }
+
+        return null;
+    }
+
+    private function summarizeAssignedLicenses(mixed $value): array
+    {
+        $licenses = is_array($value) ? $value : [];
+        $skuIds = [];
+        $skuPartNumbers = [];
+
+        foreach ($licenses as $license) {
+            if (! is_array($license)) {
+                continue;
+            }
+            if (! empty($license['skuId'])) {
+                $skuIds[] = (string) $license['skuId'];
+            }
+            if (! empty($license['skuPartNumber'])) {
+                $skuPartNumbers[] = (string) $license['skuPartNumber'];
+            }
+        }
+
+        return [
+            'count' => count($licenses),
+            'skuIds' => array_slice(array_values(array_unique($skuIds)), 0, 50),
+            'skuPartNumbers' => array_slice(array_values(array_unique($skuPartNumbers)), 0, 50),
+        ];
+    }
+
+    /**
+     * @param  array<int, string>  $allowedKeys
+     * @return array<string, mixed>
+     */
+    private function compactArray(array $value, array $allowedKeys): array
+    {
+        $compacted = [];
+
+        foreach ($allowedKeys as $key) {
+            if (array_key_exists($key, $value)) {
+                $compacted[$key] = $value[$key];
+            }
+        }
+
+        return $compacted;
+    }
+
+    private function eventWithinCutoff(array $event, Carbon $cutoff, array $dateKeys): bool
+    {
+        foreach ($dateKeys as $key) {
+            if (! empty($event[$key])) {
+                try {
+                    return Carbon::parse($event[$key])->gte($cutoff);
+                } catch (\Throwable) {
+                    return false;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private function rowContainsRecipient(array $entry, string $needle): bool
+    {
+        foreach (['RecipientAddress', 'recipientAddress', 'recipients'] as $key) {
+            $val = $entry[$key] ?? null;
+            if (is_string($val) && mb_strtolower($val) === $needle) {
+                return true;
+            }
+            if (is_array($val)) {
+                foreach ($val as $recipient) {
+                    if (is_string($recipient) && mb_strtolower($recipient) === $needle) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
+    }
 }
