@@ -61,12 +61,59 @@ final class CippMcpToolPolicy
     ];
 
     /**
+     * The ONLY upstream tools approved for dynamic raw-passthrough import. DEFAULT-DENY:
+     * an upstream tool that is not on this list is never imported, advertised, or
+     * executable — even when CIPP's live ExecMCP tools/list starts advertising it.
+     *
+     * This inverts the import-by-default (deny-by-omission) that let ListMailboxRules and
+     * ListUserSigninLogs in: previously any read tool not curated and not blocked was
+     * imported and run as a raw passthrough, so the unreviewed long tail was live by
+     * default and each new dangerous tool was a fresh hole (psa-3g8y, from the psa-dbrw.8
+     * review of PR #276).
+     *
+     * WHY exactly these two and nothing else: ListGraphRequest / ListGraphBulkRequest are
+     * the only dynamic tools with dedicated, security-reviewed handling in
+     * CippMcpDynamicToolExecutor (inspectable-GET-only via genericGraphAttempt/
+     * isGenericGraphTool, reference-only sanitised output, credential-redacted telemetry),
+     * and they are the generic Graph read capability Chet actively uses. psa-ppm7 tracks
+     * replacing them with typed curated wrappers, after which this list shrinks toward
+     * empty. Every OTHER upstream read tool is an UNREVIEWED raw passthrough — the surface
+     * this default-deny refuses.
+     *
+     * To approve a new tool: review its CIPP source for scoping/identity traps (the
+     * psa-7lgo rule — read the producer, don't guess the shape) and add its exact upstream
+     * name here. That edit is a security-review event, exactly like editing
+     * BLOCKED_UPSTREAM_TOOLS. Deliberately EXPLICIT NAMES, not category/"class" matching:
+     * a class allow-list would re-admit danger (ListMailboxRules is itself read-only and
+     * category Email).
+     */
+    public const APPROVED_DYNAMIC_UPSTREAM_TOOLS = [
+        'ListGraphRequest',
+        'ListGraphBulkRequest',
+    ];
+
+    /**
      * May a dynamic catalog row under this (local, upstream) name pair be advertised or
      * executed?
      */
     public static function permitsDynamicTool(string $localName, string $upstreamName): bool
     {
         return self::refusalReason($localName, $upstreamName) === null;
+    }
+
+    /**
+     * Is this upstream tool approved for dynamic raw-passthrough import? Default-deny: an
+     * upstream name not on APPROVED_DYNAMIC_UPSTREAM_TOOLS is refused.
+     *
+     * Kept separate from refusalReason() on purpose: refusalReason() names DANGER (a
+     * blocked tool or a curated-name collision) and is logged at WARNING, because that is
+     * an anomaly somebody must look at. "Not on the allow-list" is the EXPECTED default for
+     * the entire unreviewed long tail and must stay quiet — folding it into refusalReason()
+     * would drown the real warnings in routine long-tail noise.
+     */
+    public static function approvedDynamicTool(string $upstreamName): bool
+    {
+        return in_array(trim($upstreamName), self::APPROVED_DYNAMIC_UPSTREAM_TOOLS, true);
     }
 
     /**

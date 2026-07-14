@@ -121,6 +121,20 @@ class CippMcpCatalogSyncService
                 continue;
             }
 
+            // Default-deny: only reviewed, allow-listed upstream tools are imported. This
+            // inverts the old import-by-default that let the unreviewed long tail (and, in
+            // it, ListMailboxRules / ListUserSigninLogs) become live raw passthroughs by
+            // omission (psa-3g8y). Logged at DEBUG, not WARNING — skipping the long tail is
+            // the normal, expected case, not an anomaly like a refusal.
+            if (! CippMcpToolPolicy::approvedDynamicTool($upstreamName)) {
+                Log::debug('[CippMcpCatalogSync] Skipped an unapproved dynamic CIPP tool (default-deny allow-list)', [
+                    'upstream_name' => $upstreamName,
+                    'local_name' => $localName,
+                ]);
+
+                continue;
+            }
+
             $readOnly = ($tool['annotations']['readOnlyHint'] ?? null) === true;
 
             $rows[] = [

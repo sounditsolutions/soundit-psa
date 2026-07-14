@@ -92,45 +92,58 @@ class CippMcpCatalogSyncTest extends TestCase
             // A hypothetical upstream tool whose name normalises onto a curated
             // local tool. It must be refused, not imported.
             $this->tool('List_Mailbox_Rules', category: 'Email'),
-            $this->tool('ListDBCache', category: 'CIPP'),
+            // An approved tool alongside it: refusing one tool must not break the rest
+            // of the catalog. (Under default-deny the surviving tool must itself be
+            // approved — an unapproved one would just be default-denied and prove nothing.)
+            $this->tool('ListGraphRequest', category: 'CIPP'),
         ]);
 
         $result = app(CippMcpCatalogSyncService::class)->sync($client);
 
         $this->assertDatabaseMissing('cipp_mcp_tools', ['local_name' => 'cipp_list_mailbox_rules']);
         // The rest of the catalog still syncs — refusing one tool must not break it.
-        $this->assertDatabaseHas('cipp_mcp_tools', ['local_name' => 'cipp_list_db_cache', 'active' => true]);
+        $this->assertDatabaseHas('cipp_mcp_tools', ['local_name' => 'cipp_list_graph_request', 'active' => true]);
         $this->assertSame(1, $result->active);
     }
 
     /**
-     * The three outcomes of a catalog sync, in one pass: the long tail of read tools is
-     * imported, a curated tool's upstream is skipped, and a BLOCKED upstream is refused.
+     * The four outcomes of a catalog sync under the default-deny allow-list, in one pass:
+     * an APPROVED tool is imported, a CURATED tool's upstream is skipped, a BLOCKED
+     * upstream is refused, and any other UNAPPROVED tool is default-denied.
      *
-     * This test previously asserted the opposite of its third case — it was named
-     * "..._and_imports_user_signin_logs" and pinned cipp_list_user_signin_logs as an
-     * active row. That is worth saying out loud: the per-user sign-in passthrough was not
-     * an oversight in the skip list, it was a guaranteed behaviour with a green test
-     * behind it. It is a raw passthrough onto an endpoint that filters Graph on an Azure
-     * AD object ID and nothing else, so it answers a confident "no sign-ins" to any UPN
-     * it is handed — the exact false clean the curated cipp_list_sign_ins now refuses
-     * (psa-cipp-p1).
+     * This test used to assert the opposite of its unapproved case — it imported
+     * cipp_list_db_cache as the "long tail" and (in an even earlier head) pinned
+     * cipp_list_user_signin_logs as an active row. That is the behaviour this bead inverts:
+     * the long tail was live by default (import-by-omission), so each new unreviewed raw
+     * passthrough CIPP grew was a hole. Now only the reviewed allow-list is imported; the
+     * unreviewed ListDBCache is default-denied, not imported (psa-3g8y).
      */
-    public function test_sync_imports_dynamic_read_tools_and_skips_curated_and_blocked_tools(): void
+    public function test_sync_imports_approved_and_skips_curated_blocked_and_unapproved_tools(): void
     {
         $client = Mockery::mock(CippMcpClient::class);
         $client->shouldReceive('listTools')->once()->andReturn([
-            $this->tool('ListUsers'),
-            $this->tool('ListDBCache', category: 'CIPP'),
-            $this->tool('ListUserSigninLogs', category: 'Identity'),
+            $this->tool('ListGraphRequest', category: 'CIPP'),   // approved  -> imported
+            $this->tool('ListUsers'),                            // curated   -> skipped
+            $this->tool('ListUserSigninLogs', category: 'Identity'), // blocked -> refused
+            $this->tool('ListDBCache', category: 'CIPP'),        // unapproved -> default-denied
         ]);
 
         $result = app(CippMcpCatalogSyncService::class)->sync($client);
 
         $this->assertInstanceOf(CippMcpCatalogSyncResult::class, $result);
-        $this->assertSame(3, $result->seen);
+        $this->assertSame(4, $result->seen);
         $this->assertSame(1, $result->active);
         $this->assertSame(1, $result->created);
+
+        // Approved: the only tool that syncs.
+        $this->assertDatabaseHas('cipp_mcp_tools', [
+            'local_name' => 'cipp_list_graph_request',
+            'upstream_name' => 'ListGraphRequest',
+            'category' => 'CIPP',
+            'read_only' => true,
+            'sensitive' => false,
+            'active' => true,
+        ]);
 
         // Curated: we hand-wrote cipp_list_users, so the raw upstream is skipped.
         $this->assertDatabaseMissing('cipp_mcp_tools', ['local_name' => 'cipp_list_users']);
@@ -138,15 +151,8 @@ class CippMcpCatalogSyncTest extends TestCase
         // Blocked: dangerous as a raw passthrough, whatever name it arrives under.
         $this->assertDatabaseMissing('cipp_mcp_tools', ['upstream_name' => 'ListUserSigninLogs']);
 
-        // The long tail still syncs — refusing tools must not break the rest of the catalog.
-        $this->assertDatabaseHas('cipp_mcp_tools', [
-            'local_name' => 'cipp_list_db_cache',
-            'upstream_name' => 'ListDBCache',
-            'category' => 'CIPP',
-            'read_only' => true,
-            'sensitive' => false,
-            'active' => true,
-        ]);
+        // Unapproved long tail: default-denied, not imported.
+        $this->assertDatabaseMissing('cipp_mcp_tools', ['upstream_name' => 'ListDBCache']);
     }
 
     public function test_sync_deactivates_catalog_rows_missing_from_later_import(): void
@@ -166,21 +172,26 @@ class CippMcpCatalogSyncTest extends TestCase
 
         $client = Mockery::mock(CippMcpClient::class);
         $client->shouldReceive('listTools')->once()->andReturn([
-            $this->tool('ListAppConsentRequests', category: 'Tenant'),
+            $this->tool('ListGraphRequest', category: 'CIPP'),
         ]);
 
         $result = app(CippMcpCatalogSyncService::class)->sync($client);
 
         $this->assertSame(1, $result->deactivated);
         $this->assertFalse(CippMcpTool::where('local_name', 'cipp_list_db_cache')->firstOrFail()->active);
-        $this->assertTrue(CippMcpTool::where('local_name', 'cipp_list_app_consent_requests')->firstOrFail()->active);
+        $this->assertTrue(CippMcpTool::where('local_name', 'cipp_list_graph_request')->firstOrFail()->active);
     }
 
     public function test_sync_collision_fails_closed_without_partial_catalog_corruption(): void
     {
+        // An existing active row already occupies the approved tool's local name under a
+        // DIFFERENT upstream — the existing-conflict the collision guard must catch. The
+        // colliding import has to be an APPROVED tool: an unapproved one would be
+        // default-denied out of the catalog before it ever reached the collision check, so
+        // the collision must be built on the reviewed allow-list to still fire (psa-3g8y).
         CippMcpTool::create([
-            'local_name' => 'cipp_existing_tool',
-            'upstream_name' => 'ExistingTool',
+            'local_name' => 'cipp_list_graph_request',
+            'upstream_name' => 'ListGraphRequestLegacy',
             'category' => 'CIPP',
             'description' => 'Existing.',
             'input_schema' => ['type' => 'object', 'properties' => []],
@@ -193,9 +204,10 @@ class CippMcpCatalogSyncTest extends TestCase
 
         $client = Mockery::mock(CippMcpClient::class);
         $client->shouldReceive('listTools')->once()->andReturn([
-            $this->tool('ExistingToolRenamed', name: 'Existing Tool Renamed'),
-            $this->tool('Existing_Tool', name: 'Existing Tool'),
-            $this->tool('ListDBCache'),
+            // An innocent approved tool that WOULD import — proving the abort is all-or-nothing.
+            $this->tool('ListGraphBulkRequest', name: 'Graph Bulk Request'),
+            // Collides with the seeded row's local name under a different upstream.
+            $this->tool('ListGraphRequest', name: 'Graph Request'),
         ]);
 
         $this->expectException(\RuntimeException::class);
@@ -205,25 +217,72 @@ class CippMcpCatalogSyncTest extends TestCase
             app(CippMcpCatalogSyncService::class)->sync($client);
         } finally {
             $this->assertSame(1, CippMcpTool::count());
-            $this->assertTrue(CippMcpTool::where('local_name', 'cipp_existing_tool')->firstOrFail()->active);
-            $this->assertDatabaseMissing('cipp_mcp_tools', ['local_name' => 'cipp_list_db_cache']);
+            $this->assertSame('ListGraphRequestLegacy', CippMcpTool::where('local_name', 'cipp_list_graph_request')->firstOrFail()->upstream_name);
+            $this->assertTrue(CippMcpTool::where('local_name', 'cipp_list_graph_request')->firstOrFail()->active);
+            // The innocent bystander was NOT written — no partial catalog corruption.
+            $this->assertDatabaseMissing('cipp_mcp_tools', ['local_name' => 'cipp_list_graph_bulk_request']);
         }
     }
 
-    public function test_non_read_only_catalog_entries_land_in_sensitive_write_tier(): void
+    /**
+     * A write-class upstream tool is not on the reviewed allow-list, so under default-deny
+     * it is not imported at all — this used to assert it landed as an active sensitive
+     * write-tier row.
+     *
+     * The write-tier tiering itself (read_only=false => sensitive=true, and the executor's
+     * write-class execution refusal) is retained in code as defense-in-depth: it would
+     * still apply IF a write tool were ever added to APPROVED_DYNAMIC_UPSTREAM_TOOLS. Today
+     * none is, so no write tool reaches the tiering — it is default-denied first (psa-3g8y).
+     */
+    public function test_sync_default_denies_an_unapproved_write_tool(): void
     {
         $client = Mockery::mock(CippMcpClient::class);
         $client->shouldReceive('listTools')->once()->andReturn([
             $this->tool('SetUserLicense', category: 'Identity', readOnly: false),
         ]);
 
-        app(CippMcpCatalogSyncService::class)->sync($client);
+        $result = app(CippMcpCatalogSyncService::class)->sync($client);
 
+        $this->assertSame(0, $result->active);
+        $this->assertDatabaseMissing('cipp_mcp_tools', ['upstream_name' => 'SetUserLicense']);
+    }
+
+    /**
+     * The core bead requirement: an unknown, read-only upstream tool that CIPP starts
+     * advertising is NOT imported by default. Before the inversion this exact tool would
+     * have been written as a live active row (import-by-omission); now it is refused until
+     * a human reviews it and adds it to the allow-list (psa-3g8y).
+     */
+    public function test_sync_default_denies_an_unapproved_read_only_tool(): void
+    {
+        $client = Mockery::mock(CippMcpClient::class);
+        $client->shouldReceive('listTools')->once()->andReturn([
+            $this->tool('ListDBCache', category: 'CIPP'),
+        ]);
+
+        $result = app(CippMcpCatalogSyncService::class)->sync($client);
+
+        $this->assertSame(1, $result->seen);
+        $this->assertSame(0, $result->active);
+        $this->assertSame(0, $result->created);
+        $this->assertDatabaseMissing('cipp_mcp_tools', ['upstream_name' => 'ListDBCache']);
+    }
+
+    /** The positive half of the bead requirement: a reviewed, allow-listed tool still syncs. */
+    public function test_sync_imports_an_approved_dynamic_tool(): void
+    {
+        $client = Mockery::mock(CippMcpClient::class);
+        $client->shouldReceive('listTools')->once()->andReturn([
+            $this->tool('ListGraphRequest', category: 'CIPP'),
+        ]);
+
+        $result = app(CippMcpCatalogSyncService::class)->sync($client);
+
+        $this->assertSame(1, $result->active);
+        $this->assertSame(1, $result->created);
         $this->assertDatabaseHas('cipp_mcp_tools', [
-            'local_name' => 'cipp_set_user_license',
-            'upstream_name' => 'SetUserLicense',
-            'read_only' => false,
-            'sensitive' => true,
+            'upstream_name' => 'ListGraphRequest',
+            'local_name' => 'cipp_list_graph_request',
             'active' => true,
         ]);
     }

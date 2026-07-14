@@ -47,9 +47,12 @@ class McpToolsListResilienceTest extends TestCase
 
     public function test_tools_list_repairs_dynamic_cipp_schema_before_publishing(): void
     {
+        // Schema repair is tool-agnostic, but under default-deny only an approved tool is
+        // published, so the deliberately malformed schema rides the approved
+        // ListGraphRequest (psa-3g8y).
         CippMcpTool::create([
-            'local_name' => 'cipp_bad_but_repairable_schema',
-            'upstream_name' => 'ListBadButRepairable',
+            'local_name' => 'cipp_list_graph_request',
+            'upstream_name' => 'ListGraphRequest',
             'category' => 'CIPP',
             'description' => 'Repairable dynamic schema.',
             'input_schema' => [
@@ -81,12 +84,12 @@ class McpToolsListResilienceTest extends TestCase
             'last_seen_at' => now(),
         ]);
 
-        $token = McpConfig::rotateStaffToken(['cipp_bad_but_repairable_schema'], 'chet');
+        $token = McpConfig::rotateStaffToken(['cipp_list_graph_request'], 'chet');
 
         $response = $this->listTools($token);
 
         $response->assertOk();
-        $tool = collect($response->json('result.tools'))->firstWhere('name', 'cipp_bad_but_repairable_schema');
+        $tool = collect($response->json('result.tools'))->firstWhere('name', 'cipp_list_graph_request');
         $this->assertIsArray($tool);
 
         $schema = $tool['inputSchema'];

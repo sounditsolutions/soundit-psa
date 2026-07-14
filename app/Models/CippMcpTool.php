@@ -47,23 +47,31 @@ class CippMcpTool extends Model
     }
 
     /**
-     * Rows the policy forbids from ever being a dynamic tool — a blocked upstream
-     * endpoint, or a row squatting on a curated tool's local name.
+     * Rows dispatchable as dynamic tools: default-deny to the reviewed allow-list, then
+     * belt-and-suspenders exclusion of blocked upstreams and curated-name squatters.
      *
-     * This is applied to the scopes below rather than to each call site, so that the
-     * whole runtime surface — what tools/list advertises, what handles() claims, and what
-     * the dynamic executor will look up — is safe BY CONSTRUCTION. An offending row that
-     * is already in the table is inert on read, which is what makes the guard immediate at
-     * deploy instead of eventual at the next catalog sync (psa-7lgo.7).
+     * The whereIn(APPROVED) is the PRIMARY gate now — an already-imported row whose
+     * upstream is not on the allow-list is inert the moment it is read, which is what
+     * closes the import-by-default hole at DEPLOY rather than at the next optional weekly
+     * catalog sync (psa-3g8y, extending psa-7lgo.7). The two whereNotIn clauses are kept:
+     * they are redundant while APPROVED holds only reviewed read tools, but they are
+     * self-documenting and still refuse a blocked/colliding name if one were ever mistakenly
+     * added to APPROVED.
+     *
+     * This is applied to the scopes below rather than to each call site, so that the whole
+     * runtime surface — what tools/list advertises, what handles() claims, and what the
+     * dynamic executor will look up — is safe BY CONSTRUCTION.
      *
      * Deliberately NOT a global scope: CippMcpCatalogSyncService must still be able to SEE
-     * these rows in order to deactivate them, and it queries without the scopes.
+     * every row (including now-unapproved ones) in order to deactivate them, and it queries
+     * without the scopes.
      *
      * @param  Builder<CippMcpTool>  $query
      */
     public function scopeDispatchable(Builder $query): void
     {
-        $query->whereNotIn('upstream_name', CippMcpToolPolicy::BLOCKED_UPSTREAM_TOOLS)
+        $query->whereIn('upstream_name', CippMcpToolPolicy::APPROVED_DYNAMIC_UPSTREAM_TOOLS)
+            ->whereNotIn('upstream_name', CippMcpToolPolicy::BLOCKED_UPSTREAM_TOOLS)
             ->whereNotIn('local_name', CippMcpToolPolicy::curatedLocalToolNames());
     }
 

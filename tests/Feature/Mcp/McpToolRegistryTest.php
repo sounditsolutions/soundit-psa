@@ -66,8 +66,29 @@ class McpToolRegistryTest extends TestCase
         $this->assertFalse($groups['general']['sensitive']);
     }
 
+    /**
+     * A live dynamic cipp read tool is registry-backed and grouped as an integration read.
+     * Under the default-deny allow-list only the reviewed tools are live, so the read tool
+     * is the approved cipp_list_graph_request; an unapproved read tool AND an unapproved
+     * (would-be write-tier) tool are both excluded from the registry entirely — the
+     * inversion holds at the registry surface too, not just at import (psa-3g8y).
+     */
     public function test_dynamic_cipp_catalog_tools_are_registry_backed_and_grouped_by_sensitivity(): void
     {
+        CippMcpTool::create([
+            'local_name' => 'cipp_list_graph_request',
+            'upstream_name' => 'ListGraphRequest',
+            'category' => 'CIPP',
+            'description' => 'Generic Graph request.',
+            'input_schema' => ['type' => 'object', 'properties' => []],
+            'annotations' => ['readOnlyHint' => true],
+            'read_only' => true,
+            'sensitive' => false,
+            'active' => true,
+            'last_seen_at' => now(),
+        ]);
+        // An unapproved read tool and an unapproved write tool, exactly as an
+        // import-by-default sync would have written them — both default-denied.
         CippMcpTool::create([
             'local_name' => 'cipp_list_db_cache',
             'upstream_name' => 'ListDBCache',
@@ -95,10 +116,15 @@ class McpToolRegistryTest extends TestCase
 
         $groups = McpToolRegistry::groups();
 
-        $this->assertContains('cipp_list_db_cache', array_column($groups['integration']['tools'], 'name'));
-        $this->assertContains('cipp_set_user_license', array_column($groups['cipp_write']['tools'], 'name'));
-        $this->assertContains('cipp_list_db_cache', McpToolRegistry::allToolNames());
-        $this->assertContains('cipp_set_user_license', McpToolRegistry::allToolNames());
+        // Approved read tool: registry-backed, grouped as an integration read.
+        $this->assertContains('cipp_list_graph_request', array_column($groups['integration']['tools'], 'name'));
+        $this->assertContains('cipp_list_graph_request', McpToolRegistry::allToolNames());
+
+        // Default-deny: neither unapproved row is registry-backed, in any group.
+        $this->assertNotContains('cipp_list_db_cache', McpToolRegistry::allToolNames());
+        $this->assertNotContains('cipp_set_user_license', McpToolRegistry::allToolNames());
+        $this->assertNotContains('cipp_list_db_cache', array_column($groups['integration']['tools'], 'name'));
+        $this->assertNotContains('cipp_set_user_license', array_column($groups['cipp_write']['tools'], 'name'));
     }
 
     public function test_tools_carry_descriptions_and_no_group_overlap(): void
