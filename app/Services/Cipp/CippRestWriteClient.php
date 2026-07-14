@@ -469,13 +469,14 @@ class CippRestWriteClient
      */
     public function listMailQuarantine(string $tenantFilter): array
     {
-        $response = $this->get('api/ListMailQuarantine', ['tenantFilter' => $tenantFilter]);
+        $body = $this->sendGet('api/ListMailQuarantine', ['tenantFilter' => $tenantFilter]);
 
-        if (is_array($response['body'] ?? null)) {
-            CippQueueGuard::assertNotQueueBacked($response['body']);
-        }
+        // Unconditional by design: sendGet() returns array<…> or [] (never a scalar), so
+        // unlike the removed get() path this needs no is_array() wrapper — and must not
+        // regain one. On get() a non-array body SKIPPED the guard entirely; here it cannot.
+        CippQueueGuard::assertNotQueueBacked($body);
 
-        $rows = $response['body']['Results'] ?? [];
+        $rows = $body['Results'] ?? [];
         if (! is_array($rows)) {
             return [];
         }
@@ -855,8 +856,10 @@ class CippRestWriteClient
 
     /**
      * Curated GET with the same URL-safety, DNS-pinning, and token handling as
-     * send(). Returns the decoded body — used only by resolution reads that
-     * support a write (listDirectoryRoles), never exposed as a generic getter.
+     * send(). Returns the decoded body, or [] when upstream answers with a
+     * non-array payload. Private and endpoint-specific by design: it backs only
+     * the curated verification reads that gate a write (listDirectoryRoles,
+     * listGroups, listMailQuarantine) and is never exposed as a generic getter.
      *
      * @param  array<string, string>  $query
      * @return array<int|string, mixed>
@@ -880,29 +883,6 @@ class CippRestWriteClient
         $body = $response->json();
 
         return is_array($body) ? $body : [];
-    }
-
-    /**
-     * @param  array<string, mixed>  $query
-     * @return array<int|string, mixed>
-     */
-    private function get(string $endpoint, array $query): array
-    {
-        $url = $this->endpointUrl($endpoint);
-        $options = $this->safeRequestOptions($url);
-        $token = $this->getToken();
-
-        $response = Http::timeout(60)
-            ->acceptJson()
-            ->withOptions($options)
-            ->withToken($token)
-            ->get($url, $query);
-
-        if ($response->failed()) {
-            throw new CippClientException("CIPP read {$endpoint} failed: HTTP {$response->status()}");
-        }
-
-        return ['success' => true, 'status' => $response->status(), 'body' => $response->json()];
     }
 
     private function getToken(): string

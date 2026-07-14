@@ -52,7 +52,6 @@ class CippRestWriteClientTest extends TestCase
         $this->assertNotContains('post', $methods);
         $this->assertNotContains('get', $methods);
         $this->assertNotContains('request', $methods);
-        $this->assertNotContains('get', $methods);
     }
 
     public function test_set_mailbox_delegate_posts_exec_edit_mailbox_permissions_shape(): void
@@ -766,6 +765,30 @@ class CippRestWriteClientTest extends TestCase
             && $request->method() === 'GET'
             && $request->hasHeader('Authorization', 'Bearer WRITE-TOKEN')
             && str_contains($request->url(), 'tenantFilter=acme.onmicrosoft.com'));
+    }
+
+    /**
+     * Pins the degraded-payload contract the shared sendGet() helper is
+     * responsible for: a non-array upstream body yields no rows rather than an
+     * offset error. Empty is the safe answer on THIS path specifically —
+     * listMailQuarantine only ever backs verifiedQuarantineRow(), which
+     * requires the identity to be present and refuses the release when it is
+     * not, so a degraded read fails closed instead of reading as an all-clear.
+     */
+    public function test_list_mail_quarantine_returns_no_rows_when_upstream_body_is_not_an_array(): void
+    {
+        foreach (['"unexpected-scalar"', '123', 'null'] as $payload) {
+            Http::fake([
+                'login.microsoftonline.com/*' => Http::response(['access_token' => 'WRITE-TOKEN', 'expires_in' => 3600]),
+                'cipp.example.test/api/ListMailQuarantine*' => Http::response($payload, 200, ['Content-Type' => 'application/json']),
+            ]);
+
+            $this->assertSame(
+                [],
+                $this->emailSecurityClient()->listMailQuarantine('acme.onmicrosoft.com'),
+                "Expected no rows for upstream body {$payload}"
+            );
+        }
     }
 
     public function test_reset_password_forwards_must_change_false_when_requested(): void
