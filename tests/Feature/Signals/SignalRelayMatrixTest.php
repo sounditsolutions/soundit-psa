@@ -2,18 +2,29 @@
 
 namespace Tests\Feature\Signals;
 
+use App\Models\McpToken;
 use App\Models\SignalConfigLog;
 use App\Models\SignalDestination;
 use App\Models\SignalEventTypeSetting;
 use App\Models\SignalRoute;
 use App\Services\Signals\SignalRelayMatrix;
 use App\Support\McpConfig;
+use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
 class SignalRelayMatrixTest extends TestCase
 {
     use RefreshDatabase;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        // The matrix write path requires a LIVE token label; 'Chet' is the column used
+        // across these tests, 'NoPoll' exercises the poll_signals guard.
+        McpConfig::rotateStaffToken(['poll_signals'], 'Chet');
+        McpConfig::rotateStaffToken(['find_clients'], 'NoPoll');
+    }
 
     private function matrix(): SignalRelayMatrix
     {
@@ -113,9 +124,7 @@ class SignalRelayMatrixTest extends TestCase
 
     public function test_matrix_read_surfaces_all_18_types_tokens_cells_and_poll_signals_guard(): void
     {
-        McpConfig::rotateStaffToken(['poll_signals'], 'Chet');
-        McpConfig::rotateStaffToken(['find_clients'], 'NoPoll'); // no poll_signals grant
-
+        // 'Chet' (poll_signals) and 'NoPoll' (no poll_signals) are minted in setUp.
         $this->matrix()->setRelay('Chet', 'ticket.created', true);
         $this->matrix()->setNudge('Chet', 'ticket.created', true);
 
@@ -180,5 +189,71 @@ class SignalRelayMatrixTest extends TestCase
         $this->assertTrue(SignalConfigLog::where('action', 'relay_added')->exists());
         $this->assertTrue(SignalConfigLog::where('action', 'nudge_added')->exists());
         $this->assertTrue(SignalConfigLog::where('action', 'type_global_toggle')->exists());
+    }
+
+    public function test_set_relay_rejects_a_nonexistent_token_label(): void
+    {
+        try {
+            $this->matrix()->setRelay('Ghost', 'ticket.created', true);
+            $this->fail('Expected InvalidArgumentException for a nonexistent token label.');
+        } catch (\InvalidArgumentException) {
+            // No matrix config may be pre-armed for a label with no live token.
+            $this->assertSame(0, SignalRoute::where('managed_token_label', 'Ghost')->count());
+            $this->assertSame(0, SignalDestination::where('mcp_token_label', 'Ghost')->count());
+        }
+    }
+
+    public function test_set_relay_rejects_a_revoked_token_label(): void
+    {
+        McpConfig::rotateStaffToken(['poll_signals'], 'Gone');
+        McpToken::where('label', 'Gone')->update(['revoked_at' => now()]);
+
+        $this->expectException(\InvalidArgumentException::class);
+        try {
+            $this->matrix()->setRelay('Gone', 'ticket.created', true);
+        } finally {
+            $this->assertSame(0, SignalRoute::where('managed_token_label', 'Gone')->count());
+        }
+    }
+
+    public function test_set_relay_rejects_a_malformed_or_oversized_label(): void
+    {
+        $this->assertThrows(fn () => $this->matrix()->setRelay('', 'ticket.created', true), \InvalidArgumentException::class);
+        $this->assertThrows(fn () => $this->matrix()->setRelay(str_repeat('x', 300), 'ticket.created', true), \InvalidArgumentException::class);
+    }
+
+    public function test_set_relay_off_for_a_token_with_no_route_is_a_noop(): void
+    {
+        $this->matrix()->setRelay('Chet', 'ticket.created', false);
+
+        $this->assertSame(0, SignalRoute::where('managed_token_label', 'Chet')->count());
+        $this->assertSame(0, SignalDestination::where('mcp_token_label', 'Chet')->count());
+    }
+
+    public function test_the_db_enforces_one_managed_route_per_token(): void
+    {
+        $this->matrix()->setRelay('Chet', 'ticket.created', true);
+        $this->assertSame(1, SignalRoute::where('managed_token_label', 'Chet')->count());
+
+        // A second managed route for the same token is rejected at the DB level — the
+        // invariant does not rely on service code alone.
+        $this->expectException(UniqueConstraintViolationException::class);
+        SignalRoute::create([
+            'label' => 'dup',
+            'managed_token_label' => 'Chet',
+            'event_filter' => ['types' => []],
+            'enabled' => false,
+            'cooldown_seconds' => 0,
+        ]);
+    }
+
+    public function test_many_operator_authored_routes_may_share_a_null_managed_label(): void
+    {
+        // The unique key is nullable — operator-authored routes (managed_token_label IS NULL)
+        // are unaffected and can coexist in any number.
+        SignalRoute::create(['label' => 'a', 'event_filter' => ['types' => []], 'enabled' => false, 'cooldown_seconds' => 300]);
+        SignalRoute::create(['label' => 'b', 'event_filter' => ['types' => []], 'enabled' => false, 'cooldown_seconds' => 300]);
+
+        $this->assertSame(2, SignalRoute::whereNull('managed_token_label')->count());
     }
 }

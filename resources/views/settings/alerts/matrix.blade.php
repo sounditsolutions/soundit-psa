@@ -88,21 +88,32 @@
                                             <button type="submit"
                                                 class="btn btn-sm {{ $cell['relayed'] ? 'btn-success' : 'btn-outline-secondary' }}"
                                                 @disabled($globallyOff && ! $cell['relayed'])
+                                                aria-label="{{ $cell['relayed'] ? 'Relaying '.$type['label'].' to '.$token['label'].' — activate to stop' : 'Not relaying '.$type['label'].' to '.$token['label'].' — activate to relay' }}"
                                                 title="{{ $cell['relayed'] ? 'Relaying — click to stop' : 'Not relaying — click to relay' }}">
-                                                <i class="bi {{ $cell['relayed'] ? 'bi-check-lg' : 'bi-dash' }}"></i> Relay
+                                                <i class="bi {{ $cell['relayed'] ? 'bi-check-lg' : 'bi-dash' }}" aria-hidden="true"></i> Relay
                                             </button>
                                         </form>
 
+                                        {{-- Also-nudge: gold is reserved for the ACTIVE state only. A relayed-but-not-nudging
+                                             cell is a neutral outline; an unavailable (not-yet-relayed) cell is muted + disabled,
+                                             and the relay-first dependency is exposed via an accessible aria-label, not the title alone. --}}
+                                        @php($nudgeClass = $cell['nudge'] ? 'btn-warning text-dark' : 'btn-outline-secondary')
+                                        @php($nudgeLabel = $cell['relayed']
+                                            ? ($cell['nudge']
+                                                ? 'Also-nudging '.$type['label'].' to '.$token['label'].' — activate to stop'
+                                                : 'Queue only for '.$type['label'].' to '.$token['label'].' — activate to also nudge')
+                                            : 'Relay '.$type['label'].' to '.$token['label'].' first to enable also-nudge')
                                         <form method="POST" action="{{ route('settings.alerts.matrix.nudge') }}" class="d-inline">
                                             @csrf
                                             <input type="hidden" name="token_label" value="{{ $token['label'] }}">
                                             <input type="hidden" name="type_key" value="{{ $type['key'] }}">
                                             <input type="hidden" name="nudge" value="{{ $cell['nudge'] ? 0 : 1 }}">
                                             <button type="submit"
-                                                class="btn btn-sm {{ $cell['nudge'] ? 'btn-warning text-dark' : 'btn-outline-warning' }}"
+                                                class="btn btn-sm {{ $nudgeClass }} {{ ! $cell['relayed'] ? 'opacity-50' : '' }}"
                                                 @disabled(! $cell['relayed'])
-                                                title="{{ $cell['relayed'] ? ($cell['nudge'] ? 'Also-nudging — click to stop' : 'Queue only — click to also nudge') : 'Relay this type first to enable nudge' }}">
-                                                <i class="bi bi-bell{{ $cell['nudge'] ? '-fill' : '' }}"></i>
+                                                aria-label="{{ $nudgeLabel }}"
+                                                title="{{ $nudgeLabel }}">
+                                                <i class="bi bi-bell{{ $cell['nudge'] ? '-fill' : '' }}" aria-hidden="true"></i>
                                             </button>
                                         </form>
                                     @endif
@@ -113,9 +124,9 @@
                 </tbody>
             </table>
         </div>
-        <p class="text-muted small mt-2">
-            <i class="bi bi-check-lg"></i> Relay = queue the alert for this token to poll ·
-            <i class="bi bi-bell-fill"></i> Bell = also-nudge (piggyback awareness on the next tool call) ·
+        <p class="text-muted small mt-2 mb-0">
+            <span class="badge bg-success">Relay</span> queues the alert for this token to poll ·
+            a <span class="badge bg-warning text-dark"><i class="bi bi-bell-fill" aria-hidden="true"></i></span> gold bell = also-nudge active (piggybacks awareness on the token’s next tool call); the bell is available only after the type is relayed to that token ·
             a greyed row is globally disabled for every token.
         </p>
     @endif

@@ -24,8 +24,13 @@ return new class extends Migration
     public function up(): void
     {
         Schema::table('signal_routes', function (Blueprint $table) {
+            // Nullable UNIQUE: enforces the one matrix-owned relay route per MCP token
+            // invariant at the DB level (a concurrent first-toggle can't create a duplicate
+            // managed route -> no duplicate MCP inbox deliveries / ambiguous nudge reads).
+            // Both MariaDB and SQLite allow MANY NULLs in a unique index, so every
+            // operator-authored route (managed_token_label IS NULL) is unaffected.
             $table->string('managed_token_label')->nullable()->after('label');
-            $table->index('managed_token_label');
+            $table->unique('managed_token_label');
         });
 
         Schema::create('signal_event_type_settings', function (Blueprint $table) {
@@ -41,7 +46,7 @@ return new class extends Migration
         Schema::dropIfExists('signal_event_type_settings');
 
         Schema::table('signal_routes', function (Blueprint $table) {
-            $table->dropIndex(['managed_token_label']);
+            $table->dropUnique(['managed_token_label']);
             $table->dropColumn('managed_token_label');
         });
     }

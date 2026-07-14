@@ -9,6 +9,7 @@ use App\Models\SignalEvent;
 use App\Models\SignalEventTypeSetting;
 use App\Models\SignalRoute;
 use App\Support\McpConfig;
+use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -100,6 +101,7 @@ class SignalRelayMatrix
     /** Turn relay of a type on/off for a token (queue-always — the baseline delivery path). */
     public function setRelay(string $tokenLabel, string $typeKey, bool $on, ?int $userId = null): void
     {
+        $tokenLabel = $this->assertValidTokenLabel($tokenLabel);
         $this->assertRoutableCatalogType($typeKey);
 
         if ($on && ! SignalEventTypeSetting::isTypeGloballyEnabled($typeKey)) {
@@ -107,7 +109,15 @@ class SignalRelayMatrix
         }
 
         DB::transaction(function () use ($tokenLabel, $typeKey, $on, $userId): void {
-            $route = $this->relayRouteFor($tokenLabel);
+            // Turning a cell OFF for a token that has no relay route yet is a no-op — never
+            // create an empty managed route just to disable it.
+            $route = $on
+                ? $this->relayRouteFor($tokenLabel)
+                : SignalRoute::query()->where('managed_token_label', $tokenLabel)->first();
+            if ($route === null) {
+                return;
+            }
+
             $filter = is_array($route->event_filter) ? $route->event_filter : [];
             $types = $this->stringList($filter['types'] ?? []);
             $nudge = $this->stringList($filter['nudge_types'] ?? []);
@@ -137,6 +147,7 @@ class SignalRelayMatrix
     /** Turn the also-nudge flag on/off for an already-relayed cell (D5, per-cell). */
     public function setNudge(string $tokenLabel, string $typeKey, bool $on, ?int $userId = null): void
     {
+        $tokenLabel = $this->assertValidTokenLabel($tokenLabel);
         $this->assertRoutableCatalogType($typeKey);
 
         DB::transaction(function () use ($tokenLabel, $typeKey, $on, $userId): void {
@@ -185,7 +196,25 @@ class SignalRelayMatrix
     {
         $route = SignalRoute::query()->where('managed_token_label', $tokenLabel)->first();
         if ($route !== null) {
-            return $route;
+            return $route->loadMissing('steps');
+        }
+
+        // Create the ROUTE first, so the unique key on managed_token_label trips BEFORE any
+        // destination is written — a lost concurrent first-toggle race leaves no orphan.
+        try {
+            $route = SignalRoute::create([
+                'label' => "Relay to {$tokenLabel}",
+                'managed_token_label' => $tokenLabel,
+                'event_filter' => ['types' => [], 'nudge_types' => []],
+                'enabled' => false,
+                // Queue-always: no cooldown suppression on the matrix relay path (the
+                // 60/type/hr rate cap remains the flood backstop).
+                'cooldown_seconds' => 0,
+            ]);
+        } catch (UniqueConstraintViolationException) {
+            // Another request already created this token's one managed route — use theirs
+            // (the unique key guarantees exactly one, so this is the race-resistant path).
+            return SignalRoute::query()->where('managed_token_label', $tokenLabel)->firstOrFail()->loadMissing('steps');
         }
 
         $destination = SignalDestination::create([
@@ -195,19 +224,32 @@ class SignalRelayMatrix
             'enabled' => true,
         ]);
 
-        $route = SignalRoute::create([
-            'label' => "Relay to {$tokenLabel}",
-            'managed_token_label' => $tokenLabel,
-            'event_filter' => ['types' => [], 'nudge_types' => []],
-            'enabled' => false,
-            // Queue-always: no cooldown suppression on the matrix relay path (the
-            // 60/type/hr rate cap remains the flood backstop).
-            'cooldown_seconds' => 0,
-        ]);
-
         $route->steps()->create(['step_order' => 1, 'destination_id' => $destination->id]);
 
         return $route->load('steps');
+    }
+
+    /**
+     * Validate + normalise an MCP token label before ANY relay route/destination/step write.
+     * The write authority lives HERE (not in the controller/form): a crafted authenticated
+     * POST must not be able to pre-arm matrix config for a nonexistent, revoked, malformed or
+     * oversized token label. Requires a LIVE (non-revoked) token — the same predicate that
+     * builds the matrix columns (McpToken::active()) — so the write surface can never exceed
+     * the read surface. Returns the trimmed label used for storage/lookup.
+     */
+    private function assertValidTokenLabel(string $tokenLabel): string
+    {
+        $label = trim($tokenLabel);
+
+        if ($label === '' || mb_strlen($label) > 255) {
+            throw new \InvalidArgumentException('Invalid MCP token label.');
+        }
+
+        if (! McpToken::hasLiveLabel($label)) {
+            throw new \InvalidArgumentException("Unknown or revoked MCP token label: {$label}");
+        }
+
+        return $label;
     }
 
     /** @return array<int, string> */
