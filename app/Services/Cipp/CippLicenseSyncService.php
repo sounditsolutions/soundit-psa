@@ -57,9 +57,17 @@ class CippLicenseSyncService
         foreach ($licenses as $licenseData) {
             $skuId = $licenseData['skuId'] ?? $licenseData['SkuId'] ?? null;
             $skuPartNumber = $licenseData['skuPartNumber'] ?? $licenseData['SkuPartNumber'] ?? null;
-            $displayName = $licenseData['skuName'] ?? $licenseData['SkuName']
-                ?? $licenseData['License'] ?? $skuPartNumber ?? 'Unknown M365 License';
-            $consumed = (int) ($licenseData['consumedUnits'] ?? $licenseData['ConsumedUnits'] ?? 0);
+            // CIPP's Get-CIPPLicenseOverview emits the friendly product name in
+            // `License`; skuName / SkuName are never emitted at this layer, so they
+            // were dead reads. skuPartNumber duplicates the pretty name and is the
+            // last resort (psa-d6mf, verified against CIPP-API source).
+            $displayName = $licenseData['License'] ?? $skuPartNumber ?? 'Unknown M365 License';
+            // Seat counts are CountUsed / CountAvailable / TotalLicenses (STRINGS) —
+            // NOT the raw Graph consumedUnits / prepaidUnits keys, which CIPP consumes
+            // internally and never emits here. Reading consumedUnits resolved to 0 for
+            // every row, so the license silently recorded its TOTAL seat count instead
+            // of the used one (psa-d6mf).
+            $consumed = (int) ($licenseData['CountUsed'] ?? $licenseData['countUsed'] ?? 0);
             $total = (int) ($licenseData['totalLicenses'] ?? $licenseData['TotalLicenses']
                 ?? $licenseData['availableUnits'] ?? 0);
 
@@ -81,7 +89,15 @@ class CippLicenseSyncService
                 ]
             );
 
-            // Upsert the license record — quantity is consumed units
+            // Upsert the license record with the vendor-agnostic seat split the
+            // other license syncs use (e.g. AppRiver: quantity=TotalLicenses,
+            // assigned_quantity=AssignedLicenses): quantity = purchased/entitled
+            // seats — the billable denominator BillingService sums for PerLicense /
+            // PerLicenseType / PerResellerLicenseType — and assigned_quantity = the
+            // used/consumed seats that drive the utilization/waste UI. TotalLicenses
+            // is the purchased count, CountUsed the consumed count. Recording used in
+            // quantity (as the first psa-d6mf pass did) under-bills an MSP that
+            // resells purchased seats and hides license waste (psa-d6mf product review).
             $license = License::updateOrCreate(
                 [
                     'license_type_id' => $licenseType->id,
@@ -89,7 +105,8 @@ class CippLicenseSyncService
                     'vendor_ref' => $vendorSkuId,
                 ],
                 [
-                    'quantity' => $consumed > 0 ? $consumed : $total,
+                    'quantity' => $total,
+                    'assigned_quantity' => $consumed,
                     'status' => 'active',
                     'synced_at' => now(),
                 ]

@@ -102,7 +102,11 @@ class CippClient
 
     /**
      * List M365 license assignments for a tenant.
-     * Returns: [{skuId, skuPartNumber, totalLicenses, consumedLicenses, ...}, ...]
+     *
+     * CIPP's Get-CIPPLicenseOverview hand-builds each row (NOT raw Graph
+     * subscribedSkus): [{skuId, skuPartNumber, License, CountUsed, CountAvailable,
+     * TotalLicenses, TermInfo, ...}, ...], with the seat counts as STRINGS. There is
+     * no consumedLicenses key at this layer (psa-d6mf, verified against CIPP-API).
      */
     public function listLicenses(string $tenantFilter): array
     {
