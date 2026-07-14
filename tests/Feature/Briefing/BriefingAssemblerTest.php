@@ -14,7 +14,9 @@ use App\Models\PhoneCall;
 use App\Models\Ticket;
 use App\Models\User;
 use App\Services\Briefing\BriefingAssembler;
+use App\Support\AppTimezone;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Queue;
 use Tests\TestCase;
 
@@ -170,6 +172,20 @@ class BriefingAssemblerTest extends TestCase
 
     public function test_sla_risk_includes_due_today_and_overdue_but_not_future(): void
     {
+        // psa-yc5a: FREEZE AT LOCAL NOON, and do it in the app's timezone, not UTC.
+        //
+        // "SLA risk today" means due_at <= the end of the technician's LOCAL day
+        // (BriefingAssembler::assemble). This test expresses its fixtures RELATIVE to now,
+        // so run it late enough in the day and now()+2h silently rolls over into tomorrow —
+        // the "due later today" ticket stops being due today and the count drops from 2 to 1.
+        // It failed exactly that way on plain origin/main around 23:00 UTC.
+        //
+        // Noon in AppTimezone::get() is the one anchor that keeps all three fixtures on the
+        // intended side of the boundary (+2h and -1h stay inside the local day, +1 week stays
+        // outside it) under ANY configured timezone — freezing at noon UTC would still be
+        // fragile for a tenant running a large positive offset.
+        $this->travelTo(Carbon::now(AppTimezone::get())->startOfDay()->addHours(12));
+
         $tech = User::factory()->tech()->create();
         $client = Client::factory()->create(['primary_tech_id' => $tech->id, 'is_active' => true]);
 
