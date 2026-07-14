@@ -394,6 +394,16 @@ Schedule::command('technician:emergency-sweep')
     ->runInBackground()
     ->when(fn () => TechnicianConfig::emergencyBackstopEnabled());
 
+// AI Technician — stale-claim reaper (psa-xz0z): return runs stranded in 'executing' by a
+// process death or a DEPLOY (PHP-FPM restart mid-approval) to the approval queue, so an
+// approvable action is never silently lost behind an "already handled" message. NOT config-gated:
+// the approval path is core, and a run stranded before the subsystem was toggled off still needs
+// recovering. everyMinute for fast recovery; the scan is a cheap indexed lookup on 'executing'.
+Schedule::command('technician:reap-stale-claims')
+    ->everyMinute()
+    ->withoutOverlapping()
+    ->runInBackground();
+
 // AI Technician — escalation degradation sweep: re-deliver unacked flag_attention
 // escalations and advance them up the operator chain so nothing is ever silently
 // stuck. Cadence (30 min) is less than the default reping window (120 min), so the

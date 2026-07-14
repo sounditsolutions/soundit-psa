@@ -117,7 +117,7 @@ class TechnicianCockpitController extends Controller
             'executed' => $result->message ?? 'Held action approved and executed.',
             // bd psa-xr84: approved but the device was offline — parked to auto-run on reconnect.
             'queued_offline' => 'Device offline — queued to run automatically when it comes back online.',
-            'already_handled' => 'That draft was already handled.',
+            'already_handled' => $this->handledMessage($run, 'That draft was already handled.'),
             'recipient_invalid' => $result->message ?? 'One or more recipients are no longer valid — re-check the To/CC and try again.',
             // psa-zjpd deep-review: a held destructive action can decline for a
             // specific recoverable reason (typed-id mismatch, identity drift,
@@ -146,7 +146,7 @@ class TechnicianCockpitController extends Controller
             $request,
             $ok,
             $ok ? 'denied' : 'already_handled',
-            $ok ? 'Draft dismissed; the ticket is back with your team.' : 'That draft was already handled.',
+            $ok ? 'Draft dismissed; the ticket is back with your team.' : $this->handledMessage($run, 'That draft was already handled.'),
             undo: $ok ? $this->runUndoPayload($run, 'hold') : null,
         );
     }
@@ -463,6 +463,21 @@ class TechnicianCockpitController extends Controller
         ]);
 
         return [array_values($v['to'] ?? []), array_values($v['cc'] ?? [])];
+    }
+
+    /**
+     * psa-xz0z: 'already_handled' is honest for a run that genuinely reached a terminal state
+     * (Done / Denied / Superseded / …), but a LIE for one wedged in 'executing' — a claim
+     * stranded by a process death or a deploy. Tell the operator the truth in that case: the
+     * stale-claim reaper (technician:reap-stale-claims) returns wedged runs to the queue
+     * automatically within a few minutes, so "already handled" would send them away from an
+     * action that is actually still recoverable.
+     */
+    private function handledMessage(TechnicianRun $run, string $terminalMessage): string
+    {
+        return $run->fresh()?->state === TechnicianRunState::Executing
+            ? 'This action is still finishing — if it’s stuck, it returns to your approval queue automatically within a few minutes. Try again shortly.'
+            : $terminalMessage;
     }
 
     private function actionResponse(
