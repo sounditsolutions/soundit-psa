@@ -10,11 +10,19 @@ use App\Models\SignalDestination;
 use App\Models\SignalEvent;
 use App\Models\SignalRoute;
 use App\Models\SignalRouteStep;
+use App\Support\McpConfig;
 use Illuminate\Database\Eloquent\Collection;
 
 class SignalRouter
 {
     public const MAX_PER_TYPE_PER_HOUR = 60;
+
+    /**
+     * The operator-bridge tool an agent uses to DRAIN a signal destination's inbox. A token
+     * that is not granted this tool can never read what we deliver, so a destination pointing
+     * at one is not consumable (see wouldReachMcpDestination()). Name per OperatorBridgeTools.
+     */
+    private const POLL_SIGNALS_TOOL = 'poll_signals';
 
     public function route(SignalEvent $event): void
     {
@@ -59,6 +67,59 @@ class SignalRouter
     protected function afterStepDispatched(SignalRoute $route, SignalEvent $event, int $stepOrder): void
     {
         CheckSignalStepAcks::scheduleIfNeeded($route, $event, $stepOrder);
+    }
+
+    /**
+     * Would an event of $typeKey carrying $context actually be DELIVERED to an enabled
+     * MCP destination — i.e. land in an inbox an agent can poll?
+     *
+     * This exists so "nobody is watching the support inbox" can be DETECTED and shouted
+     * about instead of silently entered (psa-28j4.3). It deliberately reuses matches()
+     * and mcpDeliveryBlockReason() rather than re-deriving them, because a second copy
+     * of the filter semantics WOULD drift — and the traps here are precisely the ones a
+     * naive re-implementation misses:
+     *   - types are EXACT-match; "intake.*" matches nothing (only the literal "all" wildcards);
+     *   - a route carrying min_priority or categories matches NO intake event at all,
+     *     because the intake emissions carry neither (only client_id) and matches() hard-
+     *     fails a null context key. Such a route looks correct and delivers zero emails.
+     * Asking the real matcher is the only answer that cannot rot.
+     *
+     * Scope: this answers "is a path WIRED", not "will this one event survive the rate
+     * limit / cooldown" — those are runtime and are reported at the point of suppression.
+     *
+     * Conservative by construction: it inspects firstSteps() — the steps that actually fire
+     * when the event lands — so it can never return a false all-clear. An MCP destination
+     * parked on a later escalation tier reads as unwatched, which is the safe direction to
+     * be wrong in: a spurious warning is an annoyance, a false all-clear loses the inbox.
+     *
+     * "Reach" here means CONSUMABLE, not merely deliverable. A live, non-revoked token label
+     * is not enough: the staff MCP boundary only lets a SCOPED token granted poll_signals
+     * drain a destination's inbox (McpStaffController::toolAllowed(), bridge branch), and
+     * poll_signals is precisely how an agent reads what we deliver. So we additionally require
+     * the destination's token to be authorized for it — otherwise a delivered signal lands in
+     * an inbox nobody can read, which is a black hole wearing a live label. This closes the
+     * false all-clear the psa-28j4.3 review gate found in the original label-only check.
+     */
+    public function wouldReachMcpDestination(string $typeKey, array $context = []): bool
+    {
+        if (! SignalEventTypes::routable($typeKey)) {
+            return false;
+        }
+
+        $probe = new SignalEvent(['type_key' => $typeKey, 'context' => $context]);
+
+        return SignalRoute::query()
+            ->where('enabled', true)
+            ->with('steps.destination')
+            ->get()
+            ->contains(fn (SignalRoute $route): bool => $this->matches($route, $probe)
+                && $this->firstSteps($route)->contains(
+                    fn (SignalRouteStep $step): bool => (bool) $step->destination?->enabled
+                        && $step->destination->type === 'mcp'
+                        && $this->mcpDeliveryBlockReason($step->destination) === null
+                        && McpConfig::labelCanUseBridgeTool($step->destination->mcp_token_label, self::POLL_SIGNALS_TOOL)
+                )
+            );
     }
 
     private function matches(SignalRoute $route, SignalEvent $event): bool

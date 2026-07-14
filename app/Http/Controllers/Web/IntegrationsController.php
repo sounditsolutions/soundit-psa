@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Web;
 use App\Http\Controllers\Controller;
 use App\Models\Setting;
 use App\Models\TacticalWebhook;
+use App\Services\Agent\Intake\EmailTriageWatch;
 use App\Services\Cipp\CippMcpCatalogSyncService;
 use App\Services\Graph\GraphClient;
 use App\Services\Graph\GraphWebhookManager;
@@ -153,6 +154,13 @@ class IntegrationsController extends Controller
         $graphConnectedAt = $fmtTs(Setting::getValue('graph_connected_at'));
         $graphEmailSignature = Setting::getValue('email_signature') ?? '';
         $emailAutoTicket = (bool) Setting::getValue('email_auto_ticket');
+
+        // psa-28j4.3: turning auto-ticketing off is only safe if SOMETHING else is watching.
+        // With it off and no signal route delivering intake.email_unresolved to an enabled MCP
+        // destination, inbound support email creates no ticket and notifies no agent — it just
+        // stops being anybody's job, silently. Surface that here, at the toggle, because a
+        // warning buried in laravel.log is invisible to the person actually making the choice.
+        $emailTriageUnwatched = app(EmailTriageWatch::class)->isPileUpRisk();
 
         // Ticket automation
         $autoCloseResolvedDays = (int) Setting::getValue('auto_close_resolved_days', 0);
@@ -376,7 +384,7 @@ class IntegrationsController extends Controller
             'printixConfigured', 'printixPartnerId', 'printixHasSecret', 'printixConnected', 'printixEnabled',
             'cippConfigured', 'cippApiUrl', 'cippTenantId', 'cippClientId', 'cippApplicationId', 'cippHasSecret', 'cippMcpClientId', 'cippMcpHasSecret', 'cippMcpConfigured', 'cippConnected', 'cippEnabled', 'cippMcpEnabled', 'cippContactSyncEnabled', 'cippDeviceSyncEnabled', 'cippMcpCatalogSyncEnabled',
             'plivoAuthId', 'plivoDidNumber', 'plivoAppId', 'plivoHasToken', 'plivoHasWebhookSecret', 'plivoConnectedAt', 'plivoEnabled',
-            'graphMailbox', 'graphConnectedAt', 'graphEmailSignature', 'emailAutoTicket', 'graphEnabled', 'autoCloseResolvedDays', 'gravatarDefault',
+            'graphMailbox', 'graphConnectedAt', 'graphEmailSignature', 'emailAutoTicket', 'emailTriageUnwatched', 'graphEnabled', 'autoCloseResolvedDays', 'gravatarDefault',
             'aiProvider', 'aiHasKey', 'aiModel', 'aiConnectedAt', 'aiEnabled', 'aiReplyGuidelines',
             'transcriptionConfigured', 'transcriptionHasKey', 'transcriptionAutoEnabled', 'transcriptionMinSeconds',
             'huntressCwConfigured', 'huntressCwHost', 'huntressCwCompanyId', 'huntressCwPublicKey', 'huntressCwSystemUserId', 'huntressCwUsers',

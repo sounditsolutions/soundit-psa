@@ -20,6 +20,7 @@ use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Models\TicketNote;
 use App\Models\User;
+use App\Services\Agent\Intake\EmailTriageWatch;
 use App\Services\Agent\Intake\IntakeDecision;
 use App\Services\Agent\Intake\IntakeRouter;
 use App\Services\Email\ForwardedEmailParser;
@@ -277,6 +278,8 @@ class EmailService
             app(NotificationService::class)->notifyUnresolvedEmail($email);
 
             $this->emitIntakeSignal('intake.email_unresolved', $email, 'inbound email unresolved (no ticket)');
+
+            $this->warnIfNobodyIsWatching($email);
         }
 
         // E1 umbrella intake feed for fallthrough survivors. Outcome is derived from whether a
@@ -286,6 +289,50 @@ class EmailService
         // (AgentConfig::intakeEmailEnabled()). Revisit this label if intake routing is enabled.
         $outcome = $email->ticket_id !== null ? 'ticket created' : 'unresolved (no ticket)';
         $this->emitIntakeSignal('intake.email_received', $email, 'inbound email received — '.$outcome);
+    }
+
+    /**
+     * SCREAM when a real support email has just landed with nothing to catch it.
+     *
+     * psa-28j4.3. Turning off email_auto_ticket is a legitimate operator choice — but ONLY
+     * if something else is watching. When auto-ticketing is off and no signal route delivers
+     * intake.email_unresolved to an enabled MCP destination, this email creates no ticket and
+     * notifies no agent: it becomes nobody's job, and every layer of that is quiet. The signal
+     * row is written, the router matches nothing, no delivery is attempted, and no error is
+     * raised anywhere. The inbox does not fail — it just stops being read.
+     *
+     * That is the exact failure class CLAUDE.md's third rule was written against: a clean,
+     * confident, EMPTY result that an operator cannot tell apart from a genuine all-clear.
+     * A support inbox nobody is reading looks precisely like a quiet one. So it must be loud.
+     *
+     * Fail-soft: a guard that cannot answer must never take down inbound email processing.
+     * If the check itself throws, we log and move on — the email is already saved either way.
+     */
+    private function warnIfNobodyIsWatching(Email $email): void
+    {
+        try {
+            if (! app(EmailTriageWatch::class)->isPileUpRisk()) {
+                return;
+            }
+
+            Log::warning(
+                '[EmailService] UNWATCHED SUPPORT EMAIL — auto-ticketing is OFF and no agent is being notified. '.
+                'This email created no ticket and reached no AI technician; it will sit unhandled until a human finds it. '.
+                'Fix: either re-enable email_auto_ticket, or wire a signal route for '.EmailTriageWatch::SIGNAL.
+                ' to an enabled MCP destination in Settings → Alerts so Chet is told to triage it.',
+                // No from_address here: email_id + client_id are enough to investigate, and
+                // this warning lands in laravel.log at warning level (psa-28j4.3 gate advisory).
+                [
+                    'email_id' => $email->id,
+                    'client_id' => $email->client_id,
+                ]
+            );
+        } catch (\Throwable $e) {
+            Log::warning('[EmailService] unwatched-inbox check failed', [
+                'email_id' => $email->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
     }
 
     /**
