@@ -4,6 +4,7 @@ namespace App\Models;
 
 use App\Enums\TechnicianRunState;
 use Carbon\CarbonInterface;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
@@ -32,6 +33,7 @@ class TechnicianRun extends Model
         'action_type',
         'content_hash',
         'state',
+        'claimed_at',
         'proposed_content',
         'proposed_meta',
         'confidence',
@@ -47,6 +49,7 @@ class TechnicianRun extends Model
     {
         return [
             'state' => TechnicianRunState::class,
+            'claimed_at' => 'datetime',
             'proposed_meta' => 'array',
             'confidence' => 'float',
             'tokens_used' => 'integer',
@@ -69,22 +72,32 @@ class TechnicianRun extends Model
      */
     public function claimForExecution(): bool
     {
+        // Stamp claimed_at inside the same CAS write so the stale-claim reaper (psa-xz0z) can
+        // measure how long a run has been wedged in Executing — a process death between here and
+        // releaseClaim()/advanceTo(Done) leaves no other trace.
+        $now = now();
         $claimed = static::query()
             ->whereKey($this->getKey())
             ->where('state', TechnicianRunState::AwaitingApproval->value)
-            ->update(['state' => TechnicianRunState::Executing->value]) === 1;
+            ->update(['state' => TechnicianRunState::Executing->value, 'claimed_at' => $now]) === 1;
 
         if ($claimed) {
             $this->state = TechnicianRunState::Executing;
+            $this->claimed_at = $now;
         }
 
         return $claimed;
     }
 
-    /** Release a claimed run back to the queue (executing → awaiting_approval). Direct update because claimForExecution bypasses dirty tracking. */
-    public function releaseClaim(): void
+    /**
+     * Release a claimed run back to the queue (executing → awaiting_approval). Direct update
+     * because claimForExecution bypasses dirty tracking. Returns whether the CAS won — false
+     * means the run was no longer Executing (it completed, or another releaser beat us), which
+     * lets the stale-claim reaper count only the runs it actually rescued.
+     */
+    public function releaseClaim(): bool
     {
-        $this->releaseClaimTo(TechnicianRunState::AwaitingApproval);
+        return $this->releaseClaimTo(TechnicianRunState::AwaitingApproval);
     }
 
     /**
@@ -93,12 +106,68 @@ class TechnicianRun extends Model
      * to QueuedOffline so the queue keeps waiting rather than re-entering the
      * human approval lane. Direct update because the claim bypasses dirty tracking.
      */
-    public function releaseClaimTo(TechnicianRunState $state): void
+    public function releaseClaimTo(TechnicianRunState $state): bool
     {
-        static::query()->whereKey($this->getKey())
+        $released = static::query()->whereKey($this->getKey())
             ->where('state', TechnicianRunState::Executing->value)
-            ->update(['state' => $state->value]);
-        $this->state = $state;
+            ->update(['state' => $state->value]) === 1;
+        // Only reflect the transition in memory when the CAS actually won — mirroring the DB so
+        // the new bool contract isn't leaky (a lost CAS must not claim it moved the run).
+        if ($released) {
+            $this->state = $state;
+        }
+
+        return $released;
+    }
+
+    /**
+     * Action types the stale-claim reaper (psa-xz0z) may safely return to awaiting_approval.
+     *
+     * SAFE means: the whole side effect is a single gate DB transaction (note/close/merge + audit
+     * + advanceTo(Done)), and any EXTERNAL send happens only AFTER that transaction commits — so a
+     * run still stuck in 'executing' provably never committed, never sent, and re-approval replays
+     * cleanly (TechnicianApprovalService::approveAndSend/approveClose/approveMerge and the shared
+     * approveStagedBodyAction, whose sendEmail is after the committed Done, ~:451).
+     *
+     * DELIBERATELY EXCLUDED (fail-safe — anything not listed is treated as unsafe): the staged
+     * VENDOR actions (cipp_stage_*, tactical_stage_*) delegate to
+     * Staff{Cipp,Tactical}*ToolExecutor::approveStagedRun, which fire the UPSTREAM call BEFORE the
+     * local audit/Done. A crash between that call and Done leaves 'executing' with the side effect
+     * already done, so reopening it would let a fresh approval DUPLICATE a create-user / script /
+     * wipe. Those strands are surfaced for manual review, never auto-reopened.
+     */
+    public const RECOVERY_SAFE_ACTION_TYPES = [
+        'send_reply',
+        'propose_resolution',
+        'propose_close',
+        'propose_merge',
+        'stage_email',
+        'stage_public_note',
+    ];
+
+    /** Whether the reaper may return this stranded run to the queue without risking a duplicate side effect. */
+    public function isRecoverySafeToReopen(): bool
+    {
+        return in_array($this->action_type, self::RECOVERY_SAFE_ACTION_TYPES, true);
+    }
+
+    /**
+     * Runs wedged in Executing since before $before — the stale-claim reaper's candidates
+     * (psa-xz0z). claimed_at is the authoritative claim time; updated_at is the fallback for
+     * rows claimed before claimed_at existed (the claim's CAS ->update() stamped updated_at),
+     * so a run stranded by the very DEPLOY that shipped this column is still recoverable.
+     *
+     * @param  Builder<TechnicianRun>  $query
+     */
+    public function scopeStaleExecuting(Builder $query, CarbonInterface $before): void
+    {
+        $query->where('state', TechnicianRunState::Executing->value)
+            ->where(function (Builder $q) use ($before): void {
+                $q->where('claimed_at', '<=', $before)
+                    ->orWhere(function (Builder $inner) use ($before): void {
+                        $inner->whereNull('claimed_at')->where('updated_at', '<=', $before);
+                    });
+            });
     }
 
     /**
@@ -148,14 +217,16 @@ class TechnicianRun extends Model
      */
     public function claimQueuedForExecution(): bool
     {
+        $now = now();
         $claimed = static::query()
             ->whereKey($this->getKey())
             ->where('state', TechnicianRunState::QueuedOffline->value)
             ->where('expires_at', '>', now())
-            ->update(['state' => TechnicianRunState::Executing->value]) === 1;
+            ->update(['state' => TechnicianRunState::Executing->value, 'claimed_at' => $now]) === 1;
 
         if ($claimed) {
             $this->state = TechnicianRunState::Executing;
+            $this->claimed_at = $now;
         }
 
         return $claimed;
