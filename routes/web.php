@@ -330,6 +330,10 @@ Route::middleware('auth')->group(function () {
     Route::get('/settings/alerts/routes/{route}', [AlertsHubController::class, 'showRoute'])->name('settings.alerts.routes.show');
     Route::put('/settings/alerts/routes/{route}', [AlertsHubController::class, 'updateRoute'])->name('settings.alerts.routes.update');
     Route::post('/settings/alerts/routes/{route}/toggle', [AlertsHubController::class, 'toggleRoute'])->name('settings.alerts.routes.toggle');
+    Route::get('/settings/alerts/matrix', [AlertsHubController::class, 'matrix'])->name('settings.alerts.matrix');
+    Route::post('/settings/alerts/matrix/relay', [AlertsHubController::class, 'setRelay'])->name('settings.alerts.matrix.relay');
+    Route::post('/settings/alerts/matrix/nudge', [AlertsHubController::class, 'setNudge'])->name('settings.alerts.matrix.nudge');
+    Route::post('/settings/alerts/matrix/type-toggle', [AlertsHubController::class, 'setTypeGlobalEnabled'])->name('settings.alerts.matrix.type-toggle');
     Route::post('/settings/integrations/toggle', [IntegrationsController::class, 'toggleIntegration'])->name('settings.integrations.toggle');
     Route::post('/settings/integrations/ninja', [IntegrationsController::class, 'updateNinja'])->name('settings.integrations.ninja.update');
     Route::post('/settings/integrations/ninja/test', [IntegrationsController::class, 'testNinja'])->name('settings.integrations.ninja.test');

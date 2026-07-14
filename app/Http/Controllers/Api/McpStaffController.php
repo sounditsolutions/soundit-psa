@@ -23,6 +23,7 @@ use App\Services\Mcp\StaffCippWriteToolExecutor;
 use App\Services\Mcp\StaffPsaActionToolExecutor;
 use App\Services\Mcp\StaffTacticalActionToolExecutor;
 use App\Services\Mcp\StaffTacticalAdminToolExecutor;
+use App\Services\Signals\SignalNudgeNotice;
 use App\Services\Tactical\Actions\ActionRedactor;
 use App\Support\McpInputSchema;
 use App\Support\McpStaffToken;
@@ -896,13 +897,33 @@ class McpStaffController extends Controller
                 $start, $request,
             );
 
+            $content = [
+                ['type' => 'text', 'text' => json_encode($result, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)],
+            ];
+
+            // Alerts-Hub payload piggyback (psa-0j6i): if this token has unread nudge-flagged
+            // alerts, ride a short awareness notice on the NORMAL response of this tool call so
+            // an active agent learns of them without a GC-specific wake. Skip poll_signals — that
+            // call IS the drain. Defensive: a notice failure must never break the tool response.
+            if ((string) $name !== 'poll_signals') {
+                try {
+                    $staffToken = $request->attributes->get('mcp_staff_token');
+                    $nudgeNotice = app(SignalNudgeNotice::class)->pendingNoticeFor(
+                        $staffToken instanceof McpStaffToken ? $staffToken->label : null,
+                    );
+                    if ($nudgeNotice !== null) {
+                        $content[] = ['type' => 'text', 'text' => $nudgeNotice];
+                    }
+                } catch (\Throwable $e) {
+                    Log::warning('[MCP/staff] Nudge notice computation failed: '.$e->getMessage());
+                }
+            }
+
             $response = response()->json([
                 'jsonrpc' => '2.0',
                 'id' => $id,
                 'result' => [
-                    'content' => [
-                        ['type' => 'text', 'text' => json_encode($result, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)],
-                    ],
+                    'content' => $content,
                     'isError' => $isError,
                 ],
             ]);

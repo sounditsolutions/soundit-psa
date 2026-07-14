@@ -11,6 +11,7 @@ use App\Models\SignalEvent;
 use App\Models\SignalRoute;
 use App\Rules\SafeWebhookUrl;
 use App\Services\Signals\SignalEventTypes;
+use App\Services\Signals\SignalRelayMatrix;
 use App\Services\Signals\Sinks\EmailSink;
 use App\Services\Signals\Sinks\McpSink;
 use App\Services\Signals\Sinks\WebhookSink;
@@ -236,6 +237,80 @@ class AlertsHubController extends Controller
 
         return redirect()->back()
             ->with('success', $route->enabled ? 'Route enabled.' : 'Route disabled.');
+    }
+
+    /**
+     * The relay matrix (psa-0j6i): catalog(rows) × token(columns), each cell a relay +
+     * also-nudge toggle, plus a per-type global master toggle. A thin view over
+     * SignalRelayMatrix — the service owns all find-or-create / gating / audit logic.
+     */
+    public function matrix()
+    {
+        return view('settings.alerts.matrix', app(SignalRelayMatrix::class)->matrix());
+    }
+
+    public function setRelay(Request $request)
+    {
+        $data = $request->validate([
+            'token_label' => ['required', 'string'],
+            'type_key' => ['required', 'string'],
+            'relay' => ['required', 'boolean'],
+        ]);
+
+        try {
+            app(SignalRelayMatrix::class)->setRelay(
+                $data['token_label'],
+                $data['type_key'],
+                $request->boolean('relay'),
+                $request->user()?->id,
+            );
+        } catch (\InvalidArgumentException $e) {
+            return redirect()->back()->with('error', $e->getMessage());
+        }
+
+        return redirect()->back()->with('success', 'Relay updated.');
+    }
+
+    public function setNudge(Request $request)
+    {
+        $data = $request->validate([
+            'token_label' => ['required', 'string'],
+            'type_key' => ['required', 'string'],
+            'nudge' => ['required', 'boolean'],
+        ]);
+
+        try {
+            app(SignalRelayMatrix::class)->setNudge(
+                $data['token_label'],
+                $data['type_key'],
+                $request->boolean('nudge'),
+                $request->user()?->id,
+            );
+        } catch (\InvalidArgumentException $e) {
+            return redirect()->back()->with('error', $e->getMessage());
+        }
+
+        return redirect()->back()->with('success', 'Also-nudge updated.');
+    }
+
+    public function setTypeGlobalEnabled(Request $request)
+    {
+        $data = $request->validate([
+            'type_key' => ['required', 'string'],
+            'enabled' => ['required', 'boolean'],
+        ]);
+
+        try {
+            app(SignalRelayMatrix::class)->setTypeGlobalEnabled(
+                $data['type_key'],
+                $request->boolean('enabled'),
+                $request->user()?->id,
+            );
+        } catch (\InvalidArgumentException $e) {
+            return redirect()->back()->with('error', $e->getMessage());
+        }
+
+        return redirect()->back()->with('success', 'Type master toggle updated.');
     }
 
     private function validatedDestinationAttributes(Request $request, ?SignalDestination $destination = null): array
