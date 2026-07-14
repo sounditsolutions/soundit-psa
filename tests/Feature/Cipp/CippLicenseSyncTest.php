@@ -22,12 +22,17 @@ use Tests\TestCase;
  * at this layer.
  *
  * The service read $licenseData['consumedUnits'] ?? ['ConsumedUnits'] ?? 0, so the
- * consumed count resolved to 0 for every row and the license fell back to syncing
- * the TOTAL seat count instead of the used one — the tool's own comment says
- * "quantity is consumed units", but it was quietly recording the total. A mock
- * authored from the code's wished-for shape would have hidden this; this fixture
- * is copied from what CIPP actually emits, so it fails loudly until the real key
- * is read (CLAUDE.md, the psa-7lgo lesson).
+ * used-seat count resolved to 0 for every row and assigned_quantity was never
+ * populated — hiding license waste — while the license fell back to recording the
+ * TOTAL in quantity. The fix reads the REAL key, CountUsed, and records the
+ * vendor-agnostic split the other license syncs use (e.g. AppRiver:
+ * quantity=TotalLicenses, assigned_quantity=AssignedLicenses): quantity = the
+ * purchased/entitled seats BillingService bills PerLicense, assigned_quantity = the
+ * used seats that drive the utilization/waste UI (psa-d6mf product review: recording
+ * used in quantity under-bills a reseller and hides waste). A mock authored from the
+ * code's wished-for shape would have hidden the dead key; this fixture is copied from
+ * what CIPP actually emits, so it fails loudly until the real key is read (CLAUDE.md,
+ * the psa-7lgo lesson).
  */
 class CippLicenseSyncTest extends TestCase
 {
@@ -65,14 +70,29 @@ class CippLicenseSyncTest extends TestCase
         return $client;
     }
 
-    public function test_consumed_units_are_read_from_the_real_count_used_key(): void
+    public function test_quantity_is_the_purchased_total_licenses_count(): void
     {
         $client = $this->syncWith([$this->realLicenseOverviewRow()]);
 
         $license = License::where('client_id', $client->id)->firstOrFail();
 
-        // The consumed count is CountUsed (18), not 0 and not the total (20).
-        $this->assertSame(18, $license->quantity, 'consumed seat count read from the real CIPP key');
+        // quantity is the purchased/entitled seat count (TotalLicenses = 20), the
+        // billable denominator — NOT the used count. Recording used here would
+        // under-bill a reseller and hide waste (psa-d6mf product review).
+        $this->assertSame(20, $license->quantity, 'purchased seat count read from TotalLicenses');
+    }
+
+    public function test_assigned_quantity_is_read_from_the_real_count_used_key(): void
+    {
+        $client = $this->syncWith([$this->realLicenseOverviewRow()]);
+
+        $license = License::where('client_id', $client->id)->firstOrFail();
+
+        // The used count lands in assigned_quantity, read from the REAL CIPP key
+        // (CountUsed = 18) — not 0 (the dead consumedUnits read) and not the total.
+        // This drives utilization_percent / waste. It would be 0 if the service
+        // still read the non-emitted consumedUnits key.
+        $this->assertSame(18, $license->assigned_quantity, 'used seat count read from the real CountUsed key');
     }
 
     public function test_license_type_takes_its_name_from_the_real_license_key(): void
@@ -86,13 +106,15 @@ class CippLicenseSyncTest extends TestCase
         $this->assertSame('Microsoft 365 Business Premium', $type->name);
     }
 
-    public function test_falls_back_to_total_when_no_seats_are_consumed(): void
+    public function test_zero_used_records_full_quantity_and_zero_assigned(): void
     {
-        // A license type owned but entirely unused reports CountUsed "0"; showing
-        // the total it is entitled to is more useful to the agent than a bare 0.
+        // A license type owned but entirely unused reports CountUsed "0": the full
+        // purchased count still bills (quantity = 20) and the waste signal is
+        // explicit (assigned_quantity = 0), not hidden.
         $client = $this->syncWith([$this->realLicenseOverviewRow(['CountUsed' => '0'])]);
 
         $license = License::where('client_id', $client->id)->firstOrFail();
         $this->assertSame(20, $license->quantity);
+        $this->assertSame(0, $license->assigned_quantity);
     }
 }

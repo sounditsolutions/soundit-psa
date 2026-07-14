@@ -89,7 +89,15 @@ class CippLicenseSyncService
                 ]
             );
 
-            // Upsert the license record — quantity is consumed units
+            // Upsert the license record with the vendor-agnostic seat split the
+            // other license syncs use (e.g. AppRiver: quantity=TotalLicenses,
+            // assigned_quantity=AssignedLicenses): quantity = purchased/entitled
+            // seats — the billable denominator BillingService sums for PerLicense /
+            // PerLicenseType / PerResellerLicenseType — and assigned_quantity = the
+            // used/consumed seats that drive the utilization/waste UI. TotalLicenses
+            // is the purchased count, CountUsed the consumed count. Recording used in
+            // quantity (as the first psa-d6mf pass did) under-bills an MSP that
+            // resells purchased seats and hides license waste (psa-d6mf product review).
             $license = License::updateOrCreate(
                 [
                     'license_type_id' => $licenseType->id,
@@ -97,7 +105,8 @@ class CippLicenseSyncService
                     'vendor_ref' => $vendorSkuId,
                 ],
                 [
-                    'quantity' => $consumed > 0 ? $consumed : $total,
+                    'quantity' => $total,
+                    'assigned_quantity' => $consumed,
                     'status' => 'active',
                     'synced_at' => now(),
                 ]
