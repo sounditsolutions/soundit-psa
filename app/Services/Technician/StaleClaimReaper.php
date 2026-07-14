@@ -15,9 +15,13 @@ use Illuminate\Support\Facades\Log;
  * win again, every retry returns 'already_handled', and the operator's approvable action is
  * silently lost behind a message that says it went through.
  *
- * Recovery is SAFE to do bluntly: the gate wraps executor + audit in one transaction, so a
- * stranded run's action was rolled back — nothing half-executed. Returning it to awaiting_approval
- * lets the operator re-approve and the gate replays cleanly. The release is a CAS
+ * Recovery is safe to do bluntly ONLY for action types whose whole side effect is a single gate DB
+ * transaction with any external send AFTER the committed Done — a stranded run of those provably
+ * rolled back and never sent, so re-approval replays cleanly (TechnicianRun::isRecoverySafeToReopen).
+ * The staged VENDOR actions (cipp_stage_*, tactical_stage_*) fire their upstream call BEFORE the
+ * local audit/Done, so a crash between the two leaves 'executing' with the side effect already done;
+ * reopening those would let a fresh approval DUPLICATE a create-user / script / wipe. So they are
+ * NEVER auto-reopened — they are surfaced loudly for manual review instead. The release is a CAS
  * (releaseClaim → where state = executing), so a run that legitimately completes between our fetch
  * and the release is a no-op and is never miscounted.
  */
@@ -31,16 +35,37 @@ class StaleClaimReaper
      */
     public const STALE_AFTER_MINUTES = 5;
 
-    /** @return array{reaped: int, run_ids: array<int, int>} */
+    /** @return array{reaped: int, run_ids: array<int, int>, flagged_unsafe: int, unsafe_run_ids: array<int, int>} */
     public function reap(): array
     {
         $cutoff = now()->subMinutes(self::STALE_AFTER_MINUTES);
         $reaped = [];
+        $flaggedUnsafe = [];
 
         TechnicianRun::query()
             ->staleExecuting($cutoff)
             ->get()
-            ->each(function (TechnicianRun $run) use (&$reaped): void {
+            ->each(function (TechnicianRun $run) use (&$reaped, &$flaggedUnsafe): void {
+                if (! $run->isRecoverySafeToReopen()) {
+                    // A staged vendor action (CIPP/Tactical) may have already fired its upstream
+                    // call before the crash. Reopening it would let a re-approval DUPLICATE that
+                    // side effect, so we never do — we surface it loudly for a human to reconcile.
+                    $flaggedUnsafe[] = $run->id;
+                    Log::error(
+                        '[Technician] A side-effecting action is stranded in "executing" and needs '.
+                        'MANUAL review — its vendor side effect (CIPP/Tactical) may already have fired, '.
+                        'so it is NOT auto-returned to the approval queue (a re-approval could duplicate it).',
+                        [
+                            'run_id' => $run->id,
+                            'ticket_id' => $run->ticket_id,
+                            'action_type' => $run->action_type,
+                            'claimed_at' => optional($run->claimed_at)->toIso8601String(),
+                        ],
+                    );
+
+                    return;
+                }
+
                 if (! $run->releaseClaim()) {
                     return; // completed between the fetch and here — not ours to claim.
                 }
@@ -58,6 +83,11 @@ class StaleClaimReaper
                 );
             });
 
-        return ['reaped' => count($reaped), 'run_ids' => $reaped];
+        return [
+            'reaped' => count($reaped),
+            'run_ids' => $reaped,
+            'flagged_unsafe' => count($flaggedUnsafe),
+            'unsafe_run_ids' => $flaggedUnsafe,
+        ];
     }
 }

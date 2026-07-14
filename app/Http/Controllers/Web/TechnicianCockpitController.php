@@ -475,9 +475,18 @@ class TechnicianCockpitController extends Controller
      */
     private function handledMessage(TechnicianRun $run, string $terminalMessage): string
     {
-        return $run->fresh()?->state === TechnicianRunState::Executing
+        $fresh = $run->fresh();
+
+        if ($fresh?->state !== TechnicianRunState::Executing) {
+            return $terminalMessage;
+        }
+
+        // A recovery-safe run auto-returns to the queue (the reaper reopens it); a side-effecting
+        // vendor run does NOT — it may already have partly run, so it is flagged for manual review
+        // and the operator must not blindly retry (that could duplicate the vendor action).
+        return $fresh->isRecoverySafeToReopen()
             ? 'This action is still finishing — if it’s stuck, it returns to your approval queue automatically within a few minutes. Try again shortly.'
-            : $terminalMessage;
+            : 'This action is still finishing — if it stays stuck it’s flagged for manual review, because it may already have partly run. Check with your admin before retrying.';
     }
 
     private function actionResponse(

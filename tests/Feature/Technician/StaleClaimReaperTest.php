@@ -24,7 +24,7 @@ class StaleClaimReaperTest extends TestCase
 {
     use RefreshDatabase;
 
-    private function makeRun(TechnicianRunState $state, mixed $claimedAt = null): TechnicianRun
+    private function makeRun(TechnicianRunState $state, mixed $claimedAt = null, string $actionType = 'send_reply'): TechnicianRun
     {
         $client = Client::factory()->create();
         $ticket = Ticket::factory()->for($client)->create();
@@ -32,7 +32,7 @@ class StaleClaimReaperTest extends TestCase
         return TechnicianRun::create([
             'ticket_id' => $ticket->id,
             'client_id' => $client->id,
-            'action_type' => 'send_reply',
+            'action_type' => $actionType,
             'content_hash' => hash('sha256', 'reap-test-'.microtime().rand()),
             'state' => $state,
             'claimed_at' => $claimedAt,
@@ -90,6 +90,65 @@ class StaleClaimReaperTest extends TestCase
 
         $this->assertSame(TechnicianRunState::AwaitingApproval, $legacy->fresh()->state);
         $this->assertSame(1, $summary['reaped']);
+    }
+
+    /**
+     * REGRESSION (psa-xz0z.1 ARCH / .3.2 SECURITY): a staged VENDOR action (CIPP/Tactical) fires
+     * its upstream call BEFORE the local audit/Done, so a crash between them leaves 'executing'
+     * with the side effect already done. The reaper must NOT return it to the queue — a fresh
+     * approval would DUPLICATE the create-user / script / wipe. It is flagged for manual review.
+     */
+    public function test_a_stranded_staged_vendor_action_is_flagged_not_reopened(): void
+    {
+        $cipp = $this->makeRun(TechnicianRunState::Executing, now()->subMinutes(30), 'cipp_stage_create_user');
+        $tactical = $this->makeRun(TechnicianRunState::Executing, now()->subMinutes(30), 'tactical_stage_script');
+
+        $summary = $this->reaper()->reap();
+
+        $this->assertSame(TechnicianRunState::Executing, $cipp->fresh()->state, 'a stranded CIPP write must NOT be reopened');
+        $this->assertSame(TechnicianRunState::Executing, $tactical->fresh()->state, 'a stranded Tactical action must NOT be reopened');
+        $this->assertSame(0, $summary['reaped']);
+        $this->assertSame(2, $summary['flagged_unsafe']);
+        $this->assertEqualsCanonicalizing([$cipp->id, $tactical->id], $summary['unsafe_run_ids']);
+    }
+
+    /** An unknown/future action type is treated as unsafe (fail-safe default), never auto-reopened. */
+    public function test_an_unknown_action_type_is_not_reopened(): void
+    {
+        $run = $this->makeRun(TechnicianRunState::Executing, now()->subMinutes(30), 'some_future_vendor_action');
+
+        $summary = $this->reaper()->reap();
+
+        $this->assertSame(TechnicianRunState::Executing, $run->fresh()->state);
+        $this->assertSame(0, $summary['reaped']);
+        $this->assertSame(1, $summary['flagged_unsafe']);
+    }
+
+    public function test_a_stranded_vendor_action_screams_for_manual_review(): void
+    {
+        Log::spy();
+        $this->makeRun(TechnicianRunState::Executing, now()->subMinutes(30), 'cipp_stage_create_user');
+
+        $this->reaper()->reap();
+
+        Log::shouldHaveReceived('error')
+            ->withArgs(fn (string $message): bool => str_contains($message, 'MANUAL review'))
+            ->once();
+    }
+
+    public function test_every_recovery_safe_action_type_is_reaped(): void
+    {
+        foreach (TechnicianRun::RECOVERY_SAFE_ACTION_TYPES as $type) {
+            $run = $this->makeRun(TechnicianRunState::Executing, now()->subMinutes(30), $type);
+
+            $this->reaper()->reap();
+
+            $this->assertSame(
+                TechnicianRunState::AwaitingApproval,
+                $run->fresh()->state,
+                "{$type} is on the recovery-safe list and must be returned to the queue"
+            );
+        }
     }
 
     public function test_reaping_is_idempotent(): void
@@ -154,5 +213,19 @@ class StaleClaimReaperTest extends TestCase
 
         $this->assertFalse($response->json('ok'));
         $this->assertStringContainsString('already handled', $response->json('message'));
+    }
+
+    public function test_a_wedged_vendor_action_warns_of_manual_review_not_auto_return(): void
+    {
+        // The reaper does NOT auto-return a side-effecting vendor strand, so the message must not
+        // promise it will — it points the operator to manual review rather than a naive retry.
+        $wedged = $this->makeRun(TechnicianRunState::Executing, now()->subMinutes(30), 'tactical_stage_script');
+
+        $response = $this->actingAs(User::factory()->create())
+            ->postJson(route('cockpit.approve', $wedged));
+
+        $this->assertFalse($response->json('ok'));
+        $this->assertStringContainsString('manual review', $response->json('message'));
+        $this->assertStringNotContainsString('automatically', $response->json('message'));
     }
 }

@@ -20,7 +20,10 @@ class TechnicianReapStaleClaims extends Command
     public function handle(StaleClaimReaper $reaper): int
     {
         $summary = $reaper->reap();
-        $this->info("Stale-claim reaper: returned {$summary['reaped']} stranded run(s) to the approval queue.");
+        $this->info(
+            "Stale-claim reaper: returned {$summary['reaped']} stranded run(s) to the approval queue; ".
+            "flagged {$summary['flagged_unsafe']} side-effecting run(s) for manual review."
+        );
 
         return self::SUCCESS;
     }

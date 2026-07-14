@@ -111,9 +111,44 @@ class TechnicianRun extends Model
         $released = static::query()->whereKey($this->getKey())
             ->where('state', TechnicianRunState::Executing->value)
             ->update(['state' => $state->value]) === 1;
-        $this->state = $state;
+        // Only reflect the transition in memory when the CAS actually won — mirroring the DB so
+        // the new bool contract isn't leaky (a lost CAS must not claim it moved the run).
+        if ($released) {
+            $this->state = $state;
+        }
 
         return $released;
+    }
+
+    /**
+     * Action types the stale-claim reaper (psa-xz0z) may safely return to awaiting_approval.
+     *
+     * SAFE means: the whole side effect is a single gate DB transaction (note/close/merge + audit
+     * + advanceTo(Done)), and any EXTERNAL send happens only AFTER that transaction commits — so a
+     * run still stuck in 'executing' provably never committed, never sent, and re-approval replays
+     * cleanly (TechnicianApprovalService::approveAndSend/approveClose/approveMerge and the shared
+     * approveStagedBodyAction, whose sendEmail is after the committed Done, ~:451).
+     *
+     * DELIBERATELY EXCLUDED (fail-safe — anything not listed is treated as unsafe): the staged
+     * VENDOR actions (cipp_stage_*, tactical_stage_*) delegate to
+     * Staff{Cipp,Tactical}*ToolExecutor::approveStagedRun, which fire the UPSTREAM call BEFORE the
+     * local audit/Done. A crash between that call and Done leaves 'executing' with the side effect
+     * already done, so reopening it would let a fresh approval DUPLICATE a create-user / script /
+     * wipe. Those strands are surfaced for manual review, never auto-reopened.
+     */
+    public const RECOVERY_SAFE_ACTION_TYPES = [
+        'send_reply',
+        'propose_resolution',
+        'propose_close',
+        'propose_merge',
+        'stage_email',
+        'stage_public_note',
+    ];
+
+    /** Whether the reaper may return this stranded run to the queue without risking a duplicate side effect. */
+    public function isRecoverySafeToReopen(): bool
+    {
+        return in_array($this->action_type, self::RECOVERY_SAFE_ACTION_TYPES, true);
     }
 
     /**
