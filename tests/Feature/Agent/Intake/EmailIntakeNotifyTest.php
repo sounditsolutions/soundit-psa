@@ -70,9 +70,14 @@ class EmailIntakeNotifyTest extends TestCase
      * Wire the notify path the way an operator would in Settings → Alerts:
      * an enabled route for the intake signal → an enabled MCP destination → a live token.
      */
-    private function wireChetsInbox(array $eventFilter = ['types' => [EmailTriageWatch::SIGNAL]]): SignalDestination
-    {
-        McpToken::create(['label' => 'chet', 'token_hash' => 'h1', 'tools' => ['poll_signals']]);
+    private function wireChetsInbox(
+        array $eventFilter = ['types' => [EmailTriageWatch::SIGNAL]],
+        ?array $tokenTools = ['poll_signals'],
+    ): SignalDestination {
+        // $tokenTools mirrors McpToken::$tools: null = legacy full-surface token, an array =
+        // scoped grant list. poll_signals is the tool Chet uses to drain the signal inbox, so
+        // it is what makes this destination genuinely consumable (see the grant regressions).
+        McpToken::create(['label' => 'chet', 'token_hash' => 'h1', 'tools' => $tokenTools]);
 
         $destination = SignalDestination::create([
             'label' => 'Chet inbox',
@@ -239,6 +244,66 @@ class EmailIntakeNotifyTest extends TestCase
 
         $this->assertFalse($this->watch()->isWatchedByAgent(), 'nobody can poll a revoked token — the inbox is a black hole');
         $this->assertTrue($this->watch()->isPileUpRisk());
+    }
+
+    /**
+     * REGRESSION (psa-28j4.3.2 SECURITY / .3.1 ARCHITECTURE gate): a live, non-revoked token
+     * is NOT enough. The staff MCP boundary (McpStaffController::toolAllowed(), bridge branch)
+     * only lets a SCOPED token call poll_signals — the exact tool Chet uses to drain the signal
+     * inbox. A token not granted poll_signals can never read the queued rows, so the destination
+     * is a black hole however live its label is. The watch predicate must prove CONSUMABILITY
+     * (can Chet poll it?), not merely deliverability — else it hands back a false all-clear on a
+     * dying inbox, the exact failure class this whole guard exists to prevent.
+     */
+    public function test_a_route_whose_mcp_token_cannot_poll_signals_is_unwatched(): void
+    {
+        $this->autoTicketOff();
+        // Enabled route + enabled MCP destination + ACTIVE, non-revoked token — but its grant
+        // list omits poll_signals, so Chet cannot consume the inbox.
+        $this->wireChetsInbox(tokenTools: ['find_staff']);
+
+        $this->assertFalse(
+            $this->watch()->isWatchedByAgent(),
+            'a token that cannot call poll_signals can never drain the inbox — it must not read as watched'
+        );
+        $this->assertTrue($this->watch()->isPileUpRisk());
+    }
+
+    /**
+     * The subtle half of the same rule: a LEGACY full-surface token (tools = null) looks
+     * maximally privileged but is DENIED the sensitive bridge tools by the same boundary
+     * (`allowedTools !== null && allows()`), so it too cannot poll_signals. A naive
+     * `allows('poll_signals')` check (null = full surface = allowed) gets this WRONG.
+     */
+    public function test_a_route_whose_mcp_token_is_legacy_full_surface_is_unwatched(): void
+    {
+        $this->autoTicketOff();
+        $this->wireChetsInbox(tokenTools: null);
+
+        $this->assertFalse(
+            $this->watch()->isWatchedByAgent(),
+            'a legacy full-surface token is denied poll_signals by the staff MCP boundary — not watched'
+        );
+        $this->assertTrue($this->watch()->isPileUpRisk());
+    }
+
+    /**
+     * And the scream must still fire end to end for the poll_signals-less config — the warning
+     * the gate required must not vanish just because a route and a live token happen to exist.
+     */
+    public function test_an_email_whose_only_route_cannot_poll_signals_still_screams(): void
+    {
+        $this->autoTicketOff();
+        $this->wireChetsInbox(tokenTools: ['find_staff']);
+        $email = $this->inboundEmail(Client::factory()->create());
+
+        $warnings = $this->warningsDuring(fn () => app(EmailService::class)->processInbound($email));
+
+        $this->assertCount(
+            1,
+            $this->unwatchedAlarms($warnings),
+            'a live token that cannot poll_signals is still an unwatched inbox — it must SCREAM'
+        );
     }
 
     /** A disabled route is not a notify path, however correct its filter looks. */

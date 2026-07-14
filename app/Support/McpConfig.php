@@ -59,6 +59,44 @@ class McpConfig
     }
 
     /**
+     * Whether a live (non-revoked) staff token under $label is authorized to call the
+     * sensitive OPERATOR-BRIDGE tool $toolName, under the SAME rule the staff MCP boundary
+     * applies at request time — McpStaffController::toolAllowed()'s bridge branch, which is
+     * `allowedTools !== null && allows($tool)`. A legacy full-surface token (tools === null)
+     * is DENIED bridge tools by that rule, so it does NOT count here either; anything looser
+     * (e.g. a plain allows(), where null = full surface = allowed) would MISREAD it.
+     *
+     * This is what makes an Alerts → MCP destination genuinely CONSUMABLE rather than merely
+     * deliverable: poll_signals is the tool an agent uses to drain a destination's signal
+     * inbox, so a token that cannot call it can never read the queued rows — the destination
+     * is a black hole no matter how live its label is (psa-28j4.3 review gate).
+     *
+     * Liveness matches McpToken::hasLiveLabel() (draft/paused count — they can be activated to
+     * drain a backlog; only revocation is terminal), so this composes cleanly with the
+     * delivery-side mcpDeliveryBlockReason() check rather than contradicting it. The grant
+     * projection is a faithful copy of resolveStaffToken() above, so the two cannot drift.
+     */
+    public static function labelCanUseBridgeTool(?string $label, string $toolName): bool
+    {
+        $label = trim((string) $label);
+        if ($label === '') {
+            return false;
+        }
+
+        return McpToken::query()
+            ->where('label', $label)
+            ->whereNull('revoked_at')
+            ->get()
+            ->contains(function (McpToken $record) use ($toolName): bool {
+                $allowedTools = $record->tools === null
+                    ? null
+                    : McpToolModes::parseGrants(self::normalizeToolList($record->tools))['tools'];
+
+                return $allowedTools !== null && in_array($toolName, $allowedTools, true);
+            });
+    }
+
+    /**
      * Generate and store a new staff token. Returns the new token (only
      * shown once — caller is responsible for handing it to the bot operator).
      *

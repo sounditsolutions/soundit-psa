@@ -320,9 +320,10 @@ class EmailService
                 'This email created no ticket and reached no AI technician; it will sit unhandled until a human finds it. '.
                 'Fix: either re-enable email_auto_ticket, or wire a signal route for '.EmailTriageWatch::SIGNAL.
                 ' to an enabled MCP destination in Settings → Alerts so Chet is told to triage it.',
+                // No from_address here: email_id + client_id are enough to investigate, and
+                // this warning lands in laravel.log at warning level (psa-28j4.3 gate advisory).
                 [
                     'email_id' => $email->id,
-                    'from' => $email->from_address,
                     'client_id' => $email->client_id,
                 ]
             );
