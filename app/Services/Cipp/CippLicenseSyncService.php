@@ -57,9 +57,17 @@ class CippLicenseSyncService
         foreach ($licenses as $licenseData) {
             $skuId = $licenseData['skuId'] ?? $licenseData['SkuId'] ?? null;
             $skuPartNumber = $licenseData['skuPartNumber'] ?? $licenseData['SkuPartNumber'] ?? null;
-            $displayName = $licenseData['skuName'] ?? $licenseData['SkuName']
-                ?? $licenseData['License'] ?? $skuPartNumber ?? 'Unknown M365 License';
-            $consumed = (int) ($licenseData['consumedUnits'] ?? $licenseData['ConsumedUnits'] ?? 0);
+            // CIPP's Get-CIPPLicenseOverview emits the friendly product name in
+            // `License`; skuName / SkuName are never emitted at this layer, so they
+            // were dead reads. skuPartNumber duplicates the pretty name and is the
+            // last resort (psa-d6mf, verified against CIPP-API source).
+            $displayName = $licenseData['License'] ?? $skuPartNumber ?? 'Unknown M365 License';
+            // Seat counts are CountUsed / CountAvailable / TotalLicenses (STRINGS) —
+            // NOT the raw Graph consumedUnits / prepaidUnits keys, which CIPP consumes
+            // internally and never emits here. Reading consumedUnits resolved to 0 for
+            // every row, so the license silently recorded its TOTAL seat count instead
+            // of the used one (psa-d6mf).
+            $consumed = (int) ($licenseData['CountUsed'] ?? $licenseData['countUsed'] ?? 0);
             $total = (int) ($licenseData['totalLicenses'] ?? $licenseData['TotalLicenses']
                 ?? $licenseData['availableUnits'] ?? 0);
 
