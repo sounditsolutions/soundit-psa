@@ -143,6 +143,78 @@ class AlertsHubManagedRouteIsolationTest extends TestCase
             ->assertRedirect(route('settings.alerts.matrix'));
     }
 
+    // --- THE POISONED STATE: rows the old leak already broke ---
+
+    /**
+     * psa-lunj round 2 (review catch). Guarding the doors stops NEW corruption; it does
+     * nothing for a row the leak already broke — and this fix would otherwise ENTRENCH it,
+     * because it also removes the only door the operator had to toggle it back on.
+     *
+     * For a managed route `enabled` is DERIVED, not configured: setRelay does
+     * `$route->enabled = $types !== []` (:136), relayRouteFor creates enabled=false with
+     * types=[] (:209), and setNudge never touches it. The matrix exposes no enable/disable
+     * control at all. So (types non-empty AND enabled=false) is a state the OWNER CANNOT
+     * PRODUCE OR EXPRESS — it is corruption, and the old Routes-page toggle was its only
+     * possible source.
+     *
+     * The matrix must never render such a row as relayed: SignalRouter skips it
+     * (SignalRouter.php:42-43 filters enabled=true), so claiming "relayed" is the exact lie
+     * this bead exists to kill.
+     */
+    public function test_a_disabled_managed_route_is_never_rendered_as_relaying(): void
+    {
+        \App\Support\McpConfig::rotateStaffToken(['poll_signals'], 'Chet');
+
+        SignalRoute::create([
+            'label' => 'Relay to Chet',
+            'managed_token_label' => 'Chet',
+            // The poisoned shape: configured types, but disabled behind the matrix's back.
+            'event_filter' => ['types' => ['ticket.created'], 'nudge_types' => ['ticket.created']],
+            'enabled' => false,
+        ]);
+
+        $matrix = app(\App\Services\Signals\SignalRelayMatrix::class)->matrix();
+
+        $this->assertFalse(
+            $matrix['cells']['Chet']['ticket.created']['relayed'] ?? true,
+            'a DISABLED managed route delivers nothing (SignalRouter filters enabled=true) — the matrix must not claim it relays',
+        );
+        $this->assertFalse(
+            $matrix['cells']['Chet']['ticket.created']['nudge'] ?? true,
+            'nudge_types ⊆ types: a type that cannot relay cannot nudge either',
+        );
+    }
+
+    /**
+     * The 2026_07_15_100001 heal, exercised directly. Guarding the doors is not enough:
+     * rows the leak already broke must be repaired, or this fix entrenches the outage it
+     * was written to end (it removes the only control that could have switched them back on).
+     */
+    public function test_the_heal_migration_re_enables_corrupted_managed_routes_only(): void
+    {
+        $poisoned = SignalRoute::create([
+            'label' => 'Relay to Chet', 'managed_token_label' => 'Chet',
+            'event_filter' => ['types' => ['ticket.created'], 'nudge_types' => []], 'enabled' => false,
+        ]);
+        // Consistent resting state — no types, disabled. Must be left alone.
+        $resting = SignalRoute::create([
+            'label' => 'Relay to Quiet', 'managed_token_label' => 'Quiet',
+            'event_filter' => ['types' => [], 'nudge_types' => []], 'enabled' => false,
+        ]);
+        // An operator route disabled on purpose — a legitimate, expressible choice.
+        $operatorOff = SignalRoute::create([
+            'label' => 'Operator route, off on purpose', 'managed_token_label' => null,
+            'event_filter' => ['types' => ['ticket.created']], 'enabled' => false,
+        ]);
+
+        require_once database_path('migrations/2026_07_15_100001_heal_disabled_managed_relay_routes.php');
+        (require database_path('migrations/2026_07_15_100001_heal_disabled_managed_relay_routes.php'))->up();
+
+        $this->assertTrue($poisoned->fresh()->enabled, 'a managed route with types but disabled is corruption — heal it');
+        $this->assertFalse($resting->fresh()->enabled, 'no types + disabled is the CONSISTENT resting state — do not touch it');
+        $this->assertFalse($operatorOff->fresh()->enabled, 'an operator route disabled on purpose is a real choice — never override it');
+    }
+
     // --- the guards must NOT over-block: operator routes still work exactly as before ---
 
     public function test_operator_routes_remain_fully_editable(): void

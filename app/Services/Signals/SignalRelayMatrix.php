@@ -83,8 +83,23 @@ class SignalRelayMatrix
             ];
 
             $route = $routesByLabel->get($label);
-            $relayed = array_fill_keys($this->routeTypes($route), true);
-            $nudged = array_fill_keys($this->routeNudgeTypes($route), true);
+
+            // psa-lunj: a DISABLED route delivers NOTHING — SignalRouter filters
+            // ->where('enabled', true) (:43, :126). Rendering its cells from
+            // event_filter.types alone would claim a relay that cannot fire, which is
+            // precisely the lie this surface must never tell.
+            //
+            // For a managed route `enabled` is DERIVED, not configured (setRelay:
+            // `enabled = $types !== []`; relayRouteFor creates enabled=false with types=[];
+            // setNudge never touches it) and the matrix exposes no enable/disable control.
+            // So (types non-empty AND enabled=false) is corruption, not configuration — the
+            // old un-guarded Routes-page toggle was its only source (now guarded). The
+            // 2026_07_15_100001 migration heals rows it already broke; reading `enabled`
+            // here is the belt-and-braces so the surface CANNOT lie even if some future
+            // path re-breaks the invariant.
+            $delivers = $route !== null && (bool) $route->enabled;
+            $relayed = $delivers ? array_fill_keys($this->routeTypes($route), true) : [];
+            $nudged = $delivers ? array_fill_keys($this->routeNudgeTypes($route), true) : [];
 
             $cells[$label] = [];
             foreach ($types as $type) {
