@@ -58,6 +58,20 @@
     </div>
 @endif
 
+{{-- Storage-tier errors key off `tiers.*`, which no per-field @error on the
+     form renders. A silent refusal on a billing form is no refusal. --}}
+@if($errors->any())
+    <div class="alert alert-danger alert-dismissible fade show">
+        <strong>Please fix the following errors:</strong>
+        <ul class="mb-0 mt-1">
+            @foreach($errors->all() as $error)
+                <li>{{ $error }}</li>
+            @endforeach
+        </ul>
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    </div>
+@endif
+
 <div class="row g-4">
     <div class="col-lg-8">
         <div class="card shadow-sm">

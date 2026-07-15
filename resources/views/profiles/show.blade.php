@@ -209,6 +209,7 @@
                                                     data-included-per-unit="{{ $s->included_per_unit }}"
                                                     data-default-quantity-type="{{ $s->default_quantity_type?->value }}"
                                                     data-default-license-type-id="{{ $s->default_license_type_id }}"
+                                                    data-has-volume-tiers="{{ $s->backup_storage_tiers_count ? '1' : '0' }}"
                                                     {{ old("lines.{$i}.sku_id", $line->sku_id) == $s->id ? 'selected' : '' }}>
                                                     {{ $s->sku_code }} — {{ $s->name }}
                                                 </option>
@@ -223,9 +224,10 @@
                                     </div>
                                     <div class="col-md-1">
                                         <label class="form-label small">Price</label>
-                                        <input type="number" class="form-control form-control-sm price-input"
+                                        <input type="number" class="form-control form-control-sm price-input{{ $line->isTiered() ? ' bg-light' : '' }}"
                                                name="lines[{{ $i }}][unit_price]" step="0.01" min="0"
-                                               value="{{ old("lines.{$i}.unit_price", $line->unit_price) }}" required>
+                                               value="{{ old("lines.{$i}.unit_price", $line->unit_price) }}" required
+                                               {{ $line->isTiered() ? 'readonly title=Set-by-the-first-tier-below' : '' }}>
                                     </div>
                                     <div class="col-md-1">
                                         <label class="form-label small">Cost</label>
@@ -283,6 +285,76 @@
                                             <i class="bi bi-trash"></i>
                                         </button>
                                     </div>
+                                </div>
+                                @php
+                                    $lineTiers = $line->pricingTiers();
+                                    // Which rate card will actually price this line — and whether the
+                                    // line's graduated bands are overriding the SKU's volume card.
+                                    // Reviewing a profile before you press Generate is exactly when
+                                    // you need to know this; a server log is no use to the person
+                                    // making the billing decision.
+                                    $lineHasVolumeCard = \App\Support\PricingModelOverride::volumeRateCardApplies($line->quantity_type, $line->sku);
+                                    $lineOverride = \App\Support\PricingModelOverride::onLine($line);
+                                @endphp
+                                <div class="mt-2 d-flex align-items-center gap-2 flex-wrap">
+                                    <div class="form-check form-check-inline mb-0">
+                                        <input type="checkbox" class="form-check-input tiered-toggle" id="tiered-{{ $i }}" onchange="toggleTiered(this)" {{ $lineTiers ? 'checked' : '' }}>
+                                        <label class="form-check-label small" for="tiered-{{ $i }}">Tiered pricing (graduated)</label>
+                                    </div>
+                                    @if($lineTiers)
+                                        <span class="badge bg-info-subtle text-info-emphasis border border-info-subtle">
+                                            <i class="bi bi-bar-chart-steps me-1"></i>Graduated &middot; {{ count($lineTiers) }} {{ \Illuminate\Support\Str::plural('band', count($lineTiers)) }}@if($lineOverride) &middot; overrides SKU volume tiers @endif
+                                        </span>
+                                    @elseif($lineHasVolumeCard)
+                                        <span class="badge bg-secondary-subtle text-secondary-emphasis border border-secondary-subtle">
+                                            <i class="bi bi-layers me-1"></i>Volume tiers (from SKU)
+                                        </span>
+                                    @endif
+                                    <span class="pricing-method-note small text-info-emphasis" style="display:none"></span>
+                                </div>
+                                @if($lineOverride)
+                                    <div class="alert alert-info py-2 px-3 mt-2 mb-0 small">
+                                        <i class="bi bi-info-circle-fill me-1"></i>
+                                        <strong>Pricing method:</strong>
+                                        this line bills by its own graduated tiers, which override the backup storage
+                                        <span class="fw-semibold">volume tiers</span> on its SKU
+                                        (<span class="fw-semibold">{{ $line->sku->name }}</span>). The SKU's method is the default;
+                                        a line-level setting wins. The bands below are what the invoice will charge. To bill by the
+                                        SKU's volume tiers instead, turn graduated pricing off here.
+                                    </div>
+                                @endif
+                                <div class="tier-config-panel mt-2 p-2 border rounded bg-light" data-tier-seq="{{ count($lineTiers) }}" style="{{ $lineTiers ? '' : 'display:none' }}">
+                                    <div class="small text-muted mb-2">
+                                        <i class="bi bi-bar-chart-steps me-1"></i>Graduated pricing — each band prices only the units that fall in its range (first N @ $X, next M @ $Y). Leave the last "Up to" blank; it covers everything above. The Price above is taken from the first band.
+                                        <br>
+                                        <i class="bi bi-info-circle me-1"></i>On a "Backup Storage (GB)" line whose SKU carries <em>volume</em> storage tiers, these graduated bands take precedence — the SKU's pricing method is a default, not a constraint.
+                                    </div>
+                                    <div class="tier-rows">
+                                        @foreach($lineTiers as $ti => $tier)
+                                            <div class="row g-2 tier-row mb-1 align-items-end">
+                                                <div class="col-md-4">
+                                                    <label class="form-label small">Up to (qty)</label>
+                                                    <input type="number" class="form-control form-control-sm tier-upto"
+                                                           name="lines[{{ $i }}][pricing_tiers][{{ $ti }}][up_to]" min="1" step="1" placeholder="unlimited"
+                                                           value="{{ $tier['up_to'] }}">
+                                                </div>
+                                                <div class="col-md-4">
+                                                    <label class="form-label small">Unit price</label>
+                                                    <input type="number" class="form-control form-control-sm tier-price"
+                                                           name="lines[{{ $i }}][pricing_tiers][{{ $ti }}][unit_price]" min="0" step="0.01" oninput="syncTierBasePrice(this)"
+                                                           value="{{ $tier['unit_price'] }}">
+                                                </div>
+                                                <div class="col-md-2">
+                                                    <button type="button" class="btn btn-outline-danger btn-sm" onclick="removeTier(this)">
+                                                        <i class="bi bi-trash"></i>
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        @endforeach
+                                    </div>
+                                    <button type="button" class="btn btn-outline-secondary btn-sm mt-1 add-tier-btn" onclick="addTier(this)">
+                                        <i class="bi bi-plus-lg me-1"></i>Add tier
+                                    </button>
                                 </div>
                                 <div class="overage-config-panel mt-2 p-2 border rounded bg-light" style="{{ $line->quantity_type !== \App\Enums\QuantityType::Overage ? 'display:none' : '' }}">
                                     <div class="row g-2">
@@ -455,7 +527,7 @@ let lineIndex = {{ $profile->lines->count() }};
 function addLine() {
     const container = document.getElementById('linesContainer');
     const quantityOptions = `@foreach($quantityTypes as $qt)<option value="{{ $qt->value }}">{{ $qt->label() }}</option>@endforeach`;
-    const skuOptions = `<option value="">-- Manual --</option>@foreach($skus as $s)<option value="{{ $s->id }}" data-price="{{ $s->unit_price }}" data-taxable="{{ $s->is_taxable ? '1' : '0' }}" data-description="{{ $s->name }}" data-included-per-unit="{{ $s->included_per_unit }}" data-default-quantity-type="{{ $s->default_quantity_type?->value }}" data-default-license-type-id="{{ $s->default_license_type_id }}">{{ $s->sku_code }} — {{ $s->name }}</option>@endforeach`;
+    const skuOptions = `<option value="">-- Manual --</option>@foreach($skus as $s)<option value="{{ $s->id }}" data-price="{{ $s->unit_price }}" data-taxable="{{ $s->is_taxable ? '1' : '0' }}" data-description="{{ $s->name }}" data-included-per-unit="{{ $s->included_per_unit }}" data-default-quantity-type="{{ $s->default_quantity_type?->value }}" data-default-license-type-id="{{ $s->default_license_type_id }}" data-has-volume-tiers="{{ $s->backup_storage_tiers_count ? '1' : '0' }}">{{ $s->sku_code }} — {{ $s->name }}</option>@endforeach`;
     const licenseTypeOptions = `<option value="">Select...</option>@foreach($licenseTypes as $lt)<option value="{{ $lt->id }}">{{ $lt->name }} ({{ $lt->vendor }})</option>@endforeach`;
     const licenseTypeOptionsWithNone = `<option value="">(none — use 1)</option>@foreach($licenseTypes as $lt)<option value="{{ $lt->id }}">{{ $lt->name }} ({{ $lt->vendor }})</option>@endforeach`;
 
@@ -503,6 +575,22 @@ function addLine() {
                         <i class="bi bi-trash"></i>
                     </button>
                 </div>
+            </div>
+            <div class="mt-2 d-flex align-items-center gap-2 flex-wrap">
+                <div class="form-check form-check-inline mb-0">
+                    <input type="checkbox" class="form-check-input tiered-toggle" id="tiered-${lineIndex}" onchange="toggleTiered(this)">
+                    <label class="form-check-label small" for="tiered-${lineIndex}">Tiered pricing (graduated)</label>
+                </div>
+                <span class="pricing-method-note small text-info-emphasis" style="display:none"></span>
+            </div>
+            <div class="tier-config-panel mt-2 p-2 border rounded bg-light" data-tier-seq="0" style="display:none">
+                <div class="small text-muted mb-2">
+                    <i class="bi bi-bar-chart-steps me-1"></i>Graduated pricing — each band prices only the units that fall in its range (first N @ $X, next M @ $Y). Leave the last "Up to" blank; it covers everything above. The Price above is taken from the first band.
+                </div>
+                <div class="tier-rows"></div>
+                <button type="button" class="btn btn-outline-secondary btn-sm mt-1 add-tier-btn" onclick="addTier(this)">
+                    <i class="bi bi-plus-lg me-1"></i>Add tier
+                </button>
             </div>
             <div class="overage-config-panel mt-2 p-2 border rounded bg-light" style="display:none">
                 <div class="row g-2">
@@ -598,6 +686,102 @@ function toggleFixedQty(select) {
     if (overagePanel) overagePanel.style.display = select.value === 'overage' ? '' : 'none';
 }
 
+// ── Tiered (graduated) pricing ──
+
+function tierRowHtml(lineIdx, tierIdx) {
+    return `
+        <div class="row g-2 tier-row mb-1 align-items-end">
+            <div class="col-md-4">
+                <label class="form-label small">Up to (qty)</label>
+                <input type="number" class="form-control form-control-sm tier-upto"
+                       name="lines[${lineIdx}][pricing_tiers][${tierIdx}][up_to]" min="1" step="1" placeholder="unlimited">
+            </div>
+            <div class="col-md-4">
+                <label class="form-label small">Unit price</label>
+                <input type="number" class="form-control form-control-sm tier-price"
+                       name="lines[${lineIdx}][pricing_tiers][${tierIdx}][unit_price]" min="0" step="0.01" oninput="syncTierBasePrice(this)">
+            </div>
+            <div class="col-md-2">
+                <button type="button" class="btn btn-outline-danger btn-sm" onclick="removeTier(this)">
+                    <i class="bi bi-trash"></i>
+                </button>
+            </div>
+        </div>`;
+}
+
+function addTier(el) {
+    const panel = el.closest('.tier-config-panel');
+    const lineItem = panel.closest('.line-item');
+    const rows = panel.querySelector('.tier-rows');
+    const seq = parseInt(panel.dataset.tierSeq || '0', 10);
+    panel.dataset.tierSeq = (seq + 1).toString();
+    rows.insertAdjacentHTML('beforeend', tierRowHtml(lineItem.dataset.index, seq));
+}
+
+function removeTier(btn) {
+    const lineItem = btn.closest('.line-item');
+    btn.closest('.tier-row').remove();
+    syncTierBasePriceFromLine(lineItem);
+}
+
+function toggleTiered(checkbox) {
+    const lineItem = checkbox.closest('.line-item');
+    const panel = lineItem.querySelector('.tier-config-panel');
+    const priceInput = lineItem.querySelector('.price-input');
+
+    if (checkbox.checked) {
+        panel.style.display = '';
+        if (!panel.querySelector('.tier-row')) addTier(panel.querySelector('.add-tier-btn'));
+        if (priceInput) { priceInput.readOnly = true; priceInput.classList.add('bg-light'); priceInput.title = 'Set by the first tier below'; }
+        syncTierBasePriceFromLine(lineItem);
+    } else {
+        panel.style.display = 'none';
+        panel.querySelectorAll('.tier-row').forEach(r => r.remove());
+        if (priceInput) { priceInput.readOnly = false; priceInput.classList.remove('bg-light'); priceInput.title = ''; }
+    }
+}
+
+// The stored/flat unit price mirrors the first tier so it stays a sensible base
+// and satisfies the required unit_price validation.
+function syncTierBasePrice(input) {
+    syncTierBasePriceFromLine(input.closest('.line-item'));
+}
+
+function syncTierBasePriceFromLine(lineItem) {
+    const firstTier = lineItem.querySelector('.tier-config-panel .tier-price');
+    const priceInput = lineItem.querySelector('.price-input');
+    if (firstTier && priceInput && firstTier.value !== '') {
+        priceInput.value = parseFloat(firstTier.value).toFixed(2);
+    }
+}
+
+// The applied pricing method must be visible where it is CHOSEN, not only after
+// saving: the moment this line's graduated bands would override volume storage
+// tiers carried by its SKU, say so beside the toggle that does it. (The badges
+// above reflect the saved state; this note tracks the unsaved form state.)
+function updatePricingMethodNote(lineItem) {
+    const note = lineItem.querySelector('.pricing-method-note');
+    if (!note) return;
+
+    const skuSelect = lineItem.querySelector('.sku-select');
+    const opt = skuSelect ? skuSelect.options[skuSelect.selectedIndex] : null;
+    const qtySelect = lineItem.querySelector('.qty-type-select');
+    const overrides = !!(opt && opt.dataset.hasVolumeTiers === '1')
+        && !!(qtySelect && qtySelect.value === 'per_backup_storage_gb')
+        && !!lineItem.querySelector('.tiered-toggle')?.checked;
+
+    if (overrides) {
+        note.innerHTML = '<i class="bi bi-info-circle me-1"></i>Overrides the SKU\'s volume storage tiers — this line will bill by its graduated bands.';
+    }
+    note.style.display = overrides ? '' : 'none';
+}
+
+document.getElementById('linesContainer').addEventListener('change', function (e) {
+    if (e.target.matches('.sku-select, .qty-type-select, .tiered-toggle')) {
+        updatePricingMethodNote(e.target.closest('.line-item'));
+    }
+});
+
 function previewInvoice() {
     const modal = new bootstrap.Modal(document.getElementById('previewModal'));
     const body = document.getElementById('previewBody');
@@ -617,11 +801,21 @@ function previewInvoice() {
                 return `${m}m`;
             };
 
+            const esc = s => String(s ?? '').replace(/[&<>"']/g, c =>
+                ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+            // quantity_source names the rate card that priced the line
+            // ("[graduated: 3 bands]" / "[volume tier rate $0.80/GB]"). This is
+            // the last screen before Generate, so it says so here rather than
+            // only in the invoice after the money is committed.
             let rows = data.lines.map(l =>
                 `<tr>
-                    <td>${l.description}</td>
+                    <td>${esc(l.description)}</td>
                     <td class="text-end">${l.quantity}</td>
-                    <td class="small text-muted">${l.quantity_type}</td>
+                    <td class="small text-muted">
+                        ${esc(l.quantity_type)}
+                        ${l.quantity_source ? `<div class="text-muted">${esc(l.quantity_source)}</div>` : ''}
+                    </td>
                     <td class="text-end">$${Number(l.unit_price).toFixed(2)}</td>
                     <td class="text-end fw-semibold">$${Number(l.amount).toFixed(2)}</td>
                     <td class="text-end small text-muted">${l.prepaid_time_minutes ? formatHours(l.prepaid_time_minutes) : '—'}</td>

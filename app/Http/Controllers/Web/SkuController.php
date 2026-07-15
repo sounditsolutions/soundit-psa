@@ -12,6 +12,7 @@ use App\Services\Qbo\QboSyncService;
 use App\Services\SkuService;
 use App\Services\Stripe\StripeClientException;
 use App\Services\Stripe\StripeSyncService;
+use App\Support\PricingModelOverride;
 use App\Support\StripeConfig;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -179,6 +180,13 @@ class SkuController extends Controller
             ->with(['profile.contract.client'])
             ->get();
 
+        // Lines that price this SKU with their own graduated bands override the
+        // volume rate card configured below — the tiers editor names them, so
+        // the operator setting the product's default sees who will not follow it.
+        $overridingProfileNames = PricingModelOverride::profileNames(
+            PricingModelOverride::graduatedBackupLinesForSku($sku),
+        );
+
         $invoiceLines = $sku->invoiceLines()
             ->with(['invoice.client'])
             ->orderByDesc('id')
@@ -200,6 +208,7 @@ class SkuController extends Controller
         return view('skus.edit', [
             'sku' => $sku,
             'profileLines' => $profileLines,
+            'overridingProfileNames' => $overridingProfileNames,
             'invoiceLines' => $invoiceLines,
             'licenseTypes' => LicenseType::active()->orderBy('name')->get(['id', 'name']),
             'qboIncomeAccounts' => $qboIncomeAccounts,
@@ -248,33 +257,53 @@ class SkuController extends Controller
     }
 
     /**
-     * Replace a SKU's backup-storage tier rate card from submitted rows.
+     * Replace a SKU's backup-storage VOLUME tier rate card from submitted rows.
      * Fully-empty template rows are ignored; a blank `up_to_gb` marks the
      * unbounded catch-all tier.
+     *
+     * The card is this product's pricing DEFAULT, not a constraint: a recurring
+     * profile line that carries its own graduated bands overrides it (see
+     * {@see \App\Support\PricingModelOverride}), so writing a card under an
+     * already-graduated line is allowed — the SKU form names those lines beside
+     * this editor rather than refusing the save.
      */
     private function syncBackupStorageTiers(Sku $sku, array $tiers): void
     {
+        $rows = $this->submittedStorageTiers($tiers);
+
         $sku->backupStorageTiers()->delete();
 
-        $order = 0;
-        foreach ($tiers as $tier) {
+        foreach ($rows as $order => $tier) {
             $upTo = $tier['up_to_gb'] ?? null;
             $price = $tier['unit_price'] ?? null;
 
-            $upTo = ($upTo === '' || $upTo === null) ? null : (int) $upTo;
-            $priceBlank = ($price === '' || $price === null);
-
-            // Skip rows with no data at all (leftover add-row templates).
-            if ($upTo === null && $priceBlank) {
-                continue;
-            }
-
             $sku->backupStorageTiers()->create([
-                'up_to_gb' => $upTo,
-                'unit_price' => $priceBlank ? 0 : $price,
-                'sort_order' => $order++,
+                'up_to_gb' => ($upTo === '' || $upTo === null) ? null : (int) $upTo,
+                'unit_price' => ($price === '' || $price === null) ? 0 : $price,
+                'sort_order' => $order,
             ]);
         }
+    }
+
+    /**
+     * The tier rows a submitted form actually asks us to persist — leftover
+     * add-row templates (no bound AND no price) are not tiers.
+     *
+     * @param  array<int, mixed>  $tiers
+     * @return array<int, array<string, mixed>>
+     */
+    private function submittedStorageTiers(array $tiers): array
+    {
+        return array_values(array_filter($tiers, function ($tier): bool {
+            if (! is_array($tier)) {
+                return false;
+            }
+
+            $upTo = $tier['up_to_gb'] ?? null;
+            $price = $tier['unit_price'] ?? null;
+
+            return ! (($upTo === '' || $upTo === null) && ($price === '' || $price === null));
+        }));
     }
 
     public function destroy(Sku $sku)

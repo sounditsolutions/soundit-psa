@@ -180,10 +180,28 @@
 <div class="mb-3" id="skuStorageTiersSection"
      style="{{ old('default_quantity_type', $sku?->default_quantity_type?->value) === 'per_backup_storage_gb' ? '' : 'display:none' }}">
     <label class="form-label mb-1">
-        Backup Storage Pricing Tiers
+        Backup Storage Pricing Tiers <span class="badge bg-secondary-subtle text-secondary-emphasis border border-secondary-subtle align-middle">Volume</span>
         <i class="bi bi-question-circle text-muted ms-1" data-bs-toggle="tooltip" data-bs-placement="top"
            title="Volume pricing for backup storage. When a recurring profile line for this SKU uses quantity type &quot;Backup Storage (GB)&quot;, the measured storage selects the first tier whose upper bound covers it, and the whole amount is billed at that tier's per-GB rate. Leave &quot;Up to (GB)&quot; blank on the last tier for an unbounded catch-all. With no tiers, the flat Unit Price applies per GB."></i>
     </label>
+    {{-- Volume ≠ graduated, and the difference is real money: 300 GB over
+         1.00/0.80/0.60 is $240 volume but $260 graduated. Say which one this is,
+         on the form where it is chosen. --}}
+    <div class="form-text mt-0 mb-2">
+        <strong>Volume</strong> pricing — the <em>whole</em> measured usage bills at the single tier rate that covers it
+        (not split into bands). These tiers are this product's pricing <em>default</em>: a recurring profile line that
+        carries its own <em>graduated</em> tiers overrides them for that line.
+    </div>
+    @if(($overridingProfileNames ?? collect())->isNotEmpty())
+        {{-- The other place the pricing decision is reviewed: the operator
+             configuring the product's default sees who will not follow it. --}}
+        <div class="alert alert-info py-2 px-3 small">
+            <i class="bi bi-info-circle-fill me-1"></i>
+            The following recurring profile line(s) price this SKU with their own graduated tiers,
+            which override these volume tiers:
+            <span class="fw-semibold">{{ $overridingProfileNames->join(', ') }}</span>.
+        </div>
+    @endif
     <table class="table table-sm align-middle mb-2" style="max-width: 520px;">
         <thead>
             <tr>

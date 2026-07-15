@@ -134,6 +134,13 @@ class Sku extends Model
      *
      * Returns null when the SKU has no tiers configured, so callers can fall
      * back to the flat line/SKU unit price.
+     *
+     * NOT graduated pricing — the whole quantity bills at ONE rate here, it is
+     * not split into per-band brackets. For that, see the profile line's
+     * `pricing_tiers` and {@see \App\Support\TieredPricing}, which uses a
+     * near-identical tier shape with the opposite meaning. A profile line's own
+     * graduated tiers take precedence over this SKU-level card; see
+     * BillingService::priceLineSegments().
      */
     public function priceForStorageGb(int $gb): ?float
     {

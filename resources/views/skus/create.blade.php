@@ -17,6 +17,18 @@
     </div>
 </div>
 
+@if($errors->any())
+    <div class="alert alert-danger alert-dismissible fade show">
+        <strong>Please fix the following errors:</strong>
+        <ul class="mb-0 mt-1">
+            @foreach($errors->all() as $error)
+                <li>{{ $error }}</li>
+            @endforeach
+        </ul>
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    </div>
+@endif
+
 <div class="row">
     <div class="col-lg-8">
         <div class="card shadow-sm">
