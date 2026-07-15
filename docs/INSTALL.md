@@ -522,6 +522,19 @@ To verify the worker is running:
 sudo systemctl status soundit-psa-technician-queue
 ```
 
+#### Emergency stop (`technician_kill_switch`)
+
+**Settings → Integrations → Emergency stop.** The brake on every AI **write** action — engage it when an AI is doing something you do not want it doing, without first working out which feature is responsible. It takes effect immediately and is re-checked in-flight, so an action already in progress is stopped before it executes. Nothing is lost: held actions wait for you. Engaging is one click; releasing asks for confirmation. Both transitions are logged at `WARNING` with the acting user.
+
+Engaged, it stops:
+
+- **GC Chet's MCP write tools** — client emails, ticket status changes, CIPP writes are **refused**.
+- **The AI Technician's actions** — **held** for human approval instead of executing.
+
+**It does NOT stop AI triage.** The junk filter's auto-close (**on by default** whenever triage is enabled) and the hourly conversation-review auto-close run in the triage lane, which this switch does not reach — turn **AI Triage** off for those. It also does not stop reads; the AI can still read and analyse, it just cannot write. Do not read this control as "stop all AI".
+
+> The setting is `technician_kill_switch` (default off/`0`). Prior to the Settings UI it was writable only by editing the `settings` row directly; the UI is now its only writer, and it requires an explicit intent, so a malformed request can never release the brake.
+
 **AI Technician scheduled commands** (run by the Laravel scheduler via cron — no extra setup required):
 
 - `TechnicianPing` — every 5 min, queues a liveness ping on the dedicated `technician` queue. **Gated**: fires when `technician_enabled = 1` or `technician_emergency_enabled = 1`.
