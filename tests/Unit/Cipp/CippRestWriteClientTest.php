@@ -232,6 +232,64 @@ class CippRestWriteClientTest extends TestCase
             && $request->hasHeader('Authorization', 'Bearer WRITE-TOKEN'));
     }
 
+    public function test_list_mail_quarantine_throws_on_a_queue_backed_payload_rather_than_reporting_no_rows(): void
+    {
+        // The write client unwraps {"Results": ...} like the two read clients do, so it owns
+        // the same hazard: a CIPP "still loading" reply becomes an empty row list. Today its
+        // only caller is a write GATE (StaffCippWriteToolExecutor::verifiedQuarantineRow),
+        // which turns "no rows" into a REFUSED release — so it fails safe rather than into a
+        // false all-clear. That safety is a property of the CALLER, not of this client, so
+        // the guard belongs here before someone adds a read whose result is an answer.
+        // Shape from CIPP-API Invoke-ListMailQuarantine.ps1:48-51 + :95-96.
+        Http::fake([
+            'login.microsoftonline.com/*' => Http::response(['access_token' => 'WRITE-TOKEN', 'expires_in' => 3600]),
+            'cipp.example.test/api/ListMailQuarantine*' => Http::response([
+                'Results' => [],
+                'Metadata' => [
+                    'QueueMessage' => 'Still loading data for all tenants. Please check back in a few more minutes',
+                    'QueueId' => 'b7d1c0e2-3f45-4a68-91bc-2d5e8f0a7c34',
+                ],
+            ]),
+        ]);
+
+        $client = new CippRestWriteClient([
+            'api_url' => 'https://cipp.example.test',
+            'tenant_id' => 'tenant-1',
+            'client_id' => 'write-client',
+            'client_secret' => 'write-secret',
+        ], Cache::store(), fn (string $host): array => ['93.184.216.34']);
+
+        $this->expectException(CippClientException::class);
+        $this->expectExceptionMessage('Still loading data for all tenants');
+
+        $client->listMailQuarantine('acme.onmicrosoft.com');
+    }
+
+    public function test_list_mail_quarantine_returns_rows_when_metadata_carries_only_a_null_queue_id(): void
+    {
+        // CIPP-API Invoke-ListMailQuarantine.ps1:73-77 — the healthy rows-present branch
+        // still emits Metadata{QueueId}, serialised null. Good data must survive the guard.
+        Http::fake([
+            'login.microsoftonline.com/*' => Http::response(['access_token' => 'WRITE-TOKEN', 'expires_in' => 3600]),
+            'cipp.example.test/api/ListMailQuarantine*' => Http::response([
+                'Results' => [['Identity' => 'acme\\quarantine\\1', 'SenderAddress' => 'sender@example.test']],
+                'Metadata' => ['QueueId' => null],
+            ]),
+        ]);
+
+        $client = new CippRestWriteClient([
+            'api_url' => 'https://cipp.example.test',
+            'tenant_id' => 'tenant-1',
+            'client_id' => 'write-client',
+            'client_secret' => 'write-secret',
+        ], Cache::store(), fn (string $host): array => ['93.184.216.34']);
+
+        $rows = $client->listMailQuarantine('acme.onmicrosoft.com');
+
+        $this->assertCount(1, $rows);
+        $this->assertSame('acme\\quarantine\\1', $rows[0]['Identity']);
+    }
+
     public function test_list_directory_roles_unwraps_results_envelope(): void
     {
         Http::fake([

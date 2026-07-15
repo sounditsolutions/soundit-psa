@@ -19,6 +19,44 @@ use App\Services\Triage\TriageToolDefinitions;
  *
  * Import-time alone is not enough. The catalog sync is optional, weekly and config-gated,
  * so "the next sync cleans it up" leaves the hole open across a deploy (psa-7lgo.7).
+ *
+ * ── WHY THERE IS NO APPROVAL ALLOW-LIST HERE (psa-3g8y → psa-pzwv) ───────────────────
+ * This policy names only what is FORBIDDEN. It deliberately does not carry an "approved"
+ * allow-list, and the reason is worth keeping because the question recurs: if we already
+ * had per-token grants, why was psa-3g8y's allow-list ever necessary — and why was it safe
+ * to remove?
+ *
+ * psa-3g8y added APPROVED_DYNAMIC_UPSTREAM_TOOLS as a default-deny allow-list: an upstream
+ * tool not named there was never imported, advertised, or executable. The goal was right —
+ * kill IMPORT-BY-DEFAULT, where an unreviewed raw passthrough goes live with no human
+ * decision — but the mechanism reached too far. It also made tools an operator had
+ * DELIBERATELY assigned to a token inert, and on deploy ~210 of Chet's granted tools
+ * vanished (psa-pzwv).
+ *
+ * It could be dropped without re-opening the hole because authorization never rested on it.
+ * McpStaffController::toolAllowed() requires `allowedTools !== null && allows($tool)` for
+ * any name CippMcpTool::handles() claims — an explicit, per-token, per-name grant governing
+ * BOTH tools/list and tools/call. That predates psa-3g8y and is strictly stronger: it admits
+ * a tool only when a human picked it for a specific token, whereas an allow-list admits an
+ * approved tool to anyone. Grants are stored as resolved name snapshots
+ * (McpTokensController::updateTools), so a later catalog sync cannot silently widen one.
+ * Against import-by-default the allow-list was redundant; against operator intent it was
+ * destructive.
+ *
+ * What still gates, and is HARD (see refusalReason()): BLOCKED_UPSTREAM_TOOLS and
+ * curated-name collisions. Those name DANGER, which no grant may buy back.
+ *
+ * ListGraphRequest / ListGraphBulkRequest — the two names the retired allow-list held — do
+ * have dedicated, security-reviewed handling (inspectable-GET-only via
+ * genericGraphAttempt/isGenericGraphTool, reference-only sanitised output,
+ * credential-redacted telemetry). That handling is keyed off the tool names inside
+ * CippMcpDynamicToolExecutor, never off a list here. psa-ppm7 tracks replacing them with
+ * typed curated wrappers.
+ *
+ * The constant itself is gone (psa-xty1). Its last caller was the 2026_07_14_000001 sweep
+ * migration, which now carries its own frozen literal — a shipped migration must not read a
+ * live app constant, or editing the constant silently rewrites what that migration does on
+ * every future fresh-DB replay.
  */
 final class CippMcpToolPolicy
 {
@@ -58,41 +96,6 @@ final class CippMcpToolPolicy
     public const BLOCKED_UPSTREAM_TOOLS = [
         'ListMailboxRules',
         'ListUserSigninLogs',
-    ];
-
-    /**
-     * HISTORICAL — no longer a runtime gate. Retained because the 2026_07_14_000001
-     * migration is defined in terms of it and must stay runnable on a fresh database.
-     *
-     * psa-3g8y made this a default-deny allow-list: an upstream tool not named here was
-     * never imported, advertised, or executable. The goal was right — kill IMPORT-BY-DEFAULT,
-     * where an unreviewed raw passthrough goes live with no human decision — but the
-     * mechanism reached too far. It also made tools an operator had DELIBERATELY assigned to
-     * a token inert, and on deploy ~210 of Chet's granted tools vanished (psa-pzwv).
-     *
-     * The reason it could be dropped without re-opening the hole: authorization for dynamic
-     * CIPP tools never rested on this list. McpStaffController::toolAllowed() requires
-     * `allowedTools !== null && allows($tool)` for any name CippMcpTool::handles() claims —
-     * an explicit, per-token, per-name grant, governing BOTH tools/list and tools/call. That
-     * predates psa-3g8y and is strictly stronger than this list: it admits a tool only when a
-     * human picked it for a specific token, whereas an allow-list would admit an approved
-     * tool to anyone. Grants are stored as resolved name snapshots (McpTokensController::
-     * updateTools), so a later catalog sync cannot silently widen one. Against
-     * import-by-default the allow-list was therefore redundant; against operator intent it
-     * was destructive.
-     *
-     * What still gates: BLOCKED_UPSTREAM_TOOLS and curated-name collisions, both HARD (see
-     * refusalReason()) — they name DANGER, which no grant may buy back.
-     *
-     * The two names below are the dynamic tools with dedicated, security-reviewed handling
-     * in CippMcpDynamicToolExecutor (inspectable-GET-only via genericGraphAttempt/
-     * isGenericGraphTool, reference-only sanitised output, credential-redacted telemetry).
-     * That handling is keyed off the tool names in the executor, not off this list. psa-ppm7
-     * tracks replacing them with typed curated wrappers.
-     */
-    public const APPROVED_DYNAMIC_UPSTREAM_TOOLS = [
-        'ListGraphRequest',
-        'ListGraphBulkRequest',
     ];
 
     /**

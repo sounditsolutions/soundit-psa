@@ -1,6 +1,5 @@
 <?php
 
-use App\Support\CippMcpToolPolicy;
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -19,14 +18,36 @@ use Illuminate\Support\Facades\Log;
  * the stale, now-unapproved rows do not sit in the table looking live, and so operators
  * see them leave on the deploy rather than on whenever the optional weekly catalog sync
  * next runs — the same reasoning as the earlier forbidden/per-user-signin sweeps.
+ *
+ * HISTORICAL — read the paragraph above as of 2026-07-14, not as current behaviour.
+ * psa-pzwv has since RETIRED that allow-list runtime gate: scopeDispatchable now filters on
+ * blocked + curated-collisions only, and authorization proper is the per-token explicit
+ * grant in McpStaffController::toolAllowed(). What this migration DID on the rows it swept
+ * is unchanged; only the surrounding rationale has moved on.
  */
 return new class extends Migration
 {
+    /**
+     * The reviewed allow-list (psa-3g8y) as it stood when this migration shipped,
+     * inlined ON PURPOSE and FROZEN HERE.
+     *
+     * It used to read CippMcpToolPolicy::APPROVED_DYNAMIC_UPSTREAM_TOOLS. That coupled an
+     * already-shipped migration to a live app constant: editing the constant — entirely
+     * reasonable once it was documented as historical with no other callers — would have
+     * silently changed what this migration does on every future fresh-DB replay. A
+     * migration is a snapshot of intent at a moment; it must carry its own literals.
+     * (psa-xty1, on an architecture-lane finding from PR #290.)
+     */
+    private const APPROVED_UPSTREAM_AT_2026_07_14 = [
+        'ListGraphRequest',
+        'ListGraphBulkRequest',
+    ];
+
     public function up(): void
     {
         $deactivated = DB::table('cipp_mcp_tools')
             ->where('active', true)
-            ->whereNotIn('upstream_name', CippMcpToolPolicy::APPROVED_DYNAMIC_UPSTREAM_TOOLS)
+            ->whereNotIn('upstream_name', self::APPROVED_UPSTREAM_AT_2026_07_14)
             ->update(['active' => false]);
 
         if ($deactivated > 0) {

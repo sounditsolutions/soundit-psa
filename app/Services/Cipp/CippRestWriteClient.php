@@ -456,11 +456,24 @@ class CippRestWriteClient
      * content). Uses the same credential set as the write it gates, so the
      * release tool cannot outrun its own verification.
      *
+     * "Still loading" is not "no rows" — see CippQueueGuard. Today this cannot mislead
+     * anyone even unguarded, because its only caller
+     * (StaffCippWriteToolExecutor::verifiedQuarantineRow) turns an empty listing into a
+     * REFUSED release rather than an answer, so the failure polarity is safe. But that is a
+     * property of the CALLER, not of this method: the day a read here becomes something an
+     * agent or operator is shown as an answer, an unguarded queue reply is a false
+     * all-clear again. Guarding at the source keeps that from depending on who calls it
+     * (psa-lmex, on a psa-00s5 gate finding).
+     *
      * @return array<int, array<string, mixed>>
      */
     public function listMailQuarantine(string $tenantFilter): array
     {
         $response = $this->get('api/ListMailQuarantine', ['tenantFilter' => $tenantFilter]);
+
+        if (is_array($response['body'] ?? null)) {
+            CippQueueGuard::assertNotQueueBacked($response['body']);
+        }
 
         $rows = $response['body']['Results'] ?? [];
         if (! is_array($rows)) {
