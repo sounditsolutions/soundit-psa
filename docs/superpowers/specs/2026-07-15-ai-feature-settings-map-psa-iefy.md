@@ -19,7 +19,7 @@ This is not thirty unrelated defects. It is **one defect class, repeated across 
 | "AI enabled" is the master switch | 2 functional readers; **25 files** gate on *"is an API key present"* instead. Clearing the key is the only real kill — **and the UI cannot clear it** (§3.1) |
 | "Enable AI Assistant" turns the Assistant off | **Cosmetic.** Every reader is a Blade `@if`. The endpoint and both write tools stay live (§3.7) |
 | `agent_enabled = false` stops the AI closing tickets | Stops Path A, **misses** Path B, **wakes** Path C (psa-s72e, mapped in the companion spec) |
-| The emergency stop stops the AI | Now reachable (psa-2wwh shipped a UI). Still misses **Triage, Wiki, Assistant, Briefing, Portal, and 4 MCP write tools** — and **fails open when unset** (§4.1) |
+| The emergency stop stops the AI | Now reachable (psa-2wwh shipped a UI). Still misses **Triage, Wiki, Assistant, Briefing, Portal, and 4 MCP write tools** — while **its own card tells the operator "you do not need to work out which tool is responsible first"** (§4.1) |
 | "Tokens per run" caps spend | **Dead** in two clusters. The agent hardcodes **double** the dead setting's default (§4.2) |
 | Ticking a relay cell means the alert relays | 9 of 18 catalog event types **have no producer** and can never fire (§3.8) |
 
@@ -327,8 +327,17 @@ Per this bead's own rule — **no author verifies their own claim**. The compani
 | "**Two** docblocks claim read-only" | **PARTLY-TRUE → CORRECTED** | There is **one** docblock (`AssistantToolDefinitions.php:8`) + the system prompt. `AssistantToolExecutor`'s docblock makes no such claim. Substance intact, count was wrong. |
 | Opus posted to OpenAI | **REFUTED → REPLACED** | The tool loop throws **before** the model is read, so Opus **never** reaches OpenAI. **But Haiku does** — via `complete()` in `SignificanceGate`/`ChimeInGate`, a path I never cited. The corrected finding is **stronger**. |
 | OpenAI "breaks" 3 tool loops | **PARTLY-TRUE → CORRECTED** | All three throws are **swallowed**; all five callers degrade without crashing. The real defect is **invisible no-ops**, not breakage. *Silent* was right; *broken* was not. |
+| **§1's headline row: "…and it fails open when unset"** | **BLOCKED BY THE REVIEW GATE → FIXED** | **The refuted claim was still standing in the headline table** — dropped from §4.1, recorded as dropped *right here in this table*, and left live at line 22. Caught by the gate, not by me, not by my verifiers. See below. |
 
-**Four of my own claims went in; three came back altered.** That is the entire argument for the rule — and the reason §7's UNVERIFIED list should be read as seriously as the findings.
+**Four of my own claims went in; three came back altered. Then the review gate found a fifth — and it was the worst one.**
+
+> **⚠️ THIS DOCUMENT DID THE EXACT THING IT IS ABOUT, IN ITS OWN HEADLINE, WHILE DESCRIBING ITSELF AS HAVING NOT DONE IT.**
+>
+> The claim *"the emergency stop fails open when unset"* was refuted, removed from §4.1, and recorded as **REFUTED → DROPPED** in the table above. It nonetheless survived in **§1's headline table** — the most-read paragraph in the document, the one part a busy owner reads — where it sat contradicting its own verification record three sections below. **A summary that overstates the code, in a document whose entire thesis is that summaries overstate the code.**
+>
+> The mechanism is worth naming because it is general and it is not carelessness: **I fixed the body and the heading of §4.1 and never re-read §1.** Corrections propagate backwards poorly. A claim enters a document once but is *restated* in the abstract, the summary table, the headline — and a refutation applied at the point of evidence does not travel to the places that merely assert it. **Summary text is where refuted wording goes to survive.** That is exactly why the reviewer's second instruction was a document-wide sweep from §6 back through §1, not a one-line fix — and the sweep found a second instance in §7 ("tool-loop breakage") that the blocking finding had not named.
+>
+> **This is the third docs-only review in this repo to find false claims inside anti-false-claims content** — psa-sslk (`a2a7b44`) was the first, the companion spec psa-u6bc the second, this the third. In the gate request for this very document I wrote: *"If three overreaches survived my own drafting, assume a fourth survived the verifiers. Find it."* It did, and they did. **Three for three is no longer a coincidence; it is the base rate.** No author of a document like this — including this one, twice over — should be trusted to be their own last reader. That is the finding, and it outranks anything in §4.
 
 ## 7. UNVERIFIED — and deliberately not probed
 
@@ -338,7 +347,7 @@ Per this bead's own rule — **no author verifies their own claim**. The compani
 2. **Which tools Chet's prod token grants.** The tree proves what *can* be granted, never what *is*. **Path B's liveness rests entirely on this** — it is the single highest-value check in this document.
 3. **The deployed SHA.** If prod is behind `0e16d26`, psa-2wwh's "DB-edit-only" is **still true in prod** and the remedy is a **deploy**, not a build. §4.1's correction is a claim about the tree only.
 4. **Whether any relay cell is configured in prod** — decides whether psa-qddf (§3.8) is live or latent. Only Charlie or gus can answer.
-5. **Which provider prod runs** — decides whether §4.4's tool-loop breakage and the briefing's Haiku bug bite.
+5. **Which provider prod runs** — decides whether §4.4's silent tool-loop no-ops and the briefing's Haiku bug bite. *(Not "breakage": §4.4 establishes they fail soft. The word is fixed here too, because §7 is summary text and this document's own gate found that refuted wording survives longest in summaries.)*
 6. **Prod token spend.** The Opus-vs-Sonnet delta is a real pricing question not answerable from the tree.
 7. **Code comments asserting prod facts are not evidence about prod.** `OperatorDelivery.php:66-83` and `TeamsMessagesController.php:74-77` assert prod's Teams configuration. That is evidence about their author's intent. It decides whether `agent_model`→Opus prices a live `TeamsReplyService` or a dead lane, and **it should not be inherited from those comments.**
 
