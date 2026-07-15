@@ -191,6 +191,53 @@ class CippDirectPathFailLoudTest extends TestCase
     }
 
     /**
+     * Bind a REAL CippClient whose HTTP layer returns $body.
+     *
+     * Every other helper here mocks CippClient itself, which is right when the
+     * client is scaffolding. It is wrong when the client's own decoding IS the
+     * thing under test: a mocked `get()` never runs the queue guard, so the test
+     * would assert the handler and prove nothing about the control.
+     */
+    private function cippHttpReturning(string $body): void
+    {
+        $this->app->instance(CippClient::class, new CippClient(
+            ['api_url' => 'https://cipp.example.test'],
+            app(\Illuminate\Contracts\Cache\Repository::class),
+            new \GuzzleHttp\Client([
+                'handler' => \GuzzleHttp\HandlerStack::create(
+                    new \GuzzleHttp\Handler\MockHandler(array_fill(0, 8, new \GuzzleHttp\Psr7\Response(
+                        200, ['Content-Type' => 'application/json'], $body
+                    )))
+                ),
+                'base_uri' => 'https://cipp.example.test/',
+            ]),
+        ));
+    }
+
+    public function test_queue_backed_read_reaches_both_executors_as_an_error_not_an_all_clear(): void
+    {
+        // The control, not the handler: a real CippClient decodes a real CIPP
+        // "still loading" payload, so the queue guard actually fires. Without it
+        // this read returns [] and the agent is told, with total confidence, that
+        // the tenant has no conditional access policies.
+        //
+        // Shape from CIPP-API Invoke-ListConditionalAccessPolicies.ps1:209-213.
+        \Illuminate\Support\Facades\Cache::put('cipp_oauth_token', 'test-token', 3600);
+        $this->cippHttpReturning(
+            '{"Results":[],"Metadata":{"QueueMessage":"Still loading data for all tenants. Please check back in a few more minutes",'.
+            '"QueueId":"a1b2c3d4-5e6f-4708-9a1b-2c3d4e5f6071"}}'
+        );
+
+        foreach ($this->executors() as $label => $executor) {
+            $result = $executor->execute('cipp_list_conditional_access_policies', []);
+
+            $this->assertArrayHasKey('error', $result, "{$label} did not surface the queue-backed read as an error");
+            $this->assertStringContainsString('Still loading data for all tenants', $result['error'], "{$label} lost the upstream reason");
+            $this->assertSame([], array_values(array_diff(array_keys($result), ['error'])), "{$label} returned rows alongside the error");
+        }
+    }
+
+    /**
      * @param  array<int, array<string, mixed>>  $rows
      */
     private function cippReturning(string $endpoint, array $rows, ?array &$captured = null): void

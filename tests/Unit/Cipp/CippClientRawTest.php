@@ -3,6 +3,7 @@
 namespace Tests\Unit\Cipp;
 
 use App\Services\Cipp\CippClient;
+use App\Services\Cipp\CippClientException;
 use GuzzleHttp\Client;
 use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\HandlerStack;
@@ -70,5 +71,42 @@ class CippClientRawTest extends TestCase
             app(CacheInterface::class),
             $http,
         );
+    }
+
+    private function jsonResponse(string $body): Response
+    {
+        return new Response(200, ['Content-Type' => 'application/json'], $body);
+    }
+
+    public function test_get_throws_on_queue_backed_payload_rather_than_returning_an_empty_list(): void
+    {
+        // The REST path unwraps {"Results": ...} exactly like the MCP path does,
+        // so it owns the same false-clear: CIPP answering "still loading" for an
+        // AllTenants read hands back Results: [] and the caller cannot tell that
+        // apart from "nothing found". Shape from CIPP-API
+        // Invoke-ListConditionalAccessPolicies.ps1:209-213 (+ :118 AllTenants gate).
+        $client = $this->clientReturning($this->jsonResponse(
+            '{"Results":[],"Metadata":{"QueueMessage":"Still loading data for all tenants. Please check back in a few more minutes",'.
+            '"QueueId":"a1b2c3d4-5e6f-4708-9a1b-2c3d4e5f6071"}}'
+        ));
+
+        $this->expectException(CippClientException::class);
+        $this->expectExceptionMessage('Still loading data for all tenants');
+
+        $client->get('api/ListConditionalAccessPolicies', ['TenantFilter' => 'AllTenants']);
+    }
+
+    public function test_get_returns_rows_when_metadata_carries_only_a_null_queue_id(): void
+    {
+        // CIPP-API Invoke-ListMailQuarantine.ps1:73-77 — the healthy rows-present
+        // branch emits Metadata{QueueId} which serialises to null. Good data must
+        // still come back; QueueId is not a queue marker.
+        $client = $this->clientReturning($this->jsonResponse(
+            '{"Results":[{"Identity":"acme\\\\quarantine\\\\1","Subject":"Invoice overdue"}],"Metadata":{"QueueId":null}}'
+        ));
+
+        $rows = $client->get('api/ListMailQuarantine', ['TenantFilter' => 'acme.example']);
+
+        $this->assertSame([['Identity' => 'acme\\quarantine\\1', 'Subject' => 'Invoice overdue']], $rows);
     }
 }

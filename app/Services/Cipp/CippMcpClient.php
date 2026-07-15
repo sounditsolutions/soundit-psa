@@ -284,6 +284,10 @@ class CippMcpClient
      */
     private function unwrapCippEnvelope(array $data): array
     {
+        // "Still loading" is not "nothing found" — see CippQueueGuard for the
+        // vendor shapes and why this must throw rather than unwrap to [].
+        CippQueueGuard::assertNotQueueBacked($data);
+
         foreach (['Results', 'results', 'value', 'Value'] as $key) {
             if (array_key_exists($key, $data) && is_array($data[$key])) {
                 return $data[$key];

@@ -186,4 +186,126 @@ class CippMcpClientTest extends TestCase
             Http::assertNothingSent();
         }
     }
+
+    /**
+     * Build a client whose single ExecMCP tool call returns $toolResultJson as
+     * its text content. $toolResultJson must be transcribed from a CIPP
+     * producer, never authored from the shape this client expects (psa-7lgo).
+     */
+    private function clientReturningToolText(string $toolResultJson): CippMcpClient
+    {
+        Http::fake([
+            'login.microsoftonline.com/*' => Http::response([
+                'access_token' => 'MCP-TOKEN',
+                'expires_in' => 3600,
+            ]),
+            'cipp.example.test/api/ExecMCP*' => Http::response(
+                "event: message\n".
+                'data: '.json_encode([
+                    'jsonrpc' => '2.0',
+                    'id' => 1,
+                    'result' => [
+                        'content' => [['type' => 'text', 'text' => $toolResultJson]],
+                        'isError' => false,
+                    ],
+                ])."\n\n",
+                200,
+                ['Content-Type' => 'text/event-stream'],
+            ),
+        ]);
+
+        return new CippMcpClient([
+            'api_url' => 'https://cipp.example.test',
+            'tenant_id' => 'tenant-1',
+            'client_id' => 'mcp-client-1',
+            'client_secret' => 'mcp-secret',
+        ], Cache::store(), fn (string $host): array => ['93.184.216.34']);
+    }
+
+    public function test_call_tool_throws_when_queue_fields_are_hoisted_into_metadata_and_results_blanked(): void
+    {
+        // CIPP-API Invoke-ListGraphRequest.ps1:176-191 — when Get-GraphRequestList
+        // answers with a queue marker, the entrypoint HOISTS Queued/QueueMessage/
+        // QueueId into Metadata and sets `$Results = @()`. So "still loading"
+        // arrives as an empty Results array: the exact rule-3 false-clear, where a
+        // confident [] means "we do not know" rather than "nothing found".
+        $client = $this->clientReturningToolText(
+            '{"Results":[],"Metadata":{"TenantFilter":"AllTenants","Endpoint":"users","Queued":true,'.
+            '"QueueMessage":"Data still processing, please wait","QueueId":"9f2c1b7e-0d3a-4c55-9a10-2b6f8e4d1c33"}}'
+        );
+
+        $this->expectException(CippClientException::class);
+        $this->expectExceptionMessage('Data still processing, please wait');
+
+        $client->callTool('ListGraphRequest', ['tenantFilter' => 'AllTenants', 'Endpoint' => 'users']);
+    }
+
+    public function test_call_tool_throws_on_queue_metadata_without_a_queued_flag(): void
+    {
+        // CIPP-API Invoke-ListMailQuarantine.ps1:48-51 + :95-96 — this producer
+        // builds Metadata with QueueMessage + QueueId and NO Queued flag. Keying
+        // the guard on `Queued` alone would sail straight past this one and hand
+        // back a clean empty for "quarantine still loading".
+        $client = $this->clientReturningToolText(
+            '{"Results":[],"Metadata":{"QueueMessage":"Still loading data for all tenants. Please check back in a few more minutes",'.
+            '"QueueId":"3d1f6a08-77bc-4e21-9f0d-5c8ab2e94411"}}'
+        );
+
+        $this->expectException(CippClientException::class);
+        $this->expectExceptionMessage('Still loading data for all tenants');
+
+        $client->callTool('ListMailQuarantine', ['tenantFilter' => 'AllTenants']);
+    }
+
+    public function test_call_tool_throws_on_flat_top_level_queue_payload(): void
+    {
+        // CIPP-API Get-GraphRequestList.ps1:259-263 (also :267-271, :317-320,
+        // :344-347) — the generic producer emits the queue marker FLAT, with no
+        // Results wrapper at all. Entrypoints that pass it through unhoisted
+        // deliver this shape verbatim, where it would otherwise decode into a
+        // single junk pseudo-row.
+        $client = $this->clientReturningToolText(
+            '{"QueueMessage":"Data still processing, please wait","QueueId":"7c5e2a91-4b6d-4a3f-8e12-0d9f7b3c6a55","Queued":true}'
+        );
+
+        $this->expectException(CippClientException::class);
+        $this->expectExceptionMessage('Data still processing, please wait');
+
+        $client->callTool('ListGraphRequest', ['tenantFilter' => 'AllTenants', 'Endpoint' => 'users']);
+    }
+
+    public function test_call_tool_returns_rows_when_metadata_carries_only_a_null_queue_id(): void
+    {
+        // CIPP-API Invoke-ListMailQuarantine.ps1:73-77 + :95-96 — the HEALTHY
+        // rows-present branch still emits Metadata{QueueId}, and because
+        // $RunningQueue is falsy there it serialises as null. QueueId is
+        // therefore NOT a queue marker: a guard keyed on it would reject good
+        // data. This is the precision test for that trap.
+        $client = $this->clientReturningToolText(
+            '{"Results":[{"Identity":"acme\\\\quarantine\\\\1","Subject":"Invoice overdue","Tenant":"acme.example"}],"Metadata":{"QueueId":null}}'
+        );
+
+        $rows = $client->callTool('ListMailQuarantine', ['tenantFilter' => 'acme.example']);
+
+        $this->assertSame([
+            ['Identity' => 'acme\\quarantine\\1', 'Subject' => 'Invoice overdue', 'Tenant' => 'acme.example'],
+        ], $rows);
+    }
+
+    public function test_call_tool_returns_rows_when_metadata_carries_pagination_next_link(): void
+    {
+        // CIPP-API Invoke-ListMailQuarantine.ps1:20-25 + :95-96 — Metadata is
+        // also the carrier for pagination (nextLink = the next page number), which
+        // has nothing to do with queueing. A guard that fired on "Metadata exists"
+        // would break every paginated read.
+        $client = $this->clientReturningToolText(
+            '{"Results":[{"Identity":"acme\\\\quarantine\\\\2","Subject":"Password reset","Tenant":"acme.example"}],"Metadata":{"nextLink":"2"}}'
+        );
+
+        $rows = $client->callTool('ListMailQuarantine', ['tenantFilter' => 'acme.example']);
+
+        $this->assertSame([
+            ['Identity' => 'acme\\quarantine\\2', 'Subject' => 'Password reset', 'Tenant' => 'acme.example'],
+        ], $rows);
+    }
 }

@@ -34,6 +34,12 @@ class CippClient
 
         $data = json_decode((string) $response->getBody(), true) ?? [];
 
+        if (is_array($data)) {
+            // "Still loading" is not "nothing found" — see CippQueueGuard for the
+            // vendor shapes and why this must throw rather than unwrap to [].
+            CippQueueGuard::assertNotQueueBacked($data);
+        }
+
         // CIPP wraps list results in {"Results": [...]} — unwrap
         if (is_array($data) && isset($data['Results'])) {
             return $data['Results'];
