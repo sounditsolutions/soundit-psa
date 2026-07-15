@@ -58,14 +58,20 @@ class StaffPsaActionToolExecutor
     ) {}
 
     /** @return array<string, mixed> */
-    public function execute(string $name, array $arguments, int $clientId, string $actorLabel): array
+    /**
+     * $actorLabel is the prefixed audit label (McpStaffToken::actorLabel()); $tokenLabel
+     * is the caller's BARE McpToken.label. They are NOT interchangeable: only the bare
+     * one resolves a Teams persona for the client-facing tagline (psa-u51h). Handlers
+     * that emit no client-facing text take $actorLabel alone, as before.
+     */
+    public function execute(string $name, array $arguments, int $clientId, string $actorLabel, ?string $tokenLabel = null): array
     {
         return match ($name) {
             'create_ticket' => $this->createTicket($arguments, $clientId, $actorLabel),
-            'send_email' => $this->sendEmail($arguments, $clientId, $actorLabel),
-            'write_public_note' => $this->writePublicNote($arguments, $clientId, $actorLabel),
-            'stage_email' => $this->stageTicketAction('stage_email', $arguments, $clientId, $actorLabel, sendsEmail: true),
-            'stage_public_note' => $this->stageTicketAction('stage_public_note', $arguments, $clientId, $actorLabel, sendsEmail: false),
+            'send_email' => $this->sendEmail($arguments, $clientId, $actorLabel, $tokenLabel),
+            'write_public_note' => $this->writePublicNote($arguments, $clientId, $actorLabel, $tokenLabel),
+            'stage_email' => $this->stageTicketAction('stage_email', $arguments, $clientId, $actorLabel, sendsEmail: true, tokenLabel: $tokenLabel),
+            'stage_public_note' => $this->stageTicketAction('stage_public_note', $arguments, $clientId, $actorLabel, sendsEmail: false, tokenLabel: $tokenLabel),
             'propose_merge' => $this->proposeMerge($arguments, $clientId, $actorLabel),
             'update_ticket' => $this->updateTicket($arguments, $clientId, $actorLabel),
             'set_ticket_status' => $this->setTicketStatus($arguments, $clientId, $actorLabel),
@@ -1950,7 +1956,7 @@ class StaffPsaActionToolExecutor
     }
 
     /** @return array<string, mixed> */
-    private function sendEmail(array $arguments, int $clientId, string $actorLabel): array
+    private function sendEmail(array $arguments, int $clientId, string $actorLabel, ?string $tokenLabel = null): array
     {
         if ($error = $this->guardDirectAction()) {
             return $error;
@@ -1995,8 +2001,8 @@ class StaffPsaActionToolExecutor
             return ['error' => 'send_email rate limit: direct email already sent for this ticket recently'];
         }
 
-        $note = DB::transaction(function () use ($ticket, $body, $actorLabel, $contentHash, $reason, $resolved): TicketNote {
-            $note = $this->createAiNote($ticket, $this->disclosedBody($body), NoteType::Reply);
+        $note = DB::transaction(function () use ($ticket, $body, $actorLabel, $tokenLabel, $contentHash, $reason, $resolved): TicketNote {
+            $note = $this->createAiNote($ticket, $this->disclosedBody($body, $tokenLabel), NoteType::Reply, $tokenLabel);
             $ticket->forceFill(['responded_at' => $ticket->responded_at ?? now()])->save();
             $summary = 'Direct MCP email sent: '.EmailRedactor::redact($reason).' ['.$resolved->auditDescriptor().']';
             $this->auditDirectExecution('send_email', $ticket, $actorLabel, $contentHash, $summary);
@@ -2028,7 +2034,7 @@ class StaffPsaActionToolExecutor
     }
 
     /** @return array<string, mixed> */
-    private function writePublicNote(array $arguments, int $clientId, string $actorLabel): array
+    private function writePublicNote(array $arguments, int $clientId, string $actorLabel, ?string $tokenLabel = null): array
     {
         if ($error = $this->guardDirectAction()) {
             return $error;
@@ -2058,8 +2064,8 @@ class StaffPsaActionToolExecutor
             return ['error' => 'write_public_note rate limit: direct public note already written for this ticket recently'];
         }
 
-        $note = DB::transaction(function () use ($ticket, $body, $actorLabel, $contentHash, $reason): TicketNote {
-            $note = $this->createAiNote($ticket, $this->disclosedBody($body), NoteType::Note);
+        $note = DB::transaction(function () use ($ticket, $body, $actorLabel, $tokenLabel, $contentHash, $reason): TicketNote {
+            $note = $this->createAiNote($ticket, $this->disclosedBody($body, $tokenLabel), NoteType::Note, $tokenLabel);
             $this->auditDirectExecution('write_public_note', $ticket, $actorLabel, $contentHash, 'Direct MCP public note written: '.$reason);
 
             return $note;
@@ -2075,7 +2081,7 @@ class StaffPsaActionToolExecutor
     }
 
     /** @return array<string, mixed> */
-    private function stageTicketAction(string $actionType, array $arguments, int $clientId, string $actorLabel, bool $sendsEmail): array
+    private function stageTicketAction(string $actionType, array $arguments, int $clientId, string $actorLabel, bool $sendsEmail, ?string $tokenLabel = null): array
     {
         $reason = $this->requiredString($arguments, 'reason');
         if ($reason === null) {
@@ -2096,6 +2102,11 @@ class StaffPsaActionToolExecutor
         $meta = [
             'reasons' => [$reason],
             'drafted_by' => $actorLabel,
+            // The BARE label too: this run's disclosure is written at APPROVAL time, by
+            // which point the token is long out of scope. 'drafted_by' cannot serve — it
+            // is the prefixed audit form and resolves no persona. Absent on runs staged
+            // before psa-u51h, which degrade to the global actor name (psa-u51h part 2).
+            'drafted_by_token' => $tokenLabel,
             'contact_email' => $ticket->contact?->email,
             'contact_name' => $ticket->contact?->fullName,
         ];
@@ -2485,20 +2496,26 @@ class StaffPsaActionToolExecutor
         return implode('; ', $parts);
     }
 
-    private function disclosedBody(string $body): string
+    /**
+     * $tokenLabel is the BARE McpToken.label of the AUTHENTICATED caller (never
+     * anything from $input) — the persona is derived server-side from it, the same
+     * trust boundary OperatorBridgeToolExecutor established. It is NOT $actorLabel,
+     * which is the prefixed audit form and resolves no persona (psa-u51h).
+     */
+    private function disclosedBody(string $body, ?string $tokenLabel = null): string
     {
-        $disclosed = $this->disclosure->withDisclosure($body, TechnicianConfig::aiActorName());
+        $disclosed = $this->disclosure->withDisclosure($body, TechnicianConfig::actorNameForTokenLabel($tokenLabel));
         $this->disclosure->assertPresent($disclosed);
 
         return $disclosed;
     }
 
-    private function createAiNote(Ticket $ticket, string $body, NoteType $type): TicketNote
+    private function createAiNote(Ticket $ticket, string $body, NoteType $type, ?string $tokenLabel = null): TicketNote
     {
         $note = TicketNote::create([
             'ticket_id' => $ticket->id,
             'author_id' => TechnicianConfig::requiredAiActorUserId(),
-            'author_name' => TechnicianConfig::aiActorName(),
+            'author_name' => TechnicianConfig::actorNameForTokenLabel($tokenLabel),
             'who_type' => WhoType::Agent,
             'ai_authored' => true,
             'body' => $body,

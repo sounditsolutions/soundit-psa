@@ -848,6 +848,7 @@ class McpStaffController extends Controller
                     $arguments,
                     (int) $clientId,
                     $this->actorLabel($request),
+                    $this->tokenLabel($request),
                 );
             } elseif ($this->isPsaRecordsTool((string) $name)) {
                 // create_client is global ($clientId null → 0, ignored by the
@@ -857,6 +858,7 @@ class McpStaffController extends Controller
                     $arguments,
                     (int) $clientId,
                     $this->actorLabel($request),
+                    $this->tokenLabel($request),
                 );
             } elseif ($this->isIntakeManageTool((string) $name)) {
                 // None of these carry client_id — scope lives on the targeted
@@ -867,6 +869,7 @@ class McpStaffController extends Controller
                     $arguments,
                     (int) $clientId,
                     $this->actorLabel($request),
+                    $this->tokenLabel($request),
                 );
             } elseif ((string) $name === 'send_reply') {
                 $result = $this->sendReply($arguments, $request);
@@ -987,7 +990,7 @@ class McpStaffController extends Controller
             $input['body'] = $arguments['body'];
         }
 
-        $message = app(SendReplyTool::class)->executeHeld($ticket, $input, $this->actorLabel($request));
+        $message = app(SendReplyTool::class)->executeHeld($ticket, $input, $this->actorLabel($request), $this->tokenLabel($request));
 
         return [
             'success' => true,
@@ -2182,5 +2185,20 @@ class McpStaffController extends Controller
         $token = $request->attributes->get('mcp_staff_token');
 
         return $token instanceof McpStaffToken ? $token->actorLabel() : McpStaffToken::LEGACY_ACTOR_LABEL;
+    }
+
+    /**
+     * The authenticated caller's BARE McpToken.label — what TeamsPersona.mcp_token_label
+     * matches, and so the only form that resolves a persona for the client-facing
+     * tagline (psa-u51h). Deliberately NOT actorLabel(), which is the prefixed audit
+     * form "mcp-staff:{label}" and matches no persona. Null for a legacy (unlabelled)
+     * token, which correctly resolves none. Mirrors what the OperatorBridge branch
+     * already passes.
+     */
+    private function tokenLabel(Request $request): ?string
+    {
+        $token = $request->attributes->get('mcp_staff_token');
+
+        return $token instanceof McpStaffToken ? $token->label : null;
     }
 }

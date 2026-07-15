@@ -96,8 +96,12 @@ class SendReplyTool
     /**
      * Create a held reply draft from MCP/staff. A supplied body is held verbatim
      * for cockpit approval; bodyless calls preserve the native drafter fallback.
+     *
+     * $tokenLabel is the caller's BARE McpToken.label, recorded so the disclosure
+     * written at APPROVAL time can name the persona that drafted this (psa-u51h) —
+     * $draftedBy cannot serve, being the prefixed audit label.
      */
-    public function executeHeld(Ticket $ticket, array $input, string $draftedBy): string
+    public function executeHeld(Ticket $ticket, array $input, string $draftedBy, ?string $tokenLabel = null): string
     {
         return $this->executeInternal(
             ticket: $ticket,
@@ -105,6 +109,7 @@ class SendReplyTool
             correctionContext: null,
             allowSuppliedBody: true,
             draftedBy: $draftedBy,
+            tokenLabel: $tokenLabel,
         );
     }
 
@@ -114,6 +119,7 @@ class SendReplyTool
         ?array $correctionContext,
         bool $allowSuppliedBody,
         string $draftedBy,
+        ?string $tokenLabel = null,
     ): string {
         $reason = trim((string) ($input['reason'] ?? ''));
 
@@ -141,10 +147,15 @@ class SendReplyTool
             $to = $draft->to;
             $tokensUsed = $draft->tokensUsed;
             $draftedBy = 'technician-drafter';
+            // The NATIVE drafter wrote these words, in the global actor's voice (it is
+            // handed aiActorName() above). Crediting the caller's persona would name a
+            // persona that did not write the reply, so drop the label and let the
+            // tagline fall back to the global name (psa-u51h).
+            $tokenLabel = null;
         }
 
         $hash = hash('sha256', 'send_reply:'.$ticket->id.':'.$body);
-        $meta = $this->draftMeta($to, $reason, $draftedBy, $correctionContext);
+        $meta = $this->draftMeta($to, $reason, $draftedBy, $correctionContext, $tokenLabel);
 
         $run = TechnicianRun::firstOrCreate(
             [
@@ -213,7 +224,7 @@ class SendReplyTool
     /**
      * @return array<string, mixed>
      */
-    private function draftMeta(?string $to, string $reason, string $draftedBy, ?array $correctionContext): array
+    private function draftMeta(?string $to, string $reason, string $draftedBy, ?array $correctionContext, ?string $tokenLabel = null): array
     {
         $meta = [];
         if ($to !== null && trim($to) !== '') {
@@ -222,6 +233,9 @@ class SendReplyTool
 
         $meta['reasons'] = $reason !== '' ? [$reason] : [];
         $meta['drafted_by'] = $draftedBy;
+        // Bare label for approval-time persona resolution; null on natively-drafted
+        // runs, which are in the global actor's voice (psa-u51h).
+        $meta['drafted_by_token'] = $tokenLabel;
 
         if ($correctionContext !== null) {
             $meta['informed_by_correction'] = $correctionContext;

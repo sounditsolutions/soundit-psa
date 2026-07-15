@@ -9,6 +9,7 @@ use App\Enums\WhoType;
 use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Models\TicketNote;
+use App\Models\User;
 use App\Services\Email\EmailRecipientResolver;
 use App\Services\Email\RecipientContext;
 use App\Services\Email\RecipientValidationException;
@@ -52,6 +53,37 @@ class TechnicianApprovalService
         private readonly EmailRecipientResolver $recipients,
     ) {}
 
+    /**
+     * The persona that DRAFTED this run, for note attribution and the AI half of the
+     * dual credit (psa-u51h). Read from the bare token label the staging path recorded
+     * — the token itself is long out of scope by approval time. A run staged before
+     * psa-u51h (or drafted natively, with no token at all) has no such key and degrades
+     * to the global actor name, byte-identical to the pre-psa-u51h tagline.
+     */
+    private function drafterName(TechnicianRun $run): string
+    {
+        $label = data_get($run->proposed_meta, 'drafted_by_token');
+
+        return TechnicianConfig::actorNameForTokenLabel(is_string($label) ? $label : null);
+    }
+
+    /**
+     * Dual credit for the approved send: the AI that drafted it AND the technician who
+     * reviewed and sent it (Charlie's rule — this path is human-approved, unlike the
+     * auto-sent path, which keeps the AI-only banner). An approver that no longer
+     * resolves to a named user degrades to AI-only rather than crediting a phantom
+     * human (manager ruling, psa-u51h Q3).
+     */
+    private function disclosedForApproval(string $body, string $drafterName, int $approverId): string
+    {
+        $approverName = (string) (User::find($approverId)?->name ?? '');
+
+        $disclosed = $this->disclosure->withDualDisclosure($body, $drafterName, $approverName);
+        $this->disclosure->assertPresent($disclosed); // fail-closed pre-send check
+
+        return $disclosed;
+    }
+
     private function resolveRecipients(Ticket $ticket, array $to, array $cc): ResolvedRecipients
     {
         // Every send below is operator-approved from the cockpit (the recipient list is
@@ -75,7 +107,7 @@ class TechnicianApprovalService
 
         $ticket = $run->ticket;
         $actorId = TechnicianConfig::aiActorUserId();
-        $actorName = TechnicianConfig::aiActorName();
+        $actorName = $this->drafterName($run);
 
         // GATE 3: re-resolve the operator's recipients at execution time — a ref that no
         // longer resolves (person deleted/re-parented, arbitrary knob off) fails closed
@@ -106,8 +138,7 @@ class TechnicianApprovalService
             $hash = hash('sha256', 'send_reply:'.$run->ticket_id.':'.$resolved->hashPayload($body));
             $token = TechnicianApprovalGrant::issue('send_reply', $run->ticket_id, $hash, $approverId);
 
-            $disclosed = $this->disclosure->withDisclosure($body, $actorName);
-            $this->disclosure->assertPresent($disclosed); // fail-closed pre-send check
+            $disclosed = $this->disclosedForApproval($body, $actorName, $approverId);
 
             $createdNote = null;
 
@@ -392,7 +423,7 @@ class TechnicianApprovalService
         }
 
         $actorId = TechnicianConfig::aiActorUserId();
-        $actorName = TechnicianConfig::aiActorName();
+        $actorName = $this->drafterName($run);
 
         try {
             // Email-sending action: the grant + audit hash binds body AND the final
@@ -401,8 +432,7 @@ class TechnicianApprovalService
             $hash = hash('sha256', $actionType.':'.$run->ticket_id.':'.($resolved !== null ? $resolved->hashPayload($body) : $body));
             $token = TechnicianApprovalGrant::issue($actionType, $run->ticket_id, $hash, $approverId);
 
-            $disclosed = $this->disclosure->withDisclosure($body, $actorName);
-            $this->disclosure->assertPresent($disclosed);
+            $disclosed = $this->disclosedForApproval($body, $actorName, $approverId);
 
             $createdNote = null;
 

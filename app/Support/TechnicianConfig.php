@@ -113,6 +113,29 @@ class TechnicianConfig
     }
 
     /**
+     * The acting TOKEN's persona display name, falling back to the global actor name
+     * (psa-u51h part 1; an instance of the so-bp4f white-label defect — one tenant's
+     * "Chet" must not sign every tenant's mail).
+     *
+     * $label is the BARE McpToken.label (what TeamsPersona.mcp_token_label stores and
+     * what byTokenLabel() matches), NOT McpStaffToken::actorLabel(), which returns the
+     * prefixed audit form "mcp-staff:{label}". Passing the prefixed label here resolves
+     * NO persona and silently falls back for ever — a no-op that looks like it works.
+     * Callers with only an actorLabel must thread the bare label separately (see
+     * McpStaffController, which already does exactly this for OperatorBridge).
+     *
+     * Resolution is active()-scoped via byTokenLabel(): an unknown, disabled, or
+     * credential-incomplete persona yields the pre-psa-u51h name, byte-identical.
+     */
+    public static function actorNameForTokenLabel(?string $label): string
+    {
+        $trimmed = trim((string) $label);
+        $persona = $trimmed !== '' ? TeamsPersonaConfig::byTokenLabel($trimmed) : null;
+
+        return $persona?->display_name ?? self::aiActorName();
+    }
+
+    /**
      * action_type => tier-string map (data, not code). Invalid/missing → [],
      * which the classifier reads as "default-deny everything to Approve".
      *

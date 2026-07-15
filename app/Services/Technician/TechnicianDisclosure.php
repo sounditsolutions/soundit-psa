@@ -24,9 +24,43 @@ class TechnicianDisclosure
 
     public function withDisclosure(string $body, string $actorName): string
     {
-        $name = trim($actorName) !== '' ? trim($actorName) : 'our virtual assistant';
-        $banner = '— Sent by '.$name.self::DISCLOSURE_SENTINEL;
+        $banner = '— Sent by '.self::displayName($actorName).self::DISCLOSURE_SENTINEL;
 
+        return self::append($body, $banner);
+    }
+
+    /**
+     * Dual credit for an AI-DRAFTED, HUMAN-APPROVED-AND-SENT message (psa-u51h part 2):
+     * the client sees both who wrote it and who reviewed it. The auto-sent path keeps
+     * withDisclosure() — the AI alone is accountable there, and claiming a human
+     * reviewer who never existed is exactly the trust breach this disclosure exists
+     * to prevent.
+     *
+     * DISCLOSURE_SENTINEL is embedded verbatim, so assertPresent() stays name- AND
+     * shape-independent. A blank approver degrades to the AI-only banner rather than
+     * crediting nobody (manager ruling, psa-u51h Q3).
+     */
+    public function withDualDisclosure(string $body, string $actorName, string $approverName): string
+    {
+        $approver = trim($approverName);
+        if ($approver === '') {
+            return $this->withDisclosure($body, $actorName);
+        }
+
+        $banner = '— Drafted by '.self::displayName($actorName).self::DISCLOSURE_SENTINEL
+            .' Reviewed and sent by '.$approver.'.';
+
+        return self::append($body, $banner);
+    }
+
+    /** Never leave the persona slot empty — an unnamed sender reads as a human. */
+    private static function displayName(string $actorName): string
+    {
+        return trim($actorName) !== '' ? trim($actorName) : 'our virtual assistant';
+    }
+
+    private static function append(string $body, string $banner): string
+    {
         return rtrim($body)."\n\n".$banner."\n".self::HUMAN_AFFORDANCE;
     }
 
