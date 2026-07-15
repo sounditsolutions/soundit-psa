@@ -121,6 +121,39 @@ class CockpitDisclosurePreviewTest extends TestCase
         $this->assertStringContainsString('Robin', $html);
     }
 
+    /**
+     * The card promises dual credit UNIFORMLY, so that promise must hold for EVERY action
+     * type it renders. The view builds its card list by filtering $drafts to $replyTypes;
+     * each of those four routes through the dual-credit seam (send_reply +
+     * propose_resolution -> approveAndSend; stage_email + stage_public_note ->
+     * approveStagedBodyAction). Add a reply type that does NOT dual-credit, or make the
+     * preview map partial, and the card starts promising the client something they will
+     * never receive — the same defect as psa-u51h.2, pointed the other way.
+     */
+    public function test_every_action_type_the_card_renders_previews_a_real_disclosure(): void
+    {
+        $actor = User::factory()->create(['name' => 'Dana Tech']);
+        $this->personaFor('robin-token', 'Robin');
+        $run = $this->seedStagedEmailRun($actor, 'robin-token');
+
+        foreach (['send_reply', 'propose_resolution', 'stage_email', 'stage_public_note'] as $i => $type) {
+            TechnicianRun::create([
+                'ticket_id' => $run->ticket_id, 'client_id' => $run->client_id, 'action_type' => $type,
+                'content_hash' => str_repeat((string) $i, 64), 'state' => TechnicianRunState::AwaitingApproval,
+                'proposed_content' => 'Draft for '.$type,
+                'proposed_meta' => ['drafted_by' => 'mcp-staff:robin-token', 'drafted_by_token' => 'robin-token'],
+            ]);
+        }
+
+        $html = $this->actingAs($actor)->get(route('cockpit.index'))->assertOk()->getContent();
+
+        // Each card carries the real banner — never the empty promise a partial preview
+        // map would render ("added automatically, exactly as written:" + nothing).
+        $expected = '— Drafted by Robin, an AI assistant for our team. Reviewed and sent by Dana Tech.';
+        $this->assertSame(5, substr_count($html, $expected), 'every rendered reply card must preview the real disclosure');
+        $this->assertStringNotContainsString('exactly as written:</span>', $html);
+    }
+
     public function test_a_run_with_no_recorded_token_previews_the_global_name_unchanged(): void
     {
         // Runs staged BEFORE psa-u51h (and native drafts) carry no bare label: the preview
