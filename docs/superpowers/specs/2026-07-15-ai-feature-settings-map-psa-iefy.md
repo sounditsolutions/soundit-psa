@@ -122,7 +122,47 @@ Scalars (reader → real default → gate): `triage_enabled` (`:14` → **false*
 
 ### 3.4 Cluster: Technician — `TechnicianConfig` (590 lines, the largest)
 
-**31 keys: 27 operator settings + 4 runtime-state stamps sharing the same namespace, table, and helper.** Full table omitted here for length; the load-bearing facts:
+**31 keys: 27 operator settings + 4 runtime-state stamps sharing the same namespace, table, and helper.** `TC:` = `TechnicianConfig.php`, `IC:` = `IntegrationsController.php`, `blade:` = `settings/integrations.blade.php`. No seeder or migration pre-seeds **any** `technician_` key, so "unset" is the real shipped state and the helper's fallback **is** the shipped default.
+
+| Key | Kind | Reader | REAL default | Gates | UI | Dormant? |
+|---|---|---|---|---|---|---|
+| `technician_kill_switch` | OPERATOR | TC:36-39 | `false` | **15 enforcement sites** (`TechnicianActionGate.php:76,117` + 13 MCP write sites) | **`IC:1921`** on its own route (`web.php:472`) + blade `:3511-3611` | live |
+| `technician_enabled` | OPERATOR | TC:18-21 | **false** | `RunTechnicianLoop` dispatch: `TicketObserver.php:53`, `EmailService.php:728`, `TicketService.php:273` | `IC:1964` + blade `:3626` | **off + badged superseded** |
+| `technician_emergency_enabled` | OPERATOR | TC:24-27 | **false** | `emergencyBackstopEnabled()` TC:32 → ping/heartbeat/sweep | `IC:1965` + blade `:3631` | off |
+| `technician_action_tiers` | OPERATOR | TC:144-147 | `[]` → **default-deny** | `TechnicianTierClassifier.php:32,66` | `IC:1984` — **only 2 of N keys** → **§4.8** | live |
+| `technician_daily_token_limit` | OPERATOR | TC:244-249 | `1_000_000` | `TechnicianBudget.php:22` → **`DraftPipeline.php:43` only** | **NO UI** | live |
+| `technician_max_tokens_per_run` | OPERATOR | TC:252-257 | `100_000` | **nothing** | **NO UI** | **DEAD** |
+| `technician_operator_covering` | OPERATOR | TC:166-171 | `true` | **nothing** | **NO UI** | **DEAD** (docblock: *"Authoritative"*) |
+| `technician_ack_eta_text` | OPERATOR | TC:173-178 | `'within one business day'` | `AutoAcknowledge.php:118` | **NO UI** | live |
+| `technician_ack_suppressed_categories` | OPERATOR | TC:181-192 | `['billing','security','incident','outage']` | `AutoAcknowledge.php:35` | **NO UI** | live |
+| `technician_excluded_client_ids` | OPERATOR | TC:149-152 | `[]` | `TechnicianActionGate.php:81` (HOLD) | **NO UI** | **live safety control** |
+| `technician_always_human_client_ids` | OPERATOR | TC:154-157 | `[]` | `TechnicianActionGate.php:92` | **NO UI** | **live safety control** |
+| `technician_escalation_judgment_user` | OPERATOR | TC:513-518 | `null` | TC:535 → `EscalationNotifier.php:77`; TC:553 → `OperatorBridgeToolExecutor.php:111` | **NO UI** | **live Chet routing** |
+| `technician_escalation_handson_user` | OPERATOR | TC:521-526 | `null` | as above | **NO UI** | **live Chet routing** |
+| `technician_notify_email` | OPERATOR | TC:211-216 | `null` | `OperatorNotifier.php:36` | `IC:1992` + blade `:3665` | live |
+| `technician_teams_webhook_url` | OPERATOR (enc) | TC:227-241 | `null` | `TeamsNotifier.php:84`, `DefaultSignalRoutes.php:18` | `IC:1990` + blade `:3658` | live |
+| `technician_digest_enabled` | OPERATOR | TC:260-265 | **`true`** | `TechnicianDigest.php:18`, `console.php:372` | `IC:1993` + blade `:3669` | live |
+| `technician_digest_time` | OPERATOR | TC:268-273 | `'08:00'` | `console.php:377` | `IC:2000` + blade `:3675` | live |
+| `technician_heartbeat_interval` | OPERATOR | TC:304-309 | `15`, floor 10 | `TechnicianHeartbeat.php:34,43` | `IC:2001` + blade `:3679` | live |
+| `technician_emergency_age_minutes` | OPERATOR | TC:331-338 | `{p1:15,p2:60,p3:240,p4:1440}` | `EmergencyDetector.php:31` | `IC:2054` + blade `:3768` | live |
+| `technician_emergency_keywords` | OPERATOR | TC:346-353 | 10 keywords | `EmergencyDetector.php:41` | `IC:2062` + blade `:3778` | live |
+| `technician_escalation_timeout` | OPERATOR | TC:359-364 | `15`, **reader floor 5** | `EscalationService.php:117` | `IC:2067` (**writer floor 1**) + blade `:3785` | live — **floor mismatch** |
+| `technician_emergency_reping` | OPERATOR | TC:420-425 | `30`, **reader floor 5** | `EscalationService.php:133,169` | `IC:2070` (**writer floor 1**) + blade `:3790` | live — **floor mismatch** |
+| `technician_storm_window` | OPERATOR | TC:396-401 | `15`, floor 1 | `EmergencyGrouper.php:18` | `IC:2073` + blade `:3795` | live |
+| `technician_max_hold_message` | OPERATOR | TC:407-414 | canned text | `MaxHoldSender.php:68` | `IC:2078` + blade `:3805` | live |
+| `technician_escalation_chain` | OPERATOR | TC:160-163 | `[]` | `EscalationService.php:63`, `EmergencySweep.php:273` | `IC:2023` + blade `:3698` | live |
+| `technician_operator_availability` | OPERATOR | TC:370-378 | **unset ⇒ available** | `EscalationSweep.php:131` | `IC:2028` + blade `:3726` | live |
+| `technician_operator_phones` | OPERATOR | TC:470-476 | `null` | `OperatorNotifier.php:73` (SMS) | `IC:2041` + blade `:3748` | live |
+| `technician_coverage_start_at` | **RUNTIME** | TC:436-441 | `null` | `EmergencyDetector.php:32`, `EmergencySweep.php:79` | side-effect of `IC:1969/:1971` | n/a |
+| `technician_last_digest_at` | **RUNTIME** | TC:276-281 | `null` | `console.php:380` | `TechnicianDigest.php:24` | n/a |
+| `technician_worker_last_seen` | **RUNTIME** | TC:292-295 | `null` | `TechnicianHeartbeat.php:33` | `TechnicianPing.php:25` | n/a |
+| `technician_last_heartbeat_alert_at` | **RUNTIME** | TC:312-317 | `null` | `TechnicianHeartbeat.php:42` | `TechnicianHeartbeat.php:52` | n/a |
+
+**Spillover — non-`technician_` keys this helper owns** (an IA seam in itself): `allow_arbitrary_email_recipients` (TC:42), `allow_arbitrary_email_recipients_staged` (TC:48), `direct_email_new_recipients` (TC:67), `triage_system_user_id` (TC:92), and **`agent_escalation_reping_minutes`** (TC:503-508) — *the only `agent_*` key in the repo not read by `AgentConfig`.*
+
+**What actually runs at the shipped default** (both toggles unset ⇒ false): ping, digest, emergency-sweep and heartbeat's worker-liveness half are all **dormant**. Only `technician:reap-stale-claims` runs unconditionally (deliberately — a run stranded before the toggle went off still needs recovering). **`technician:heartbeat` still fires every minute if `TriageConfig::autoReviewEnabled()`**, even with the whole Technician subsystem off — deliberate (psa-lqlu: *"the alarm must not be blind to the very stall it exists to catch"*), and the one place the Technician schedule reaches into the Triage lane.
+
+The load-bearing facts:
 
 - **`technician_kill_switch`** — the emergency stop. **15 enforcement sites** (`TechnicianActionGate.php:76,117` + 13 MCP write sites). **Now has a UI** (psa-2wwh, `IntegrationsController.php:1921`, blade `:3511`) on its **own route** (`web.php:472`) — deliberately separate so an unrelated form save cannot disarm it, with `engaged` required `in:0,1` so a malformed POST 422s rather than releasing the brake. **Good design.** See §4.1 and §4.3 for what it still does not cover and who can flip it.
 - **DEAD but live-looking:** `technician_operator_covering` (docblock: *"Authoritative manual 'covering / not covering' toggle"*; **zero production callers**) and `technician_max_tokens_per_run` (**zero callers** — while `TechnicianAgent.php:132` hardcodes `maxTokenBudget: 200_000`, **double** the dead setting's 100k default).
