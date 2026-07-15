@@ -284,6 +284,10 @@ class IntegrationsController extends Controller
         // AI Technician settings
         $technicianEnabled = \App\Support\TechnicianConfig::enabled();
         $technicianEmergencyEnabled = \App\Support\TechnicianConfig::emergencyEnabled();
+        // psa-2wwh: the emergency brake's true current state. ~16 readers gate on it;
+        // until now nothing rendered it, so the operator could not see whether the AI
+        // write surface was paused without querying the DB.
+        $technicianKillSwitch = \App\Support\TechnicianConfig::killSwitchEngaged();
         $technicianAutoAck = ((\App\Support\TechnicianConfig::tierMap()['send_ack'] ?? null) === 'auto');
         // psa-uvuy: the Teams webhook is a masked secret — expose only whether one is
         // stored (drives the "••••••••" placeholder), never the raw URL to the view.
@@ -393,7 +397,7 @@ class IntegrationsController extends Controller
             'triageDefaultAssignee', 'triageSystemUser', 'triageModel', 'triageMaxTokens', 'triageDailyTokens', 'triageBatchSize', 'triageStages',
             'assistantEnabled', 'assistantMaxMessages', 'assistantDailyTokens',
             'intakeCallEnabled', 'intakeEmailEnabled',
-            'technicianEnabled', 'technicianEmergencyEnabled', 'technicianAutoAck',
+            'technicianEnabled', 'technicianEmergencyEnabled', 'technicianKillSwitch', 'technicianAutoAck',
             'technicianTeamsWebhookSet', 'technicianNotifyEmail', 'technicianDigestEnabled', 'technicianDigestTime', 'technicianHeartbeatInterval',
             'allowArbitraryEmailRecipients', 'allowArbitraryEmailRecipientsStaged', 'directEmailNewRecipients',
             'technicianEscalationChain', 'technicianEscalationTimeout', 'technicianEmergencyReping', 'technicianStormWindow',
@@ -1888,6 +1892,44 @@ class IntegrationsController extends Controller
     }
 
     // --- AI Technician ---
+
+    /**
+     * psa-2wwh — engage/release the emergency kill switch.
+     *
+     * Deliberately NOT part of updateTechnician(), and deliberately NOT using
+     * $request->has(). Two safety properties, each covered by a test:
+     *
+     *  1. OWN ROUTE. The technician form means "absent = off". Sharing it would let
+     *     an unrelated save silently disarm the brake mid-incident.
+     *  2. EXPLICIT VALIDATED INTENT. `engaged` is required and must be 0|1, so an
+     *     empty or malformed POST 422s instead of releasing the brake. Fail-closed:
+     *     releasing an emergency stop must be something you SAID, never something
+     *     that happened because a field went missing.
+     *
+     * Scope note: this exposes the existing switch; it does not change what the
+     * switch covers. It gates the agent/MCP write lane (~16 readers) and NOT the
+     * triage lane — see psa-0d0t. The card states that limit rather than implying
+     * a reach the code does not have.
+     */
+    public function updateTechnicianKillSwitch(Request $request)
+    {
+        $validated = $request->validate([
+            'engaged' => ['required', 'in:0,1'],
+        ]);
+
+        $engaged = $validated['engaged'] === '1';
+        Setting::setValue('technician_kill_switch', $engaged ? '1' : '0');
+
+        Log::warning('[Technician] Emergency kill switch '.($engaged ? 'ENGAGED' : 'RELEASED'), [
+            'user_id' => $request->user()?->id,
+            'engaged' => $engaged,
+        ]);
+
+        return redirect()->route('settings.integrations')
+            ->with('success', $engaged
+                ? 'Emergency stop ENGAGED — AI writes are paused.'
+                : 'Emergency stop released — AI writes resume.');
+    }
 
     public function updateTechnician(Request $request)
     {

@@ -466,6 +466,10 @@ Route::middleware('auth')->group(function () {
 
     // Settings — AI Technician
     Route::post('/settings/integrations/technician', [IntegrationsController::class, 'updateTechnician'])->name('settings.integrations.technician.update');
+    // psa-2wwh: the emergency brake gets its OWN route, deliberately NOT folded into
+    // updateTechnician. That form's semantics are "absent = off", so sharing it would
+    // let an unrelated settings save silently disarm the kill switch mid-incident.
+    Route::post('/settings/integrations/technician/kill-switch', [IntegrationsController::class, 'updateTechnicianKillSwitch'])->name('settings.integrations.technician.kill-switch');
     Route::post('/settings/integrations/teams-bot', [IntegrationsController::class, 'updateTeamsBot'])->name('settings.integrations.teams-bot.update');
     Route::delete('/settings/integrations/personas/{persona}/conversation-binding', [IntegrationsController::class, 'unbindPersonaConversation'])->name('settings.integrations.persona.unbind-conversation');
 

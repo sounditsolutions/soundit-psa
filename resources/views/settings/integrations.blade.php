@@ -3508,6 +3508,75 @@
             </div>
         </div>
 
+        {{-- Emergency stop (technician_kill_switch) — psa-2wwh.
+             Its OWN card, deliberately NOT inside the AI Technician card below. That card is
+             badged "Superseded by GC Chet — leave it off", so an operator reasonably skips it
+             as legacy — while this brake is what stops GC CHET's live MCP writes. Burying the
+             live brake inside the superseded card would hide it at the exact moment it matters. --}}
+        <div class="card shadow-sm mb-4 {{ $technicianKillSwitch ? 'border-danger border-2' : '' }}">
+            <div class="card-header d-flex align-items-center {{ $technicianKillSwitch ? 'bg-danger text-white' : '' }}">
+                <span>
+                    <i class="bi bi-sign-stop-fill me-2"></i>Emergency stop
+                    @if($technicianKillSwitch)
+                        <span class="badge bg-white text-danger ms-2">ENGAGED — AI writes are paused</span>
+                    @else
+                        <span class="badge bg-secondary ms-2">Not engaged</span>
+                    @endif
+                </span>
+            </div>
+            <div class="card-body">
+                <p class="text-muted small">
+                    The brake on every AI <strong>write</strong> action. Engage it when an AI is doing something you
+                    do not want it doing — you do not need to work out which feature is responsible first.
+                </p>
+
+                <div class="row g-3 mb-3">
+                    <div class="col-md-6">
+                        <div class="border rounded p-2 h-100">
+                            <div class="small fw-semibold text-success-emphasis mb-1"><i class="bi bi-check-circle me-1"></i>Engaged, this stops</div>
+                            <ul class="small text-muted mb-0 ps-3">
+                                <li><strong>GC Chet's write tools</strong> — client emails, ticket status changes, CIPP writes are <em>refused</em>.</li>
+                                <li><strong>The AI Technician's actions</strong> — held for human approval instead of executing.</li>
+                            </ul>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="border rounded p-2 h-100">
+                            <div class="small fw-semibold text-danger-emphasis mb-1"><i class="bi bi-exclamation-triangle me-1"></i>It does NOT stop</div>
+                            <ul class="small text-muted mb-0 ps-3">
+                                <li><strong>Does not stop AI triage.</strong> The junk filter's auto-close (on by default) and the
+                                    hourly review auto-close run in the triage lane, which this brake does not reach — turn
+                                    <em>AI Triage</em> off for those.</li>
+                                <li><strong>Reads.</strong> The AI can still read and analyse; it just cannot write.</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+
+                <form method="POST" action="{{ route('settings.integrations.technician.kill-switch') }}"
+                      onsubmit="return this.engaged.checked || confirm('Release the emergency stop?\n\nAI write actions will resume immediately.');">
+                    @csrf
+                    {{-- Hidden 0 + checkbox 1: `engaged` is ALWAYS submitted explicitly. The handler
+                         requires it (0|1) and 422s otherwise, so a malformed post can never silently
+                         release the brake. Releasing must be something you said, not a missing field. --}}
+                    <input type="hidden" name="engaged" value="0">
+                    <div class="form-check form-switch">
+                        <input class="form-check-input" type="checkbox" role="switch" value="1"
+                               id="technician_kill_switch" name="engaged"
+                               {{ $technicianKillSwitch ? 'checked' : '' }}
+                               onchange="this.form.submit()">
+                        <label class="form-check-label" for="technician_kill_switch">
+                            <strong>Engage emergency stop</strong>
+                            <span class="d-block text-muted small">
+                                Takes effect immediately — it is re-checked in-flight, so an action already in
+                                progress is stopped before it executes. Nothing is lost: held actions wait for you.
+                            </span>
+                        </label>
+                    </div>
+                </form>
+            </div>
+        </div>
+
         {{-- AI Technician Card --}}
         <div class="card shadow-sm mb-4">
             <div class="card-header d-flex align-items-center">
