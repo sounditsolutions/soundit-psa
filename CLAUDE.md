@@ -257,18 +257,25 @@ Casing is a trap in particular: CIPP passes Microsoft Graph through as camelCase
 
 Applies to every vendor integration in this repo, not just CIPP.
 
-## API documentation references
-When you need to look up API endpoints, schemas, or integration details, read from `~/repos/HaloClaude/docs/`:
+## API documentation references — how to actually read a vendor's shape
 
-### Vendor docs (`docs/<vendor>/`)
-| Vendor | Key file | Notes |
-|--------|----------|-------|
-| **CIPP** | `api-endpoints.md` | 436 endpoints, OAuth2, tenant-scoped Microsoft management |
-| **Mesh** | `mesh-api-index.md` + `Mesh-API-v1.json` | Email security — log search, event trace, API key auth |
-| **NinjaRMM** | `NinjaRMM-API-v2.json` | OpenAPI spec only (~1.3 MB), no markdown index |
-| **Todyl** | `SGN-SASE-SIEM-field-mappings.txt` | Field mapping reference for security/SIEM |
-| **Servosity** | `Servosity-API-v1.json` | OpenAPI spec, Token auth, Django REST pagination |
-| **Zorus** | `zorus-api.json` | OpenAPI spec only (~55 KB) |
+The rule above says read the vendor's **producer**, never guess. This section is how you obtain it. Follow the order below; it goes from "the real code" to "worse substitutes", and stops at "ask" rather than at "guess".
+
+**1. Clone the vendor's source, if the vendor is open source.** This is the best answer and it beats any docs index — the producer is the only thing that can't be out of date. **CIPP is open source** (verified 2026-07-15):
+
+```bash
+git clone --depth 1 https://github.com/KelvinTegelaar/CIPP-API /tmp/cipp-api   # public, ~128MB, ~20s, no auth
+```
+
+Its HTTP entrypoints — the functions that build the payloads our `CippMcpToolRelay`/`CippClient` receive — live under `Modules/CIPPHTTP/Public/Entrypoints/HTTP Functions/`, one `Invoke-<Endpoint>.ps1` per endpoint. Read the one you're integrating and follow it to its true producer (it may re-dispatch to `Modules/CIPPCore/`). Then **cite the file:line in a comment next to your field list**, as the rule above requires, so the next person re-verifies instead of re-guessing.
+
+Check whether a vendor is public before assuming either way — `curl -s https://api.github.com/repos/<owner>/<repo>` answers unauthenticated for public repos; a private one 404s.
+
+**2. If the vendor is not open source**, its OpenAPI spec is the next-best producer. Get it from the vendor's own developer portal, and record where you got it.
+
+**3. If you cannot obtain the shape, STOP AND ASK Charlie or gus.** Do not infer it from the vendor's docs prose, from the resource it wraps, or from what the field "obviously" must be called. An unanswered question costs an hour; a guessed field name cost us six silently-broken CIPP tools for months (see the rule above). "I need the real payload for X and can't reach it" is always a legitimate thing to escalate.
+
+> **Historical note — a path that used to be here.** This section previously said to read specs from `~/repos/HaloClaude/docs/` (tables for CIPP, Mesh, NinjaRMM, Todyl, Servosity, Zorus). **That directory does not exist on the dev box, and the HaloClaude repo is not reachable from it** (verified 2026-07-15 — `git ls-remote` prompts for credentials). Those specs may still exist in Charlie's HaloClaude repo; ask him if you need one. It is called out rather than silently deleted because the dead path actively caused the failure it was meant to prevent: an agent obeying "read the source" found nothing there and fell back to guessing, and at least one bead (psa-00s5) sat blocked on "no vendor source available" when the vendor was a 20-second public clone away.
 
 ## Database
 - **Local dev**: MariaDB (or SQLite for quick local work). Configure via `.env`.
