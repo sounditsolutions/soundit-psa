@@ -210,6 +210,60 @@
     </div>
 </div>
 
+{{-- psa-lunj: matrix-owned relay routes, READ-ONLY.
+     These used to be listed in the Routes table above, indistinguishable from operator
+     routes — which is precisely why the relay matrix read as "redundant with existing
+     Routes config": this page was displaying the matrix's own rows. Worse, they could be
+     toggled off from here, which silently stopped the relay while the matrix went on
+     showing the cell as relayed.
+     They are SHOWN rather than hidden on purpose: a route that delivers and appears
+     nowhere is its own trap. This list states who owns them and points there. --}}
+@if($managedRoutes->isNotEmpty())
+<div class="card card-static shadow-sm mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+        <span>
+            <i class="bi bi-grid-3x3-gap me-2"></i>Relay routes
+            <span class="badge bg-secondary ms-2">Managed by the relay matrix</span>
+        </span>
+        <a class="btn btn-outline-primary btn-sm" href="{{ route('settings.alerts.matrix') }}">
+            <i class="bi bi-sliders me-1"></i>Open relay matrix
+        </a>
+    </div>
+    <div class="card-body pb-0">
+        <p class="text-muted small mb-0">
+            One route per MCP token, created and maintained by the <strong>relay matrix</strong> — edit them there,
+            not here. They are listed so nothing delivers invisibly; toggling or rewiring them from this page would
+            silently stop a relay the matrix would still show as on.
+        </p>
+    </div>
+    <div class="table-responsive">
+        <table class="table table-hover mb-0 align-middle">
+            <thead class="thead-brand">
+                <tr>
+                    <th>Route</th>
+                    <th>Token</th>
+                    <th>Relayed types</th>
+                    <th>Steps</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach($managedRoutes as $route)
+                    <tr>
+                        <td>
+                            <span class="fw-semibold">{{ $route->label }}</span>
+                            <div>@include('settings.alerts._status_badge', ['enabled' => $route->enabled])</div>
+                        </td>
+                        <td class="small"><code>{{ $route->managed_token_label }}</code></td>
+                        <td class="small">{{ $route->event_filter_summary }}</td>
+                        <td class="small">{{ $route->steps_summary }}</td>
+                    </tr>
+                @endforeach
+            </tbody>
+        </table>
+    </div>
+</div>
+@endif
+
 <div class="mb-3">
     <h5 class="section-title mb-0"><i class="bi bi-activity me-2"></i>Activity</h5>
 </div>

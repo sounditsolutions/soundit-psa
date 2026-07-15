@@ -36,7 +36,21 @@ class AlertsHubController extends Controller
                 ->orderBy('label')
                 ->get()
                 ->map(fn (SignalDestination $destination) => $this->decorateDestination($destination)),
+            // psa-lunj: the operator list is operator-authored routes ONLY. Matrix-owned
+            // routes (managed_token_label IS NOT NULL) were previously listed here
+            // indistinguishably, which is what made the Matrix look "redundant with
+            // existing Routes config" — the page was literally displaying the Matrix's
+            // own rows — and let an operator silently disable a live relay from here.
             'routes' => SignalRoute::query()
+                ->whereNull('managed_token_label')
+                ->with('steps.destination')
+                ->orderBy('label')
+                ->get()
+                ->map(fn (SignalRoute $route) => $this->decorateRoute($route)),
+            // Shown READ-ONLY rather than hidden: a route that delivers and appears
+            // nowhere is its own trap. The matrix owns them; this list only points at it.
+            'managedRoutes' => SignalRoute::query()
+                ->whereNotNull('managed_token_label')
                 ->with('steps.destination')
                 ->orderBy('label')
                 ->get()
@@ -193,8 +207,38 @@ class AlertsHubController extends Controller
         ]);
     }
 
+    /**
+     * psa-lunj — the operator UI may not mutate a matrix-owned relay route.
+     *
+     * signal_routes.managed_token_label is the discriminator separating operator-authored
+     * routes from the ones SignalRelayMatrix owns. The matrix honours it (whereNotNull) and
+     * is tested for it; this side never was, so the operator page could silently disable a
+     * live relay while the Matrix went on rendering the cell as relayed (its cells read
+     * event_filter.types, never enabled) — and the next matrix edit would silently
+     * re-enable it. Guard every operator door into a managed row, and say WHERE to go
+     * instead: a refusal that does not name the real owner just moves the confusion.
+     *
+     * The guard lives at the operator-UI boundary, not on the model: SignalRelayMatrix
+     * legitimately writes these rows, so a model-level block would break the owner.
+     */
+    private function managedRouteRefusal(SignalRoute $route): ?string
+    {
+        if ($route->managed_token_label === null) {
+            return null;
+        }
+
+        return "\"{$route->label}\" is managed by the relay matrix (token: {$route->managed_token_label}) and cannot be edited here — change it on the relay matrix instead.";
+    }
+
     public function showRoute(SignalRoute $route)
     {
+        if ($this->managedRouteRefusal($route) !== null) {
+            // Send them to the surface that actually owns it rather than showing an edit
+            // form whose Save would be refused.
+            return redirect()->route('settings.alerts.matrix')
+                ->with('error', $this->managedRouteRefusal($route));
+        }
+
         return view('settings.alerts.routes.show', [
             'route' => $this->decorateRoute($route->load('steps.destination')),
             'routeDestinations' => SignalDestination::query()->orderBy('label')->get(['id', 'label', 'type']),
@@ -206,6 +250,13 @@ class AlertsHubController extends Controller
 
     public function updateRoute(Request $request, SignalRoute $route)
     {
+        // psa-lunj: refuse BEFORE validation/forceFill — replaceRouteSteps() on a managed
+        // route would destroy the matrix's mcp destination+step wiring and every invariant
+        // it holds (one route per token, nudge_types ⊆ types).
+        if (($refusal = $this->managedRouteRefusal($route)) !== null) {
+            return redirect()->route('settings.alerts.index')->with('error', $refusal);
+        }
+
         [$attributes, $steps] = $this->validatedRoutePayload($request);
 
         DB::transaction(function () use ($request, $route, $attributes, $steps): void {
@@ -226,6 +277,13 @@ class AlertsHubController extends Controller
 
     public function toggleRoute(Request $request, SignalRoute $route)
     {
+        // psa-lunj: THE silent-drop vector. Toggling a managed route off here stops relay
+        // (SignalRouter filters enabled=true) while the Matrix keeps showing the cell as
+        // relayed — the operator is told alerts relay while they do not.
+        if (($refusal = $this->managedRouteRefusal($route)) !== null) {
+            return redirect()->route('settings.alerts.index')->with('error', $refusal);
+        }
+
         $route->forceFill(['enabled' => ! $route->enabled])->save();
 
         SignalConfigLog::record(
