@@ -3526,8 +3526,10 @@
             </div>
             <div class="card-body">
                 <p class="text-muted small">
-                    The brake on every AI <strong>write</strong> action. Engage it when an AI is doing something you
-                    do not want it doing — you do not need to work out which feature is responsible first.
+                    Pauses the AI's <strong>write</strong> actions in the agent/MCP lane — GC Chet's write tools and
+                    the AI Technician's actions. Engage it when one of those is doing something you do not want it
+                    doing; within this lane you do not need to work out which tool is responsible first.
+                    It does <strong>not</strong> cover AI triage — see the right-hand panel.
                 </p>
 
                 <div class="row g-3 mb-3">
@@ -3553,27 +3555,39 @@
                     </div>
                 </div>
 
-                <form method="POST" action="{{ route('settings.integrations.technician.kill-switch') }}"
-                      onsubmit="return this.engaged.checked || confirm('Release the emergency stop?\n\nAI write actions will resume immediately.');">
-                    @csrf
-                    {{-- Hidden 0 + checkbox 1: `engaged` is ALWAYS submitted explicitly. The handler
-                         requires it (0|1) and 422s otherwise, so a malformed post can never silently
-                         release the brake. Releasing must be something you said, not a missing field. --}}
-                    <input type="hidden" name="engaged" value="0">
-                    <div class="form-check form-switch">
-                        <input class="form-check-input" type="checkbox" role="switch" value="1"
-                               id="technician_kill_switch" name="engaged"
-                               {{ $technicianKillSwitch ? 'checked' : '' }}
-                               onchange="this.form.submit()">
-                        <label class="form-check-label" for="technician_kill_switch">
-                            <strong>Engage emergency stop</strong>
-                            <span class="d-block text-muted small">
-                                Takes effect immediately — it is re-checked in-flight, so an action already in
-                                progress is stopped before it executes. Nothing is lost: held actions wait for you.
-                            </span>
-                        </label>
-                    </div>
-                </form>
+                {{-- One state-dependent form with ONE input named `engaged` and a REAL submit button.
+                     Deliberately not a checkbox+hidden pair driven by onchange="this.form.submit()" — the
+                     review of 22f1602 proved that shape broken in a browser two ways at once: two inputs
+                     sharing a name make form.engaged a RadioNodeList (so .checked reads undefined), and
+                     HTMLFormElement.submit() does NOT fire onsubmit, so the release confirmation never ran
+                     at all. An explicitly-labelled button carries the operator's intent in the label itself,
+                     the confirm now actually fires (real submit), and the engage path needs no JS whatsoever. --}}
+                @if($technicianKillSwitch)
+                    <form method="POST" action="{{ route('settings.integrations.technician.kill-switch') }}"
+                          onsubmit="return confirm('Release the emergency stop?\n\nAI write actions resume immediately.');">
+                        @csrf
+                        <input type="hidden" name="engaged" value="0">
+                        <button type="submit" class="btn btn-outline-danger">
+                            <i class="bi bi-play-fill me-1"></i>Release emergency stop
+                        </button>
+                        <span class="d-block text-muted small mt-2">
+                            AI write actions in this lane resume immediately. Anything held while the stop was
+                            engaged is still waiting for you — nothing was lost.
+                        </span>
+                    </form>
+                @else
+                    <form method="POST" action="{{ route('settings.integrations.technician.kill-switch') }}">
+                        @csrf
+                        <input type="hidden" name="engaged" value="1">
+                        <button type="submit" class="btn btn-danger">
+                            <i class="bi bi-sign-stop-fill me-1"></i>Engage emergency stop
+                        </button>
+                        <span class="d-block text-muted small mt-2">
+                            Takes effect immediately — it is re-checked in-flight, so an action already in
+                            progress is stopped before it executes. Nothing is lost: held actions wait for you.
+                        </span>
+                    </form>
+                @endif
             </div>
         </div>
 

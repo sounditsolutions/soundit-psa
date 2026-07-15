@@ -524,7 +524,7 @@ sudo systemctl status soundit-psa-technician-queue
 
 #### Emergency stop (`technician_kill_switch`)
 
-**Settings → Integrations → Emergency stop.** The brake on every AI **write** action — engage it when an AI is doing something you do not want it doing, without first working out which feature is responsible. It takes effect immediately and is re-checked in-flight, so an action already in progress is stopped before it executes. Nothing is lost: held actions wait for you. Engaging is one click; releasing asks for confirmation. Both transitions are logged at `WARNING` with the acting user.
+**Settings → Integrations → Emergency stop.** Pauses the AI's **write** actions in the agent/MCP lane — GC Chet's write tools and the AI Technician's actions. Engage it when one of those is doing something you do not want it doing; within that lane you do not need to work out which tool is responsible first. It takes effect immediately and is re-checked in-flight, so an action already in progress is stopped before it executes. Nothing is lost: held actions wait for you. Engaging is one click; releasing asks for confirmation. Both transitions are logged at `WARNING` with the acting user.
 
 Engaged, it stops:
 

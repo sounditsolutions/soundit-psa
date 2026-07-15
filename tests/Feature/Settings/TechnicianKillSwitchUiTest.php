@@ -133,7 +133,8 @@ class TechnicianKillSwitchUiTest extends TestCase
             ->get(route('settings.integrations'))
             ->assertOk()
             ->assertSee('Emergency stop')
-            ->assertSee('technician_kill_switch');
+            ->assertSee('Engage emergency stop')
+            ->assertDontSee('Release emergency stop');
     }
 
     public function test_the_control_shows_when_the_brake_is_engaged(): void
@@ -143,7 +144,77 @@ class TechnicianKillSwitchUiTest extends TestCase
         $this->actingAs($this->user)
             ->get(route('settings.integrations'))
             ->assertOk()
-            ->assertSee('AI writes are paused');
+            ->assertSee('AI writes are paused')
+            ->assertSee('Release emergency stop')
+            ->assertDontSee('Engage emergency stop');
+    }
+
+    // --- SAFETY 4: the FORM must post the value its button promises ---
+
+    /**
+     * The review of 22f1602 caught the previous shape being broken in a real browser:
+     * a hidden(0) + checkbox(1) pair sharing name="engaged" made form.engaged a
+     * RadioNodeList (so `.checked` read undefined), and onchange="this.form.submit()"
+     * bypassed onsubmit entirely, so the release confirmation never ran — one stray
+     * toggle could release the brake silently. Every server-side test still passed,
+     * because they POST the field directly and never touch the form.
+     *
+     * So: pin the FORM, not just the handler. Each state renders exactly ONE input
+     * named `engaged`, carrying the value its button promises. If someone reintroduces
+     * a second `engaged` input, or flips a value, these fail.
+     */
+    public function test_the_engage_form_posts_engaged_one_and_renders_a_single_engaged_input(): void
+    {
+        $html = $this->actingAs($this->user)->get(route('settings.integrations'))->getContent();
+        $form = $this->killSwitchForm($html);
+
+        $this->assertStringContainsString('name="engaged" value="1"', $form, 'the engage form must post engaged=1');
+        $this->assertSame(1, substr_count($form, 'name="engaged"'), 'exactly ONE input named engaged — two makes form.engaged a RadioNodeList');
+    }
+
+    public function test_the_release_form_posts_engaged_zero_and_renders_a_single_engaged_input(): void
+    {
+        Setting::setValue('technician_kill_switch', '1');
+
+        $html = $this->actingAs($this->user)->get(route('settings.integrations'))->getContent();
+        $form = $this->killSwitchForm($html);
+
+        $this->assertStringContainsString('name="engaged" value="0"', $form, 'the release form must post engaged=0');
+        $this->assertSame(1, substr_count($form, 'name="engaged"'), 'exactly ONE input named engaged');
+    }
+
+    // --- SAFETY 5: engage is one click; release asks ---
+
+    public function test_release_asks_for_confirmation_and_engage_does_not(): void
+    {
+        // Engaging is always safe — no friction on the way to safety.
+        $engageForm = $this->killSwitchForm(
+            $this->actingAs($this->user)->get(route('settings.integrations'))->getContent()
+        );
+        $this->assertStringNotContainsString('confirm(', $engageForm, 'engaging must be one click — never gated behind a dialog');
+
+        // Releasing resumes autonomous client-facing writes — it must be deliberate.
+        // The confirm hangs off a REAL submit button's onsubmit (which fires), not
+        // form.submit() (which does not).
+        Setting::setValue('technician_kill_switch', '1');
+        $releaseForm = $this->killSwitchForm(
+            $this->actingAs($this->user)->get(route('settings.integrations'))->getContent()
+        );
+        $this->assertStringContainsString('confirm(', $releaseForm, 'releasing must ask');
+        $this->assertStringContainsString('type="submit"', $releaseForm, 'a real submit button — onsubmit does not fire for form.submit()');
+        $this->assertStringNotContainsString('this.form.submit()', $releaseForm, 'form.submit() bypasses onsubmit and would skip the confirm');
+    }
+
+    /** Isolate the kill-switch form so assertions cannot accidentally match another card's markup. */
+    private function killSwitchForm(string $html): string
+    {
+        $action = route('settings.integrations.technician.kill-switch');
+        $start = strpos($html, $action);
+        $this->assertNotFalse($start, 'the kill-switch form must be on the page');
+        $formStart = strrpos(substr($html, 0, $start), '<form');
+        $formEnd = strpos($html, '</form>', $start);
+
+        return substr($html, $formStart, $formEnd - $formStart);
     }
 
     // --- SAFETY 3 (psa-0d0t): the control must not overstate its own reach ---
