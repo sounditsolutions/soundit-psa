@@ -55,16 +55,12 @@ class TechnicianApprovalService
 
     /**
      * The persona that DRAFTED this run, for note attribution and the AI half of the
-     * dual credit (psa-u51h). Read from the bare token label the staging path recorded
-     * — the token itself is long out of scope by approval time. A run staged before
-     * psa-u51h (or drafted natively, with no token at all) has no such key and degrades
-     * to the global actor name, byte-identical to the pre-psa-u51h tagline.
+     * dual credit (psa-u51h). Lives on the run itself so the cockpit approval card
+     * previews the SAME drafter this send credits (psa-u51h.2).
      */
     private function drafterName(TechnicianRun $run): string
     {
-        $label = data_get($run->proposed_meta, 'drafted_by_token');
-
-        return TechnicianConfig::actorNameForTokenLabel(is_string($label) ? $label : null);
+        return $run->drafterDisplayName();
     }
 
     /**

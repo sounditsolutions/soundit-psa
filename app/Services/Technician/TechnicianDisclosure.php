@@ -24,9 +24,19 @@ class TechnicianDisclosure
 
     public function withDisclosure(string $body, string $actorName): string
     {
-        $banner = '— Sent by '.self::displayName($actorName).self::DISCLOSURE_SENTINEL;
+        return self::append($body, $this->banner($actorName));
+    }
 
-        return self::append($body, $banner);
+    /**
+     * The AI-only banner, alone. Public so an operator-facing preview (the cockpit
+     * approval card) can show the EXACT line the send appends: the card asks a human to
+     * put their name on this message, so a preview that drifts from the send is a trust
+     * breach, not a cosmetic bug (psa-u51h.2, product review). Previews MUST read the
+     * banner from here rather than re-typing the format.
+     */
+    public function banner(string $actorName): string
+    {
+        return '— Sent by '.self::displayName($actorName).self::DISCLOSURE_SENTINEL;
     }
 
     /**
@@ -42,15 +52,19 @@ class TechnicianDisclosure
      */
     public function withDualDisclosure(string $body, string $actorName, string $approverName): string
     {
+        return self::append($body, $this->dualBanner($actorName, $approverName));
+    }
+
+    /** The dual-credit banner, alone — see banner() for why this is public. */
+    public function dualBanner(string $actorName, string $approverName): string
+    {
         $approver = trim($approverName);
         if ($approver === '') {
-            return $this->withDisclosure($body, $actorName);
+            return $this->banner($actorName);
         }
 
-        $banner = '— Drafted by '.self::displayName($actorName).self::DISCLOSURE_SENTINEL
+        return '— Drafted by '.self::displayName($actorName).self::DISCLOSURE_SENTINEL
             .' Reviewed and sent by '.$approver.'.';
-
-        return self::append($body, $banner);
     }
 
     /** Never leave the persona slot empty — an unnamed sender reads as a human. */

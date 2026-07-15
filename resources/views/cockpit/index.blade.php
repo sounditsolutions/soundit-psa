@@ -219,8 +219,15 @@
                         @php($bodyLabel = $run->action_type === 'stage_public_note' ? 'Public note (edit before publishing)' : 'Message to the client (edit before sending)')
                         <label class="form-label small text-muted mb-1" for="body-{{ $run->id }}">{{ $bodyLabel }}</label>
                         <textarea class="form-control mb-2" id="body-{{ $run->id }}" name="body" rows="4" form="approve-{{ $run->id }}">{{ $run->proposed_content }}</textarea>
+                        {{-- psa-u51h.2: show the EXACT disclosure this approval will append. Every
+                             body-bearing action on this card (send_reply / propose_resolution ->
+                             approveAndSend; stage_email / stage_public_note -> approveStagedBodyAction)
+                             routes through the dual-credit seam and credits YOU by name, so the card
+                             must not promise the old global AI-only line. Banner text comes from
+                             TechnicianDisclosure so the preview cannot drift from the send. --}}
                         <p class="text-muted small mb-2">
-                            <i class="bi bi-info-circle me-1"></i>A disclosure line ("— Sent by {{ \App\Support\TechnicianConfig::aiActorName() }}, an AI assistant for our team.") is added automatically.
+                            <i class="bi bi-info-circle me-1"></i>Added automatically, exactly as written:
+                            <span class="d-block fst-italic mt-1">{{ $disclosurePreviews[$run->id] ?? '' }}</span>
                         </p>
 
                         @if($reasonText = $reasons($run))
@@ -229,7 +236,14 @@
                             <p class="text-muted small mb-2">Confidence: {{ $confidenceLabel($run) }}</p>
                         @endif
                         @if(!empty($run->proposed_meta['drafted_by']))
-                            <p class="text-muted small mb-2">Drafted by: {{ $run->proposed_meta['drafted_by'] }}</p>
+                            {{-- psa-u51h.2: on THIS card the drafter is client-facing text, so name the
+                                 persona the client will see — not the raw 'mcp-staff:{token}' audit
+                                 string. The audit form is unchanged in proposed_meta and stays one hover
+                                 away. (The tactical/direct-close cards keep the raw label on purpose:
+                                 they preview no client disclosure, and for a token with no persona the
+                                 friendly name degrades to the GLOBAL actor name, which would lose the
+                                 which-token provenance those audit surfaces exist to show.) --}}
+                            <p class="text-muted small mb-2" title="Audit: {{ $run->proposed_meta['drafted_by'] }}">Drafted by: {{ $run->drafterDisplayName() }}</p>
                         @endif
 
                         @php($rv = $recipientViews[$run->id] ?? null)

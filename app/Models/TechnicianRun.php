@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Enums\TechnicianRunState;
+use App\Support\TechnicianConfig;
 use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
@@ -63,6 +64,27 @@ class TechnicianRun extends Model
     {
         $this->state = $state;
         $this->save();
+    }
+
+    /**
+     * The persona name that DRAFTED this run — i.e. the AI half of the client-facing
+     * credit (psa-u51h). Resolved from the BARE token label the staging path recorded,
+     * since the token itself is long out of scope by approval time.
+     *
+     * ONE home on purpose: both the send (TechnicianApprovalService) and the operator's
+     * approval-card preview must name the same drafter. Two copies of this lookup is how
+     * the card comes to promise something the client never receives (psa-u51h.2).
+     *
+     * NOT proposed_meta['drafted_by'] — that is the PREFIXED audit form
+     * ('mcp-staff:{label}'), which matches no persona and is not client-facing text.
+     * A run staged before psa-u51h (or drafted natively, with no token) has no bare
+     * label and degrades to the global actor name.
+     */
+    public function drafterDisplayName(): string
+    {
+        $label = data_get($this->proposed_meta, 'drafted_by_token');
+
+        return TechnicianConfig::actorNameForTokenLabel(is_string($label) ? $label : null);
     }
 
     /**

@@ -51,7 +51,12 @@ class CockpitControllerTest extends TestCase
             ->assertOk()
             ->assertSee('Printer down')
             ->assertSee('We will get the printer back online.')
-            ->assertSee('Drafted by: mcp-staff:chet');
+            // psa-u51h.2 (product ruling): the card names the drafter the CLIENT will see, not
+            // the raw 'mcp-staff:{token}' audit string it used to print here. This run records
+            // no bare token label (staged pre-psa-u51h), so the friendly name degrades to the
+            // global actor name — 'Chet'. The audit form is NOT lost: it stays on the title.
+            ->assertSee('Drafted by: Chet')
+            ->assertSee('Audit: mcp-staff:chet');
     }
 
     public function test_approve_sends_and_clears_the_draft(): void

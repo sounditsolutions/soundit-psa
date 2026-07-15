@@ -14,6 +14,7 @@ use App\Models\TicketNote;
 use App\Services\Technician\Cockpit\CockpitQuery;
 use App\Services\Technician\Cockpit\CockpitUndoToken;
 use App\Services\Technician\TechnicianApprovalService;
+use App\Services\Technician\TechnicianDisclosure;
 use App\Services\TicketService;
 use App\Support\PhoneNumber;
 use Illuminate\Http\Request;
@@ -23,12 +24,20 @@ class TechnicianCockpitController extends Controller
 {
     private const UNDO_WINDOW_MINUTES = 5;
 
-    public function index(CockpitQuery $query, \App\Services\Technician\Cockpit\CockpitRecipientView $recipients)
+    public function index(CockpitQuery $query, \App\Services\Technician\Cockpit\CockpitRecipientView $recipients, TechnicianDisclosure $disclosure)
     {
         $drafts = $query->pendingDrafts();
+        // psa-u51h.2: the EXACT disclosure each approval will append, keyed by run id. Every
+        // body-bearing action here is human-approved, so it credits the approver by name —
+        // the card must show that, not the old global AI-only line. Text comes from the
+        // disclosure service itself so the preview cannot drift from the send.
+        $approverName = (string) (auth()->user()?->name ?? '');
 
         return view('cockpit.index', [
             'drafts' => $drafts,
+            'disclosurePreviews' => $drafts->mapWithKeys(fn ($run) => [
+                $run->id => $disclosure->dualBanner($run->drafterDisplayName(), $approverName),
+            ]),
             // psa-kt82 PR B (gate 4): resolved recipient block data keyed by run id.
             'recipientViews' => $drafts->mapWithKeys(fn ($run) => [$run->id => $recipients->for($run)])->filter(),
             'flagged' => $query->flaggedForAttention(),
