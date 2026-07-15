@@ -43,8 +43,33 @@ use App\Services\Triage\TriageToolDefinitions;
  * Against import-by-default the allow-list was redundant; against operator intent it was
  * destructive.
  *
- * What still gates, and is HARD (see refusalReason()): BLOCKED_UPSTREAM_TOOLS and
- * curated-name collisions. Those name DANGER, which no grant may buy back.
+ * ── THE STANDING DEFAULT IS *NOT* A BLOCKLIST (owner directive, 2026-07-15) ─────────
+ * An earlier version of this very docblock said the remaining gates "name DANGER, which no
+ * grant may buy back." *** That is NOT this office's model, and repeating it here was
+ * regenerating the wrong instinct in every next reader. *** Charlie, verbatim: "Don't
+ * hard-block those either. I have said this a dozen times. Wire the tools, make sure they
+ * work correctly and let me/the MSP decide which ones to allow."
+ *
+ * So the default is: WIRE the tool → MAKE IT CORRECT → EXPOSE IT GRANTABLE → allow/deny is
+ * the operator's, per token. Safety here is CORRECTNESS plus operator grant discretion, not
+ * a code-level blocklist. When a tool reads as "dangerous", the answer is almost always
+ * make-it-correct + expose-grantable — not block. Do not add to a blocklist by reflex.
+ *
+ * BLOCKED_UPSTREAM_TOOLS is therefore ON ITS WAY OUT: it holds exactly ListMailboxRules and
+ * ListUserSigninLogs, both of which that directive unblocks, so the constant empties and the
+ * concept goes with it. It survives only until the correctness work below lands.
+ *
+ * *** THE ONE THING THAT MUST NOT BE DECOUPLED: unblock and make-correct ship TOGETHER. ***
+ * The block is not what makes ListUserSigninLogs safe — CORRECTNESS is. Remove it from the
+ * list before the UPN→objectID resolution is wired and the raw passthrough answers a
+ * compromise-triage question with HTTP 200 + empty body, i.e. a confident "this account has
+ * no sign-ins" that is a lie. Unblocking first is the only way to turn this directive into
+ * the exact false all-clear it explicitly forbids. Same for ListMailboxRules: wire it, label
+ * the tenant-wide scope, prove no false-empty — then unlist it.
+ *
+ * Curated-name collisions stay, but read them as CORRECTNESS, not policy: they stop a raw
+ * passthrough silently SHADOWING a hand-written curated tool. That is an integrity
+ * mechanism, not an allow/deny opinion, and it removes no operator choice.
  *
  * ListGraphRequest / ListGraphBulkRequest — the two names the retired allow-list held — do
  * have dedicated, security-reviewed handling (inspectable-GET-only via
@@ -61,7 +86,15 @@ use App\Services\Triage\TriageToolDefinitions;
 final class CippMcpToolPolicy
 {
     /**
-     * Upstream tools that must never reach the agent — not curated, not dynamic.
+     * *** BEING RETIRED — DO NOT ADD TO THIS LIST. *** Read the class docblock first.
+     *
+     * Owner directive 2026-07-15: hard-blocking is not this office's model. Both entries
+     * below are to be UNBLOCKED, wired, made correct and exposed as grantable, with allow/
+     * deny left to the operator's per-token grant — which empties this constant and retires
+     * the concept. It survives only until that correctness work lands, and it must not
+     * outlive it. The paragraphs below explain what the raw passthrough gets WRONG for these
+     * two, which is exactly the correctness bar that work has to clear — they are the spec
+     * for fixing the tools, NOT a case for keeping them blocked.
      *
      * A dynamic catalog row is executed as a RAW PASSTHROUGH: whatever parameters the
      * model supplies, plus the tenant. Both entries below are tools where that is not a

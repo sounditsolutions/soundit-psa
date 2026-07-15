@@ -65,10 +65,19 @@ class CippMcpTool extends Model
      * already refuses that, strictly harder than the allow-list did. So the allow-list was
      * subtracting only operator agency, and it is gone; the two gates it fronted are not:
      *
-     *   - BLOCKED_UPSTREAM_TOOLS is DANGER, and a grant cannot buy it back.
+     *   - BLOCKED_UPSTREAM_TOOLS — *** BEING RETIRED; DO NOT REASON FROM IT. *** This line
+     *     used to read "is DANGER, and a grant cannot buy it back". Owner directive
+     *     2026-07-15 overrules that: hard-blocking is not the model. Both its entries get
+     *     wired, made CORRECT and exposed as grantable, with allow/deny left to the
+     *     per-token grant — which empties the constant. See CippMcpToolPolicy's class
+     *     docblock. The unblock ships WITH the correctness work, never before it (removing
+     *     ListUserSigninLogs from the list while the raw passthrough still can't bridge
+     *     UPN→objectID buys a confident false "no sign-ins" during compromise triage).
      *   - A curated-name collision is a privilege DOWNGRADE (the dynamic executor dispatches
      *     first, so a colliding row silently replaces the reviewed, scoped implementation
-     *     with a raw passthrough), and a grant cannot buy that either.
+     *     with a raw passthrough). This one STAYS — but read it as CORRECTNESS/integrity,
+     *     not as an allow/deny opinion: it removes no operator choice, it only stops a
+     *     passthrough silently shadowing a reviewed tool of the same name.
      *
      * This is applied to the scopes below rather than to each call site, so that the whole
      * runtime surface — what tools/list advertises, what handles() claims, and what the
