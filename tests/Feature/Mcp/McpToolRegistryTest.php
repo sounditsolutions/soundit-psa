@@ -87,8 +87,8 @@ class McpToolRegistryTest extends TestCase
             'active' => true,
             'last_seen_at' => now(),
         ]);
-        // An unapproved read tool and an unapproved write tool, exactly as an
-        // import-by-default sync would have written them — both default-denied.
+        // An unreviewed read tool and an unreviewed write tool from the long tail — both
+        // belong in the grant catalog, tiered by sensitivity.
         CippMcpTool::create([
             'local_name' => 'cipp_list_db_cache',
             'upstream_name' => 'ListDBCache',
@@ -116,15 +116,25 @@ class McpToolRegistryTest extends TestCase
 
         $groups = McpToolRegistry::groups();
 
-        // Approved read tool: registry-backed, grouped as an integration read.
+        // Read tools are registry-backed and grouped as integration reads.
         $this->assertContains('cipp_list_graph_request', array_column($groups['integration']['tools'], 'name'));
         $this->assertContains('cipp_list_graph_request', McpToolRegistry::allToolNames());
 
-        // Default-deny: neither unapproved row is registry-backed, in any group.
-        $this->assertNotContains('cipp_list_db_cache', McpToolRegistry::allToolNames());
-        $this->assertNotContains('cipp_set_user_license', McpToolRegistry::allToolNames());
-        $this->assertNotContains('cipp_list_db_cache', array_column($groups['integration']['tools'], 'name'));
-        $this->assertNotContains('cipp_set_user_license', array_column($groups['cipp_write']['tools'], 'name'));
+        // The unreviewed long tail is registry-backed too, and MUST be: groups() is the
+        // grant catalog an operator picks from, and honoring explicit grants is meaningless
+        // if the tool cannot be seen to be granted. psa-3g8y's allow-list dropped these rows
+        // from the catalog entirely, so an operator could neither keep an existing grant nor
+        // make a new one — the drift that made the hardcoded list untenable (psa-pzwv).
+        // Being catalogued is not being live: nothing here reaches an agent without an
+        // explicit per-token grant (McpStaffController::toolAllowed()).
+        $this->assertContains('cipp_list_db_cache', McpToolRegistry::allToolNames());
+        $this->assertContains('cipp_list_db_cache', array_column($groups['integration']['tools'], 'name'));
+
+        // Sensitivity tiering holds: a write-class row is catalogued under the sensitive
+        // cipp_write group, never as an integration read.
+        $this->assertContains('cipp_set_user_license', array_column($groups['cipp_write']['tools'], 'name'));
+        $this->assertNotContains('cipp_set_user_license', array_column($groups['integration']['tools'], 'name'));
+        $this->assertTrue($groups['cipp_write']['sensitive']);
     }
 
     public function test_tools_carry_descriptions_and_no_group_overlap(): void

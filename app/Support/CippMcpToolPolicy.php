@@ -61,31 +61,34 @@ final class CippMcpToolPolicy
     ];
 
     /**
-     * The ONLY upstream tools approved for dynamic raw-passthrough import. DEFAULT-DENY:
-     * an upstream tool that is not on this list is never imported, advertised, or
-     * executable — even when CIPP's live ExecMCP tools/list starts advertising it.
+     * HISTORICAL — no longer a runtime gate. Retained because the 2026_07_14_000001
+     * migration is defined in terms of it and must stay runnable on a fresh database.
      *
-     * This inverts the import-by-default (deny-by-omission) that let ListMailboxRules and
-     * ListUserSigninLogs in: previously any read tool not curated and not blocked was
-     * imported and run as a raw passthrough, so the unreviewed long tail was live by
-     * default and each new dangerous tool was a fresh hole (psa-3g8y, from the psa-dbrw.8
-     * review of PR #276).
+     * psa-3g8y made this a default-deny allow-list: an upstream tool not named here was
+     * never imported, advertised, or executable. The goal was right — kill IMPORT-BY-DEFAULT,
+     * where an unreviewed raw passthrough goes live with no human decision — but the
+     * mechanism reached too far. It also made tools an operator had DELIBERATELY assigned to
+     * a token inert, and on deploy ~210 of Chet's granted tools vanished (psa-pzwv).
      *
-     * WHY exactly these two and nothing else: ListGraphRequest / ListGraphBulkRequest are
-     * the only dynamic tools with dedicated, security-reviewed handling in
-     * CippMcpDynamicToolExecutor (inspectable-GET-only via genericGraphAttempt/
-     * isGenericGraphTool, reference-only sanitised output, credential-redacted telemetry),
-     * and they are the generic Graph read capability Chet actively uses. psa-ppm7 tracks
-     * replacing them with typed curated wrappers, after which this list shrinks toward
-     * empty. Every OTHER upstream read tool is an UNREVIEWED raw passthrough — the surface
-     * this default-deny refuses.
+     * The reason it could be dropped without re-opening the hole: authorization for dynamic
+     * CIPP tools never rested on this list. McpStaffController::toolAllowed() requires
+     * `allowedTools !== null && allows($tool)` for any name CippMcpTool::handles() claims —
+     * an explicit, per-token, per-name grant, governing BOTH tools/list and tools/call. That
+     * predates psa-3g8y and is strictly stronger than this list: it admits a tool only when a
+     * human picked it for a specific token, whereas an allow-list would admit an approved
+     * tool to anyone. Grants are stored as resolved name snapshots (McpTokensController::
+     * updateTools), so a later catalog sync cannot silently widen one. Against
+     * import-by-default the allow-list was therefore redundant; against operator intent it
+     * was destructive.
      *
-     * To approve a new tool: review its CIPP source for scoping/identity traps (the
-     * psa-7lgo rule — read the producer, don't guess the shape) and add its exact upstream
-     * name here. That edit is a security-review event, exactly like editing
-     * BLOCKED_UPSTREAM_TOOLS. Deliberately EXPLICIT NAMES, not category/"class" matching:
-     * a class allow-list would re-admit danger (ListMailboxRules is itself read-only and
-     * category Email).
+     * What still gates: BLOCKED_UPSTREAM_TOOLS and curated-name collisions, both HARD (see
+     * refusalReason()) — they name DANGER, which no grant may buy back.
+     *
+     * The two names below are the dynamic tools with dedicated, security-reviewed handling
+     * in CippMcpDynamicToolExecutor (inspectable-GET-only via genericGraphAttempt/
+     * isGenericGraphTool, reference-only sanitised output, credential-redacted telemetry).
+     * That handling is keyed off the tool names in the executor, not off this list. psa-ppm7
+     * tracks replacing them with typed curated wrappers.
      */
     public const APPROVED_DYNAMIC_UPSTREAM_TOOLS = [
         'ListGraphRequest',
@@ -99,21 +102,6 @@ final class CippMcpToolPolicy
     public static function permitsDynamicTool(string $localName, string $upstreamName): bool
     {
         return self::refusalReason($localName, $upstreamName) === null;
-    }
-
-    /**
-     * Is this upstream tool approved for dynamic raw-passthrough import? Default-deny: an
-     * upstream name not on APPROVED_DYNAMIC_UPSTREAM_TOOLS is refused.
-     *
-     * Kept separate from refusalReason() on purpose: refusalReason() names DANGER (a
-     * blocked tool or a curated-name collision) and is logged at WARNING, because that is
-     * an anomaly somebody must look at. "Not on the allow-list" is the EXPECTED default for
-     * the entire unreviewed long tail and must stay quiet — folding it into refusalReason()
-     * would drown the real warnings in routine long-tail noise.
-     */
-    public static function approvedDynamicTool(string $upstreamName): bool
-    {
-        return in_array(trim($upstreamName), self::APPROVED_DYNAMIC_UPSTREAM_TOOLS, true);
     }
 
     /**

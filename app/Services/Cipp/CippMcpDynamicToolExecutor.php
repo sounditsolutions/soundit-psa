@@ -52,20 +52,12 @@ class CippMcpDynamicToolExecutor
             return ['error' => "Refused CIPP MCP catalog tool ({$refusal}): {$toolName}"];
         }
 
-        // Default-deny defense-in-depth: active() already excludes any row whose upstream
-        // is not on the reviewed allow-list, so reaching here with an unapproved row means
-        // it was fetched some other way. Refuse and say so loudly — an unapproved dynamic
-        // tool is a raw passthrough nobody reviewed (psa-3g8y). CLAUDE.md: a degraded read
-        // must SCREAM.
-        if (! CippMcpToolPolicy::approvedDynamicTool($tool->upstream_name)) {
-            Log::warning('[CippMcpDynamicToolExecutor] Refused a dynamic CIPP tool not on the reviewed allow-list', [
-                'tool' => $toolName,
-                'upstream_tool' => $tool->upstream_name,
-            ]);
-
-            return ['error' => "Refused CIPP MCP catalog tool (not on the reviewed dynamic allow-list): {$toolName}"];
-        }
-
+        // No allow-list check here. psa-3g8y refused any upstream off
+        // APPROVED_DYNAMIC_UPSTREAM_TOOLS at this point; reaching this executor now means
+        // McpStaffController::toolAllowed() has already confirmed the calling token
+        // EXPLICITLY grants this exact tool, and that deliberate operator grant is the
+        // approval (psa-pzwv). The refusal above is the part that survives: BLOCKED and
+        // curated-name collisions are danger, not un-review, so no grant buys them back.
         if (! $tool->read_only || $tool->sensitive) {
             return ['error' => 'CIPP MCP write-class catalog tools are not enabled for execution.'];
         }

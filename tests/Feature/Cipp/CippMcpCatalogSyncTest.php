@@ -107,35 +107,34 @@ class CippMcpCatalogSyncTest extends TestCase
     }
 
     /**
-     * The four outcomes of a catalog sync under the default-deny allow-list, in one pass:
-     * an APPROVED tool is imported, a CURATED tool's upstream is skipped, a BLOCKED
-     * upstream is refused, and any other UNAPPROVED tool is default-denied.
+     * The three outcomes of a catalog sync, in one pass: a CURATED tool's upstream is
+     * skipped, a BLOCKED upstream is refused, and everything else — including the
+     * unreviewed long tail — is imported so that a tool an operator grants HAS a row.
      *
-     * This test used to assert the opposite of its unapproved case — it imported
-     * cipp_list_db_cache as the "long tail" and (in an even earlier head) pinned
-     * cipp_list_user_signin_logs as an active row. That is the behaviour this bead inverts:
-     * the long tail was live by default (import-by-omission), so each new unreviewed raw
-     * passthrough CIPP grew was a hole. Now only the reviewed allow-list is imported; the
-     * unreviewed ListDBCache is default-denied, not imported (psa-3g8y).
+     * Importing is not advertising. A row reaches an agent only via an explicit per-token
+     * grant of that exact tool (McpStaffController::toolAllowed()), so the long tail sits in
+     * the catalog GRANTABLE, not live. psa-3g8y also skipped any upstream off
+     * APPROVED_DYNAMIC_UPSTREAM_TOOLS here; that starved deliberate grants of their rows and
+     * broke a trip-critical agent, and the grant gate already provides the stronger
+     * guarantee the skip was reaching for (psa-pzwv).
      */
-    public function test_sync_imports_approved_and_skips_curated_blocked_and_unapproved_tools(): void
+    public function test_sync_imports_the_long_tail_and_skips_curated_and_blocked_tools(): void
     {
         $client = Mockery::mock(CippMcpClient::class);
         $client->shouldReceive('listTools')->once()->andReturn([
-            $this->tool('ListGraphRequest', category: 'CIPP'),   // approved  -> imported
+            $this->tool('ListGraphRequest', category: 'CIPP'),   // long tail -> imported
             $this->tool('ListUsers'),                            // curated   -> skipped
             $this->tool('ListUserSigninLogs', category: 'Identity'), // blocked -> refused
-            $this->tool('ListDBCache', category: 'CIPP'),        // unapproved -> default-denied
+            $this->tool('ListDBCache', category: 'CIPP'),        // long tail -> imported
         ]);
 
         $result = app(CippMcpCatalogSyncService::class)->sync($client);
 
         $this->assertInstanceOf(CippMcpCatalogSyncResult::class, $result);
         $this->assertSame(4, $result->seen);
-        $this->assertSame(1, $result->active);
-        $this->assertSame(1, $result->created);
+        $this->assertSame(2, $result->active);
+        $this->assertSame(2, $result->created);
 
-        // Approved: the only tool that syncs.
         $this->assertDatabaseHas('cipp_mcp_tools', [
             'local_name' => 'cipp_list_graph_request',
             'upstream_name' => 'ListGraphRequest',
@@ -145,14 +144,19 @@ class CippMcpCatalogSyncTest extends TestCase
             'active' => true,
         ]);
 
+        // The unreviewed long tail is imported — grantable, not live.
+        $this->assertDatabaseHas('cipp_mcp_tools', [
+            'local_name' => 'cipp_list_db_cache',
+            'upstream_name' => 'ListDBCache',
+            'active' => true,
+        ]);
+
         // Curated: we hand-wrote cipp_list_users, so the raw upstream is skipped.
         $this->assertDatabaseMissing('cipp_mcp_tools', ['local_name' => 'cipp_list_users']);
 
-        // Blocked: dangerous as a raw passthrough, whatever name it arrives under.
+        // Blocked: dangerous as a raw passthrough, whatever name it arrives under. No grant
+        // buys this back — it is never imported, advertised, or executable.
         $this->assertDatabaseMissing('cipp_mcp_tools', ['upstream_name' => 'ListUserSigninLogs']);
-
-        // Unapproved long tail: default-denied, not imported.
-        $this->assertDatabaseMissing('cipp_mcp_tools', ['upstream_name' => 'ListDBCache']);
     }
 
     public function test_sync_deactivates_catalog_rows_missing_from_later_import(): void
@@ -225,16 +229,13 @@ class CippMcpCatalogSyncTest extends TestCase
     }
 
     /**
-     * A write-class upstream tool is not on the reviewed allow-list, so under default-deny
-     * it is not imported at all — this used to assert it landed as an active sensitive
-     * write-tier row.
-     *
-     * The write-tier tiering itself (read_only=false => sensitive=true, and the executor's
-     * write-class execution refusal) is retained in code as defense-in-depth: it would
-     * still apply IF a write tool were ever added to APPROVED_DYNAMIC_UPSTREAM_TOOLS. Today
-     * none is, so no write tool reaches the tiering — it is default-denied first (psa-3g8y).
+     * A write-class upstream tool imports as a SENSITIVE write-tier row (readOnlyHint=false
+     * => read_only=false => sensitive=true). The tiering is what the executor's write-class
+     * execution refusal keys off, so this pins the input to that guard: no dynamic
+     * write-class row is ever executed, however it was imported (psa-pzwv restores this;
+     * psa-3g8y had default-denied the row before it reached the tiering).
      */
-    public function test_sync_default_denies_an_unapproved_write_tool(): void
+    public function test_sync_imports_a_write_class_tool_as_a_sensitive_row(): void
     {
         $client = Mockery::mock(CippMcpClient::class);
         $client->shouldReceive('listTools')->once()->andReturn([
@@ -243,17 +244,22 @@ class CippMcpCatalogSyncTest extends TestCase
 
         $result = app(CippMcpCatalogSyncService::class)->sync($client);
 
-        $this->assertSame(0, $result->active);
-        $this->assertDatabaseMissing('cipp_mcp_tools', ['upstream_name' => 'SetUserLicense']);
+        $this->assertSame(1, $result->active);
+        $this->assertDatabaseHas('cipp_mcp_tools', [
+            'local_name' => 'cipp_set_user_license',
+            'upstream_name' => 'SetUserLicense',
+            'read_only' => false,
+            'sensitive' => true,
+            'active' => true,
+        ]);
     }
 
     /**
-     * The core bead requirement: an unknown, read-only upstream tool that CIPP starts
-     * advertising is NOT imported by default. Before the inversion this exact tool would
-     * have been written as a live active row (import-by-omission); now it is refused until
-     * a human reviews it and adds it to the allow-list (psa-3g8y).
+     * The complementary read tiering: an unreviewed read-only long-tail tool imports as a
+     * non-sensitive read row, which is the tier that is executable AT ALL — and then only
+     * for a token that explicitly grants it (psa-pzwv).
      */
-    public function test_sync_default_denies_an_unapproved_read_only_tool(): void
+    public function test_sync_imports_an_unreviewed_read_tool_as_a_non_sensitive_row(): void
     {
         $client = Mockery::mock(CippMcpClient::class);
         $client->shouldReceive('listTools')->once()->andReturn([
@@ -263,9 +269,15 @@ class CippMcpCatalogSyncTest extends TestCase
         $result = app(CippMcpCatalogSyncService::class)->sync($client);
 
         $this->assertSame(1, $result->seen);
-        $this->assertSame(0, $result->active);
-        $this->assertSame(0, $result->created);
-        $this->assertDatabaseMissing('cipp_mcp_tools', ['upstream_name' => 'ListDBCache']);
+        $this->assertSame(1, $result->active);
+        $this->assertSame(1, $result->created);
+        $this->assertDatabaseHas('cipp_mcp_tools', [
+            'local_name' => 'cipp_list_db_cache',
+            'upstream_name' => 'ListDBCache',
+            'read_only' => true,
+            'sensitive' => false,
+            'active' => true,
+        ]);
     }
 
     /** The positive half of the bead requirement: a reviewed, allow-listed tool still syncs. */

@@ -121,20 +121,14 @@ class CippMcpCatalogSyncService
                 continue;
             }
 
-            // Default-deny: only reviewed, allow-listed upstream tools are imported. This
-            // inverts the old import-by-default that let the unreviewed long tail (and, in
-            // it, ListMailboxRules / ListUserSigninLogs) become live raw passthroughs by
-            // omission (psa-3g8y). Logged at DEBUG, not WARNING — skipping the long tail is
-            // the normal, expected case, not an anomaly like a refusal.
-            if (! CippMcpToolPolicy::approvedDynamicTool($upstreamName)) {
-                Log::debug('[CippMcpCatalogSync] Skipped an unapproved dynamic CIPP tool (default-deny allow-list)', [
-                    'upstream_name' => $upstreamName,
-                    'local_name' => $localName,
-                ]);
-
-                continue;
-            }
-
+            // Everything upstream advertises that refusalReason() permits is imported, so a
+            // tool an operator grants HAS a row to dispatch. Importing is not advertising:
+            // a row reaches an agent only via an explicit per-token grant
+            // (McpStaffController::toolAllowed()), so the unreviewed long tail sits in the
+            // catalog as GRANTABLE, not live. psa-3g8y additionally skipped any upstream off
+            // APPROVED_DYNAMIC_UPSTREAM_TOOLS here; that starved deliberate grants of their
+            // rows and broke a trip-critical agent, and the grant gate already provides the
+            // stronger guarantee it was reaching for (psa-pzwv).
             $readOnly = ($tool['annotations']['readOnlyHint'] ?? null) === true;
 
             $rows[] = [

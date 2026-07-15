@@ -462,16 +462,19 @@ class DynamicCippMcpToolsTest extends TestCase
     }
 
     /**
-     * A write-class dynamic row is not executed even when a token tries to grant it.
+     * A write-class dynamic row is NEVER executed, even when explicitly granted.
      *
-     * This used to reach the executor's write-tier refusal ("not enabled for execution").
-     * Under default-deny a write-class tool is not on the reviewed allow-list, so it is
-     * inert BEFORE that guard: not dispatchable, not advertised, and dropped from the
-     * token's grant when minted — so the call is refused at the grant gate. The security
-     * property (a write-class raw passthrough is never executed) holds harder, via a
-     * stronger gate. The write-tier execution guard remains in CippMcpDynamicToolExecutor
-     * as defense-in-depth for any write tool ever added to APPROVED_DYNAMIC_UPSTREAM_TOOLS
-     * (psa-3g8y).
+     * The refusal moved back a step (psa-pzwv). Honoring explicit grants means a granted
+     * write-class row is once again dispatchable and advertised, so the call now reaches the
+     * executor's write-tier guard instead of dying at the grant gate — which is where this
+     * refusal lived before psa-3g8y. The security property is unchanged and is what this
+     * asserts: the raw passthrough never reaches upstream. Guarding it in the executor is
+     * also the more robust place, since it holds for ANY write-class row however it was
+     * imported, rather than depending on an allow-list to have omitted it.
+     *
+     * That a permanently-refusing tool is advertised at all is a real (pre-existing) wart —
+     * it costs the agent a wasted call to learn what the catalog could have told it. Tracked
+     * separately rather than widened into this security fix.
      */
     public function test_dynamic_cipp_write_tier_fails_closed_even_when_granted(): void
     {
@@ -491,10 +494,6 @@ class DynamicCippMcpToolsTest extends TestCase
         $client = Client::factory()->create(['cipp_tenant_domain' => 'acme.example']);
         $token = McpConfig::rotateStaffToken(['cipp_set_user_license'], 'catalog');
 
-        // Inert: not dispatchable and not advertised.
-        $this->assertFalse(CippMcpTool::handles('cipp_set_user_license'));
-        $this->assertNotContains('cipp_set_user_license', collect($this->listTools($token))->pluck('name')->all());
-
         $relay = Mockery::mock(CippMcpClient::class);
         $relay->shouldNotReceive('callTool');
         $this->app->instance(CippMcpClient::class, $relay);
@@ -503,7 +502,7 @@ class DynamicCippMcpToolsTest extends TestCase
 
         $response->assertOk();
         $this->assertTrue((bool) $response->json('result.isError'));
-        $this->assertStringContainsString('not allowed for this token', (string) $response->json('result.content.0.text'));
+        $this->assertStringContainsString('not enabled for execution', (string) $response->json('result.content.0.text'));
     }
 
     private function configureCippMcp(): void
@@ -786,19 +785,58 @@ class DynamicCippMcpToolsTest extends TestCase
      * next optional weekly catalog sync. Mirrors the stale blocked/curated-collision tests
      * above, for the (far larger) unreviewed long tail.
      */
-    public function test_an_unapproved_dynamic_row_is_inert_at_runtime_even_before_resync(): void
+    /**
+     * An EXPLICIT operator grant is itself the approval (psa-pzwv).
+     *
+     * psa-3g8y's allow-list made an unapproved row inert at runtime no matter what — which
+     * also killed dynamic tools an operator had DELIBERATELY assigned to a token, a real
+     * functional regression (Chet lost ~210 granted tools on the 21517ba deploy). The
+     * default-deny is aimed at AUTO-IMPORT-BY-DEFAULT — an unreviewed tool going live with
+     * NO human decision. A human picking a tool off the grant catalog is the opposite of
+     * that, so it is honored. ListDBCache stands in for the long tail: read-only, not
+     * reviewed, and granted on purpose.
+     */
+    public function test_an_explicitly_granted_unapproved_dynamic_row_is_listed_and_callable(): void
     {
         $this->configureCippMcp();
-        // Exactly what an import-by-default sync would have written for the long tail: an
-        // active, read-only ListDBCache row under its own normalised local name.
         $this->createDynamicTool();
         $client = Client::factory()->create(['cipp_tenant_domain' => 'acme.example']);
         McpToolRegistry::flushMemoized();
 
-        // Not dispatchable, so not advertised and not executable.
-        $this->assertFalse(CippMcpTool::handles('cipp_list_db_cache'));
+        $this->assertTrue(CippMcpTool::handles('cipp_list_db_cache'));
 
         $token = McpConfig::rotateStaffToken(['cipp_list_db_cache'], 'catalog');
+        $this->assertContains('cipp_list_db_cache', collect($this->listTools($token))->pluck('name')->all());
+
+        $relay = Mockery::mock(CippMcpClient::class);
+        $relay->shouldReceive('callTool')
+            ->once()
+            ->with('ListDBCache', Mockery::on(fn (array $args): bool => ($args['tenantFilter'] ?? null) === 'acme.example'))
+            ->andReturn(['Results' => [['id' => 'row-1', 'displayName' => 'Cache row']]]);
+        $this->app->instance(CippMcpClient::class, $relay);
+
+        $response = $this->callTool($token, 'cipp_list_db_cache', ['client_id' => $client->id]);
+
+        $response->assertOk();
+        $this->assertNotTrue($response->json('result.isError'));
+    }
+
+    /**
+     * The grant is the ONLY thing that admits an unapproved tool — honoring explicit grants
+     * must not become advertise-by-default. A scoped token that did not grant this tool sees
+     * nothing and can call nothing, so the psa-3g8y win (no unreviewed tool goes live
+     * without a human decision) survives (psa-pzwv).
+     */
+    public function test_an_unapproved_dynamic_row_is_inert_for_a_token_that_did_not_grant_it(): void
+    {
+        $this->configureCippMcp();
+        $this->createDynamicTool();
+        $this->createGraphRequestTool();
+        $client = Client::factory()->create(['cipp_tenant_domain' => 'acme.example']);
+        McpToolRegistry::flushMemoized();
+
+        // A scoped token granting a DIFFERENT dynamic tool.
+        $token = McpConfig::rotateStaffToken(['cipp_list_graph_request'], 'catalog');
         $this->assertNotContains('cipp_list_db_cache', collect($this->listTools($token))->pluck('name')->all());
 
         $relay = Mockery::mock(CippMcpClient::class);
@@ -809,6 +847,91 @@ class DynamicCippMcpToolsTest extends TestCase
 
         $response->assertOk();
         $this->assertTrue((bool) $response->json('result.isError'));
+        $this->assertStringContainsString('not allowed for this token', (string) $response->json('result.content.0.text'));
+    }
+
+    /**
+     * The legacy full-surface token (tools === null) grants NOTHING explicitly, so it gains
+     * zero unapproved dynamic tools. This is the load-bearing half of psa-pzwv: "honor
+     * explicit grants" reads the grant list, and a null list is the absence of a decision,
+     * not a blanket one. Without this, restoring the long tail would hand the whole
+     * unreviewed surface to every legacy token — precisely the hole psa-3g8y closed.
+     */
+    public function test_legacy_full_surface_token_gains_zero_unapproved_dynamic_cipp_tools(): void
+    {
+        $this->configureCippMcp();
+        $this->createDynamicTool();
+        $client = Client::factory()->create(['cipp_tenant_domain' => 'acme.example']);
+        McpToolRegistry::flushMemoized();
+
+        $token = McpConfig::rotateStaffToken();
+
+        $this->assertNotContains('cipp_list_db_cache', collect($this->listTools($token))->pluck('name')->all());
+
+        $relay = Mockery::mock(CippMcpClient::class);
+        $relay->shouldReceive('callTool')->with('ListDBCache', Mockery::any())->never();
+        $this->app->instance(CippMcpClient::class, $relay);
+
+        $response = $this->callTool($token, 'cipp_list_db_cache', ['client_id' => $client->id]);
+
+        $response->assertOk();
+        $this->assertTrue((bool) $response->json('result.isError'));
+        $this->assertStringContainsString('not allowed for this token', (string) $response->json('result.content.0.text'));
+    }
+
+    /**
+     * BLOCKED stays a HARD gate: an explicit grant does NOT buy a dangerous tool back.
+     *
+     * This is the security crux of honoring grants (psa-pzwv). ListUserSigninLogs is the
+     * cleaner of the two hazards to assert — it is blocked for DANGER (it filters Graph on
+     * an Azure AD object ID, so a UPN read off a ticket yields HTTP 200 + zero rows: a
+     * confident false "no sign-ins" during compromise triage) and, unlike ListMailboxRules,
+     * it collides with no curated name, so only the block itself can be what refuses it.
+     */
+    public function test_a_blocked_upstream_tool_is_inert_even_when_explicitly_granted(): void
+    {
+        $this->configureCippMcp();
+        $this->createStalePerUserSignInRow();
+        $client = Client::factory()->create(['cipp_tenant_domain' => 'acme.example']);
+        McpToolRegistry::flushMemoized();
+
+        $this->assertFalse(CippMcpTool::handles('cipp_list_user_signin_logs'));
+
+        $token = McpConfig::rotateStaffToken(['cipp_list_user_signin_logs'], 'catalog');
+        $this->assertNotContains('cipp_list_user_signin_logs', collect($this->listTools($token))->pluck('name')->all());
+
+        $relay = Mockery::mock(CippMcpClient::class);
+        $relay->shouldReceive('callTool')->with('ListUserSigninLogs', Mockery::any())->never();
+        $this->app->instance(CippMcpClient::class, $relay);
+
+        $response = $this->callTool($token, 'cipp_list_user_signin_logs', ['client_id' => $client->id]);
+
+        $response->assertOk();
+        $this->assertTrue((bool) $response->json('result.isError'));
+    }
+
+    /**
+     * The curated-name collision stays a HARD gate under explicit grants too: a dynamic row
+     * may never take a curated tool's local name, because the dynamic executor is dispatched
+     * FIRST — so a collision silently swaps the reviewed, mailbox-scoped implementation for a
+     * raw tenant-wide passthrough. A grant must not be able to buy that downgrade (psa-pzwv).
+     */
+    public function test_a_curated_name_collision_is_inert_even_when_explicitly_granted(): void
+    {
+        $this->configureCippMcp();
+        $this->createStaleTenantWideMailboxRulesRow();
+        $client = Client::factory()->create(['cipp_tenant_domain' => 'acme.example']);
+        McpToolRegistry::flushMemoized();
+
+        $this->assertFalse(CippMcpTool::handles('cipp_list_mailbox_rules'));
+
+        $token = McpConfig::rotateStaffToken(['cipp_list_mailbox_rules'], 'catalog');
+
+        $relay = Mockery::mock(CippMcpClient::class);
+        $relay->shouldReceive('callTool')->with('ListMailboxRules', Mockery::any())->never();
+        $this->app->instance(CippMcpClient::class, $relay);
+
+        $this->callTool($token, 'cipp_list_mailbox_rules', ['client_id' => $client->id])->assertOk();
     }
 
     /**
@@ -847,6 +970,48 @@ class DynamicCippMcpToolsTest extends TestCase
             'upstream_name' => 'ListGraphRequest',
             'active' => true,
         ]);
+    }
+
+    /**
+     * The psa-pzwv reactivation undoes psa-3g8y's sweep for the long tail, on the DEPLOY.
+     *
+     * A row must be active to be dispatchable at all, so honoring explicit grants restores
+     * nothing on its own while the ~210 swept rows sit inactive — and the catalog sync that
+     * would re-import them is weekly AND config-gated, so "wait for the sync" could leave a
+     * trip-critical agent broken for a week.
+     */
+    public function test_the_reactivation_migration_restores_a_swept_long_tail_row(): void
+    {
+        $this->createDynamicTool();
+        CippMcpTool::query()->update(['active' => false]);
+
+        $migration = require database_path('migrations/2026_07_15_000001_reactivate_granted_cipp_mcp_catalog_tools.php');
+        $migration->up();
+
+        $this->assertDatabaseHas('cipp_mcp_tools', [
+            'local_name' => 'cipp_list_db_cache',
+            'upstream_name' => 'ListDBCache',
+            'active' => true,
+        ]);
+    }
+
+    /**
+     * The reactivation must not resurrect the two real hazards. They were swept by the
+     * earlier forbidden/per-user-signin migrations for DANGER, not for being unreviewed, and
+     * they stay dead — runtime hard-gates them anyway, but a reactivation that flipped them
+     * back to active would leave them sitting in the table looking live (psa-pzwv).
+     */
+    public function test_the_reactivation_migration_leaves_blocked_rows_deactivated(): void
+    {
+        $this->createStalePerUserSignInRow();
+        $this->createStaleTenantWideMailboxRulesRow();
+        CippMcpTool::query()->update(['active' => false]);
+
+        $migration = require database_path('migrations/2026_07_15_000001_reactivate_granted_cipp_mcp_catalog_tools.php');
+        $migration->up();
+
+        $this->assertDatabaseHas('cipp_mcp_tools', ['upstream_name' => 'ListUserSigninLogs', 'active' => false]);
+        $this->assertDatabaseHas('cipp_mcp_tools', ['upstream_name' => 'ListMailboxRules', 'active' => false]);
     }
 
     /** @return array<int, array<string, mixed>> */

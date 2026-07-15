@@ -47,31 +47,41 @@ class CippMcpTool extends Model
     }
 
     /**
-     * Rows dispatchable as dynamic tools: default-deny to the reviewed allow-list, then
-     * belt-and-suspenders exclusion of blocked upstreams and curated-name squatters.
+     * Rows that MAY be dispatched as dynamic tools — the two HARD gates, and only those.
+     * A row surviving this scope is not thereby allowed: it is merely not forbidden.
      *
-     * The whereIn(APPROVED) is the PRIMARY gate now — an already-imported row whose
-     * upstream is not on the allow-list is inert the moment it is read, which is what
-     * closes the import-by-default hole at DEPLOY rather than at the next optional weekly
-     * catalog sync (psa-3g8y, extending psa-7lgo.7). The two whereNotIn clauses are kept:
-     * they are redundant while APPROVED holds only reviewed read tools, but they are
-     * self-documenting and still refuse a blocked/colliding name if one were ever mistakenly
-     * added to APPROVED.
+     * Authorization is a separate, stricter question answered per-token in
+     * McpStaffController::toolAllowed(), which for any name CippMcpTool::handles() claims
+     * requires `allowedTools !== null && allows($tool)` — an EXPLICIT operator grant of that
+     * exact tool. That gate governs both tools/list and tools/call, so nothing here reaches
+     * an agent without a human having picked it, and a legacy full-surface token (tools ===
+     * null) — which grants nothing explicitly — gets zero dynamic CIPP tools.
+     *
+     * This scope used to also whereIn(APPROVED_DYNAMIC_UPSTREAM_TOOLS) (psa-3g8y). That made
+     * an unapproved row inert no matter what — including ~210 tools an operator had
+     * DELIBERATELY assigned to a token, which vanished on deploy and broke a trip-critical
+     * agent (psa-pzwv). The default-deny's real target is AUTO-IMPORT-BY-DEFAULT — an
+     * unreviewed tool going live with NO human decision — and the per-token grant gate above
+     * already refuses that, strictly harder than the allow-list did. So the allow-list was
+     * subtracting only operator agency, and it is gone; the two gates it fronted are not:
+     *
+     *   - BLOCKED_UPSTREAM_TOOLS is DANGER, and a grant cannot buy it back.
+     *   - A curated-name collision is a privilege DOWNGRADE (the dynamic executor dispatches
+     *     first, so a colliding row silently replaces the reviewed, scoped implementation
+     *     with a raw passthrough), and a grant cannot buy that either.
      *
      * This is applied to the scopes below rather than to each call site, so that the whole
      * runtime surface — what tools/list advertises, what handles() claims, and what the
      * dynamic executor will look up — is safe BY CONSTRUCTION.
      *
      * Deliberately NOT a global scope: CippMcpCatalogSyncService must still be able to SEE
-     * every row (including now-unapproved ones) in order to deactivate them, and it queries
-     * without the scopes.
+     * every row in order to deactivate stale ones, and it queries without the scopes.
      *
      * @param  Builder<CippMcpTool>  $query
      */
     public function scopeDispatchable(Builder $query): void
     {
-        $query->whereIn('upstream_name', CippMcpToolPolicy::APPROVED_DYNAMIC_UPSTREAM_TOOLS)
-            ->whereNotIn('upstream_name', CippMcpToolPolicy::BLOCKED_UPSTREAM_TOOLS)
+        $query->whereNotIn('upstream_name', CippMcpToolPolicy::BLOCKED_UPSTREAM_TOOLS)
             ->whereNotIn('local_name', CippMcpToolPolicy::curatedLocalToolNames());
     }
 
