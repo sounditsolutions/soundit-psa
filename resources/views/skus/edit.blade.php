@@ -58,8 +58,8 @@
     </div>
 @endif
 
-{{-- The storage-tier conflict error keys off `tiers`, which no per-field @error
-     on the form renders. A silent refusal on a billing form is no refusal. --}}
+{{-- Storage-tier errors key off `tiers.*`, which no per-field @error on the
+     form renders. A silent refusal on a billing form is no refusal. --}}
 @if($errors->any())
     <div class="alert alert-danger alert-dismissible fade show">
         <strong>Please fix the following errors:</strong>

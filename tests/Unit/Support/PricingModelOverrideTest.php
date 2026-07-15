@@ -5,17 +5,18 @@ namespace Tests\Unit\Support;
 use App\Enums\QuantityType;
 use App\Models\BackupStorageTier;
 use App\Models\Sku;
-use App\Support\PricingModelConflict;
+use App\Support\PricingModelOverride;
 use Illuminate\Database\Eloquent\Collection;
 use PHPUnit\Framework\TestCase;
 
 /**
- * The single predicate every guard consults. It is deliberately narrow: a
- * conflict needs all THREE facts to be true at once, because the SKU's volume
- * rate card is only ever read for backup-storage lines. Blocking any wider would
- * stop operators configuring pricing that is not ambiguous at all.
+ * The single predicate behind every surface that tells the operator WHICH rate
+ * card prices a line. It is deliberately narrow: the override needs all THREE
+ * facts at once, because the SKU's volume rate card is only ever read for
+ * backup-storage lines. Any wider and the UI would announce an override that
+ * never actually happens — which is its own way of lying about money.
  */
-class PricingModelConflictTest extends TestCase
+class PricingModelOverrideTest extends TestCase
 {
     private const BANDS = [
         ['up_to' => 100, 'unit_price' => 1.00],
@@ -38,27 +39,27 @@ class PricingModelConflictTest extends TestCase
         return $sku;
     }
 
-    public function test_all_three_facts_together_are_a_conflict(): void
+    public function test_all_three_facts_together_are_an_active_override(): void
     {
-        $this->assertTrue(PricingModelConflict::exists(
+        $this->assertTrue(PricingModelOverride::active(
             QuantityType::PerBackupStorageGb,
             self::BANDS,
             $this->sku(withVolumeTiers: true),
         ));
     }
 
-    public function test_no_graduated_bands_is_no_conflict(): void
+    public function test_no_graduated_bands_is_no_override(): void
     {
-        $this->assertFalse(PricingModelConflict::exists(
+        $this->assertFalse(PricingModelOverride::active(
             QuantityType::PerBackupStorageGb,
             [],
             $this->sku(withVolumeTiers: true),
         ));
     }
 
-    public function test_no_volume_rate_card_is_no_conflict(): void
+    public function test_no_volume_rate_card_is_no_override(): void
     {
-        $this->assertFalse(PricingModelConflict::exists(
+        $this->assertFalse(PricingModelOverride::active(
             QuantityType::PerBackupStorageGb,
             self::BANDS,
             $this->sku(withVolumeTiers: false),
@@ -68,21 +69,21 @@ class PricingModelConflictTest extends TestCase
     /**
      * The volume rate card is only ever consulted for backup-storage lines
      * (BillingService::resolveUnitPrice). A graduated per-user line on the same
-     * SKU overrides nothing, so it must not be blocked.
+     * SKU overrides nothing, so no surface may claim it does.
      */
     public function test_a_non_backup_storage_quantity_type_never_reads_the_volume_card(): void
     {
         foreach ([QuantityType::Fixed, QuantityType::PerUser, QuantityType::PerWorkstation, QuantityType::Overage] as $type) {
             $this->assertFalse(
-                PricingModelConflict::exists($type, self::BANDS, $this->sku(withVolumeTiers: true)),
+                PricingModelOverride::active($type, self::BANDS, $this->sku(withVolumeTiers: true)),
                 "{$type->value} lines do not consult the SKU volume rate card — must not be flagged.",
             );
         }
     }
 
-    public function test_a_line_with_no_sku_cannot_conflict(): void
+    public function test_a_line_with_no_sku_cannot_override(): void
     {
-        $this->assertFalse(PricingModelConflict::exists(
+        $this->assertFalse(PricingModelOverride::active(
             QuantityType::PerBackupStorageGb,
             self::BANDS,
             null,
@@ -90,9 +91,9 @@ class PricingModelConflictTest extends TestCase
     }
 
     /** Bands that normalize away to nothing are not bands. */
-    public function test_unusable_bands_are_not_a_conflict(): void
+    public function test_unusable_bands_are_not_an_override(): void
     {
-        $this->assertFalse(PricingModelConflict::exists(
+        $this->assertFalse(PricingModelOverride::active(
             QuantityType::PerBackupStorageGb,
             [['up_to' => 100, 'unit_price' => '']], // no price → dropped by normalize()
             $this->sku(withVolumeTiers: true),

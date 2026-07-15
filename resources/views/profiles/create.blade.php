@@ -18,10 +18,9 @@
     </div>
 </div>
 
-{{-- Line-level errors (e.g. a graduated/volume pricing-model conflict) key off
-     `lines.N.*`, which no per-field @error on this page renders. Without this
-     summary the refusal would be silent — and a silent refusal on a billing form
-     is exactly the failure the guard exists to prevent. --}}
+{{-- Line-level errors key off `lines.N.*`, which no per-field @error on this
+     page renders. Without this summary a line refusal would be silent — and a
+     silent refusal on a billing form is no refusal. --}}
 @if($errors->any())
     <div class="alert alert-danger alert-dismissible fade show">
         <strong>Please fix the following errors:</strong>
@@ -158,7 +157,8 @@
                                                 data-description="{{ $s->name }}"
                                                 data-included-per-unit="{{ $s->included_per_unit }}"
                                                 data-default-quantity-type="{{ $s->default_quantity_type?->value }}"
-                                                data-default-license-type-id="{{ $s->default_license_type_id }}">
+                                                data-default-license-type-id="{{ $s->default_license_type_id }}"
+                                                data-has-volume-tiers="{{ $s->backup_storage_tiers_count ? '1' : '0' }}">
                                                 {{ $s->sku_code }} — {{ $s->name }}
                                             </option>
                                         @endforeach
@@ -218,17 +218,18 @@
                                     </div>
                                 </div>
                             </div>
-                            <div class="mt-2">
-                                <div class="form-check form-check-inline">
+                            <div class="mt-2 d-flex align-items-center gap-2 flex-wrap">
+                                <div class="form-check form-check-inline mb-0">
                                     <input type="checkbox" class="form-check-input tiered-toggle" id="tiered-0" onchange="toggleTiered(this)">
                                     <label class="form-check-label small" for="tiered-0">Tiered pricing (graduated)</label>
                                 </div>
+                                <span class="pricing-method-note small text-info-emphasis" style="display:none"></span>
                             </div>
                             <div class="tier-config-panel mt-2 p-2 border rounded bg-light" data-tier-seq="0" style="display:none">
                                 <div class="small text-muted mb-2">
                                     <i class="bi bi-bar-chart-steps me-1"></i>Graduated pricing — each band prices only the units that fall in its range (first N @ $X, next M @ $Y). Leave the last "Up to" blank; it covers everything above. The unit price above is taken from the first band.
                                     <br>
-                                    <i class="bi bi-exclamation-triangle me-1"></i>A "Backup Storage (GB)" line whose SKU already carries <em>volume</em> storage tiers cannot also be graduated — the two bill different amounts for the same usage, so you will be asked to pick one.
+                                    <i class="bi bi-info-circle me-1"></i>On a "Backup Storage (GB)" line whose SKU carries <em>volume</em> storage tiers, these graduated bands take precedence — the SKU's pricing method is a default, not a constraint.
                                 </div>
                                 <div class="tier-rows"></div>
                                 <button type="button" class="btn btn-outline-secondary btn-sm mt-1 add-tier-btn" onclick="addTier(this)">
@@ -292,7 +293,7 @@ let lineIndex = 1;
 function addLine() {
     const container = document.getElementById('linesContainer');
     const quantityOptions = `@foreach($quantityTypes as $qt)<option value="{{ $qt->value }}">{{ $qt->label() }}</option>@endforeach`;
-    const skuOptions = `<option value="">-- Manual --</option>@foreach($skus as $s)<option value="{{ $s->id }}" data-price="{{ $s->unit_price }}" data-cost="{{ $s->unit_cost }}" data-taxable="{{ $s->is_taxable ? '1' : '0' }}" data-description="{{ $s->name }}" data-included-per-unit="{{ $s->included_per_unit }}" data-default-quantity-type="{{ $s->default_quantity_type?->value }}" data-default-license-type-id="{{ $s->default_license_type_id }}">{{ $s->sku_code }} — {{ $s->name }}</option>@endforeach`;
+    const skuOptions = `<option value="">-- Manual --</option>@foreach($skus as $s)<option value="{{ $s->id }}" data-price="{{ $s->unit_price }}" data-cost="{{ $s->unit_cost }}" data-taxable="{{ $s->is_taxable ? '1' : '0' }}" data-description="{{ $s->name }}" data-included-per-unit="{{ $s->included_per_unit }}" data-default-quantity-type="{{ $s->default_quantity_type?->value }}" data-default-license-type-id="{{ $s->default_license_type_id }}" data-has-volume-tiers="{{ $s->backup_storage_tiers_count ? '1' : '0' }}">{{ $s->sku_code }} — {{ $s->name }}</option>@endforeach`;
     const licenseTypeOptions = `<option value="">Select...</option>@foreach($licenseTypes as $lt)<option value="{{ $lt->id }}">{{ $lt->name }} ({{ $lt->vendor }})</option>@endforeach`;
     const licenseTypeOptionsWithNone = `<option value="">(none — use 1)</option>@foreach($licenseTypes as $lt)<option value="{{ $lt->id }}">{{ $lt->name }} ({{ $lt->vendor }})</option>@endforeach`;
 
@@ -358,11 +359,12 @@ function addLine() {
                     </button>
                 </div>
             </div>
-            <div class="mt-2">
-                <div class="form-check form-check-inline">
+            <div class="mt-2 d-flex align-items-center gap-2 flex-wrap">
+                <div class="form-check form-check-inline mb-0">
                     <input type="checkbox" class="form-check-input tiered-toggle" id="tiered-${lineIndex}" onchange="toggleTiered(this)">
                     <label class="form-check-label small" for="tiered-${lineIndex}">Tiered pricing (graduated)</label>
                 </div>
+                <span class="pricing-method-note small text-info-emphasis" style="display:none"></span>
             </div>
             <div class="tier-config-panel mt-2 p-2 border rounded bg-light" data-tier-seq="0" style="display:none">
                 <div class="small text-muted mb-2">
@@ -535,6 +537,32 @@ function syncTierBasePriceFromLine(lineItem) {
         priceInput.value = parseFloat(firstTier.value).toFixed(2);
     }
 }
+
+// The applied pricing method must be visible where it is CHOSEN, not only after
+// saving: the moment this line's graduated bands would override volume storage
+// tiers carried by its SKU, say so beside the toggle that does it.
+function updatePricingMethodNote(lineItem) {
+    const note = lineItem.querySelector('.pricing-method-note');
+    if (!note) return;
+
+    const skuSelect = lineItem.querySelector('.sku-select');
+    const opt = skuSelect ? skuSelect.options[skuSelect.selectedIndex] : null;
+    const qtySelect = lineItem.querySelector('.qty-type-select');
+    const overrides = !!(opt && opt.dataset.hasVolumeTiers === '1')
+        && !!(qtySelect && qtySelect.value === 'per_backup_storage_gb')
+        && !!lineItem.querySelector('.tiered-toggle')?.checked;
+
+    if (overrides) {
+        note.innerHTML = '<i class="bi bi-info-circle me-1"></i>Overrides the SKU\'s volume storage tiers — this line will bill by its graduated bands.';
+    }
+    note.style.display = overrides ? '' : 'none';
+}
+
+document.getElementById('linesContainer').addEventListener('change', function (e) {
+    if (e.target.matches('.sku-select, .qty-type-select, .tiered-toggle')) {
+        updatePricingMethodNote(e.target.closest('.line-item'));
+    }
+});
 
 // Initialize visibility on page load
 document.querySelectorAll('.qty-type-select').forEach(toggleConditionalFields);

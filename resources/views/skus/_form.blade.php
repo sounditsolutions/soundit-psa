@@ -189,12 +189,19 @@
          on the form where it is chosen. --}}
     <div class="form-text mt-0 mb-2">
         <strong>Volume</strong> pricing — the <em>whole</em> measured usage bills at the single tier rate that covers it
-        (not split into bands). A recurring profile line that prices this SKU with <em>graduated</em> tiers instead cannot
-        coexist with these; you will be asked to pick one.
+        (not split into bands). These tiers are this product's pricing <em>default</em>: a recurring profile line that
+        carries its own <em>graduated</em> tiers overrides them for that line.
     </div>
-    @error('tiers')
-        <div class="alert alert-danger py-2 px-3 small">{{ $message }}</div>
-    @enderror
+    @if(($overridingProfileNames ?? collect())->isNotEmpty())
+        {{-- The other place the pricing decision is reviewed: the operator
+             configuring the product's default sees who will not follow it. --}}
+        <div class="alert alert-info py-2 px-3 small">
+            <i class="bi bi-info-circle-fill me-1"></i>
+            The following recurring profile line(s) price this SKU with their own graduated tiers,
+            which override these volume tiers:
+            <span class="fw-semibold">{{ $overridingProfileNames->join(', ') }}</span>.
+        </div>
+    @endif
     <table class="table table-sm align-middle mb-2" style="max-width: 520px;">
         <thead>
             <tr>

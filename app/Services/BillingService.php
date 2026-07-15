@@ -12,7 +12,7 @@ use App\Models\InvoiceLine;
 use App\Models\RecurringInvoiceProfile;
 use App\Models\RecurringInvoiceProfileLine;
 use App\Models\Setting;
-use App\Support\PricingModelConflict;
+use App\Support\PricingModelOverride;
 use App\Support\TieredPricing;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
@@ -270,18 +270,18 @@ class BillingService
      *
      * Graduated wins over volume because it is the more specific configuration:
      * it is set on *this line*, while the volume card is inherited from the
-     * product. That is already the precedence every other override on the
-     * line-generation path follows (`unit_cost_override ?? sku->unit_cost`,
-     * `prepaid_time_override ?? sku->prepaid_time_minutes`). The alternative
-     * fails worse: a SKU rate card silently overriding bands the operator
-     * explicitly put on the line would bill a pricing model nobody configured.
+     * product. The SKU's pricing method is a DEFAULT, not a constraint — the
+     * same precedence every other override on the line-generation path follows
+     * (`unit_cost_override ?? sku->unit_cost`, `prepaid_time_override ??
+     * sku->prepaid_time_minutes`). The alternative fails worse: a SKU rate card
+     * silently overriding bands the operator explicitly put on the line would
+     * bill a pricing model nobody configured.
      *
-     * That combination is now REFUSED at every door that can create it
-     * ({@see \App\Support\PricingModelConflict}) — but this precedence stays, as
-     * defence in depth. Validation stops new conflicts; it cannot un-write a row
-     * that predates it. So if one still reaches billing, it must bill
-     * deterministically and say so: loudly in the log, and by name in the invoice
-     * line's `quantity_source`.
+     * The override is a supported configuration, but never a silent one
+     * ({@see \App\Support\PricingModelOverride}): the profile form, the profile
+     * page, the SKU tiers editor, and the invoice preview all state which card
+     * applies, and the invoice line's `quantity_source` names it in the audit
+     * record. The log below is the runtime's own breadcrumb of the same fact.
      *
      * Every segment carries `amount = round(quantity × unit_price, 2)`,
      * whichever model priced it, so that invariant holds for every invoice line
@@ -312,10 +312,11 @@ class BillingService
             ]];
         }
 
-        // A row that got in before the guard existed. Bill it deterministically,
-        // and do not let it pass quietly.
-        if (PricingModelConflict::onLine($line)) {
-            Log::warning('[Billing] Profile line {line} carries graduated tiers and its SKU carries a volume rate card; the line\'s graduated tiers win.', [
+        // Both cards in play: the line's graduated bands override the SKU's
+        // volume card. A supported, operator-visible configuration — info, not
+        // a warning — but the runtime still records which card won.
+        if (PricingModelOverride::onLine($line)) {
+            Log::info('[Billing] Profile line {line} prices with its own graduated tiers, overriding its SKU\'s volume rate card (line pricing wins over the SKU default).', [
                 'line' => $line->id,
                 'profile_id' => $line->profile_id,
                 'sku_id' => $line->sku_id,
