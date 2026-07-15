@@ -106,6 +106,19 @@ class TicketNote extends Model
 
     public function getDisplayAuthorAttribute(): string
     {
+        // psa-u51h.3: an AI note's author_name is the ACTING TOKEN'S PERSONA — the name the
+        // client is told wrote it — while author_id points at the SHARED AI-actor user,
+        // whose name is the GLOBAL one. Relation-first therefore re-displayed one tenant's
+        // "Chet" above a body signed by a different persona (the so-bp4f white-label defect,
+        // surviving at the render layer). The portal makes this the NORMAL case, not an edge
+        // one: its avatar takes :user="$note->author" a line above the header, so the
+        // relation is always loaded by the time the name renders.
+        if ($this->ai_authored && filled($this->author_name)) {
+            return $this->author_name;
+        }
+
+        // Humans keep relation-first: author_name is a write-time snapshot, so a renamed
+        // technician should still show their CURRENT name.
         if ($this->relationLoaded('author') && $this->author) {
             return $this->author->name;
         }
