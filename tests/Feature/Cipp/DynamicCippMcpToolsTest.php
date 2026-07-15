@@ -25,9 +25,9 @@ class DynamicCippMcpToolsTest extends TestCase
     public function test_scoped_token_lists_and_calls_dynamic_cipp_read_tool_with_sanitized_reference_body(): void
     {
         $this->configureCippMcp();
-        // The reference-body sanitisation plumbing is tool-agnostic, but under default-deny
-        // the only live dynamic read tool is the approved generic Graph passthrough, so the
-        // coverage rides it via a plain GET (psa-3g8y).
+        // The reference-body sanitisation plumbing is tool-agnostic; the coverage rides the
+        // generic Graph passthrough via a plain GET because that is the dynamic tool with
+        // dedicated executor handling, and the one Chet actually leans on.
         $this->createGraphRequestTool();
         $client = Client::factory()->create(['cipp_tenant_domain' => 'acme.example']);
         $token = McpConfig::rotateStaffToken(['cipp_list_graph_request'], 'catalog');
@@ -441,9 +441,9 @@ class DynamicCippMcpToolsTest extends TestCase
     public function test_legacy_full_surface_token_gains_zero_dynamic_cipp_tools_for_list_or_call(): void
     {
         $this->configureCippMcp();
-        // An APPROVED, live dynamic tool: this proves a full/legacy token gains zero
-        // dynamic cipp tools even when one is fully importable — the exclusion is by design,
-        // not a side effect of the tool being inert (psa-3g8y).
+        // A fully live, dispatchable dynamic tool: this proves a full/legacy token gains zero
+        // dynamic cipp tools even when one is perfectly callable for a token that grants it —
+        // the exclusion is by design, not a side effect of the row being inert.
         $this->createGraphRequestTool();
         $client = Client::factory()->create(['cipp_tenant_domain' => 'acme.example']);
         $token = McpConfig::rotateStaffToken();
@@ -779,13 +779,6 @@ class DynamicCippMcpToolsTest extends TestCase
     }
 
     /**
-     * The core runtime half of the inversion (psa-3g8y): an UNAPPROVED dynamic row that is
-     * already active in the table — as any import-by-default catalog sync would have left
-     * it — is inert the moment it is read, closing the hole at DEPLOY rather than at the
-     * next optional weekly catalog sync. Mirrors the stale blocked/curated-collision tests
-     * above, for the (far larger) unreviewed long tail.
-     */
-    /**
      * An EXPLICIT operator grant is itself the approval (psa-pzwv).
      *
      * psa-3g8y's allow-list made an unapproved row inert at runtime no matter what — which
@@ -935,10 +928,11 @@ class DynamicCippMcpToolsTest extends TestCase
     }
 
     /**
-     * The migration companion: it stops the now-unapproved long-tail rows sitting in the
-     * table looking live, on the deploy rather than on whenever the optional weekly catalog
-     * sync next runs — the same reasoning as the earlier forbidden/per-user-signin sweeps,
-     * inverted to the allow-list (psa-3g8y).
+     * HISTORICAL — pins what the psa-3g8y sweep migration did, not current behaviour. It
+     * deactivated every row off the (now retired) allow-list, which is what took Chet's
+     * granted tools out. The 2026_07_15 reactivation migration REVERSES it for the
+     * non-blocked/non-curated rows; see the reactivation tests below. Kept because the
+     * migration still ships and must keep doing exactly this on a replay (psa-pzwv).
      */
     public function test_the_migration_deactivates_an_unapproved_row_already_in_the_table(): void
     {

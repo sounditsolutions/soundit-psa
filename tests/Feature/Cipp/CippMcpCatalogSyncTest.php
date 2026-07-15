@@ -280,8 +280,14 @@ class CippMcpCatalogSyncTest extends TestCase
         ]);
     }
 
-    /** The positive half of the bead requirement: a reviewed, allow-listed tool still syncs. */
-    public function test_sync_imports_an_approved_dynamic_tool(): void
+    /**
+     * The generic Graph passthrough — the one dynamic tool with dedicated, security-reviewed
+     * handling in CippMcpDynamicToolExecutor, and the one Chet leans on — syncs as an active
+     * row. Named for that handling, not for a policy tier: the APPROVED allow-list it was
+     * once named after is retired (psa-pzwv), and it now imports by the same rule as the rest
+     * of the permitted catalog.
+     */
+    public function test_sync_imports_the_generic_graph_passthrough_tool(): void
     {
         $client = Mockery::mock(CippMcpClient::class);
         $client->shouldReceive('listTools')->once()->andReturn([
