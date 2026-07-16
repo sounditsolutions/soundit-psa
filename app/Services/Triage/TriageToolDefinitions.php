@@ -625,13 +625,27 @@ class TriageToolDefinitions
             ],
             [
                 'name' => 'cipp_list_mailbox_rules',
-                'description' => 'List inbox rules for a specific user\'s mailbox. Useful for investigating mail delivery issues or compromised accounts.',
+                'description' => 'List inbox rules for ONE specific user\'s mailbox, read live from Exchange. Useful for investigating mail delivery issues or a suspected compromised account. For a tenant-wide sweep across every mailbox, use cipp_list_tenant_mailbox_rules instead.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
                         'user_id' => ['type' => 'string', 'description' => 'User principal name (email) or Azure AD object ID'],
                     ],
                     'required' => ['user_id'],
+                ],
+            ],
+            [
+                'name' => 'cipp_list_tenant_mailbox_rules',
+                // The scope AND the freshness both belong in the description: an
+                // operator granting this must be able to tell it from the per-mailbox
+                // tool, and an agent calling it must understand that an empty first
+                // answer means "the cache is warming", not "no rules exist". The
+                // eventual-consistency sentence is not padding — it is the difference
+                // between the agent retrying and the agent reporting an all-clear.
+                'description' => 'Sweep inbox rules across EVERY mailbox in the client\'s tenant at once — the tenant-wide hunt for malicious forwarding/delete rules (BEC persistence). Returns each rule with the mailbox it belongs to. This reads CIPP\'s cached snapshot (refreshed hourly), NOT live Exchange: the first call for a tenant typically returns "still loading" rather than data, and you should retry in a minute. For one specific mailbox read live, use cipp_list_mailbox_rules instead.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => (object) [],
                 ],
             ],
             [

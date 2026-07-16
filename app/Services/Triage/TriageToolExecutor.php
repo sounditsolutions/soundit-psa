@@ -104,6 +104,13 @@ class TriageToolExecutor
             // ListUserMailboxRules, NOT ListMailboxRules: the latter takes no user
             // parameter and returns EVERY mailbox's rules in the tenant (psa-7lgo.1).
             'cipp_list_mailbox_rules' => $this->cippQueryWithUser('cipp_list_mailbox_rules', $input, 'api/ListUserMailboxRules', 'UserID'),
+            // The tenant-wide sweep (psa-4k6m) — deliberately the endpoint the line above
+            // refuses, because here that IS the question: hunt BEC forwarding rules across
+            // every mailbox at once. Unlike its per-mailbox sibling this does not reach
+            // Exchange: it reads CIPP's hourly cache and can answer "still loading" with an
+            // empty list, which CippQueueGuard turns into an error rather than a false
+            // all-clear. See CippToolContract::shapeTenantMailboxRules().
+            'cipp_list_tenant_mailbox_rules' => $this->cippQuery('cipp_list_tenant_mailbox_rules', $input, 'api/ListMailboxRules'),
             'cipp_list_defender_state' => $this->cippQuery('cipp_list_defender_state', $input, 'api/ListDefenderState'),
             'cipp_list_conditional_access_policies' => $this->cippQuery('cipp_list_conditional_access_policies', $input, 'api/ListConditionalAccessPolicies'),
             'cipp_list_user_conditional_access' => $this->cippQueryWithUser('cipp_list_user_conditional_access', $input, 'api/ListUserConditionalAccessPolicies'),

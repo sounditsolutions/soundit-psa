@@ -1,6 +1,5 @@
 <?php
 
-use App\Support\CippMcpToolPolicy;
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -43,12 +42,55 @@ use Illuminate\Support\Facades\Log;
  */
 return new class extends Migration
 {
+    /**
+     * FROZEN AT THIS MIGRATION'S MOMENT (2026-07-15), inlined by psa-4k6m.
+     *
+     * These two lists were `CippMcpToolPolicy::BLOCKED_UPSTREAM_TOOLS` and
+     * `CippMcpToolPolicy::curatedLocalToolNames()` — LIVE app code read from an
+     * already-shipped migration. That is a latent bug and it bit within a day: this
+     * very change removes 'ListMailboxRules' from the constant and ADDS
+     * 'cipp_list_tenant_mailbox_rules' to the curated list, either of which would have
+     * silently altered what this shipped migration does on a fresh-DB replay — a
+     * different set of rows reactivated than the deploy that ran it intended.
+     *
+     * Same defect and same fix as psa-xty1, which inlined APPROVED_DYNAMIC_UPSTREAM_TOOLS
+     * into 2026_07_14_000001 for exactly this reason. A migration is a FROZEN SNAPSHOT of
+     * intent; it must carry its own literals. Do not re-point these at the constants.
+     *
+     * @var array<int, string>
+     */
+    private const BLOCKED_AT_2026_07_15 = [
+        'ListMailboxRules',
+        'ListUserSigninLogs',
+    ];
+
+    /** @var array<int, string> */
+    private const CURATED_LOCAL_NAMES_AT_2026_07_15 = [
+        'cipp_list_users',
+        'cipp_list_mailboxes',
+        'cipp_list_licenses',
+        'cipp_list_devices',
+        'cipp_list_groups',
+        'cipp_list_user_groups',
+        'cipp_list_mailbox_permissions',
+        'cipp_list_mailbox_rules',
+        'cipp_list_defender_state',
+        'cipp_list_conditional_access_policies',
+        'cipp_list_user_conditional_access',
+        'cipp_list_audit_logs',
+        'cipp_list_message_trace',
+        'cipp_list_mail_quarantine',
+        'cipp_list_user_mfa_methods',
+        'cipp_list_oauth_apps',
+        'cipp_list_sign_ins',
+    ];
+
     public function up(): void
     {
         $reactivated = DB::table('cipp_mcp_tools')
             ->where('active', false)
-            ->whereNotIn('upstream_name', CippMcpToolPolicy::BLOCKED_UPSTREAM_TOOLS)
-            ->whereNotIn('local_name', CippMcpToolPolicy::curatedLocalToolNames())
+            ->whereNotIn('upstream_name', self::BLOCKED_AT_2026_07_15)
+            ->whereNotIn('local_name', self::CURATED_LOCAL_NAMES_AT_2026_07_15)
             ->update(['active' => true]);
 
         if ($reactivated > 0) {

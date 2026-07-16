@@ -257,6 +257,52 @@ class CippMcpClientTest extends TestCase
         $client->callTool('ListMailQuarantine', ['tenantFilter' => 'AllTenants']);
     }
 
+    public function test_call_tool_throws_on_the_concrete_tenant_mailbox_rules_queue_payload(): void
+    {
+        // *** THIS IS THE ONE THAT IS NOT LATENT (psa-4k6m). ***
+        // Every other queue path in this integration is reachable only for
+        // TenantFilter=AllTenants, which we never send — which is why the guard's
+        // docblock long said "latent, not live". Invoke-ListMailboxRules.ps1 breaks
+        // that: BOTH of its queue branches fire for a CONCRETE tenant, and it reads a
+        // cache with a ONE-HOUR TTL rather than calling Exchange —
+        //     if ($RunningQueue -and !$Rows) { ... QueueMessage = "Still loading data for $TenantFilter..." }
+        //     elseif ((!$Rows -and !$RunningQueue) -or ($TenantFilter -eq 'AllTenants' -and ...)) { ... }
+        // Note the elseif's FIRST clause has no AllTenants test at all. So the first
+        // call for any tenant, and any call more than an hour after the last, takes
+        // the queue path with Results=[]. That is the COMMON case, not an edge case.
+        //
+        // Unguarded, cipp_list_tenant_mailbox_rules would answer "this tenant has no
+        // malicious inbox rules" while CIPP was still loading. Payload copied from the
+        // vendor's own string, tenant substituted.
+        $client = $this->clientReturningToolText(
+            '{"Results":[],"Metadata":{"QueueMessage":"Loading data for acme.example. Please check back in 1 minute",'.
+            '"QueueId":"7a4e9c21-3b5d-4f88-a1c6-0e2d9b7f5a34"}}'
+        );
+
+        $this->expectException(CippClientException::class);
+        $this->expectExceptionMessage('Loading data for acme.example');
+
+        $client->callTool('ListMailboxRules', ['tenantFilter' => 'acme.example']);
+    }
+
+    public function test_call_tool_does_not_mistake_the_healthy_mailbox_rules_branch_for_a_queue(): void
+    {
+        // The trap the guard's docblock already warns about, now pinned for THIS
+        // endpoint too: Invoke-ListMailboxRules's healthy branch also emits Metadata
+        // with a QueueId — `$Metadata = [PSCustomObject]@{ QueueId = $RunningQueue.RowKey ?? $null }`
+        // — so a guard keying on QueueId rather than QueueMessage would reject real
+        // rules and turn a working BEC sweep into a permanent error.
+        $client = $this->clientReturningToolText(
+            '{"Results":[{"Identity":"a@acme.example\\\\1698","Name":"zz","Enabled":true,"Tenant":"acme.example"}],'.
+            '"Metadata":{"QueueId":null}}'
+        );
+
+        $rows = $client->callTool('ListMailboxRules', ['tenantFilter' => 'acme.example']);
+
+        $this->assertCount(1, $rows);
+        $this->assertSame('zz', $rows[0]['Name']);
+    }
+
     public function test_call_tool_throws_on_flat_top_level_queue_payload(): void
     {
         // CIPP-API Get-GraphRequestList.ps1:259-263 (also :267-271, :317-320,

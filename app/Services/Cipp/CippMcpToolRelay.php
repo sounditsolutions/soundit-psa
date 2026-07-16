@@ -40,6 +40,22 @@ class CippMcpToolRelay
         // UserID and runs Get-InboxRule -Mailbox $UserID, so Exchange enforces
         // the scope server-side (psa-7lgo.1).
         'cipp_list_mailbox_rules' => 'ListUserMailboxRules',
+        // The TENANT-WIDE sibling of the line above, and deliberately a separate tool
+        // rather than a mode of it (psa-4k6m). Two things make them different reads,
+        // not one read with a parameter — an operator granting these must be able to
+        // tell them apart:
+        //   SCOPE:     ListUserMailboxRules runs Get-InboxRule -Mailbox $UserID, so
+        //              Exchange enforces one mailbox server-side. ListMailboxRules has
+        //              no user parameter at all and returns EVERY mailbox in the tenant.
+        //   FRESHNESS: ListUserMailboxRules is a LIVE Exchange call. ListMailboxRules
+        //              does NOT touch Exchange — it reads the `cachembxrules` table with
+        //              a ONE-HOUR TTL and, on a miss, kicks off an orchestration and
+        //              answers "still loading" with an EMPTY Results array. So the
+        //              tenant-wide read is eventually-consistent by construction and its
+        //              first call almost always returns nothing yet.
+        // That second property is why this tool cannot be wired naively: see
+        // CippToolContract::shapeTenantMailboxRules() and CippQueueGuard.
+        'cipp_list_tenant_mailbox_rules' => 'ListMailboxRules',
         'cipp_list_defender_state' => 'ListDefenderState',
         'cipp_list_conditional_access_policies' => 'ListConditionalAccessPolicies',
         'cipp_list_user_conditional_access' => 'ListUserConditionalAccessPolicies',

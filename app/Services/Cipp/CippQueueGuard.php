@@ -34,10 +34,28 @@ namespace App\Services\Cipp;
  * the pagination carrier (nextLink, :20-25), so its mere presence means
  * nothing either. Both traps are pinned by regression tests.
  *
- * Latent today, not live: every queue path above is gated on
- * TenantFilter = AllTenants, and we only ever send a concrete tenant domain.
- * This guard exists so that mapping a queue-capable endpoint later cannot
- * silently reintroduce the false-clear.
+ * *** NO LONGER LATENT — AND THE THING IT WAS INSURANCE AGAINST HAPPENED. ***
+ * This guard shipped (psa-00s5) with the note "latent today, not live: every
+ * queue path above is gated on TenantFilter = AllTenants, and we only ever send
+ * a concrete tenant domain... so that mapping a queue-capable endpoint later
+ * cannot silently reintroduce the false-clear." That mapping arrived the next
+ * day (psa-4k6m, cipp_list_tenant_mailbox_rules -> ListMailboxRules), and the
+ * AllTenants premise does not hold for it:
+ *
+ *   Invoke-ListMailboxRules.ps1 (verified 2026-07-16) does NOT call Exchange. It
+ *   reads the `cachembxrules` table with a ONE-HOUR TTL, and BOTH of its queue
+ *   branches fire for a CONCRETE tenant:
+ *     if ($RunningQueue -and !$Rows) { $Metadata = @{ QueueMessage = "Still loading data for $TenantFilter..." } }
+ *     elseif ((!$Rows -and !$RunningQueue) -or ($TenantFilter -eq 'AllTenants' -and ...)) { ... QueueMessage = "Loading data for $TenantFilter. Please check back in 1 minute" }
+ *   — the elseif's FIRST clause carries no AllTenants test. So the first call for
+ *   any tenant, and any call >1h after the last, returns Results=[] with a queue
+ *   marker. It is the COMMON case for that tool, not an edge case.
+ *
+ * So this guard is now load-bearing on a live security read: without it,
+ * "does this tenant have malicious inbox rules?" answers "no" while CIPP is
+ * still loading. Do not weaken it, and do not restore the AllTenants-only
+ * reasoning — it was true of the endpoints mapped at the time and of nothing
+ * else. Pinned by CippMcpClientTest's concrete-tenant mailbox-rules tests.
  */
 class CippQueueGuard
 {
