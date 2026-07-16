@@ -1,6 +1,5 @@
 <?php
 
-use App\Support\CippMcpToolPolicy;
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -22,13 +21,53 @@ use Illuminate\Support\Facades\Log;
  */
 return new class extends Migration
 {
+    /**
+     * FROZEN AT THIS MIGRATION'S MOMENT (commit c2b0a62, 2026-07-13), inlined by psa-4k6m.
+     *
+     * Two names here where the predecessor freezes one — that difference is the whole
+     * point of this migration existing, and `git show c2b0a62` confirms the constant
+     * held exactly these two when it shipped. The docblock above already explains why a
+     * second migration was needed: the first "has already run wherever it was deployed,
+     * so growing BLOCKED_UPSTREAM_TOOLS does not retroactively re-run it." That
+     * observation is correct and it is also the bug — it means the constant and the
+     * shipped migrations had already come apart. Inlining is the fix (psa-xty1).
+     * Do not re-point these at the constants.
+     *
+     * @var array<int, string>
+     */
+    private const BLOCKED_AT_2026_07_13 = [
+        'ListMailboxRules',
+        'ListUserSigninLogs',
+    ];
+
+    /** @var array<int, string> */
+    private const CURATED_LOCAL_NAMES_AT_2026_07_13 = [
+        'cipp_list_users',
+        'cipp_list_mailboxes',
+        'cipp_list_licenses',
+        'cipp_list_devices',
+        'cipp_list_groups',
+        'cipp_list_user_groups',
+        'cipp_list_mailbox_permissions',
+        'cipp_list_mailbox_rules',
+        'cipp_list_defender_state',
+        'cipp_list_conditional_access_policies',
+        'cipp_list_user_conditional_access',
+        'cipp_list_audit_logs',
+        'cipp_list_message_trace',
+        'cipp_list_mail_quarantine',
+        'cipp_list_user_mfa_methods',
+        'cipp_list_oauth_apps',
+        'cipp_list_sign_ins',
+    ];
+
     public function up(): void
     {
         $deactivated = DB::table('cipp_mcp_tools')
             ->where('active', true)
             ->where(function ($query): void {
-                $query->whereIn('upstream_name', CippMcpToolPolicy::BLOCKED_UPSTREAM_TOOLS)
-                    ->orWhereIn('local_name', CippMcpToolPolicy::curatedLocalToolNames());
+                $query->whereIn('upstream_name', self::BLOCKED_AT_2026_07_13)
+                    ->orWhereIn('local_name', self::CURATED_LOCAL_NAMES_AT_2026_07_13);
             })
             ->update(['active' => false]);
 

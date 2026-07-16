@@ -137,6 +137,9 @@ class AssistantToolExecutor
             // ListUserMailboxRules, NOT ListMailboxRules: the latter takes no user
             // parameter and returns EVERY mailbox's rules in the tenant (psa-7lgo.1).
             'cipp_list_mailbox_rules' => $this->cippQueryWithUser('cipp_list_mailbox_rules', $input, 'api/ListUserMailboxRules', 'UserID'),
+            // Tenant-wide sweep (psa-4k6m). See the twin arm in TriageToolExecutor — this
+            // pair is what CippToolDispatchTest exists to keep from drifting apart.
+            'cipp_list_tenant_mailbox_rules' => $this->cippQuery('cipp_list_tenant_mailbox_rules', $input, 'api/ListMailboxRules'),
             'cipp_list_defender_state' => $this->cippQuery('cipp_list_defender_state', $input, 'api/ListDefenderState'),
             'cipp_list_conditional_access_policies' => $this->cippQuery('cipp_list_conditional_access_policies', $input, 'api/ListConditionalAccessPolicies'),
             'cipp_list_user_conditional_access' => $this->cippQueryWithUser('cipp_list_user_conditional_access', $input, 'api/ListUserConditionalAccessPolicies'),

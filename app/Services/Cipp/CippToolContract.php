@@ -68,6 +68,20 @@ class CippToolContract
     /** The row names an actor we could not compare to the requested user at all. Excluding it proves nothing. */
     private const ROW_UNATTRIBUTABLE = 'unattributable';
 
+    /**
+     * The two sentinel `Name` values Push-ListMailboxRulesQueue.ps1 writes into the
+     * `cachembxrules` Rules column INSTEAD of a rule (verified against the vendor
+     * source 2026-07-16, psa-4k6m). Frozen as literals here on purpose: they are the
+     * vendor's strings, not ours, so they must be re-verified upstream rather than
+     * reasoned about locally.
+     *
+     * The ERROR one is prefix-matched because the vendor appends the raw exception:
+     *     "Could not connect to tenant $($_.Exception.message)"
+     */
+    private const MAILBOX_RULES_EMPTY_SENTINEL = 'No rules found';
+
+    private const MAILBOX_RULES_ERROR_SENTINEL = 'Could not connect to tenant';
+
     private const OAUTH_APP_FIELDS = [
         'id' => ['ObjectID', 'ObjectId', 'id', 'Id'],
         'appId' => ['ApplicationID', 'ApplicationId', 'applicationId', 'appId'],
@@ -1021,6 +1035,17 @@ class CippToolContract
         // SendAs rows; SendOnBehalf rows carry display names in User.
         'cipp_list_mailbox_permissions' => ['user', 'permissions'],
         'cipp_list_mailbox_rules' => ['name', 'enabled', 'priority', 'description', 'from', 'sentTo', 'forwardTo', 'redirectTo', 'deleteMessage', 'moveToFolder'],
+        // Same raw Get-InboxRule fields as the per-mailbox tool above, PLUS the two
+        // that say WHOSE mailbox the rule sits on. A tenant-wide sweep without an
+        // owner is not an actionable BEC finding — "someone in this tenant forwards
+        // mail externally" cannot be triaged. Note the owner must come off the raw
+        // Exchange object: the CACHE path we read carries no UserPrincipalName (only
+        // the UseReportDB path adds one, Push-GetMailboxRulesBatch.ps1), so there is
+        // no userPrincipalName to project here and inventing one would be a lie.
+        // forwardAsAttachmentTo is included where the per-mailbox tool omits it: it
+        // is a third exfil verb alongside forwardTo/redirectTo and a tenant sweep is
+        // exactly where you hunt for it.
+        'cipp_list_tenant_mailbox_rules' => ['identity', 'mailboxOwnerId', 'name', 'enabled', 'priority', 'description', 'from', 'sentTo', 'forwardTo', 'redirectTo', 'forwardAsAttachmentTo', 'deleteMessage', 'moveToFolder', 'stopProcessingRules', 'tenant'],
         // No cipp_list_defender_state entry: shape() routes that tool to
         // shapeDefenderState(), which bypasses projectRows() and names its own
         // keys. The DEFAULT_FIELDS list that used to sit here was never read
@@ -1088,6 +1113,16 @@ class CippToolContract
         'redirectTo' => ['RedirectTo', 'redirectTo'],
         'deleteMessage' => ['DeleteMessage', 'deleteMessage'],
         'moveToFolder' => ['MoveToFolder', 'moveToFolder'],
+        // Tenant-wide sweep additions (psa-4k6m). Same raw Get-InboxRule object, so
+        // same PascalCase-first rule. Identity is guaranteed present on a real rule —
+        // Push-ListMailboxRulesQueue.ps1 filters `Where-Object { $_.Identity }` — which
+        // is what lets sentinelName() tell a hand-built sentinel row from a real rule.
+        'identity' => ['Identity', 'identity'],
+        'mailboxOwnerId' => ['MailboxOwnerId', 'mailboxOwnerId'],
+        'forwardAsAttachmentTo' => ['ForwardAsAttachmentTo', 'forwardAsAttachmentTo'],
+        'stopProcessingRules' => ['StopProcessingRules', 'stopProcessingRules'],
+        // Added by Invoke-ListMailboxRules on read, not by Get-InboxRule.
+        'tenant' => ['Tenant', 'tenant'],
 
         'skuPartNumber' => ['skuPartNumber', 'SkuPartNumber', 'sku', 'SKU'],
         'license' => ['License', 'license'],
@@ -1196,6 +1231,7 @@ class CippToolContract
             'cipp_list_user_mfa_methods' => $this->shapeUserMfaMethods($rows, $input, $clientId),
             'cipp_list_defender_state' => $this->shapeDefenderState($rows),
             'cipp_list_mailbox_rules' => $this->shapeMailboxRules($rows, $input, $clientId),
+            'cipp_list_tenant_mailbox_rules' => $this->shapeTenantMailboxRules($rows),
             'cipp_list_conditional_access_policies' => $this->shapeConditionalAccessPolicies($rows),
             default => $this->projectRows($toolName, $rows),
         };
@@ -1214,6 +1250,87 @@ class CippToolContract
      *
      * @return array<int, array<string, mixed>>
      */
+    /**
+     * The tenant-wide inbox-rule sweep (psa-4k6m).
+     *
+     * *** THIS ENDPOINT ENCODES BOTH "NOTHING FOUND" AND "I COULD NOT LOOK" AS FAKE
+     * RULE ROWS, AND THE SECOND ONE IS A FALSE ALL-CLEAR ON THE CANONICAL BEC
+     * PERSISTENCE MECHANISM. *** Read the producer before touching this.
+     *
+     * Invoke-ListMailboxRules.ps1 does not call Exchange; it reads the `cachembxrules`
+     * table and returns `$_.Rules | ConvertFrom-Json` verbatim. The true producer of
+     * that column is Push-ListMailboxRulesQueue.ps1 (verified 2026-07-16), which writes
+     * THREE shapes under it:
+     *
+     *   real rules  `Rules = [string]($Rule | ConvertTo-Json)`   raw Get-InboxRule
+     *   no rules    `$Rules = @(@{ Name = 'No rules found' }) | ConvertTo-Json`
+     *   UNREACHABLE `$Rules = @{ Name = "Could not connect to tenant $($_.Exception.message)" } | ConvertTo-Json`
+     *
+     * The third arrives with HTTP 200 as a single row that projects to an entirely
+     * ordinary-looking inbox rule: no forwarding, no delete, nothing suspicious. An
+     * agent asking "does this tenant have malicious inbox rules?" would read a tenant
+     * it never reached as "one benign rule — all clear". It is worse than an empty
+     * list, because `[]` at least looks like an absence of data whereas this looks
+     * like a completed scan. So it MUST hard-error (psa-7lgo rule 3: a degraded read
+     * screams, it does not return a clean result).
+     *
+     * The second is a genuine all-clear and must be returned as an ABSENCE — an empty
+     * list — never as a phantom rule named "No rules found" that an agent can count,
+     * quote, or reason about.
+     *
+     * The "still loading" case is handled upstream of here, by CippQueueGuard on both
+     * clients, and — unlike every other queue path in this integration — it is NOT
+     * AllTenants-gated and fires for a concrete tenant on a cold (>1h) cache.
+     */
+    private function shapeTenantMailboxRules(array $rules): array
+    {
+        foreach ($rules as $rule) {
+            $name = $this->sentinelName($rule);
+
+            if ($name !== null && str_starts_with($name, self::MAILBOX_RULES_ERROR_SENTINEL)) {
+                // Deliberately surfaced with the upstream text attached: "could not
+                // connect" plus its reason is the whole diagnostic, and an operator
+                // seeing 401 vs timeout knows which lever to pull. Sanitised because
+                // it carries an upstream exception message.
+                return ['error' => 'CIPP could not read mailbox rules for this tenant, so this is NOT an all-clear — the tenant was never scanned. Upstream said: '.$this->textSanitizer->sanitize(
+                    'CIPP mailbox rules error',
+                    mb_substr($name, 0, 200),
+                    200,
+                )];
+            }
+        }
+
+        // A clean tenant. Drop the phantom row rather than project it.
+        $rules = array_values(array_filter(
+            $rules,
+            fn (array $rule): bool => $this->sentinelName($rule) !== self::MAILBOX_RULES_EMPTY_SENTINEL,
+        ));
+
+        return $this->projectRows('cipp_list_tenant_mailbox_rules', $rules);
+    }
+
+    /**
+     * The `Name` of a row that carries nothing else — the shape both of this
+     * endpoint's sentinels take. A real Get-InboxRule object always has an Identity
+     * (Push-ListMailboxRulesQueue filters on `Where-Object { $_.Identity }`), and the
+     * sentinels are built by hand with a Name and nothing more, so requiring the
+     * absence of Identity keeps a genuine rule that merely happens to be *called*
+     * "No rules found" from being swallowed.
+     *
+     * @param  array<string, mixed>  $rule
+     */
+    private function sentinelName(array $rule): ?string
+    {
+        if ($this->resolveKey($rule, 'identity') !== null) {
+            return null;
+        }
+
+        $key = $this->resolveKey($rule, 'name');
+        $name = $key === null ? null : $rule[$key] ?? null;
+
+        return is_string($name) ? $name : null;
+    }
+
     private function shapeMailboxRules(array $rules, array $input, ?int $clientId): array
     {
         $requested = self::requiredUserId($input);

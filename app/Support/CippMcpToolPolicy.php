@@ -101,9 +101,15 @@ final class CippMcpToolPolicy
      * missing feature but a security failure, and where a hand-written curated tool
      * already provides the same capability safely.
      *
-     * ListMailboxRules takes NO user parameter (its only CIPP parameters are tenantFilter
-     * and UseReportDB) and returns EVERY mailbox's rules in the tenant. The curated
-     * cipp_list_mailbox_rules exists precisely to scope that read to one mailbox.
+     * HISTORICAL, and corrected by psa-4k6m — this paragraph used to justify blocking
+     * ListMailboxRules: it takes NO user parameter (its only CIPP parameters are
+     * tenantFilter and UseReportDB) and returns EVERY mailbox's rules in the tenant, while
+     * the curated cipp_list_mailbox_rules scopes that read to one mailbox. The FACTS are
+     * still true; the CONCLUSION was overruled. A tenant-wide inbox-rule sweep is
+     * legitimate, valuable MSP work — it is how you hunt BEC persistence across a tenant —
+     * and "returns more than one mailbox" is a SCOPE to label, not a danger to block. It
+     * now ships as the curated cipp_list_tenant_mailbox_rules, clearly labelled against
+     * its per-mailbox sibling so an operator can tell which one they are granting.
      *
      * ListUserSigninLogs filters Microsoft Graph on the signIn `userId` property — an
      * Azure AD OBJECT ID and nothing else (CIPP-API dev, Invoke-ListUserSigninLogs.ps1
@@ -126,8 +132,42 @@ final class CippMcpToolPolicy
      * fix, and it is why blocking is enforced at RUNTIME (CippMcpTool::scopeDispatchable)
      * and not merely at import.
      */
+    /**
+     * *** SHRINKING, AND ON ITS WAY TO EMPTY (psa-4k6m, Charlie's standing directive:
+     * "Wire the tools, make sure they work correctly and let me/the MSP decide which
+     * ones to allow"). Do not add to it. ***
+     *
+     * ListMailboxRules is GONE from this list as of psa-4k6m, and removing it changed
+     * NOTHING at runtime — which is the point. Its derived local name is
+     * `cipp_list_mailbox_rules` (CippMcpCatalogSyncService::localNameFor), which collides
+     * with the curated per-mailbox tool, so refusalReason()'s collision branch and
+     * scopeDispatchable()'s second whereNotIn refuse the dynamic row regardless of this
+     * list. *** The block never hid that capability from the operator; the collision
+     * guard did, and still does. *** The capability itself now ships properly, as the
+     * curated tenant-wide tool cipp_list_tenant_mailbox_rules — wired, made correct
+     * (it hard-errors on CIPP's "could not connect" sentinel instead of reporting it as
+     * a benign rule), and grantable per token like everything else.
+     *
+     * ListUserSigninLogs REMAINS, pending Charlie's A/B ruling, and it is the only entry
+     * with teeth: `cipp_list_user_signin_logs` collides with nothing, so removing it
+     * genuinely exposes the raw passthrough. That passthrough filters Graph on the signIn
+     * `userId` property — an Azure AD OBJECT ID and nothing else (CIPP-API
+     * Invoke-ListUserSigninLogs.ps1:17-18) — so a model passing the address it read off a
+     * ticket gets a valid filter matching zero rows: HTTP 200, empty body, and a confident
+     * "this account has no sign-ins" during compromise triage.
+     *
+     * *** THE INVARIANT, AND IT IS NOT A SLOW-WALK OF THE DIRECTIVE — IT IS THE DIRECTIVE'S
+     * OWN ITEM 2: unblock and make-correct ship in the SAME change. NEVER unblock first. ***
+     * The block is not what makes this safe; CORRECTNESS is. The capability is ALREADY
+     * exposed correctly and grantable via the curated cipp_list_sign_ins, which dispatches
+     * to this very endpoint when a user_id is supplied and refuses when it cannot bridge
+     * the identity (CippMcpToolRelay:130-131, CippToolContract::identityRefusal). So this
+     * entry hides no capability either — only the choice to grant a broken twin of one the
+     * operator already has.
+     *
+     * @var array<int, string>
+     */
     public const BLOCKED_UPSTREAM_TOOLS = [
-        'ListMailboxRules',
         'ListUserSigninLogs',
     ];
 
