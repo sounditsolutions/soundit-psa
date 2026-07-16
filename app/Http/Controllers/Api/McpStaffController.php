@@ -95,6 +95,28 @@ class McpStaffController extends Controller
 
     private const TACTICAL_SCRIPT_BODY_AUDIT_PLACEHOLDER = '[script body withheld]';
 
+    /**
+     * Curated CIPP READS whose blast radius is large enough that an operator must grant
+     * them by name — they are never auto-inherited by the legacy full-surface token
+     * (psa-4k6m, caught by the psa-4k6m.2 security lane).
+     *
+     * *** THIS IS NOT A BLOCKLIST AND MUST NOT BECOME ONE. *** Charlie's standing
+     * directive is "wire the tools, make sure they work correctly and let me/the MSP
+     * decide which ones to allow." A tool the legacy token inherits SILENTLY is a tool
+     * the operator never got to decide about — so requiring an explicit grant is that
+     * directive, enforced, not an exception to it. Everything here stays fully grantable;
+     * it just cannot arrive by default.
+     *
+     * The bar for adding a name: the read is CATEGORICALLY wider than its siblings, not
+     * merely sensitive. cipp_list_tenant_mailbox_rules returns EVERY mailbox's inbox
+     * rules in a tenant, where every other curated CIPP read is either one user's data
+     * or a single-purpose list. If a future read is only "a bit sensitive", it does not
+     * belong here — the per-token grant already covers it.
+     */
+    private const CIPP_EXPLICIT_GRANT_READ_TOOLS = [
+        'cipp_list_tenant_mailbox_rules',
+    ];
+
     private const WIKI_WRITE_TOOLS = [
         'wiki_add_fact',
         'wiki_create_page',
@@ -1860,6 +1882,14 @@ class McpStaffController extends Controller
 
         if ($token->allowedTools !== null && ! in_array($toolName, McpToolRegistry::allToolNames(), true)) {
             return false;
+        }
+
+        // High-scope curated CIPP reads: explicit grant only, never auto-inherited by the
+        // legacy full-surface token. Placed FIRST among the family branches because it is
+        // the only one that gates a CURATED READ — a reader scanning for "why doesn't the
+        // legacy token get this?" will look here before the write families.
+        if (in_array($toolName, self::CIPP_EXPLICIT_GRANT_READ_TOOLS, true)) {
+            return $token->allowedTools !== null && $token->allows($toolName);
         }
 
         if (in_array($toolName, self::WIKI_WRITE_TOOLS, true)) {

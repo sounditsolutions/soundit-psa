@@ -115,6 +115,16 @@ class CippTenantMailboxRulesTest extends TestCase
         // The cache path carries no UserPrincipalName (only the report-DB path adds
         // one), so the owner must come off the raw Get-InboxRule object.
         $this->assertStringContainsString('attacker@acme.example', $rule['mailboxOwnerId']);
+
+        // psa-4k6m.2 security lane: identity and mailboxOwnerId LOOK like identifiers
+        // and are not — Exchange surfaces Identity as display-name and legacy-DN shapes
+        // too, and the mailbox segment is tenant-chosen text. They are bare scalars, so
+        // unlike forwardTo (an array, fenced leaf-by-leaf) nothing else would catch them.
+        // The original version of this test asserted only that the VALUE survived, which
+        // passes whether or not the fence exists — that gap is exactly how they shipped
+        // unfenced. Assert the fence itself.
+        $this->assertStringContainsString('UNTRUSTED', $rule['mailboxOwnerId']);
+        $this->assertStringContainsString('UNTRUSTED', $rule['identity']);
     }
 
     public function test_the_no_rules_found_sentinel_becomes_a_genuine_empty_result(): void
