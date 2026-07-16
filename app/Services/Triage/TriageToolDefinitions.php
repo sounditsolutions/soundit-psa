@@ -642,6 +642,16 @@ class TriageToolDefinitions
                 // answer means "the cache is warming", not "no rules exist". The
                 // eventual-consistency sentence is not padding — it is the difference
                 // between the agent retrying and the agent reporting an all-clear.
+                //
+                // EXPLICIT GRANT ONLY. Unlike every other curated CIPP read, this one is
+                // listed in McpStaffController::CIPP_EXPLICIT_GRANT_READ_TOOLS, so the
+                // legacy full-surface token does NOT inherit it — an operator must grant
+                // it by name. It shipped without that and the psa-4k6m.2 security lane
+                // caught it: a curated read falls through toolAllowed() to
+                // `$token->allows()`, which is unconditionally true for a legacy token,
+                // so a break-glass token silently gained a read of every mailbox's inbox
+                // rules. Adding a read here is normally free; adding a TENANT-WIDE one is
+                // not, and nothing about this file's shape tells you that. It does now.
                 'description' => 'Sweep inbox rules across EVERY mailbox in the client\'s tenant at once — the tenant-wide hunt for malicious forwarding/delete rules (BEC persistence). Returns each rule with the mailbox it belongs to. This reads CIPP\'s cached snapshot (refreshed hourly), NOT live Exchange: the first call for a tenant typically returns "still loading" rather than data, and you should retry in a minute. For one specific mailbox read live, use cipp_list_mailbox_rules instead.',
                 'input_schema' => [
                     'type' => 'object',

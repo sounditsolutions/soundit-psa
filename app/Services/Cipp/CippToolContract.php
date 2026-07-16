@@ -976,6 +976,20 @@ class CippToolContract
             // names, subjects), so they are untrusted free text like any other.
             'title',
             'Title',
+            // An inbox rule's Identity and MailboxOwnerId (psa-4k6m, caught by the
+            // psa-4k6m.2 security lane). They LOOK like identifiers and are not: Exchange
+            // surfaces Identity as `<mailbox>\<rule id>` but also as display-name and
+            // legacy-DN shapes, and the mailbox segment is a name a tenant admin chose —
+            // so both are tenant-sourced text, on the same footing as the rule's name.
+            // They reach the agent through the tenant-wide BEC sweep, i.e. precisely the
+            // tool that runs against an already-compromised tenant, which is the worst
+            // possible place to leave an unfenced text channel. Bare scalars, so unlike
+            // forwardTo/redirectTo (arrays, fenced leaf-by-leaf by boundArray) nothing
+            // else would have caught them.
+            'identity',
+            'Identity',
+            'mailboxOwnerId',
+            'MailboxOwnerId',
         ], true);
     }
 
