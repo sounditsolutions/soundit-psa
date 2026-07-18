@@ -1033,6 +1033,20 @@ class CippMcpToolRelayTest extends TestCase
         $this->assertStringContainsString('Default Anti-Phishing Policy', $entry['PolicyName']);
         $this->assertStringContainsString('20260711164200.ABC123@remote.example', $entry['MessageId']);
         $this->assertArrayNotHasKey('QuarantineTypes', $entry);
+
+        // *** Identity MUST stay RAW here — it is a GUID\GUID that the quarantine-RELEASE
+        // write tool (StaffCippWriteToolExecutor, quarantine_identity) reads back and
+        // validates with a raw-GUID regex. psa-4k6m briefly fenced Identity GLOBALLY
+        // while making the tenant-wide mailbox-rule sweep fence its own tenant-sourced
+        // Identity, which wrapped THIS value in an UNTRUSTED fence and broke the
+        // read->write release contract (caught by the psa-4k6m.8 security lane). The fix
+        // scopes that fencing to cipp_list_tenant_mailbox_rules; this asserts quarantine
+        // Identity is exactly reusable, byte-for-byte, so the regression cannot return. ***
+        $this->assertSame(
+            '4c60d138-8a2f-4b0e-9f01-aa11bb22cc33\\9c8fd2ee-1234-4a5b-8c6d-ee77ff88aa99',
+            $entry['Identity'],
+        );
+        $this->assertStringNotContainsString('UNTRUSTED', $entry['Identity']);
     }
 
     public function test_users_projection_carries_lic_joined_license_names(): void
