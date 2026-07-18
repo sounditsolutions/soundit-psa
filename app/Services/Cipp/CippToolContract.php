@@ -895,9 +895,27 @@ class CippToolContract
      * redacted, instruction-neutralized and wrapped as data; arrays are bounded and
      * their leaves fenced the same way.
      */
+    /**
+     * Field names that are untrusted free text ONLY on a specific tool, because the same
+     * name carries a comparable identifier elsewhere (psa-4k6m.8).
+     *
+     * identity / mailboxOwnerId are tenant-chosen text on the tenant-wide mailbox-rule
+     * sweep — Exchange surfaces Identity as `<mailbox>\<rule id>`, display-name and
+     * legacy-DN shapes, and the mailbox segment is a name a tenant admin picked, on an
+     * already-compromised tenant. But cipp_list_mail_quarantine's Identity is a
+     * GUID\GUID that StaffCippWriteToolExecutor's quarantine-release path reads back and
+     * validates with a raw-GUID regex, so fencing it globally breaks that read->write
+     * contract. Hence: fence these two by tool, never by name alone.
+     *
+     * @var array<string, array<int, string>>
+     */
+    private const TOOL_SCOPED_FREE_TEXT_FIELDS = [
+        'cipp_list_tenant_mailbox_rules' => ['identity', 'Identity', 'mailboxOwnerId', 'MailboxOwnerId'],
+    ];
+
     public function fence(string $toolName, string $field, mixed $value): mixed
     {
-        if (is_string($value) && self::isFreeTextField($field)) {
+        if (is_string($value) && $this->fieldIsFreeText($toolName, $field)) {
             return $this->textSanitizer->sanitize($this->fieldLabel($toolName, $field), $value, 1000);
         }
 
@@ -930,6 +948,21 @@ class CippToolContract
         $tool = str_replace('_', ' ', preg_replace('/^cipp_/', '', $toolName) ?? $toolName);
 
         return "CIPP {$tool} {$field}";
+    }
+
+    /**
+     * Whether a projected value is untrusted free text for THIS tool — the global
+     * name-keyed list, plus any tool-scoped fields (psa-4k6m.8). Fencing decisions must
+     * consult this, not isFreeTextField() alone, or a field that is free text on one tool
+     * gets fenced on every tool that shares its name.
+     */
+    private function fieldIsFreeText(string $toolName, string $field): bool
+    {
+        if (self::isFreeTextField($field)) {
+            return true;
+        }
+
+        return in_array($field, self::TOOL_SCOPED_FREE_TEXT_FIELDS[$toolName] ?? [], true);
     }
 
     public static function isFreeTextField(string $field): bool
@@ -976,20 +1009,13 @@ class CippToolContract
             // names, subjects), so they are untrusted free text like any other.
             'title',
             'Title',
-            // An inbox rule's Identity and MailboxOwnerId (psa-4k6m, caught by the
-            // psa-4k6m.2 security lane). They LOOK like identifiers and are not: Exchange
-            // surfaces Identity as `<mailbox>\<rule id>` but also as display-name and
-            // legacy-DN shapes, and the mailbox segment is a name a tenant admin chose —
-            // so both are tenant-sourced text, on the same footing as the rule's name.
-            // They reach the agent through the tenant-wide BEC sweep, i.e. precisely the
-            // tool that runs against an already-compromised tenant, which is the worst
-            // possible place to leave an unfenced text channel. Bare scalars, so unlike
-            // forwardTo/redirectTo (arrays, fenced leaf-by-leaf by boundArray) nothing
-            // else would have caught them.
-            'identity',
-            'Identity',
-            'mailboxOwnerId',
-            'MailboxOwnerId',
+            // NB: an inbox rule's Identity / MailboxOwnerId are ALSO tenant-sourced text
+            // (psa-4k6m), but they are NOT in this GLOBAL list — the same field names are
+            // comparable identifiers on other tools (cipp_list_mail_quarantine's Identity
+            // is a GUID\GUID the quarantine-RELEASE write tool round-trips), so fencing
+            // them here breaks that read->write contract. They are fenced tool-scoped
+            // instead — see TOOL_SCOPED_FREE_TEXT_FIELDS. (psa-4k6m.8 caught the global
+            // version breaking quarantine release; this is the corrected form.)
         ], true);
     }
 
