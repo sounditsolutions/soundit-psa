@@ -1058,7 +1058,12 @@ class McpToolRegistry
                 'properties' => [
                     'client_id' => ['type' => 'integer', 'description' => 'Optional: scope to one client. Omit for a cross-client view.'],
                     'contract_id' => ['type' => 'integer', 'description' => 'Optional: only invoices billed against this contract.'],
-                    'status' => ['type' => 'string', 'enum' => ['draft', 'pending_sync', 'synced', 'posted', 'paid', 'void'], 'description' => 'Optional status filter.'],
+                    // psa-ij59.6/.7/.8 — the ENUM IS PART OF THE CONTRACT. It must list
+                    // every value the executor accepts, including the two derived web
+                    // filters, or a schema-driven MCP client sees them as invalid while
+                    // the description and runtime say otherwise. Keep in step with
+                    // AssistantToolExecutor::listInvoices() and InvoiceStatus.
+                    'status' => ['type' => 'string', 'enum' => ['outstanding', 'overdue', 'draft', 'pending_sync', 'synced', 'posted', 'paid', 'void'], 'description' => 'Optional status filter. outstanding/overdue are derived filters matching the web invoice list; the rest are stored statuses.'],
                     'from' => ['type' => 'string', 'description' => 'Optional YYYY-MM-DD; only invoices dated on/after this.'],
                     'to' => ['type' => 'string', 'description' => 'Optional YYYY-MM-DD; only invoices dated on/before this.'],
                     'limit' => ['type' => 'integer', 'description' => 'Max rows (default 25, cap 50).'],

@@ -1186,7 +1186,16 @@ class AssistantToolExecutor
             $query->where('client_id', $this->clientId);
         }
 
-        if (($contractId = (int) ($input['contract_id'] ?? 0)) > 0) {
+        // psa-ij59.5: same failure class as the status bug — a malformed contract_id
+        // was silently DROPPED, so a caller intending to scope to one contract got
+        // every invoice the token can see, cost and margin included. On a cross-client
+        // financial read a bad filter must error, never fall through to a wider result.
+        if (array_key_exists('contract_id', $input) && $input['contract_id'] !== null && $input['contract_id'] !== '') {
+            $raw = $input['contract_id'];
+            $contractId = is_int($raw) ? $raw : (is_string($raw) && preg_match('/^[1-9][0-9]*$/', $raw) === 1 ? (int) $raw : 0);
+            if ($contractId <= 0) {
+                return ['error' => 'contract_id must be a positive integer'];
+            }
             $query->where('contract_id', $contractId);
         }
 

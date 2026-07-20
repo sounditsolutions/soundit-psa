@@ -422,6 +422,68 @@ class PsaInvoiceReadToolsTest extends TestCase
         $this->assertNotContains($paid->id, $ids);
     }
 
+    /**
+     * psa-ij59.6/.7/.8 — all three lanes found the same defect: the executor and the
+     * description supported outstanding/overdue while the PUBLISHED SCHEMA ENUM did
+     * not, so a schema-driven MCP client would treat them as invalid.
+     *
+     * *** THE TEST THAT MISSED IT IS AS INSTRUCTIVE AS THE BUG. *** My earlier
+     * derived-filter test called the tool directly, which proved the EXECUTOR worked
+     * while saying nothing about the CONTRACT the agent actually reads. This one
+     * asserts the advertised surface through tools/list and pins it to the executor's
+     * accepted set, so the two cannot drift apart again.
+     */
+    public function test_the_advertised_status_enum_matches_every_value_the_executor_accepts(): void
+    {
+        $scoped = collect($this->tools($this->token(['list_invoices'])))->keyBy('name');
+        $enum = $scoped['list_invoices']['inputSchema']['properties']['status']['enum'] ?? [];
+
+        $expected = array_merge(
+            ['outstanding', 'overdue'],
+            array_column(InvoiceStatus::cases(), 'value'),
+        );
+
+        sort($enum);
+        sort($expected);
+        $this->assertSame($expected, $enum, 'the published enum must list every accepted status');
+
+        // And every advertised value must actually be accepted, not just listed.
+        $client = Client::factory()->create();
+        $this->invoice($client);
+        $token = $this->token(['list_invoices']);
+        foreach ($expected as $value) {
+            $result = $this->decodedResult($this->callTool($token, 'list_invoices', ['status' => $value]));
+            $this->assertArrayNotHasKey('error', $result, "advertised status '{$value}' must be accepted");
+        }
+    }
+
+    /**
+     * psa-ij59.5 (SECURITY) — a malformed contract_id was silently dropped, so a
+     * caller intending to scope to one contract received every invoice the token can
+     * see, cost and margin included. Same failure class as the status bug: on a
+     * cross-client financial read a bad filter must error, never widen.
+     */
+    public function test_a_malformed_contract_id_errors_rather_than_widening_the_read(): void
+    {
+        $client = Client::factory()->create();
+        $contract = $this->contract($client);
+        $this->invoice($client, ['contract_id' => $contract->id]);
+        $this->invoice($client); // off-contract; must NOT come back on a bad filter
+
+        $token = $this->token(['list_invoices']);
+
+        foreach (['abc', '0', '-1', 0, -5] as $bad) {
+            $result = $this->decodedResult($this->callTool($token, 'list_invoices', ['contract_id' => $bad]));
+            $this->assertArrayHasKey('error', $result, 'contract_id='.var_export($bad, true).' must error');
+            $this->assertArrayNotHasKey('invoices', $result, 'a bad contract_id must not fall through');
+        }
+
+        // The valid case still works.
+        $ok = $this->decodedResult($this->callTool($token, 'list_invoices', ['contract_id' => $contract->id]));
+        $this->assertArrayHasKey('invoices', $ok);
+        $this->assertCount(1, $ok['invoices']);
+    }
+
     public function test_get_invoice_reports_a_missing_invoice_rather_than_an_empty_shell(): void
     {
         $token = $this->token(['get_invoice']);
