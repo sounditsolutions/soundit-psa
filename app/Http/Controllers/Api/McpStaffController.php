@@ -219,6 +219,11 @@ class McpStaffController extends Controller
         'get_email_item',
         'list_phone_calls',
         'get_phone_call',
+        // psa-ij59: invoicing reads. Cross-client like the email/call pairs above,
+        // with client_id an optional filter. Unlike the contract reads, these DO
+        // expose internal cost/margin — Charlie's explicit ruling, 2026-07-20.
+        'list_invoices',
+        'get_invoice',
     ];
 
     /**

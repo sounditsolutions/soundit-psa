@@ -5,12 +5,15 @@ namespace App\Services\Assistant;
 use App\Enums\CallDirection;
 use App\Enums\ContractStatus;
 use App\Enums\EmailDirection;
+use App\Enums\InvoiceStatus;
 use App\Enums\NoteType;
 use App\Enums\TranscriptionStatus;
 use App\Models\Asset;
 use App\Models\Client;
 use App\Models\Contract;
 use App\Models\Email;
+use App\Models\Invoice;
+use App\Models\InvoiceLine;
 use App\Models\Person;
 use App\Models\PhoneCall;
 use App\Models\Ticket;
@@ -104,6 +107,8 @@ class AssistantToolExecutor
             'get_email_item' => $this->getEmailItem($input),
             'list_phone_calls' => $this->listPhoneCalls($input),
             'get_phone_call' => $this->getPhoneCall($input),
+            'list_invoices' => $this->listInvoices($input),
+            'get_invoice' => $this->getInvoice($input),
 
             // NinjaRMM tools
             'ninja_search_devices' => $this->ninjaSearchDevices($input),
@@ -1151,6 +1156,144 @@ class AssistantToolExecutor
             'transcription_status' => $call->transcription_status?->value,
             'transcription' => $call->transcription,
         ]];
+    }
+
+    // ── Invoicing reads (psa-ij59) ──
+
+    /**
+     * list_invoices — cross-client staff-class read, mirroring listEmailItems().
+     *
+     * Scope note: client_id is NOT read from $input. The MCP boundary lifts it out of
+     * the raw arguments and into this executor's constructor scope before dispatch
+     * (McpStaffController::callTool), so reading $input['client_id'] here would be
+     * both dead and a scope-bypass shape. Omitted client => cross-client, which is
+     * Charlie's ruling for this tool ("staff-wide, per-token grant").
+     *
+     * Exposes internal cost/margin, unlike its psa_read contract-tool neighbours.
+     *
+     * @param  array<string, mixed>  $input
+     * @return array<string, mixed>
+     */
+    private function listInvoices(array $input): array
+    {
+        // max(1, …) guards the lower bound: Laravel's limit() treats a negative value
+        // as "no limit", which would dump the whole cross-client invoice table.
+        $limit = max(1, min((int) ($input['limit'] ?? 25), 50));
+
+        $query = Invoice::query()->with(['client:id,name', 'contract:id,name']);
+
+        if ($this->clientId) {
+            $query->where('client_id', $this->clientId);
+        }
+
+        if (($contractId = (int) ($input['contract_id'] ?? 0)) > 0) {
+            $query->where('contract_id', $contractId);
+        }
+
+        if (($status = trim((string) ($input['status'] ?? ''))) !== '' && ($case = InvoiceStatus::tryFrom($status)) !== null) {
+            $query->where('status', $case);
+        }
+
+        // A malformed date must ERROR, never fall through to an unfiltered read.
+        // Answering "not-a-date" with rows would silently ignore the caller's filter;
+        // answering it with [] would read as "no invoices in that range" — both are
+        // the confident-wrong-answer failure CLAUDE.md rule 3 exists to prevent.
+        foreach ([['from', '>='], ['to', '<=']] as [$key, $op]) {
+            $raw = trim((string) ($input[$key] ?? ''));
+            if ($raw === '') {
+                continue;
+            }
+            try {
+                $query->whereDate('invoice_date', $op, \Carbon\Carbon::parse($raw));
+            } catch (\Throwable) {
+                return ['error' => "{$key} must be a valid date (YYYY-MM-DD)"];
+            }
+        }
+
+        $invoices = $query->orderByDesc('invoice_date')->orderByDesc('id')->limit($limit)->get();
+
+        return [
+            'count' => $invoices->count(),
+            'client_id' => $this->clientId,
+            'invoices' => $invoices->map(fn (Invoice $inv) => [
+                'id' => $inv->id,
+                'invoice_number' => $inv->invoice_number,
+                'client_id' => $inv->client_id,
+                'client_name' => $inv->client?->name,
+                'contract_id' => $inv->contract_id,
+                'contract_name' => $inv->contract?->name,
+                'invoice_date' => $inv->invoice_date?->toDateString(),
+                'due_date' => $inv->due_date?->toDateString(),
+                'status' => $inv->status?->value,
+                'subtotal' => $inv->subtotal,
+                'tax' => $inv->tax,
+                'total' => $inv->total,
+                // Internal — never client-visible. Named in the tool description.
+                'total_cost' => $inv->total_cost,
+                'margin' => $inv->margin,
+            ])->toArray(),
+        ];
+    }
+
+    /**
+     * get_invoice — one invoice with every line, in billing order.
+     *
+     * *** quantity_source IS THE AUDIT RECORD and must never be dropped. *** A
+     * graduated line is expanded by BillingService into ONE LINE PER CONSUMED BAND,
+     * so several lines legitimately share a description at different unit_prices;
+     * quantity_source is what names the rate card that priced each one
+     * ("[graduated: N bands]" / "[volume tier rate $X/GB]"). Order matters too — the
+     * QBO push pairs lines by sort_order POSITION — so lines() is left in its own
+     * ordering rather than re-sorted here.
+     *
+     * @param  array<string, mixed>  $input
+     * @return array<string, mixed>
+     */
+    private function getInvoice(array $input): array
+    {
+        $id = (int) ($input['invoice_id'] ?? 0);
+        $invoice = $id > 0
+            ? Invoice::with(['client:id,name', 'contract:id,name', 'lines'])->find($id)
+            : null;
+
+        if (! $invoice) {
+            return ['error' => 'Invoice not found'];
+        }
+
+        if ($this->clientId && $invoice->client_id !== $this->clientId) {
+            return ['error' => 'Invoice not found'];
+        }
+
+        return [
+            'id' => $invoice->id,
+            'invoice_number' => $invoice->invoice_number,
+            'client_id' => $invoice->client_id,
+            'client_name' => $invoice->client?->name,
+            'contract_id' => $invoice->contract_id,
+            'contract_name' => $invoice->contract?->name,
+            'invoice_date' => $invoice->invoice_date?->toDateString(),
+            'due_date' => $invoice->due_date?->toDateString(),
+            'status' => $invoice->status?->value,
+            'subtotal' => $invoice->subtotal,
+            'tax' => $invoice->tax,
+            'total' => $invoice->total,
+            'total_cost' => $invoice->total_cost,
+            'margin' => $invoice->margin,
+            'notes' => $invoice->notes,
+            'lines' => $invoice->lines->map(fn (InvoiceLine $line) => [
+                'id' => $line->id,
+                'sort_order' => $line->sort_order,
+                'description' => $line->description,
+                'quantity' => $line->quantity,
+                'unit_price' => $line->unit_price,
+                'amount' => $line->amount,
+                'unit_cost' => $line->unit_cost,
+                'cost_amount' => $line->cost_amount,
+                'is_taxable' => (bool) $line->is_taxable,
+                'prepaid_time_minutes' => $line->prepaid_time_minutes,
+                'quantity_source' => $line->quantity_source,
+            ])->toArray(),
+        ];
     }
 
     // ── NinjaRMM Tools ──

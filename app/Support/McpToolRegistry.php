@@ -921,6 +921,8 @@ class McpToolRegistry
             self::getEmailItemTool(),
             self::listPhoneCallsTool(),
             self::getPhoneCallTool(),
+            self::listInvoicesTool(),
+            self::getInvoiceTool(),
         ];
     }
 
@@ -1028,6 +1030,55 @@ class McpToolRegistry
                     'phone_call_id' => ['type' => 'integer', 'description' => 'The phone call ID to read.'],
                 ],
                 'required' => ['phone_call_id'],
+            ],
+        ];
+    }
+
+    /**
+     * psa-ij59 — invoicing reads (Charlie, 2026-07-20). Cross-client staff-class,
+     * mirroring list_email_items/list_phone_calls rather than the hard client-scoped
+     * list_client_contracts.
+     *
+     * *** THE DATA BOUNDARY IS DELIBERATELY THE OPPOSITE OF ITS psa_read NEIGHBOURS. ***
+     * list_client_contracts/get_contract state "pricing and financial fields are not
+     * exposed"; these expose totals AND unit_cost/cost_amount/total_cost/margin, on
+     * Charlie's explicit ruling. He asked that a grant be LEGIBLE, so the descriptions
+     * NAME the cost fields outright — a granter must be able to see they are handing
+     * over cross-client margin, not "financial details". Do not soften that wording.
+     *
+     * @return array<string, mixed>
+     */
+    public static function listInvoicesTool(): array
+    {
+        return [
+            'name' => 'list_invoices',
+            'description' => 'List invoices (summary rows: id, number, client, contract, dates, status, subtotal/tax/total, and the internal total_cost and margin). Staff-class, cross-client — omit client_id to search every client, or pass it to scope to one. Filter by date range (from/to on invoice_date), client_id, contract_id and status. INTERNAL COST DATA: this returns total_cost and margin, which are never shown to clients. Requires an explicit token grant.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'client_id' => ['type' => 'integer', 'description' => 'Optional: scope to one client. Omit for a cross-client view.'],
+                    'contract_id' => ['type' => 'integer', 'description' => 'Optional: only invoices billed against this contract.'],
+                    'status' => ['type' => 'string', 'enum' => ['draft', 'pending_sync', 'synced', 'posted', 'paid', 'void'], 'description' => 'Optional status filter.'],
+                    'from' => ['type' => 'string', 'description' => 'Optional YYYY-MM-DD; only invoices dated on/after this.'],
+                    'to' => ['type' => 'string', 'description' => 'Optional YYYY-MM-DD; only invoices dated on/before this.'],
+                    'limit' => ['type' => 'integer', 'description' => 'Max rows (default 25, cap 50).'],
+                ],
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public static function getInvoiceTool(): array
+    {
+        return [
+            'name' => 'get_invoice',
+            'description' => 'Get one invoice in full: header (client, contract, dates, status, subtotal/tax/total, internal total_cost and margin) plus every line in billing order with description, quantity, unit_price, amount, the internal unit_cost/cost_amount, prepaid minutes and quantity_source. quantity_source is the AUDIT RECORD naming which rate card priced the line — a graduated line is split into one line per band, so several lines may share a description at different unit prices; that is correct, not duplication. INTERNAL COST DATA: returns cost and margin, never shown to clients. Requires an explicit token grant.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'invoice_id' => ['type' => 'integer', 'description' => 'The invoice ID to read.'],
+                ],
+                'required' => ['invoice_id'],
             ],
         ];
     }
