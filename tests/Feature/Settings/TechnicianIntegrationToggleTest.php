@@ -91,6 +91,60 @@ class TechnicianIntegrationToggleTest extends TestCase
         $this->assertArrayNotHasKey('send_ack', TechnicianConfig::tierMap());
     }
 
+    // --- tier-map key ownership (psa-xjiz): this form owns ONLY the two keys it renders ---
+    //
+    // technician_action_tiers is an open action_type => tier map (TechnicianConfig::tierMap()
+    // docblock: "action_type => tier-string map (data, not code)"), read for arbitrary keys by
+    // TechnicianTierClassifier's generic path. This form renders exactly two of those keys, so
+    // it must never destroy one it does not render. Same hazard class as the kill switch, which
+    // psa-2wwh gave its own route for precisely this reason (routes/web.php: "sharing it would
+    // let an unrelated settings save silently disarm the kill switch mid-incident").
+
+    public function test_saving_the_technician_form_preserves_a_db_only_propose_close_block(): void
+    {
+        // The operator's ONLY way to say "the AI may never propose closes" — it has no UI,
+        // so it is necessarily hand-set in the DB (TechnicianTierClassifier:32 honours it
+        // as a kill). An unrelated checkbox save must not erase it.
+        Setting::setValue('technician_action_tiers', json_encode(['propose_close' => 'block']));
+
+        $this->actingAs($this->user)
+            ->post(route('settings.integrations.technician.update'), [
+                'technician_enabled' => '1',
+                'technician_auto_ack' => '1', // an unrelated toggle in the same form
+            ])
+            ->assertRedirect(route('settings.integrations'));
+
+        $this->assertSame(
+            'block',
+            TechnicianConfig::tierMap()['propose_close'] ?? null,
+            'an unrelated Technician-card save must not wipe the operator propose_close denylist'
+        );
+        $this->assertSame('auto', TechnicianConfig::tierMap()['send_ack'] ?? null, 'the form still owns its own keys');
+    }
+
+    public function test_saving_the_technician_form_preserves_tier_keys_it_does_not_render(): void
+    {
+        // The invariant is ownership, not a propose_close special case: any key this form
+        // does not render survives it.
+        Setting::setValue('technician_action_tiers', json_encode([
+            'propose_close' => 'block',
+            'some_future_action' => 'auto',
+            'send_ack' => 'auto',
+        ]));
+
+        $this->actingAs($this->user)
+            ->post(route('settings.integrations.technician.update'), [
+                'technician_enabled' => '1',
+                // no technician_auto_ack → send_ack (a key this form DOES own) must clear
+            ])
+            ->assertRedirect(route('settings.integrations'));
+
+        $tiers = TechnicianConfig::tierMap();
+        $this->assertSame('block', $tiers['propose_close'] ?? null);
+        $this->assertSame('auto', $tiers['some_future_action'] ?? null);
+        $this->assertArrayNotHasKey('send_ack', $tiers, 'unchecking still removes only the key this form owns');
+    }
+
     // --- coverage-start anchor (psa-wmqp): stamp on OFF→ON, clear on disable ---
 
     public function test_enabling_off_to_on_stamps_coverage_start(): void

@@ -1972,9 +1972,20 @@ class IntegrationsController extends Controller
         }
 
         // CO-4: rebuild tier map from checkboxes — both send_ack and send_max_hold are
-        // operator-toggleable auto actions. Reconstruct from scratch so we never orphan
-        // stale keys, and so unchecking either removes only that key.
-        $tiers = [];
+        // operator-toggleable auto actions. Unchecking either removes only that key.
+        //
+        // psa-xjiz: start from the STORED map and drop only the two keys this form renders,
+        // rather than rebuilding from scratch. technician_action_tiers is an open
+        // action_type => tier map (TechnicianConfig::tierMap()) whose other keys the
+        // classifier honours — notably propose_close:block, the operator's only kill for
+        // AI-proposed closes (TechnicianTierClassifier:32), which has no UI and so exists
+        // only as a hand-set DB value. Rebuilding blind silently wiped it on any unrelated
+        // save. Same hazard psa-2wwh fixed for the kill switch by giving it its own route
+        // (routes/web.php: "sharing it would let an unrelated settings save silently disarm
+        // the kill switch mid-incident"); this form simply must not touch keys it does not
+        // render. Stale-key hygiene is preserved for the two keys it does own.
+        $tiers = TechnicianConfig::tierMap();
+        unset($tiers['send_ack'], $tiers['send_max_hold']);
         if ($request->has('technician_auto_ack')) {
             $tiers['send_ack'] = 'auto';
         }
