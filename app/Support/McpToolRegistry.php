@@ -1052,7 +1052,7 @@ class McpToolRegistry
     {
         return [
             'name' => 'list_invoices',
-            'description' => 'List invoices (summary rows: id, number, client, contract, dates, status, subtotal/tax/total, and the internal total_cost and margin). Staff-class, cross-client — omit client_id to search every client, or pass it to scope to one. Filter by date range (from/to on invoice_date), client_id, contract_id and status. INTERNAL COST DATA: this returns total_cost and margin, which are never shown to clients. Requires an explicit token grant.',
+            'description' => 'List invoices (summary rows: id, number, client, contract, dates, status, reportable subtotal/tax/total, and the internal reportable_total_cost and reportable_margin). Staff-class, cross-client — omit client_id to search every client, or pass it to scope to one. Filter by date range (from/to on invoice_date), client_id, contract_id and status (draft, pending_sync, synced, posted, paid, void, plus the derived outstanding and overdue). VOIDED INVOICES report zero: a voided invoice has reportable_* of 0 and carries is_void_with_snapshot=true with original_total showing what was actually billed — do not read a voided row as a $0 invoice. INTERNAL COST DATA: this returns cost and margin, which are never shown to clients. Requires an explicit token grant.',
             'input_schema' => [
                 'type' => 'object',
                 'properties' => [
@@ -1072,7 +1072,7 @@ class McpToolRegistry
     {
         return [
             'name' => 'get_invoice',
-            'description' => 'Get one invoice in full: header (client, contract, dates, status, subtotal/tax/total, internal total_cost and margin) plus every line in billing order with description, quantity, unit_price, amount, the internal unit_cost/cost_amount, prepaid minutes and quantity_source. quantity_source is the AUDIT RECORD naming which rate card priced the line — a graduated line is split into one line per band, so several lines may share a description at different unit prices; that is correct, not duplication. INTERNAL COST DATA: returns cost and margin, never shown to clients. Requires an explicit token grant.',
+            'description' => 'Get one invoice in full: header (client, contract, dates, status) plus every line in billing order with description, quantity, unit_price, prepaid minutes and quantity_source. quantity_source is the AUDIT RECORD naming which rate card priced the line — a graduated line is split into one line per band, so several lines may share a description at different unit prices; that is correct, not duplication. MONEY IS REPORTED TWICE AND THE DISTINCTION MATTERS: reportable_* is what counts toward revenue, original_* is what was actually billed. They are equal except on a VOIDED invoice, which is zeroed for reporting — there is_void_with_snapshot=true, reportable_total is 0, and original_total is the real historical figure. Never answer "what was this invoice for?" from reportable_* alone on a voided invoice. INTERNAL COST DATA: returns unit_cost, cost amounts, total cost and margin, which are never shown to clients. Does NOT return the free-text invoice notes field. Requires an explicit token grant.',
             'input_schema' => [
                 'type' => 'object',
                 'properties' => [

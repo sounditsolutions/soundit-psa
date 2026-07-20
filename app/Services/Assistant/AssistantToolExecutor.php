@@ -1190,8 +1190,21 @@ class AssistantToolExecutor
             $query->where('contract_id', $contractId);
         }
 
-        if (($status = trim((string) ($input['status'] ?? ''))) !== '' && ($case = InvoiceStatus::tryFrom($status)) !== null) {
-            $query->where('status', $case);
+        // psa-ij59.2 / .4: an unrecognised status must ERROR, never be silently
+        // dropped. Ignoring it would widen a cross-client financial read to every
+        // client's invoices — cost and margin included — while the caller believes
+        // it filtered. 'overdue'/'outstanding' are REAL domain filters the web list
+        // uses (InvoiceStatus::filterOptions, Invoice::scopeStatusFilter), so they
+        // are plausible caller values and are supported here for web parity rather
+        // than rejected.
+        if (($status = trim((string) ($input['status'] ?? ''))) !== '') {
+            $derived = ['outstanding', 'overdue'];
+            if (! in_array($status, $derived, true) && InvoiceStatus::tryFrom($status) === null) {
+                $valid = implode(', ', array_merge($derived, array_column(InvoiceStatus::cases(), 'value')));
+
+                return ['error' => "status must be one of: {$valid}"];
+            }
+            $query->statusFilter($status);
         }
 
         // A malformed date must ERROR, never fall through to an unfiltered read.
@@ -1204,7 +1217,9 @@ class AssistantToolExecutor
                 continue;
             }
             try {
-                $query->whereDate('invoice_date', $op, \Carbon\Carbon::parse($raw));
+                // Plain where(), not whereDate(): invoice_date is a DATE column with
+                // an index (psa-ij59.2), and this mirrors the web invoice list.
+                $query->where('invoice_date', $op, \Carbon\Carbon::parse($raw)->toDateString());
             } catch (\Throwable) {
                 return ['error' => "{$key} must be a valid date (YYYY-MM-DD)"];
             }
@@ -1225,12 +1240,19 @@ class AssistantToolExecutor
                 'invoice_date' => $inv->invoice_date?->toDateString(),
                 'due_date' => $inv->due_date?->toDateString(),
                 'status' => $inv->status?->value,
-                'subtotal' => $inv->subtotal,
-                'tax' => $inv->tax,
-                'total' => $inv->total,
+                // Voided invoices carry zeroed live money (InvoiceVoidService) with
+                // the originals in pre_void_*. Flagging it here — not just on
+                // get_invoice — so a $0 row in a LIST cannot be read as "this
+                // invoice was for nothing" either. original_total gives the billed
+                // figure via the model's own display accessor.
+                'is_void_with_snapshot' => $inv->isVoidWithSnapshot(),
+                'reportable_subtotal' => $inv->subtotal,
+                'reportable_tax' => $inv->tax,
+                'reportable_total' => $inv->total,
+                'original_total' => $inv->display_total,
                 // Internal — never client-visible. Named in the tool description.
-                'total_cost' => $inv->total_cost,
-                'margin' => $inv->margin,
+                'reportable_total_cost' => $inv->total_cost,
+                'reportable_margin' => $inv->margin,
             ])->toArray(),
         ];
     }
@@ -1274,21 +1296,38 @@ class AssistantToolExecutor
             'invoice_date' => $invoice->invoice_date?->toDateString(),
             'due_date' => $invoice->due_date?->toDateString(),
             'status' => $invoice->status?->value,
-            'subtotal' => $invoice->subtotal,
-            'tax' => $invoice->tax,
-            'total' => $invoice->total,
-            'total_cost' => $invoice->total_cost,
-            'margin' => $invoice->margin,
-            'notes' => $invoice->notes,
+            // psa-ij59.3 — VOIDED INVOICES. InvoiceVoidService zeroes the live money
+            // fields on void and snapshots the originals into pre_void_*, so that
+            // aggregates exclude voided invoices structurally. Returning ONLY the
+            // zeroed values would answer "what was on this invoice?" with a
+            // detailed-looking $0 and let an agent misreport a real historical bill.
+            // So we mirror the staff web detail exactly: reportable_* is the live
+            // (zeroed) value that counts toward revenue, original_* is what was
+            // billed, and is_void_with_snapshot says which reading applies. The
+            // original_* values come from the model's own display_* accessors rather
+            // than being re-derived here.
+            'is_void_with_snapshot' => $invoice->isVoidWithSnapshot(),
+            'reportable_subtotal' => $invoice->subtotal,
+            'reportable_tax' => $invoice->tax,
+            'reportable_total' => $invoice->total,
+            'reportable_total_cost' => $invoice->total_cost,
+            'reportable_margin' => $invoice->margin,
+            'original_subtotal' => $invoice->display_subtotal,
+            'original_tax' => $invoice->display_tax,
+            'original_total' => $invoice->display_total,
+            'original_total_cost' => $invoice->display_total_cost,
+            'original_margin' => $invoice->display_margin,
             'lines' => $invoice->lines->map(fn (InvoiceLine $line) => [
                 'id' => $line->id,
                 'sort_order' => $line->sort_order,
                 'description' => $line->description,
                 'quantity' => $line->quantity,
                 'unit_price' => $line->unit_price,
-                'amount' => $line->amount,
+                'reportable_amount' => $line->amount,
+                'reportable_cost_amount' => $line->cost_amount,
+                'original_amount' => $line->display_amount,
+                'original_cost_amount' => $line->display_cost_amount,
                 'unit_cost' => $line->unit_cost,
-                'cost_amount' => $line->cost_amount,
                 'is_taxable' => (bool) $line->is_taxable,
                 'prepaid_time_minutes' => $line->prepaid_time_minutes,
                 'quantity_source' => $line->quantity_source,

@@ -300,10 +300,126 @@ class PsaInvoiceReadToolsTest extends TestCase
         $token = $this->token(['get_invoice']);
         $result = $this->decodedResult($this->callTool($token, 'get_invoice', ['invoice_id' => $invoice->id]));
 
-        $this->assertEquals(400.00, (float) $result['total_cost']);
-        $this->assertEquals(600.00, (float) $result['margin']);
-        $this->assertEquals(400.00, (float) $result['lines'][0]['cost_amount']);
+        $this->assertEquals(400.00, (float) $result['reportable_total_cost']);
+        $this->assertEquals(600.00, (float) $result['reportable_margin']);
+        $this->assertEquals(400.00, (float) $result['lines'][0]['reportable_cost_amount']);
         $this->assertEquals(400.00, (float) $result['lines'][0]['unit_cost']);
+    }
+
+    /**
+     * psa-ij59.1 (SECURITY, REVISE) — the invoice `notes` column is arbitrary
+     * operator-entered free text (up to 5000 chars) that can hold PII, internal
+     * commentary or pasted secrets. Charlie approved cross-client COST/MARGIN
+     * exposure; he did not approve an unadvertised cross-client free-text field.
+     * The whole control for this feature is that the grant description tells a
+     * granter what they are handing over, so an undisclosed field is precisely the
+     * failure. Dropped from the payload rather than disclosed — it has no clear
+     * agent value that would justify the surface. This test stops it returning.
+     */
+    public function test_detail_does_not_leak_the_free_text_invoice_notes_field(): void
+    {
+        $client = Client::factory()->create();
+        $invoice = $this->invoice($client, [
+            'notes' => 'INTERNAL: chase Bob re: the disputed line, card ending 4242',
+        ]);
+
+        $token = $this->token(['get_invoice']);
+        $response = $this->callTool($token, 'get_invoice', ['invoice_id' => $invoice->id]);
+        $result = $this->decodedResult($response);
+
+        $this->assertArrayNotHasKey('notes', $result);
+        // Belt and braces: the raw payload must not carry the text anywhere.
+        $this->assertStringNotContainsString(
+            'card ending 4242',
+            (string) $response->json('result.content.0.text'),
+        );
+    }
+
+    /**
+     * psa-ij59.3 (PRODUCT, REVISE) — THE VOID TRAP. InvoiceVoidService zeroes the
+     * live money fields on void and snapshots the originals into pre_void_*, so
+     * aggregates exclude voided invoices structurally. A payload returning only the
+     * zeroed values would answer "what was on this invoice?" with a detailed-looking
+     * $0 and let an agent misreport a real historical bill. So the payload mirrors
+     * the staff web detail: reportable_* (what counts) vs original_* (what was
+     * billed), with is_void_with_snapshot saying which reading applies.
+     */
+    public function test_a_voided_invoice_cannot_be_mistaken_for_a_zero_dollar_invoice(): void
+    {
+        $client = Client::factory()->create();
+        $invoice = $this->invoice($client);
+        $line = InvoiceLine::create([
+            'invoice_id' => $invoice->id,
+            'description' => 'Managed services',
+            'quantity' => 1, 'unit_price' => 1000.00, 'amount' => 1000.00,
+            'unit_cost' => 400.00, 'cost_amount' => 400.00,
+            'sort_order' => 1,
+        ]);
+
+        // Void it exactly the way the app does, rather than hand-faking the columns.
+        app(\App\Services\InvoiceVoidService::class)->void($invoice->fresh());
+
+        $token = $this->token(['get_invoice']);
+        $result = $this->decodedResult($this->callTool($token, 'get_invoice', ['invoice_id' => $invoice->id]));
+
+        $this->assertSame('void', $result['status']);
+        $this->assertTrue($result['is_void_with_snapshot'], 'the payload must announce the void snapshot');
+
+        // Reportable money is zero — that is correct and must stay correct.
+        $this->assertEquals(0.0, (float) $result['reportable_total']);
+
+        // *** But the original bill is still recoverable from the same payload. ***
+        $this->assertEquals(1100.00, (float) $result['original_total']);
+        $this->assertEquals(1000.00, (float) $result['lines'][0]['original_amount']);
+        $this->assertEquals(0.0, (float) $result['lines'][0]['reportable_amount']);
+
+        unset($line);
+    }
+
+    /**
+     * psa-ij59.2 + .4 (ARCHITECTURE + UX, both REVISE, found independently) — an
+     * unrecognised status was silently DROPPED, widening a cross-client financial
+     * read to every client's invoices while the caller believed it had filtered.
+     * Rule 3 again: a degraded read must scream. I had applied that to dates and
+     * not to status, in the same method.
+     */
+    public function test_an_unrecognised_status_errors_rather_than_widening_the_read(): void
+    {
+        $clientA = Client::factory()->create();
+        $clientB = Client::factory()->create();
+        $this->invoice($clientA);
+        $this->invoice($clientB);
+
+        $token = $this->token(['list_invoices']);
+        $result = $this->decodedResult($this->callTool($token, 'list_invoices', ['status' => 'paiddd']));
+
+        $this->assertArrayHasKey('error', $result);
+        $this->assertArrayNotHasKey('invoices', $result, 'a bad status must not fall through to an unfiltered read');
+        $this->assertStringContainsString('status must be one of', $result['error']);
+    }
+
+    /**
+     * 'overdue' and 'outstanding' are real domain filters the web invoice list
+     * offers (InvoiceStatus::filterOptions / Invoice::scopeStatusFilter), so they
+     * are plausible caller values. Supported for parity rather than rejected —
+     * psa-ij59.2's suggested alternative.
+     */
+    public function test_the_derived_web_status_filters_are_supported(): void
+    {
+        $client = Client::factory()->create();
+        $paid = $this->invoice($client, ['status' => InvoiceStatus::Paid]);
+        $overdue = $this->invoice($client, [
+            'status' => InvoiceStatus::Posted,
+            'due_date' => now()->subDays(10)->toDateString(),
+        ]);
+
+        $token = $this->token(['list_invoices']);
+        $result = $this->decodedResult($this->callTool($token, 'list_invoices', ['status' => 'overdue']));
+
+        $this->assertArrayHasKey('invoices', $result, 'overdue is a supported filter, not an error');
+        $ids = collect($result['invoices'])->pluck('id')->all();
+        $this->assertContains($overdue->id, $ids);
+        $this->assertNotContains($paid->id, $ids);
     }
 
     public function test_get_invoice_reports_a_missing_invoice_rather_than_an_empty_shell(): void
