@@ -567,6 +567,62 @@ class TieredPricingOverrideTest extends TestCase
         }
     }
 
+    /**
+     * psa-x47y — CHARACTERISATION GUARD for the shared tier-editor partial.
+     *
+     * The graduated-tier editor and its override note were duplicated verbatim
+     * between profiles/create and profiles/show (7 identical JS functions, 75
+     * lines). That duplication is a billing-trust hazard rather than a cosmetic
+     * one: updatePricingMethodNote is what tells an operator, at the moment they
+     * flip the toggle, that this line's graduated bands will override the SKU's
+     * volume rate card. Charlie's 2026-07-13 ruling is that the override is
+     * ALLOWED but must never be SILENT — so a drift on ONE copy silently
+     * reintroduces exactly the invisible-to-the-operator defect the product lane
+     * originally rejected.
+     *
+     * This asserts the behaviour is present and identical on BOTH screens. It
+     * passed before the extraction and must keep passing after it — that is the
+     * point: the refactor is behaviour-preserving, and this is what proves it.
+     */
+    public function test_both_profile_forms_ship_the_same_tier_editor_behaviour(): void
+    {
+        $contract = $this->contract();
+        $profile = $this->profile($contract);
+
+        $this->actingAs($this->actor());
+
+        // The whole tier-editor surface both screens must carry, including the
+        // real-money note string itself.
+        $required = [
+            'function tierRowHtml',
+            'function addTier',
+            'function removeTier',
+            'function toggleTiered',
+            'function syncTierBasePrice',
+            'function syncTierBasePriceFromLine',
+            'function updatePricingMethodNote',
+            // NB: the note lives inside a JS string literal, so the rendered HTML
+            // carries an escaped apostrophe (SKU\'s). Match on a fragment either
+            // side of it rather than the full sentence.
+            'Overrides the SKU',
+            'volume storage tiers',
+            'pricing-method-note',
+            'per_backup_storage_gb',
+        ];
+
+        foreach ([route('profiles.create', $contract), route('profiles.show', $profile)] as $url) {
+            $html = $this->get($url)->assertOk()->getContent();
+
+            foreach ($required as $needle) {
+                $this->assertStringContainsString(
+                    $needle,
+                    $html,
+                    "tier-editor surface must be present on {$url} — missing: {$needle}",
+                );
+            }
+        }
+    }
+
     /** The last screen before Generate says which card priced each row. */
     public function test_preview_names_the_graduated_card_on_an_overriding_line(): void
     {
