@@ -14,76 +14,46 @@ use App\Services\Assistant\AssistantToolExecutor;
  *
  * Nothing here enumerates writers — a guard that has to name what it blocks is
  * only as complete as that list, and on this surface it twice was not.
+ *
+ * THE PUBLIC SURFACE IS ONE METHOD, forTurn(), AND THAT IS DELIBERATE.
+ *
+ * There used to be two: definitions() for the schema and executor() for the
+ * runner. Callers took both — and executor() resolved the published set a SECOND
+ * time to build its allowlist. Both calls read the live vendor availability
+ * probes, so they were two answers to the same question asked a moment apart,
+ * and a lane that flipped in between made the bot's schema and the bot's
+ * behaviour disagree. In the granting direction that is a fail-open: the
+ * executor runs something the model was never offered (psa-uw2o.21). In the
+ * revoking direction it is an over-block: the executor refuses something that
+ * WAS offered (psa-uw2o.22).
+ *
+ * A caller cannot make that mistake now, because there is nothing to pair up
+ * wrongly. forTurn() resolves availability ONCE and hands back a
+ * TeamsReadOnlySurface carrying both halves, with the allowlist derived from the
+ * published array itself. definitions() is private: the only way to obtain this
+ * schema is from the object that also knows how to run it.
  */
 class TeamsReadOnlyToolset
 {
-    /** What the executor returns for anything this surface will not run. */
-    private const REFUSAL = ['error' => 'That tool is not available in chat (read-only).'];
-
     /**
-     * May the ReadOnly chat surface run this tool? Only if it is BOTH published
-     * in this surface's own schema AND classified as a read by the executor that
-     * would run it.
+     * Resolve ONE Teams turn's read-only surface: the schema to publish and the
+     * executor that will run its calls, from a single availability snapshot.
      *
-     * This is an ALLOWLIST, and that is the whole guard. It used to be a
-     * denylist of known writers, which meant the bot's safety depended on that
-     * list having named every writer the executor could dispatch — so a
-     * mutating tool was permitted by DEFAULT and stayed permitted until someone
-     * remembered to name it. Twice, in review, someone did not: a mutating arm
-     * added beside wiki_create_page went unnamed and the bot called ReadOnly
-     * persisted a real WikiPage row, with the guard suite green.
-     *
-     * psa-uw2o.17 — WHY THE PUBLISHED SCHEMA, AND NOT JUST THE READ LIST.
-     * The previous version allowlisted AssistantToolExecutor::readTools() alone,
-     * and a comment asserted that because definitions() filtered through the
-     * same call, "the published schema and the set of tools that will actually
-     * run cannot disagree". That was false, and the reason is worth stating
-     * plainly: the two filters were identical but their BASE SETS were not.
-     * definitions() filters the merged AssistantToolDefinitions surface; this
-     * filtered the executor's ENTIRE read classification, which also carries the
-     * MCP staff server's reads (list_email_items, get_email_item, list_invoices,
-     * list_phone_calls, …) plus every vendor lane. Nineteen names were offered
-     * and fifty-nine were runnable. Identical filtering over different inputs is
-     * not equality.
-     *
-     * It mattered because AiClient::executeToolLoop() dispatches whatever tool
-     * NAME comes back from the model without checking it against the schema it
-     * sent. So the forty unadvertised arms were reachable by name, and a
-     * reviewer drove list_email_items straight through this executor and got
-     * email metadata back. Anchoring to the published names closes that by
-     * construction: a capability this surface does not advertise is one it
-     * cannot run.
-     *
-     * The read check is kept as well rather than leaned out of definitions(). It
-     * is the property this class exists for, and it must not become a
-     * consequence of how some other method happens to be written today.
-     */
-    public static function allows(string $name): bool
-    {
-        return in_array($name, self::runnable(), true);
-    }
-
-    /**
-     * The exact set this surface will execute: published AND read-classified.
-     *
-     * Config-dependent, deliberately — AssistantToolDefinitions merges the
-     * vendor lanes only when those integrations are live, so a lane that is off
-     * is neither offered nor runnable, and one that is on is both.
-     *
-     * NOT FREE TO CALL. Resolving it runs the vendor availability probes behind
+     * NOT FREE TO CALL — and that is the second reason this is once-per-turn.
+     * Resolving the published set runs the vendor availability probes behind
      * getTools(true), and LevelClient::isHealthy() is an unconditional live HTTP
-     * GET (NinjaClient's is a cached token, but misses hit the network too). So
-     * executor() snapshots this ONCE per Teams turn rather than re-deriving it on
-     * every tool call — see there for why that is also the more correct reading.
+     * GET (NinjaClient's is a cached token, but misses hit the network too). The
+     * old shape paid for that twice per turn to answer a question whose answer
+     * must not change mid-turn anyway.
      *
-     * @return list<string>
+     * The executor's read classification is snapshotted here too, so the same
+     * $reads filters what gets published AND backs the surface's allowlist.
      */
-    public static function runnable(): array
+    public static function forTurn(?int $userId): TeamsReadOnlySurface
     {
-        return array_values(array_intersect(
-            array_column(self::definitions(), 'name'),
-            AssistantToolExecutor::readTools(),
-        ));
+        $reads = AssistantToolExecutor::readTools();
+
+        return TeamsReadOnlySurface::of(self::publish($reads), $reads, $userId);
     }
 
     /**
@@ -95,9 +65,15 @@ class TeamsReadOnlyToolset
      * to answer both "what's open?" and "find this person". Client-scoped tools return
      * a graceful "no client context" when used without one.
      *
-     * @return array<int, array<string, mixed>>
+     * Config-dependent, deliberately — AssistantToolDefinitions merges the vendor
+     * lanes only when those integrations are live, so a lane that is off is
+     * neither offered nor runnable, and one that is on is both. That is exactly
+     * why it must be resolved once per turn and shared, not re-derived.
+     *
+     * @param  list<string>  $reads  AssistantToolExecutor::readTools() for this turn
+     * @return list<array<string, mixed>>
      */
-    public static function definitions(): array
+    private static function publish(array $reads): array
     {
         $merged = array_merge(
             AssistantToolDefinitions::getTools(false),
@@ -105,23 +81,26 @@ class TeamsReadOnlyToolset
         );
 
         // Keep only reads. NOTE what this does and does not buy: it makes the
-        // published set a SUBSET of the executor's reads, which is why the
-        // earlier claim here — that sharing this call with the executor guard
-        // meant the two "cannot disagree" — was false in the direction that
-        // mattered. Subset is not equality. Equality is delivered by allows()
-        // anchoring to THIS list (see runnable()), not by both sides calling
-        // readTools(). TeamsReadOnlyWriteGuardTest asserts both directions.
+        // published set a SUBSET of the executor's reads. Subset is not equality,
+        // and an earlier version of this class claimed equality on exactly that
+        // basis — that because the schema and the guard both filtered through
+        // readTools(), the two "cannot disagree". They did not disagree about the
+        // FILTER; they disagreed about the BASE SET. This filters the merged
+        // AssistantToolDefinitions surface (19 names); the guard filtered the
+        // executor's ENTIRE read classification (59), which also carries the MCP
+        // staff server's reads and every vendor lane. Identical filtering over
+        // different inputs is not equality, and a reviewer drove list_email_items
+        // through the gap and got email metadata back.
         //
-        // This must read the executor's classification DIRECTLY, never
-        // self::runnable() — runnable() is defined in terms of this method, so
-        // routing it back through here is unbounded recursion.
-        $allowed = AssistantToolExecutor::readTools();
-
+        // Equality is delivered by TeamsReadOnlySurface deriving its allowlist
+        // FROM the array this method returns, not by both sides calling
+        // readTools(). $reads is threaded in rather than read here so one
+        // snapshot covers both uses.
         $seen = [];
         $out = [];
         foreach ($merged as $tool) {
             $name = $tool['name'] ?? null;
-            if (! is_string($name) || ! in_array($name, $allowed, true) || isset($seen[$name])) {
+            if (! is_string($name) || ! in_array($name, $reads, true) || isset($seen[$name])) {
                 continue;
             }
             $seen[$name] = true;
@@ -129,40 +108,5 @@ class TeamsReadOnlyToolset
         }
 
         return $out;
-    }
-
-    /**
-     * A tool executor that runs as $userId but refuses anything outside the
-     * allowlist BEFORE the inner executor is ever reached (defense in depth —
-     * the schema already hides them, this guarantees they cannot run even if a
-     * name slips through, which on this surface it did: psa-uw2o.17).
-     *
-     * The allowlist is SNAPSHOT once, here, and closed over — it is the set of
-     * names published for THIS Teams turn. Two reasons, and the first is the one
-     * that matters:
-     *
-     *  - Correctness. TeamsReplyService builds the schema from definitions()
-     *    once and then runs this executor for each tool call in the loop. If a
-     *    vendor integration flipped mid-turn, re-deriving the allowlist per call
-     *    would let it drift from the schema the model was actually handed — a
-     *    fresh instance of the exact bug this commit closes. One snapshot cannot.
-     *  - Cost. runnable() runs the vendor health probes; Level's is a live HTTP
-     *    GET. Per tool call, in a chat loop, that is a network round trip each
-     *    time for an answer that must not change mid-turn anyway.
-     *
-     * @return callable(string, array<string, mixed>): mixed
-     */
-    public static function executor(?int $userId): callable
-    {
-        $inner = new AssistantToolExecutor(null, null, $userId);
-        $allowed = self::runnable();
-
-        return function (string $name, array $input) use ($inner, $allowed): mixed {
-            if (! in_array($name, $allowed, true)) {
-                return self::REFUSAL;
-            }
-
-            return $inner->execute($name, $input);
-        };
     }
 }

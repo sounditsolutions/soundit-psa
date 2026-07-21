@@ -63,16 +63,23 @@ class TeamsReplyService
             $system = $this->systemPrompt($mspName, $persona);
             $messages = $this->history($conversation);
             // The full read-only surface (general queue tools + PSA entity lookups +
-            // integration reads), minus the two mutators (stripped + executor-refused).
-            $tools = TeamsReadOnlyToolset::definitions();
-            $executor = TeamsReadOnlyToolset::executor($sender->user->id);
+            // integration reads), minus the mutators (stripped + executor-refused).
+            //
+            // ONE call, deliberately. This used to build the schema and the executor
+            // separately, and each resolved the live vendor availability probes for
+            // itself — so a lane flipping between the two lines made the bot's schema
+            // and the bot's behaviour disagree, in whichever direction it flipped
+            // (psa-uw2o.21 fail-open / psa-uw2o.22 over-block). The surface resolves
+            // availability once and carries both halves, with the executor's allowlist
+            // derived from the very array published below.
+            $surface = TeamsReadOnlyToolset::forTurn($sender->user->id);
 
             // 6. Run the tool loop (read-only), nudging typing on each tool call.
             $response = $this->ai->runChatWithTools(
                 system: $system,
                 messages: $messages,
-                tools: $tools,
-                executor: $executor,
+                tools: $surface->tools(),
+                executor: $surface->executor(),
                 onToolCall: fn (string $tool) => $this->typing($sender, $client),
                 enableCaching: true,
             );
