@@ -1,8 +1,51 @@
 {{-- Shared line item JavaScript for invoice create/edit views --}}
 {{-- Required variable: $lineIndex (int) - starting index for new lines --}}
 {{-- Required variable: $skus (Collection) - available SKUs for dropdown --}}
+
+@php
+    // Option list for the client-side "Add Line" builder. A SKU name is
+    // vendor-sync-reachable (QBO/Stripe item names land in it unattended, past
+    // the staff forms' validation), so it is shipped as data and rendered with
+    // textContent — see partials/_select_options_js for why (psa-951q).
+    //
+    // The four data keys are the dataset property names onSkuSelected() reads
+    // back below (opt.dataset.price / .cost / .taxable / .description); each is a
+    // single lowercase word, so the dataset<->attribute mapping is an identity
+    // and they land as data-price / data-cost / data-taxable / data-description.
+    // Renaming one here silently mis-prices a line.
+    $skuOptionData = $skus->map(fn ($s) => [
+        'value' => (string) $s->id,
+        'label' => $s->sku_code.' — '.$s->name,
+        'data' => [
+            'price' => (string) $s->unit_price,
+            'cost' => (string) $s->unit_cost,
+            'taxable' => $s->is_taxable ? '1' : '0',
+            'description' => (string) $s->name,
+        ],
+    ])->values();
+@endphp
+
+@include('partials._select_options_js')
+
 <script>
 let lineIndex = {{ $lineIndex }};
+
+// psa-951q: this option list is inert DATA, never JavaScript source. SKU names
+// are vendor-sync-reachable, not merely operator-entered, and the backtick
+// template literal below is a JavaScript string context that Blade's HTML
+// escaping does not cover — a name containing a backtick closed the literal,
+// and one containing ${...} was evaluated in the staff browser. See
+// partials/_select_options_js for the full story and the exact write paths.
+//
+// The json directive below is given a BARE VARIABLE, shaped in the PHP block
+// above. It must never be given an inline expression containing a comma: the
+// directive explode()s its argument on ',' (CompilesJson::compileJson), so a
+// re-inlined two-element ['value' => .., 'label' => ..] map — one comma —
+// compiles to json_encode($x, 512) instead of json_encode($x, 15, 512). That is
+// VALID PHP which renders fine and passes tests, with JSON_HEX_TAG silently
+// dropped and < / > left raw. Only 3+ commas fail loudly, so re-inlining this
+// would NOT announce itself. See partials/_select_options_js and psa-28hr.
+const SKU_OPTIONS = @json($skuOptionData);
 
 function addLine() {
     const container = document.getElementById('linesContainer');
@@ -16,13 +59,6 @@ function addLine() {
                             name="lines[${i}][sku_id]"
                             onchange="onSkuSelected(this)">
                         <option value="">-- Manual --</option>
-                        @foreach($skus as $s)
-                        <option value="{{ $s->id }}"
-                            data-price="{{ $s->unit_price }}"
-                            data-cost="{{ $s->unit_cost }}"
-                            data-taxable="{{ $s->is_taxable ? '1' : '0' }}"
-                            data-description="{{ e($s->name) }}">{{ $s->sku_code }} &mdash; {{ $s->name }}</option>
-                        @endforeach
                     </select>
                 </div>
                 <div class="col-lg-2 col-md-6">
@@ -70,6 +106,19 @@ function addLine() {
         </div>`;
     container.insertAdjacentHTML('beforeend', html);
     const newItem = container.lastElementChild;
+
+    // The markup above is static, developer-authored HTML. The options are the
+    // untrusted, vendor-sync-reachable part, so they are built from data instead
+    // — never spliced into a string that JavaScript then has to parse.
+    //
+    // The '-- Manual --' placeholder is ALSO in the static markup above. It is a
+    // developer constant with no XSS exposure, so it costs nothing to ship it
+    // server-side, and it means a JS failure here degrades the row to a LABELLED
+    // empty select rather than a blank one. fillSelectOptions replaceChildren()s
+    // it away and re-adds it, so the success path is unchanged. Keep the two
+    // spellings identical. Only the untrusted SKU labels must stay in data.
+    fillSelectOptions(newItem.querySelector('.sku-select'), SKU_OPTIONS, '-- Manual --');
+
     const descInput = newItem.querySelector('.desc-input');
     if (descInput) descInput.focus();
 }

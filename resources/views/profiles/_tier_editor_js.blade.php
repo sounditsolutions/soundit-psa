@@ -16,9 +16,9 @@
     which asserts this surface renders on BOTH screens.
 
     The MARKUP is deliberately NOT shared: create/ builds its tier rows from a
-    client-side JS template (${lineIndex}) while show/ renders them server-side from a
-    Blade loop ({{ $i }}). Those are genuinely different rendering modes, so only the
-    BEHAVIOUR is single-sourced here. The server-side counterpart of this predicate is
+    client-side JS template (the addLine() row index) while show/ renders them
+    server-side from a Blade loop ({{ $i }}). Those are genuinely different rendering
+    modes, so only the BEHAVIOUR is single-sourced here. The server-side counterpart of this predicate is
     App\Support\PricingModelOverride, which is already single-sourced across the
     service, views and controller.
 

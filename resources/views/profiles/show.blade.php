@@ -521,53 +521,110 @@
 @endsection
 
 @push('scripts')
+
+@php
+    // Option lists for the client-side "Add Line" builder. The SKU and
+    // license-type labels are vendor-sync-reachable (QBO/Stripe item names,
+    // Mesh/CIPP/AppRiver/Comet license names — written unattended, past the
+    // staff forms' validation), so the lists are shipped as data and rendered
+    // with textContent — see partials/_select_options_js for why (psa-951q).
+    $skuOptionData = $skus->map(fn ($s) => [
+        'value' => (string) $s->id,
+        'label' => $s->sku_code.' — '.$s->name,
+        'data' => [
+            'price' => (string) $s->unit_price,
+            'taxable' => $s->is_taxable ? '1' : '0',
+            'description' => (string) $s->name,
+            'includedPerUnit' => (string) $s->included_per_unit,
+            'defaultQuantityType' => (string) $s->default_quantity_type?->value,
+            'defaultLicenseTypeId' => (string) $s->default_license_type_id,
+            'hasVolumeTiers' => $s->backup_storage_tiers_count ? '1' : '0',
+        ],
+    ])->values();
+
+    $quantityTypeOptionData = collect($quantityTypes)->map(fn ($qt) => [
+        'value' => $qt->value,
+        'label' => $qt->label(),
+    ])->values();
+
+    $licenseTypeOptionData = $licenseTypes->map(fn ($lt) => [
+        'value' => (string) $lt->id,
+        'label' => $lt->name.' ('.$lt->vendor.')',
+    ])->values();
+@endphp
+
+@include('partials._select_options_js')
+
 <script>
 let lineIndex = {{ $profile->lines->count() }};
 
+// psa-951q: option lists are inert DATA, never JavaScript source. These labels
+// are vendor-sync-reachable, not merely operator-entered, and a backtick
+// template literal is a JavaScript string context that Blade's HTML escaping
+// does not cover. See partials/_select_options_js for the full story and the
+// exact write paths.
+//
+// The json directive below is given a BARE VARIABLE, shaped in the PHP block
+// above. It must never be given an inline expression containing a comma: the
+// directive explode()s its argument on ',' (CompilesJson::compileJson), so a
+// re-inlined two-element ['value' => .., 'label' => ..] map — one comma —
+// compiles to json_encode($x, 512) instead of json_encode($x, 15, 512). That is
+// VALID PHP which renders fine and passes tests, with JSON_HEX_TAG silently
+// dropped and < / > left raw. Only 3+ commas fail loudly, so re-inlining this
+// would NOT announce itself. See partials/_select_options_js and psa-28hr.
+const SKU_OPTIONS = @json($skuOptionData);
+const QUANTITY_TYPE_OPTIONS = @json($quantityTypeOptionData);
+const LICENSE_TYPE_OPTIONS = @json($licenseTypeOptionData);
+
 function addLine() {
     const container = document.getElementById('linesContainer');
-    const quantityOptions = `@foreach($quantityTypes as $qt)<option value="{{ $qt->value }}">{{ $qt->label() }}</option>@endforeach`;
-    const skuOptions = `<option value="">-- Manual --</option>@foreach($skus as $s)<option value="{{ $s->id }}" data-price="{{ $s->unit_price }}" data-taxable="{{ $s->is_taxable ? '1' : '0' }}" data-description="{{ $s->name }}" data-included-per-unit="{{ $s->included_per_unit }}" data-default-quantity-type="{{ $s->default_quantity_type?->value }}" data-default-license-type-id="{{ $s->default_license_type_id }}" data-has-volume-tiers="{{ $s->backup_storage_tiers_count ? '1' : '0' }}">{{ $s->sku_code }} — {{ $s->name }}</option>@endforeach`;
-    const licenseTypeOptions = `<option value="">Select...</option>@foreach($licenseTypes as $lt)<option value="{{ $lt->id }}">{{ $lt->name }} ({{ $lt->vendor }})</option>@endforeach`;
-    const licenseTypeOptionsWithNone = `<option value="">(none — use 1)</option>@foreach($licenseTypes as $lt)<option value="{{ $lt->id }}">{{ $lt->name }} ({{ $lt->vendor }})</option>@endforeach`;
+
+    // Claim this row's index BEFORE building it, so a throw anywhere below can
+    // never hand the next Add Line the same index. Colliding lines[N][...] field
+    // names on a billing form silently merge two rows on submit. (The invoice
+    // line editor has always done it this way; profiles used to increment at the
+    // end of the function, after the fill calls that can throw.)
+    const i = lineIndex++;
 
     const html = `
-        <div class="line-item border rounded p-3 mb-3" data-index="${lineIndex}">
+        <div class="line-item border rounded p-3 mb-3" data-index="${i}">
             <div class="row g-2">
                 <div class="col-md-3">
                     <label class="form-label small">SKU</label>
                     <select class="form-select form-select-sm sku-select"
-                            name="lines[${lineIndex}][sku_id]"
+                            name="lines[${i}][sku_id]"
                             onchange="onSkuSelected(this)">
-                        ${skuOptions}
+                        <option value="">-- Manual --</option>
                     </select>
                 </div>
                 <div class="col-md-3">
                     <label class="form-label small">Description</label>
                     <input type="text" class="form-control form-control-sm desc-input"
-                           name="lines[${lineIndex}][description]" required>
+                           name="lines[${i}][description]" required>
                 </div>
                 <div class="col-md-2">
                     <label class="form-label small">Unit Price</label>
                     <input type="number" class="form-control form-control-sm price-input"
-                           name="lines[${lineIndex}][unit_price]" step="0.01" min="0" required>
+                           name="lines[${i}][unit_price]" step="0.01" min="0" required>
                 </div>
                 <div class="col-md-2">
                     <label class="form-label small">Quantity Type</label>
                     <select class="form-select form-select-sm qty-type-select"
-                            name="lines[${lineIndex}][quantity_type]" onchange="toggleFixedQty(this)">
-                        ${quantityOptions}
+                            name="lines[${i}][quantity_type]" onchange="toggleFixedQty(this)">
+                        @foreach($quantityTypes as $qt)
+                            <option value="{{ $qt->value }}">{{ $qt->label() }}</option>
+                        @endforeach
                     </select>
                 </div>
                 <div class="col-md-1 fixed-qty-col">
                     <label class="form-label small">Qty</label>
                     <input type="number" class="form-control form-control-sm"
-                           name="lines[${lineIndex}][fixed_quantity]" value="1" step="0.01" min="0">
+                           name="lines[${i}][fixed_quantity]" value="1" step="0.01" min="0">
                 </div>
                 <div class="col-md-1 d-flex align-items-end gap-2">
                     <div class="form-check mb-2">
-                        <input type="hidden" name="lines[${lineIndex}][is_taxable]" value="0">
-                        <input type="checkbox" class="form-check-input taxable-check" name="lines[${lineIndex}][is_taxable]"
+                        <input type="hidden" name="lines[${i}][is_taxable]" value="0">
+                        <input type="checkbox" class="form-check-input taxable-check" name="lines[${i}][is_taxable]"
                                value="1" checked>
                         <label class="form-check-label small">Tax</label>
                     </div>
@@ -578,8 +635,8 @@ function addLine() {
             </div>
             <div class="mt-2 d-flex align-items-center gap-2 flex-wrap">
                 <div class="form-check form-check-inline mb-0">
-                    <input type="checkbox" class="form-check-input tiered-toggle" id="tiered-${lineIndex}" onchange="toggleTiered(this)">
-                    <label class="form-check-label small" for="tiered-${lineIndex}">Tiered pricing (graduated)</label>
+                    <input type="checkbox" class="form-check-input tiered-toggle" id="tiered-${i}" onchange="toggleTiered(this)">
+                    <label class="form-check-label small" for="tiered-${i}">Tiered pricing (graduated)</label>
                 </div>
                 <span class="pricing-method-note small text-info-emphasis" style="display:none"></span>
             </div>
@@ -596,28 +653,28 @@ function addLine() {
                 <div class="row g-2">
                     <div class="col-md-3">
                         <label class="form-label small">Usage License Type</label>
-                        <select class="form-select form-select-sm" name="lines[${lineIndex}][usage_license_type_id]">
-                            ${licenseTypeOptions}
+                        <select class="form-select form-select-sm" name="lines[${i}][usage_license_type_id]">
+                            <option value="">Select...</option>
                         </select>
                         <div class="form-text">What to measure</div>
                     </div>
                     <div class="col-md-3">
                         <label class="form-label small">Base License Type</label>
-                        <select class="form-select form-select-sm" name="lines[${lineIndex}][base_license_type_id]">
-                            ${licenseTypeOptionsWithNone}
+                        <select class="form-select form-select-sm" name="lines[${i}][base_license_type_id]">
+                            <option value="">(none — use 1)</option>
                         </select>
                         <div class="form-text">What provides included amount</div>
                     </div>
                     <div class="col-md-3">
                         <label class="form-label small">Included per Base</label>
                         <input type="number" class="form-control form-control-sm included-per-base-input"
-                               name="lines[${lineIndex}][included_per_base_unit]" min="0" step="1" placeholder="e.g. 1024">
+                               name="lines[${i}][included_per_base_unit]" min="0" step="1" placeholder="e.g. 1024">
                         <div class="form-text">Units included per base unit</div>
                     </div>
                     <div class="col-md-3">
                         <label class="form-label small">Overage Divisor</label>
                         <input type="number" class="form-control form-control-sm"
-                               name="lines[${lineIndex}][overage_divisor]" min="1" step="1" value="1">
+                               name="lines[${i}][overage_divisor]" min="1" step="1" value="1">
                         <div class="form-text">Convert raw overage to billing units</div>
                     </div>
                 </div>
@@ -625,7 +682,25 @@ function addLine() {
         </div>`;
 
     container.insertAdjacentHTML('beforeend', html);
-    lineIndex++;
+
+    // The markup above is static, developer-authored HTML. The options are the
+    // untrusted, vendor-sync-reachable part, so they are built from data instead
+    // — never spliced into a string that JavaScript then has to parse.
+    //
+    // Each placeholder below is ALSO in the static markup above, and the
+    // quantity-type select carries its FULL enum list there: both are developer
+    // constants with no XSS exposure, so shipping them server-side costs nothing
+    // and means a failure here degrades a row to LABELLED selects — the required
+    // quantity-type control still usable — rather than blank ones (psa-951q.4).
+    // fillSelectOptions replaceChildren()s them away and re-adds them from the
+    // islands, so the success path is unchanged. Keep the two spellings
+    // identical. Only the untrusted SKU and license-type labels must stay in
+    // data.
+    const line = container.lastElementChild;
+    fillSelectOptions(line.querySelector('.sku-select'), SKU_OPTIONS, '-- Manual --');
+    fillSelectOptions(line.querySelector('.qty-type-select'), QUANTITY_TYPE_OPTIONS, null);
+    fillSelectOptions(line.querySelector('[name$="[usage_license_type_id]"]'), LICENSE_TYPE_OPTIONS, 'Select...');
+    fillSelectOptions(line.querySelector('[name$="[base_license_type_id]"]'), LICENSE_TYPE_OPTIONS, '(none — use 1)');
 }
 
 function onSkuSelected(select) {
