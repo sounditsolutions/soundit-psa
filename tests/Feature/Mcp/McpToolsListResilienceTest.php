@@ -42,7 +42,28 @@ class McpToolsListResilienceTest extends TestCase
             ->count();
 
         $this->assertLessThanOrEqual(3, $cippQueries, $sql);
-        $this->assertLessThanOrEqual(25, count($queries), $sql);
+
+        // Budget raised 25 -> 33 by psa-wzjzz, deliberately and with the trade stated.
+        //
+        // The six vendor availability predicates now consult their master switch
+        // (Setting::getValue is uncached, one query per read), which costs ~6 more queries
+        // on this path than the old credentials-only checks did. In exchange the Ninja and
+        // Level lanes no longer make a LIVE HTTP round-trip to decide availability, so the
+        // path trades two network calls for six single-row indexed reads on a tiny table.
+        //
+        // The increase is CONSTANT, not proportional to the catalog: this fixture builds 214
+        // dynamic CIPP tools and the count moved by a fixed 6, so it is not an N+1. The sharp
+        // assertion above — the dynamic CIPP catalog staying at <= 3 queries, which is the
+        // actual N+1 this test was written to catch — is untouched and still passing.
+        //
+        // MEMOIZATION WAS CONSIDERED AND REJECTED. McpToolRegistry::memoized() would collapse
+        // these reads, but it keys its reset on spl_object_id(app('request')), which never
+        // changes in a long-running queue worker — the memo would never reset. Caching the
+        // answer to "is this integration switched off?" in a daemon that runs triage is how
+        // you reintroduce exactly the defect this bead fixes: an operator flips the switch
+        // off and the worker keeps publishing the vendor's tools until someone restarts it.
+        // A few indexed reads are the cheaper mistake.
+        $this->assertLessThanOrEqual(33, count($queries), $sql);
     }
 
     public function test_tools_list_repairs_dynamic_cipp_schema_before_publishing(): void

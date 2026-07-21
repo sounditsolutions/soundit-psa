@@ -2,12 +2,12 @@
 
 namespace App\Services\Triage;
 
-use App\Services\Level\LevelClient;
-use App\Services\Ninja\NinjaClient;
 use App\Support\CippConfig;
 use App\Support\CometConfig;
 use App\Support\ControlDConfig;
+use App\Support\LevelConfig;
 use App\Support\MeshConfig;
+use App\Support\NinjaConfig;
 use App\Support\TacticalConfig;
 use App\Support\ZorusConfig;
 
@@ -765,11 +765,31 @@ class TriageToolDefinitions
     }
 
     // ── Integration Availability Checks ──
+    //
+    // OFF MEANS OFF (psa-wzjzz, Charlie's ruling 2026-07-21). Every predicate below asks
+    // BOTH questions in the same order: is the integration switched on, and is it usable.
+    // Each of these vendors ships a real, settings-backed master switch, and until this
+    // change not one predicate consulted it — so an operator could flip the documented
+    // off-switch, watch sync commands and webhooks correctly stop, and still have the AI
+    // surface publishing and executing that vendor's tools against the live API. A control
+    // whose label says "off" while the capability stays live is the defect class this
+    // codebase keeps re-producing; the toggle is a boundary, not a label.
+    //
+    // THIS IS THE PUBLICATION CHOKE POINT (psa-mocr shape). Each predicate is defined ONCE
+    // and every publishing surface funnels through it — triage via self::getTools(), the
+    // staff Assistant via AssistantToolDefinitions:68-81, and staff MCP via McpToolSurface,
+    // which is assembled from the Assistant's list. Do NOT scatter isEnabled() checks across
+    // the surfaces: that rebuilds the two-lists-that-must-agree root cause these beads keep
+    // finding. Add the gate here or not at all.
+    //
+    // Ninja and Level previously gated on a LIVE HTTP health probe, so their tool surface
+    // silently varied with vendor uptime and cost a round-trip on the path. Charlie was told
+    // about and accepted that behaviour change explicitly.
 
     public static function isNinjaAvailable(): bool
     {
         try {
-            return app(NinjaClient::class)->isHealthy();
+            return NinjaConfig::isEnabled() && NinjaConfig::isConfigured();
         } catch (\Throwable) {
             return false;
         }
@@ -778,7 +798,7 @@ class TriageToolDefinitions
     public static function isLevelAvailable(): bool
     {
         try {
-            return app(LevelClient::class)->isHealthy();
+            return LevelConfig::isEnabled() && LevelConfig::isConfigured();
         } catch (\Throwable) {
             return false;
         }
@@ -787,7 +807,7 @@ class TriageToolDefinitions
     public static function isMeshAvailable(): bool
     {
         try {
-            return MeshConfig::isConfigured();
+            return MeshConfig::isEnabled() && MeshConfig::isConfigured();
         } catch (\Throwable) {
             return false;
         }
@@ -796,16 +816,26 @@ class TriageToolDefinitions
     public static function isCippAvailable(): bool
     {
         try {
-            return CippConfig::isConfigured();
+            return CippConfig::isEnabled() && CippConfig::isConfigured();
         } catch (\Throwable) {
             return false;
         }
     }
 
+    // ControlD and Zorus carry the same defect as the four above and are fixed with them.
+    // Charlie's ruling was briefed on ninja/level/mesh/cipp, but it is stated as a principle
+    // ("if the integration's master switch is off, that should disable that integration's
+    // tools too") and `controld_enabled` / `zorus_enabled` are real settings-backed switches
+    // that these predicates ignored in exactly the same way. Shipping the other four while
+    // knowingly leaving these two would leave the same false-label control in place in the
+    // very change that condemns it. Both default to '1', so this only alters behaviour for
+    // an operator who deliberately switched them off. These two are triage-only — the staff
+    // Assistant never published ControlD or Zorus tools.
+
     public static function isControlDAvailable(): bool
     {
         try {
-            return ControlDConfig::isConfigured();
+            return ControlDConfig::isEnabled() && ControlDConfig::isConfigured();
         } catch (\Throwable) {
             return false;
         }
@@ -814,11 +844,16 @@ class TriageToolDefinitions
     public static function isZorusAvailable(): bool
     {
         try {
-            return ZorusConfig::isConfigured();
+            return ZorusConfig::isEnabled() && ZorusConfig::isConfigured();
         } catch (\Throwable) {
             return false;
         }
     }
+
+    // Tactical and Comet need no change: for both, isEnabled() is defined AS isConfigured()
+    // (TacticalConfig.php:51, CometConfig.php:35), so there is no separate master switch to
+    // ignore and adding the conjunct would be a no-op. Verified, not assumed — this is a
+    // deliberate exclusion, not an oversight.
 
     public static function isTacticalAvailable(): bool
     {

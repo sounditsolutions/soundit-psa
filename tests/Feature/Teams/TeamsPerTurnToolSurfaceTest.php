@@ -15,6 +15,7 @@ use App\Services\Teams\ResolvedSender;
 use App\Services\Teams\TeamsBotClient;
 use App\Services\Teams\TeamsReadOnlySurface;
 use App\Services\Teams\TeamsReplyService;
+use App\Services\Triage\TriageToolDefinitions;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -210,21 +211,36 @@ class TeamsPerTurnToolSurfaceTest extends TestCase
      * one the executor used to take for itself — and the executor then runs a
      * vendor tool the model was never offered.
      *
-     * The Ninja probe is only the clock: probe #0 belongs to the schema build,
-     * probe #1 to the executor's. Ninja itself stays unavailable throughout, so
-     * Mesh is the only lane that differs between the two snapshots.
+     * *** THE CLOCK CHANGED IN psa-wzjzz — READ THIS BEFORE EDITING. *** This test used
+     * to hang the mid-turn grant off the Ninja health probe (probe #0 = the schema build,
+     * probe #1 = the executor's own pass). psa-wzjzz replaced the Ninja and Level liveness
+     * probes with configuration checks, so isHealthy() is no longer called on this path at
+     * all — the callback stopped firing, the grant never landed, and this test went GREEN
+     * WHILE ASSERTING NOTHING. A vacuous pass is worse than a failure: it reads as coverage.
+     *
+     * The grant is now applied directly between the two things whose disagreement is the
+     * defect — after the turn has published its schema, before the executor is invoked.
+     * That needs no clock, and it is strictly more adversarial than the probe version was:
+     * the grant is guaranteed to have landed before the executor runs, where the old
+     * version depended on a probe ordering to make it happen at all.
      */
     public function test_a_tool_granted_after_the_schema_was_built_cannot_run_in_that_turn(): void
     {
         $this->fakeLevel();
         $this->fakeMesh();
-        $this->fakeNinja([false], function (int $probe): void {
-            if ($probe === 1) {
-                Setting::setEncrypted('mesh_api_key', 'granted-mid-turn');
-            }
-        });
+        $this->fakeNinja([false]);
 
         [$tools, $executor] = $this->runTurn();
+
+        Setting::setEncrypted('mesh_api_key', 'granted-after-the-schema-was-built');
+
+        // CONTROL — without this the test can rot back into the vacuum it was just rescued
+        // from. It asserts the grant genuinely took effect, so the refusal below is the
+        // per-turn snapshot holding the line and not merely Mesh still being unconfigured.
+        $this->assertTrue(
+            TriageToolDefinitions::isMeshAvailable(),
+            'the mid-turn grant did not take effect, so this test would prove nothing'
+        );
 
         $this->assertNotContains(
             'mesh_get_email_events',
@@ -246,9 +262,17 @@ class TeamsPerTurnToolSurfaceTest extends TestCase
 
     /**
      * psa-uw2o.22, the mirror. A published tool must stay runnable for the whole
-     * turn. Ninja is healthy when the schema is built and unhealthy by the time
-     * the executor's own probe fires, so the bot advertises a capability and then
-     * refuses it — half a turn wasted, and a model told two different things.
+     * turn: the bot must not advertise a capability and then refuse it — half a
+     * turn wasted, and a model told two different things.
+     *
+     * *** THE LEVER CHANGED IN psa-wzjzz. *** Ninja availability used to flap via the
+     * health probe (healthy at schema build, unhealthy by the executor's pass). It is now
+     * a configuration read, so the master switch IS the lever: Ninja is switched on and
+     * credentialled when the schema is built, and switched off before the executor runs.
+     * The revocation is real and lands in exactly the same window; only the mechanism moved.
+     *
+     * Note ninja_enabled must be set explicitly — it defaults to '0' (offboarding, psa-u97k),
+     * which is precisely the default psa-wzjzz stopped the tool surface from ignoring.
      *
      * ninja_search_devices with no client context returns a plain "no client
      * context" error, so this asserts the guard's verdict without any vendor I/O.
@@ -258,7 +282,13 @@ class TeamsPerTurnToolSurfaceTest extends TestCase
         $this->fakeLevel();
         $this->fakeNinja([true, false]);
 
+        Setting::setValue('ninja_enabled', '1');
+        Setting::setValue('ninja_client_id', 'ninja-client-id');
+        Setting::setEncrypted('ninja_client_secret', 'ninja-client-secret');
+
         [$tools, $executor] = $this->runTurn();
+
+        Setting::setValue('ninja_enabled', '0');
 
         $this->assertContains(
             'ninja_search_devices',
@@ -277,22 +307,28 @@ class TeamsPerTurnToolSurfaceTest extends TestCase
     // ── 3. One snapshot means one probe pass ─────────────────────────────────
 
     /**
-     * The double snapshot was also a double cost. LevelClient::isHealthy() is an
-     * unconditional live HTTP GET, so a turn that resolves availability twice
-     * pays two round trips for an answer that must not change mid-turn anyway.
+     * The double snapshot was also a double cost. LevelClient::isHealthy() was an
+     * unconditional live HTTP GET, so a turn that resolved availability twice paid
+     * two round trips for an answer that must not change mid-turn anyway.
      *
-     * Asserted as an exact count, not a ceiling: "at most twice" is what the
-     * defect already satisfied.
+     * psa-uw2o got that down to exactly one. *** psa-wzjzz took it to ZERO: *** vendor
+     * availability is now a configuration read, so a Teams turn makes no vendor HTTP call
+     * to decide its tool surface at all. Charlie accepted this trade explicitly — the
+     * surface stops varying with vendor uptime, and the round trip leaves the hot path.
+     *
+     * Still asserted as an exact count rather than a ceiling, for the same reason it always
+     * was: "at most once" is a bar the original defect already cleared. Zero is the whole
+     * point, so zero is what is pinned — if a probe ever returns to this path, this fails.
      */
-    public function test_the_availability_probes_run_once_per_turn(): void
+    public function test_the_availability_probes_never_run_on_the_turn_path(): void
     {
         $level = $this->fakeLevel();
         $ninja = $this->fakeNinja([false]);
 
         $this->runTurn();
 
-        $this->assertSame(1, $ninja->probes, 'the Ninja availability probe ran '.$ninja->probes.' times in one Teams turn; the turn must resolve availability exactly once');
-        $this->assertSame(1, $level->probes, 'the Level availability probe ran '.$level->probes.' times in one Teams turn, and each one is a live HTTP GET');
+        $this->assertSame(0, $ninja->probes, 'the Ninja availability probe ran '.$ninja->probes.' times in one Teams turn; availability is a config read now, so it must make no vendor call at all');
+        $this->assertSame(0, $level->probes, 'the Level availability probe ran '.$level->probes.' times in one Teams turn, and each one is a live HTTP GET on the turn path');
     }
 
     // ── 4. The read check is a second conjunct, not a side effect ────────────
