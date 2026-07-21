@@ -6,38 +6,50 @@ use App\Services\Assistant\AssistantToolDefinitions;
 use App\Services\Assistant\AssistantToolExecutor;
 
 /**
- * The assistant tool surface, hardened for the Teams staff chat (E2a): every
- * MUTATING tool is stripped from the schema AND a second guard in the executor
- * refuses them outright. The bot can look things up but can never change anything.
+ * The assistant tool surface, hardened for the Teams staff chat (E2a): only
+ * tools the executor classifies as READS are published in the schema, and a
+ * second guard refuses everything else before the executor is reached. The bot
+ * can look things up but can never change anything.
+ *
+ * Both filters are allowlists over the same source (see allows()). Nothing here
+ * enumerates writers — a guard that has to name what it blocks is only as
+ * complete as that list, and on this surface it twice was not.
  */
 class TeamsReadOnlyToolset
 {
-    /** Tools that Teams staff chat must never expose or execute. */
-    /**
-     * Derived from the EXECUTOR's write set, not the definitions'.
-     *
-     * psa-uw2o.6 first replaced a hardcoded list here with a derivation from
-     * AssistantToolDefinitions::WRITE_TOOLS. psa-uw2o.10 showed that was the
-     * WRONG LAYER and the gap was live: this class strips writers for a bot
-     * named ReadOnly, but it guards AssistantToolExecutor, which dispatches
-     * three wiki writers no definition set offers — dispatch is by NAME, so an
-     * unadvertised tool is still reachable. A reviewer drove wiki_create_page
-     * through this surface and persisted a real WikiPage row.
-     *
-     * Guard at the layer you defend: this now sources from
-     * AssistantToolExecutor::WRITE_TOOLS, which is what actually executes.
-     */
-    public const MUTATING = AssistantToolExecutor::WRITE_TOOLS;
-
-    /** What the executor returns if a mutating tool is somehow requested. */
+    /** What the executor returns for anything this surface will not run. */
     private const REFUSAL = ['error' => 'That tool is not available in chat (read-only).'];
+
+    /**
+     * May the ReadOnly chat surface run this tool? Only if the executor that
+     * would run it classifies it as a READ.
+     *
+     * This is an ALLOWLIST, and that is the whole guard. It used to be a
+     * denylist of known writers, which meant the bot's safety depended on that
+     * list having named every writer the executor could dispatch — so a
+     * mutating tool was permitted by DEFAULT and stayed permitted until someone
+     * remembered to name it. Twice, in review, someone did not: a mutating arm
+     * added beside wiki_create_page went unnamed and the bot called ReadOnly
+     * persisted a real WikiPage row, with the guard suite green.
+     *
+     * Allowlisting inverts the default. An unrecognised name, a newly added
+     * tool, a writer nobody classified — each is refused because none of them
+     * is on the read list, not because someone predicted it. The list itself
+     * comes from AssistantToolExecutor's dispatch table, where the effect is
+     * declared on the same entry as the handler, so it cannot omit a tool that
+     * exists (psa-uw2o.13, psa-uw2o.14).
+     */
+    public static function allows(string $name): bool
+    {
+        return in_array($name, AssistantToolExecutor::readTools(), true);
+    }
 
     /**
      * The FULL read-only assistant surface for the staff chat: the general queue
      * tools (getTools(false): list_open_tickets, list_my_tickets, search_all_tickets,
      * get_queue_stats …) MERGED with the PSA entity lookups + integration reads
      * (getTools(true): find_persons, find_assets, get_*, ninja/cipp …), deduplicated
-     * by name, with unavailable action tools removed. This is the surface the teammate needs
+     * by name, keeping only what the executor classifies as a read. This is the surface the teammate needs
      * to answer both "what's open?" and "find this person". Client-scoped tools return
      * a graceful "no client context" when used without one.
      *
@@ -50,11 +62,15 @@ class TeamsReadOnlyToolset
             AssistantToolDefinitions::getTools(true),
         );
 
+        // Same allowlist as the executor guard, so the published schema and the
+        // set of tools that will actually run cannot disagree.
+        $allowed = AssistantToolExecutor::readTools();
+
         $seen = [];
         $out = [];
         foreach ($merged as $tool) {
             $name = $tool['name'] ?? null;
-            if (! is_string($name) || in_array($name, self::MUTATING, true) || isset($seen[$name])) {
+            if (! is_string($name) || ! in_array($name, $allowed, true) || isset($seen[$name])) {
                 continue;
             }
             $seen[$name] = true;
@@ -65,9 +81,10 @@ class TeamsReadOnlyToolset
     }
 
     /**
-     * A tool executor that runs as $userId but refuses mutating tools BEFORE the
-     * inner executor is ever reached (defense in depth — the schema already hides
-     * them, this guarantees they cannot run even if a name slips through).
+     * A tool executor that runs as $userId but refuses anything outside the read
+     * allowlist BEFORE the inner executor is ever reached (defense in depth —
+     * the schema already hides them, this guarantees they cannot run even if a
+     * name slips through).
      *
      * @return callable(string, array<string, mixed>): mixed
      */
@@ -76,7 +93,7 @@ class TeamsReadOnlyToolset
         $inner = new AssistantToolExecutor(null, null, $userId);
 
         return function (string $name, array $input) use ($inner): mixed {
-            if (in_array($name, self::MUTATING, true)) {
+            if (! self::allows($name)) {
                 return self::REFUSAL;
             }
 

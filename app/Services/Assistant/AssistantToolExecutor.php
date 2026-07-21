@@ -7,6 +7,7 @@ use App\Enums\ContractStatus;
 use App\Enums\EmailDirection;
 use App\Enums\InvoiceStatus;
 use App\Enums\NoteType;
+use App\Enums\ToolEffect;
 use App\Enums\TranscriptionStatus;
 use App\Models\Asset;
 use App\Models\Client;
@@ -37,33 +38,6 @@ use Illuminate\Support\Facades\Log;
  */
 class AssistantToolExecutor
 {
-    /**
-     * Every tool THIS EXECUTOR can dispatch that MUTATES state.
-     *
-     * psa-uw2o.10: this is a strictly larger set than
-     * AssistantToolDefinitions::WRITE_TOOLS, and the difference was live. That
-     * constant describes the writers that FILE DEFINES; the executor also
-     * dispatches wiki_add_fact / wiki_create_page / wiki_update_page (no
-     * definition set offers them, but dispatch is BY NAME) and propose_close.
-     *
-     * TeamsReadOnlyToolset guards a surface called ReadOnly and was filtering on
-     * the DEFINITIONS constant — the wrong layer. A reviewer drove
-     * wiki_create_page through that executor and persisted a real WikiPage row.
-     * Guards belong at the layer they defend, so anything filtering this
-     * executor must source from HERE.
-     *
-     * Adding a mutating dispatch arm without listing it here fails
-     * TeamsReadOnlyWriteGuardTest.
-     */
-    public const WRITE_TOOLS = [
-        'create_ticket',
-        'add_ticket_note',
-        'propose_close',
-        'wiki_add_fact',
-        'wiki_create_page',
-        'wiki_update_page',
-    ];
-
     use HandlesCippTools;
     use HandlesWikiTools;
 
@@ -105,96 +79,210 @@ class AssistantToolExecutor
             'input' => $logInput,
         ]);
 
-        return match ($toolName) {
+        $table = self::dispatchTable();
+
+        if (! array_key_exists($toolName, $table)) {
+            return ['error' => "Unknown tool: {$toolName}"];
+        }
+
+        [, $handler] = self::entry($toolName, $table[$toolName]);
+
+        return $handler($this, $input);
+    }
+
+    /**
+     * EVERY tool this executor can dispatch, each registered as a
+     * [ToolEffect, handler] PAIR. This table is both the dispatch table and the
+     * mutability classification — deliberately one thing, not two.
+     *
+     * *** DO NOT SPLIT THE EFFECT OUT INTO A SEPARATE LIST. *** That split is
+     * the defect this shape exists to prevent, and it recurred four times on
+     * psa-uw2o. The last shape kept a WRITE_TOOLS constant beside a match
+     * statement and asserted the two agreed; two reviewers independently added a
+     * mutating arm next to wiki_create_page without touching the constant, and
+     * the ReadOnly Teams bot persisted a real WikiPage row while the guard suite
+     * stayed green. A list beside a dispatch table can disagree with it. A list
+     * that IS the dispatch table cannot: a tool that is not registered here is
+     * not dispatchable at all, and it cannot be registered here without stating
+     * whether it reads or writes.
+     *
+     * What this does NOT enforce: that the stated effect is the TRUE one. A
+     * handler that writes can still be registered as Read. That is a deliberate
+     * mistyping rather than an omission, and it is only partly covered:
+     * TeamsReadOnlyWriteGuardTest pins the six known writers by name (so
+     * reclassifying one of THEM fails) and executes every Read-classified tool
+     * to catch one that writes on trivial input. A new writer mistyped as Read
+     * that needs valid arguments before it mutates would pass both — verified,
+     * not assumed. Classify honestly; nothing below will do it for you.
+     *
+     * Handlers are static closures taking the executor explicitly, so the table
+     * can be read for classification (readTools()/writeTools()) without an
+     * instance, and so building it resolves no container services.
+     *
+     * @return array<string, array{0: ToolEffect, 1: callable(self, array<string, mixed>): mixed}>
+     */
+    private static function dispatchTable(): array
+    {
+        return [
             // General tools (no client scope required)
-            'search_all_tickets' => $this->searchAllTickets($input),
-            'list_my_tickets' => $this->listMyTickets($input),
-            'list_open_tickets' => $this->listOpenTickets($input),
-            'get_ticket_detail' => $this->getTicketDetail($input),
-            'propose_close' => $this->proposeClose($input),
-            'get_ticket_calls' => $this->getTicketCalls($input),
-            'get_queue_stats' => $this->getQueueStats(),
+            'search_all_tickets' => [ToolEffect::Read, static fn (self $x, array $in) => $x->searchAllTickets($in)],
+            'list_my_tickets' => [ToolEffect::Read, static fn (self $x, array $in) => $x->listMyTickets($in)],
+            'list_open_tickets' => [ToolEffect::Read, static fn (self $x, array $in) => $x->listOpenTickets($in)],
+            'get_ticket_detail' => [ToolEffect::Read, static fn (self $x, array $in) => $x->getTicketDetail($in)],
+            // Writes: files a held close proposal against the ticket.
+            'propose_close' => [ToolEffect::Write, static fn (self $x, array $in) => $x->proposeClose($in)],
+            'get_ticket_calls' => [ToolEffect::Read, static fn (self $x, array $in) => $x->getTicketCalls($in)],
+            'get_queue_stats' => [ToolEffect::Read, static fn (self $x, array $in) => $x->getQueueStats()],
 
             // PSA tools (client-scoped)
-            'search_tickets' => $this->searchTickets($input),
-            'get_ticket_notes' => $this->getTicketNotes($input),
-            'create_ticket' => $this->createTicket($input),
-            'add_ticket_note' => $this->addTicketNote($input),
-            'get_client' => $this->getClient(),
-            'get_person' => $this->getPerson($input),
-            'get_asset' => $this->getAsset($input),
-            'find_clients' => $this->findClients($input),
-            'find_persons' => $this->findPersons($input),
-            'find_assets' => $this->findAssets($input),
-            'list_client_contracts' => $this->listClientContracts($input),
-            'get_contract' => $this->getContract($input),
+            'search_tickets' => [ToolEffect::Read, static fn (self $x, array $in) => $x->searchTickets($in)],
+            'get_ticket_notes' => [ToolEffect::Read, static fn (self $x, array $in) => $x->getTicketNotes($in)],
+            'create_ticket' => [ToolEffect::Write, static fn (self $x, array $in) => $x->createTicket($in)],
+            'add_ticket_note' => [ToolEffect::Write, static fn (self $x, array $in) => $x->addTicketNote($in)],
+            'get_client' => [ToolEffect::Read, static fn (self $x, array $in) => $x->getClient()],
+            'get_person' => [ToolEffect::Read, static fn (self $x, array $in) => $x->getPerson($in)],
+            'get_asset' => [ToolEffect::Read, static fn (self $x, array $in) => $x->getAsset($in)],
+            'find_clients' => [ToolEffect::Read, static fn (self $x, array $in) => $x->findClients($in)],
+            'find_persons' => [ToolEffect::Read, static fn (self $x, array $in) => $x->findPersons($in)],
+            'find_assets' => [ToolEffect::Read, static fn (self $x, array $in) => $x->findAssets($in)],
+            'list_client_contracts' => [ToolEffect::Read, static fn (self $x, array $in) => $x->listClientContracts($in)],
+            'get_contract' => [ToolEffect::Read, static fn (self $x, array $in) => $x->getContract($in)],
 
             // Cross-client staff-class reads (client_id optional filter, never required)
-            'list_email_items' => $this->listEmailItems($input),
-            'get_email_item' => $this->getEmailItem($input),
-            'list_phone_calls' => $this->listPhoneCalls($input),
-            'get_phone_call' => $this->getPhoneCall($input),
-            'list_invoices' => $this->listInvoices($input),
-            'get_invoice' => $this->getInvoice($input),
+            'list_email_items' => [ToolEffect::Read, static fn (self $x, array $in) => $x->listEmailItems($in)],
+            'get_email_item' => [ToolEffect::Read, static fn (self $x, array $in) => $x->getEmailItem($in)],
+            'list_phone_calls' => [ToolEffect::Read, static fn (self $x, array $in) => $x->listPhoneCalls($in)],
+            'get_phone_call' => [ToolEffect::Read, static fn (self $x, array $in) => $x->getPhoneCall($in)],
+            'list_invoices' => [ToolEffect::Read, static fn (self $x, array $in) => $x->listInvoices($in)],
+            'get_invoice' => [ToolEffect::Read, static fn (self $x, array $in) => $x->getInvoice($in)],
 
             // NinjaRMM tools
-            'ninja_search_devices' => $this->ninjaSearchDevices($input),
-            'ninja_get_device' => $this->ninjaGetDevice($input),
-            'ninja_get_device_volumes' => $this->ninjaGetDeviceSub($input, 'volumes'),
-            'ninja_get_device_alerts' => $this->ninjaGetDeviceSub($input, 'alerts'),
-            'ninja_get_device_os_patches' => $this->ninjaGetDeviceSub($input, 'os-patches'),
-            'ninja_get_device_software' => $this->ninjaGetDeviceSub($input, 'software'),
-            'ninja_get_device_processors' => $this->ninjaGetDeviceSub($input, 'processors'),
-            'ninja_get_device_disk_drives' => $this->ninjaGetDeviceSub($input, 'disks'),
-            'ninja_get_device_network_interfaces' => $this->ninjaGetDeviceSub($input, 'network-interfaces'),
-            'ninja_get_device_windows_services' => $this->ninjaGetDeviceSub($input, 'windows-services'),
-            'ninja_get_device_last_user' => $this->ninjaGetDeviceSub($input, 'last-logged-on-user'),
+            'ninja_search_devices' => [ToolEffect::Read, static fn (self $x, array $in) => $x->ninjaSearchDevices($in)],
+            'ninja_get_device' => [ToolEffect::Read, static fn (self $x, array $in) => $x->ninjaGetDevice($in)],
+            'ninja_get_device_volumes' => [ToolEffect::Read, static fn (self $x, array $in) => $x->ninjaGetDeviceSub($in, 'volumes')],
+            'ninja_get_device_alerts' => [ToolEffect::Read, static fn (self $x, array $in) => $x->ninjaGetDeviceSub($in, 'alerts')],
+            'ninja_get_device_os_patches' => [ToolEffect::Read, static fn (self $x, array $in) => $x->ninjaGetDeviceSub($in, 'os-patches')],
+            'ninja_get_device_software' => [ToolEffect::Read, static fn (self $x, array $in) => $x->ninjaGetDeviceSub($in, 'software')],
+            'ninja_get_device_processors' => [ToolEffect::Read, static fn (self $x, array $in) => $x->ninjaGetDeviceSub($in, 'processors')],
+            'ninja_get_device_disk_drives' => [ToolEffect::Read, static fn (self $x, array $in) => $x->ninjaGetDeviceSub($in, 'disks')],
+            'ninja_get_device_network_interfaces' => [ToolEffect::Read, static fn (self $x, array $in) => $x->ninjaGetDeviceSub($in, 'network-interfaces')],
+            'ninja_get_device_windows_services' => [ToolEffect::Read, static fn (self $x, array $in) => $x->ninjaGetDeviceSub($in, 'windows-services')],
+            'ninja_get_device_last_user' => [ToolEffect::Read, static fn (self $x, array $in) => $x->ninjaGetDeviceSub($in, 'last-logged-on-user')],
 
             // Level RMM tools
-            'level_get_device' => $this->levelGetDevice($input),
+            'level_get_device' => [ToolEffect::Read, static fn (self $x, array $in) => $x->levelGetDevice($in)],
 
             // Mesh tools
-            'mesh_search_email_logs' => $this->meshSearchLogs($input),
-            'mesh_get_email_events' => $this->meshGetEvents($input),
+            'mesh_search_email_logs' => [ToolEffect::Read, static fn (self $x, array $in) => $x->meshSearchLogs($in)],
+            'mesh_get_email_events' => [ToolEffect::Read, static fn (self $x, array $in) => $x->meshGetEvents($in)],
 
             // CIPP tools (dispatch + bodies shared via HandlesCippTools)
-            'cipp_list_users' => $this->cippQuery('cipp_list_users', $input, 'api/ListUsers'),
-            'cipp_list_mailboxes' => $this->cippQuery('cipp_list_mailboxes', $input, 'api/ListMailboxes'),
-            'cipp_list_licenses' => $this->cippQuery('cipp_list_licenses', $input, 'api/ListLicenses'),
-            'cipp_list_devices' => $this->cippQuery('cipp_list_devices', $input, 'api/ListDevices'),
-            'cipp_list_sign_ins' => $this->cippListSignIns($input),
-            'cipp_list_groups' => $this->cippQuery('cipp_list_groups', $input, 'api/ListGroups'),
-            'cipp_list_user_groups' => $this->cippQueryWithUser('cipp_list_user_groups', $input, 'api/ListUserGroups'),
-            'cipp_list_mailbox_permissions' => $this->cippQueryWithUser('cipp_list_mailbox_permissions', $input, 'api/ListmailboxPermissions'),
+            'cipp_list_users' => [ToolEffect::Read, static fn (self $x, array $in) => $x->cippQuery('cipp_list_users', $in, 'api/ListUsers')],
+            'cipp_list_mailboxes' => [ToolEffect::Read, static fn (self $x, array $in) => $x->cippQuery('cipp_list_mailboxes', $in, 'api/ListMailboxes')],
+            'cipp_list_licenses' => [ToolEffect::Read, static fn (self $x, array $in) => $x->cippQuery('cipp_list_licenses', $in, 'api/ListLicenses')],
+            'cipp_list_devices' => [ToolEffect::Read, static fn (self $x, array $in) => $x->cippQuery('cipp_list_devices', $in, 'api/ListDevices')],
+            'cipp_list_sign_ins' => [ToolEffect::Read, static fn (self $x, array $in) => $x->cippListSignIns($in)],
+            'cipp_list_groups' => [ToolEffect::Read, static fn (self $x, array $in) => $x->cippQuery('cipp_list_groups', $in, 'api/ListGroups')],
+            'cipp_list_user_groups' => [ToolEffect::Read, static fn (self $x, array $in) => $x->cippQueryWithUser('cipp_list_user_groups', $in, 'api/ListUserGroups')],
+            'cipp_list_mailbox_permissions' => [ToolEffect::Read, static fn (self $x, array $in) => $x->cippQueryWithUser('cipp_list_mailbox_permissions', $in, 'api/ListmailboxPermissions')],
             // ListUserMailboxRules, NOT ListMailboxRules: the latter takes no user
             // parameter and returns EVERY mailbox's rules in the tenant (psa-7lgo.1).
-            'cipp_list_mailbox_rules' => $this->cippQueryWithUser('cipp_list_mailbox_rules', $input, 'api/ListUserMailboxRules', 'UserID'),
+            'cipp_list_mailbox_rules' => [ToolEffect::Read, static fn (self $x, array $in) => $x->cippQueryWithUser('cipp_list_mailbox_rules', $in, 'api/ListUserMailboxRules', 'UserID')],
             // Tenant-wide sweep (psa-4k6m). See the twin arm in TriageToolExecutor — this
             // pair is what CippToolDispatchTest exists to keep from drifting apart.
-            'cipp_list_tenant_mailbox_rules' => $this->cippQuery('cipp_list_tenant_mailbox_rules', $input, 'api/ListMailboxRules'),
-            'cipp_list_defender_state' => $this->cippQuery('cipp_list_defender_state', $input, 'api/ListDefenderState'),
-            'cipp_list_conditional_access_policies' => $this->cippQuery('cipp_list_conditional_access_policies', $input, 'api/ListConditionalAccessPolicies'),
-            'cipp_list_user_conditional_access' => $this->cippQueryWithUser('cipp_list_user_conditional_access', $input, 'api/ListUserConditionalAccessPolicies'),
-            'cipp_list_audit_logs' => $this->cippListAuditLogs($input),
-            'cipp_list_message_trace' => $this->cippListMessageTrace($input),
-            'cipp_list_mail_quarantine' => $this->cippListMailQuarantine($input),
-            'cipp_list_user_mfa_methods' => $this->cippListUserMfaMethods($input),
-            'cipp_list_oauth_apps' => $this->cippListOauthApps($input),
+            'cipp_list_tenant_mailbox_rules' => [ToolEffect::Read, static fn (self $x, array $in) => $x->cippQuery('cipp_list_tenant_mailbox_rules', $in, 'api/ListMailboxRules')],
+            'cipp_list_defender_state' => [ToolEffect::Read, static fn (self $x, array $in) => $x->cippQuery('cipp_list_defender_state', $in, 'api/ListDefenderState')],
+            'cipp_list_conditional_access_policies' => [ToolEffect::Read, static fn (self $x, array $in) => $x->cippQuery('cipp_list_conditional_access_policies', $in, 'api/ListConditionalAccessPolicies')],
+            'cipp_list_user_conditional_access' => [ToolEffect::Read, static fn (self $x, array $in) => $x->cippQueryWithUser('cipp_list_user_conditional_access', $in, 'api/ListUserConditionalAccessPolicies')],
+            'cipp_list_audit_logs' => [ToolEffect::Read, static fn (self $x, array $in) => $x->cippListAuditLogs($in)],
+            'cipp_list_message_trace' => [ToolEffect::Read, static fn (self $x, array $in) => $x->cippListMessageTrace($in)],
+            'cipp_list_mail_quarantine' => [ToolEffect::Read, static fn (self $x, array $in) => $x->cippListMailQuarantine($in)],
+            'cipp_list_user_mfa_methods' => [ToolEffect::Read, static fn (self $x, array $in) => $x->cippListUserMfaMethods($in)],
+            'cipp_list_oauth_apps' => [ToolEffect::Read, static fn (self $x, array $in) => $x->cippListOauthApps($in)],
 
             // DNS tools (always available, no client scope required)
-            'dns_lookup' => \App\Services\Dns\DnsToolkit::lookup($input['hostname'] ?? '', $input['type'] ?? ''),
-            'dns_email_health' => \App\Services\Dns\DnsToolkit::emailHealth($input['domain'] ?? ''),
+            'dns_lookup' => [ToolEffect::Read, static fn (self $x, array $in) => \App\Services\Dns\DnsToolkit::lookup($in['hostname'] ?? '', $in['type'] ?? '')],
+            'dns_email_health' => [ToolEffect::Read, static fn (self $x, array $in) => \App\Services\Dns\DnsToolkit::emailHealth($in['domain'] ?? '')],
 
             // Wiki retrieval tools (§6; null clientId → global-only, not an error)
-            'wiki_list_pages' => $this->wikiListPages(),
-            'wiki_search' => $this->wikiSearch($input),
-            'wiki_get_page' => $this->wikiGetPage($input),
-            'wiki_add_fact' => app(WikiAddFactTool::class)->execute($input, $this->clientId, $this->userId),
-            'wiki_create_page' => app(WikiPageAuthoringTool::class)->create($input, $this->clientId, $this->userId),
-            'wiki_update_page' => app(WikiPageAuthoringTool::class)->update($input, $this->clientId, $this->userId),
+            'wiki_list_pages' => [ToolEffect::Read, static fn (self $x, array $in) => $x->wikiListPages()],
+            'wiki_search' => [ToolEffect::Read, static fn (self $x, array $in) => $x->wikiSearch($in)],
+            'wiki_get_page' => [ToolEffect::Read, static fn (self $x, array $in) => $x->wikiGetPage($in)],
 
-            default => ['error' => "Unknown tool: {$toolName}"],
-        };
+            // Wiki authoring. NO definition set offers these, so they never appear
+            // in a published schema — but dispatch is BY NAME, which is exactly how
+            // they stayed reachable from a surface that had filtered the schema.
+            'wiki_add_fact' => [ToolEffect::Write, static fn (self $x, array $in) => app(WikiAddFactTool::class)->execute($in, $x->clientId, $x->userId)],
+            'wiki_create_page' => [ToolEffect::Write, static fn (self $x, array $in) => app(WikiPageAuthoringTool::class)->create($in, $x->clientId, $x->userId)],
+            'wiki_update_page' => [ToolEffect::Write, static fn (self $x, array $in) => app(WikiPageAuthoringTool::class)->update($in, $x->clientId, $x->userId)],
+        ];
+    }
+
+    /**
+     * Tool names this executor can dispatch that MUTATE state.
+     *
+     * Derived from the dispatch table, never declared alongside it. A guard that
+     * filters this executor must source from here — it is the layer that
+     * actually executes (psa-uw2o.10).
+     *
+     * @return list<string>
+     */
+    public static function writeTools(): array
+    {
+        return self::toolsWithEffect(ToolEffect::Write);
+    }
+
+    /**
+     * Tool names this executor can dispatch that only READ.
+     *
+     * This is the ALLOWLIST a read-only surface should filter on. Allowlisting
+     * reads rather than denylisting writes is what makes the boundary
+     * fail-closed: an unrecognised or unclassified name is refused by default,
+     * so no future tool can be reachable merely by going unnamed.
+     *
+     * @return list<string>
+     */
+    public static function readTools(): array
+    {
+        return self::toolsWithEffect(ToolEffect::Read);
+    }
+
+    /** @return list<string> */
+    private static function toolsWithEffect(ToolEffect $effect): array
+    {
+        $names = [];
+
+        foreach (self::dispatchTable() as $name => $entry) {
+            if (self::entry($name, $entry)[0] === $effect) {
+                $names[] = $name;
+            }
+        }
+
+        return $names;
+    }
+
+    /**
+     * Validate one dispatch-table registration. Both doors — execution and
+     * classification — read entries through here, so a malformed registration
+     * fails loudly at whichever it reaches first rather than being silently
+     * treated as unclassified (which, on a read-only surface, would mean
+     * "allowed").
+     *
+     * @return array{0: ToolEffect, 1: callable(self, array<string, mixed>): mixed}
+     */
+    private static function entry(string $name, mixed $entry): array
+    {
+        $effect = is_array($entry) ? ($entry[0] ?? null) : null;
+        $handler = is_array($entry) ? ($entry[1] ?? null) : null;
+
+        if (! $effect instanceof ToolEffect || ! is_callable($handler)) {
+            throw new \LogicException(
+                "Assistant tool '{$name}' is registered without a [ToolEffect, handler] pair. ".
+                'Every dispatchable tool must declare whether it reads or writes.'
+            );
+        }
+
+        return [$effect, $handler];
     }
 
     // ── General Tools (no client scope) ──
