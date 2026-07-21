@@ -318,6 +318,37 @@ class AssistantEnabledGateTest extends TestCase
      * a write-capable staff assistant — the only AI cluster here that did that,
      * and the only one that granted writes by doing so.
      */
+    /**
+     * psa-uw2o.10 finding 3: deleting the ENTIRE Anthropic-provider precondition
+     * from isEnabled() left the full suite green.
+     *
+     * It used to be pinned by AssistantBubbleSafeAreaTest's hidden-bubble case —
+     * but once the Assistant defaulted OFF, that test became OVER-DETERMINED
+     * (the bubble is hidden for the default, regardless of provider), and its
+     * own comment still states a reason that no longer makes it pass. So the
+     * precondition quietly lost its only guard as a side effect of the default
+     * flip. Pin it directly, where it cannot be over-determined.
+     */
+    public function test_the_assistant_stays_off_without_an_anthropic_provider(): void
+    {
+        $this->enable(); // explicitly ON — so only the provider can turn it off
+
+        Setting::setValue('ai_provider', 'openai');
+        $this->assertFalse(
+            AssistantConfig::isEnabled(),
+            'the tool loop is Anthropic-only — another provider must not enable the Assistant'
+        );
+
+        Setting::setValue('ai_provider', 'anthropic');
+        $this->assertTrue(AssistantConfig::isEnabled(), 'control: anthropic + enabled must be on');
+
+        Setting::setValue('ai_api_key', '');
+        $this->assertFalse(
+            AssistantConfig::isEnabled(),
+            'no configured key must not enable the Assistant, even when the toggle is on'
+        );
+    }
+
     public function test_a_present_anthropic_key_does_not_by_itself_enable_the_assistant(): void
     {
         // setUp() has already configured the provider and key; deliberately
