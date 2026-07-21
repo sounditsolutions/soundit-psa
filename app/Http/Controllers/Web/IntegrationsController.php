@@ -46,6 +46,28 @@ class IntegrationsController extends Controller
      */
     private const SECRET_MASK = '••••••••';
 
+    /**
+     * Vendor master switches that ALSO gate the vendor's AI tool surface (psa-wzjzz),
+     * mapped to the surfaces each one actually feeds. The toggle confirmation has to
+     * name that consequence: an operator who flips one off is otherwise never told the
+     * AI just lost those tools, and "not offered" looks identical to "broken" from the
+     * agent's side.
+     *
+     * Deliberately NOT applied to the whole $allowed list. Only these six are gated at
+     * TriageToolDefinitions' publication choke point; the rest (stripe, graph, plivo,
+     * t2t, huntress, …) touch no AI surface, and claiming otherwise would send the
+     * operator hunting for a tool loss that never happened. ControlD and Zorus publish
+     * to triage ONLY — the staff Assistant and MCP never carried their tools.
+     */
+    private const AI_GATING_INTEGRATIONS = [
+        'ninja' => 'AI triage, the Assistant, and MCP',
+        'level' => 'AI triage, the Assistant, and MCP',
+        'mesh' => 'AI triage, the Assistant, and MCP',
+        'cipp' => 'AI triage, the Assistant, and MCP',
+        'controld' => 'AI triage',
+        'zorus' => 'AI triage',
+    ];
+
     public function index(NinjaClient $ninja, LevelClient $level)
     {
         // Helper: format a UTC timestamp string for display in the app timezone.
@@ -463,9 +485,16 @@ class IntegrationsController extends Controller
 
         $label = $request->input('integration');
         $state = $enabled === '1' ? 'enabled' : 'disabled';
+        $message = ucfirst($label)." integration {$state}.";
+
+        if ($surfaces = self::AI_GATING_INTEGRATIONS[$label] ?? null) {
+            $message .= $enabled === '1'
+                ? " Its tools are offered to {$surfaces} again."
+                : " Its tools are no longer offered to {$surfaces}; re-enable the integration to restore them.";
+        }
 
         return redirect()->route('settings.integrations')
-            ->with('success', ucfirst($label)." integration {$state}.");
+            ->with('success', $message);
     }
 
     // --- QBO ---

@@ -12,13 +12,9 @@ use App\Services\AttachmentService;
 use App\Services\Comet\CometClient;
 use App\Services\Comet\CometJobService;
 use App\Services\Wiki\Mining\WikiRedactor;
-use App\Support\CippConfig;
 use App\Support\CometConfig;
-use App\Support\ControlDConfig;
-use App\Support\MeshConfig;
 use App\Support\TacticalConfig;
 use App\Support\WikiConfig;
-use App\Support\ZorusConfig;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -841,29 +837,51 @@ class ContextBuilder
             return null;
         }
 
+        // *** THIS LIST TELLS THE MODEL WHICH TOOLS TO USE, SO IT MUST BE DERIVED FROM THE
+        // SAME PREDICATES THAT DECIDE WHETHER THOSE TOOLS ARE PUBLISHED. *** (psa-wzjzz,
+        // UX review finding 2.)
+        //
+        // These checks used to be independent — and drifted. Ninja asked ONLY whether the
+        // client had an org mapping, consulting no configuration at all; CIPP, Control D and
+        // Zorus asked isConfigured() and ignored the master switch. Once the switch gates
+        // publication, an independent list here means the prompt actively CONTRADICTS the
+        // tool surface: the model is told "use cipp_* tools" in the same turn those tools are
+        // withheld. The model then either hallucinates a call or silently omits the check,
+        // and the technician reading the triage note cannot tell "the operator disabled this
+        // vendor" from "the AI didn't bother looking".
+        //
+        // Calling TriageToolDefinitions::is*Available() means this can no longer disagree
+        // with getTools() — the same expression decides both. Do NOT re-inline
+        // isEnabled()/isConfigured() here; that rebuilds the two-lists-that-must-agree root
+        // cause one layer up, which is the exact defect class this bead exists to close.
         $available = [];
 
-        if ($client->mesh_customer_id && MeshConfig::isEnabled() && MeshConfig::isConfigured()) {
+        if ($client->mesh_customer_id && TriageToolDefinitions::isMeshAvailable()) {
             $available[] = '- Mesh Email Security (use mesh_* tools for email delivery/quarantine issues)';
         }
-        if ($client->ninja_org_id) {
+        if ($client->ninja_org_id && TriageToolDefinitions::isNinjaAvailable()) {
             $available[] = '- NinjaRMM (use ninja_* tools for device diagnostics)';
         }
-        if ($client->cipp_tenant_domain && CippConfig::isConfigured()) {
+        if ($client->cipp_tenant_domain && TriageToolDefinitions::isCippAvailable()) {
             $available[] = '- CIPP/M365 (use cipp_* tools for M365/Azure AD issues)';
         }
-        if ($client->controld_org_id && ControlDConfig::isConfigured()) {
+        if ($client->controld_org_id && TriageToolDefinitions::isControlDAvailable()) {
             $available[] = '- Control D (use controld_* tools for DNS security issues)';
         }
-        if ($client->zorus_customer_id && ZorusConfig::isConfigured()) {
+        if ($client->zorus_customer_id && TriageToolDefinitions::isZorusAvailable()) {
             $available[] = '- Zorus (use zorus_* tools for DNS filtering issues)';
         }
+        // Routed through the predicates for the same anti-drift reason, even though these two
+        // are behaviourally identical today (TacticalConfig/CometConfig define isEnabled() AS
+        // isConfigured(), so there is no separate master switch to miss). If either ever gains
+        // a real switch, it lands here for free instead of becoming the next silent
+        // contradiction between the prompt and the tool surface.
         if ($asset = $client->assets()->whereNotNull('tactical_asset_id')->exists()) {
-            if (TacticalConfig::isConfigured()) {
+            if (TriageToolDefinitions::isTacticalAvailable()) {
                 $available[] = '- Tactical RMM (use tactical_* tools for device diagnostics, checks, services, software)';
             }
         }
-        if ($client->assets()->whereNotNull('comet_device_id')->exists() && CometConfig::isConfigured()) {
+        if ($client->assets()->whereNotNull('comet_device_id')->exists() && TriageToolDefinitions::isCometAvailable()) {
             $available[] = '- Comet Backup (use comet_get_backup_status, comet_get_backup_jobs for backup health)';
         }
 

@@ -21,8 +21,10 @@ use App\Services\Chet\OperatorBridgeTools;
  *  - granted             — in this token's allowlist and live: callable now.
  *  - available_ungranted — built and configured, not in this token: an
  *    operator token grant enables it.
- *  - unavailable_config  — built but its integration is not configured on
- *    this instance: an infrastructure/config change, not a token grant.
+ *  - unavailable_config  — built but its integration is switched off or not
+ *    configured on this instance: re-enabling it in Settings > Integrations
+ *    or adding its credentials, not a token grant. Both causes land here, so
+ *    the copy must name both remedies (psa-wzjzz made the switch a gate).
  *  - (absent from the catalog — the tool does not exist: a development build.)
  *
  * The live assembly here is the SAME code path `tools/list` uses (the
@@ -55,7 +57,7 @@ class McpToolSurface
         return [
             self::STATE_GRANTED => 'In this token\'s allowlist and live on this instance — callable now.',
             self::STATE_AVAILABLE_UNGRANTED => 'Built and configured on this instance but not in this token\'s allowlist — an operator token grant enables it.',
-            self::STATE_UNAVAILABLE_CONFIG => 'Built but its integration is not configured on this instance — an infrastructure/config change, not a token grant.',
+            self::STATE_UNAVAILABLE_CONFIG => 'Built but its integration is switched off or not configured on this instance — the remedy is re-enabling it in Settings > Integrations or adding its credentials, not a token grant.',
         ];
     }
 
@@ -97,12 +99,22 @@ class McpToolSurface
      */
     public static function liveClientScopedToolDefinitions(): array
     {
+        // CIPP publishes on TWO paths and both must honour the master switch (psa-wzjzz).
+        // The dynamic catalog rows were merged unconditionally here, one line above a
+        // sibling that was already gated, so cipp_enabled='0' left synced CIPP tools
+        // published and callable. Gating is applied at this publication site rather than
+        // inside dynamicCippRead/WriteTools() on purpose: those same helpers also feed
+        // McpToolRegistry::groups(), which is the GRANT CATALOG and is deliberately
+        // ungated so tools can be pre-granted before an integration is switched on.
+        // Gating the helper would break that by conflating "grantable" with "live".
+        $cippLive = CippConfig::isEnabled() && CippConfig::isConfigured();
+
         return array_merge(
             AssistantToolDefinitions::getTools(hasClient: true),
             ChetDataSurfaceTools::clientTools(),
-            McpToolRegistry::dynamicCippReadTools(),
-            McpToolRegistry::dynamicCippWriteTools(),
-            (CippConfig::isEnabled() && CippConfig::isConfigured()) ? McpToolRegistry::cippWriteTools() : [],
+            CippConfig::isEnabled() ? McpToolRegistry::dynamicCippReadTools() : [],
+            CippConfig::isEnabled() ? McpToolRegistry::dynamicCippWriteTools() : [],
+            $cippLive ? McpToolRegistry::cippWriteTools() : [],
             TacticalConfig::isConfigured() ? McpToolRegistry::tacticalActionTools() : [],
         );
     }

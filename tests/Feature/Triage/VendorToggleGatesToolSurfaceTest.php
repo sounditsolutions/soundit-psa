@@ -2,11 +2,17 @@
 
 namespace Tests\Feature\Triage;
 
+use App\Models\CippMcpTool;
+use App\Models\Client;
 use App\Models\Setting;
+use App\Models\Ticket;
 use App\Services\Assistant\AssistantToolDefinitions;
 use App\Services\Level\LevelClient;
 use App\Services\Ninja\NinjaClient;
+use App\Services\Triage\ContextBuilder;
 use App\Services\Triage\TriageToolDefinitions;
+use App\Support\McpConfig;
+use App\Support\McpToolRegistry;
 use App\Support\McpToolSurface;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Mockery\MockInterface;
@@ -288,5 +294,183 @@ class VendorToggleGatesToolSurfaceTest extends TestCase
 
         $this->assertNotEmpty($names, 'triage must still publish its PSA core tools with all vendors off');
         $this->assertContains('search_tickets', $names, 'search_tickets is a PSA core tool and must not be gated by any vendor switch');
+    }
+
+    // -----------------------------------------------------------------------
+    // 5b. THE PROMPT MUST NOT CONTRADICT THE TOOL SURFACE
+    // -----------------------------------------------------------------------
+
+    /**
+     * FOUND IN REVIEW (psa-wzjzz.4 UX, PR #296 @ 2469f4f).
+     *
+     * ContextBuilder writes an "Available Integrations for This Client" block into the triage
+     * prompt, telling the model which tool families to use. Its checks were INDEPENDENT of the
+     * predicates that decide publication, and had drifted: Ninja consulted no configuration at
+     * all (client mapping only), while CIPP / Control D / Zorus asked isConfigured() and
+     * ignored the master switch.
+     *
+     * Once the switch gates publication, that independence becomes an active contradiction —
+     * the prompt says "use cipp_* tools" in the same turn the tools are withheld. The model
+     * then hallucinates a call or silently skips the check, and *** a technician reading the
+     * triage note cannot tell "the operator disabled this vendor" from "the AI didn't
+     * bother" ***. That is the diagnosability failure, and it is why this is a real finding
+     * rather than a cosmetic one.
+     */
+    public function test_the_prompt_does_not_advertise_a_vendor_whose_switch_is_off(): void
+    {
+        $this->configureAllVendorCredentials();
+        $this->forceHealthProbesToSucceed();
+
+        $client = Client::factory()->create([
+            'mesh_customer_id' => 'mesh-cust',
+            'ninja_org_id' => 42,
+            'cipp_tenant_domain' => 'acme.example',
+            'controld_org_id' => 'cd-org',
+            'zorus_customer_id' => 'zorus-cust',
+        ]);
+        $ticket = Ticket::factory()->for($client)->create();
+
+        // Driven through the real public entry point rather than reflecting into the private
+        // section builder: what matters is what actually reaches the model's prompt.
+        // Every vendor switched ON: the prompt should advertise them (the mirror — without
+        // this the assertion below could pass simply because the block is always empty).
+        foreach (array_keys(self::vendorProvider()) as $vendor) {
+            Setting::setValue(self::vendorProvider()[$vendor][0], '1');
+        }
+
+        $on = ContextBuilder::buildForTicket($ticket, skipNotes: true);
+        foreach (['Mesh', 'NinjaRMM', 'CIPP/M365', 'Control D', 'Zorus'] as $label) {
+            $this->assertStringContainsString($label, $on, "with every switch ON the prompt must advertise {$label}");
+        }
+
+        // Every vendor switched OFF: the prompt must advertise none of them.
+        foreach (array_keys(self::vendorProvider()) as $vendor) {
+            Setting::setValue(self::vendorProvider()[$vendor][0], '0');
+        }
+
+        $off = ContextBuilder::buildForTicket($ticket, skipNotes: true);
+        foreach (['mesh_*', 'ninja_*', 'cipp_*', 'controld_*', 'zorus_*'] as $family) {
+            $this->assertStringNotContainsString(
+                $family,
+                $off,
+                "the prompt still tells the model to use {$family} tools while that vendor's master ".
+                'switch is off — the prompt and the published tool surface disagree'
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // 6. THE DYNAMIC CIPP CATALOG — a second publication path around the switch
+    // -----------------------------------------------------------------------
+    //
+    // FOUND IN REVIEW (psa-wzjzz.1 security / .2 architecture, PR #296 @ 2469f4f), proven by
+    // an execution probe, and it was a real hole in the first cut of this fix.
+    //
+    // Gating the six predicates covers the STATIC vendor lanes. Staff MCP publishes CIPP a
+    // SECOND way: McpToolSurface::liveClientScopedToolDefinitions() merged
+    // McpToolRegistry::dynamicCippReadTools()/dynamicCippWriteTools() UNCONDITIONALLY, one
+    // line above a sibling that was already gated on the master switch. So with
+    // cipp_enabled='0' a synced catalog row stayed published AND callable.
+    //
+    // *** AND THE SIBLING PR COULD NOT HAVE SAVED IT. *** psa-vydpz refuses a name that is
+    // not in liveToolNames(), but the dynamic row was still IN liveToolNames() — the
+    // liveness gate derives from the very source that was ungated. Two guards reading one
+    // wrong answer agree with each other, which is exactly why "the other PR covers it" is
+    // never a substitute for closing the publication path itself.
+
+    private function configureCippMcpRelay(): void
+    {
+        Setting::setValue('cipp_api_url', 'https://cipp.example.test');
+        Setting::setValue('cipp_tenant_id', 'tenant-1');
+        Setting::setValue('cipp_mcp_client_id', 'mcp-client');
+        Setting::setEncrypted('cipp_mcp_client_secret', 'mcp-secret');
+        Setting::setValue('cipp_mcp_enabled', '1');
+    }
+
+    private function createDynamicCippRow(): void
+    {
+        CippMcpTool::create([
+            'local_name' => 'cipp_list_db_cache',
+            'upstream_name' => 'ListDBCache',
+            'category' => 'CIPP',
+            'description' => '[CIPP] List DB cache.',
+            'input_schema' => ['type' => 'object', 'properties' => ['tenantFilter' => ['type' => 'string']]],
+            'annotations' => ['readOnlyHint' => true],
+            'read_only' => true,
+            'sensitive' => false,
+            'active' => true,
+            'last_seen_at' => now(),
+        ]);
+    }
+
+    public function test_the_cipp_master_switch_also_disables_the_dynamic_catalog(): void
+    {
+        $this->configureAllVendorCredentials();
+        $this->configureCippMcpRelay();
+        $this->createDynamicCippRow();
+
+        Setting::setValue('cipp_enabled', '0');
+        McpToolRegistry::flushMemoized();
+
+        $this->assertNotContains(
+            'cipp_list_db_cache',
+            McpToolSurface::liveToolNames(),
+            'cipp_enabled=0 but a dynamic CIPP catalog row is still live — the master switch is '
+            .'bypassed by the dynamic publication path, and psa-vydpz cannot save it because its '
+            .'liveness gate reads this same list'
+        );
+
+        $token = McpConfig::rotateStaffToken(allowedTools: ['cipp_list_db_cache'], label: 'chet');
+
+        $listed = array_column(
+            $this->withHeaders(['Authorization' => 'Bearer '.$token])
+                ->postJson('/api/mcp/staff', [
+                    'jsonrpc' => '2.0',
+                    'id' => 1,
+                    'method' => 'tools/list',
+                    'params' => [],
+                ])->json('result.tools') ?? [],
+            'name'
+        );
+
+        $this->assertNotContains('cipp_list_db_cache', $listed, 'tools/list published a dynamic CIPP tool with the master switch off');
+
+        // The executor is the defence-in-depth layer and must refuse independently of
+        // publication: isMcpRelayEnabled() ignored the master switch, while its three
+        // siblings in CippConfig all consult it.
+        $response = $this->withHeaders(['Authorization' => 'Bearer '.$token])
+            ->postJson('/api/mcp/staff', [
+                'jsonrpc' => '2.0',
+                'id' => 1,
+                'method' => 'tools/call',
+                'params' => ['name' => 'cipp_list_db_cache', 'arguments' => ['client_id' => 1]],
+            ]);
+
+        $this->assertTrue(
+            (bool) $response->json('result.isError'),
+            'cipp_enabled=0 and a granted token still executed a dynamic CIPP tool: '
+            .(string) $response->json('result.content.0.text')
+        );
+    }
+
+    /**
+     * The mirror. Switched ON, the dynamic catalog must still publish — otherwise the fix
+     * has silently removed the entire synced CIPP surface, which is a far larger regression
+     * than the hole it closes.
+     */
+    public function test_the_dynamic_catalog_still_publishes_when_cipp_is_switched_on(): void
+    {
+        $this->configureAllVendorCredentials();
+        $this->configureCippMcpRelay();
+        $this->createDynamicCippRow();
+
+        Setting::setValue('cipp_enabled', '1');
+        McpToolRegistry::flushMemoized();
+
+        $this->assertContains(
+            'cipp_list_db_cache',
+            McpToolSurface::liveToolNames(),
+            'CIPP is switched ON and configured, but the dynamic catalog row is not live — over-block'
+        );
     }
 }
