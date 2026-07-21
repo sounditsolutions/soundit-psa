@@ -287,15 +287,57 @@
 @endsection
 
 @push('scripts')
+
+@php
+    // Option lists for the client-side "Add Line" builder. Every label here is
+    // operator-entered, so it is shipped as data and rendered with textContent —
+    // see profiles/_line_options_js for why (psa-951q).
+    $skuOptionData = $skus->map(fn ($s) => [
+        'value' => (string) $s->id,
+        'label' => $s->sku_code.' — '.$s->name,
+        'data' => [
+            'price' => (string) $s->unit_price,
+            'cost' => (string) $s->unit_cost,
+            'taxable' => $s->is_taxable ? '1' : '0',
+            'description' => (string) $s->name,
+            'includedPerUnit' => (string) $s->included_per_unit,
+            'defaultQuantityType' => (string) $s->default_quantity_type?->value,
+            'defaultLicenseTypeId' => (string) $s->default_license_type_id,
+            'hasVolumeTiers' => $s->backup_storage_tiers_count ? '1' : '0',
+        ],
+    ])->values();
+
+    $quantityTypeOptionData = collect($quantityTypes)->map(fn ($qt) => [
+        'value' => $qt->value,
+        'label' => $qt->label(),
+    ])->values();
+
+    $licenseTypeOptionData = $licenseTypes->map(fn ($lt) => [
+        'value' => (string) $lt->id,
+        'label' => $lt->name.' ('.$lt->vendor.')',
+    ])->values();
+@endphp
+
+@include('profiles._line_options_js')
+
 <script>
 let lineIndex = 1;
 
+// psa-951q: option lists are inert DATA, never JavaScript source. These labels
+// are operator-entered, and a backtick template literal is a JavaScript string
+// context that Blade's HTML escaping does not cover. See
+// profiles/_line_options_js for the full story.
+//
+// Shaped in the PHP block above rather than inline, because Blade's json
+// directive splits its expression on commas (CompilesJson::compileJson) and
+// mangles a multi-element array literal into invalid PHP. A plain variable is
+// safe.
+const SKU_OPTIONS = @json($skuOptionData);
+const QUANTITY_TYPE_OPTIONS = @json($quantityTypeOptionData);
+const LICENSE_TYPE_OPTIONS = @json($licenseTypeOptionData);
+
 function addLine() {
     const container = document.getElementById('linesContainer');
-    const quantityOptions = `@foreach($quantityTypes as $qt)<option value="{{ $qt->value }}">{{ $qt->label() }}</option>@endforeach`;
-    const skuOptions = `<option value="">-- Manual --</option>@foreach($skus as $s)<option value="{{ $s->id }}" data-price="{{ $s->unit_price }}" data-cost="{{ $s->unit_cost }}" data-taxable="{{ $s->is_taxable ? '1' : '0' }}" data-description="{{ $s->name }}" data-included-per-unit="{{ $s->included_per_unit }}" data-default-quantity-type="{{ $s->default_quantity_type?->value }}" data-default-license-type-id="{{ $s->default_license_type_id }}" data-has-volume-tiers="{{ $s->backup_storage_tiers_count ? '1' : '0' }}">{{ $s->sku_code }} — {{ $s->name }}</option>@endforeach`;
-    const licenseTypeOptions = `<option value="">Select...</option>@foreach($licenseTypes as $lt)<option value="{{ $lt->id }}">{{ $lt->name }} ({{ $lt->vendor }})</option>@endforeach`;
-    const licenseTypeOptionsWithNone = `<option value="">(none — use 1)</option>@foreach($licenseTypes as $lt)<option value="{{ $lt->id }}">{{ $lt->name }} ({{ $lt->vendor }})</option>@endforeach`;
 
     const html = `
         <div class="line-item border rounded p-3 mb-3" data-index="${lineIndex}">
@@ -304,7 +346,6 @@ function addLine() {
                     <label class="form-label small">SKU</label>
                     <select class="form-select form-select-sm sku-select"
                             name="lines[${lineIndex}][sku_id]" onchange="onSkuSelected(this)">
-                        ${skuOptions}
                     </select>
                 </div>
                 <div class="col-md-3">
@@ -333,7 +374,6 @@ function addLine() {
                     <label class="form-label small">Quantity Type</label>
                     <select class="form-select form-select-sm qty-type-select"
                             name="lines[${lineIndex}][quantity_type]" onchange="toggleConditionalFields(this)">
-                        ${quantityOptions}
                     </select>
                 </div>
                 <div class="col-md-1 fixed-qty-col">
@@ -344,7 +384,6 @@ function addLine() {
                 <div class="col-md-2 license-type-col" style="display:none">
                     <label class="form-label small">License Type</label>
                     <select class="form-select form-select-sm" name="lines[${lineIndex}][license_type_id]">
-                        ${licenseTypeOptions}
                     </select>
                 </div>
                 <div class="col-md-1 d-flex align-items-end gap-2">
@@ -380,14 +419,12 @@ function addLine() {
                     <div class="col-md-3">
                         <label class="form-label small">Usage License Type</label>
                         <select class="form-select form-select-sm" name="lines[${lineIndex}][usage_license_type_id]">
-                            ${licenseTypeOptions}
                         </select>
                         <div class="form-text">What to measure</div>
                     </div>
                     <div class="col-md-3">
                         <label class="form-label small">Base License Type</label>
                         <select class="form-select form-select-sm" name="lines[${lineIndex}][base_license_type_id]">
-                            ${licenseTypeOptionsWithNone}
                         </select>
                         <div class="form-text">What provides included amount</div>
                     </div>
@@ -408,6 +445,17 @@ function addLine() {
         </div>`;
 
     container.insertAdjacentHTML('beforeend', html);
+
+    // The markup above is static, developer-authored HTML. The options are the
+    // operator-entered part, so they are built from data instead — never spliced
+    // into a string that JavaScript then has to parse.
+    const line = container.lastElementChild;
+    fillSelectOptions(line.querySelector('.sku-select'), SKU_OPTIONS, '-- Manual --');
+    fillSelectOptions(line.querySelector('.qty-type-select'), QUANTITY_TYPE_OPTIONS, null);
+    fillSelectOptions(line.querySelector('[name$="[license_type_id]"]'), LICENSE_TYPE_OPTIONS, 'Select...');
+    fillSelectOptions(line.querySelector('[name$="[usage_license_type_id]"]'), LICENSE_TYPE_OPTIONS, 'Select...');
+    fillSelectOptions(line.querySelector('[name$="[base_license_type_id]"]'), LICENSE_TYPE_OPTIONS, '(none — use 1)');
+
     lineIndex++;
 }
 

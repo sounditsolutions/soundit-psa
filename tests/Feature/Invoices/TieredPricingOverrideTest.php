@@ -541,6 +541,19 @@ class TieredPricingOverrideTest extends TestCase
      * The inline note beside the graduated toggle is driven by a per-SKU marker
      * on the option element — the operator must see "this overrides the SKU's
      * volume tiers" at the moment they flip the toggle, not after saving.
+     *
+     * Both screens deliver that marker twice over, and both are asserted here:
+     *
+     *   - as data-has-volume-tiers on the SERVER-RENDERED options (the first line
+     *     on create, and one per existing line on show), and
+     *   - as hasVolumeTiers in the SKU_OPTIONS data island, which is what
+     *     fillSelectOptions stamps onto lines added client-side by "Add Line".
+     *
+     * psa-951q moved the second one: it used to be option markup spliced into a
+     * JavaScript template literal, where an operator-entered SKU name could break
+     * out of the string. It is now inert JSON, but it must still carry the marker
+     * — a dynamically added line whose SKU is silently unmarked is exactly the
+     * invisible-to-the-operator override the product lane rejected.
      */
     public function test_profile_forms_mark_volume_card_skus_for_the_inline_method_note(): void
     {
@@ -554,17 +567,55 @@ class TieredPricingOverrideTest extends TestCase
         foreach ([route('profiles.create', $contract), route('profiles.show', $profile)] as $url) {
             $html = $this->get($url)->assertOk()->getContent();
 
-            $this->assertMatchesRegularExpression(
-                '/value="'.$withCard->id.'"[^>]*data-has-volume-tiers="1"/s',
-                $html,
-                "volume-card SKU option must be marked on {$url}",
+            $options = $this->skuOptionData($html, $url);
+
+            $this->assertSame(
+                '1',
+                $options[$withCard->id]['data']['hasVolumeTiers'] ?? null,
+                "volume-card SKU must be marked in the option data on {$url}",
             );
-            $this->assertMatchesRegularExpression(
-                '/value="'.$without->id.'"[^>]*data-has-volume-tiers="0"/s',
-                $html,
-                "card-less SKU option must not be marked on {$url}",
+            $this->assertSame(
+                '0',
+                $options[$without->id]['data']['hasVolumeTiers'] ?? null,
+                "card-less SKU must not be marked in the option data on {$url}",
             );
         }
+
+        // The server-rendered options carry the same marker as an attribute.
+        // Only asserted on create, because show renders one select per existing
+        // profile line and this profile deliberately has none.
+        $html = $this->get(route('profiles.create', $contract))->assertOk()->getContent();
+
+        $this->assertMatchesRegularExpression(
+            '/value="'.$withCard->id.'"[^>]*data-has-volume-tiers="1"/s',
+            $html,
+            'volume-card SKU option must be marked in the server-rendered select',
+        );
+        $this->assertMatchesRegularExpression(
+            '/value="'.$without->id.'"[^>]*data-has-volume-tiers="0"/s',
+            $html,
+            'card-less SKU option must not be marked in the server-rendered select',
+        );
+    }
+
+    /**
+     * The SKU_OPTIONS data island the line editor builds client-side options
+     * from, decoded and keyed by SKU id.
+     *
+     * @return array<int, array{value: string, label: string, data: array<string, string>}>
+     */
+    private function skuOptionData(string $html, string $url): array
+    {
+        $this->assertSame(
+            1,
+            preg_match('/const SKU_OPTIONS = (\[.*?\]);\n/s', $html, $m),
+            "no SKU_OPTIONS data island on {$url}",
+        );
+
+        $decoded = json_decode($m[1], true);
+        $this->assertIsArray($decoded, "SKU_OPTIONS on {$url} is not valid JSON");
+
+        return collect($decoded)->keyBy(fn ($o) => (int) $o['value'])->all();
     }
 
     /**
