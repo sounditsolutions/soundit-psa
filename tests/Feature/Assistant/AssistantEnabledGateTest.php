@@ -26,10 +26,14 @@ use Tests\TestCase;
  * for this toggle mid-incident precisely because they want the AI to stop
  * writing. A control that is trusted under stress must do what its label says.
  *
- * Scope note: this fixes the OFF switch only. Whether the Assistant should
- * DEFAULT to on when an Anthropic key is present is a separate product call
- * (psa-98dq, Charlie's). These tests deliberately assert against an EXPLICIT
- * setting in both directions, so they hold under either ruling.
+ * The DEFAULT was a separate product question (psa-98dq), and Charlie ruled it
+ * on 2026-07-21: the Assistant DEFAULTS OFF — a present Anthropic key confers
+ * no capability on its own. The gate honours whatever isEnabled() returns, so
+ * that ruling was a one-line change to an untouched file rather than a rework.
+ *
+ * Every test here still sets `assistant_enabled` EXPLICITLY, except the one
+ * that asserts the default itself. That is deliberate: a test asserting a gate
+ * should not be silently coupled to which way the default happens to point.
  */
 class AssistantEnabledGateTest extends TestCase
 {
@@ -225,22 +229,36 @@ class AssistantEnabledGateTest extends TestCase
      * already throws the exact right sentence; the middleware must not pre-empt
      * that with a shape no consumer reads.
      */
-    public function test_a_json_client_is_told_why_it_was_refused(): void
+    /**
+     * psa-uw2o.8 caught that this was asserted on ONE route. The sibling test
+     * covering all six passes only because Laravel's test client defaults to
+     * `Accept: text/html` — so it exercised the BROWSER path six times and the
+     * JSON path, which is the one the live UI actually receives, exactly once.
+     * It looked comprehensive and was not. All six now assert the JSON shape.
+     */
+    public function test_every_endpoint_tells_a_json_client_why_it_was_refused(): void
     {
         $this->disable();
 
-        $response = $this->actingAs($this->user)
-            ->withHeaders(['Accept' => 'application/json'])
-            ->get('/assistant/general');
+        $conversation = $this->conversation();
+        $client = Client::factory()->create();
+        $ticket = Ticket::factory()->create(['client_id' => $client->id]);
 
-        $body = (array) json_decode($response->getContent(), true);
+        foreach ($this->routes($conversation, $ticket) as $name => [$verb, $uri, $payload]) {
+            $response = $this->actingAs($this->user)
+                ->withHeaders(['Accept' => 'application/json'])
+                ->{$verb}($uri, $payload);
 
-        $this->assertArrayHasKey(
-            'error',
-            $body,
-            'the JS handlers read d.error — a refusal without that key surfaces as "Request failed" or silence'
-        );
-        $this->assertStringContainsStringIgnoringCase('disabled', (string) $body['error']);
+            $body = (array) json_decode($response->getContent(), true);
+
+            $this->assertArrayHasKey(
+                'error',
+                $body,
+                "{$name}: the JS handlers read d.error — a refusal without that key surfaces as ".
+                '"Request failed" or, on the load paths, silence'
+            );
+            $this->assertStringContainsStringIgnoringCase('disabled', (string) $body['error'], $name);
+        }
     }
 
     /**
@@ -292,6 +310,31 @@ class AssistantEnabledGateTest extends TestCase
         $this->assertFalse(AssistantConfig::isEnabled());
     }
 
+    /**
+     * psa-98dq, ruled by Charlie 2026-07-21: the Assistant DEFAULTS OFF.
+     *
+     * An Anthropic key alone must confer no capability. Previously an absent
+     * `assistant_enabled` read as enabled, so pasting a key silently activated
+     * a write-capable staff assistant — the only AI cluster here that did that,
+     * and the only one that granted writes by doing so.
+     */
+    public function test_a_present_anthropic_key_does_not_by_itself_enable_the_assistant(): void
+    {
+        // setUp() has already configured the provider and key; deliberately
+        // never touch assistant_enabled, so this asserts the DEFAULT.
+        $this->assertNull(Setting::getValue('assistant_enabled'), 'precondition: the setting must be absent');
+
+        $this->assertFalse(
+            AssistantConfig::isEnabled(),
+            'a configured Anthropic key must not activate the Assistant on its own'
+        );
+
+        $this->actingAs($this->user)
+            ->withHeaders(['Accept' => 'application/json'])
+            ->get('/assistant/general')
+            ->assertStatus(403);
+    }
+
     private function promptFor(AssistantConversation $conversation): string
     {
         $method = new \ReflectionMethod(AssistantService::class, 'buildSystemPrompt');
@@ -304,29 +347,120 @@ class AssistantEnabledGateTest extends TestCase
     }
 
     /**
-     * psa-uw2o.3 (product review): the no-client prompt says "your tools are
-     * read-only". That is true today only by coincidence of which definition
-     * sets getTools(false) merges — one of which, TriageToolDefinitions::
-     * wikiTools(), is owned by the TRIAGE lane, not this one. Someone adding a
-     * writer there would re-falsify the prompt with a green suite, which is
-     * precisely the failure this whole bead is about.
+     * psa-uw2o.5/.6/.7 all independently killed the first version of this
+     * guard. It was a verb-PREFIX denylist, and every tool set in this repo is
+     * LANE-prefixed (wiki_, dns_, cipp_, tactical_), so no lane tool could ever
+     * match it. Reviewers proved it by adding a real writer — wiki_create_page,
+     * from the exact lane the docblock named as the risk — and watching the
+     * suite stay green while the prompt still claimed read-only.
      *
-     * So assert the property rather than trusting the coincidence.
+     * A denylist fails OPEN: it only catches what its author thought of. These
+     * are ALLOWLISTS, so ANY change to either surface — a writer, a reader, a
+     * rename — goes red until a human looks at it and updates the list
+     * deliberately. That is the only shape that can catch a tool nobody
+     * anticipated, which is the entire point.
      */
-    public function test_the_no_client_tool_surface_carries_no_write_tool(): void
+    private const EXPECTED_NO_CLIENT_TOOLS = [
+        'dns_email_health',
+        'dns_lookup',
+        'find_clients',
+        'get_queue_stats',
+        'get_ticket_calls',
+        'get_ticket_detail',
+        'list_my_tickets',
+        'list_open_tickets',
+        'search_all_tickets',
+        'wiki_get_page',
+        'wiki_list_pages',
+        'wiki_search',
+    ];
+
+    public function test_the_no_client_tool_surface_is_exactly_the_expected_read_only_set(): void
     {
         $names = array_column(AssistantToolDefinitions::getTools(false), 'name');
+        sort($names);
 
-        $this->assertNotEmpty($names, 'the general assistant must offer some tools, or this test proves nothing');
+        $expected = self::EXPECTED_NO_CLIENT_TOOLS;
+        sort($expected);
 
-        foreach ($names as $name) {
-            $this->assertDoesNotMatchRegularExpression(
-                '/^(create|add|update|delete|set|send|remove|assign|close|resolve|write|push|link|dismiss|retire|move)_/',
-                $name,
-                "the no-client surface is described to the model as read-only, but offers '{$name}'. ".
-                'Either that tool does not belong here, or the prompt must stop claiming read-only.'
-            );
+        $this->assertSame(
+            $expected,
+            $names,
+            "The no-client tool surface changed. The system prompt tells the model this surface is READ-ONLY.\n".
+            "If you added a read tool, add it to EXPECTED_NO_CLIENT_TOOLS.\n".
+            'If you added a tool that WRITES, the prompt is now lying and must be fixed too.'
+        );
+    }
+
+    /**
+     * The client surface's writers must be exactly WRITE_TOOLS — asserted in
+     * BOTH directions.
+     *
+     * psa-uw2o.6 showed the previous anchor could detect a writer being
+     * REMOVED or renamed but was structurally blind to one being ADDED: adding
+     * close_ticket to psaTools() left the suite green while the prompt still
+     * said "Two of your tools WRITE". Since the prompt is now generated from
+     * WRITE_TOOLS, an added writer that IS declared self-discloses; this test
+     * catches one that is NOT declared.
+     */
+    public function test_the_client_surface_offers_exactly_the_declared_write_tools(): void
+    {
+        $method = new \ReflectionMethod(AssistantToolDefinitions::class, 'psaTools');
+        $method->setAccessible(true);
+        $names = array_column($method->invoke(null), 'name');
+
+        $declared = AssistantToolDefinitions::WRITE_TOOLS;
+
+        // Every declared writer must actually be offered.
+        foreach ($declared as $writer) {
+            $this->assertContains($writer, $names, "WRITE_TOOLS declares '{$writer}' but psaTools() does not offer it");
         }
+
+        // And nothing write-shaped may be offered without being declared.
+        $expectedPsaTools = [
+            'add_ticket_note',
+            'create_ticket',
+            'find_assets',
+            'find_persons',
+            'get_asset',
+            'get_client',
+            'get_person',
+            'get_ticket_notes',
+            'search_tickets',
+        ];
+        sort($names);
+        sort($expectedPsaTools);
+
+        $this->assertSame(
+            $expectedPsaTools,
+            $names,
+            'psaTools() changed. If the new tool WRITES, add it to AssistantToolDefinitions::WRITE_TOOLS '.
+            "so the system prompt discloses it to the model.\nThen add it here."
+        );
+    }
+
+    /**
+     * psa-uw2o.6: nothing proved buildSystemPrompt actually OBEYS its
+     * $hasClient argument — the test helper re-derived it the same way correct
+     * code does, so a mutant ignoring the parameter survived. Drive both values
+     * against the SAME conversation so only the argument differs.
+     */
+    public function test_the_prompt_obeys_its_has_client_argument(): void
+    {
+        $this->enable();
+
+        $conversation = $this->conversation();
+
+        $method = new \ReflectionMethod(AssistantService::class, 'buildSystemPrompt');
+        $method->setAccessible(true);
+        $service = new AssistantService;
+
+        $asClient = (string) $method->invoke($service, $conversation, true);
+        $asGeneral = (string) $method->invoke($service, $conversation, false);
+
+        $this->assertStringContainsString('create_ticket', $asClient, 'hasClient=true must disclose the writers');
+        $this->assertStringNotContainsString('create_ticket', $asGeneral, 'hasClient=false must not');
+        $this->assertNotSame($asClient, $asGeneral, 'the argument must change the prompt');
     }
 
     /**

@@ -211,15 +211,25 @@ PROMPT;
         // Assistant can do. Driven by the same $hasClient the tool list is, so
         // WHICH branch is taken cannot drift from the surface offered.
         //
-        // What that does NOT guarantee is the CONTENT of the read-only branch
-        // (psa-uw2o.3): it is true only while every definition set getTools()
-        // merges for the no-client case stays read-only — including
-        // TriageToolDefinitions::wikiTools(), which the triage lane owns. Adding
-        // a writer there would re-falsify this sentence, so
-        // AssistantEnabledGateTest asserts the no-client surface carries no
-        // write tool rather than trusting that it still doesn't.
+        // The CONTENT of the read-only branch is a separate guarantee, and the
+        // first attempt at it overclaimed (psa-uw2o.5): this comment asserted
+        // the test "asserts the no-client surface carries no write tool", when
+        // the test was a name-prefix regex that could not match a lane-prefixed
+        // tool at all. What actually guards it now is an ALLOWLIST —
+        // AssistantEnabledGateTest pins the exact expected tool names for this
+        // surface, so ANY addition (including a writer in
+        // TriageToolDefinitions::wikiTools(), which the triage lane owns) fails
+        // until a human updates the list deliberately. Both guards were
+        // mutation-tested against that exact wiki-writer case before this
+        // comment was written.
         if ($hasClient) {
-            $prompt .= "\n\nTwo of your tools WRITE to the PSA: create_ticket creates a real ticket, and add_ticket_note adds a real note. Both take effect immediately and are not held for anyone's approval. Use them only when the technician has asked you to — never as a side effect of investigating.";
+            // Named from AssistantToolDefinitions::WRITE_TOOLS rather than
+            // spelled out, so a writer added there cannot leave this sentence
+            // describing a surface that no longer exists (psa-uw2o.6).
+            $writers = AssistantToolDefinitions::WRITE_TOOLS;
+            $prompt .= "\n\n".count($writers).' of your tools WRITE to the PSA ('.implode(', ', $writers).
+                '). They take effect immediately and are not held for anyone\'s approval. '.
+                'Use them only when the technician has asked you to — never as a side effect of investigating.';
         } else {
             $prompt .= "\n\nYour tools are read-only: you can look things up, but you cannot change anything in the PSA.";
         }

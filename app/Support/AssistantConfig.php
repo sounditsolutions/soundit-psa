@@ -25,8 +25,14 @@ class AssistantConfig
 
         $value = Setting::getValue('assistant_enabled');
 
-        // Default to enabled if AI is configured with Anthropic
-        return $value === null || (bool) $value;
+        // psa-98dq, ruled by Charlie 2026-07-21: the Assistant DEFAULTS OFF.
+        // It previously returned enabled when the setting was ABSENT, so merely
+        // pasting an Anthropic key silently activated a write-capable staff
+        // assistant — the only AI cluster in this codebase that defaulted on,
+        // and the only one that granted writes by doing so. Every sibling
+        // (triage, technician, agent, portal chatbot, personas) ships dormant;
+        // this now matches. A present key confers no capability on its own.
+        return $value !== null && (bool) $value;
     }
 
     public static function dailyTokenLimit(): int
