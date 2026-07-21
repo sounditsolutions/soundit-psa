@@ -3189,8 +3189,14 @@
             <div class="card-header d-flex align-items-center">
                 <span>
                     <i class="bi bi-chat-dots me-2"></i>AI Assistant
-                    @if($assistantEnabled)
+                    {{-- psa-e317t: the badge reports what is actually HAPPENING, which is
+                         not the same as what the switch below says. "Switched on but
+                         cannot run" is a real state and gets its own badge rather than
+                         being flattened into either neighbour. --}}
+                    @if($assistantActive)
                         <span class="badge bg-success ms-2">Active</span>
+                    @elseif($assistantIntent)
+                        <span class="badge bg-warning text-dark ms-2">Not running</span>
                     @else
                         <span class="badge bg-secondary ms-2">Disabled</span>
                     @endif
@@ -3216,14 +3222,39 @@
                     this toggle is what stops it.
                 </div>
 
+                {{-- psa-e317t: ELIGIBILITY, reported separately from the switch below.
+                     Folding it into the checkbox is what let this card silently rewrite
+                     the operator's stored choice. --}}
+                @unless($assistantEligible)
+                    <div class="alert alert-danger small py-2" data-assistant-eligibility>
+                        <i class="bi bi-exclamation-triangle me-1"></i>
+                        <strong>This assistant cannot run with the current AI settings.</strong>
+                        @if(! \App\Support\AiConfig::isConfigured())
+                            No AI provider is configured — add an Anthropic API key in the
+                            <em>AI Provider</em> card above.
+                        @else
+                            The AI provider is set to <strong>{{ \App\Support\AiConfig::provider() }}</strong>,
+                            and this assistant's tool loop is Anthropic-only. Switch the provider to
+                            Anthropic in the <em>AI Provider</em> card above.
+                        @endif
+                        The switch below records what you want; it takes effect once this is fixed.
+                    </div>
+                @endunless
+
                 <form method="POST" action="{{ route('settings.integrations.assistant.update') }}">
                     @csrf
                     <div class="form-check form-switch mb-3">
-                        <input class="form-check-input" type="checkbox" id="assistant_enabled" name="assistant_enabled" {{ $assistantEnabled ? 'checked' : '' }}>
+                        {{-- psa-e317t: renders STORED OPERATOR INTENT, never the composite
+                             isEnabled(). Rendering the composite meant an ineligible install
+                             showed this box unticked despite the operator having switched it
+                             on — and since browsers omit unchecked boxes from the POST, simply
+                             saving this card wrote that back as '0'. --}}
+                        <input class="form-check-input" type="checkbox" id="assistant_enabled" name="assistant_enabled" {{ $assistantIntent ? 'checked' : '' }}>
                         <label class="form-check-label" for="assistant_enabled"><strong>Enable AI Assistant</strong></label>
                         <div class="form-text">
                             Unticking this refuses the assistant endpoints outright, not just the on-screen
                             chat — existing conversations stay visible on their tickets as history.
+                            This records your choice; the assistant also needs the Anthropic provider to run.
                         </div>
                     </div>
 

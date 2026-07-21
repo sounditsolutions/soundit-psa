@@ -267,8 +267,26 @@ class IntegrationsController extends Controller
             ->count();
         $tacticalWebhookFailed = TacticalWebhook::where('status', 'failed')->count();
 
-        // AI Assistant settings
-        $assistantEnabled = \App\Support\AssistantConfig::isEnabled();
+        // AI Assistant settings.
+        //
+        // psa-e317t: three DIFFERENT questions, deliberately not one flag. The card
+        // used to render its checkbox from the composite isEnabled(), which is
+        // `intent AND eligible` — so on an install with a non-Anthropic provider the
+        // box showed UNCHECKED even though the operator had switched the Assistant
+        // ON. An unchecked box is absent from a browser's POST, so saving the card to
+        // change the message cap wrote assistant_enabled='0' and silently destroyed
+        // the stored intent. Every disabled notice in the UI points the operator at
+        // this card to recover, so the recovery path was booby-trapped.
+        //
+        // Same lesson as the intake card below (psa-28j4 §3.2), arrived at from the
+        // opposite direction: intake had to render the EFFECTIVE value because its
+        // effective value inherits a legacy key. The Assistant's effective value
+        // folds in eligibility, which the checkbox does not control — so here the
+        // checkbox must render raw stored INTENT, and eligibility is reported beside
+        // it instead of being silently folded in.
+        $assistantIntent = \App\Support\AssistantConfig::operatorIntent();  // drives the checkbox
+        $assistantEligible = \App\Support\AssistantConfig::isEligible();    // drives the status text
+        $assistantActive = \App\Support\AssistantConfig::isEnabled();       // drives the badge
         $assistantMaxMessages = Setting::getValue('assistant_max_messages') ?? 50;
         $assistantDailyTokens = Setting::getValue('assistant_daily_token_limit') ?? 500000;
 
@@ -395,7 +413,7 @@ class IntegrationsController extends Controller
             't2tConfigured', 't2tApiUrl', 't2tCompanyId', 't2tCallbackUrl', 't2tUsers', 't2tSystemUserId', 't2tEnabled',
             'triageEnabled', 'triageAutoNew', 'triageAutoReview', 'triageReviewFrequency', 'triageReviewAutoClose', 'triageReviewThreshold',
             'triageDefaultAssignee', 'triageSystemUser', 'triageModel', 'triageMaxTokens', 'triageDailyTokens', 'triageBatchSize', 'triageStages',
-            'assistantEnabled', 'assistantMaxMessages', 'assistantDailyTokens',
+            'assistantIntent', 'assistantEligible', 'assistantActive', 'assistantMaxMessages', 'assistantDailyTokens',
             'intakeCallEnabled', 'intakeEmailEnabled',
             'technicianEnabled', 'technicianEmergencyEnabled', 'technicianKillSwitch', 'technicianAutoAck',
             'technicianTeamsWebhookSet', 'technicianNotifyEmail', 'technicianDigestEnabled', 'technicianDigestTime', 'technicianHeartbeatInterval',

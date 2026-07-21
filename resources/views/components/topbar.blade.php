@@ -31,20 +31,33 @@
             <i class="bi bi-robot"></i>
             <span class="d-none d-sm-inline">Ask AI</span>
         </button>
-        @elseif(\App\Support\AiConfig::isConfigured())
+        @elseif(\App\Support\AssistantConfig::shouldShowDisabledNotice())
         {{-- psa-322qo / psa-uw2o.12: the topbar is global chrome on EVERY page, so
              it is the most reachable place someone looks for the Assistant — leaving
              it simply absent is the silent disable Charlie ruled against.
 
-             Gated on an AI provider actually being configured, so a deployment that
-             never wanted an assistant sees nothing at all. A quiet disabled control
-             rather than a banner: it stays silent until someone reaches for it,
-             where a page-width banner would demand attention on every page. --}}
-        <button type="button" class="assistant-trigger opacity-50" disabled
-                title="AI Assistant is disabled — turn it on in Settings &rsaquo; Integrations">
-            <i class="bi bi-robot"></i>
-            <span class="d-none d-sm-inline">AI off</span>
-        </button>
+             The predicate and the wording both come from AssistantConfig, which is
+             the one place that knows the difference between "never wanted an
+             Assistant" (say nothing), "cannot run here" and "switched off"
+             (psa-uw2o.13 F2 — this site was right and the other two had drifted).
+
+             psa-uw2o.13 F3: this was a DISABLED <button>, whose explanation lived
+             only in a title. A disabled button is not keyboard focusable, so that
+             text was unreachable without a mouse. It is a <span> now — it was never
+             a control, and saying so costs nothing and makes the sentence readable.
+             The full sentence is in the accessibility tree rather than on screen
+             because this is global chrome on every page; the ticket sites, where
+             someone actually reaches for the Assistant, show it as visible text. --}}
+        @php
+            $assistantSummary = \App\Support\AssistantConfig::disabledSummary();
+            $assistantRecovery = \App\Support\AssistantConfig::disabledRecovery();
+        @endphp
+        <span class="assistant-status-off" data-assistant-disabled-notice="topbar"
+              title="{{ $assistantSummary }} — {{ $assistantRecovery }}">
+            <i class="bi bi-robot" aria-hidden="true"></i>
+            <span class="d-none d-sm-inline" aria-hidden="true">AI off</span>
+            <span class="visually-hidden">{{ $assistantSummary }}. {{ $assistantRecovery }}</span>
+        </span>
         @endif
 
         {{-- Softphone button (conditional) --}}
