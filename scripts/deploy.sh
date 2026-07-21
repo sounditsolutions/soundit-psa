@@ -1,6 +1,12 @@
 #!/bin/bash
 # Deploy soundit-psa to VPS
-# Usage: bash scripts/deploy.sh
+# Usage: bash scripts/deploy.sh [REVIEWED_REF]
+#
+# REVIEWED_REF (optional): the exact reviewed commit/ref to deploy (e.g. a SHA or
+# tag that is ALREADY on origin via the review/merge gate). Defaults to
+# origin/<DEPLOY_BRANCH> (origin/main). The deploy fast-forwards the VPS checkout
+# to this ref ff-only, so a diverged production checkout FAILS LOUD instead of
+# silently creating a merge commit on prod (so-e67m cutover-safety).
 #
 # Real deploy targets are read from scripts/deploy.env (gitignored). Copy
 # scripts/deploy.env.example to scripts/deploy.env and fill in your values.
@@ -25,20 +31,34 @@ set +a
 : "${DEPLOY_PATH:?not set in scripts/deploy.env}"
 : "${DEPLOY_DOMAIN:?not set in scripts/deploy.env}"
 
+DEPLOY_BRANCH="${DEPLOY_BRANCH:-main}"
+# Deploy a ref that is ALREADY on origin (landed via the review/merge gate). We do
+# NOT push local state from here — the deploy target is origin's reviewed ref, never
+# whatever happens to be checked out on the deploying box. so-e67m: this replaces the
+# old 'git push' (unpinned local branch) + VPS 'git pull' (unconditional non-ff merge).
+REVIEWED_REF="${1:-origin/$DEPLOY_BRANCH}"
+
 echo "=== Deploying to $DEPLOY_HOST ==="
+echo "Target ref: $REVIEWED_REF (must already be on origin — land code via the review gate, not this script)"
 
-# Push current branch
-echo "Pushing to GitHub..."
-git push
-
-# Deploy on VPS (deploy path passed as $1 into the remote shell)
+# Deploy on VPS (deploy path + reviewed ref passed as $1/$2 into the remote shell)
 echo "Deploying on VPS..."
-ssh "$DEPLOY_HOST" bash -s "$DEPLOY_PATH" << 'REMOTE'
+ssh "$DEPLOY_HOST" bash -s "$DEPLOY_PATH" "$REVIEWED_REF" << 'REMOTE'
 set -eo pipefail
 cd "$1"
+TARGET="$2"
 
-echo "  Pulling latest..."
-git pull
+echo "  Fetching origin..."
+git fetch --prune origin
+
+echo "  Fast-forwarding to $TARGET (ff-only — a diverged prod checkout FAILS LOUD, no silent merge)..."
+if ! git merge --ff-only "$TARGET"; then
+  echo "  ERROR: cannot fast-forward the production checkout to $TARGET." >&2
+  echo "  The prod checkout has DIVERGED from origin (local commits, or a non-ancestor ref)." >&2
+  echo "  Refusing to merge/rewrite history on production. Inspect 'git status' / 'git log --oneline -5'" >&2
+  echo "  and reconcile manually — do NOT --force. (so-e67m cutover-safety guard.)" >&2
+  exit 1
+fi
 
 echo "  Installing dependencies..."
 composer install --no-dev --optimize-autoloader --quiet
