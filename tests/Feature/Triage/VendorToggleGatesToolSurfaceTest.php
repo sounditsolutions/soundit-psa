@@ -454,9 +454,9 @@ class VendorToggleGatesToolSurfaceTest extends TestCase
     }
 
     /**
-     * The mirror. Switched ON, the dynamic catalog must still publish — otherwise the fix
-     * has silently removed the entire synced CIPP surface, which is a far larger regression
-     * than the hole it closes.
+     * The mirror. Switched ON (integration AND relay), the dynamic catalog must still
+     * publish — otherwise the fix has silently removed the entire synced CIPP surface,
+     * which is a far larger regression than the hole it closes.
      */
     public function test_the_dynamic_catalog_still_publishes_when_cipp_is_switched_on(): void
     {
@@ -471,6 +471,69 @@ class VendorToggleGatesToolSurfaceTest extends TestCase
             'cipp_list_db_cache',
             McpToolSurface::liveToolNames(),
             'CIPP is switched ON and configured, but the dynamic catalog row is not live — over-block'
+        );
+    }
+
+    /**
+     * FOUND IN RE-REVIEW (psa-wzjzz.6 architecture, PR #296 @ bce8066), proven by an
+     * execution probe. The first cut of the CIPP fix closed the cipp_enabled='0' bypass but
+     * left a NEW publish-vs-dispatch split one notch over.
+     *
+     * The dynamic catalog EXECUTES through CippMcpDynamicToolExecutor, which gates on
+     * CippConfig::isMcpRelayEnabled() — that is isEnabled() AND cipp_mcp_enabled='1' AND
+     * isMcpConfigured(). But publication was gated on isEnabled() ALONE. So in the state
+     * cipp_enabled='1', cipp_mcp_enabled='0' the tool was advertised as LIVE and then
+     * refused at execution as "CIPP MCP relay is not enabled or configured" — the exact
+     * publish-vs-dispatch divergence this whole bead family exists to eliminate, and it made
+     * the unavailable_config copy wrong (the tool showed as available, not as needing config).
+     *
+     * The fix is one predicate for both: publication is gated on the SAME isMcpRelayEnabled()
+     * the executor uses, so the two cannot disagree by construction. This test pins the split
+     * the earlier two dynamic-CIPP tests missed because both always enabled the relay first.
+     */
+    public function test_the_dynamic_catalog_matches_the_executor_gate_not_a_weaker_one(): void
+    {
+        $this->configureAllVendorCredentials();
+        $this->configureCippMcpRelay();
+        $this->createDynamicCippRow();
+
+        // Integration ON, but the MCP relay sub-switch OFF: the executor would refuse, so
+        // publication must too. Precisely the reviewer's probe state.
+        Setting::setValue('cipp_enabled', '1');
+        Setting::setValue('cipp_mcp_enabled', '0');
+        McpToolRegistry::flushMemoized();
+
+        $this->assertFalse(
+            \App\Support\CippConfig::isMcpRelayEnabled(),
+            'precondition: with cipp_mcp_enabled=0 the executor gate must be closed, or this asserts nothing'
+        );
+
+        $this->assertNotContains(
+            'cipp_list_db_cache',
+            McpToolSurface::liveToolNames(),
+            'the dynamic CIPP tool is published as live while cipp_mcp_enabled=0, but the executor '
+            .'refuses it — publication and dispatch disagree. Gate publication on isMcpRelayEnabled(), '
+            .'the same predicate the executor uses.'
+        );
+
+        $token = McpConfig::rotateStaffToken(allowedTools: ['cipp_list_db_cache'], label: 'chet');
+
+        $listed = array_column(
+            $this->withHeaders(['Authorization' => 'Bearer '.$token])
+                ->postJson('/api/mcp/staff', [
+                    'jsonrpc' => '2.0',
+                    'id' => 1,
+                    'method' => 'tools/list',
+                    'params' => [],
+                ])->json('result.tools') ?? [],
+            'name'
+        );
+
+        $this->assertNotContains(
+            'cipp_list_db_cache',
+            $listed,
+            'tools/list advertised a dynamic CIPP tool the executor will refuse — the same tool '
+            .'that would then read as unavailable_config only AFTER the model tried to call it'
         );
     }
 }

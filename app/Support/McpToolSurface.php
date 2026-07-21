@@ -99,22 +99,35 @@ class McpToolSurface
      */
     public static function liveClientScopedToolDefinitions(): array
     {
-        // CIPP publishes on TWO paths and both must honour the master switch (psa-wzjzz).
-        // The dynamic catalog rows were merged unconditionally here, one line above a
-        // sibling that was already gated, so cipp_enabled='0' left synced CIPP tools
-        // published and callable. Gating is applied at this publication site rather than
-        // inside dynamicCippRead/WriteTools() on purpose: those same helpers also feed
-        // McpToolRegistry::groups(), which is the GRANT CATALOG and is deliberately
-        // ungated so tools can be pre-granted before an integration is switched on.
-        // Gating the helper would break that by conflating "grantable" with "live".
-        $cippLive = CippConfig::isEnabled() && CippConfig::isConfigured();
+        // CIPP publishes on TWO paths, and each must be gated on the SAME predicate its
+        // executor uses — publish and dispatch answering one question, not two (psa-wzjzz).
+        //
+        //   - Static curated writes (cippWriteTools) execute against the CIPP REST API
+        //     (CippClient), whose liveness is isEnabled() && isConfigured().
+        //   - The DYNAMIC catalog (dynamicCippRead/WriteTools) executes through
+        //     CippMcpDynamicToolExecutor, which refuses on !isMcpRelayEnabled()
+        //     (= isEnabled() && cipp_mcp_enabled && isMcpConfigured()) — a DIFFERENT
+        //     subsystem with its own sub-switch and credentials.
+        //
+        // The first cut of this fix gated the dynamic rows on isEnabled() alone. That closed
+        // the cipp_enabled='0' bypass but left a new split: with the integration on and the
+        // relay sub-switch off, the tool published as live and then refused at execution.
+        // Gating each path on its own executor's predicate removes the divergence by
+        // construction — there is no state where one says live and the other refuses.
+        //
+        // Gating happens at THIS publication site, not inside the dynamicCipp* helpers,
+        // because those also feed McpToolRegistry::groups() — the GRANT CATALOG, deliberately
+        // ungated so a tool can be pre-granted before its integration is switched on. Gating
+        // the helper would conflate "grantable" with "live".
+        $cippRestLive = CippConfig::isEnabled() && CippConfig::isConfigured();
+        $cippMcpLive = CippConfig::isMcpRelayEnabled();
 
         return array_merge(
             AssistantToolDefinitions::getTools(hasClient: true),
             ChetDataSurfaceTools::clientTools(),
-            CippConfig::isEnabled() ? McpToolRegistry::dynamicCippReadTools() : [],
-            CippConfig::isEnabled() ? McpToolRegistry::dynamicCippWriteTools() : [],
-            $cippLive ? McpToolRegistry::cippWriteTools() : [],
+            $cippMcpLive ? McpToolRegistry::dynamicCippReadTools() : [],
+            $cippMcpLive ? McpToolRegistry::dynamicCippWriteTools() : [],
+            $cippRestLive ? McpToolRegistry::cippWriteTools() : [],
             TacticalConfig::isConfigured() ? McpToolRegistry::tacticalActionTools() : [],
         );
     }
