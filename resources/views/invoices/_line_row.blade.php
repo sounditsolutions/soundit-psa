@@ -12,7 +12,10 @@
                         data-price="{{ $s->unit_price }}"
                         data-cost="{{ $s->unit_cost }}"
                         data-taxable="{{ $s->is_taxable ? '1' : '0' }}"
-                        data-description="{{ e($s->name) }}"
+                        {{-- Single escape only: {{ }} already runs htmlspecialchars, so the
+                             extra e() encoded it TWICE and onSkuSelected copied the still-encoded
+                             text into the description input, which was then saved to the line. --}}
+                        data-description="{{ $s->name }}"
                         {{ old("lines.{$i}.sku_id", $line->sku_id) == $s->id ? 'selected' : '' }}>{{ $s->sku_code }} &mdash; {{ $s->name }}</option>
                 @endforeach
             </select>

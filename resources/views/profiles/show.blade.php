@@ -525,7 +525,7 @@
 @php
     // Option lists for the client-side "Add Line" builder. Every label here is
     // operator-entered, so it is shipped as data and rendered with textContent —
-    // see profiles/_line_options_js for why (psa-951q).
+    // see partials/_select_options_js for why (psa-951q).
     $skuOptionData = $skus->map(fn ($s) => [
         'value' => (string) $s->id,
         'label' => $s->sku_code.' — '.$s->name,
@@ -551,7 +551,7 @@
     ])->values();
 @endphp
 
-@include('profiles._line_options_js')
+@include('partials._select_options_js')
 
 <script>
 let lineIndex = {{ $profile->lines->count() }};
@@ -559,12 +559,16 @@ let lineIndex = {{ $profile->lines->count() }};
 // psa-951q: option lists are inert DATA, never JavaScript source. These labels
 // are operator-entered, and a backtick template literal is a JavaScript string
 // context that Blade's HTML escaping does not cover. See
-// profiles/_line_options_js for the full story.
+// partials/_select_options_js for the full story.
 //
-// Shaped in the PHP block above rather than inline, because Blade's json
-// directive splits its expression on commas (CompilesJson::compileJson) and
-// mangles a multi-element array literal into invalid PHP. A plain variable is
-// safe.
+// The json directive below is given a BARE VARIABLE, shaped in the PHP block
+// above. It must never be given an inline expression containing a comma: the
+// directive explode()s its argument on ',' (CompilesJson::compileJson), so a
+// re-inlined two-element ['value' => .., 'label' => ..] map — one comma —
+// compiles to json_encode($x, 512) instead of json_encode($x, 15, 512). That is
+// VALID PHP which renders fine and passes tests, with JSON_HEX_TAG silently
+// dropped and < / > left raw. Only 3+ commas fail loudly, so re-inlining this
+// would NOT announce itself. See partials/_select_options_js and psa-28hr.
 const SKU_OPTIONS = @json($skuOptionData);
 const QUANTITY_TYPE_OPTIONS = @json($quantityTypeOptionData);
 const LICENSE_TYPE_OPTIONS = @json($licenseTypeOptionData);
