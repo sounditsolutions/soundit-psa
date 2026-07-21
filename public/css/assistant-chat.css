@@ -415,33 +415,14 @@
     color: #fff;
 }
 
-/* ── Topbar "Assistant is off" indicator (psa-uw2o.13 F3) ──
-   NOT a control: no hover, no pointer, no focus ring. It reads as a quiet
-   status chip so it cannot be mistaken for a dead button (psa-uw2o.4).
+/* psa-uw2o.20: `.assistant-status-off` used to live here, directly below its
+   sibling .assistant-trigger — and no page has ever linked THIS FILE, so the
+   chip rendered unstyled and the WCAG AA colours it carried never reached a
+   browser. It now sits in sidebar.css beside .psa-topbar, which the layout
+   loads unconditionally for authenticated users.
 
-   It used to be .assistant-trigger + Bootstrap's .opacity-50, which measured
-   3.08:1 against the chip and 3.60:1 against the navy topbar at 0.8rem — below
-   the 4.5:1 WCAG AA needs for normal text. Global opacity is the mechanism:
-   it fades the text and its backdrop TOGETHER, so no colour underneath can
-   rescue it. These colours are opaque-over-known-backdrop instead, measuring
-   6.45:1 against the chip and 8.18:1 against the topbar.
-
-   AssistantDisabledNoticeSitesTest parses these two declarations and recomputes
-   the ratio, so a restyle that dips below AA fails the suite rather than
-   shipping. Keep them literal and parseable. */
-.assistant-status-off {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    background: rgba(255, 255, 255, 0.08);
-    border: 1px solid rgba(255, 255, 255, 0.25);
-    border-radius: 6px;
-    color: #cbd5e1;
-    padding: 4px 10px;
-    font-size: 0.8rem;
-    font-family: 'Inter', sans-serif;
-    cursor: default;
-}
+   NOTE for whoever touches .assistant-trigger above: it has the same problem,
+   and it is not fixed. This whole stylesheet is unreferenced. */
 
 /* ── Responsive ── */
 @media (max-width: 767.98px) {

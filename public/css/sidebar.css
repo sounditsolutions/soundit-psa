@@ -203,6 +203,60 @@
     box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
 }
 
+/* ── Topbar "Assistant is off" indicator (psa-uw2o.13 F3, psa-uw2o.20) ──
+   NOT a control: no hover, no pointer, no focus ring. It reads as a quiet
+   status chip so it cannot be mistaken for a dead button (psa-uw2o.4).
+
+   It used to be .assistant-trigger + Bootstrap's .opacity-50, which measured
+   3.08:1 against the chip and 3.60:1 against the navy topbar at 0.8rem — below
+   the 4.5:1 WCAG AA needs for normal text. Global opacity is the mechanism:
+   it fades the text and its backdrop TOGETHER, so no colour underneath can
+   rescue it. These colours are opaque-over-known-backdrop instead, measuring
+   6.45:1 against the chip and 8.18:1 against the topbar.
+
+   psa-uw2o.20: this rule lived in assistant-chat.css, which NOTHING LINKS, so
+   the chip was unstyled and the contrast fix above existed only in the
+   repository. It lives here now because sidebar.css owns .psa-topbar and the
+   layout loads it unconditionally for authenticated users. The contrast guard
+   in AssistantDisabledNoticeSitesTest no longer reads a file by name — it
+   sources this rule from the rendered page's own <link> tags and recomputes
+   the ratio, so both a restyle below AA and a move back into an unserved
+   stylesheet fail the suite rather than shipping. Keep the colours literal
+   and parseable.
+
+   nowrap + no shrink because the chip now carries the load-bearing text: in a
+   fixed 56px flex row it must not wrap to two lines or be squeezed. The page
+   title beside it is .text-truncate and yields first, which is the right
+   priority — a truncated title is a nuisance, an unreadable notice is the bug
+   this fixes. */
+.assistant-status-off {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    border-radius: 6px;
+    color: #cbd5e1;
+    padding: 4px 10px;
+    font-size: 0.8rem;
+    font-family: 'Inter', sans-serif;
+    cursor: default;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+/* The gear + "Settings" pointer. A hairline divider and the chip's own colour,
+   so it reads as the second half of a status sentence rather than as a button —
+   no fill, no radius, no underline, nothing that offers a click the span cannot
+   honour. It names where the fix lives; it does not pretend to take you there. */
+.assistant-status-path {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding-left: 6px;
+    border-left: 1px solid rgba(255, 255, 255, 0.25);
+}
+
 .psa-topbar .dropdown-menu {
     border: 1px solid #e5e7eb;
     border-radius: 8px;
