@@ -7,8 +7,9 @@ use App\Enums\QuantityType;
 /**
  * Assertions for the two halves of psa-951q's option-list fix:
  *
- *   1. operator-entered text reaches the page as inert DATA, not as JavaScript
- *      source (assertLabelIsInertJsData and the lexer under it), and
+ *   1. untrusted label text (vendor-sync-reachable, not merely typed by staff)
+ *      reaches the page as inert DATA, not as JavaScript source
+ *      (assertLabelIsInertJsData and the lexer under it), and
  *   2. that data is actually BUILT INTO A DROPDOWN once it gets there
  *      (assertOptionBuilderReachesThePage, assertPlaceholderFloorInAddLineMarkup,
  *      assertQuantityTypeFloorInAddLineMarkup).
@@ -105,7 +106,7 @@ trait AssertsInertJsData
             // way it must fail loudly rather than silently mis-classify.
             $this->assertTrue(
                 $lexedCleanly,
-                "{$screen}: a <script> block carrying operator data did not lex to a balanced JS source — ".
+                "{$screen}: a <script> block carrying untrusted label data did not lex to a balanced JS source — ".
                 'a label almost certainly closed a string literal early.'
             );
 
@@ -116,7 +117,7 @@ trait AssertsInertJsData
                 $this->assertSame(
                     ['d'],
                     array_values($contexts),
-                    "{$screen}: operator-entered label reached JS context '".implode('', $contexts)."' ".
+                    "{$screen}: untrusted label reached JS context '".implode('', $contexts)."' ".
                     "(expected 'd' = inert double-quoted JSON string). ".
                     'Context legend: c=code, t=template literal, s/d=quoted string, r=regex, #=comment. '.
                     'Near: '.var_export(substr($js, max(0, $at - 90), 200), true)
@@ -138,7 +139,7 @@ trait AssertsInertJsData
                     $this->assertStringNotContainsString(
                         $raw,
                         $run,
-                        "{$screen}: a JSON data island carrying operator text contains a RAW '{$raw}' where ".
+                        "{$screen}: a JSON data island carrying untrusted text contains a RAW '{$raw}' where ".
                         "'{$escaped}' was expected. The json directive's encoding flags have been dropped — ".
                         'it was almost certainly given an inline expression containing a comma. Pass it a bare '.
                         'variable shaped in an @php block instead (see psa-28hr). Run: '.var_export($run, true)
@@ -153,7 +154,7 @@ trait AssertsInertJsData
                 $this->assertContains(
                     $decoded,
                     $expected,
-                    "{$screen}: a JSON string carrying operator text decoded to something unexpected — ".
+                    "{$screen}: a JSON string carrying untrusted text decoded to something unexpected — ".
                     'the encoding is safe but lossy.'
                 );
             }
@@ -166,7 +167,7 @@ trait AssertsInertJsData
             'Either the option lists moved out of JS, or the fixture did not render.'
         );
 
-        // Every field that should carry the operator text must actually carry it,
+        // Every field that should carry the label text must actually carry it,
         // byte for byte — a fix that quietly dropped the description data
         // attribute would otherwise pass everything above.
         foreach ($expected as $want) {
@@ -247,8 +248,8 @@ trait AssertsInertJsData
 
     /**
      * Placeholders ('-- Manual --', 'Select...', '(none — use 1)') are DEVELOPER
-     * CONSTANTS, not operator text, so they carry no XSS exposure and belong in
-     * the static server markup where they survive a JS failure.
+     * CONSTANTS, not untrusted label text, so they carry no XSS exposure and
+     * belong in the static server markup where they survive a JS failure.
      *
      * fillSelectOptions() calls replaceChildren() and re-adds the placeholder, so
      * the success path is byte-identical — but if the helper never arrives, or
@@ -302,8 +303,8 @@ trait AssertsInertJsData
      *
      * fillSelectOptions() replaceChildren()s the floor away and rebuilds the
      * same list from the QUANTITY_TYPE_OPTIONS island, so the success path is
-     * byte-identical. Only the operator-entered lists (SKUs, license types)
-     * must stay data-island-only.
+     * byte-identical. Only the untrusted lists (SKUs, license types —
+     * vendor-sync-reachable) must stay data-island-only.
      *
      * Asserted in template-literal context ('t') for the same reason as the
      * placeholder floor: that is what proves the options sit in the addLine()

@@ -289,9 +289,11 @@
 @push('scripts')
 
 @php
-    // Option lists for the client-side "Add Line" builder. Every label here is
-    // operator-entered, so it is shipped as data and rendered with textContent —
-    // see partials/_select_options_js for why (psa-951q).
+    // Option lists for the client-side "Add Line" builder. The SKU and
+    // license-type labels are vendor-sync-reachable (QBO/Stripe item names,
+    // Mesh/CIPP/AppRiver/Comet license names — written unattended, past the
+    // staff forms' validation), so the lists are shipped as data and rendered
+    // with textContent — see partials/_select_options_js for why (psa-951q).
     $skuOptionData = $skus->map(fn ($s) => [
         'value' => (string) $s->id,
         'label' => $s->sku_code.' — '.$s->name,
@@ -324,9 +326,10 @@
 let lineIndex = 1;
 
 // psa-951q: option lists are inert DATA, never JavaScript source. These labels
-// are operator-entered, and a backtick template literal is a JavaScript string
-// context that Blade's HTML escaping does not cover. See
-// partials/_select_options_js for the full story.
+// are vendor-sync-reachable, not merely operator-entered, and a backtick
+// template literal is a JavaScript string context that Blade's HTML escaping
+// does not cover. See partials/_select_options_js for the full story and the
+// exact write paths.
 //
 // The json directive below is given a BARE VARIABLE, shaped in the PHP block
 // above. It must never be given an inline expression containing a comma: the
@@ -465,8 +468,8 @@ function addLine() {
     container.insertAdjacentHTML('beforeend', html);
 
     // The markup above is static, developer-authored HTML. The options are the
-    // operator-entered part, so they are built from data instead — never spliced
-    // into a string that JavaScript then has to parse.
+    // untrusted, vendor-sync-reachable part, so they are built from data instead
+    // — never spliced into a string that JavaScript then has to parse.
     //
     // Each placeholder below is ALSO in the static markup above, and the
     // quantity-type select carries its FULL enum list there: both are developer
@@ -475,7 +478,8 @@ function addLine() {
     // quantity-type control still usable — rather than blank ones (psa-951q.4).
     // fillSelectOptions replaceChildren()s them away and re-adds them from the
     // islands, so the success path is unchanged. Keep the two spellings
-    // identical. Only the operator-entered labels must stay in data.
+    // identical. Only the untrusted SKU and license-type labels must stay in
+    // data.
     const line = container.lastElementChild;
     fillSelectOptions(line.querySelector('.sku-select'), SKU_OPTIONS, '-- Manual --');
     fillSelectOptions(line.querySelector('.qty-type-select'), QUANTITY_TYPE_OPTIONS, null);

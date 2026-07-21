@@ -25,8 +25,9 @@ use Tests\TestCase;
  *
  * Blade's {{ }} escapes for HTML, and htmlspecialchars() does not touch a
  * backtick, a dollar sign or a brace — all three of which are syntax inside a
- * backtick literal. So an operator-entered SKU name carrying a backtick CLOSED
- * the literal and one carrying ${...} was EVALUATED as the string was built, in
+ * backtick literal. So a persisted SKU name — staff-entered, or written
+ * unattended by the QBO/Stripe product sync — carrying a backtick CLOSED the
+ * literal and one carrying ${...} was EVALUATED as the string was built, in
  * the staff browser, on "Add Line".
  *
  * The assertions live in Tests\Support\AssertsInertJsData, shared with
@@ -222,7 +223,10 @@ class InvoiceLineOptionsJsContextTest extends TestCase
 
     // ----------------------------------------------------------------- fixtures
 
-    /** A SKU whose operator-entered name is hostile. */
+    /**
+     * A SKU whose stored name is hostile — created straight in the DB, exactly
+     * as a vendor sync would write it (no staff-form validation in the path).
+     */
     private function sku(string $name): Sku
     {
         return Sku::create([

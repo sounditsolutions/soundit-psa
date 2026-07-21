@@ -4,8 +4,9 @@
 
 @php
     // Option list for the client-side "Add Line" builder. A SKU name is
-    // operator-entered, so it is shipped as data and rendered with textContent —
-    // see partials/_select_options_js for why (psa-951q).
+    // vendor-sync-reachable (QBO/Stripe item names land in it unattended, past
+    // the staff forms' validation), so it is shipped as data and rendered with
+    // textContent — see partials/_select_options_js for why (psa-951q).
     //
     // The four data keys are the dataset property names onSkuSelected() reads
     // back below (opt.dataset.price / .cost / .taxable / .description); each is a
@@ -30,10 +31,11 @@
 let lineIndex = {{ $lineIndex }};
 
 // psa-951q: this option list is inert DATA, never JavaScript source. SKU names
-// are operator-entered, and the backtick template literal below is a JavaScript
-// string context that Blade's HTML escaping does not cover — a name containing
-// a backtick closed the literal, and one containing ${...} was evaluated in the
-// staff browser. See partials/_select_options_js for the full story.
+// are vendor-sync-reachable, not merely operator-entered, and the backtick
+// template literal below is a JavaScript string context that Blade's HTML
+// escaping does not cover — a name containing a backtick closed the literal,
+// and one containing ${...} was evaluated in the staff browser. See
+// partials/_select_options_js for the full story and the exact write paths.
 //
 // The json directive below is given a BARE VARIABLE, shaped in the PHP block
 // above. It must never be given an inline expression containing a comma: the
@@ -106,15 +108,15 @@ function addLine() {
     const newItem = container.lastElementChild;
 
     // The markup above is static, developer-authored HTML. The options are the
-    // operator-entered part, so they are built from data instead — never spliced
-    // into a string that JavaScript then has to parse.
+    // untrusted, vendor-sync-reachable part, so they are built from data instead
+    // — never spliced into a string that JavaScript then has to parse.
     //
     // The '-- Manual --' placeholder is ALSO in the static markup above. It is a
     // developer constant with no XSS exposure, so it costs nothing to ship it
     // server-side, and it means a JS failure here degrades the row to a LABELLED
     // empty select rather than a blank one. fillSelectOptions replaceChildren()s
     // it away and re-adds it, so the success path is unchanged. Keep the two
-    // spellings identical. Only the operator-entered labels must stay in data.
+    // spellings identical. Only the untrusted SKU labels must stay in data.
     fillSelectOptions(newItem.querySelector('.sku-select'), SKU_OPTIONS, '-- Manual --');
 
     const descInput = newItem.querySelector('.desc-input');

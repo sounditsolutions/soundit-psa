@@ -10,10 +10,24 @@
 
     A Blade echo escapes for HTML, but a backtick-delimited literal is ALSO a
     JavaScript string context, and htmlspecialchars() does not touch a backtick,
-    a dollar sign or a brace. So a SKU or license-type name — operator-entered,
-    hence staff-to-staff — that carried a backtick CLOSED the literal, and one
-    that carried a dollar-brace substitution was EVALUATED as the string was
-    built, in the staff browser, on "Add Line".
+    a dollar sign or a brace. So a SKU or license-type name that carried a
+    backtick CLOSED the literal, and one that carried a dollar-brace
+    substitution was EVALUATED as the string was built, in the staff browser,
+    on "Add Line".
+
+    Trust boundary (corrected in review, psa-951q.1): these labels are NOT
+    merely operator-entered, and the exposure is NOT just staff-to-staff. Staff
+    forms do write them, but vendor syncs write them too — unattended, and
+    bypassing the staff controllers' validation. QBO and Stripe product/item
+    names land in Sku::name and the derived sku_code (QboSyncService,
+    StripeSyncService); Mesh service_name, CIPP license display names, AppRiver
+    ProductName and Comet's unknown-engine fallback all land in
+    LicenseType::name (their license sync services). So the realistic hostile
+    label is REMOTELY AUTHORED — planted in a connected vendor account or
+    tenant and synced in with no staff action. Not anonymous-reachable, but a
+    trusted-integration-channel input rendered in the staff browser. Scope any
+    sibling sink accordingly: "only staff can write this field" is false for
+    these fields, and must not be assumed for their neighbours.
 
     The fix is to stop shipping server data as JS SOURCE at all. Each view emits
     its option lists as inert JSON data islands (the pattern profiles/index and
@@ -90,7 +104,8 @@ function fillSelectOptions(select, options, placeholder) {
     (options || []).forEach(function (item) {
         const opt = document.createElement('option');
         opt.value = item.value;
-        // textContent, never innerHTML — this label is operator-entered.
+        // textContent, never innerHTML — this label is untrusted
+        // (vendor-sync-reachable, see the trust boundary note above).
         opt.textContent = item.label;
         Object.entries(item.data || {}).forEach(function (entry) {
             opt.dataset[entry[0]] = entry[1];

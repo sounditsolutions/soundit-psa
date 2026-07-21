@@ -25,8 +25,13 @@ use Tests\TestCase;
  * SKU name carrying a backtick CLOSES the literal, and one carrying ${...} is
  * EVALUATED the moment the string is constructed — in the staff browser.
  *
- * SKU and license-type labels are operator-entered (staff create SKUs), so this
- * is staff-to-staff stored XSS: real, but not anonymous-user-reachable.
+ * SKU and license-type labels are NOT merely operator-entered: vendor syncs
+ * also write both unattended, bypassing the staff forms' validation — QBO and
+ * Stripe item names land in Sku::name and the derived sku_code; Mesh, CIPP,
+ * AppRiver and Comet write LicenseType::name. So this is stored XSS from a
+ * trusted-integration channel into the staff browser: wider than
+ * staff-to-staff — a hostile label can arrive from a connected vendor account
+ * with no staff action at all — though still not anonymous-user-reachable.
  *
  * These tests assert the JAVASCRIPT-context layer specifically. Asserting that
  * the labels are HTML-escaped is NOT sufficient — that already held while the
@@ -95,9 +100,9 @@ class ProfileLineOptionsJsContextTest extends TestCase
      * This test pins the island half: every enum case must still arrive as
      * inert JSON data decoding byte-for-byte to the enum's own value/label
      * pair, so the success-path dropdown and the static floor cannot drift
-     * apart. The wiring tests below pin the markup half. Operator-entered
-     * lists get no such split — they stay data-island-only, and the
-     * hostile-label tests above hold them there.
+     * apart. The wiring tests below pin the markup half. The untrusted lists
+     * (SKUs, license types) get no such split — they stay data-island-only,
+     * and the hostile-label tests above hold them there.
      */
     public function test_quantity_type_options_are_inert_js_data_too(): void
     {
@@ -323,7 +328,10 @@ class ProfileLineOptionsJsContextTest extends TestCase
         ]);
     }
 
-    /** A SKU whose operator-entered name is hostile. */
+    /**
+     * A SKU whose stored name is hostile — created straight in the DB, exactly
+     * as a vendor sync would write it (no staff-form validation in the path).
+     */
     private function sku(string $name): Sku
     {
         return Sku::create([
@@ -337,7 +345,10 @@ class ProfileLineOptionsJsContextTest extends TestCase
         ]);
     }
 
-    /** A license type whose operator-entered name is hostile. */
+    /**
+     * A license type whose stored name is hostile — created straight in the DB,
+     * exactly as a vendor sync would write it (no staff-form validation).
+     */
     private function licenseType(string $name): LicenseType
     {
         return LicenseType::create([

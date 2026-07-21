@@ -550,10 +550,10 @@ class TieredPricingOverrideTest extends TestCase
      *     fillSelectOptions stamps onto lines added client-side by "Add Line".
      *
      * psa-951q moved the second one: it used to be option markup spliced into a
-     * JavaScript template literal, where an operator-entered SKU name could break
-     * out of the string. It is now inert JSON, but it must still carry the marker
-     * — a dynamically added line whose SKU is silently unmarked is exactly the
-     * invisible-to-the-operator override the product lane rejected.
+     * JavaScript template literal, where a hostile persisted SKU name could
+     * break out of the string. It is now inert JSON, but it must still carry the
+     * marker — a dynamically added line whose SKU is silently unmarked is
+     * exactly the invisible-to-the-operator override the product lane rejected.
      */
     public function test_profile_forms_mark_volume_card_skus_for_the_inline_method_note(): void
     {
