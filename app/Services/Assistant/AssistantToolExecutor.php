@@ -37,6 +37,33 @@ use Illuminate\Support\Facades\Log;
  */
 class AssistantToolExecutor
 {
+    /**
+     * Every tool THIS EXECUTOR can dispatch that MUTATES state.
+     *
+     * psa-uw2o.10: this is a strictly larger set than
+     * AssistantToolDefinitions::WRITE_TOOLS, and the difference was live. That
+     * constant describes the writers that FILE DEFINES; the executor also
+     * dispatches wiki_add_fact / wiki_create_page / wiki_update_page (no
+     * definition set offers them, but dispatch is BY NAME) and propose_close.
+     *
+     * TeamsReadOnlyToolset guards a surface called ReadOnly and was filtering on
+     * the DEFINITIONS constant — the wrong layer. A reviewer drove
+     * wiki_create_page through that executor and persisted a real WikiPage row.
+     * Guards belong at the layer they defend, so anything filtering this
+     * executor must source from HERE.
+     *
+     * Adding a mutating dispatch arm without listing it here fails
+     * TeamsReadOnlyWriteGuardTest.
+     */
+    public const WRITE_TOOLS = [
+        'create_ticket',
+        'add_ticket_note',
+        'propose_close',
+        'wiki_add_fact',
+        'wiki_create_page',
+        'wiki_update_page',
+    ];
+
     use HandlesCippTools;
     use HandlesWikiTools;
 

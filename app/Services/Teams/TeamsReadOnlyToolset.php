@@ -14,14 +14,20 @@ class TeamsReadOnlyToolset
 {
     /** Tools that Teams staff chat must never expose or execute. */
     /**
-     * psa-uw2o.6: the assistant writers are DERIVED from their own definition
-     * file rather than re-listed here. This class strips writers for a bot
-     * named ReadOnly, so a writer added to AssistantToolDefinitions and not
-     * mirrored here would have leaked straight through it. propose_close is
-     * appended because it is mutating in this lane but is not an assistant
-     * tool, so it has no home in that constant.
+     * Derived from the EXECUTOR's write set, not the definitions'.
+     *
+     * psa-uw2o.6 first replaced a hardcoded list here with a derivation from
+     * AssistantToolDefinitions::WRITE_TOOLS. psa-uw2o.10 showed that was the
+     * WRONG LAYER and the gap was live: this class strips writers for a bot
+     * named ReadOnly, but it guards AssistantToolExecutor, which dispatches
+     * three wiki writers no definition set offers — dispatch is by NAME, so an
+     * unadvertised tool is still reachable. A reviewer drove wiki_create_page
+     * through this surface and persisted a real WikiPage row.
+     *
+     * Guard at the layer you defend: this now sources from
+     * AssistantToolExecutor::WRITE_TOOLS, which is what actually executes.
      */
-    public const MUTATING = [...AssistantToolDefinitions::WRITE_TOOLS, 'propose_close'];
+    public const MUTATING = AssistantToolExecutor::WRITE_TOOLS;
 
     /** What the executor returns if a mutating tool is somehow requested. */
     private const REFUSAL = ['error' => 'That tool is not available in chat (read-only).'];
