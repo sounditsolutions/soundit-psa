@@ -3,6 +3,7 @@
 namespace Tests\Feature\Profiles;
 
 use App\Enums\QuantityType;
+use App\Models\BackupStorageTier;
 use App\Models\Client;
 use App\Models\Contract;
 use App\Models\LicenseType;
@@ -143,6 +144,130 @@ class ProfileLineOptionsJsContextTest extends TestCase
         $this->assertAddLineUsesACapturedIndex($html, 'profiles.show');
     }
 
+    /**
+     * The profile option data does not merely price a line — it CONFIGURES one,
+     * and that makes a key drift here worse than on the invoice side.
+     *
+     * onSkuSelected copies opt.dataset.defaultQuantityType into the quantity-type
+     * select. If that key stops arriving, the select silently stays on "Fixed":
+     * the operator picks a per-workstation SKU, sees a plausible-looking line, and
+     * the client is billed 1 unit per cycle instead of N — every cycle, forever,
+     * with nothing failing anywhere. Silent, permanent, client-facing mis-billing.
+     *
+     * These keys are camelCase PHP array keys joined to their kebab data-*
+     * attribute by an invisible DOM rule (fillSelectOptions writes
+     * opt.dataset[key]; onSkuSelected reads opt.dataset.<key>). They used to be
+     * copy-pasted attribute text visible on both sides. The refactor RAISED the
+     * drift risk here, so each key is pinned against the consumer that reads it —
+     * mirroring the invoice-side pin, which this branch shipped while leaving the
+     * profile screens, with more keys and a riskier one, entirely unguarded.
+     */
+    public function test_profile_create_sku_option_data_carries_every_key_its_consumers_read(): void
+    {
+        $contract = $this->contract();
+        $licenseType = $this->licenseType('Backup Seats');
+        $sku = $this->configuredSku($licenseType);
+
+        $this->actingAs(User::factory()->create());
+        $html = $this->get(route('profiles.create', $contract))->assertOk()->getContent();
+
+        $option = $this->optionFromIsland($html, 'SKU_OPTIONS', (string) $sku->id, 'profiles.create');
+
+        // profiles/create is the only profile screen that emits 'cost'.
+        $this->assertProfileSkuOptionData($option['data'] ?? [], 'profiles.create', $licenseType, withCost: true);
+    }
+
+    /** @see test_profile_create_sku_option_data_carries_every_key_its_consumers_read */
+    public function test_profile_show_sku_option_data_carries_every_key_its_consumers_read(): void
+    {
+        $profile = $this->profile();
+        $licenseType = $this->licenseType('Backup Seats');
+        $sku = $this->configuredSku($licenseType);
+
+        $this->actingAs(User::factory()->create());
+        $html = $this->get(route('profiles.show', $profile))->assertOk()->getContent();
+
+        $option = $this->optionFromIsland($html, 'SKU_OPTIONS', (string) $sku->id, 'profiles.show');
+
+        $this->assertProfileSkuOptionData($option['data'] ?? [], 'profiles.show', $licenseType, withCost: false);
+    }
+
+    /**
+     * Every key the profile SKU option data emits, pinned against its reader.
+     *
+     * The full-key-set assertion comes first and is not redundant with the
+     * per-key ones: a RENAME presents as a missing key AND an unexpected key,
+     * and only comparing the whole set catches the second half — which is what
+     * tells the next reader that the data is now carrying a name nothing reads.
+     */
+    private function assertProfileSkuOptionData(array $data, string $screen, LicenseType $licenseType, bool $withCost): void
+    {
+        $expected = [
+            'price',
+            'taxable',
+            'description',
+            'includedPerUnit',
+            'defaultQuantityType',
+            'defaultLicenseTypeId',
+            'hasVolumeTiers',
+        ];
+
+        if ($withCost) {
+            $expected[] = 'cost';
+        }
+
+        $actual = array_keys($data);
+        sort($expected);
+        sort($actual);
+
+        $this->assertSame(
+            $expected,
+            $actual,
+            "{$screen}: the SKU option data no longer emits exactly the keys its consumers read. ".
+            'A key renamed here is read back as undefined by onSkuSelected and the line silently keeps '.
+            'its default — on defaultQuantityType that is a per-cycle mis-bill with nothing failing.'
+        );
+
+        // onSkuSelected (profiles/create + profiles/show).
+        $this->assertSame('123.45', $data['price'] ?? null, "{$screen}: opt.dataset.price feeds .price-input");
+        $this->assertSame('1', $data['taxable'] ?? null, "{$screen}: opt.dataset.taxable feeds .taxable-check (compared === '1')");
+        $this->assertSame('Managed Backup', $data['description'] ?? null, "{$screen}: opt.dataset.description feeds .desc-input");
+        $this->assertSame('1024', $data['includedPerUnit'] ?? null, "{$screen}: opt.dataset.includedPerUnit feeds .included-per-base-input");
+        $this->assertSame(
+            'per_license_type',
+            $data['defaultQuantityType'] ?? null,
+            "{$screen}: opt.dataset.defaultQuantityType feeds .qty-type-select — a drift here bills 1 unit ".
+            'per cycle instead of N, silently and forever'
+        );
+        $this->assertSame(
+            (string) $licenseType->id,
+            $data['defaultLicenseTypeId'] ?? null,
+            "{$screen}: opt.dataset.defaultLicenseTypeId feeds [license_type_id] / [usage_license_type_id], ".
+            'branched on defaultQuantityType'
+        );
+
+        // updatePricingMethodNote (profiles/_tier_editor_js). Also covered by
+        // TieredPricingOverrideTest; asserted here so the key set above is a
+        // complete statement of the contract rather than a partial one.
+        $this->assertSame(
+            '1',
+            $data['hasVolumeTiers'] ?? null,
+            "{$screen}: opt.dataset.hasVolumeTiers drives the inline pricing-method override note"
+        );
+
+        // 'cost' is emitted but NOTHING on either profile screen reads it — the
+        // cost field here is unit_cost_override, which is deliberately left blank
+        // to mean "inherit the SKU cost". Pinned as emitted rather than as
+        // consumed, so this stays an accurate record. See psa-951q.3 notes.
+        if ($withCost) {
+            $this->assertSame(
+                '67.89',
+                $data['cost'] ?? null,
+                'profiles.create: cost is emitted but currently has NO reader on this screen'
+            );
+        }
+    }
+
     // ------------------------------------------------------------------ fixtures
 
     private function contract(): Contract
@@ -195,5 +320,36 @@ class ProfileLineOptionsJsContextTest extends TestCase
             'vendor' => 'psa951q',
             'is_active' => true,
         ]);
+    }
+
+    /**
+     * A SKU that exercises EVERY key the profile option data emits: a non-default
+     * quantity type, an included-per-unit, a linked license type, and a volume
+     * rate card. A fixture that left any of these at its default would let the
+     * matching key drift undetected.
+     */
+    private function configuredSku(LicenseType $licenseType): Sku
+    {
+        $sku = Sku::create([
+            'name' => 'Managed Backup',
+            'sku_code' => 'PSA951Q-CONFIGURED',
+            'unit_price' => '123.45',
+            'unit_cost' => '67.89',
+            'included_per_unit' => 1024,
+            'default_quantity_type' => QuantityType::PerLicenseType,
+            'default_license_type_id' => $licenseType->id,
+            'is_taxable' => true,
+            'is_active' => true,
+        ]);
+
+        // Gives the SKU a volume rate card, so hasVolumeTiers renders '1'.
+        BackupStorageTier::create([
+            'sku_id' => $sku->id,
+            'up_to_gb' => null,
+            'unit_price' => '0.60',
+            'sort_order' => 0,
+        ]);
+
+        return $sku;
     }
 }

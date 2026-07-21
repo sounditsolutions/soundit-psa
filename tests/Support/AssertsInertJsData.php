@@ -310,6 +310,40 @@ trait AssertsInertJsData
         }
     }
 
+    // ------------------------------------------------------- reading the island
+
+    /**
+     * Decode one entry out of a rendered `const <NAME> = [...];` data island.
+     *
+     * Shared so the screens cannot drift apart on how the island is located —
+     * the same reason the hostile-label corpus is shared.
+     *
+     * @return array{value: string, label: string, data?: array<string, string>}
+     */
+    private function optionFromIsland(string $html, string $const, string $value, string $screen): array
+    {
+        $pattern = '/const '.preg_quote($const, '/').' = (\[.*?\]);/s';
+
+        $this->assertMatchesRegularExpression(
+            $pattern,
+            $html,
+            "{$screen}: no {$const} data island found — the option list is not being shipped as data."
+        );
+
+        preg_match($pattern, $html, $m);
+        $options = json_decode($m[1], true);
+
+        $this->assertIsArray($options, "{$screen}: {$const} did not decode as JSON.");
+
+        foreach ($options as $option) {
+            if (($option['value'] ?? null) === $value) {
+                return $option;
+            }
+        }
+
+        $this->fail("{$screen}: value {$value} was not present in the {$const} data island.");
+    }
+
     // ------------------------------------------------------------------- lexing
 
     /** @return list<string> the body of every <script> element in the page */

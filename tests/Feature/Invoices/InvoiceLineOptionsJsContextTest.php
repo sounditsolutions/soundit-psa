@@ -217,24 +217,7 @@ class InvoiceLineOptionsJsContextTest extends TestCase
     /** Pull one SKU's entry out of the rendered SKU_OPTIONS data island. */
     private function skuOptionFor(string $html, string $skuId): array
     {
-        $this->assertMatchesRegularExpression(
-            '/const SKU_OPTIONS = (\[.*?\]);/s',
-            $html,
-            'invoices.create: no SKU_OPTIONS data island found — the option list is not being shipped as data.'
-        );
-
-        preg_match('/const SKU_OPTIONS = (\[.*?\]);/s', $html, $m);
-        $options = json_decode($m[1], true);
-
-        $this->assertIsArray($options, 'SKU_OPTIONS did not decode as JSON.');
-
-        foreach ($options as $option) {
-            if (($option['value'] ?? null) === $skuId) {
-                return $option;
-            }
-        }
-
-        $this->fail("SKU {$skuId} was not present in the SKU_OPTIONS data island.");
+        return $this->optionFromIsland($html, 'SKU_OPTIONS', $skuId, 'invoices.create');
     }
 
     // ----------------------------------------------------------------- fixtures
