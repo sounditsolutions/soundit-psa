@@ -73,7 +73,7 @@ class TeamsReadOnlyWriteGuardTest extends TestCase
     {
         $user = User::factory()->create();
 
-        $result = (TeamsReadOnlyToolset::executor($user->id))('wiki_create_page_alias', []);
+        $result = (TeamsReadOnlyToolset::forTurn($user->id)->executor())('wiki_create_page_alias', []);
 
         $this->assertSame(
             self::REFUSAL,
@@ -91,7 +91,7 @@ class TeamsReadOnlyWriteGuardTest extends TestCase
         Setting::setValue('wiki_enabled', '1');
         $user = User::factory()->create();
 
-        (TeamsReadOnlyToolset::executor($user->id))('wiki_create_page_alias', [
+        (TeamsReadOnlyToolset::forTurn($user->id)->executor())('wiki_create_page_alias', [
             'slug' => 'runbooks/guard-probe',
             'title' => 'Guard Probe',
             'body_md' => "## Probe\n\nThe ReadOnly bot must never persist this.\n",
@@ -114,7 +114,7 @@ class TeamsReadOnlyWriteGuardTest extends TestCase
     {
         Setting::setValue('wiki_enabled', '1');
         $user = User::factory()->create();
-        $run = TeamsReadOnlyToolset::executor($user->id);
+        $run = TeamsReadOnlyToolset::forTurn($user->id)->executor();
 
         $writes = AssistantToolExecutor::writeTools();
         $this->assertNotEmpty($writes, 'The executor reports no write tools at all — the classification is not being read.');
@@ -144,13 +144,14 @@ class TeamsReadOnlyWriteGuardTest extends TestCase
     public function test_every_read_the_teams_surface_publishes_stays_available(): void
     {
         $user = User::factory()->create();
-        $run = TeamsReadOnlyToolset::executor($user->id);
+        $surface = TeamsReadOnlyToolset::forTurn($user->id);
+        $run = $surface->executor();
 
-        $offered = array_column(TeamsReadOnlyToolset::definitions(), 'name');
+        $offered = array_column($surface->tools(), 'name');
         $this->assertGreaterThan(15, count($offered), 'The published surface has collapsed — the chat bot has lost most of its capability.');
 
         foreach ($offered as $name) {
-            $this->assertTrue(TeamsReadOnlyToolset::allows($name), "'{$name}' is published but the surface will not allow it.");
+            $this->assertTrue($surface->allows($name), "'{$name}' is published but the surface will not allow it.");
             $this->assertNotSame(
                 self::REFUSAL,
                 $run($name, []),
@@ -168,11 +169,12 @@ class TeamsReadOnlyWriteGuardTest extends TestCase
     {
         $writes = AssistantToolExecutor::writeTools();
         $reads = AssistantToolExecutor::readTools();
+        $surface = TeamsReadOnlyToolset::forTurn(null);
 
         foreach (self::KNOWN_WRITERS as $writer) {
             $this->assertContains($writer, $writes, "{$writer} mutates state and must be classified as a write");
             $this->assertNotContains($writer, $reads, "{$writer} mutates state and must never be classified as a read");
-            $this->assertFalse(TeamsReadOnlyToolset::allows($writer), "{$writer} must be refused in chat");
+            $this->assertFalse($surface->allows($writer), "{$writer} must be refused in chat");
         }
     }
 
@@ -223,13 +225,14 @@ class TeamsReadOnlyWriteGuardTest extends TestCase
      */
     public function test_the_published_schema_offers_only_tools_the_surface_will_run(): void
     {
-        $offered = array_column(TeamsReadOnlyToolset::definitions(), 'name');
+        $surface = TeamsReadOnlyToolset::forTurn(null);
+        $offered = array_column($surface->tools(), 'name');
 
         $this->assertNotEmpty($offered);
 
         foreach ($offered as $name) {
             $this->assertTrue(
-                TeamsReadOnlyToolset::allows($name),
+                $surface->allows($name),
                 "The chat schema advertises '{$name}', which the guard refuses to run."
             );
         }
@@ -253,12 +256,18 @@ class TeamsReadOnlyWriteGuardTest extends TestCase
     public function test_the_teams_surface_runs_exactly_what_the_teams_schema_publishes(): void
     {
         $user = User::factory()->create();
-        $run = TeamsReadOnlyToolset::executor($user->id);
+        // ONE surface for both halves — which is now the only way to ask. Taking
+        // the schema and the executor from separate calls is what psa-uw2o.21/.22
+        // exploited: each resolved the vendor availability probes for itself, so
+        // the two could describe different turns. TeamsPerTurnToolSurfaceTest
+        // drives that timing directly; this asserts the resulting set equality.
+        $surface = TeamsReadOnlyToolset::forTurn($user->id);
+        $run = $surface->executor();
 
-        $offered = array_column(TeamsReadOnlyToolset::definitions(), 'name');
+        $offered = array_column($surface->tools(), 'name');
         sort($offered);
 
-        // Probed against the LIVE executor, not just the predicate. executor()
+        // Probed against the LIVE executor, not just the predicate. The surface
         // snapshots the allowlist rather than calling allows() per invocation, so
         // asserting the predicate alone would leave the snapshot unpinned — and
         // "two things that agree today" is the shape of every defect on this PR.
@@ -287,7 +296,7 @@ class TeamsReadOnlyWriteGuardTest extends TestCase
         foreach ($everyDispatchable as $name) {
             $this->assertSame(
                 in_array($name, $offered, true),
-                TeamsReadOnlyToolset::allows($name),
+                $surface->allows($name),
                 "allows('{$name}') disagrees with what the executor actually does with it."
             );
         }
@@ -321,13 +330,15 @@ class TeamsReadOnlyWriteGuardTest extends TestCase
             'is_read' => false,
         ]);
 
+        $surface = TeamsReadOnlyToolset::forTurn($user->id);
+
         $this->assertNotContains(
             'list_email_items',
-            array_column(TeamsReadOnlyToolset::definitions(), 'name'),
+            array_column($surface->tools(), 'name'),
             'precondition: the Teams schema must not publish list_email_items'
         );
 
-        $result = (TeamsReadOnlyToolset::executor($user->id))('list_email_items', ['limit' => 5]);
+        $result = ($surface->executor())('list_email_items', ['limit' => 5]);
 
         $this->assertSame(
             self::REFUSAL,

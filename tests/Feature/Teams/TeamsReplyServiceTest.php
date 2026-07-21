@@ -141,10 +141,15 @@ class TeamsReplyServiceTest extends TestCase
         $this->assertContains('create_ticket', $rawClient, 'Sanity: the raw client surface still has the mutators.');
         $this->assertNotContains('propose_close', array_column(AssistantToolDefinitions::getTools(false), 'name'));
 
-        $filteredClient = array_column(TeamsReadOnlyToolset::definitions(true), 'name');
-        $this->assertNotContains('create_ticket', $filteredClient);
-        $this->assertNotContains('add_ticket_note', $filteredClient);
-        $this->assertNotContains('propose_close', $filteredClient);
+        // NOTE: this used to read TeamsReadOnlyToolset::definitions(true), which
+        // took no parameter — PHP silently discards extra arguments to a userland
+        // function, so the `true` never meant anything and this was not the
+        // "client-scoped" variant it appeared to be. The published surface is
+        // whatever forTurn() resolved, merged over both scopes; ask it directly.
+        $filtered = array_column(TeamsReadOnlyToolset::forTurn(null)->tools(), 'name');
+        $this->assertNotContains('create_ticket', $filtered);
+        $this->assertNotContains('add_ticket_note', $filtered);
+        $this->assertNotContains('propose_close', $filtered);
     }
 
     // ── 3. The executor refuses mutating tools without touching the inner one ─
