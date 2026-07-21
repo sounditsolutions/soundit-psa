@@ -351,6 +351,13 @@ class ProspectAiVisibilityTest extends TestCase
         config(['services.ai.api_key' => 'sk-test-key']);
         $this->enableAutoTriage();
 
+        // psa-98dq (Charlie, 2026-07-21): the Assistant now DEFAULTS OFF, and
+        // this test asserts the Ask AI button and the live chat input RENDER —
+        // both of which are (correctly) gated on it. The subject here is
+        // "prospect tickets get the same AI controls as any other", so enable
+        // the Assistant explicitly rather than relying on a default.
+        Setting::setValue('assistant_enabled', '1');
+
         $user = User::factory()->create();
         $prospect = Client::factory()->prospect()->create();
         $ticket = Ticket::factory()->create([

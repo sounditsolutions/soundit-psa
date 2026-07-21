@@ -18,6 +18,22 @@ use App\Services\Triage\TriageToolDefinitions;
  */
 class AssistantToolDefinitions
 {
+    /**
+     * The tools defined in THIS file that MUTATE. Single source of truth.
+     *
+     * psa-uw2o.6: before this existed there were FOUR independent hardcoded
+     * lists of "which assistant tools write" — the system prompt's sentence,
+     * two separate assertions in the gate test, and TeamsReadOnlyToolset::
+     * MUTATING. Four lists means a fifth writer added to psaTools() is
+     * disclosed by none of them; one of those consumers strips writers for a
+     * bot literally named ReadOnly, so the drift is not merely cosmetic.
+     *
+     * Anything added here must be reflected in psaTools(). The gate test
+     * asserts both directions, so adding a writer WITHOUT listing it here
+     * fails, and listing one that psaTools() does not offer fails too.
+     */
+    public const WRITE_TOOLS = ['create_ticket', 'add_ticket_note'];
+
     public static function getTools(bool $hasClient): array
     {
         if (! $hasClient) {

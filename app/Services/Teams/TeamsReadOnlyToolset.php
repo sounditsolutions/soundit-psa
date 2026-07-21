@@ -13,7 +13,15 @@ use App\Services\Assistant\AssistantToolExecutor;
 class TeamsReadOnlyToolset
 {
     /** Tools that Teams staff chat must never expose or execute. */
-    public const MUTATING = ['create_ticket', 'add_ticket_note', 'propose_close'];
+    /**
+     * psa-uw2o.6: the assistant writers are DERIVED from their own definition
+     * file rather than re-listed here. This class strips writers for a bot
+     * named ReadOnly, so a writer added to AssistantToolDefinitions and not
+     * mirrored here would have leaked straight through it. propose_close is
+     * appended because it is mutating in this lane but is not an assistant
+     * tool, so it has no home in that constant.
+     */
+    public const MUTATING = [...AssistantToolDefinitions::WRITE_TOOLS, 'propose_close'];
 
     /** What the executor returns if a mutating tool is somehow requested. */
     private const REFUSAL = ['error' => 'That tool is not available in chat (read-only).'];

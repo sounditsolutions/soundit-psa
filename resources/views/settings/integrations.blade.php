@@ -3206,9 +3206,14 @@
                      stated nowhere an operator would look. --}}
                 <div class="alert alert-warning small py-2">
                     <i class="bi bi-pencil-square me-1"></i>
+                    {{-- psa-uw2o.7/.8: name the control the operator can actually find. It is
+                         labelled "Emergency stop" in this UI; "kill switch" is only the internal
+                         setting key, and calling it "global" overstates its reach — its own card
+                         says it does not cover the triage lane either. --}}
                     <strong>This assistant can write.</strong> In a ticket or client conversation it can
                     create tickets and add notes. Those take effect immediately and are not held for
-                    approval, and the global AI kill switch does not cover this assistant.
+                    approval, and the <em>Emergency stop</em> below does not cover this assistant —
+                    this toggle is what stops it.
                 </div>
 
                 <form method="POST" action="{{ route('settings.integrations.assistant.update') }}">
@@ -3563,6 +3568,12 @@
                                 <li><strong>Does not stop AI triage.</strong> The junk filter's auto-close (on by default) and the
                                     hourly review auto-close run in the triage lane, which this brake does not reach — turn
                                     <em>AI Triage</em> off for those.</li>
+                                {{-- psa-uw2o.8: this list reads as exhaustive, so an omission is a false
+                                     all-clear. The Assistant's create_ticket / add_ticket_note are unheld
+                                     writes that this brake does not reach either. --}}
+                                <li><strong>Does not stop the AI Assistant.</strong> Its <em>Create ticket</em> and
+                                    <em>Add note</em> tools write immediately and are outside this brake — untick
+                                    <em>Enable AI Assistant</em> above to stop those.</li>
                                 <li><strong>Reads.</strong> The AI can still read and analyse; it just cannot write.</li>
                             </ul>
                         </div>

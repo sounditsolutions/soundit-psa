@@ -27,6 +27,14 @@ class AssistantBubbleSafeAreaTest extends TestCase
         // are made while rendering the layout.
         config()->set('services.ai.provider', 'anthropic');
         config()->set('services.ai.api_key', 'test-key');
+
+        // psa-98dq (Charlie, 2026-07-21): the Assistant now DEFAULTS OFF, so a
+        // key alone no longer enables it. This helper is named enableAssistant
+        // and its callers mean it — say so explicitly rather than leaning on a
+        // default. (Worth noting: this test is the in-repo instance of exactly
+        // the thing the deploy caution is about — something that relied on
+        // auto-on and went quiet when the default flipped.)
+        \App\Models\Setting::setValue('assistant_enabled', '1');
     }
 
     public function test_content_wrapper_reserves_safe_area_when_bubble_is_shown(): void
