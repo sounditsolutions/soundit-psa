@@ -608,6 +608,9 @@ function addLine() {
                     <label class="form-label small">Quantity Type</label>
                     <select class="form-select form-select-sm qty-type-select"
                             name="lines[${i}][quantity_type]" onchange="toggleFixedQty(this)">
+                        @foreach($quantityTypes as $qt)
+                            <option value="{{ $qt->value }}">{{ $qt->label() }}</option>
+                        @endforeach
                     </select>
                 </div>
                 <div class="col-md-1 fixed-qty-col">
@@ -681,11 +684,13 @@ function addLine() {
     // operator-entered part, so they are built from data instead — never spliced
     // into a string that JavaScript then has to parse.
     //
-    // Each placeholder below is ALSO in the static markup above. Placeholders are
-    // developer constants with no XSS exposure, so shipping them server-side costs
-    // nothing and means a failure here degrades a row to LABELLED empty selects
-    // rather than blank ones. fillSelectOptions replaceChildren()s them away and
-    // re-adds them, so the success path is unchanged. Keep the two spellings
+    // Each placeholder below is ALSO in the static markup above, and the
+    // quantity-type select carries its FULL enum list there: both are developer
+    // constants with no XSS exposure, so shipping them server-side costs nothing
+    // and means a failure here degrades a row to LABELLED selects — the required
+    // quantity-type control still usable — rather than blank ones (psa-951q.4).
+    // fillSelectOptions replaceChildren()s them away and re-adds them from the
+    // islands, so the success path is unchanged. Keep the two spellings
     // identical. Only the operator-entered labels must stay in data.
     const line = container.lastElementChild;
     fillSelectOptions(line.querySelector('.sku-select'), SKU_OPTIONS, '-- Manual --');

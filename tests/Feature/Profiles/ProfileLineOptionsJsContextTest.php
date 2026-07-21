@@ -83,23 +83,46 @@ class ProfileLineOptionsJsContextTest extends TestCase
     }
 
     /**
-     * The quantity-type list is enum-sourced rather than operator-entered, so it
-     * is not an injection vector today — but it is built by the same code path,
-     * and a label there must be inert data for the same reason. This pins the
-     * whole option surface, not just the two lists an attacker can reach now.
+     * The quantity-type list is enum-sourced — developer-authored, no operator
+     * input — so unlike the SKU and license lists it deliberately lives in BOTH
+     * places on each profile screen: the QUANTITY_TYPE_OPTIONS island that
+     * fillSelectOptions rebuilds every added row from (the success path), and
+     * the static addLine() row markup that survives the helper failing
+     * (assertQuantityTypeFloorInAddLineMarkup — psa-951q.4's blocker: quantity
+     * type is a required billing control, and it came up completely EMPTY on
+     * both profile screens when fillSelectOptions was forced to throw).
+     *
+     * This test pins the island half: every enum case must still arrive as
+     * inert JSON data decoding byte-for-byte to the enum's own value/label
+     * pair, so the success-path dropdown and the static floor cannot drift
+     * apart. The wiring tests below pin the markup half. Operator-entered
+     * lists get no such split — they stay data-island-only, and the
+     * hostile-label tests above hold them there.
      */
     public function test_quantity_type_options_are_inert_js_data_too(): void
     {
         $contract = $this->contract();
+        $profile = $this->profile($contract);
 
         $this->actingAs(User::factory()->create());
-        $html = $this->get(route('profiles.create', $contract))->assertOk()->getContent();
 
-        $label = QuantityType::PerBackupStorageGb->label();
+        foreach ([
+            'profiles.create' => route('profiles.create', $contract),
+            'profiles.show' => route('profiles.show', $profile),
+        ] as $screen => $url) {
+            $html = $this->get($url)->assertOk()->getContent();
 
-        // This label carries no hostile characters, so it survives every encoder
-        // verbatim and can locate itself.
-        $this->assertLabelIsInertJsData($html, [$label], 'profiles.create', $label);
+            foreach (QuantityType::cases() as $type) {
+                $option = $this->optionFromIsland($html, 'QUANTITY_TYPE_OPTIONS', $type->value, $screen);
+
+                $this->assertSame(
+                    $type->label(),
+                    $option['label'] ?? null,
+                    "{$screen}: the QUANTITY_TYPE_OPTIONS island no longer carries the enum's own label for ".
+                    "'{$type->value}' — the success-path dropdown would drift from the static floor."
+                );
+            }
+        }
     }
 
     /**
@@ -124,6 +147,7 @@ class ProfileLineOptionsJsContextTest extends TestCase
             'Select...',
             '(none — use 1)',
         ]);
+        $this->assertQuantityTypeFloorInAddLineMarkup($html, 'profiles.create');
         $this->assertAddLineUsesACapturedIndex($html, 'profiles.create');
     }
 
@@ -141,6 +165,7 @@ class ProfileLineOptionsJsContextTest extends TestCase
             'Select...',
             '(none — use 1)',
         ]);
+        $this->assertQuantityTypeFloorInAddLineMarkup($html, 'profiles.show');
         $this->assertAddLineUsesACapturedIndex($html, 'profiles.show');
     }
 

@@ -2,13 +2,16 @@
 
 namespace Tests\Support;
 
+use App\Enums\QuantityType;
+
 /**
  * Assertions for the two halves of psa-951q's option-list fix:
  *
  *   1. operator-entered text reaches the page as inert DATA, not as JavaScript
  *      source (assertLabelIsInertJsData and the lexer under it), and
  *   2. that data is actually BUILT INTO A DROPDOWN once it gets there
- *      (assertOptionBuilderReachesThePage, assertPlaceholderFloorInAddLineMarkup).
+ *      (assertOptionBuilderReachesThePage, assertPlaceholderFloorInAddLineMarkup,
+ *      assertQuantityTypeFloorInAddLineMarkup).
  *
  * Half 2 exists because half 1 alone is not evidence the screen works. A review
  * at e4f6f4e deleted @include('partials._select_options_js') from all three
@@ -283,6 +286,57 @@ trait AssertsInertJsData
                 'A placeholder is a developer constant, so it belongs in the markup — without it, a JS '.
                 'failure leaves an unlabelled blank select instead of a labelled empty one. It must be '.
                 'spelled exactly as the argument passed to '.self::BUILDER.'().'
+            );
+        }
+    }
+
+    /**
+     * The quantity-type <option> list is ENUM-SOURCED — developer-authored
+     * constants, no operator input — so like the placeholders above it belongs
+     * in the static addLine() row markup, as a floor that survives a
+     * fillSelectOptions failure. Unlike the placeholders it is the WHOLE list:
+     * quantity type is a required billing control, and an operator under load
+     * reads a blank one as missing data or a broken form (psa-951q.4, verified
+     * in Chromium with a forced throw — the placeholder floors survived, this
+     * select came up completely empty on both profile screens).
+     *
+     * fillSelectOptions() replaceChildren()s the floor away and rebuilds the
+     * same list from the QUANTITY_TYPE_OPTIONS island, so the success path is
+     * byte-identical. Only the operator-entered lists (SKUs, license types)
+     * must stay data-island-only.
+     *
+     * Asserted in template-literal context ('t') for the same reason as the
+     * placeholder floor: that is what proves the options sit in the addLine()
+     * row template rather than merely in the server-rendered first-paint row.
+     */
+    private function assertQuantityTypeFloorInAddLineMarkup(string $html, string $screen): void
+    {
+        $blocks = [];
+
+        foreach ($this->scriptBlocks($html) as $js) {
+            $blocks[] = [$js, $this->lexJs($js)[0]];
+        }
+
+        foreach (QuantityType::cases() as $type) {
+            $option = '<option value="'.$type->value.'">'.$type->label().'</option>';
+            $found = false;
+
+            foreach ($blocks as [$js, $map]) {
+                foreach ($this->offsetsOf($js, $option) as $at) {
+                    if ($map[$at] === 't') {
+                        $found = true;
+                        break 2;
+                    }
+                }
+            }
+
+            $this->assertTrue(
+                $found,
+                "{$screen}: the addLine() row template has no static ".var_export($option, true).' floor. '.
+                'Quantity type is a required billing control and its labels are enum constants — developer-'.
+                'authored, zero XSS exposure — so the full list belongs in the static row markup, where it '.
+                'survives a fillSelectOptions failure instead of leaving the operator a blank control '.
+                '(psa-951q.4). It must be spelled exactly as the server-rendered first row spells it.'
             );
         }
     }
