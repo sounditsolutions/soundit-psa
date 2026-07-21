@@ -176,8 +176,15 @@ class AiClient
         // actually delivered to the model. Dispatch is BY NAME, so without this the
         // published schema is documentation rather than a boundary: a surface that
         // hardened itself by filtering its schema stayed fully exploitable through its
-        // executor. That defect was found and fixed per-surface five times before being
-        // closed here once (psa-uw2o, psa-hbbuq, psa-hryjm, psa-vydpz, psa-o8w6t).
+        // executor.
+        //
+        // SCOPE — this closes the FIVE lanes that pass through this loop: AI Technician
+        // (psa-hbbuq), deterministic triage (psa-hryjm), Teams (psa-uw2o), the staff
+        // Assistant (psa-o8w6t) and the portal chatbot. *** IT DOES NOT CLOSE STAFF MCP
+        // (psa-vydpz) OR CHET. *** Those never reach AiClient — McpStaffController
+        // constructs AssistantToolExecutor and calls execute() directly — so they remain
+        // on their own controller/executor boundary with their own grant gates, and must
+        // be fixed there. Do not read this guard as covering them.
         //
         // Computed ONCE, before the loop, from the same $tools array that is sent every
         // round: $tools is by-value and never mutated, so this cannot drift from what the

@@ -17,10 +17,15 @@ use Tests\TestCase;
  * THE DEFECT THIS PINS. AiClient::executeToolLoop() invoked the executor by name
  * without ever checking that the name appeared in the $tools schema it had just sent
  * to Anthropic. Publication and dispatch were two independent lists, so a surface
- * that hardened itself by FILTERING ITS SCHEMA was not hardened at all. The same
- * defect was found and fixed per-surface five times (Teams/psa-uw2o,
- * Technician/psa-hbbuq, triage/psa-hryjm, staff MCP/psa-vydpz, Chet) before being
- * closed here, once, at the single seam every one of those lanes passes through.
+ * that hardened itself by FILTERING ITS SCHEMA was not hardened at all.
+ *
+ * WHAT THESE TESTS COVER, AND WHAT THEY DO NOT. They pin the guard for the five lanes
+ * that pass through AiClient: Technician (psa-hbbuq), triage (psa-hryjm), Teams
+ * (psa-uw2o), the staff Assistant (psa-o8w6t) and the portal chatbot. STAFF MCP
+ * (psa-vydpz) AND CHET ARE NOT COVERED HERE AND ARE NOT CLOSED BY THIS SEAM —
+ * McpStaffController calls AssistantToolExecutor directly and never touches AiClient,
+ * so a green run of this file says NOTHING about that boundary. The defect class spans
+ * both groups; this guard does not.
  *
  * WHY THE ASSERTION IS "NEVER REACHED" AND NOT "RETURNED AN ERROR". An executor that
  * happens to answer {"error": "Unknown tool"} would satisfy a weaker assertion while
