@@ -235,8 +235,14 @@ class ProspectAiVisibilityTest extends TestCase
         // "prospect context is accepted", not "the endpoint is reachable while the
         // Assistant is off" — so supply the precondition the surface legitimately
         // needs. It still fails if prospect context is ever rejected.
+        //
+        // assistant_enabled is set EXPLICITLY rather than leaning on the current
+        // default-on behaviour: psa-98dq may yet rule that the Assistant defaults
+        // off, and this test is about prospects, so it must not be the one place
+        // that silently depends on that ruling (psa-uw2o.2 / psa-uw2o.3).
         Setting::setValue('ai_provider', 'anthropic');
         Setting::setEncrypted('ai_api_key', 'test-key');
+        Setting::setValue('assistant_enabled', '1');
 
         $user = User::factory()->create();
         $prospect = Client::factory()->prospect()->create();

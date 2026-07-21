@@ -78,16 +78,20 @@ class AssistantService
             ]);
         }
 
-        // Build system prompt
-        $system = $this->buildSystemPrompt($conversation);
-
-        // Build message history for API
-        $apiMessages = $this->buildMessageHistory($conversation);
-
-        // Resolve tools and executor
+        // Resolve tools and executor.
+        // psa-uw2o.2: resolved BEFORE the prompt is built so the prompt and the
+        // tool list are driven by the SAME value rather than by two evaluations
+        // of the same expression. The prompt describes the write tools, so an
+        // enforced invariant is worth more here than a comment asserting one.
         $clientId = $conversation->resolveClientId();
         $ticket = $conversation->resolveTicket();
         $hasClient = $clientId !== null;
+
+        // Build system prompt
+        $system = $this->buildSystemPrompt($conversation, $hasClient);
+
+        // Build message history for API
+        $apiMessages = $this->buildMessageHistory($conversation);
 
         // If this is a ticket conversation and the ticket has image attachments
         // (screenshots from email, manually attached, etc.), augment the FIRST
@@ -164,6 +168,15 @@ class AssistantService
      */
     public function saveAsNote(AssistantMessage $message, Ticket $ticket, int $userId): TicketNote
     {
+        // psa-uw2o.1: this is the OTHER service entry point, and it writes a
+        // real TicketNote. The route gate covers it today, but the guard on
+        // sendMessage was documented as covering "every programmatic caller" —
+        // a promise this method would have quietly falsified. Same class of
+        // overclaim as the "read-only tools" docblock this change exists to fix.
+        if (! AssistantConfig::isEnabled()) {
+            throw new \RuntimeException('The AI assistant is disabled.');
+        }
+
         $body = "**AI Assistant:**\n\n".$message->content;
 
         return TicketNote::create([
@@ -177,7 +190,12 @@ class AssistantService
         ]);
     }
 
-    private function buildSystemPrompt(AssistantConversation $conversation): string
+    /**
+     * @param  bool  $hasClient  the SAME value handed to AssistantToolDefinitions::getTools(),
+     *                           so the capabilities described here cannot disagree with the
+     *                           capabilities actually offered (psa-uw2o.2).
+     */
+    private function buildSystemPrompt(AssistantConversation $conversation, bool $hasClient): string
     {
         $prompt = <<<'PROMPT'
 You are an AI assistant for MSP technicians. You help investigate issues, answer questions about clients and their infrastructure, and provide technical guidance.
@@ -190,10 +208,17 @@ PROMPT;
         // psa-uw2o: this prompt used to tell the model its tools were read-only
         // while handing it two writers, which is how a write surface stays
         // invisible to anyone reviewing the prompt to find out what the
-        // Assistant can do. Keyed to the SAME predicate getTools() is given
-        // ($hasClient, from resolveClientId()) so the description cannot drift
-        // from the surface actually offered.
-        if ($conversation->resolveClientId() !== null) {
+        // Assistant can do. Driven by the same $hasClient the tool list is, so
+        // WHICH branch is taken cannot drift from the surface offered.
+        //
+        // What that does NOT guarantee is the CONTENT of the read-only branch
+        // (psa-uw2o.3): it is true only while every definition set getTools()
+        // merges for the no-client case stays read-only — including
+        // TriageToolDefinitions::wikiTools(), which the triage lane owns. Adding
+        // a writer there would re-falsify this sentence, so
+        // AssistantEnabledGateTest asserts the no-client surface carries no
+        // write tool rather than trusting that it still doesn't.
+        if ($hasClient) {
             $prompt .= "\n\nTwo of your tools WRITE to the PSA: create_ticket creates a real ticket, and add_ticket_note adds a real note. Both take effect immediately and are not held for anyone's approval. Use them only when the technician has asked you to — never as a side effect of investigating.";
         } else {
             $prompt .= "\n\nYour tools are read-only: you can look things up, but you cannot change anything in the PSA.";

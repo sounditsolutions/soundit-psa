@@ -15,14 +15,29 @@ use Symfony\Component\HttpFoundation\Response;
  * it unlocked — the endpoints kept running the tool loop, including the
  * Assistant's two write tools (create_ticket, add_ticket_note).
  *
- * Mirrors PortalEnabled: this codebase already ships a feature-gate middleware
- * for the portal, so the pattern is the repo's own, not a new invention.
+ * Modelled on PortalEnabled, with one deliberate difference. PortalEnabled
+ * guards HTML page routes, where a bare 404 renders something a human can
+ * read. These six routes are a JSON API consumed by already-rendered UI, and
+ * abort(404) emits {"message":""} — no `error` key, which is the only key the
+ * assistant's JS reads. So the refusal arrived as a generic "Request failed",
+ * or on the load paths as nothing at all (psa-uw2o.4).
+ *
+ * AssistantController already answers RuntimeException with ['error' => ...],
+ * and the service guard already throws the right sentence. A JSON caller gets
+ * that same shape here; a browser still gets the bare 404 so the surface is not
+ * advertised.
  */
 class AssistantEnabled
 {
+    public const DISABLED_MESSAGE = 'The AI assistant is disabled.';
+
     public function handle(Request $request, Closure $next): Response
     {
         if (! AssistantConfig::isEnabled()) {
+            if ($request->expectsJson()) {
+                abort(response()->json(['error' => self::DISABLED_MESSAGE], 403));
+            }
+
             abort(404);
         }
 

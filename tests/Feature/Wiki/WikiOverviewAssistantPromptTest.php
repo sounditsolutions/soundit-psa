@@ -50,7 +50,10 @@ class WikiOverviewAssistantPromptTest extends TestCase
         $method = new ReflectionMethod(AssistantService::class, 'buildSystemPrompt');
         $method->setAccessible(true);
 
-        return $method->invoke(new AssistantService, $conversation);
+        // psa-uw2o.2: $hasClient is now passed in rather than re-derived inside
+        // the method, so the prompt and the tool list cannot disagree. Mirror
+        // how sendMessage computes it.
+        return $method->invoke(new AssistantService, $conversation, $conversation->resolveClientId() !== null);
     }
 
     public function test_client_prompt_injects_composed_overview(): void

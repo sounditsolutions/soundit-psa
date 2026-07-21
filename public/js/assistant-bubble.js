@@ -113,7 +113,15 @@
         fetch('/assistant/general', {
             headers: { 'Accept': 'application/json', 'X-CSRF-TOKEN': CSRF_TOKEN }
         })
-        .then(function(r) { return r.json(); })
+        // psa-uw2o.4: without the r.ok check a refusal parsed cleanly, left
+        // data.id undefined, latched loaded = true so it never retried, and
+        // rendered the ordinary "Ask me anything" empty state. A refusal that
+        // looks exactly like an empty conversation is the silent failure this
+        // whole bead is about.
+        .then(function(r) {
+            if (!r.ok) return r.json().then(function(d) { throw new Error(d.error || 'Could not load the assistant.'); });
+            return r.json();
+        })
         .then(function(data) {
             conversationId = data.id;
             loaded = true;
@@ -129,6 +137,11 @@
         })
         .catch(function(err) {
             console.error('Failed to load general conversation:', err);
+            // Not loaded — so reopening retries rather than showing a stale empty box.
+            loaded = false;
+            hideEmpty();
+            messagesEl.innerHTML = '';
+            appendMessage('error', err.message || 'Could not load the assistant.');
         });
     }
 
