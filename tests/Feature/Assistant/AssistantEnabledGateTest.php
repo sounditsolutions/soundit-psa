@@ -9,8 +9,12 @@ use App\Models\Ticket;
 use App\Models\User;
 use App\Services\Assistant\AssistantService;
 use App\Services\Assistant\AssistantToolDefinitions;
+use App\Services\Assistant\AssistantToolExecutor;
+use App\Services\Level\LevelClient;
+use App\Services\Ninja\NinjaClient;
 use App\Support\AssistantConfig;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Mockery\MockInterface;
 use Tests\TestCase;
 
 /**
@@ -563,6 +567,95 @@ class AssistantEnabledGateTest extends TestCase
                 "the prompt must not name {$writer} when it is not offered"
             );
         }
+    }
+
+    /**
+     * Turn every conditionally-merged vendor lane ON.
+     *
+     * getTools(true) merges ninjaTools/levelTools/meshTools/cippTools only when
+     * the integration is available, and in the test environment all four are OFF.
+     * Any invariant asserted over getTools(true) without this helper is VACUOUS
+     * for exactly the lanes it is supposed to police — it would pass by never
+     * seeing them. Mutation-tested: adding a Write-classified tool to a vendor
+     * lane must turn the invariant below RED.
+     */
+    private function forceVendorLanesOn(): void
+    {
+        $this->mock(NinjaClient::class, function (MockInterface $m): void {
+            $m->shouldReceive('isHealthy')->andReturn(true);
+        });
+        $this->mock(LevelClient::class, function (MockInterface $m): void {
+            $m->shouldReceive('isHealthy')->andReturn(true);
+        });
+
+        Setting::setEncrypted('mesh_api_key', 'test-mesh-key');
+
+        Setting::setValue('cipp_api_url', 'https://cipp.example.test');
+        Setting::setValue('cipp_tenant_id', 'tenant-id');
+        Setting::setValue('cipp_client_id', 'client-id');
+        Setting::setEncrypted('cipp_client_secret', 'client-secret');
+    }
+
+    /**
+     * psa-uw2o.18: WRITE_TOOLS is the sentence the system prompt reads out to the
+     * model, and nothing pinned it to what the EXECUTOR classifies as a write.
+     *
+     * The docblock above the constant claimed "the gate test asserts both
+     * directions" — true of its agreement with psaTools() (a definition file
+     * agreeing with a definition file), silently absent for its agreement with
+     * AssistantToolExecutor's dispatch table, which is the layer that decides
+     * whether a call actually mutates. A reviewer flipped get_client from Read to
+     * Write and the whole gate + Teams suite stayed green while the prompt went
+     * on disclosing two writers out of three.
+     *
+     * This crosses the two independent sources, so it is not a tautology: the
+     * OFFERED surface comes from AssistantToolDefinitions, the CLASSIFICATION
+     * comes from AssistantToolExecutor, and WRITE_TOOLS must equal their overlap.
+     *
+     * Vendor lanes are forced on so the assertion actually covers them.
+     */
+    public function test_the_offered_writers_are_exactly_the_declared_write_tools(): void
+    {
+        $this->forceVendorLanesOn();
+
+        $writeClassified = AssistantToolExecutor::writeTools();
+        $this->assertNotEmpty($writeClassified, 'the executor reports no writers at all — the classification is not being read');
+
+        $offeredWithClient = array_column(AssistantToolDefinitions::getTools(true), 'name');
+
+        // Precondition: the vendor lanes really are in the surface under test.
+        // Without this the invariant below could pass by never seeing them.
+        foreach (['ninja_search_devices', 'level_get_device', 'mesh_search_email_logs', 'cipp_list_users'] as $laneTool) {
+            $this->assertContains(
+                $laneTool,
+                $offeredWithClient,
+                "vendor lanes are not switched on — this invariant would be vacuous for {$laneTool}"
+            );
+        }
+
+        $offeredWriters = array_values(array_intersect($offeredWithClient, $writeClassified));
+        sort($offeredWriters);
+
+        $declared = AssistantToolDefinitions::WRITE_TOOLS;
+        sort($declared);
+
+        $this->assertSame(
+            $declared,
+            $offeredWriters,
+            "The client tool surface offers a different set of writers than WRITE_TOOLS declares.\n".
+            "The system prompt is generated from WRITE_TOOLS, so it is now telling the model the wrong\n".
+            "number of its tools mutate the PSA. Update WRITE_TOOLS — including for a writer added to a\n".
+            'vendor lane (ninjaTools/levelTools/meshTools/cippTools), which this surface merges in.'
+        );
+
+        // The no-client surface promises the model "your tools are read-only".
+        $offeredWithoutClient = array_column(AssistantToolDefinitions::getTools(false), 'name');
+
+        $this->assertSame(
+            [],
+            array_values(array_intersect($offeredWithoutClient, $writeClassified)),
+            'the no-client surface offers a tool the executor classifies as a write, but the prompt tells the model it is read-only'
+        );
     }
 
     public function test_the_tool_definitions_docblock_does_not_claim_read_only_only(): void
