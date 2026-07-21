@@ -247,21 +247,36 @@ class AiClient
                 // This is deliberately ABOVE $onToolCall: a refused tool never ran, so it
                 // must not appear in the caller's progress UI as though it did.
                 if (! in_array($toolName, $publishedTools, true)) {
+                    // The guard deliberately does NOT know WHY a name is unpublished, so it
+                    // cannot reproduce the specific reason an executor used to give. That
+                    // costs real diagnosability in one known case and the log must carry the
+                    // slack: with ControlD configured but its analytics token absent, the
+                    // system prompt still advertises controld_dns_queries while the schema
+                    // omits it, and the executor previously answered "Control D analytics is
+                    // not configured" — actionable — where this now answers generically
+                    // (psa-ejzjd.4). Hence 'likely_cause': an operator grepping logs needs
+                    // the next step, not just the refusal. Operator-facing remediation at the
+                    // settings surface is tracked separately.
                     Log::warning('[AiClient] Refused a tool that was not published to the model', [
                         'tool' => $toolName,
                         'round' => $round + 1,
                         'published_count' => count($publishedTools),
+                        'likely_cause' => 'prompt/schema drift — the system prompt may advertise this tool while its integration is unconfigured; check the relevant integration settings before treating this as abuse',
                     ]);
 
                     $toolResults[] = [
                         'type' => 'tool_result',
                         'tool_use_id' => $toolId,
                         // Phrased as availability, not as an accusation: the common cause is
-                        // benign prompt/schema drift (the system prompt names vendor tool
-                        // families unconditionally, while the schema is config-gated), not an
-                        // attack. Naming the tool keeps the log diagnosable either way.
+                        // benign prompt/schema drift, not an attack. The "do not retry" is
+                        // load-bearing — without it a model that was told in its system prompt
+                        // to use this tool will burn rounds re-requesting it.
+                        //
+                        // It stays GENERIC on purpose: saying "exists but is disabled" would
+                        // confirm which capabilities a deployment has to whoever can influence
+                        // this loop, and the ticket body is untrusted client text.
                         'content' => json_encode([
-                            'error' => "Tool '{$toolName}' is not available in this deployment.",
+                            'error' => "Tool '{$toolName}' is not available in this deployment. Do not retry it; continue without it and say plainly what you could not check.",
                         ]),
                     ];
 
