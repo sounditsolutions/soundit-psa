@@ -383,11 +383,18 @@ class ClientSituationIntegrationTest extends TestCase
     // ── 2.5 Triage-loop no-leak regression: agent-only tools never reach the loop ──
 
     /**
-     * The three drill-downs are agent-only (offered via readTools(), allowlisted in
+     * The three drill-downs are agent-only (offered via readTools(), dispatchable in
      * TechnicianAgentToolExecutor). This one-line structural guard prevents a future edit
      * from leaking a client-situation tool into psaTools()/getTools() — the deterministic
      * triage loop that TechnicalTriager runs. psaTools() is private, so it is invoked via
      * reflection to lock the invariant on the actual source rather than only its superset.
+     *
+     * SCOPE OF THIS GUARD: it pins the triage loop's published TOOL SET, which is what
+     * its name says and all it checks. It does NOT make the three unrunnable there —
+     * TechnicalTriager dispatches by name through an unguarded TriageToolExecutor
+     * closure, and all three were confirmed by execution to run (psa-hbbuq probe). The
+     * agent lane got that property via TechnicianAgentSurface; the triage lane is
+     * tracked under psa-ejzjd. Do not read this test as proving isolation.
      */
     public function test_triage_loop_tool_set_excludes_all_three_agent_only_tools(): void
     {

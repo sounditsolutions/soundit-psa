@@ -39,10 +39,21 @@ class TriageToolDefinitions
         // deliberately NOT part of psaTools()/getTools() — those feed the deterministic
         // triage loop and must never gain these read tools.
         //
-        // DORMANCY: the situation drill-downs are OFFERED only when the situation-context
-        // flag is on. Off (the default) → they are never merged here, so the model is never
-        // offered them and cannot call them — true dormancy, matching the AgentConfig
-        // docblock contract that this flag gates the digest AND the tools.
+        // DORMANCY — WHAT THIS GATE DOES, AND WHAT IT DOES NOT DO ON ITS OWN.
+        // This method controls OFFERING only: with the situation-context flag off (the
+        // default) the drill-downs are not merged here, so the model is never offered
+        // them. That is NOT by itself enough to make them uncallable, and this comment
+        // used to claim it was. Tool dispatch is BY NAME — AiClient::runToolLoop() runs
+        // whatever name the model returns without checking it against the schema it sent
+        // — so a name the model was never offered still reaches the executor, and the
+        // agent's ticket body is untrusted client text that can name one (psa-hbbuq: all
+        // three ran at the default flag setting, returning live client data).
+        //
+        // What makes them unrunnable is TechnicianAgentSurface, which derives the turn's
+        // runnable set FROM the array this method returns. Removing a tool here removes
+        // it from that allowlist in the same expression, so the gate above is enforced
+        // rather than merely advertised. Anything that publishes this schema WITHOUT
+        // going through that surface re-opens the hole.
         return array_merge(
             $readPsa,
             \App\Support\AgentConfig::situationContextEnabled() ? self::agentReadTools() : [],
@@ -53,11 +64,24 @@ class TriageToolDefinitions
     /**
      * Agent-only read tools — the AI Technician's "client situation" drill-downs.
      *
-     * Kept OUT of psaTools()/getTools() so they can never leak into the deterministic
-     * triage tool loop; offered ONLY via readTools() here, allowlisted in
-     * TechnicianAgentToolExecutor::READ_TOOLS, and handled in TriageToolExecutor::execute().
+     * Kept OUT of psaTools()/getTools() so the deterministic triage loop is never
+     * OFFERED them; offered ONLY via readTools() here, dispatchable in
+     * TechnicianAgentToolExecutor, and handled in TriageToolExecutor::execute().
      * All three situation drill-downs (list_client_tickets, list_client_calls,
      * get_client_security_posture) live on this single seam.
+     *
+     * On the agent lane, being named in the executor does NOT make them runnable:
+     * TechnicianAgentSurface intersects that list with the schema readTools() actually
+     * published for the turn, so the flag above is what decides, and the executor only
+     * decides KIND.
+     *
+     * ON THE TRIAGE LANE THAT IS NOT YET TRUE, so this docblock does not claim it.
+     * TechnicalTriager hands AiClient an unguarded closure over TriageToolExecutor,
+     * which matches these three by name regardless of what getTools() published — all
+     * three were confirmed by execution to RUN there and return live client data
+     * (psa-hbbuq probe, 2026-07-21). "Kept out of getTools()" is therefore a statement
+     * about OFFERING only; it is not isolation. Fixing that lane belongs with the
+     * AiClient-level toolName-in-schema enforcement tracked as psa-ejzjd.
      */
     public static function agentReadTools(): array
     {

@@ -6,7 +6,6 @@ use App\Models\Ticket;
 use App\Services\Ai\AiClient;
 use App\Services\Technician\PromptFence;
 use App\Services\Triage\ContextBuilder;
-use App\Services\Triage\TriageToolDefinitions;
 use App\Support\AgentConfig;
 use App\Support\AiConfig;
 use Illuminate\Support\Facades\Log;
@@ -21,6 +20,8 @@ use Illuminate\Support\Facades\Log;
  *  - Constructor-inject AiClient so tests can mock it.
  *  - run() NEVER throws — any Throwable is caught and logged (fail-soft).
  *  - The tool list is the fenced read set + propose_close (no mutators).
+ *  - The schema and the executor come from ONE TechnicianAgentSurface, so the set
+ *    the model is offered and the set that can run are the same list (psa-hbbuq).
  *  - CO-4 propose-once guard: the second propose_close call in a single run
  *    is refused before it reaches ProposeCloseTool, preventing duplicate rows.
  *  - The agent NEVER closes a ticket itself — only propose_close, which is
@@ -82,25 +83,14 @@ class TechnicianAgent
 
             $userMessage = ContextBuilder::buildForTicket($ticket, includeClientSituation: true);
 
-            // A2b: send_reply is now OFFERED to the model — the agent is the SOLE producer
-            // of held client replies (DraftPipeline's reply branch is retired). It is always
-            // held for operator approval (Approve-tier, never auto-sent). The whole reply
-            // capability stays dormant until the operator enables the agent (AgentConfig).
-            $tools = array_merge(TriageToolDefinitions::readTools(), [
-                ProposeCloseTool::definition(),
-                FlagAttentionTool::definition(),
-                SendReplyTool::definition(),
-                RequestToolTool::definition(),
-            ]);
-
-            $toolExecutor = new TechnicianAgentToolExecutor(
-                $ticket,
-                app(ProposeCloseTool::class),
-                app(FlagAttentionTool::class),
-                app(SendReplyTool::class),
-                app(RequestToolTool::class),
-                $correctionContext,
-            );
+            // ONE surface carries both halves of this turn: the schema published to the
+            // model and the executor that will run its calls, with the runnable set
+            // DERIVED from the published array rather than assembled beside it. Taking
+            // them as two independent values is the psa-hbbuq defect — the flag-gated
+            // situation drill-downs were unpublished and still ran, because dispatch is
+            // by name and nothing compared the two.
+            $surface = TechnicianAgentSurface::forTicket($ticket, $correctionContext);
+            $runTool = $surface->executor();
 
             // One-action-per-run guard (CO-4, generalised for Increment H): the agent
             // takes AT MOST one action per ticket — propose_close OR flag_attention OR
@@ -108,9 +98,12 @@ class TechnicianAgent
             // returns a stop string and is NOT dispatched, so a single loop can never
             // produce two TechnicianRun rows (e.g. a close AND a flag, or two flags with
             // different reasons that would each pass the tools' own idempotency).
+            //
+            // The guard trips only on an action the surface will actually dispatch, so a
+            // refused (unpublished) name cannot burn the run's single action.
             $acted = false;
-            $executor = function (string $toolName, array $input) use ($toolExecutor, &$acted): mixed {
-                if (in_array($toolName, ['propose_close', 'flag_attention', 'send_reply'], true)) {
+            $executor = function (string $toolName, array $input) use ($surface, $runTool, &$acted): mixed {
+                if ($surface->allows($toolName) && in_array($toolName, ['propose_close', 'flag_attention', 'send_reply'], true)) {
                     if ($acted) {
                         Log::info('[TechnicianAgent] Suppressed a second action call (one-action-per-run guard)', ['tool' => $toolName]);
 
@@ -120,13 +113,13 @@ class TechnicianAgent
                     $acted = true;
                 }
 
-                return $toolExecutor->execute($toolName, $input);
+                return $runTool($toolName, $input);
             };
 
             $response = $this->ai->runToolLoop(
                 system: $system,
                 userMessage: $userMessage,
-                tools: $tools,
+                tools: $surface->tools(),
                 executor: $executor,
                 maxRounds: 10,
                 maxTokenBudget: 200_000,
