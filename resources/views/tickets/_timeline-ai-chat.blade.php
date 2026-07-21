@@ -74,11 +74,20 @@
             {{-- Read-only: collapsed summary --}}
             <div class="small text-muted">
                 {{ $messageCount }} messages
-                @if($isOwner && ! \App\Support\AssistantConfig::isEnabled())
+                @if($isOwner && \App\Support\AssistantConfig::shouldShowDisabledNotice())
                     {{-- psa-322qo: this conversation would otherwise just stop
                          being usable with no reason given — say why, so the dead
-                         input explains itself to the person who was using it. --}}
-                    <span class="ms-1">&middot; AI Assistant is disabled, so this conversation is read-only.</span>
+                         input explains itself to the person who was using it.
+
+                         psa-uw2o.13 F2: the predicate was a bare !isEnabled(), so
+                         this also fired on installs with no AI provider at all.
+                         F3: it said the conversation was read-only and stopped
+                         there — no recovery path in any form, not even a tooltip.
+                         Both now come from AssistantConfig. --}}
+                    <span class="ms-1" data-assistant-disabled-notice="timeline">
+                        &middot; {{ \App\Support\AssistantConfig::disabledSummary() }}, so this conversation is
+                        read-only. {{ \App\Support\AssistantConfig::disabledRecovery() }}
+                    </span>
                 @endif
             </div>
             <a class="small text-decoration-none" data-bs-toggle="collapse"
