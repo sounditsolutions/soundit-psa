@@ -13,6 +13,7 @@ use App\Models\SignalRoute;
 use App\Models\SignalRouteStep;
 use App\Support\McpConfig;
 use Illuminate\Database\Eloquent\Collection;
+use Illuminate\Support\Facades\Log;
 
 class SignalRouter
 {
@@ -186,10 +187,25 @@ class SignalRouter
             return 'causal-depth';
         }
 
-        if ($this->hourlyTypeCount($event) > self::MAX_PER_TYPE_PER_HOUR) {
+        // The rate cap DROPS a signal the agent will never see, and the only trace is a
+        // status=suppressed row nobody reads — a clean confident nothing (CLAUDE.md rule 3).
+        // Under a storm the Chet path degrades to silence that is indistinguishable from an
+        // idle one, so say so out loud, per route, once per signal actually dropped.
+        // Loudness only: the cap itself is deliberately unchanged (psa-28j4.4).
+        $hourlyTypeCount = $this->hourlyTypeCount($event);
+        if ($hourlyTypeCount > self::MAX_PER_TYPE_PER_HOUR) {
+            Log::warning('[Signals] RATE LIMIT — signal suppressed, NOT delivered to this route', [
+                'type_key' => $event->type_key,
+                'route_id' => $route->id,
+                'count' => $hourlyTypeCount,
+                'cap' => self::MAX_PER_TYPE_PER_HOUR,
+            ]);
+
             return 'rate-limit';
         }
 
+        // Cooldown is intentional per-entity dedup and fires in normal operation — it stays
+        // quiet on purpose. Making it loud would bury the alarm above.
         if ($this->inCooldown($route, $event)) {
             return 'cooldown';
         }
