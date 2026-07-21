@@ -23,9 +23,15 @@ use Tests\TestCase;
 /**
  * TechnicianAgentToolExecutor — the read-only tool fence (Task 4, CO-1 BLOCKER).
  *
- * The executor is the enforcement boundary: a mutator tool name must NEVER
- * reach a mutating code path. All adversarial cases must fail early and leave
- * the DB in the exact same state they found it.
+ * The executor is the enforcement boundary FOR KIND: a mutator tool name must
+ * NEVER reach a mutating code path. All adversarial cases must fail early and
+ * leave the DB in the exact same state they found it.
+ *
+ * It is NOT the boundary for enablement. Whether a dispatchable tool is switched
+ * on for a given turn is decided by TechnicianAgentSurface, which derives the
+ * runnable set from the schema actually published to the model — so these tests
+ * exercise the classification layer directly and are deliberately flag-blind.
+ * The enablement property is pinned in TechnicianDormancyTest (psa-hbbuq).
  *
  * Tests:
  *  1. Mutator refusal (CO-1): set_ticket_status, set_ticket_priority,

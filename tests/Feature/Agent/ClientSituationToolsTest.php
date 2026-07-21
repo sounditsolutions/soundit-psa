@@ -561,10 +561,16 @@ class ClientSituationToolsTest extends TestCase
      * Fix 1 (the dormancy contract): readTools() — the OFFERING seam the agent loop reads
      * (TechnicianAgent builds its tool list from it) — must EXCLUDE all three situation
      * drill-downs when agent_situation_context_enabled is off (the default) and INCLUDE all
-     * three when it is on. This is true dormancy: flag off → the model is never offered the
-     * tools → it cannot call them. (The execute()-path tests above route through the
-     * READ_TOOLS allowlist, an unreachable defense-in-depth path when the tools aren't
-     * offered, so they are flag-independent and stay green either way.)
+     * three when it is on.
+     *
+     * OFFERING IS ALL THIS TEST PROVES. It used to conclude "flag off → the model is never
+     * offered the tools → it cannot call them", and that inference was false: dispatch is by
+     * name, so a name the model was never offered still reaches the executor, and psa-hbbuq
+     * proved all three RAN with the flag off. The execute()-path tests above are therefore
+     * NOT "an unreachable defense-in-depth path" as this comment once asserted — they were
+     * the live path. Uncallability is a property of the SEAM, not of this method, and it is
+     * pinned in TechnicianDormancyTest, which drives TechnicianAgent::run() and checks the
+     * published schema against the executor handed out beside it.
      */
     public function test_situation_tools_are_offered_only_when_the_flag_is_enabled(): void
     {
