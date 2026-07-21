@@ -2,6 +2,8 @@
 
 namespace Tests\Feature\Teams;
 
+use App\Enums\EmailDirection;
+use App\Models\Email;
 use App\Models\Setting;
 use App\Models\User;
 use App\Models\WikiPage;
@@ -130,21 +132,29 @@ class TeamsReadOnlyWriteGuardTest extends TestCase
      * ...and the guard must NOT over-block. A read wrongly refused silently
      * removes capability from the chat surface, which a write-refusal test alone
      * would never notice — a guard that refuses everything would pass it.
+     *
+     * psa-uw2o.17 changed WHAT "not over-blocking" means here, and the change is
+     * deliberate. This used to demand that every read the EXECUTOR can dispatch
+     * stay runnable in Teams — which is precisely the over-broad expectation that
+     * left 40 unadvertised tools reachable, because the executor is shared with
+     * the MCP staff server and carries its reads too. The bot's capability is
+     * what it PUBLISHES; that is the set that must not shrink, and every member
+     * of it must really run.
      */
-    public function test_every_read_the_executor_can_dispatch_stays_available(): void
+    public function test_every_read_the_teams_surface_publishes_stays_available(): void
     {
         $user = User::factory()->create();
         $run = TeamsReadOnlyToolset::executor($user->id);
 
-        $reads = AssistantToolExecutor::readTools();
-        $this->assertGreaterThan(20, count($reads), 'The read surface has collapsed — the chat bot has lost most of its capability.');
+        $offered = array_column(TeamsReadOnlyToolset::definitions(), 'name');
+        $this->assertGreaterThan(15, count($offered), 'The published surface has collapsed — the chat bot has lost most of its capability.');
 
-        foreach ($reads as $name) {
-            $this->assertTrue(TeamsReadOnlyToolset::allows($name), "'{$name}' is a read but the surface will not allow it.");
+        foreach ($offered as $name) {
+            $this->assertTrue(TeamsReadOnlyToolset::allows($name), "'{$name}' is published but the surface will not allow it.");
             $this->assertNotSame(
                 self::REFUSAL,
                 $run($name, []),
-                "'{$name}' is a read and must stay available in chat, but the guard refused it."
+                "'{$name}' is published to the model and must stay runnable, but the guard refused it."
             );
         }
     }
@@ -171,12 +181,20 @@ class TeamsReadOnlyWriteGuardTest extends TestCase
      * classified in general — a writer needing valid input still errors out
      * before touching anything — but it does catch a tool that mutates on the
      * way in, which is what a newly added and casually classified one would do.
+     *
+     * Driven through the INNER executor, not the Teams guard. The guard now
+     * refuses anything Teams does not publish (psa-uw2o.17), so routing this
+     * through it would quietly stop executing 40 of the 59 read handlers and
+     * shrink to a test of the guard rather than of the classification. The
+     * property under test belongs to the executor — every tool it classifies as
+     * a read must be one — and it is asserted over ALL of them, including the
+     * MCP-only reads that Teams never sees.
      */
     public function test_reads_do_not_write(): void
     {
         Setting::setValue('wiki_enabled', '1');
         $user = User::factory()->create();
-        $run = TeamsReadOnlyToolset::executor($user->id);
+        $executor = new AssistantToolExecutor(null, null, $user->id);
 
         $watching = true;
         $mutations = [];
@@ -186,8 +204,11 @@ class TeamsReadOnlyWriteGuardTest extends TestCase
             }
         });
 
-        foreach (AssistantToolExecutor::readTools() as $name) {
-            $run($name, []);
+        $reads = AssistantToolExecutor::readTools();
+        $this->assertGreaterThan(20, count($reads), 'the executor reports almost no reads — the classification is not being read');
+
+        foreach ($reads as $name) {
+            $executor->execute($name, []);
         }
 
         $watching = false;
@@ -212,5 +233,107 @@ class TeamsReadOnlyWriteGuardTest extends TestCase
                 "The chat schema advertises '{$name}', which the guard refuses to run."
             );
         }
+    }
+
+    /**
+     * psa-uw2o.17: ...and the OTHER direction, which is the one that was missing.
+     *
+     * The test above only checks offered => runnable. The previous commit
+     * asserted in a comment that filtering both definitions() and the executor
+     * guard through the same allows() meant the two "cannot disagree". They do
+     * not disagree about the FILTER; they disagreed about the BASE SET.
+     * definitions() filters the merged AssistantToolDefinitions surface (19
+     * names); allows() filtered the executor's entire read classification (59).
+     * Identical filtering over different inputs is not equality, and the 40-name
+     * gap was silently runnable by name.
+     *
+     * Asserting BOTH directions is what makes "the schema is the allowlist" a
+     * fact rather than a claim.
+     */
+    public function test_the_teams_surface_runs_exactly_what_the_teams_schema_publishes(): void
+    {
+        $user = User::factory()->create();
+        $run = TeamsReadOnlyToolset::executor($user->id);
+
+        $offered = array_column(TeamsReadOnlyToolset::definitions(), 'name');
+        sort($offered);
+
+        // Probed against the LIVE executor, not just the predicate. executor()
+        // snapshots the allowlist rather than calling allows() per invocation, so
+        // asserting the predicate alone would leave the snapshot unpinned — and
+        // "two things that agree today" is the shape of every defect on this PR.
+        // Every dispatchable name is a candidate, so a write leaking in fails here too.
+        $everyDispatchable = array_merge(
+            AssistantToolExecutor::readTools(),
+            AssistantToolExecutor::writeTools(),
+        );
+
+        $runnable = array_values(array_filter(
+            $everyDispatchable,
+            fn (string $n) => $run($n, []) !== self::REFUSAL
+        ));
+        sort($runnable);
+
+        $this->assertSame(
+            $offered,
+            $runnable,
+            "What the Teams bot will RUN is not what its schema PUBLISHES.\n".
+            'Runnable but unpublished: '.(implode(', ', array_diff($runnable, $offered)) ?: '(none)')."\n".
+            'Published but refused: '.(implode(', ', array_diff($offered, $runnable)) ?: '(none)')
+        );
+
+        // ...and the public predicate must describe that same set, so a caller
+        // asking allows() gets the truth about what the executor will do.
+        foreach ($everyDispatchable as $name) {
+            $this->assertSame(
+                in_array($name, $offered, true),
+                TeamsReadOnlyToolset::allows($name),
+                "allows('{$name}') disagrees with what the executor actually does with it."
+            );
+        }
+    }
+
+    /**
+     * psa-uw2o.17, the exploit end to end.
+     *
+     * list_email_items is dispatchable by AssistantToolExecutor (it belongs to
+     * the MCP staff surface, which shares the executor) and is classified Read,
+     * so the old executor-wide allowlist permitted it — while the Teams schema
+     * never advertised it. AiClient::executeToolLoop() dispatches whatever name
+     * comes back, so an unadvertised arm stayed reachable and handed FULL EMAIL
+     * METADATA to a bot whose published surface says it cannot see email at all.
+     */
+    public function test_an_unpublished_read_cannot_be_run_by_name_through_the_teams_surface(): void
+    {
+        $user = User::factory()->create();
+
+        Email::create([
+            'graph_id' => null,
+            'direction' => EmailDirection::Inbound,
+            'from_address' => 'someone@example.test',
+            'to_recipients' => [['address' => 'support@example.test']],
+            'subject' => 'Hidden read probe',
+            'body_preview' => 'Should never reach the ReadOnly Teams bot.',
+            'body_text' => 'Should never reach the ReadOnly Teams bot.',
+            'has_attachments' => false,
+            'importance' => 'normal',
+            'received_at' => now(),
+            'is_read' => false,
+        ]);
+
+        $this->assertNotContains(
+            'list_email_items',
+            array_column(TeamsReadOnlyToolset::definitions(), 'name'),
+            'precondition: the Teams schema must not publish list_email_items'
+        );
+
+        $result = (TeamsReadOnlyToolset::executor($user->id))('list_email_items', ['limit' => 5]);
+
+        $this->assertSame(
+            self::REFUSAL,
+            $result,
+            'The Teams ReadOnly bot executed a tool it never published and got email data back: '.
+            json_encode($result)
+        );
     }
 }
