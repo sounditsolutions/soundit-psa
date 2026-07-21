@@ -101,6 +101,48 @@ class ProfileLineOptionsJsContextTest extends TestCase
         $this->assertLabelIsInertJsData($html, [$label], 'profiles.create', $label);
     }
 
+    /**
+     * The island is inert; that is only half the story. These two assert the
+     * other half — that the thing which turns it into a dropdown is on the page
+     * and wired to every select. Deleting the @include leaves all of the
+     * assertions above green while every "Add Line" row comes up empty.
+     *
+     * profiles/create fills five selects: SKU, quantity type, and three
+     * license-type selects (line, overage usage, overage base).
+     */
+    public function test_profile_create_add_line_is_wired_to_the_option_builder(): void
+    {
+        $contract = $this->contract();
+
+        $this->actingAs(User::factory()->create());
+        $html = $this->get(route('profiles.create', $contract))->assertOk()->getContent();
+
+        $this->assertOptionBuilderReachesThePage($html, 'profiles.create', 5);
+        $this->assertPlaceholderFloorInAddLineMarkup($html, 'profiles.create', [
+            '-- Manual --',
+            'Select...',
+            '(none — use 1)',
+        ]);
+        $this->assertAddLineUsesACapturedIndex($html, 'profiles.create');
+    }
+
+    /** profiles/show fills four: SKU, quantity type, overage usage and overage base. */
+    public function test_profile_show_add_line_is_wired_to_the_option_builder(): void
+    {
+        $profile = $this->profile();
+
+        $this->actingAs(User::factory()->create());
+        $html = $this->get(route('profiles.show', $profile))->assertOk()->getContent();
+
+        $this->assertOptionBuilderReachesThePage($html, 'profiles.show', 4);
+        $this->assertPlaceholderFloorInAddLineMarkup($html, 'profiles.show', [
+            '-- Manual --',
+            'Select...',
+            '(none — use 1)',
+        ]);
+        $this->assertAddLineUsesACapturedIndex($html, 'profiles.show');
+    }
+
     // ------------------------------------------------------------------ fixtures
 
     private function contract(): Contract

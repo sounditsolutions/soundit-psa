@@ -576,41 +576,49 @@ const LICENSE_TYPE_OPTIONS = @json($licenseTypeOptionData);
 function addLine() {
     const container = document.getElementById('linesContainer');
 
+    // Claim this row's index BEFORE building it, so a throw anywhere below can
+    // never hand the next Add Line the same index. Colliding lines[N][...] field
+    // names on a billing form silently merge two rows on submit. (The invoice
+    // line editor has always done it this way; profiles used to increment at the
+    // end of the function, after the fill calls that can throw.)
+    const i = lineIndex++;
+
     const html = `
-        <div class="line-item border rounded p-3 mb-3" data-index="${lineIndex}">
+        <div class="line-item border rounded p-3 mb-3" data-index="${i}">
             <div class="row g-2">
                 <div class="col-md-3">
                     <label class="form-label small">SKU</label>
                     <select class="form-select form-select-sm sku-select"
-                            name="lines[${lineIndex}][sku_id]"
+                            name="lines[${i}][sku_id]"
                             onchange="onSkuSelected(this)">
+                        <option value="">-- Manual --</option>
                     </select>
                 </div>
                 <div class="col-md-3">
                     <label class="form-label small">Description</label>
                     <input type="text" class="form-control form-control-sm desc-input"
-                           name="lines[${lineIndex}][description]" required>
+                           name="lines[${i}][description]" required>
                 </div>
                 <div class="col-md-2">
                     <label class="form-label small">Unit Price</label>
                     <input type="number" class="form-control form-control-sm price-input"
-                           name="lines[${lineIndex}][unit_price]" step="0.01" min="0" required>
+                           name="lines[${i}][unit_price]" step="0.01" min="0" required>
                 </div>
                 <div class="col-md-2">
                     <label class="form-label small">Quantity Type</label>
                     <select class="form-select form-select-sm qty-type-select"
-                            name="lines[${lineIndex}][quantity_type]" onchange="toggleFixedQty(this)">
+                            name="lines[${i}][quantity_type]" onchange="toggleFixedQty(this)">
                     </select>
                 </div>
                 <div class="col-md-1 fixed-qty-col">
                     <label class="form-label small">Qty</label>
                     <input type="number" class="form-control form-control-sm"
-                           name="lines[${lineIndex}][fixed_quantity]" value="1" step="0.01" min="0">
+                           name="lines[${i}][fixed_quantity]" value="1" step="0.01" min="0">
                 </div>
                 <div class="col-md-1 d-flex align-items-end gap-2">
                     <div class="form-check mb-2">
-                        <input type="hidden" name="lines[${lineIndex}][is_taxable]" value="0">
-                        <input type="checkbox" class="form-check-input taxable-check" name="lines[${lineIndex}][is_taxable]"
+                        <input type="hidden" name="lines[${i}][is_taxable]" value="0">
+                        <input type="checkbox" class="form-check-input taxable-check" name="lines[${i}][is_taxable]"
                                value="1" checked>
                         <label class="form-check-label small">Tax</label>
                     </div>
@@ -621,8 +629,8 @@ function addLine() {
             </div>
             <div class="mt-2 d-flex align-items-center gap-2 flex-wrap">
                 <div class="form-check form-check-inline mb-0">
-                    <input type="checkbox" class="form-check-input tiered-toggle" id="tiered-${lineIndex}" onchange="toggleTiered(this)">
-                    <label class="form-check-label small" for="tiered-${lineIndex}">Tiered pricing (graduated)</label>
+                    <input type="checkbox" class="form-check-input tiered-toggle" id="tiered-${i}" onchange="toggleTiered(this)">
+                    <label class="form-check-label small" for="tiered-${i}">Tiered pricing (graduated)</label>
                 </div>
                 <span class="pricing-method-note small text-info-emphasis" style="display:none"></span>
             </div>
@@ -639,26 +647,28 @@ function addLine() {
                 <div class="row g-2">
                     <div class="col-md-3">
                         <label class="form-label small">Usage License Type</label>
-                        <select class="form-select form-select-sm" name="lines[${lineIndex}][usage_license_type_id]">
+                        <select class="form-select form-select-sm" name="lines[${i}][usage_license_type_id]">
+                            <option value="">Select...</option>
                         </select>
                         <div class="form-text">What to measure</div>
                     </div>
                     <div class="col-md-3">
                         <label class="form-label small">Base License Type</label>
-                        <select class="form-select form-select-sm" name="lines[${lineIndex}][base_license_type_id]">
+                        <select class="form-select form-select-sm" name="lines[${i}][base_license_type_id]">
+                            <option value="">(none — use 1)</option>
                         </select>
                         <div class="form-text">What provides included amount</div>
                     </div>
                     <div class="col-md-3">
                         <label class="form-label small">Included per Base</label>
                         <input type="number" class="form-control form-control-sm included-per-base-input"
-                               name="lines[${lineIndex}][included_per_base_unit]" min="0" step="1" placeholder="e.g. 1024">
+                               name="lines[${i}][included_per_base_unit]" min="0" step="1" placeholder="e.g. 1024">
                         <div class="form-text">Units included per base unit</div>
                     </div>
                     <div class="col-md-3">
                         <label class="form-label small">Overage Divisor</label>
                         <input type="number" class="form-control form-control-sm"
-                               name="lines[${lineIndex}][overage_divisor]" min="1" step="1" value="1">
+                               name="lines[${i}][overage_divisor]" min="1" step="1" value="1">
                         <div class="form-text">Convert raw overage to billing units</div>
                     </div>
                 </div>
@@ -670,13 +680,18 @@ function addLine() {
     // The markup above is static, developer-authored HTML. The options are the
     // operator-entered part, so they are built from data instead — never spliced
     // into a string that JavaScript then has to parse.
+    //
+    // Each placeholder below is ALSO in the static markup above. Placeholders are
+    // developer constants with no XSS exposure, so shipping them server-side costs
+    // nothing and means a failure here degrades a row to LABELLED empty selects
+    // rather than blank ones. fillSelectOptions replaceChildren()s them away and
+    // re-adds them, so the success path is unchanged. Keep the two spellings
+    // identical. Only the operator-entered labels must stay in data.
     const line = container.lastElementChild;
     fillSelectOptions(line.querySelector('.sku-select'), SKU_OPTIONS, '-- Manual --');
     fillSelectOptions(line.querySelector('.qty-type-select'), QUANTITY_TYPE_OPTIONS, null);
     fillSelectOptions(line.querySelector('[name$="[usage_license_type_id]"]'), LICENSE_TYPE_OPTIONS, 'Select...');
     fillSelectOptions(line.querySelector('[name$="[base_license_type_id]"]'), LICENSE_TYPE_OPTIONS, '(none — use 1)');
-
-    lineIndex++;
 }
 
 function onSkuSelected(select) {

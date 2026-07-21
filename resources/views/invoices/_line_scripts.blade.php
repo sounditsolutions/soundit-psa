@@ -56,6 +56,7 @@ function addLine() {
                     <select class="form-select form-select-sm sku-select"
                             name="lines[${i}][sku_id]"
                             onchange="onSkuSelected(this)">
+                        <option value="">-- Manual --</option>
                     </select>
                 </div>
                 <div class="col-lg-2 col-md-6">
@@ -107,6 +108,13 @@ function addLine() {
     // The markup above is static, developer-authored HTML. The options are the
     // operator-entered part, so they are built from data instead — never spliced
     // into a string that JavaScript then has to parse.
+    //
+    // The '-- Manual --' placeholder is ALSO in the static markup above. It is a
+    // developer constant with no XSS exposure, so it costs nothing to ship it
+    // server-side, and it means a JS failure here degrades the row to a LABELLED
+    // empty select rather than a blank one. fillSelectOptions replaceChildren()s
+    // it away and re-adds it, so the success path is unchanged. Keep the two
+    // spellings identical. Only the operator-entered labels must stay in data.
     fillSelectOptions(newItem.querySelector('.sku-select'), SKU_OPTIONS, '-- Manual --');
 
     const descInput = newItem.querySelector('.desc-input');

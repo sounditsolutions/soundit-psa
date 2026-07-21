@@ -3,8 +3,22 @@
 namespace Tests\Support;
 
 /**
- * Assertions for "operator-entered text reached the page as inert DATA, not as
- * JavaScript source" (psa-951q).
+ * Assertions for the two halves of psa-951q's option-list fix:
+ *
+ *   1. operator-entered text reaches the page as inert DATA, not as JavaScript
+ *      source (assertLabelIsInertJsData and the lexer under it), and
+ *   2. that data is actually BUILT INTO A DROPDOWN once it gets there
+ *      (assertOptionBuilderReachesThePage, assertPlaceholderFloorInAddLineMarkup).
+ *
+ * Half 2 exists because half 1 alone is not evidence the screen works. A review
+ * at e4f6f4e deleted @include('partials._select_options_js') from all three
+ * consumers and ran tests/Feature/Invoices + tests/Feature/Profiles: 107 tests,
+ * 902 assertions, ALL GREEN — while every "Add Line" row, and invoices/create's
+ * only row, rendered with completely empty dropdowns. Every assertion covered
+ * the inertness of the island; none covered its CONSUMER existing.
+ *
+ * So: a data island is only half a feature, and asserting it is inert is only
+ * half a test.
  *
  * Several line editors in this app build <option> lists client-side so an "Add
  * Line" button can stamp out another row. Blade's {{ }} escapes for HTML. It
@@ -33,6 +47,13 @@ trait AssertsInertJsData
      * characters hang off it.
      */
     private const MARK = 'PSA951QMARK';
+
+    /**
+     * The helper that turns a data island into real <option> elements. It reaches
+     * a page ONLY via @include('partials._select_options_js'), so its presence in
+     * the rendered output is exactly the include's presence.
+     */
+    private const BUILDER = 'fillSelectOptions';
 
     /** Each hostile label, keyed by the JS context it attacks. */
     public static function hostileLabels(): array
@@ -150,6 +171,141 @@ trait AssertsInertJsData
                 $want,
                 $decodings,
                 "{$screen}: expected an option field decoding to ".var_export($want, true).', but none did.'
+            );
+        }
+    }
+
+    // -------------------------------------------------- the island's CONSUMER
+
+    /**
+     * A data island is inert on its own — it is JSON sitting in a const. What
+     * turns it into a usable dropdown is fillSelectOptions(), which arrives on
+     * the page only through @include('partials._select_options_js').
+     *
+     * This is the assertion whose absence let the include be deleted from all
+     * three consumers with the whole suite green (see the class docblock). It
+     * pins BOTH ends of the wiring, because either alone is satisfiable while the
+     * screen is broken: the helper must be DEFINED (the include is present) and
+     * it must be CALLED (the rows are actually populated from it).
+     *
+     * $expectedFillCalls is pinned exactly rather than as a minimum, so dropping
+     * one fill call — leaving a single select permanently empty — fails too. If
+     * you legitimately added a select that fillSelectOptions now populates, bump
+     * the number in the calling test.
+     */
+    private function assertOptionBuilderReachesThePage(string $html, string $screen, int $expectedFillCalls): void
+    {
+        $definitions = 0;
+        $calls = 0;
+
+        foreach ($this->scriptBlocks($html) as $js) {
+            if (! str_contains($js, self::BUILDER)) {
+                continue;
+            }
+
+            [$map, $lexedCleanly] = $this->lexJs($js);
+
+            $this->assertTrue(
+                $lexedCleanly,
+                "{$screen}: a <script> block referencing ".self::BUILDER.' did not lex to a balanced JS source.'
+            );
+
+            foreach ($this->offsetsOf($js, self::BUILDER) as $at) {
+                // Only real JS counts — the views also name the helper in prose
+                // inside // comments, and a comment populates nothing.
+                if ($map[$at] !== 'c') {
+                    continue;
+                }
+
+                if (str_ends_with(rtrim(substr($js, 0, $at)), 'function')) {
+                    $definitions++;
+                } else {
+                    $calls++;
+                }
+            }
+        }
+
+        $this->assertSame(
+            1,
+            $definitions,
+            "{$screen}: expected exactly one `function ".self::BUILDER."(` on the page, found {$definitions}. ".
+            "0 means @include('partials._select_options_js') is missing, and every client-side row on this ".
+            'screen renders with EMPTY dropdowns — silently, because the data island itself still looks fine. '.
+            'More than 1 means the partial is included twice.'
+        );
+
+        $this->assertSame(
+            $expectedFillCalls,
+            $calls,
+            "{$screen}: expected {$expectedFillCalls} ".self::BUILDER.'() call sites, found '.$calls.'. '.
+            'A dropped call leaves that select permanently empty; an added one needs this count bumped.'
+        );
+    }
+
+    /**
+     * Placeholders ('-- Manual --', 'Select...', '(none — use 1)') are DEVELOPER
+     * CONSTANTS, not operator text, so they carry no XSS exposure and belong in
+     * the static server markup where they survive a JS failure.
+     *
+     * fillSelectOptions() calls replaceChildren() and re-adds the placeholder, so
+     * the success path is byte-identical — but if the helper never arrives, or
+     * throws, the row degrades to a LABELLED empty select instead of a blank one.
+     * Only the untrusted labels must go through the data island.
+     *
+     * Asserted in template-literal context specifically, which is what proves the
+     * option is in the addLine() row template rather than merely somewhere on the
+     * page (every screen also renders a server-side first-paint row).
+     */
+    private function assertPlaceholderFloorInAddLineMarkup(string $html, string $screen, array $placeholders): void
+    {
+        $blocks = [];
+
+        foreach ($this->scriptBlocks($html) as $js) {
+            $blocks[] = [$js, $this->lexJs($js)[0]];
+        }
+
+        foreach ($placeholders as $placeholder) {
+            $option = '<option value="">'.$placeholder.'</option>';
+            $found = false;
+
+            foreach ($blocks as [$js, $map]) {
+                foreach ($this->offsetsOf($js, $option) as $at) {
+                    if ($map[$at] === 't') {
+                        $found = true;
+                        break 2;
+                    }
+                }
+            }
+
+            $this->assertTrue(
+                $found,
+                "{$screen}: the addLine() row template has no static ".var_export($option, true).' floor. '.
+                'A placeholder is a developer constant, so it belongs in the markup — without it, a JS '.
+                'failure leaves an unlabelled blank select instead of a labelled empty one. It must be '.
+                'spelled exactly as the argument passed to '.self::BUILDER.'().'
+            );
+        }
+    }
+
+    /**
+     * addLine() must claim its row index BEFORE building the row, never after.
+     *
+     * profiles/* used to increment the shared counter at the END of the function,
+     * so a throw mid-build (e.g. a missing fillSelectOptions) left the counter
+     * unadvanced and the NEXT Add Line reused the index — colliding lines[N][...]
+     * field names, which merge two rows on submit. On a billing form that is a
+     * data-integrity bug, not a cosmetic one. Referencing the mutable counter
+     * inside the template is the shape of that defect, so no screen may do it.
+     */
+    private function assertAddLineUsesACapturedIndex(string $html, string $screen): void
+    {
+        foreach ($this->scriptBlocks($html) as $js) {
+            $this->assertStringNotContainsString(
+                '${lineIndex}',
+                $js,
+                "{$screen}: addLine() interpolates the shared lineIndex counter directly. Capture it first ".
+                '(`const i = lineIndex++;`) so a throw mid-build cannot hand the next row the same index '.
+                'and collide its lines[N][...] field names.'
             );
         }
     }

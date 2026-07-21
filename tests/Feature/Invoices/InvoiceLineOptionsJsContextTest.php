@@ -181,6 +181,37 @@ class InvoiceLineOptionsJsContextTest extends TestCase
         );
     }
 
+    /**
+     * The island is inert; that is only half the story. These two assert the
+     * other half — that the thing which turns it into a dropdown is on the page
+     * and wired to the select. Deleting the @include leaves all of the assertions
+     * above green while every "Add Line" row comes up empty, and on
+     * invoices/create the sole row IS an "Add Line" row.
+     *
+     * _line_scripts fills one select per row: the SKU picker.
+     */
+    public function test_invoice_create_add_line_is_wired_to_the_option_builder(): void
+    {
+        $this->actingAs(User::factory()->create());
+        $html = $this->get(route('invoices.create'))->assertOk()->getContent();
+
+        $this->assertOptionBuilderReachesThePage($html, 'invoices.create', 1);
+        $this->assertPlaceholderFloorInAddLineMarkup($html, 'invoices.create', ['-- Manual --']);
+        $this->assertAddLineUsesACapturedIndex($html, 'invoices.create');
+    }
+
+    public function test_invoice_edit_add_line_is_wired_to_the_option_builder(): void
+    {
+        $invoice = $this->editableInvoice();
+
+        $this->actingAs(User::factory()->create());
+        $html = $this->get(route('invoices.edit', $invoice))->assertOk()->getContent();
+
+        $this->assertOptionBuilderReachesThePage($html, 'invoices.edit', 1);
+        $this->assertPlaceholderFloorInAddLineMarkup($html, 'invoices.edit', ['-- Manual --']);
+        $this->assertAddLineUsesACapturedIndex($html, 'invoices.edit');
+    }
+
     // ------------------------------------------------------------------ helpers
 
     /** Pull one SKU's entry out of the rendered SKU_OPTIONS data island. */
