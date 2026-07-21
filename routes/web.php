@@ -678,14 +678,18 @@ Route::middleware('auth')->group(function () {
         ->where('slug', '.*')->name('clients.wiki.show');
 
     // AI Assistant
-    Route::post('/assistant/conversations', [AssistantController::class, 'createConversation'])->name('assistant.create');
-    Route::get('/assistant/conversations/for-ticket/{ticket}', [AssistantController::class, 'forTicket'])->name('assistant.for-ticket');
-    Route::get('/assistant/conversations/{conversation}', [AssistantController::class, 'getMessages'])->name('assistant.show');
-    Route::post('/assistant/conversations/{conversation}/messages', [AssistantController::class, 'sendMessage'])
-        ->middleware('throttle:10,1')
-        ->name('assistant.message');
-    Route::post('/assistant/conversations/{conversation}/save-note', [AssistantController::class, 'saveNote'])->name('assistant.save-note');
-    Route::get('/assistant/general', [AssistantController::class, 'general'])->name('assistant.general');
+    // psa-uw2o: grouped behind `assistant.enabled` so the toggle is a real off
+    // switch, and so a route added here later cannot land outside the gate.
+    Route::middleware('assistant.enabled')->group(function () {
+        Route::post('/assistant/conversations', [AssistantController::class, 'createConversation'])->name('assistant.create');
+        Route::get('/assistant/conversations/for-ticket/{ticket}', [AssistantController::class, 'forTicket'])->name('assistant.for-ticket');
+        Route::get('/assistant/conversations/{conversation}', [AssistantController::class, 'getMessages'])->name('assistant.show');
+        Route::post('/assistant/conversations/{conversation}/messages', [AssistantController::class, 'sendMessage'])
+            ->middleware('throttle:10,1')
+            ->name('assistant.message');
+        Route::post('/assistant/conversations/{conversation}/save-note', [AssistantController::class, 'saveNote'])->name('assistant.save-note');
+        Route::get('/assistant/general', [AssistantController::class, 'general'])->name('assistant.general');
+    });
 
     // AI Technician cockpit (Plan 1B)
     Route::get('/cockpit', [\App\Http\Controllers\Web\TechnicianCockpitController::class, 'index'])->name('cockpit.index');

@@ -40,6 +40,14 @@ class AssistantService
             throw new \RuntimeException('AI assistant requires Anthropic provider to be configured.');
         }
 
+        // psa-uw2o: defence in depth behind the `assistant.enabled` route gate.
+        // The middleware guards the HTTP door; this guards every programmatic
+        // caller, so a future entry point cannot reach the tool loop — and its
+        // two write tools — around the operator's off switch.
+        if (! AssistantConfig::isEnabled()) {
+            throw new \RuntimeException('The AI assistant is disabled.');
+        }
+
         // Check conversation length
         $messageCount = $conversation->messages()->count();
         $maxMessages = AssistantConfig::maxMessagesPerConversation();
@@ -174,10 +182,22 @@ class AssistantService
         $prompt = <<<'PROMPT'
 You are an AI assistant for MSP technicians. You help investigate issues, answer questions about clients and their infrastructure, and provide technical guidance.
 
-You have access to read-only tools for querying ticket history, device health, email security, and Microsoft 365 data. Use tools proactively when they would help answer the question — do not guess when you can look it up.
+You have tools for querying ticket history, device health, email security, and Microsoft 365 data. Use tools proactively when they would help answer the question — do not guess when you can look it up.
 
 Be concise and actionable. Reference ticket IDs and device hostnames specifically. Use markdown formatting. When you use a tool, briefly note what you found so the technician can verify your sources.
 PROMPT;
+
+        // psa-uw2o: this prompt used to tell the model its tools were read-only
+        // while handing it two writers, which is how a write surface stays
+        // invisible to anyone reviewing the prompt to find out what the
+        // Assistant can do. Keyed to the SAME predicate getTools() is given
+        // ($hasClient, from resolveClientId()) so the description cannot drift
+        // from the surface actually offered.
+        if ($conversation->resolveClientId() !== null) {
+            $prompt .= "\n\nTwo of your tools WRITE to the PSA: create_ticket creates a real ticket, and add_ticket_note adds a real note. Both take effect immediately and are not held for anyone's approval. Use them only when the technician has asked you to — never as a side effect of investigating.";
+        } else {
+            $prompt .= "\n\nYour tools are read-only: you can look things up, but you cannot change anything in the PSA.";
+        }
 
         // Add context based on conversation type
         if ($conversation->context_type === 'ticket') {

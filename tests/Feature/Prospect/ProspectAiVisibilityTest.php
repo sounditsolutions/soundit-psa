@@ -230,6 +230,14 @@ class ProspectAiVisibilityTest extends TestCase
 
     public function test_assistant_conversations_and_save_note_allow_prospect_context(): void
     {
+        // psa-uw2o: the assistant routes are now gated on AssistantConfig::isEnabled(),
+        // which requires a configured Anthropic provider. This test's subject is
+        // "prospect context is accepted", not "the endpoint is reachable while the
+        // Assistant is off" — so supply the precondition the surface legitimately
+        // needs. It still fails if prospect context is ever rejected.
+        Setting::setValue('ai_provider', 'anthropic');
+        Setting::setEncrypted('ai_api_key', 'test-key');
+
         $user = User::factory()->create();
         $prospect = Client::factory()->prospect()->create();
         $ticket = Ticket::factory()->create(['client_id' => $prospect->id]);
