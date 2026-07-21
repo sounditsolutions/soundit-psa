@@ -49,6 +49,8 @@ class AssistantDisabledNoticeSitesTest extends TestCase
      */
     private const SITES = ['topbar', 'ticket-actions', 'timeline'];
 
+    private const NOTICE_ATTR = 'data-assistant-disabled-notice';
+
     private User $user;
 
     private Ticket $ticket;
@@ -116,7 +118,7 @@ class AssistantDisabledNoticeSitesTest extends TestCase
 
     private function marker(string $site): string
     {
-        return 'data-assistant-disabled-notice="'.$site.'"';
+        return self::NOTICE_ATTR.'="'.$site.'"';
     }
 
     /**
@@ -324,7 +326,351 @@ class AssistantDisabledNoticeSitesTest extends TestCase
         }
     }
 
+    // ── .20: the topbar must SAY the state, not whisper it ───────────────────
+
+    /**
+     * The three tests above were satisfied by a chip whose only VISIBLE text
+     * was the hard-coded string "AI off" — hidden below `sm` at that, so on a
+     * phone it was a bare robot icon. The state and the recovery path lived
+     * only in a `title` and a `visually-hidden` span, which inverted the usual
+     * failure: a screen-reader user was told more than a sighted keyboard or
+     * touch user, who got an unexplained icon.
+     *
+     * They passed because `noticeRegion()` matches raw HTML, and raw HTML
+     * cannot tell "on screen" from "in the accessibility tree". Everything
+     * below walks the DOM instead, because the questions here are structural:
+     * what does a sighted user at 360px read off this chip, and what does a
+     * screen reader announce?
+     */
+    private function home(): string
+    {
+        return (string) $this->actingAs($this->user)->get('/')->assertOk()->getContent();
+    }
+
+    private function xpath(string $html): \DOMXPath
+    {
+        $doc = new \DOMDocument;
+
+        $previous = libxml_use_internal_errors(true);
+        $doc->loadHTML('<?xml encoding="UTF-8">'.$html, LIBXML_NOERROR | LIBXML_NOWARNING);
+        libxml_clear_errors();
+        libxml_use_internal_errors($previous);
+
+        return new \DOMXPath($doc);
+    }
+
+    private function topbarNotice(string $html): \DOMElement
+    {
+        $nodes = $this->xpath($html)->query('//*[@'.self::NOTICE_ATTR.'="topbar"]');
+
+        $this->assertNotFalse($nodes, 'the notice XPath did not run — this guard would silently pass on nothing');
+        $this->assertSame(1, $nodes->length, 'expected exactly one topbar notice element on the page');
+
+        $element = $nodes->item(0);
+        $this->assertInstanceOf(\DOMElement::class, $element);
+
+        return $element;
+    }
+
+    /**
+     * The text a sighted user reads off the chip at the NARROWEST viewport.
+     *
+     * `d-none` is Bootstrap's "hidden at every breakpoint until a wider
+     * `d-{bp}-*` puts it back", so at base width anything carrying it is off
+     * screen — which is exactly how the old label (`d-none d-sm-inline`)
+     * vanished on the viewports least able to hover a tooltip. `visually-hidden`
+     * is never visible at any width. `title` never appears here at all, because
+     * it is an attribute and not text.
+     */
+    private function visibleTextAtBaseWidth(\DOMNode $node): string
+    {
+        return $this->collapse($this->textOf($node, function (\DOMElement $el): bool {
+            $classes = ' '.$el->getAttribute('class').' ';
+
+            return $el->hasAttribute('hidden')
+                || str_contains($classes, ' d-none ')
+                || str_contains($classes, ' visually-hidden ')
+                || str_contains($classes, ' visually-hidden-focusable ');
+        }));
+    }
+
+    /**
+     * The text assistive tech would announce for the chip.
+     *
+     * `aria-hidden` subtrees are dropped; `title` values are ADDED, because
+     * screen readers commonly announce a title as the element's description.
+     * That inclusion is the point of the duplication guard below: a sentence
+     * that lives both in a `visually-hidden` span and in a `title` is a
+     * sentence that can be read out twice.
+     */
+    private function announcedText(\DOMNode $node): string
+    {
+        $text = $this->textOf($node, fn (\DOMElement $el): bool => $el->getAttribute('aria-hidden') === 'true');
+
+        foreach ($this->titlesWithin($node) as $title) {
+            $text .= ' '.$title;
+        }
+
+        return $this->collapse($text);
+    }
+
+    /** @return list<string> */
+    private function titlesWithin(\DOMNode $node): array
+    {
+        $titles = [];
+
+        $attributes = (new \DOMXPath($node->ownerDocument))
+            ->query('descendant-or-self::*/@title', $node);
+
+        if ($attributes !== false) {
+            foreach ($attributes as $attribute) {
+                $titles[] = $attribute->nodeValue ?? '';
+            }
+        }
+
+        return $titles;
+    }
+
+    private function textOf(\DOMNode $node, callable $isHidden): string
+    {
+        if ($node instanceof \DOMText) {
+            return $node->wholeText;
+        }
+
+        if ($node instanceof \DOMElement && $isHidden($node)) {
+            return '';
+        }
+
+        $text = '';
+
+        foreach ($node->childNodes as $child) {
+            $text .= ' '.$this->textOf($child, $isHidden);
+        }
+
+        return $text;
+    }
+
+    private function collapse(string $text): string
+    {
+        return trim((string) preg_replace('/\s+/', ' ', $text));
+    }
+
+    /**
+     * The probe itself, under test.
+     *
+     * Every assertion in this section is only worth what this walker is worth.
+     * If it silently counted `visually-hidden` text as visible, the whole
+     * section would go green on the exact defect it exists to catch — so the
+     * separation is asserted directly rather than assumed.
+     */
+    public function test_the_visible_text_probe_actually_separates_screen_from_accessibility_tree(): void
+    {
+        $this->anthropicButSwitchedOff();
+
+        $notice = $this->topbarNotice($this->home());
+
+        $visible = $this->visibleTextAtBaseWidth($notice);
+        $announced = $this->announcedText($notice);
+
+        $this->assertNotSame('', $visible, 'control: the chip must have some visible text at all');
+        $this->assertStringContainsString(
+            'AI Assistant is disabled',
+            $announced,
+            'control: the full sentence must reach the accessibility tree, or the separation below is measuring nothing'
+        );
+        $this->assertStringNotContainsString(
+            'AI Assistant is disabled',
+            $visible,
+            'control: visually-hidden text must NOT be counted as visible, or every guard in this section is vacuous'
+        );
+    }
+
+    /**
+     * The blocking defect: the visible chip said "AI off" in BOTH ineligible
+     * states, so the three-state model this class exists to express was
+     * invisible on the one surface that appears on every page.
+     */
+    public function test_the_topbar_tells_the_two_causes_apart_in_visible_text(): void
+    {
+        $this->anthropicButSwitchedOff();
+        $switchedOff = $this->visibleTextAtBaseWidth($this->topbarNotice($this->home()));
+
+        $this->nonAnthropicProvider();
+        $wrongProvider = $this->visibleTextAtBaseWidth($this->topbarNotice($this->home()));
+
+        $this->assertNotSame(
+            $switchedOff,
+            $wrongProvider,
+            "both causes rendered the same visible chip ('{$switchedOff}') — a switched-off Assistant and one that cannot run on this provider need different actions"
+        );
+
+        $this->assertStringContainsString('disabled', $switchedOff, "visible topbar text was '{$switchedOff}'");
+        $this->assertStringNotContainsString('unavailable', $switchedOff, "visible topbar text was '{$switchedOff}'");
+
+        $this->assertStringContainsString('unavailable', $wrongProvider, "visible topbar text was '{$wrongProvider}'");
+        $this->assertStringNotContainsString(
+            'disabled',
+            $wrongProvider,
+            "visible topbar text was '{$wrongProvider}' — telling an operator to flip a switch that will not help is worse than saying nothing"
+        );
+    }
+
+    /**
+     * Reviewer's requirement: the chip must give the recovery path, or a clear
+     * visible pointer to where it lives. A full sentence in chrome that sits on
+     * every page would be nagging, so a pointer is the shape — but it has to be
+     * ON SCREEN, not in a tooltip.
+     */
+    public function test_the_topbar_points_at_settings_in_visible_text_for_both_causes(): void
+    {
+        foreach (['anthropicButSwitchedOff', 'nonAnthropicProvider'] as $state) {
+            $this->{$state}();
+
+            $visible = $this->visibleTextAtBaseWidth($this->topbarNotice($this->home()));
+
+            $this->assertStringContainsString(
+                'Settings',
+                $visible,
+                "state {$state}: the visible chip read '{$visible}' — a notice that names no recovery path leaves the operator to guess"
+            );
+        }
+    }
+
+    /**
+     * The old label was `d-none d-sm-inline`, so below 576px the notice was a
+     * robot icon and nothing else — on precisely the touch devices that cannot
+     * hover the tooltip holding the explanation.
+     */
+    public function test_the_topbar_notice_is_not_icon_only_at_the_narrowest_viewport(): void
+    {
+        $this->anthropicButSwitchedOff();
+
+        $notice = $this->topbarNotice($this->home());
+
+        $this->assertStringContainsString(
+            'disabled',
+            $this->visibleTextAtBaseWidth($notice),
+            'the state must survive at base width — a bare icon explains nothing'
+        );
+
+        // Named separately from the assertion above so a regression points at
+        // its own cause rather than at "the text went missing somehow".
+        $hidden = (new \DOMXPath($notice->ownerDocument))->query(
+            'descendant-or-self::*[contains(concat(" ", normalize-space(@class), " "), " d-none ")]',
+            $notice
+        );
+
+        $this->assertNotFalse($hidden);
+        $this->assertSame(
+            0,
+            $hidden->length,
+            'something in the notice is hidden at base width — responsive hiding is what made this notice icon-only on a phone'
+        );
+    }
+
+    /**
+     * Now that the visible text carries the state, the belt-and-braces copies
+     * that used to compensate for it become a liability: a `title` plus a
+     * `visually-hidden` span holding the same sentence is that sentence read
+     * out twice.
+     */
+    public function test_the_topbar_does_not_announce_the_same_notice_twice(): void
+    {
+        $this->anthropicButSwitchedOff();
+
+        $announced = $this->announcedText($this->topbarNotice($this->home()));
+
+        $this->assertSame(
+            1,
+            substr_count($announced, 'AI Assistant is disabled'),
+            "the state is announced more than once: '{$announced}'"
+        );
+        $this->assertSame(
+            1,
+            substr_count($announced, 'Turn it on in Settings'),
+            "the recovery path is announced more than once: '{$announced}'"
+        );
+    }
+
     // ── F3: contrast. The topbar label must reach WCAG AA. ───────────────────
+
+    /**
+     * The stylesheets the rendered page actually links, as paths on disk.
+     *
+     * CDN links (Bootstrap, the icon font, Google Fonts) map to no local file
+     * and drop out here, which is what we want: this asks what OUR CSS says.
+     *
+     * @return array<string, string> path => contents
+     */
+    private function linkedStylesheets(string $html): array
+    {
+        $hrefs = $this->xpath($html)->query('//link[@rel="stylesheet"]/@href');
+        $this->assertNotFalse($hrefs);
+
+        $sheets = [];
+
+        foreach ($hrefs as $href) {
+            $path = parse_url((string) $href->nodeValue, PHP_URL_PATH);
+
+            if (! is_string($path)) {
+                continue;
+            }
+
+            $file = public_path(ltrim($path, '/'));
+
+            if (is_file($file)) {
+                $sheets[$file] = (string) file_get_contents($file);
+            }
+        }
+
+        $this->assertNotEmpty($sheets, 'the page linked no local stylesheet at all — this guard would silently pass on nothing');
+
+        return $sheets;
+    }
+
+    /**
+     * The `.assistant-status-off` block from a stylesheet the page ACTUALLY
+     * LINKS — not from whichever file we assume owns it.
+     *
+     * That distinction is the whole point. This guard used to read
+     * `public/css/assistant-chat.css` directly, and nothing in the application
+     * has ever linked that file: the AA colours it measured never reached a
+     * browser, so the contrast fix was real in the repository and absent on
+     * screen. Sourcing the rule from the rendered page's own <link> tags is
+     * what stops that from being possible again.
+     */
+    private function renderedStatusOffRule(): string
+    {
+        $blocks = [];
+
+        foreach ($this->linkedStylesheets($this->home()) as $path => $css) {
+            if (preg_match('/\.assistant-status-off\s*\{([^}]*)\}/', $css, $block) === 1) {
+                $blocks[$path] = $block[1];
+            }
+        }
+
+        $this->assertNotEmpty(
+            $blocks,
+            'no stylesheet linked by the page declares .assistant-status-off — the chip renders unstyled, and any contrast measured from an unlinked file describes nothing a user sees'
+        );
+        $this->assertCount(
+            1,
+            $blocks,
+            'more than one linked stylesheet declares .assistant-status-off — this guard cannot say which one wins, so it must not claim to have measured the chip'
+        );
+
+        return (string) reset($blocks);
+    }
+
+    public function test_the_stylesheet_that_styles_the_topbar_notice_is_actually_linked(): void
+    {
+        $this->anthropicButSwitchedOff();
+
+        // Deliberately its own test: if the rule is unreachable the contrast
+        // test below fails too, but with a message about colours rather than
+        // about delivery, which is the thing that was actually broken.
+        $this->assertNotSame('', trim($this->renderedStatusOffRule()));
+    }
 
     /**
      * The disabled topbar indicator was `.assistant-trigger` + Bootstrap's
@@ -339,10 +685,9 @@ class AssistantDisabledNoticeSitesTest extends TestCase
      */
     public function test_the_disabled_topbar_indicator_meets_wcag_aa_for_normal_text(): void
     {
-        $css = (string) file_get_contents(public_path('css/assistant-chat.css'));
+        $this->anthropicButSwitchedOff();
 
-        $found = preg_match('/\.assistant-status-off\s*\{([^}]*)\}/', $css, $block);
-        $this->assertSame(1, $found, 'the .assistant-status-off rule was not found — this guard would silently pass on nothing');
+        $block = [1 => $this->renderedStatusOffRule()];
 
         $topbar = $this->parseColor($this->declaration(
             (string) file_get_contents(public_path('css/app.css')),

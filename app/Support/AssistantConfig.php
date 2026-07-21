@@ -173,6 +173,50 @@ class AssistantConfig
         };
     }
 
+    /**
+     * The state in two words, for GLOBAL CHROME. Null when no notice is
+     * warranted.
+     *
+     * psa-uw2o.20: the topbar showed a hard-coded "AI off" — identical in both
+     * ineligible states, and hidden below the `sm` breakpoint, so on a phone the
+     * whole notice was a robot icon. Everything that actually explained it lived
+     * in a `title` and a `visually-hidden` span, which inverted the usual
+     * failure: the screen-reader user was told more than the sighted keyboard or
+     * touch user.
+     *
+     * So chrome gets its OWN copy rather than the full sentence: the topbar sits
+     * on every page, and a sentence there would nag every screen in the product.
+     * The distinguishing word is the same one disabledSummary() uses — the
+     * shapes differ, the state must not, and AssistantConfigChromeCopyTest pins
+     * that agreement so the short and long forms cannot drift apart.
+     */
+    public static function disabledChromeLabel(): ?string
+    {
+        return match (self::disabledReason()) {
+            self::REASON_SWITCHED_OFF => 'Assistant disabled',
+            self::REASON_WRONG_PROVIDER => 'Assistant unavailable',
+            default => null,
+        };
+    }
+
+    /**
+     * Where the fix lives, in one word, for global chrome. Null when no notice
+     * is warranted.
+     *
+     * Both recovery paths in disabledRecovery() run through Settings ›
+     * Integrations, so chrome can point at the common prefix and let the ticket
+     * sites — where someone is actually reaching for the Assistant — spell out
+     * which switch. It is a POINTER, not a link: the notice is inert on purpose
+     * (psa-uw2o.4), because a dead control that looks live is worse than absence.
+     */
+    public static function disabledChromePointer(): ?string
+    {
+        return match (self::disabledReason()) {
+            self::REASON_SWITCHED_OFF, self::REASON_WRONG_PROVIDER => 'Settings',
+            default => null,
+        };
+    }
+
     public static function dailyTokenLimit(): int
     {
         return (int) (Setting::getValue('assistant_daily_token_limit') ?: 500_000);

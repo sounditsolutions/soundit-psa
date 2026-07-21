@@ -45,18 +45,44 @@
              only in a title. A disabled button is not keyboard focusable, so that
              text was unreachable without a mouse. It is a <span> now — it was never
              a control, and saying so costs nothing and makes the sentence readable.
-             The full sentence is in the accessibility tree rather than on screen
-             because this is global chrome on every page; the ticket sites, where
-             someone actually reaches for the Assistant, show it as visible text. --}}
-        @php
-            $assistantSummary = \App\Support\AssistantConfig::disabledSummary();
-            $assistantRecovery = \App\Support\AssistantConfig::disabledRecovery();
-        @endphp
-        <span class="assistant-status-off" data-assistant-disabled-notice="topbar"
-              title="{{ $assistantSummary }} — {{ $assistantRecovery }}">
+
+             psa-uw2o.20: the visible label was then the hard-coded string "AI off",
+             wrapped in `d-none d-sm-inline`. Three consequences, and the previous
+             comment here defended all of them as deliberate:
+               - both ineligible states rendered the SAME two words, so the
+                 three-state model AssistantConfig exists to express was invisible
+                 on the one surface that appears on every page;
+               - below `sm` even that disappeared, leaving a bare robot icon on
+                 exactly the touch devices that cannot hover a tooltip;
+               - the state and the recovery path existed only in a `title` and a
+                 `visually-hidden` span, so a sighted keyboard or touch user was
+                 told LESS than a screen-reader user.
+
+             The instinct behind it was sound and is kept: a full sentence on
+             global chrome would nag every screen in the product. So chrome gets a
+             chrome-sized copy — state in two words, plus a pointer naming where
+             the fix lives — held at ALL widths, while the ticket sites (where
+             someone is actually reaching for the Assistant) spell out which
+             switch. Both strings come from AssistantConfig for the same reason
+             the sentences do: three views restating the same copy is what caused
+             the F2 drift.
+
+             The visible run is aria-hidden and the full sentence sits in one
+             visually-hidden span, so the accessibility tree gets the long form
+             exactly ONCE. There is deliberately no `title`: it duplicated that
+             sentence a third time, it is not reachable by keyboard or touch
+             anyway, and screen readers commonly announce it as a description —
+             which is the same sentence read out twice. --}}
+        <span class="assistant-status-off" data-assistant-disabled-notice="topbar">
             <i class="bi bi-robot" aria-hidden="true"></i>
-            <span class="d-none d-sm-inline" aria-hidden="true">AI off</span>
-            <span class="visually-hidden">{{ $assistantSummary }}. {{ $assistantRecovery }}</span>
+            <span aria-hidden="true">{{ \App\Support\AssistantConfig::disabledChromeLabel() }}</span>
+            <span class="assistant-status-path" aria-hidden="true">
+                <i class="bi bi-gear" aria-hidden="true"></i>{{ \App\Support\AssistantConfig::disabledChromePointer() }}
+            </span>
+            <span class="visually-hidden">
+                {{ \App\Support\AssistantConfig::disabledSummary() }}.
+                {{ \App\Support\AssistantConfig::disabledRecovery() }}
+            </span>
         </span>
         @endif
 
