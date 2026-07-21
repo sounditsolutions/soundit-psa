@@ -28,9 +28,31 @@ class AssistantToolDefinitions
      * disclosed by none of them; one of those consumers strips writers for a
      * bot literally named ReadOnly, so the drift is not merely cosmetic.
      *
-     * Anything added here must be reflected in psaTools(). The gate test
-     * asserts both directions, so adding a writer WITHOUT listing it here
-     * fails, and listing one that psaTools() does not offer fails too.
+     * WHAT PINS THIS, precisely — the previous version of this docblock said
+     * "the gate test asserts both directions", which was true of only one of
+     * the two things that can make this constant wrong, and did not say which:
+     *
+     *   1. Agreement with psaTools() — asserted both ways, and always was. But
+     *      that is a definition file agreeing with a definition file. It cannot
+     *      see whether a tool actually mutates.
+     *   2. Agreement with the EXECUTOR's classification — silently unasserted
+     *      until psa-uw2o.18. AssistantToolExecutor's dispatch table is what
+     *      decides whether a call writes; nothing compared it to this list. A
+     *      reviewer flipped get_client from Read to Write and the whole gate and
+     *      Teams suite stayed green while the prompt went on telling the model
+     *      that two of its tools write, not three.
+     *
+     * Both are pinned now, by test_the_offered_writers_are_exactly_the_declared_write_tools:
+     * the names getTools(true) OFFERS, intersected with the names the executor
+     * CLASSIFIES as writes, must equal this constant exactly — and the same
+     * intersection over getTools(false) must be empty, because that surface tells
+     * the model it is read-only. Crossing the two independent sources is what
+     * stops it being a tautology.
+     *
+     * That invariant covers the conditionally-merged VENDOR lanes too
+     * (ninjaTools/levelTools/meshTools/cippTools), which getTools(true) includes
+     * only when the integration is live — the test forces all four on, because
+     * otherwise it would pass by never seeing them.
      */
     public const WRITE_TOOLS = ['create_ticket', 'add_ticket_note'];
 
