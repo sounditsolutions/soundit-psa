@@ -739,7 +739,8 @@ The staff-facing assistant (the chat bubble, the topbar entry, and the ticket "A
 - **Requires the AI Provider to be Claude (Anthropic)** — the tool loop is Anthropic-only. With any other provider, or no key, the Assistant is unavailable regardless of the toggle.
 - **It is currently enabled by default once an Anthropic key is present** (an absent `assistant_enabled` setting reads as on). Untick the box to turn it off.
 - **It is not read-only.** In a conversation with client or ticket context the Assistant can `create_ticket` and `add_ticket_note`. Both write immediately and are **not** held for approval, and the global `technician_kill_switch` does **not** cover this lane. In a general (no-client) conversation the tool surface is read-only.
-- Turning the toggle off refuses the assistant HTTP endpoints outright (not just hiding the UI), so it is a genuine off switch during an incident.
+- Turning the toggle off refuses the assistant HTTP endpoints outright, not just the on-screen chat. Existing conversations stay visible on their tickets as history.
+- **What the toggle does not cover.** It stops the *staff Assistant surface* — the bubble, the ticket chat, and the `/assistant/*` endpoints. It is not a global "stop all AI writes": a staff **MCP token** granted the broad PSA tool surface can still reach `add_ticket_note` through the MCP server, which this toggle does not gate (nor does `technician_kill_switch`). To stop that lane, revoke or narrow the token grant. Knowing which control stops which lane matters most during an incident, which is exactly when someone reaches for it.
 
 ### Plivo Softphone
 

@@ -678,8 +678,11 @@ Route::middleware('auth')->group(function () {
         ->where('slug', '.*')->name('clients.wiki.show');
 
     // AI Assistant
-    // psa-uw2o: grouped behind `assistant.enabled` so the toggle is a real off
-    // switch, and so a route added here later cannot land outside the gate.
+    // psa-uw2o: grouped behind `assistant.enabled` so the toggle is visibly a
+    // real off switch where the routes are read. The binding that actually
+    // enforces it lives on AssistantController (HasMiddleware), so a route to
+    // that controller added ANYWHERE is gated — a group only covers what is
+    // written inside it (psa-uw2o.2).
     Route::middleware('assistant.enabled')->group(function () {
         Route::post('/assistant/conversations', [AssistantController::class, 'createConversation'])->name('assistant.create');
         Route::get('/assistant/conversations/for-ticket/{ticket}', [AssistantController::class, 'forTicket'])->name('assistant.for-ticket');

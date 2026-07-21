@@ -10,9 +10,25 @@ use App\Models\Ticket;
 use App\Services\Assistant\AssistantService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Routing\Controllers\HasMiddleware;
 
-class AssistantController extends Controller
+class AssistantController extends Controller implements HasMiddleware
 {
+    /**
+     * psa-uw2o.2: the gate binds to the CONTROLLER, not to a location in
+     * routes/web.php. The route group alone only covered routes written inside
+     * it — a new route added elsewhere would have missed it, which is weaker
+     * than the invariant that was claimed for it. Mirrors WikiController, which
+     * gates its module the same way ("wiki_enabled is the master switch").
+     *
+     * The group in routes/web.php is kept so the gate is visible where the
+     * routes are read; this is what actually enforces it.
+     */
+    public static function middleware(): array
+    {
+        return ['assistant.enabled'];
+    }
+
     public function getMessages(AssistantConversation $conversation): JsonResponse
     {
         if ($conversation->user_id !== auth()->id()) {

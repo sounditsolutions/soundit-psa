@@ -3201,11 +3201,25 @@
                     The AI Assistant provides contextual chat on ticket and client pages. Requires Anthropic AI provider.
                 </p>
 
+                {{-- psa-uw2o.4 / psa-uw2o.3: the operator decides at this checkbox, not in
+                     docs/INSTALL.md. The Assistant is not read-only, and that was previously
+                     stated nowhere an operator would look. --}}
+                <div class="alert alert-warning small py-2">
+                    <i class="bi bi-pencil-square me-1"></i>
+                    <strong>This assistant can write.</strong> In a ticket or client conversation it can
+                    create tickets and add notes. Those take effect immediately and are not held for
+                    approval, and the global AI kill switch does not cover this assistant.
+                </div>
+
                 <form method="POST" action="{{ route('settings.integrations.assistant.update') }}">
                     @csrf
                     <div class="form-check form-switch mb-3">
                         <input class="form-check-input" type="checkbox" id="assistant_enabled" name="assistant_enabled" {{ $assistantEnabled ? 'checked' : '' }}>
                         <label class="form-check-label" for="assistant_enabled"><strong>Enable AI Assistant</strong></label>
+                        <div class="form-text">
+                            Unticking this refuses the assistant endpoints outright, not just the on-screen
+                            chat — existing conversations stay visible on their tickets as history.
+                        </div>
                     </div>
 
                     <div class="row g-3 mb-3">

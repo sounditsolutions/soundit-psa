@@ -70,8 +70,18 @@
                 context_id: parseInt(ticketId)
             })
         })
-        .then(function(r) { return r.json(); })
+        // psa-uw2o.4: without the r.ok check a refusal parsed cleanly, so
+        // data.id was undefined and we injected a chat block id="ai-chat-undefined"
+        // badged "Active" with a live input, AND highlighted the Ask AI button to
+        // confirm it — the UI affirmatively fabricated a session that did not
+        // exist. Fail visibly instead of manufacturing success.
+        .then(function(r) {
+            if (!r.ok) return r.json().then(function(d) { throw new Error(d.error || 'Could not start an AI conversation.'); });
+            return r.json();
+        })
         .then(function(data) {
+            if (!data || !data.id) throw new Error('Could not start an AI conversation.');
+
             activeConversationId = data.id;
             insertActiveChatBlock(data.id);
 
@@ -84,6 +94,7 @@
         })
         .catch(function(err) {
             console.error('Failed to create conversation:', err);
+            window.alert(err.message || 'Could not start an AI conversation.');
         });
     }
 

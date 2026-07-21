@@ -2,7 +2,16 @@
 @php
     $isOwner = auth()->id() === $conversation->user_id;
     $lastMessage = $conversation->messages->last();
-    $isActive = $isOwner && $lastMessage?->created_at?->gt(now()->subMinutes(30));
+    // psa-uw2o.4: the live input is an affordance for an endpoint that refuses
+    // while the Assistant is off. Without this check the technician reloads the
+    // ticket during an incident and still sees a chat box badged "Active" with a
+    // working-looking send button — inside the same 30-minute window the
+    // incident lives in. Falling through to the collapsed summary keeps the
+    // HISTORY (you turn the AI off because of what it said; the record must not
+    // vanish) and drops only the dead input.
+    $isActive = $isOwner
+        && \App\Support\AssistantConfig::isEnabled()
+        && $lastMessage?->created_at?->gt(now()->subMinutes(30));
     $messageCount = $conversation->messages->count();
 @endphp
 
