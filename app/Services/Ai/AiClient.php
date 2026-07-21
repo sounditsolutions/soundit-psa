@@ -14,9 +14,15 @@ class AiClient
 
     private int $cumulativeOutputTokens = 0;
 
-    public function __construct(?string $modelOverride = null)
+    /**
+     * $http is a test seam, mirroring TacticalClient: production always passes null
+     * and gets the real client. It exists so the tool loop can be driven end-to-end
+     * against a MockHandler — the schema-enforcement guard below is only meaningful
+     * if a test can prove the executor was never REACHED, which needs the real loop.
+     */
+    public function __construct(?string $modelOverride = null, ?GuzzleClient $http = null)
     {
-        $this->http = new GuzzleClient(['timeout' => 120]);
+        $this->http = $http ?? new GuzzleClient(['timeout' => 120]);
         $this->modelOverride = $modelOverride;
     }
 
@@ -166,6 +172,26 @@ class AiClient
         $startTime = microtime(true);
         $loopTokens = 0;
 
+        // psa-ejzjd — the ONLY names this loop may dispatch, derived from the schema
+        // actually delivered to the model. Dispatch is BY NAME, so without this the
+        // published schema is documentation rather than a boundary: a surface that
+        // hardened itself by filtering its schema stayed fully exploitable through its
+        // executor.
+        //
+        // SCOPE — this closes the FIVE lanes that pass through this loop: AI Technician
+        // (psa-hbbuq), deterministic triage (psa-hryjm), Teams (psa-uw2o), the staff
+        // Assistant (psa-o8w6t) and the portal chatbot. *** IT DOES NOT CLOSE STAFF MCP
+        // (psa-vydpz) OR CHET. *** Those never reach AiClient — McpStaffController
+        // constructs AssistantToolExecutor and calls execute() directly — so they remain
+        // on their own controller/executor boundary with their own grant gates, and must
+        // be fixed there. Do not read this guard as covering them.
+        //
+        // Computed ONCE, before the loop, from the same $tools array that is sent every
+        // round: $tools is by-value and never mutated, so this cannot drift from what the
+        // model was offered. Deriving it a second time from a live source is exactly the
+        // TOCTOU that cost psa-uw2o four review rounds — do not "refresh" it per round.
+        $publishedTools = array_column($tools, 'name');
+
         $finalText = '';
 
         for ($round = 0; $round < $maxRounds; $round++) {
@@ -212,6 +238,50 @@ class AiClient
                 $toolName = $toolCall['name'];
                 $toolInput = $toolCall['input'] ?? [];
                 $toolId = $toolCall['id'];
+
+                // psa-ejzjd — refuse anything this turn did not publish, BEFORE the
+                // executor is reached. Fail-closed: the refusal goes back to the model as
+                // a tool_result so the loop continues and it can correct itself, rather
+                // than throwing, which would turn a hallucinated name into a failed turn.
+                //
+                // This is deliberately ABOVE $onToolCall: a refused tool never ran, so it
+                // must not appear in the caller's progress UI as though it did.
+                if (! in_array($toolName, $publishedTools, true)) {
+                    // The guard deliberately does NOT know WHY a name is unpublished, so it
+                    // cannot reproduce the specific reason an executor used to give. That
+                    // costs real diagnosability in one known case and the log must carry the
+                    // slack: with ControlD configured but its analytics token absent, the
+                    // system prompt still advertises controld_dns_queries while the schema
+                    // omits it, and the executor previously answered "Control D analytics is
+                    // not configured" — actionable — where this now answers generically
+                    // (psa-ejzjd.4). Hence 'likely_cause': an operator grepping logs needs
+                    // the next step, not just the refusal. Operator-facing remediation at the
+                    // settings surface is tracked separately.
+                    Log::warning('[AiClient] Refused a tool that was not published to the model', [
+                        'tool' => $toolName,
+                        'round' => $round + 1,
+                        'published_count' => count($publishedTools),
+                        'likely_cause' => 'prompt/schema drift — the system prompt may advertise this tool while its integration is unconfigured; check the relevant integration settings before treating this as abuse',
+                    ]);
+
+                    $toolResults[] = [
+                        'type' => 'tool_result',
+                        'tool_use_id' => $toolId,
+                        // Phrased as availability, not as an accusation: the common cause is
+                        // benign prompt/schema drift, not an attack. The "do not retry" is
+                        // load-bearing — without it a model that was told in its system prompt
+                        // to use this tool will burn rounds re-requesting it.
+                        //
+                        // It stays GENERIC on purpose: saying "exists but is disabled" would
+                        // confirm which capabilities a deployment has to whoever can influence
+                        // this loop, and the ticket body is untrusted client text.
+                        'content' => json_encode([
+                            'error' => "Tool '{$toolName}' is not available in this deployment. Do not retry it; continue without it and say plainly what you could not check.",
+                        ]),
+                    ];
+
+                    continue;
+                }
 
                 Log::debug('[AiClient] Executing tool', [
                     'tool' => $toolName,
