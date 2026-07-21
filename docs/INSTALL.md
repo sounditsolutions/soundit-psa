@@ -732,6 +732,15 @@ Optionally set a key expiry and rotate periodically (no rotation runbook is auto
 4. Optionally override the default model (defaults: `claude-sonnet-4-6` for Anthropic, `gpt-4o` for OpenAI)
 5. Click **Test Connection** to verify
 
+### Staff AI Assistant
+
+The staff-facing assistant (the chat bubble, the topbar entry, and the ticket "Ask AI" button). Toggle at **Settings > Integrations > Enable AI Assistant** (`assistant_enabled`).
+
+- **Requires the AI Provider to be Claude (Anthropic)** — the tool loop is Anthropic-only. With any other provider, or no key, the Assistant is unavailable regardless of the toggle.
+- **It is currently enabled by default once an Anthropic key is present** (an absent `assistant_enabled` setting reads as on). Untick the box to turn it off.
+- **It is not read-only.** In a conversation with client or ticket context the Assistant can `create_ticket` and `add_ticket_note`. Both write immediately and are **not** held for approval, and the global `technician_kill_switch` does **not** cover this lane. In a general (no-client) conversation the tool surface is read-only.
+- Turning the toggle off refuses the assistant HTTP endpoints outright (not just hiding the UI), so it is a genuine off switch during an incident.
+
 ### Plivo Softphone
 
 1. Settings > Integrations > Plivo

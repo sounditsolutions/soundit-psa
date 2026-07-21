@@ -5,9 +5,16 @@ namespace App\Services\Assistant;
 use App\Services\Triage\TriageToolDefinitions;
 
 /**
- * Tool definitions for the AI assistant. Read-only tools only (v1).
+ * Tool definitions for the AI assistant.
  * Reuses integration tool definitions from triage; defines its own PSA tools
  * with assistant-optimized descriptions.
+ *
+ * NOT read-only, despite what this docblock claimed until psa-uw2o: psaTools()
+ * — returned whenever the conversation resolves a client — includes two WRITE
+ * tools, create_ticket and add_ticket_note, which call TicketService directly
+ * with no held/approval step. The no-client surface (generalTools + dnsTools +
+ * wikiTools) is read-only. Keep this accurate: the previous claim is how the
+ * write surface stayed invisible to review.
  */
 class AssistantToolDefinitions
 {
