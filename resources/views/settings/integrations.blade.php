@@ -3571,8 +3571,13 @@
                                 {{-- psa-uw2o.8: this list reads as exhaustive, so an omission is a false
                                      all-clear. The Assistant's create_ticket / add_ticket_note are unheld
                                      writes that this brake does not reach either. --}}
+                                {{-- psa-uw2o.11: the sibling triage bullet discloses its default ("on by
+                                     default"), and this one must too — the Assistant is OFF by default
+                                     (psa-98dq), so telling an incident responder to "untick" it would send
+                                     them after a lane that is usually already dormant. --}}
                                 <li><strong>Does not stop the AI Assistant.</strong> Its <em>Create ticket</em> and
-                                    <em>Add note</em> tools write immediately and are outside this brake — untick
+                                    <em>Add note</em> tools write immediately and are outside this brake. The Assistant
+                                    is <em>off by default</em> — if it has been switched on, untick
                                     <em>Enable AI Assistant</em> above to stop those.</li>
                                 <li><strong>Reads.</strong> The AI can still read and analyse; it just cannot write.</li>
                             </ul>

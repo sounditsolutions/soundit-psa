@@ -95,6 +95,43 @@ class AssistantDisabledTicketTimelineTest extends TestCase
         );
     }
 
+    /**
+     * psa-uw2o.11 / psa-322qo: a disabled Assistant must SAY it is disabled,
+     * not just vanish.
+     *
+     * Charlie approved default-off on the condition that it is not a silent
+     * absence. The notice goes where the affordance WAS — someone who used the
+     * Assistant goes to the button they used to click and finds an explanation
+     * instead of nothing.
+     */
+    public function test_the_ticket_page_explains_that_the_assistant_is_disabled(): void
+    {
+        Setting::setValue('assistant_enabled', '0');
+
+        $html = $this->ticketPage();
+
+        $this->assertStringContainsString(
+            'AI Assistant is disabled',
+            $html,
+            'a disabled Assistant must be explained where its control used to be, not silently absent'
+        );
+        // ...and must not resurrect a live-looking control (the psa-uw2o.4
+        // lesson: a dead affordance is worse than an absent one).
+        $this->assertStringNotContainsString('id="askAiBtn"', $html);
+    }
+
+    public function test_the_disabled_notice_is_absent_when_the_assistant_is_enabled(): void
+    {
+        // Control: without this the assertion above could pass on a string that
+        // is always present.
+        Setting::setValue('assistant_enabled', '1');
+
+        $html = $this->ticketPage();
+
+        $this->assertStringNotContainsString('AI Assistant is disabled', $html);
+        $this->assertStringContainsString('id="askAiBtn"', $html);
+    }
+
     public function test_the_conversation_history_is_still_visible_while_disabled(): void
     {
         // Turning the Assistant off must not erase the record of what it did.
