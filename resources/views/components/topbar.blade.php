@@ -31,6 +31,20 @@
             <i class="bi bi-robot"></i>
             <span class="d-none d-sm-inline">Ask AI</span>
         </button>
+        @elseif(\App\Support\AiConfig::isConfigured())
+        {{-- psa-322qo / psa-uw2o.12: the topbar is global chrome on EVERY page, so
+             it is the most reachable place someone looks for the Assistant — leaving
+             it simply absent is the silent disable Charlie ruled against.
+
+             Gated on an AI provider actually being configured, so a deployment that
+             never wanted an assistant sees nothing at all. A quiet disabled control
+             rather than a banner: it stays silent until someone reaches for it,
+             where a page-width banner would demand attention on every page. --}}
+        <button type="button" class="assistant-trigger opacity-50" disabled
+                title="AI Assistant is disabled — turn it on in Settings &rsaquo; Integrations">
+            <i class="bi bi-robot"></i>
+            <span class="d-none d-sm-inline">AI off</span>
+        </button>
         @endif
 
         {{-- Softphone button (conditional) --}}

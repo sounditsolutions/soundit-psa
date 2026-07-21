@@ -72,7 +72,15 @@
             </div>
         @else
             {{-- Read-only: collapsed summary --}}
-            <div class="small text-muted">{{ $messageCount }} messages</div>
+            <div class="small text-muted">
+                {{ $messageCount }} messages
+                @if($isOwner && ! \App\Support\AssistantConfig::isEnabled())
+                    {{-- psa-322qo: this conversation would otherwise just stop
+                         being usable with no reason given — say why, so the dead
+                         input explains itself to the person who was using it. --}}
+                    <span class="ms-1">&middot; AI Assistant is disabled, so this conversation is read-only.</span>
+                @endif
+            </div>
             <a class="small text-decoration-none" data-bs-toggle="collapse"
                href="#ai-chat-history-{{ $conversation->id }}">
                 <i class="bi bi-chevron-down me-1"></i>Show conversation
