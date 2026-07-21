@@ -23,6 +23,7 @@ use App\Services\Technician\TechnicianApprovalService;
 use App\Support\McpConfig;
 use App\Support\McpToolModes;
 use App\Support\McpToolRegistry;
+use App\Support\McpToolSurface;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Testing\TestResponse;
 use Mockery;
@@ -198,6 +199,26 @@ class TacticalActionToolsPhase2Test extends TestCase
             $response->assertOk();
             $this->assertTrue((bool) $response->json('result.isError'), "{$tool} should fail.");
             $this->assertStringContainsString('not allowed for this token', (string) $response->json('result.content.0.text'));
+
+            // psa-vydpz — THE TWO TOOLS IN THIS LOOP ARE NOW REFUSED BY DIFFERENT GUARDS,
+            // and the shared message above cannot distinguish them. Pinned explicitly so a
+            // later reader is not misled into thinking both still exercise the fence:
+            //
+            //   tactical_run_diagnostic — never published, so the LIVENESS conjunct refuses
+            //     it before the legacy-token fence is reached. This half would now stay
+            //     green even if the fence were deleted; the fence is pinned elsewhere.
+            //   tactical_run_command    — IS live (Tactical is configured above), so
+            //     liveness passes and the LEGACY-TOKEN FENCE is what refuses it. This half
+            //     still tests exactly what it always did.
+            $expectedLive = $tool === 'tactical_run_command';
+
+            $this->assertSame(
+                $expectedLive,
+                in_array($tool, McpToolSurface::liveToolNames(), true),
+                $expectedLive
+                    ? "{$tool} must be live, so the refusal above proves the legacy-token fence"
+                    : "{$tool} must be unpublished, which is why liveness refuses it first"
+            );
         }
     }
 

@@ -106,19 +106,26 @@ class McpPortalController extends Controller
 
     private function listTools(mixed $id, Request $request, float $start): JsonResponse
     {
-        $tools = [];
+        // Both this path and callTool()'s handles() check now derive from
+        // PortalMcpToolDefinitions::publishableTools(), so a tool dropped for an invalid
+        // schema is dropped from BOTH — it cannot become unpublished-but-callable (psa-vydpz).
+        // The drop is still logged here, where the schema is in hand to report.
         foreach (PortalMcpToolDefinitions::tools() as $t) {
-            $schema = $t['input_schema'] ?? ['type' => 'object', 'properties' => new \stdClass];
+            $errors = McpInputSchema::validationErrors(
+                $t['input_schema'] ?? ['type' => 'object', 'properties' => new \stdClass]
+            );
 
-            $errors = McpInputSchema::validationErrors($schema);
             if ($errors !== []) {
                 Log::warning('[MCP/portal] Dropping invalid MCP tool schema', [
                     'tool' => $t['name'] ?? '(unknown)',
                     'errors' => array_slice($errors, 0, 10),
                 ]);
-
-                continue;
             }
+        }
+
+        $tools = [];
+        foreach (PortalMcpToolDefinitions::publishableTools() as $t) {
+            $schema = $t['input_schema'] ?? ['type' => 'object', 'properties' => new \stdClass];
 
             $tools[] = [
                 'name' => $t['name'],

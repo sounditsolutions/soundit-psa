@@ -42,7 +42,34 @@ class McpToolsListResilienceTest extends TestCase
             ->count();
 
         $this->assertLessThanOrEqual(3, $cippQueries, $sql);
-        $this->assertLessThanOrEqual(25, count($queries), $sql);
+
+        // Budget raised 25 -> 36 by psa-vydpz (measured 34, +2 margin).
+        //
+        // toolAllowed() gained a LIVENESS conjunct, so the list path now resolves
+        // McpToolSurface::liveToolNames() — one assembly of the general + client-scoped
+        // surfaces, and the settings reads they entail.
+        //
+        // It is ONE assembly, not one per tool. toolAllowed() is called once per candidate
+        // tool, and this fixture builds 214 of them, so the naive form was an N-fold
+        // re-assembly; the list path precomputes the lookup once and passes it down. The
+        // increase is therefore CONSTANT, and the assertion this test exists for — the
+        // dynamic CIPP catalog staying at <= 3 queries — is untouched above.
+        //
+        // NOT cached beyond that call, deliberately: an instance-level memo was tried and
+        // McpToolSurfaceDiscoveryTest caught it answering a second call from the first
+        // call's snapshot. Caching "is this tool live" reintroduces exactly the defect the
+        // conjunct closes. See the note on McpStaffController::liveToolNameLookup().
+        //
+        // *** CROSS-PR INTERACTION — THIS LINE WILL CONFLICT, AND THE COMBINED NUMBER IS
+        // MEASURED, NOT GUESSED. *** psa-wzjzz (PR #296) edits this same assertion to 33,
+        // for a different reason: its vendor predicates each read a master-switch setting.
+        // The two COMPOUND, because the live-surface assembly added here runs those
+        // predicates — so the totals do not merely add.
+        //
+        // Measured on a scratch merge of both branches: *** 46 queries. Set 48 (+2 margin)
+        // when the second of the two merges. *** Neither 33 nor 36 is correct once both
+        // have landed, and taking either side of the conflict verbatim will go red.
+        $this->assertLessThanOrEqual(36, count($queries), $sql);
     }
 
     public function test_tools_list_repairs_dynamic_cipp_schema_before_publishing(): void
