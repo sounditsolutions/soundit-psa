@@ -25,6 +25,11 @@ class TicketUpdateRequest extends FormRequest
             'priority' => ['sometimes', 'required', Rule::enum(TicketPriority::class)],
             'category' => ['nullable', 'string', 'max:100', Rule::in($categoryKeys)],
             'subcategory' => ['nullable', 'string', 'max:100'],
+            // ITIL taxonomy node (so-0ftg) — distinct from the legacy free-text
+            // pair above. Must be an ACTIVE node; a retired node can never be
+            // hand-assigned. Nullable = "Uncategorized". category_source is
+            // stamped by TicketObserver, never from request input.
+            'category_id' => ['nullable', Rule::exists('ticket_categories', 'id')->where('is_active', true)],
             'contact_id' => ['nullable', 'exists:people,id'],
             'asset_id' => ['nullable', 'exists:assets,id'],
             'assignee_id' => ['nullable', 'exists:users,id'],

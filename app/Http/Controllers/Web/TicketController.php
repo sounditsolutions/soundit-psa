@@ -14,6 +14,7 @@ use App\Models\Asset;
 use App\Models\Client;
 use App\Models\Email;
 use App\Models\Ticket;
+use App\Models\TicketCategory;
 use App\Models\TriageRun;
 use App\Models\User;
 use App\Services\RateLimitException;
@@ -102,6 +103,7 @@ class TicketController extends Controller
             'childTickets',
             'phoneCalls.answeredBy',
             'phoneCalls.person',
+            'categoryNode',
         ])->loadSum('notes', 'time_minutes');
 
         // Client assets available for linking (exclude already-linked)
@@ -152,6 +154,15 @@ class TicketController extends Controller
             'statuses' => TicketStatus::cases(),
             'priorities' => TicketPriority::cases(),
             'categories' => config('tickets.categories', []),
+            // Active ITIL taxonomy nodes as flat {id, path} options for the
+            // per-ticket category picker (so-0ftg). parent.parent covers the
+            // depth<=3 tree so pathString() walks ancestors with no N+1.
+            'taxonomyNodes' => TicketCategory::active()
+                ->with('parent.parent')
+                ->get()
+                ->map(fn (TicketCategory $node) => ['id' => $node->id, 'path' => $node->pathString()])
+                ->sortBy('path', SORT_NATURAL | SORT_FLAG_CASE)
+                ->values(),
             'clientAssets' => $clientAssets,
             'clientContacts' => $clientContacts,
             'defaultBillable' => $defaultBillable,

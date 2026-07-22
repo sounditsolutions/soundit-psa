@@ -666,6 +666,29 @@
                             </select>
                         </div>
                     </div>
+                    {{-- ITIL taxonomy category (so-0ftg): the node that carries the SOP.
+                         Distinct from the legacy free-text category/subcategory above. --}}
+                    <div class="mb-2">
+                        <label class="form-label small text-muted mb-1">
+                            SOP Category <span class="fw-normal">(taxonomy)</span>
+                        </label>
+                        <select name="category_id" class="form-select form-select-sm" id="editCategoryNode">
+                            <option value="">-- Uncategorized --</option>
+                            @foreach($taxonomyNodes as $node)
+                                <option value="{{ $node['id'] }}" @selected((int) $ticket->category_id === (int) $node['id'])>{{ $node['path'] }}</option>
+                            @endforeach
+                        </select>
+                        @if($ticket->categoryNode)
+                            <div class="small mt-1">
+                                @if($ticket->categoryNode->hasSop())
+                                    <span class="text-success"><i class="bi bi-file-earmark-text me-1"></i>SOP available</span>
+                                @else
+                                    <span class="text-warning"><i class="bi bi-exclamation-triangle me-1"></i>No SOP yet</span>
+                                @endif
+                                <a href="{{ route('ticket-categories.show', $ticket->categoryNode) }}" class="ms-1">manage</a>
+                            </div>
+                        @endif
+                    </div>
                     <div class="mb-2">
                         <button type="submit" class="btn btn-primary btn-sm">Save</button>
                     </div>
