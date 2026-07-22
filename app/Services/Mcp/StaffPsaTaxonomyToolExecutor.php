@@ -430,18 +430,19 @@ class StaffPsaTaxonomyToolExecutor
             }
         }
 
+        $currentParentId = $category->parent_id !== null ? (int) $category->parent_id : null;
         $reparenting = array_key_exists('parent_id', $validated);
         $newParentId = $reparenting
             ? ($validated['parent_id'] !== null ? (int) $validated['parent_id'] : null)
-            : $category->parent_id;
-        if ($reparenting && $newParentId !== $category->parent_id) {
+            : $currentParentId;
+        if ($reparenting && $newParentId !== $currentParentId) {
             if ($reparentError = $this->reparentError($category, $newParentId)) {
                 return $reparentError;
             }
         }
 
         $newName = array_key_exists('name', $validated) ? trim((string) $validated['name']) : $category->name;
-        if (($newName !== $category->name || $newParentId !== $category->parent_id)
+        if (($newName !== $category->name || $newParentId !== $currentParentId)
             && ($duplicateError = $this->duplicateSiblingNameError($newName, $newParentId, excludeId: (int) $category->id))) {
             return $duplicateError;
         }
