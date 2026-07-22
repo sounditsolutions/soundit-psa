@@ -482,6 +482,45 @@ class IntakeManageToolsTest extends TestCase
         $this->assertStringNotContainsString('SECRET TRANSCRIPT 3', (string) json_encode(McpAuditLog::all()->toArray()));
     }
 
+    public function test_create_ticket_from_call_refuses_a_followed_up_spam_dismissed_call(): void
+    {
+        // When a technician marks a call as spam, the cockpit stamps
+        // followed_up_at AND adds the caller to the block list
+        // (TechnicianCockpitController). followed_up_at is the resolution
+        // marker, not a soft hint — so create_ticket_from_call must refuse a
+        // call that carries it, or the agent silently manufactures a ticket
+        // from a call the technician explicitly dismissed and blocked. The
+        // guard lives at this write choke point, not only on the read.
+        $this->configureAiActor();
+        $token = $this->token(['create_ticket_from_call'], 'chet');
+
+        $client = Client::factory()->create();
+        $call = $this->makeCall([
+            'call_uuid' => 'call-manage-followedup-1',
+            'direction' => CallDirection::Inbound,
+            'from_number' => '+15555550310',
+            'status' => CallStatus::Missed,
+            'started_at' => now()->subMinutes(5),
+            'transcription' => 'SECRET TRANSCRIPT 4',
+        ], $client->id);
+        // followed_up_at is NOT fillable — set directly, like client_id.
+        $call->followed_up_at = now();
+        $call->save();
+
+        $response = $this->callTool($token, 'create_ticket_from_call', [
+            'phone_call_id' => $call->id,
+            'reason' => 'voicemail follow-up',
+        ]);
+        $response->assertOk();
+        $this->assertTrue((bool) $response->json('result.isError'), 'a followed-up call must be refused');
+        $this->assertStringContainsString('followed up', strtolower((string) $response->json('result.content.0.text')));
+
+        // The dismissal stands: nothing manufactured, nothing audited.
+        $this->assertNull($call->fresh()->ticket_id);
+        $this->assertSame(0, Ticket::query()->count());
+        $this->assertSame(0, TechnicianActionLog::where('action_type', 'create_ticket_from_call')->count());
+    }
+
     // ── cross-cutting: reason + kill-switch ──────────────────────────────────
 
     public function test_manage_verbs_require_reason(): void

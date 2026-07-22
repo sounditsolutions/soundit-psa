@@ -1202,7 +1202,12 @@ class AssistantToolExecutor
         }
 
         if (! empty($input['unlinked'])) {
-            $query->whereNull('ticket_id');
+            // "Unlinked" means "an unhandled intake item", not merely
+            // "ticket_id is null". A call a technician followed up on — in
+            // particular one marked spam, which stamps followed_up_at AND
+            // blocks the caller — is resolved, so it must not surface here as
+            // a ticket candidate. Mirrors PhoneCall::scopeUnfollowedUp().
+            $query->whereNull('ticket_id')->whereNull('followed_up_at');
         }
 
         // See listEmailItems() — client_id is the constructor-derived scope,
@@ -1237,6 +1242,11 @@ class AssistantToolExecutor
                 'duration' => $c->duration,
                 'client_id' => $c->client_id,
                 'ticket_id' => $c->ticket_id,
+                // The spam-dismissal / follow-up marker. Returned so the agent
+                // can SEE that a technician already resolved this call instead
+                // of being structurally blind to it (see create_ticket_from_call,
+                // which refuses a followed-up call).
+                'followed_up_at' => $c->followed_up_at?->toIso8601String(),
                 'transcription_status' => $c->transcription_status?->value,
             ])->toArray(),
         ];

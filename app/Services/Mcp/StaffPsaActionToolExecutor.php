@@ -1864,6 +1864,14 @@ class StaffPsaActionToolExecutor
             return ['error' => 'Phone call has no resolved client; resolve the caller to a client before creating a ticket.'];
         }
 
+        // followed_up_at is a technician's resolution marker — set when a call
+        // is handled and, in particular, when it is marked spam (which also
+        // blocks the caller). Manufacturing a ticket from such a call silently
+        // undoes that dismissal, so refuse rather than override a human's call.
+        if ($call->isFollowedUp()) {
+            return ['error' => 'Phone call was already followed up on by a technician (followed_up_at is set) — it may have been dismissed as spam. Refusing to create a ticket; clear the follow-up state first if this is a genuine new request.'];
+        }
+
         $ticket = DB::transaction(function () use ($call, $actorLabel, $reason): Ticket {
             $ticket = $this->phoneCallService->createTicketFromCall($call);
             $this->auditEntityExecution(

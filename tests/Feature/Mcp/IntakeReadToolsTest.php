@@ -241,6 +241,50 @@ class IntakeReadToolsTest extends TestCase
         $this->assertSame($completed->id, $filteredResult['phone_calls'][0]['id']);
     }
 
+    public function test_list_phone_calls_returns_followed_up_at_and_unlinked_excludes_dismissed(): void
+    {
+        // A live, unhandled missed call — needs follow-up, no ticket yet.
+        $open = PhoneCall::create([
+            'call_uuid' => 'call-fu-open',
+            'direction' => CallDirection::Inbound,
+            'from_number' => '+15555550120',
+            'to_number' => '+15555550000',
+            'status' => CallStatus::Missed,
+            'started_at' => now()->subMinutes(10),
+        ]);
+        // A call a technician dismissed as spam: followed_up_at is stamped and
+        // the number is blocked. It is NOT an unhandled intake item.
+        $dismissed = PhoneCall::create([
+            'call_uuid' => 'call-fu-dismissed',
+            'direction' => CallDirection::Inbound,
+            'from_number' => '+15555550121',
+            'to_number' => '+15555550000',
+            'status' => CallStatus::Missed,
+            'started_at' => now()->subMinutes(8),
+        ]);
+        $dismissed->followed_up_at = now(); // not fillable — set directly
+        $dismissed->save();
+
+        $token = $this->token(['list_phone_calls'], 'chet');
+
+        // The projection carries followed_up_at so the agent can SEE the
+        // dismissal rather than being structurally blind to it.
+        $all = $this->decodedResult($this->callTool($token, 'list_phone_calls', []));
+        $openRow = collect($all['phone_calls'])->firstWhere('id', $open->id);
+        $dismissedRow = collect($all['phone_calls'])->firstWhere('id', $dismissed->id);
+        $this->assertArrayHasKey('followed_up_at', $openRow);
+        $this->assertNull($openRow['followed_up_at']);
+        $this->assertNotNull($dismissedRow['followed_up_at']);
+
+        // The unlinked (intake) filter mirrors PhoneCall::unfollowedUp(): a
+        // dismissed call is excluded, so the agent never lists it as a
+        // ticket candidate in the first place.
+        $unlinked = $this->decodedResult($this->callTool($token, 'list_phone_calls', ['unlinked' => true]));
+        $unlinkedIds = collect($unlinked['phone_calls'])->pluck('id')->all();
+        $this->assertContains($open->id, $unlinkedIds);
+        $this->assertNotContains($dismissed->id, $unlinkedIds);
+    }
+
     public function test_get_phone_call_returns_transcript(): void
     {
         $call = PhoneCall::create([
