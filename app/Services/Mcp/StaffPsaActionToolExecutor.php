@@ -44,6 +44,16 @@ class StaffPsaActionToolExecutor
 {
     private const DIRECT_DEDUP_HOURS = 24;
 
+    /**
+     * Actionable recovery copy for a rejected category_id (so-0ftg, psa-bk13g UX
+     * fix). An autonomous agent (Chet) cannot self-correct from the bare Laravel
+     * "selected category id is invalid" line, so we name (1) the active-node
+     * requirement, (2) how to enumerate valid ids — list_ticket_categories WITHOUT
+     * include_inactive (see StaffPsaTaxonomyToolExecutor::definitions(), the tool
+     * and param names verified there), and (3) that null clears the assignment.
+     */
+    private const CATEGORY_ID_RECOVERY_COPY = 'category_id must reference an ACTIVE ticket taxonomy node; retired or unknown ids are rejected. Call the list_ticket_categories tool without include_inactive to list the valid active node ids, then retry update_ticket with one of them. Pass null to clear the ticket category.';
+
     public function __construct(
         private readonly TechnicianActionGate $gate,
         private readonly TechnicianDisclosure $disclosure,
@@ -2423,6 +2433,13 @@ class StaffPsaActionToolExecutor
         ]);
 
         if ($validator->fails()) {
+            // A rejected category_id gets actionable recovery copy (the agent must
+            // know it's active-node-only and how to enumerate valid ids), not the
+            // opaque validator line. The active-node-only enforcement is unchanged.
+            if ($validator->errors()->has('category_id')) {
+                return ['error' => self::CATEGORY_ID_RECOVERY_COPY];
+            }
+
             return ['error' => $validator->errors()->first()];
         }
 

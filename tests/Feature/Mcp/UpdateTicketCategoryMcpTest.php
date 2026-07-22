@@ -127,6 +127,56 @@ class UpdateTicketCategoryMcpTest extends TestCase
         $this->assertNull($ticket->refresh()->category_id);
     }
 
+    /**
+     * A rejected category_id must not hand the agent the bare Laravel validator
+     * line — it must return recovery copy that tells the model (1) an ACTIVE node
+     * is required, (2) how to enumerate valid ids (list_ticket_categories without
+     * include_inactive), and (3) that null clears the assignment. UX must-fix.
+     */
+    private function assertActionableCategoryRecoveryCopy(TestResponse $resp): void
+    {
+        $resp->assertOk();
+        $this->assertTrue((bool) $resp->json('result.isError'));
+
+        $text = (string) $resp->json('result.content.0.text');
+        // (1) names the active-node requirement.
+        $this->assertStringContainsStringIgnoringCase('must reference an active', $text);
+        // (2) names the recovery tool AND the exact param to omit.
+        $this->assertStringContainsString('list_ticket_categories', $text);
+        $this->assertStringContainsString('include_inactive', $text);
+        // (3) notes that null clears.
+        $this->assertStringContainsStringIgnoringCase('pass null to clear', $text);
+    }
+
+    public function test_rejected_inactive_category_returns_actionable_recovery_copy(): void
+    {
+        $token = $this->token(['update_ticket']);
+        $ticket = $this->ticket();
+        $retired = TicketCategory::create(['name' => 'Retired', 'is_active' => false]);
+
+        $resp = $this->callTool($token, 'update_ticket', [
+            'ticket_id' => $ticket->id,
+            'category_id' => $retired->id,
+        ]);
+
+        $this->assertActionableCategoryRecoveryCopy($resp);
+        $this->assertNull($ticket->refresh()->category_id); // unchanged on a rejected payload
+    }
+
+    public function test_rejected_nonexistent_category_returns_actionable_recovery_copy(): void
+    {
+        $token = $this->token(['update_ticket']);
+        $ticket = $this->ticket();
+
+        $resp = $this->callTool($token, 'update_ticket', [
+            'ticket_id' => $ticket->id,
+            'category_id' => 999999,
+        ]);
+
+        $this->assertActionableCategoryRecoveryCopy($resp);
+        $this->assertNull($ticket->refresh()->category_id); // unchanged on a rejected payload
+    }
+
     public function test_the_published_schema_advertises_category_id(): void
     {
         $token = $this->token(['update_ticket']);
