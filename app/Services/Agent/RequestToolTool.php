@@ -195,8 +195,9 @@ class RequestToolTool
         return [
             ToolingGapClassification::ToolUnconfigured,
             $matched,
-            "This capability already exists as the tool '{$matched}', but its integration is not configured on this "
-                .'instance. Recorded as a configuration request, not a build gap.',
+            "This capability already exists as the tool '{$matched}', but its integration is switched off or not "
+                .'configured on this instance. Ask your operator to re-enable it in Settings > Integrations or add '
+                .'its credentials; recorded as a configuration request, not a build gap.',
         ];
     }
 }

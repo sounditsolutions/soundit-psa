@@ -444,7 +444,10 @@
                         <div class="form-check form-switch">
                             <input class="form-check-input" type="checkbox" name="enabled" value="1"
                                    id="ninja_enabled" {{ $ninjaEnabled ? 'checked' : '' }} onchange="this.form.submit()">
-                            <label class="form-check-label" for="ninja_enabled">Integration enabled</label>
+                            <label class="form-check-label" for="ninja_enabled">
+                                Integration enabled
+                                <small class="text-muted d-block">Turning this off also withdraws NinjaRMM tools from AI triage, the Assistant, and MCP — turn it back on to restore them.</small>
+                            </label>
                         </div>
                     </form>
                 </div>
@@ -601,7 +604,10 @@
                         <div class="form-check form-switch">
                             <input class="form-check-input" type="checkbox" name="enabled" value="1"
                                    id="level_enabled" {{ $levelEnabled ? 'checked' : '' }} onchange="this.form.submit()">
-                            <label class="form-check-label" for="level_enabled">Integration enabled</label>
+                            <label class="form-check-label" for="level_enabled">
+                                Integration enabled
+                                <small class="text-muted d-block">Turning this off also withdraws Level tools from AI triage, the Assistant, and MCP — turn it back on to restore them.</small>
+                            </label>
                         </div>
                     </form>
                 </div>
@@ -1276,7 +1282,10 @@
                         <div class="form-check form-switch">
                             <input class="form-check-input" type="checkbox" name="enabled" value="1"
                                    id="mesh_enabled" {{ $meshEnabled ? 'checked' : '' }} onchange="this.form.submit()">
-                            <label class="form-check-label" for="mesh_enabled">Integration enabled</label>
+                            <label class="form-check-label" for="mesh_enabled">
+                                Integration enabled
+                                <small class="text-muted d-block">Turning this off also withdraws Mesh tools from AI triage, the Assistant, and MCP — turn it back on to restore them.</small>
+                            </label>
                         </div>
                     </form>
                 </div>
@@ -1459,7 +1468,10 @@
                         <div class="form-check form-switch">
                             <input class="form-check-input" type="checkbox" name="enabled" value="1"
                                    id="cipp_enabled" {{ $cippEnabled ? 'checked' : '' }} onchange="this.form.submit()">
-                            <label class="form-check-label" for="cipp_enabled">Integration enabled</label>
+                            <label class="form-check-label" for="cipp_enabled">
+                                Integration enabled
+                                <small class="text-muted d-block">Turning this off also withdraws CIPP tools from AI triage, the Assistant, and MCP — turn it back on to restore them.</small>
+                            </label>
                         </div>
                     </form>
                     <form method="POST" action="{{ route('settings.integrations.toggle') }}">
@@ -1788,7 +1800,10 @@
                         <div class="form-check form-switch">
                             <input class="form-check-input" type="checkbox" name="enabled" value="1"
                                    id="controld_enabled" {{ $controldEnabled ? 'checked' : '' }} onchange="this.form.submit()">
-                            <label class="form-check-label" for="controld_enabled">Integration enabled</label>
+                            <label class="form-check-label" for="controld_enabled">
+                                Integration enabled
+                                <small class="text-muted d-block">Turning this off also withdraws Control D tools from AI triage — turn it back on to restore them.</small>
+                            </label>
                         </div>
                     </form>
                 </div>
@@ -1877,7 +1892,10 @@
                         <div class="form-check form-switch">
                             <input class="form-check-input" type="checkbox" name="enabled" value="1"
                                    id="zorus_enabled" {{ $zorusEnabled ? 'checked' : '' }} onchange="this.form.submit()">
-                            <label class="form-check-label" for="zorus_enabled">Integration enabled</label>
+                            <label class="form-check-label" for="zorus_enabled">
+                                Integration enabled
+                                <small class="text-muted d-block">Turning this off also withdraws Zorus tools from AI triage — turn it back on to restore them.</small>
+                            </label>
                         </div>
                     </form>
                 </div>

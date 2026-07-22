@@ -2205,7 +2205,7 @@ class McpStaffController extends Controller
     {
         return [
             'name' => self::TOOL_SURFACE_TOOL,
-            'description' => 'List the full tool catalog of this server with a per-tool state: granted (in this token\'s allowlist, callable now), available_ungranted (built and configured but not granted — an operator token grant enables it), or unavailable_config (built but its integration is not configured on this instance). Tools absent from this catalog do not exist; request_tool records a build request. Names and one-line descriptions only — no data, no secrets.',
+            'description' => 'List the full tool catalog of this server with a per-tool state: granted (in this token\'s allowlist, callable now), available_ungranted (built and configured but not granted — an operator token grant enables it), or unavailable_config (built but its integration is switched off or not configured on this instance — the remedy is re-enabling it in Settings > Integrations or adding its credentials). Tools absent from this catalog do not exist; request_tool records a build request. Names and one-line descriptions only — no data, no secrets.',
             'input_schema' => [
                 'type' => 'object',
                 'properties' => [

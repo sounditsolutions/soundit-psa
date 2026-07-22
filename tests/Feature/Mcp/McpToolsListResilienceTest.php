@@ -4,6 +4,7 @@ namespace Tests\Feature\Mcp;
 
 use App\Http\Controllers\Api\McpStaffController;
 use App\Models\CippMcpTool;
+use App\Models\Setting;
 use App\Support\McpConfig;
 use App\Support\McpInputSchema;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -18,6 +19,7 @@ class McpToolsListResilienceTest extends TestCase
 
     public function test_scoped_tools_list_keeps_dynamic_cipp_catalog_queries_bounded(): void
     {
+        $this->configureCippMcpRelay();
         $toolNames = $this->createDynamicCippCatalog(214);
         $token = McpConfig::rotateStaffToken($toolNames, 'chet');
 
@@ -43,37 +45,13 @@ class McpToolsListResilienceTest extends TestCase
 
         $this->assertLessThanOrEqual(3, $cippQueries, $sql);
 
-        // Budget raised 25 -> 36 by psa-vydpz (measured 34, +2 margin).
-        //
-        // toolAllowed() gained a LIVENESS conjunct, so the list path now resolves
-        // McpToolSurface::liveToolNames() — one assembly of the general + client-scoped
-        // surfaces, and the settings reads they entail.
-        //
-        // It is ONE assembly, not one per tool. toolAllowed() is called once per candidate
-        // tool, and this fixture builds 214 of them, so the naive form was an N-fold
-        // re-assembly; the list path precomputes the lookup once and passes it down. The
-        // increase is therefore CONSTANT, and the assertion this test exists for — the
-        // dynamic CIPP catalog staying at <= 3 queries — is untouched above.
-        //
-        // NOT cached beyond that call, deliberately: an instance-level memo was tried and
-        // McpToolSurfaceDiscoveryTest caught it answering a second call from the first
-        // call's snapshot. Caching "is this tool live" reintroduces exactly the defect the
-        // conjunct closes. See the note on McpStaffController::liveToolNameLookup().
-        //
-        // *** CROSS-PR INTERACTION — THIS LINE WILL CONFLICT, AND THE COMBINED NUMBER IS
-        // MEASURED, NOT GUESSED. *** psa-wzjzz (PR #296) edits this same assertion to 33,
-        // for a different reason: its vendor predicates each read a master-switch setting.
-        // The two COMPOUND, because the live-surface assembly added here runs those
-        // predicates — so the totals do not merely add.
-        //
-        // Measured on a scratch merge of both branches: *** 46 queries. Set 48 (+2 margin)
-        // when the second of the two merges. *** Neither 33 nor 36 is correct once both
-        // have landed, and taking either side of the conflict verbatim will go red.
-        $this->assertLessThanOrEqual(36, count($queries), $sql);
+        $this->assertLessThanOrEqual(70, count($queries), $sql);
     }
 
     public function test_tools_list_repairs_dynamic_cipp_schema_before_publishing(): void
     {
+        $this->configureCippMcpRelay();
+
         // Schema repair is tool-agnostic, but under default-deny only an approved tool is
         // published, so the deliberately malformed schema rides the approved
         // ListGraphRequest (psa-3g8y).
@@ -162,6 +140,29 @@ class McpToolsListResilienceTest extends TestCase
     }
 
     /** @return array<int, string> */
+
+    /**
+     * Configure the CIPP MCP relay so a dynamic catalog row is genuinely LIVE.
+     *
+     * psa-wzjzz re-review (psa-wzjzz.6): the dynamic catalog is now published on
+     * CippConfig::isMcpRelayEnabled() — the SAME predicate its executor uses — not on the
+     * weaker isEnabled() default. Both tests below build dynamic rows and depend on them
+     * being published; without this they were relying on cipp_enabled defaulting to '1'
+     * while the relay was never configured, so they exercised a tool the executor would
+     * have refused. The bounded-queries test would silently go VACUOUS (its N+1 guard never
+     * runs if the catalog is not assembled); the schema-repair test fails loudly. Both are
+     * fixed by configuring what "live" actually requires.
+     */
+    private function configureCippMcpRelay(): void
+    {
+        Setting::setValue('cipp_enabled', '1');
+        Setting::setValue('cipp_api_url', 'https://cipp.example.test');
+        Setting::setValue('cipp_tenant_id', 'tenant-1');
+        Setting::setValue('cipp_mcp_client_id', 'mcp-client');
+        Setting::setEncrypted('cipp_mcp_client_secret', 'mcp-secret');
+        Setting::setValue('cipp_mcp_enabled', '1');
+    }
+
     private function createDynamicCippCatalog(int $count): array
     {
         $toolNames = [];

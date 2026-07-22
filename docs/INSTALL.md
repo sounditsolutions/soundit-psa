@@ -560,9 +560,15 @@ Before configuring integrations, visit **Settings > General Settings** to set yo
 
 All other integrations are configured through the **Settings > Integrations** page in the web UI. None require `.env` changes.
 
+> **Vendor master switches also gate the AI tool surface** (psa-wzjzz). Six integration on/off switches — `ninja_enabled`, `level_enabled`, `mesh_enabled`, `cipp_enabled`, `controld_enabled`, `zorus_enabled` — do more than stop syncs, schedules and webhooks: switching one **off** also withdraws that vendor's tools from the AI surfaces, so the AI is no longer offered them and cannot call them. Ninja, Level, Mesh and CIPP feed AI triage, the staff Assistant and staff MCP; Control D and Zorus feed AI triage only. The tools are *not offered*, not deleted — the definitions stay in the catalog and switching the integration back on restores them immediately, with no migration or re-grant.
+>
+> **Upgrading:** `ninja_enabled` **defaults to `0`**. A deployment that has been relying on NinjaRMM AI tools without ever explicitly setting `ninja_enabled=1` will lose them on upgrade. Set `ninja_enabled` to `1` in Settings > Integrations to restore them. The other five default to `1`, so they are unaffected unless you deliberately switched them off.
+>
+> A tool withdrawn this way reports as `unavailable_config` on the staff MCP `list_tool_surface` catalog — the same bucket as a genuinely unconfigured integration. If a tool you expect is missing, check the integration's switch **before** checking its credentials.
+
 ### NinjaRMM
 
-> **Disabled by default** (psa-u97k): NinjaRMM sync is off on fresh deployments. Set the `ninja_enabled` setting to `1` in Settings > Integrations to re-enable it.
+> **Disabled by default** (psa-u97k): NinjaRMM sync is off on fresh deployments. Set the `ninja_enabled` setting to `1` in Settings > Integrations to re-enable it. Since psa-wzjzz this switch also controls whether NinjaRMM tools are offered to AI triage, the staff Assistant and staff MCP — while it is `0`, the AI has no Ninja tools at all.
 
 1. Settings > Integrations > NinjaRMM
 2. Enter your Ninja **client ID** and **client secret**
