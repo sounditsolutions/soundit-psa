@@ -7,6 +7,7 @@ use App\Enums\SopStatus;
 use App\Enums\TechnicianTier;
 use App\Models\TechnicianActionLog;
 use App\Models\TicketCategory;
+use App\Services\Taxonomy\TicketCategoryTreeGuard;
 use App\Support\TechnicianConfig;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
@@ -30,6 +31,12 @@ use Illuminate\Validation\Rule;
  * review friction. Structure edits (rename/reparent/reactivate) live on
  * update_ticket_category; SOP content lives on set_ticket_category_sop;
  * deactivation requires the typed-confirm retire_ticket_category.
+ *
+ * Tree shape (depth <= 3, acyclicity, no retired attach targets) is decided
+ * by the shared TicketCategoryTreeGuard — the ONE write guard both doors
+ * (this MCP surface and the staff web UI) consult, per the tree-policy
+ * ruling (psa-m4bki). Do not reintroduce a local reimplementation here:
+ * divergent tree rules across the two write doors are a mis-write vector.
  */
 class StaffPsaTaxonomyToolExecutor
 {
@@ -43,12 +50,11 @@ class StaffPsaTaxonomyToolExecutor
         'set_ticket_category_sop',
     ];
 
-    /** The tree is Category > Subcategory > Item/Symptom — never deeper (so-0ftg, Charlie-locked). */
-    private const MAX_DEPTH = 3;
-
     private const LIST_DEFAULT_LIMIT = 300;
 
     private const LIST_MAX_LIMIT = 500;
+
+    public function __construct(private readonly TicketCategoryTreeGuard $treeGuard) {}
 
     public static function handles(string $toolName): bool
     {
@@ -318,11 +324,8 @@ class StaffPsaTaxonomyToolExecutor
             if (! $parent) {
                 return ['error' => 'Parent category not found'];
             }
-            if (! $parent->is_active) {
-                return ['error' => 'The parent category is retired. Reactivate it (update_ticket_category is_active=true) before creating children under it.'];
-            }
-            if ($parent->depth() >= self::MAX_DEPTH) {
-                return ['error' => 'Tree depth is capped at '.self::MAX_DEPTH.' (Category > Subcategory > Item). "'.$parent->pathString().'" is already at the deepest tier and cannot have children.'];
+            if ($guardError = $this->treeGuard->attachmentError(null, $parent)) {
+                return ['error' => $guardError];
             }
         }
 
@@ -423,12 +426,10 @@ class StaffPsaTaxonomyToolExecutor
         if (array_key_exists('is_active', $validated) && ! $validated['is_active']) {
             return ['error' => 'Deactivation goes through retire_ticket_category (typed confirmation), not update_ticket_category.'];
         }
-        if ((bool) ($validated['is_active'] ?? false) && ! $category->is_active) {
-            $parentNode = $category->parent;
-            if ($parentNode !== null && ! $parentNode->is_active) {
-                return ['error' => 'The parent category "'.$parentNode->name.'" is retired. Reactivate it first, or reparent this node.'];
-            }
-        }
+
+        // Reactivating in place — even under a retired parent — is deliberately
+        // legal: the retired-parent rule governs only NEW attach/move targets
+        // (psa-m4bki), and the web door round-trips exactly this state.
 
         $currentParentId = $category->parent_id !== null ? (int) $category->parent_id : null;
         $reparenting = array_key_exists('parent_id', $validated);
@@ -690,9 +691,10 @@ class StaffPsaTaxonomyToolExecutor
     }
 
     /**
-     * Refuse a reparent that would break the tree: cycles (a node under its own
-     * descendant), retired parents, and any placement pushing the node's whole
-     * subtree past MAX_DEPTH.
+     * Refuse a reparent that would break the tree. Existence is checked here
+     * (the guard takes a resolved model); the shape rules — self-parent,
+     * retired target, descendant cycle, subtree depth — are the shared
+     * TicketCategoryTreeGuard's, verbatim on both write doors.
      *
      * @return array<string, string>|null
      */
@@ -702,39 +704,16 @@ class StaffPsaTaxonomyToolExecutor
             return null;
         }
 
-        if ($newParentId === (int) $category->id) {
-            return ['error' => 'A category cannot be its own parent.'];
-        }
-
         $parent = TicketCategory::find($newParentId);
         if (! $parent) {
             return ['error' => 'Parent category not found'];
         }
-        if (! $parent->is_active) {
-            return ['error' => 'The parent category is retired. Reactivate it (update_ticket_category is_active=true) before moving nodes under it.'];
-        }
 
-        if ($category->descendants()->contains(fn (TicketCategory $node): bool => (int) $node->id === $newParentId)) {
-            return ['error' => 'A category cannot be moved under its own descendant.'];
-        }
-
-        $depthAfterMove = $parent->depth() + $this->subtreeHeight($category);
-        if ($depthAfterMove > self::MAX_DEPTH) {
-            return ['error' => 'Tree depth is capped at '.self::MAX_DEPTH.' (Category > Subcategory > Item). Moving "'.$category->name.'" (subtree height '.$this->subtreeHeight($category).') under "'.$parent->pathString().'" would reach depth '.$depthAfterMove.'.'];
+        if ($guardError = $this->treeGuard->attachmentError($category, $parent)) {
+            return ['error' => $guardError];
         }
 
         return null;
-    }
-
-    /** 1 for a leaf, 1 + tallest child subtree otherwise. */
-    private function subtreeHeight(TicketCategory $node): int
-    {
-        $max = 0;
-        foreach ($node->children as $child) {
-            $max = max($max, $this->subtreeHeight($child));
-        }
-
-        return 1 + $max;
     }
 
     /**

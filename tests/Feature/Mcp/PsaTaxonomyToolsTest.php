@@ -307,9 +307,11 @@ class PsaTaxonomyToolsTest extends TestCase
         $token = $this->token(['create_ticket_category']);
 
         // Depth is capped at 3: an Item/Symptom node cannot have children.
+        // The refusal wording is the shared TicketCategoryTreeGuard's — the
+        // same message the staff web UI door returns for the same move.
         $deep = $this->callTool($token, 'create_ticket_category', ['name' => 'Too deep', 'parent_id' => $item->id]);
         $this->assertTrue((bool) $deep->json('result.isError'));
-        $this->assertStringContainsString('depth is capped at 3', (string) $deep->json('result.content.0.text'));
+        $this->assertStringContainsString('maximum tree depth of 3', (string) $deep->json('result.content.0.text'));
 
         // Duplicate sibling names are refused case-insensitively.
         $duplicate = $this->callTool($token, 'create_ticket_category', ['name' => 'SCAREWARE', 'parent_id' => $cat->id]);
@@ -322,11 +324,12 @@ class PsaTaxonomyToolsTest extends TestCase
         $this->assertTrue((bool) $shadow->json('result.isError'));
         $this->assertStringContainsString('Reactivate it', (string) $shadow->json('result.content.0.text'));
 
-        // A retired parent refuses new children.
+        // A retired parent refuses new children (tree-policy ruling psa-m4bki,
+        // enforced by the shared guard on both write doors).
         $retired = TicketCategory::create(['name' => 'Retired Parent', 'is_active' => false]);
         $underRetired = $this->callTool($token, 'create_ticket_category', ['name' => 'Orphan', 'parent_id' => $retired->id]);
         $this->assertTrue((bool) $underRetired->json('result.isError'));
-        $this->assertStringContainsString('retired', (string) $underRetired->json('result.content.0.text'));
+        $this->assertStringContainsString('retired parent', (string) $underRetired->json('result.content.0.text'));
 
         // A status hint on an empty SOP would hide a coverage gap.
         $statusOnly = $this->callTool($token, 'create_ticket_category', ['name' => 'No Text', 'sop_status' => 'reviewed']);
@@ -381,7 +384,15 @@ class PsaTaxonomyToolsTest extends TestCase
         $childOfOther = TicketCategory::create(['name' => 'Windows OS', 'parent_id' => $other->id]);
         $tooDeep = $this->callTool($token, 'update_ticket_category', ['category_id' => $cat->id, 'parent_id' => $childOfOther->id]);
         $this->assertTrue((bool) $tooDeep->json('result.isError'));
-        $this->assertStringContainsString('depth is capped at 3', (string) $tooDeep->json('result.content.0.text'));
+        $this->assertStringContainsString('maximum tree depth of 3', (string) $tooDeep->json('result.content.0.text'));
+
+        // A retired node is not a legal move target either (tree-policy ruling
+        // psa-m4bki, same shared-guard refusal as the create door).
+        $retiredTarget = TicketCategory::create(['name' => 'Legacy Root', 'is_active' => false]);
+        $underRetired = $this->callTool($token, 'update_ticket_category', ['category_id' => $item->id, 'parent_id' => $retiredTarget->id]);
+        $this->assertTrue((bool) $underRetired->json('result.isError'));
+        $this->assertStringContainsString('retired parent', (string) $underRetired->json('result.content.0.text'));
+        $this->assertSame($other->id, $item->fresh()->parent_id, 'the refused move must not stick');
 
         // Reparent to null makes the node a top-level category.
         $toRoot = $this->callTool($token, 'update_ticket_category', ['category_id' => $item->id, 'parent_id' => null]);
@@ -390,7 +401,7 @@ class PsaTaxonomyToolsTest extends TestCase
         $this->assertSame(1, $item->fresh()->depth());
     }
 
-    public function test_update_rejects_sop_fields_deactivation_and_reactivates_safely(): void
+    public function test_update_rejects_sop_fields_deactivation_and_reactivates_in_place(): void
     {
         $this->configureAiActor();
         $parent = TicketCategory::create(['name' => 'Network & Connectivity', 'is_active' => false]);
@@ -407,17 +418,20 @@ class PsaTaxonomyToolsTest extends TestCase
         $this->assertTrue((bool) $off->json('result.isError'));
         $this->assertStringContainsString('retire_ticket_category', (string) $off->json('result.content.0.text'));
 
-        // Reactivating under a retired parent is refused; reactivating the
-        // parent first, then the child, works.
-        $childFirst = $this->callTool($token, 'update_ticket_category', ['category_id' => $child->id, 'is_active' => true]);
-        $this->assertTrue((bool) $childFirst->json('result.isError'));
-        $this->assertStringContainsString('parent category', (string) $childFirst->json('result.content.0.text'));
-
-        $parentOn = $this->callTool($token, 'update_ticket_category', ['category_id' => $parent->id, 'is_active' => true]);
-        $this->assertFalse((bool) $parentOn->json('result.isError'), (string) $parentOn->json('result.content.0.text'));
+        // Reactivating in place under a retired parent is legal on both write
+        // doors: the retired-parent rule governs only NEW attach/move targets
+        // (tree-policy ruling psa-m4bki — retirement is soft, and the web UI
+        // round-trips a child sitting under a retired parent). The parent
+        // itself stays retired.
         $childOn = $this->callTool($token, 'update_ticket_category', ['category_id' => $child->id, 'is_active' => true]);
         $this->assertFalse((bool) $childOn->json('result.isError'), (string) $childOn->json('result.content.0.text'));
         $this->assertTrue($child->fresh()->is_active);
+        $this->assertFalse($parent->fresh()->is_active);
+
+        // Reactivating the parent itself needs no special casing either.
+        $parentOn = $this->callTool($token, 'update_ticket_category', ['category_id' => $parent->id, 'is_active' => true]);
+        $this->assertFalse((bool) $parentOn->json('result.isError'), (string) $parentOn->json('result.content.0.text'));
+        $this->assertTrue($parent->fresh()->is_active);
     }
 
     public function test_retire_requires_typed_confirm_blocks_active_children_and_audits(): void
