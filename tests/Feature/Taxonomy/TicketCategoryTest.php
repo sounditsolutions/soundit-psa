@@ -7,6 +7,7 @@ use App\Enums\SopStatus;
 use App\Models\Ticket;
 use App\Models\TicketCategory;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Schema;
 use Tests\TestCase;
 
 /**
@@ -127,5 +128,34 @@ class TicketCategoryTest extends TestCase
 
         $this->assertTrue($draftWithText->hasSop());
         $this->assertFalse($reviewedNoText->hasSop());
+    }
+
+    public function test_taxonomy_migrations_roll_back_and_reapply_cleanly_on_sqlite(): void
+    {
+        // RefreshDatabase has already migrated the full stack for this test, so the
+        // taxonomy schema is present.
+        $this->assertTrue(Schema::hasColumn('tickets', 'category_id'));
+        $this->assertTrue(Schema::hasTable('ticket_categories'));
+
+        $addCategoryId = require database_path('migrations/2026_07_22_000002_add_category_id_to_tickets_table.php');
+        $createCategories = require database_path('migrations/2026_07_22_000001_create_ticket_categories_table.php');
+
+        // Rollback runs newest-first (000002 then 000001). The 000002 down() is the
+        // one the architecture review flagged: a redundant explicit category_id index
+        // made SQLite refuse to DROP COLUMN category_id (the column was still
+        // "indexed"), so `migrate:rollback` threw. The FK's own index already covers
+        // lookups on MariaDB, so the explicit one only existed to break this path.
+        $addCategoryId->down();
+        $this->assertFalse(Schema::hasColumn('tickets', 'category_id'), 'category_id dropped on rollback');
+
+        $createCategories->down();
+        $this->assertFalse(Schema::hasTable('ticket_categories'), 'ticket_categories dropped on rollback');
+
+        // Re-apply so the shared in-memory schema is whole again for sibling tests —
+        // the DDL above auto-commits under SQLite, which RefreshDatabase cannot undo.
+        $createCategories->up();
+        $addCategoryId->up();
+        $this->assertTrue(Schema::hasColumn('tickets', 'category_id'));
+        $this->assertTrue(Schema::hasTable('ticket_categories'));
     }
 }
