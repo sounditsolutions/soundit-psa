@@ -289,10 +289,19 @@ class AssistantToolExecutor
 
     // ── General Tools (no client scope) ──
 
-    private function activeClientTickets()
+    private function ticketQuery()
     {
-        return Ticket::query()
-            ->whereHas('client', fn ($client) => $client->active());
+        // No active-client fence. The staff queue tools mirror the web ticket
+        // list (TicketService::getTicketList) and honour their own published
+        // descriptions ("all tickets in the PSA (not scoped to any client)").
+        // A whereHas('client', active()) EXISTS clause silently dropped exactly
+        // the rows the queue most needs to surface — client_id IS NULL (the
+        // UNRESOLVED-INTAKE tickets), plus tickets at inactive or soft-deleted
+        // clients — a rule-3 false-clear that made "what's unhandled?" answer
+        // with a confident under-count (psa-6usr). Staff already see every
+        // ticket on the web dashboard, so removing it widens no access boundary;
+        // the real client-lock lives on the portal executor, which is untouched.
+        return Ticket::query();
     }
 
     private function priorityOrderSql(): string
@@ -305,7 +314,7 @@ class AssistantToolExecutor
         $query = $input['query'] ?? '';
         $limit = min($input['limit'] ?? 15, 30);
 
-        $tickets = $this->activeClientTickets()
+        $tickets = $this->ticketQuery()
             ->search($query)
             ->when($input['status'] ?? null, fn ($q, $s) => $q->where('status', $s))
             ->orderByDesc('created_at')
@@ -334,7 +343,7 @@ class AssistantToolExecutor
         $limit = min($input['limit'] ?? 20, 50);
         $openStatuses = ['new', 'in_progress', 'pending_client', 'pending_third_party'];
 
-        $tickets = $this->activeClientTickets()
+        $tickets = $this->ticketQuery()
             ->where('assignee_id', $this->userId)
             ->when(
                 $input['status'] ?? null,
@@ -364,7 +373,7 @@ class AssistantToolExecutor
         $limit = min($input['limit'] ?? 20, 50);
         $openStatuses = ['new', 'in_progress', 'pending_client', 'pending_third_party'];
 
-        $query = $this->activeClientTickets()->whereIn('status', $openStatuses);
+        $query = $this->ticketQuery()->whereIn('status', $openStatuses);
 
         if ($input['assignee'] ?? null) {
             $query->whereHas('assignee', fn ($q) => $q->where('name', 'like', '%'.$input['assignee'].'%'));
@@ -655,7 +664,7 @@ class AssistantToolExecutor
     {
         $openStatuses = ['new', 'in_progress', 'pending_client', 'pending_third_party'];
 
-        $openTickets = $this->activeClientTickets()->whereIn('status', $openStatuses);
+        $openTickets = $this->ticketQuery()->whereIn('status', $openStatuses);
 
         $byStatus = (clone $openTickets)->selectRaw('status, count(*) as count')
             ->groupBy('status')
