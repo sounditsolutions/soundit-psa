@@ -41,6 +41,7 @@ use App\Http\Controllers\Web\ResellerReportController;
 use App\Http\Controllers\Web\SkuController;
 use App\Http\Controllers\Web\StaffController;
 use App\Http\Controllers\Web\TacticalSiteController;
+use App\Http\Controllers\Web\TicketCategoryController;
 use App\Http\Controllers\Web\TicketController;
 use App\Http\Controllers\Web\TicketNoteController;
 use App\Http\Controllers\Web\TimeReportController;
@@ -201,6 +202,14 @@ Route::middleware('auth')->group(function () {
     Route::post('/tickets/{ticket}/notes', [TicketNoteController::class, 'store'])->name('tickets.notes.store');
     Route::put('/tickets/{ticket}/notes/{note}', [TicketNoteController::class, 'update'])->name('tickets.notes.update');
     Route::delete('/tickets/{ticket}/notes/{note}', [TicketNoteController::class, 'destroy'])->name('tickets.notes.destroy');
+
+    // Ticket Categories (so-0ftg taxonomy — tree CRUD, all staff, edit-in-place)
+    Route::get('/ticket-categories', [TicketCategoryController::class, 'index'])->name('ticket-categories.index');
+    Route::get('/ticket-categories/create', [TicketCategoryController::class, 'create'])->name('ticket-categories.create');
+    Route::post('/ticket-categories', [TicketCategoryController::class, 'store'])->name('ticket-categories.store');
+    Route::get('/ticket-categories/{ticketCategory}', [TicketCategoryController::class, 'show'])->name('ticket-categories.show');
+    Route::get('/ticket-categories/{ticketCategory}/edit', [TicketCategoryController::class, 'edit'])->name('ticket-categories.edit');
+    Route::patch('/ticket-categories/{ticketCategory}', [TicketCategoryController::class, 'update'])->name('ticket-categories.update');
 
     // Alerts
     Route::get('/alerts', [AlertController::class, 'index'])->name('alerts.index');

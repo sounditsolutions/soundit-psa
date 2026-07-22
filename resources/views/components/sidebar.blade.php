@@ -58,6 +58,13 @@
                 <i class="bi bi-ticket-perforated sidebar-icon"></i>
                 <span class="sidebar-label">Tickets</span>
             </a>
+            <a href="{{ route('ticket-categories.index') }}"
+               class="sidebar-link {{ request()->routeIs('ticket-categories.*') ? 'active' : '' }}"
+               @if(request()->routeIs('ticket-categories.*')) aria-current="page" @endif
+               data-bs-toggle="tooltip" data-bs-placement="right" data-bs-title="Ticket Categories">
+                <i class="bi bi-diagram-2 sidebar-icon"></i>
+                <span class="sidebar-label">Ticket Categories</span>
+            </a>
             <a href="{{ route('cockpit.index') }}"
                class="sidebar-link {{ request()->routeIs('cockpit.*') ? 'active' : '' }}"
                @if(request()->routeIs('cockpit.*')) aria-current="page" @endif
