@@ -85,6 +85,10 @@ class McpToolSurface
             McpToolRegistry::psaRecordsTools(),
             McpToolRegistry::psaReadTools(),
             McpToolRegistry::intakeManageTools(),
+            // PSA-native like its psa_* neighbours: no integration config to gate
+            // on, so publication is unconditional and the executor's only refusal
+            // (the kill switch, writes only) is runtime state, not liveness.
+            McpToolRegistry::taxonomyTools(),
             TacticalConfig::isConfigured() ? McpToolRegistry::tacticalAdminTools() : [],
             ChetDataSurfaceTools::generalTools(),
             OperatorBridgeTools::definitions(),

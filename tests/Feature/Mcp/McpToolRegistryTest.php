@@ -16,7 +16,7 @@ class McpToolRegistryTest extends TestCase
     {
         $groups = McpToolRegistry::groups();
 
-        $this->assertSame(['general', 'client', 'integration', 'cipp_write', 'tactical_action', 'tactical_admin', 'wiki_write', 'psa_action', 'psa_records', 'psa_read', 'intake_manage', 'bridge'], array_keys($groups));
+        $this->assertSame(['general', 'client', 'integration', 'cipp_write', 'tactical_action', 'tactical_admin', 'wiki_write', 'psa_action', 'psa_records', 'psa_read', 'intake_manage', 'taxonomy', 'bridge'], array_keys($groups));
 
         $names = fn (string $group): array => array_column($groups[$group]['tools'], 'name');
 
@@ -53,6 +53,12 @@ class McpToolRegistryTest extends TestCase
         $this->assertContains('dismiss_email_item', $names('intake_manage'));
         $this->assertContains('link_call_to_ticket', $names('intake_manage'));
         $this->assertContains('create_ticket_from_call', $names('intake_manage'));
+        $this->assertContains('list_ticket_categories', $names('taxonomy'));
+        $this->assertContains('get_ticket_category', $names('taxonomy'));
+        $this->assertContains('create_ticket_category', $names('taxonomy'));
+        $this->assertContains('update_ticket_category', $names('taxonomy'));
+        $this->assertContains('retire_ticket_category', $names('taxonomy'));
+        $this->assertContains('set_ticket_category_sop', $names('taxonomy'));
         $this->assertContains('post_to_operator', $names('bridge'));
         $this->assertTrue($groups['wiki_write']['sensitive']);
         $this->assertTrue($groups['tactical_action']['sensitive']);
@@ -61,6 +67,7 @@ class McpToolRegistryTest extends TestCase
         $this->assertTrue($groups['psa_records']['sensitive']);
         $this->assertTrue($groups['psa_read']['sensitive']);
         $this->assertTrue($groups['intake_manage']['sensitive']);
+        $this->assertTrue($groups['taxonomy']['sensitive']);
         $this->assertTrue($groups['bridge']['sensitive']);
         $this->assertTrue($groups['cipp_write']['sensitive']);
         $this->assertFalse($groups['general']['sensitive']);

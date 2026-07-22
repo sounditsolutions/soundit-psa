@@ -8,6 +8,7 @@ use App\Services\Assistant\AssistantToolDefinitions;
 use App\Services\Chet\ChetDataSurfaceTools;
 use App\Services\Chet\OperatorBridgeTools;
 use App\Services\Mcp\StaffCippWriteToolExecutor;
+use App\Services\Mcp\StaffPsaTaxonomyToolExecutor;
 use App\Services\Mcp\StaffTacticalActionToolExecutor;
 use App\Services\Mcp\StaffTacticalAdminToolExecutor;
 use App\Services\Triage\TriageToolDefinitions;
@@ -64,6 +65,7 @@ class McpToolRegistry
             $psaRecords = self::shape(self::psaRecordsTools());
             $psaRead = self::shape(self::psaReadTools());
             $intakeManage = self::shape(self::intakeManageTools());
+            $taxonomy = self::shape(self::taxonomyTools());
 
             return [
                 'general' => ['label' => 'General (no client context)', 'sensitive' => false, 'tools' => $general],
@@ -77,6 +79,7 @@ class McpToolRegistry
                 'psa_records' => ['label' => 'PSA records — clients, people, assets (sensitive)', 'sensitive' => true, 'tools' => $psaRecords],
                 'psa_read' => ['label' => 'PSA reads (sensitive)', 'sensitive' => true, 'tools' => $psaRead],
                 'intake_manage' => ['label' => 'Intake email/call manage (sensitive)', 'sensitive' => true, 'tools' => $intakeManage],
+                'taxonomy' => ['label' => 'Ticket taxonomy & SOPs (sensitive)', 'sensitive' => true, 'tools' => $taxonomy],
                 'bridge' => ['label' => 'Operator bridge (sensitive)', 'sensitive' => true, 'tools' => $bridge],
             ];
         });
@@ -123,6 +126,7 @@ class McpToolRegistry
                 'psa_records' => ['psa', 'write', 'Write & act', 2],
                 'psa_read' => ['psa', 'read', 'Reads', 3],
                 'intake_manage' => ['psa', 'write', 'Write & act', 2],
+                'taxonomy' => ['psa', 'taxonomy', 'Taxonomy & SOPs', 4],
                 'cipp_write' => ['cipp', 'write', 'Write & remediate', 2],
                 'tactical_action' => ['tactical', 'actions', 'Endpoint actions', 2],
                 'tactical_admin' => ['tactical', 'admin', 'Admin & provisioning', 3],
@@ -326,6 +330,18 @@ class McpToolRegistry
     public static function tacticalAdminTools(): array
     {
         return StaffTacticalAdminToolExecutor::definitions();
+    }
+
+    /**
+     * so-0ftg ticket-taxonomy CRUD surface (Chet's secondary authoring path).
+     * Definitions live on the executor so the published list, the grant
+     * catalog, and dispatch all derive from one TOOLS constant.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public static function taxonomyTools(): array
+    {
+        return StaffPsaTaxonomyToolExecutor::definitions();
     }
 
     public static function flushMemoized(): void

@@ -21,6 +21,7 @@ use App\Services\Chet\OperatorBridgeTools;
 use App\Services\Cipp\CippMcpDynamicToolExecutor;
 use App\Services\Mcp\StaffCippWriteToolExecutor;
 use App\Services\Mcp\StaffPsaActionToolExecutor;
+use App\Services\Mcp\StaffPsaTaxonomyToolExecutor;
 use App\Services\Mcp\StaffTacticalActionToolExecutor;
 use App\Services\Mcp\StaffTacticalAdminToolExecutor;
 use App\Services\Signals\SignalNudgeNotice;
@@ -564,6 +565,24 @@ class McpStaffController extends Controller
             ]);
         }
 
+        // The ticket taxonomy is global (so-0ftg). Every taxonomy tool — reads
+        // included — rejects a supplied client_id rather than silently dropping
+        // it: a caller that believes the listing it got back was client-scoped
+        // has been misled, which is worse than an error (psa-mgok).
+        if ($this->isTaxonomyTool((string) $name) && $hasClientIdArgument) {
+            $message = "client_id must be omitted for {$name}; the ticket taxonomy is global.";
+            $this->audit('tools/call', (string) $name, $auditArguments, 'error', $message, $start, $request);
+
+            return response()->json([
+                'jsonrpc' => '2.0',
+                'id' => $id,
+                'result' => [
+                    'content' => [['type' => 'text', 'text' => $message]],
+                    'isError' => true,
+                ],
+            ]);
+        }
+
         if ($this->isWikiClientScopeWrite((string) $name, $arguments) && $clientId === null) {
             $message = 'client_id is required for wiki_add_fact client-scope writes.';
             $this->audit('tools/call', (string) $name, $auditArguments, 'error', $message, $start, $request);
@@ -902,6 +921,14 @@ class McpStaffController extends Controller
                     $this->actorLabel($request),
                     $this->tokenLabel($request),
                 );
+            } elseif ($this->isTaxonomyTool((string) $name)) {
+                // Global surface — no client scope at all (a supplied client_id
+                // was already rejected above).
+                $result = app(StaffPsaTaxonomyToolExecutor::class)->execute(
+                    (string) $name,
+                    $arguments,
+                    $this->actorLabel($request),
+                );
             } elseif ((string) $name === 'send_reply') {
                 $result = $this->sendReply($arguments, $request);
             } elseif ((string) $name === 'request_tool') {
@@ -1160,6 +1187,10 @@ class McpStaffController extends Controller
 
         if (in_array((string) $tool, ['restore_asset', 'link_asset_user', 'unlink_asset_user', 'set_primary_asset_user'], true)) {
             return $this->auditAssetScopedIdArguments($args);
+        }
+
+        if ($this->isTaxonomyTool((string) $tool)) {
+            return $this->auditTaxonomyArguments($args);
         }
 
         $redacted = app(ActionRedactor::class)->redactParams($args);
@@ -1605,6 +1636,36 @@ class McpStaffController extends Controller
         return $safe;
     }
 
+    /**
+     * One projection for all six taxonomy tools: scalar identifiers, filters and
+     * hints pass through; the SOP markdown and description bodies are reduced to
+     * lengths (mirrors site notes / wiki page authoring).
+     *
+     * @return array<string, mixed>
+     */
+    private function auditTaxonomyArguments(array $arguments): array
+    {
+        $safe = [];
+
+        foreach ($arguments as $key => $value) {
+            $normalized = mb_strtolower((string) $key);
+
+            if (in_array($normalized, ['category_id', 'parent_id', 'name', 'sop_status', 'record_type_hint', 'sort_order', 'is_active', 'source_runbook_slug', 'confirm_category_name', 'reason', 'expected_updated_at', 'search', 'stale_days', 'include_inactive', 'limit'], true)) {
+                $safe[$normalized] = $value;
+            }
+
+            if ($normalized === 'sop_text') {
+                $safe['sop_text_length'] = is_string($value) ? mb_strlen($value) : 0;
+            }
+
+            if ($normalized === 'description') {
+                $safe['description_length'] = is_string($value) ? mb_strlen($value) : 0;
+            }
+        }
+
+        return $safe;
+    }
+
     /** @return array<string, mixed> */
     private function auditWikiAddFactArguments(array $arguments): array
     {
@@ -1979,6 +2040,10 @@ class McpStaffController extends Controller
             return $token->allowedTools !== null && $token->allows($toolName);
         }
 
+        if ($this->isTaxonomyTool($toolName)) {
+            return $token->allowedTools !== null && $token->allows($toolName);
+        }
+
         if ($this->isCippWriteTool($toolName)) {
             return $token->allowedTools !== null && $token->allows($toolName);
         }
@@ -2113,6 +2178,11 @@ class McpStaffController extends Controller
     private function isIntakeManageTool(string $toolName): bool
     {
         return in_array($toolName, self::INTAKE_MANAGE_TOOLS, true);
+    }
+
+    private function isTaxonomyTool(string $toolName): bool
+    {
+        return StaffPsaTaxonomyToolExecutor::handles($toolName);
     }
 
     /** psa_records tools that carry an explicit client_id argument: client-entity targets + the create_contact / create_asset parent scope. */
