@@ -142,10 +142,17 @@ class TicketCategoryController extends Controller
             'descriptionHtml' => MarkdownRenderer::render($ticketCategory->description),
             'sopHtml' => MarkdownRenderer::render($ticketCategory->sop_text),
             // Legal re-parent targets only, so the dropdown cannot offer a
-            // move the guard would refuse (self, descendants, depth overflow).
-            'parentOptions' => $this->parentOptions()
-                ->filter(fn (array $opt) => $this->guard->attachmentError($ticketCategory, $opt['node']) === null),
-            'canHaveChildren' => $ticketCategory->depth() < TicketCategoryTreeGuard::MAX_DEPTH,
+            // move the guard would refuse (retired target, self, descendants,
+            // depth overflow). The current parent is always offered even when
+            // retired — update() skips the guard for an unchanged parent, so
+            // resubmitting it stays legal and the form round-trips.
+            'parentOptions' => $this->parentOptions($ticketCategory->parent_id)
+                ->filter(fn (array $opt) => $opt['node']->id === $ticketCategory->parent_id
+                    || $this->guard->attachmentError($ticketCategory, $opt['node']) === null),
+            // Mirrors the guard: a retired node is not a legal attach target,
+            // so its page offers no add-child affordances.
+            'canHaveChildren' => $ticketCategory->is_active
+                && $ticketCategory->depth() < TicketCategoryTreeGuard::MAX_DEPTH,
         ]);
     }
 
@@ -196,13 +203,21 @@ class TicketCategoryController extends Controller
     }
 
     /**
-     * Every node flattened depth-first with its path label and depth, for
-     * parent <select>s. Retired nodes are included (labelled by the view) —
-     * structure and retirement are independent concerns.
+     * Every legal attach target flattened depth-first with its path label and
+     * depth, for parent <select>s. Retired nodes are excluded — they are no
+     * longer valid attach/move targets (tree-policy ruling, psa-m4bki), and
+     * the guard refuses them server-side as defence-in-depth. The walk still
+     * descends through retired nodes: retirement is soft, so their active
+     * children remain legal targets themselves.
+     *
+     * $keepId re-includes one retired node by id — the show page passes the
+     * node's current parent so the always-posted parent <select> round-trips
+     * losslessly instead of silently re-rooting a child that already sits
+     * under a retired parent.
      *
      * @return Collection<int, array{node: TicketCategory, label: string, depth: int}>
      */
-    private function parentOptions(): Collection
+    private function parentOptions(?int $keepId = null): Collection
     {
         $roots = TicketCategory::whereNull('parent_id')
             ->with('children.children')
@@ -211,9 +226,11 @@ class TicketCategoryController extends Controller
             ->get();
 
         $flat = collect();
-        $walk = function ($nodes, string $prefix, int $depth) use (&$walk, $flat) {
+        $walk = function ($nodes, string $prefix, int $depth) use (&$walk, $flat, $keepId) {
             foreach ($nodes as $node) {
-                $flat->push(['node' => $node, 'label' => $prefix.$node->name, 'depth' => $depth]);
+                if ($node->is_active || $node->id === $keepId) {
+                    $flat->push(['node' => $node, 'label' => $prefix.$node->name, 'depth' => $depth]);
+                }
                 $walk($node->children, $prefix.$node->name.' / ', $depth + 1);
             }
         };

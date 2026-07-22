@@ -77,6 +77,35 @@ class TicketCategoryTreeGuardTest extends TestCase
         $this->assertStringContainsString('maximum tree depth', (string) $this->guard->attachmentError($mover->fresh(), $otherSub));
     }
 
+    public function test_new_node_cannot_be_created_under_a_retired_parent(): void
+    {
+        $retired = TicketCategory::create(['name' => 'Legacy', 'is_active' => false]);
+
+        $this->assertStringContainsString('retired parent', (string) $this->guard->attachmentError(null, $retired));
+    }
+
+    public function test_node_cannot_move_under_a_retired_parent(): void
+    {
+        $retired = TicketCategory::create(['name' => 'Legacy', 'is_active' => false]);
+        $mover = TicketCategory::create(['name' => 'Printers']);
+
+        $this->assertStringContainsString('retired parent', (string) $this->guard->attachmentError($mover, $retired));
+    }
+
+    public function test_retiring_a_parent_does_not_invalidate_its_existing_children(): void
+    {
+        // Retirement is soft and non-cascading: the guard governs only NEW
+        // attach/move targets, so a child already under a retired parent
+        // keeps its place, and the retired node's active children remain
+        // legal targets themselves.
+        $cat = TicketCategory::create(['name' => 'Network']);
+        $sub = TicketCategory::create(['name' => 'Wi-Fi', 'parent_id' => $cat->id]);
+        $cat->update(['is_active' => false]);
+
+        $this->assertSame($cat->id, $sub->fresh()->parent_id);
+        $this->assertNull($this->guard->attachmentError(null, $sub->fresh()));
+    }
+
     public function test_subtree_height_counts_the_deepest_branch(): void
     {
         $node = TicketCategory::create(['name' => 'Root']);

@@ -11,6 +11,11 @@ use App\Models\TicketCategory;
  * delegates both to the write layers, and this class is that check, shared
  * by every surface that creates or re-parents nodes (staff UI now, MCP
  * CRUD tools later).
+ *
+ * Retired (is_active = false) nodes are refused as attachment targets on
+ * both write doors (tree-policy ruling, psa-m4bki): retirement stays soft —
+ * retiring a node never detaches its existing children — but no NEW node
+ * may be created under or moved under a retired parent.
  */
 class TicketCategoryTreeGuard
 {
@@ -25,6 +30,10 @@ class TicketCategoryTreeGuard
     {
         if ($parent === null) {
             return null;
+        }
+
+        if (! $parent->is_active) {
+            return 'A category cannot be placed under a retired parent.';
         }
 
         if ($node !== null && $parent->id === $node->id) {

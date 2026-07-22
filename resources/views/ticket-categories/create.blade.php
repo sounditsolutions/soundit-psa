@@ -51,7 +51,7 @@
                                 @foreach($parentOptions as $opt)
                                     <option value="{{ $opt['node']->id }}"
                                         {{ (int) old('parent_id', $preselectedParent) === $opt['node']->id ? 'selected' : '' }}>
-                                        {{ $opt['label'] }}{{ $opt['node']->is_active ? '' : ' (retired)' }}
+                                        {{ $opt['label'] }}
                                     </option>
                                 @endforeach
                             </select>

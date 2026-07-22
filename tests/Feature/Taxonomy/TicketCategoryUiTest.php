@@ -338,4 +338,119 @@ class TicketCategoryUiTest extends TestCase
 
         $this->assertSame(5, $sub->fresh()->sort_order);
     }
+
+    // ── retired parents (tree-policy ruling, psa-m4bki) ──────────────────────
+
+    public function test_store_refuses_a_retired_parent(): void
+    {
+        $retired = TicketCategory::create(['name' => 'Legacy', 'is_active' => false]);
+
+        $this->actingAs($this->user)->post(route('ticket-categories.store'), [
+            'name' => 'Orphan-to-be',
+            'parent_id' => $retired->id,
+        ])->assertSessionHasErrors('parent_id');
+
+        $this->assertDatabaseMissing('ticket_categories', ['name' => 'Orphan-to-be']);
+    }
+
+    public function test_update_refuses_a_move_under_a_retired_parent(): void
+    {
+        $retired = TicketCategory::create(['name' => 'Legacy', 'is_active' => false]);
+        $mover = TicketCategory::create(['name' => 'Printers']);
+
+        $this->actingAs($this->user)
+            ->patch(route('ticket-categories.update', $mover), ['parent_id' => $retired->id])
+            ->assertSessionHasErrors('parent_id');
+
+        $this->assertNull($mover->fresh()->parent_id);
+    }
+
+    public function test_create_page_omits_retired_parents_but_keeps_their_active_children(): void
+    {
+        [$cat, $sub] = $this->makeTree();
+        $cat->update(['is_active' => false]);
+        $lone = TicketCategory::create(['name' => 'Zz Legacy Fax', 'is_active' => false]);
+
+        $resp = $this->actingAs($this->user)->get(route('ticket-categories.create'));
+        $resp->assertOk()->assertDontSee('Zz Legacy Fax');
+
+        // Retirement is per-node, not per-subtree: the retired root is no
+        // longer offered, but its still-active child is.
+        $offered = collect($resp->viewData('parentOptions'))->pluck('node.id');
+        $this->assertNotContains($cat->id, $offered);
+        $this->assertNotContains($lone->id, $offered);
+        $this->assertContains($sub->id, $offered);
+    }
+
+    public function test_show_dropdown_omits_retired_nodes_except_the_current_parent(): void
+    {
+        [$cat, $sub] = $this->makeTree();
+        $cat->update(['is_active' => false]);
+        $bystander = TicketCategory::create(['name' => 'Workstations']);
+
+        // The child's own page still offers its retired current parent, so
+        // the always-posted parent <select> round-trips without re-rooting.
+        $subOffered = collect(
+            $this->actingAs($this->user)->get(route('ticket-categories.show', $sub))
+                ->assertOk()->assertSee('(retired)')
+                ->viewData('parentOptions')
+        )->pluck('node.id');
+        $this->assertContains($cat->id, $subOffered);
+
+        // Everyone else's page no longer offers the retired node at all.
+        $bystanderOffered = collect(
+            $this->actingAs($this->user)->get(route('ticket-categories.show', $bystander))
+                ->assertOk()->viewData('parentOptions')
+        )->pluck('node.id');
+        $this->assertNotContains($cat->id, $bystanderOffered);
+    }
+
+    public function test_details_form_roundtrips_for_a_child_of_a_retired_parent(): void
+    {
+        // Retirement is soft and non-cascading: a child already under a
+        // retired parent keeps its place, and editing it in place (which
+        // resubmits its current parent_id) must neither error nor re-root it.
+        [$cat, $sub] = $this->makeTree();
+        $cat->update(['is_active' => false]);
+
+        $this->actingAs($this->user)
+            ->patch(route('ticket-categories.update', $sub), [
+                'form_key' => 'details',
+                'parent_id' => (string) $cat->id,
+                'sort_order' => '7',
+            ])
+            ->assertRedirect(route('ticket-categories.show', $sub))
+            ->assertSessionHasNoErrors();
+
+        $fresh = $sub->fresh();
+        $this->assertSame($cat->id, $fresh->parent_id);
+        $this->assertSame(7, $fresh->sort_order);
+    }
+
+    public function test_retired_node_page_offers_no_add_child_affordances(): void
+    {
+        [$cat, $sub] = $this->makeTree();
+        $cat->update(['is_active' => false]);
+
+        // The guard would refuse the attachment, so the page must not offer
+        // it — but the existing children stay listed (retirement is soft).
+        $this->actingAs($this->user)->get(route('ticket-categories.show', $cat))
+            ->assertOk()
+            ->assertDontSee('Add Child')
+            ->assertDontSee('Quick-add child')
+            ->assertSee('Scareware');
+    }
+
+    public function test_retiring_a_node_keeps_its_existing_children_attached(): void
+    {
+        [$cat, $sub, $item] = $this->makeTree();
+
+        $this->actingAs($this->user)
+            ->patch(route('ticket-categories.update', $sub), ['is_active' => '0'])
+            ->assertSessionHasNoErrors();
+
+        $this->assertFalse($sub->fresh()->is_active);
+        $this->assertSame($sub->id, $item->fresh()->parent_id);
+        $this->assertTrue($item->fresh()->is_active);
+    }
 }
