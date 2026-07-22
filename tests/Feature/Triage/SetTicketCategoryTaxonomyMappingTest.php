@@ -172,6 +172,23 @@ class SetTicketCategoryTaxonomyMappingTest extends TestCase
         $this->assertSame($staff->id, $log->changed_by);
     }
 
+    public function test_a_system_owned_node_is_never_overwritten_by_triage(): void
+    {
+        // A System write — e.g. an agent (Chet) via the update_ticket MCP tool
+        // (psa-bk13g): the MCP surface has no authenticated web-user, so the
+        // observer stamps System. System is treated as human-owned exactly like
+        // Staff (TriageToolExecutor:549), so a Chet-set node is authoritative.
+        $ticket = Ticket::factory()->create();
+        $ticket->update(['category_id' => $this->malware->id]); // no actingAs -> System
+        $this->assertSame(TicketCategoryChangeSource::System, $ticket->refresh()->category_source);
+
+        $result = $this->setCategory($ticket->refresh(), 'Security', 'Phishing');
+
+        $this->assertSame('kept_existing', $result['taxonomy']['status']);
+        $this->assertSame($this->malware->id, $ticket->refresh()->category_id);
+        $this->assertSame(TicketCategoryChangeSource::System, $ticket->refresh()->category_source);
+    }
+
     public function test_race_human_update_committed_before_its_staff_log_row_is_preserved(): void
     {
         $ticket = Ticket::factory()->create();
