@@ -253,6 +253,9 @@
             <button class="btn btn-sm btn-info text-white" onclick="confirmBulkAction('post')">
                 <i class="bi bi-check-circle me-1"></i>Mark as Posted
             </button>
+            <button class="btn btn-sm btn-success" onclick="confirmBulkAction('mark_paid')">
+                <i class="bi bi-cash-coin me-1"></i>Mark as Paid
+            </button>
             <button class="btn btn-sm btn-outline-danger" onclick="confirmBulkAction('void')" style="border-color: rgba(255,255,255,0.5); color: #fff;">
                 <i class="bi bi-x-circle me-1"></i>Void
             </button>
@@ -364,6 +367,11 @@
                 title = 'Mark as Posted';
                 body = 'Mark ' + count + ' invoice(s) as Posted? Only Draft invoices will be updated.';
                 btnClass = 'btn-info text-white';
+                break;
+            case 'mark_paid':
+                title = 'Mark as Paid';
+                body = 'Mark ' + count + ' invoice(s) as Paid? Only posted invoices with no Stripe/QuickBooks link will be updated; the rest are skipped.';
+                btnClass = 'btn-success';
                 break;
             case 'void':
                 title = 'Void Invoices';

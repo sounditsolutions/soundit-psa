@@ -279,7 +279,7 @@ class InvoiceController extends Controller
     public function bulkAction(Request $request, QboSyncService $qboSyncService, InvoiceVoidService $voidService)
     {
         $request->validate([
-            'action' => ['required', 'string', 'in:push,post,void'],
+            'action' => ['required', 'string', 'in:push,post,void,mark_paid'],
             'invoice_ids' => ['required', 'array', 'min:1'],
             'invoice_ids.*' => ['required', 'integer', 'exists:invoices,id'],
         ]);
@@ -337,6 +337,14 @@ class InvoiceController extends Controller
                         }
                         $succeeded++;
                         break;
+
+                    case 'mark_paid':
+                        if ($this->invoiceService->markPaid($invoice)) {
+                            $succeeded++;
+                        } else {
+                            $skipped++;
+                        }
+                        break;
                 }
             } catch (\Throwable $e) {
                 $failed++;
@@ -348,7 +356,7 @@ class InvoiceController extends Controller
             }
         }
 
-        $labels = ['push' => 'pushed', 'post' => 'posted', 'void' => 'voided'];
+        $labels = ['push' => 'pushed', 'post' => 'posted', 'void' => 'voided', 'mark_paid' => 'marked paid'];
         $label = $labels[$action];
         $parts = ["{$succeeded} invoice(s) {$label}"];
         if ($failed > 0) {
@@ -360,6 +368,17 @@ class InvoiceController extends Controller
 
         return redirect()->route('invoices.index')
             ->with($failed > 0 ? 'warning' : 'success', implode(', ', $parts).'.');
+    }
+
+    public function markPaid(Invoice $invoice)
+    {
+        if (! $this->invoiceService->markPaid($invoice)) {
+            return redirect()->route('invoices.show', $invoice)
+                ->with('error', 'This invoice cannot be marked as paid. Only a posted invoice with no Stripe/QuickBooks link can be paid manually.');
+        }
+
+        return redirect()->route('invoices.show', $invoice)
+            ->with('success', 'Invoice marked as paid.');
     }
 
     public function void(Invoice $invoice, QboSyncService $syncService, InvoiceVoidService $voidService)

@@ -79,6 +79,15 @@
                         </button>
                     </form>
                 @endif
+                @if($invoice->canMarkPaid())
+                    <form method="POST" action="{{ route('invoices.mark-paid', $invoice) }}"
+                          onsubmit="return confirm('Mark this invoice as paid? This records payment in Sound PSA.')">
+                        @csrf
+                        <button type="submit" class="btn btn-outline-success btn-sm">
+                            <i class="bi bi-cash-coin me-1"></i>Mark as Paid
+                        </button>
+                    </form>
+                @endif
                 @if($invoice->status !== \App\Enums\InvoiceStatus::Void)
                     <form method="POST" action="{{ route('invoices.void', $invoice) }}"
                           onsubmit="return confirm('Are you sure you want to void this invoice?')">

@@ -97,6 +97,32 @@ class InvoiceService
         });
     }
 
+    /**
+     * Manually mark a standalone invoice Paid (psa-8yhp). Returns whether the
+     * transition happened.
+     *
+     * Eligibility (Invoice::canMarkPaid) is re-checked inside the transaction
+     * on a row-locked read, not just when the button was rendered: an invoice
+     * can leave the eligible Posted/no-backend state — a concurrent void, or a
+     * push to Stripe/QBO — between page load and this POST, and must not then
+     * be rewritten. The status flip goes through the model (not a bare UPDATE)
+     * so InvoiceObserver fires and deposits any prepaid time to the contract.
+     */
+    public function markPaid(Invoice $invoice): bool
+    {
+        return DB::transaction(function () use ($invoice) {
+            $locked = Invoice::whereKey($invoice->getKey())->lockForUpdate()->first();
+
+            if ($locked === null || ! $locked->canMarkPaid()) {
+                return false;
+            }
+
+            $locked->update(['status' => InvoiceStatus::Paid]);
+
+            return true;
+        });
+    }
+
     public function updateInvoice(Invoice $invoice, array $validated, User $user): void
     {
         DB::transaction(function () use ($invoice, $validated, $user) {

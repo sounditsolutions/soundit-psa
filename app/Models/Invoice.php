@@ -220,6 +220,27 @@ class Invoice extends Model
     }
 
     /**
+     * True when this invoice may be marked Paid by hand.
+     *
+     * Manual payment recording exists for standalone (no-backend) invoices:
+     * a Posted invoice whose payment can never arrive via Stripe/QBO sync
+     * because it carries no billing-backend link. For a backend-synced
+     * invoice the backend is the system of record for payment — marking it
+     * Paid in PSA would desync the two — so those are excluded and the
+     * operator uses "Refresh from Stripe/QBO" instead. Draft (not yet issued),
+     * Void (terminal), and Paid (already) are likewise never eligible.
+     *
+     * The single source of truth consulted by the detail view, the single
+     * mark-paid action, and the bulk action so they cannot disagree.
+     */
+    public function canMarkPaid(): bool
+    {
+        return $this->status === InvoiceStatus::Posted
+            && $this->qbo_invoice_id === null
+            && $this->stripe_invoice_id === null;
+    }
+
+    /**
      * Status label for display, accounting for the computed "Overdue" state.
      *
      * Overdue is not a stored status — an unpaid Posted invoice past its due

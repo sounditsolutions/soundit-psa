@@ -611,6 +611,7 @@ Route::middleware('auth')->group(function () {
     Route::post('/invoices/{invoice}/sync-stripe', [InvoiceController::class, 'syncFromStripe'])->name('invoices.sync-stripe');
     Route::post('/invoices/{invoice}/send-stripe', [InvoiceController::class, 'sendFromStripe'])->name('invoices.send-stripe');
     Route::post('/invoices/{invoice}/void', [InvoiceController::class, 'void'])->name('invoices.void');
+    Route::post('/invoices/{invoice}/mark-paid', [InvoiceController::class, 'markPaid'])->name('invoices.mark-paid');
 
     // Profitability
     Route::get('/profitability', [ProfitabilityController::class, 'index'])->name('profitability.index');
