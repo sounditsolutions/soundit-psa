@@ -14,12 +14,16 @@ return new class extends Migration
     public function up(): void
     {
         Schema::table('tickets', function (Blueprint $table) {
+            // constrained() already indexes category_id (MariaDB auto-creates the
+            // foreign-key index, tickets_category_id_foreign), so no explicit
+            // ->index() is added: a second index would be a redundant duplicate on
+            // MariaDB and, on SQLite, leaves category_id "indexed" so DROP COLUMN in
+            // down() fails the rollback (the FK index is dropped with the constraint).
             $table->foreignId('category_id')
                 ->nullable()
                 ->after('subcategory')
                 ->constrained('ticket_categories')
                 ->nullOnDelete();
-            $table->index('category_id');
         });
     }
 
