@@ -24,7 +24,9 @@
         @if(! $node->is_active)
             <span class="badge bg-secondary me-1">Retired</span>
         @endif
-        @if($depth < \App\Services\Taxonomy\TicketCategoryTreeGuard::MAX_DEPTH)
+        {{-- Retired nodes are not attach targets (the guard refuses them),
+             so don't offer an add-child that can only error. --}}
+        @if($node->is_active && $depth < \App\Services\Taxonomy\TicketCategoryTreeGuard::MAX_DEPTH)
             <a href="{{ route('ticket-categories.create', ['parent' => $node->id]) }}"
                class="btn btn-link btn-sm p-0 text-muted" title="Add child category">
                 <i class="bi bi-plus-circle"></i>

@@ -441,6 +441,19 @@ class TicketCategoryUiTest extends TestCase
             ->assertSee('Scareware');
     }
 
+    public function test_index_tree_offers_no_add_child_on_retired_rows(): void
+    {
+        // The index tree still lists retired nodes (soft retirement keeps
+        // their children visible), but must not offer the add-child shortcut
+        // the guard would refuse.
+        TicketCategory::create(['name' => 'Legacy', 'is_active' => false]);
+
+        $this->actingAs($this->user)->get(route('ticket-categories.index'))
+            ->assertOk()
+            ->assertSee('Legacy')
+            ->assertDontSee('Add child category');
+    }
+
     public function test_retiring_a_node_keeps_its_existing_children_attached(): void
     {
         [$cat, $sub, $item] = $this->makeTree();
