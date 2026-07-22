@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Enums\NoteType;
+use App\Enums\TicketCategoryChangeSource;
 use App\Enums\TicketPriority;
 use App\Enums\TicketSource;
 use App\Enums\TicketStatus;
@@ -63,6 +64,10 @@ class Ticket extends Model
     {
         return [
             'resolution_ai_drafted' => 'boolean',
+            // Deliberately NOT fillable: category_source is stamped by
+            // TicketObserver::updating() from execution context, so no mass-
+            // assignment path (request input, tool input) can forge ownership.
+            'category_source' => TicketCategoryChangeSource::class,
             'status' => TicketStatus::class,
             'priority' => TicketPriority::class,
             'type' => TicketType::class,

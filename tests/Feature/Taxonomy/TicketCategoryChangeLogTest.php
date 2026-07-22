@@ -16,6 +16,11 @@ use Tests\TestCase;
  * attribution and path/legacy-pair snapshots — no writer opts in, so future
  * surfaces (ticket edit UI, MCP tools) are captured the day they exist.
  * Phase 1 mines these rows to refine the coarse triage map.
+ *
+ * The same seam stamps tickets.category_source pre-persist (updating), so
+ * the ownership marker rides the SAME UPDATE as the value it describes —
+ * the log rows here are audit data, never the precedence decision source
+ * (psa-trjwf re-review).
  */
 class TicketCategoryChangeLogTest extends TestCase
 {
@@ -85,19 +90,36 @@ class TicketCategoryChangeLogTest extends TestCase
         $this->assertSame(0, TicketCategoryChangeLog::count());
     }
 
-    public function test_latest_source_for_reflects_the_most_recent_change(): void
+    public function test_category_source_stamp_reflects_the_most_recent_writer(): void
     {
         [, $leaf] = $this->tree();
         $ticket = Ticket::factory()->create();
 
-        $this->assertNull(TicketCategoryChangeLog::latestSourceFor($ticket));
+        $this->assertNull($ticket->category_source);
 
         TicketCategoryChangeLog::runAsTriage(fn () => $ticket->update(['category_id' => $leaf->id]));
-        $this->assertSame(TicketCategoryChangeSource::Triage, TicketCategoryChangeLog::latestSourceFor($ticket));
+        $this->assertSame(TicketCategoryChangeSource::Triage, $ticket->refresh()->category_source);
 
         $this->actingAs(User::factory()->create());
         $ticket->update(['category_id' => null]);
-        $this->assertSame(TicketCategoryChangeSource::Staff, TicketCategoryChangeLog::latestSourceFor($ticket));
+        $this->assertSame(TicketCategoryChangeSource::Staff, $ticket->refresh()->category_source);
+    }
+
+    public function test_caller_supplied_category_source_cannot_forge_attribution(): void
+    {
+        [, $leaf] = $this->tree();
+        $ticket = Ticket::factory()->create();
+
+        // Mass assignment cannot smuggle an ownership value past the stamp:
+        // category_source is not fillable, and the observer assigns it from
+        // execution context (auth here → Staff) whenever category_id is dirty.
+        $this->actingAs(User::factory()->create());
+        $ticket->update([
+            'category_id' => $leaf->id,
+            'category_source' => TicketCategoryChangeSource::Triage->value,
+        ]);
+
+        $this->assertSame(TicketCategoryChangeSource::Staff, $ticket->refresh()->category_source);
     }
 
     public function test_run_as_triage_resets_attribution_even_when_the_write_throws(): void

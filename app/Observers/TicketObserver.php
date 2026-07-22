@@ -57,13 +57,35 @@ class TicketObserver
         }
     }
 
+    /**
+     * Ownership stamp (psa-trjwf re-review): whoever is changing category_id
+     * gets written into tickets.category_source in the SAME UPDATE statement
+     * — updating() fires pre-persist, so mutating the model here rides the
+     * one atomic write. The change-log INSERT below (updated()) cannot carry
+     * this: it trails the row update, so a concurrent triage transaction
+     * holding the row lock could see a human's fresh category_id while the
+     * Staff log row was still pending, misread ownership from the stale log,
+     * and clobber the human's choice. Unconditional assignment: attribution
+     * comes from execution context (runAsTriage flag / auth), never from
+     * caller-supplied attributes, so it cannot be forged.
+     */
+    public function updating(Ticket $ticket): void
+    {
+        if ($ticket->isDirty('category_id')) {
+            $ticket->category_source = TicketCategoryChangeLog::attributionSource();
+        }
+    }
+
     public function updated(Ticket $ticket): void
     {
         // Taxonomy change log (so-0ftg Part 4): every tickets.category_id move
         // is recorded here — the one seam ALL writers pass through (triage
         // mapping, web UI, future MCP tools) — so Phase-1 mapping refinement
-        // gets its override data without each writer opting in. Never lets a
-        // broken log write take a ticket save down with it, but screams.
+        // gets its override data without each writer opting in. AUDIT-ONLY:
+        // this INSERT trails the row update, so ownership decisions read the
+        // category_source column stamped in updating(), never this table.
+        // Never lets a broken log write take a ticket save down with it, but
+        // screams.
         if ($ticket->wasChanged('category_id')) {
             try {
                 TicketCategoryChangeLog::recordFor($ticket);

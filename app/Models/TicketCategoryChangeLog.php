@@ -16,6 +16,14 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * Node ids are unconstrained and paths are string snapshots on purpose: the
  * log must survive node renames/deletes, and Phase-1 mapping refinement
  * reads the paths, not the live tree.
+ *
+ * AUDIT-ONLY — never the ownership-decision source. This INSERT runs in
+ * TicketObserver::updated(), AFTER the category_id UPDATE it describes, and
+ * for callers outside a transaction the two statements commit separately. A
+ * concurrent reader can therefore see the new category_id while the latest
+ * log row still names the PREVIOUS writer (psa-trjwf re-review). Precedence
+ * decisions must read tickets.category_source, which lands in the same
+ * UPDATE statement as category_id (TicketObserver::updating()).
  */
 class TicketCategoryChangeLog extends Model
 {
@@ -88,6 +96,26 @@ class TicketCategoryChangeLog extends Model
     }
 
     /**
+     * Who a category_id write happening RIGHT NOW should be attributed to,
+     * from execution context alone: the runAsTriage() flag, then the
+     * authenticated user, else System. Shared by the two stamps that must
+     * never disagree — TicketObserver::updating() writing the ownership
+     * column (tickets.category_source) and recordFor() writing the audit row.
+     */
+    public static function attributionSource(): TicketCategoryChangeSource
+    {
+        if (self::$applyingTriageMapping) {
+            return TicketCategoryChangeSource::Triage;
+        }
+
+        if (auth()->check()) {
+            return TicketCategoryChangeSource::Staff;
+        }
+
+        return TicketCategoryChangeSource::System;
+    }
+
+    /**
      * Record a just-saved category_id change. Called by TicketObserver when
      * wasChanged('category_id') — the single seam every writer passes through.
      */
@@ -96,14 +124,8 @@ class TicketCategoryChangeLog extends Model
         $previousId = $ticket->getOriginal('category_id');
         $newId = $ticket->category_id;
 
-        $source = TicketCategoryChangeSource::System;
-        $changedBy = null;
-        if (self::$applyingTriageMapping) {
-            $source = TicketCategoryChangeSource::Triage;
-        } elseif (auth()->check()) {
-            $source = TicketCategoryChangeSource::Staff;
-            $changedBy = auth()->id();
-        }
+        $source = self::attributionSource();
+        $changedBy = $source === TicketCategoryChangeSource::Staff ? auth()->id() : null;
 
         return self::create([
             'ticket_id' => $ticket->id,
@@ -116,21 +138,6 @@ class TicketCategoryChangeLog extends Model
             'source' => $source,
             'changed_by' => $changedBy,
         ]);
-    }
-
-    /**
-     * The source of the latest change for a ticket, or null when the log has
-     * never seen it. The triage mapping uses this to tell "triage set this
-     * node" from "a human owns it" — unknown history reads as human-owned.
-     */
-    public static function latestSourceFor(Ticket $ticket): ?TicketCategoryChangeSource
-    {
-        $latest = self::where('ticket_id', $ticket->id)
-            ->orderByDesc('created_at')
-            ->orderByDesc('id')
-            ->first();
-
-        return $latest?->source;
     }
 
     private static function pathSnapshot(?int $categoryId): ?string

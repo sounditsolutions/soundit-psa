@@ -493,20 +493,30 @@ class TriageToolExecutor
      * points tickets.category_id at the mapped node so the SOP surfaces on
      * the next get_ticket_detail. Four hard rules:
      *
-     *  - Ownership is decided from FRESH database state, never from the
-     *    executor's cached model: the read-decide-write runs in one
-     *    transaction holding a row lock on the ticket. A stale snapshot let
-     *    triage clobber a category a person assigned mid-loop (psa-p4zdp).
+     *  - Ownership is decided from the LOCKED ROW ALONE: the read-decide-write
+     *    runs in one transaction holding a row lock on the ticket, and the
+     *    owner is read from tickets.category_source — stamped by
+     *    TicketObserver::updating() in the same UPDATE statement as every
+     *    category_id change, so value and owner are atomic under the lock.
+     *    Two prior defects define this shape: the executor's cached model let
+     *    triage clobber a category a person assigned mid-loop (psa-p4zdp),
+     *    and deciding from ticket_category_change_logs left a window where a
+     *    human's committed UPDATE was visible while their Staff log row —
+     *    inserted AFTER the update by TicketObserver::updated() — was not,
+     *    so the stale log misattributed ownership (psa-trjwf re-review). The
+     *    log is audit-only here.
      *  - A node a human chose is never overwritten OR cleared, and a node a
-     *    human CLEARED stays cleared — triage only writes when category_id
-     *    is unset with no Staff row as the latest log entry, or when the log
-     *    says triage itself wrote last. Unknown history counts as human-owned.
+     *    human CLEARED stays cleared — triage only writes when the row says
+     *    triage owns the current value, or when category_id is unset and no
+     *    human owns the clear. Unknown ownership (null stamp with a value
+     *    present: pre-feature data, direct DB writes) counts as human-owned.
      *  - An unmapped pair degrades to a GAP (null), including clearing a
      *    stale triage-owned node after a reclassification — never a guess.
-     *  - Every write goes through runAsTriage() so the observer's change log
-     *    attributes it correctly (that log is Phase 1's refinement data), and
-     *    lands on the freshly-read model so the log's previous_* snapshots
-     *    reflect what the database actually held.
+     *  - Every write goes through runAsTriage() so the observer stamps the
+     *    column and the change log with Triage attribution (that log is
+     *    Phase 1's refinement data), and lands on the freshly-read model so
+     *    the log's previous_* snapshots reflect what the database actually
+     *    held.
      *
      * @return array{status: string, category_id: int|null, path: string|null, note: string|null}
      */
@@ -529,12 +539,15 @@ class TriageToolExecutor
             }
 
             $currentId = $fresh->category_id;
-            $latestSource = TicketCategoryChangeLog::latestSourceFor($fresh);
+            $ownerSource = $fresh->category_source;
 
-            // Human-owned: a present node triage did not write last, or a null
-            // a person explicitly chose (their clear is the latest log row).
-            $humanOwned = ($currentId !== null && $latestSource !== TicketCategoryChangeSource::Triage)
-                || ($currentId === null && $latestSource === TicketCategoryChangeSource::Staff);
+            // Human-owned: a present node triage did not write (Staff, System,
+            // or an unstamped pre-feature value), or a null a person explicitly
+            // chose (their clear stamped the row Staff). Read from the locked
+            // row only — never from the change log, whose latest row can trail
+            // the update it describes.
+            $humanOwned = ($currentId !== null && $ownerSource !== TicketCategoryChangeSource::Triage)
+                || ($currentId === null && $ownerSource === TicketCategoryChangeSource::Staff);
 
             if ($humanOwned) {
                 $current = $currentId !== null ? TicketCategory::find($currentId) : null;

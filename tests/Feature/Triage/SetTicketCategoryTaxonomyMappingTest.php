@@ -24,7 +24,11 @@ use Tests\TestCase;
  *    when the person set (or cleared) it AFTER the executor cached its Ticket
  *    model: ownership is decided from fresh DB state, not the snapshot
  *    (psa-p4zdp);
- *  - unknown history (category_id set, no log rows) counts as human-owned.
+ *  - ownership is read from tickets.category_source — stamped in the SAME
+ *    UPDATE as category_id — never from the change log, whose Staff row
+ *    lands only after the human's update and so can still name the previous
+ *    writer when a concurrent triage transaction looks (psa-trjwf re-review);
+ *  - unknown ownership (category_id set, null stamp) counts as human-owned.
  */
 class SetTicketCategoryTaxonomyMappingTest extends TestCase
 {
@@ -75,6 +79,9 @@ class SetTicketCategoryTaxonomyMappingTest extends TestCase
 
         $ticket->refresh();
         $this->assertSame($this->phishing->id, $ticket->category_id);
+        // Ownership stamped in the same UPDATE — this is what a later run's
+        // precedence decision reads under the row lock.
+        $this->assertSame(TicketCategoryChangeSource::Triage, $ticket->category_source);
         $this->assertSame('Security', $ticket->category);
         $this->assertSame('Phishing', $ticket->subcategory);
 
@@ -157,11 +164,75 @@ class SetTicketCategoryTaxonomyMappingTest extends TestCase
         $this->assertSame('kept_existing', $result['taxonomy']['status']);
         $this->assertSame($this->malware->id, $result['taxonomy']['category_id']);
         $this->assertSame($this->malware->id, $ticket->refresh()->category_id);
+        $this->assertSame(TicketCategoryChangeSource::Staff, $ticket->category_source);
 
         // Only the human's row exists — triage added nothing.
         $log = TicketCategoryChangeLog::sole();
         $this->assertSame(TicketCategoryChangeSource::Staff, $log->source);
         $this->assertSame($staff->id, $log->changed_by);
+    }
+
+    public function test_race_human_update_committed_before_its_staff_log_row_is_preserved(): void
+    {
+        $ticket = Ticket::factory()->create();
+
+        // Triage owned the node first: the log's latest row says Triage.
+        $this->setCategory($ticket, 'Security', 'Phishing');
+
+        // A concurrent triage loop constructs its executor now (stale model).
+        $executor = new TriageToolExecutor($ticket->refresh());
+
+        // Mid-loop, a human recategorizes. Their UPDATE — category_id and
+        // category_source in ONE statement — commits, but TicketObserver::
+        // updated() has not inserted the Staff log row yet (it always trails
+        // the row update; psa-trjwf re-review). saveQuietly() manufactures
+        // exactly that half-landed state: row committed, log still stale.
+        Ticket::findOrFail($ticket->id)->forceFill([
+            'category_id' => $this->malware->id,
+            'category_source' => TicketCategoryChangeSource::Staff,
+        ])->saveQuietly();
+
+        // The triage transaction now locks the row. The change log still
+        // names Triage as the last writer — deciding from it would clobber
+        // the human. The locked row's own stamp must win.
+        $result = $executor->execute('set_ticket_category', ['category' => 'Security', 'subcategory' => 'Phishing']);
+
+        $this->assertSame('kept_existing', $result['taxonomy']['status']);
+        $this->assertSame($this->malware->id, $result['taxonomy']['category_id']);
+        $this->assertSame($this->malware->id, $ticket->refresh()->category_id);
+        $this->assertSame(TicketCategoryChangeSource::Staff, $ticket->category_source);
+
+        // Triage wrote nothing: still only its original assignment row.
+        $this->assertSame(1, TicketCategoryChangeLog::count());
+        $this->assertSame(TicketCategoryChangeSource::Triage, TicketCategoryChangeLog::sole()->source);
+    }
+
+    public function test_race_human_clear_committed_before_its_staff_log_row_stays_cleared(): void
+    {
+        $ticket = Ticket::factory()->create();
+
+        // Triage owned the node first: the log's latest row says Triage.
+        $this->setCategory($ticket, 'Security', 'Phishing');
+
+        $executor = new TriageToolExecutor($ticket->refresh());
+
+        // Same half-landed window as above, for a CLEAR: the human's null
+        // (with its Staff stamp) is committed; their Staff log row is not.
+        Ticket::findOrFail($ticket->id)->forceFill([
+            'category_id' => null,
+            'category_source' => TicketCategoryChangeSource::Staff,
+        ])->saveQuietly();
+
+        // A stale-log decision would read "triage wrote last" and re-assign
+        // the node the human just removed. The row says a person owns the
+        // clear — it must stay cleared.
+        $result = $executor->execute('set_ticket_category', ['category' => 'Security', 'subcategory' => 'Malware']);
+
+        $this->assertSame('kept_existing', $result['taxonomy']['status']);
+        $this->assertNull($result['taxonomy']['category_id']);
+        $this->assertNull($ticket->refresh()->category_id);
+        $this->assertSame(TicketCategoryChangeSource::Staff, $ticket->category_source);
+        $this->assertSame(1, TicketCategoryChangeLog::count());
     }
 
     public function test_race_human_category_set_after_executor_construction_is_preserved(): void
@@ -205,14 +276,15 @@ class SetTicketCategoryTaxonomyMappingTest extends TestCase
         // Triage owned the node first...
         $this->setCategory($ticket, 'Security', 'Phishing');
 
-        // ...then a person deliberately cleared it (latest log row = Staff).
+        // ...then a person deliberately cleared it (row stamped Staff in the
+        // same UPDATE; the observer also logs a Staff row).
         $staff = User::factory()->create();
         $this->actingAs($staff);
         $ticket->refresh()->update(['category_id' => null]);
         auth()->logout();
 
         // A later triage classification must not undo the human's clear: a
-        // fresh null whose latest change is Staff-sourced is human-owned.
+        // fresh null whose ownership stamp is Staff is human-owned.
         $result = $this->setCategory($ticket->refresh(), 'Security', 'Malware');
 
         $this->assertSame('kept_existing', $result['taxonomy']['status']);
@@ -227,15 +299,16 @@ class SetTicketCategoryTaxonomyMappingTest extends TestCase
         $this->assertNull($logs[1]->new_category_id);
     }
 
-    public function test_unknown_history_counts_as_human_owned(): void
+    public function test_unknown_ownership_counts_as_human_owned(): void
     {
         $ticket = Ticket::factory()->create();
 
-        // category_id present but the change log never saw it (pre-feature
-        // data, direct DB write). Conservative: treat as human-owned.
+        // category_id present but never stamped (pre-feature data, direct DB
+        // write bypassing events). Conservative: treat as human-owned.
         Ticket::withoutEvents(fn () => $ticket->update(['category_id' => $this->malware->id]));
+        $this->assertNull($ticket->refresh()->category_source);
 
-        $result = $this->setCategory($ticket->refresh(), 'Security', 'Phishing');
+        $result = $this->setCategory($ticket, 'Security', 'Phishing');
 
         $this->assertSame('kept_existing', $result['taxonomy']['status']);
         $this->assertSame($this->malware->id, $ticket->refresh()->category_id);
