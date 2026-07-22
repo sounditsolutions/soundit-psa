@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Console;
 
+use App\Console\Commands\RepairDoubleEscapedInvoiceDescriptions;
 use App\Enums\InvoiceStatus;
 use App\Enums\QuantityType;
 use App\Models\Client;
@@ -124,6 +125,105 @@ class RepairDoubleEscapedInvoiceDescriptionsTest extends TestCase
 
         $this->expectException(QueryException::class);
         DB::table('invoices')->where('id', $invoice->id)->update(['status' => null]);
+    }
+
+    // -------------------------------------------------------------------------
+    // Write-point TOCTOU: eligibility is re-proven at the mutation, not only at
+    // survey. A draft collected as repairable can be finalized/synced/deleted in
+    // the window before its row is written (a concurrent post/auto-push, or the
+    // operator confirmation pause). The pre-scan snapshot is stale then; the
+    // write must still refuse. (psa-946hr review psa-0kw21 / psa-p4bg4.)
+    // -------------------------------------------------------------------------
+
+    /** A $row shaped exactly as collectMatches() feeds applyRepair(). */
+    private function collectedRow(InvoiceLine $line, string $before, string $after): object
+    {
+        return (object) [
+            'line_id' => $line->id,
+            'invoice_id' => $line->invoice_id,
+            'invoice_number' => 'x',
+            'description' => $before,
+            'after' => $after,
+        ];
+    }
+
+    public function test_apply_repair_refuses_when_invoice_status_left_draft_after_survey(): void
+    {
+        $invoice = $this->makeInvoice();
+        $line = $this->makeLine($invoice, 'Acme &amp; Co');
+        $row = $this->collectedRow($line, 'Acme &amp; Co', 'Acme & Co');
+
+        // Finalized in the window between survey and write.
+        $invoice->update(['status' => InvoiceStatus::Posted]);
+
+        $result = app(RepairDoubleEscapedInvoiceDescriptions::class)->applyRepair($row);
+
+        $this->assertSame(RepairDoubleEscapedInvoiceDescriptions::WRITE_SKIPPED_INELIGIBLE, $result);
+        $this->assertSame('Acme &amp; Co', $this->rawDescription($line->id));
+        $this->assertSame(0, InvoiceLineDescriptionRepair::count());
+    }
+
+    public function test_apply_repair_refuses_when_invoice_gains_external_sync_id_after_survey(): void
+    {
+        $invoice = $this->makeInvoice();
+        $line = $this->makeLine($invoice, 'Acme &amp; Co');
+        $row = $this->collectedRow($line, 'Acme &amp; Co', 'Acme & Co');
+
+        // Pushed to the billing backend in the window before write.
+        DB::table('invoices')->where('id', $invoice->id)->update(['stripe_invoice_id' => 'in_race_1']);
+
+        $result = app(RepairDoubleEscapedInvoiceDescriptions::class)->applyRepair($row);
+
+        $this->assertSame(RepairDoubleEscapedInvoiceDescriptions::WRITE_SKIPPED_INELIGIBLE, $result);
+        $this->assertSame('Acme &amp; Co', $this->rawDescription($line->id));
+        $this->assertSame(0, InvoiceLineDescriptionRepair::count());
+    }
+
+    public function test_apply_repair_refuses_when_invoice_soft_deleted_after_survey(): void
+    {
+        $invoice = $this->makeInvoice();
+        $line = $this->makeLine($invoice, 'Acme &amp; Co');
+        $row = $this->collectedRow($line, 'Acme &amp; Co', 'Acme & Co');
+
+        $invoice->delete();
+
+        $result = app(RepairDoubleEscapedInvoiceDescriptions::class)->applyRepair($row);
+
+        $this->assertSame(RepairDoubleEscapedInvoiceDescriptions::WRITE_SKIPPED_INELIGIBLE, $result);
+        $this->assertSame('Acme &amp; Co', $this->rawDescription($line->id));
+        $this->assertSame(0, InvoiceLineDescriptionRepair::count());
+    }
+
+    public function test_apply_repair_still_writes_when_invoice_stays_draft(): void
+    {
+        // Same seam, eligible path: proves the guard doesn't over-refuse.
+        $invoice = $this->makeInvoice();
+        $line = $this->makeLine($invoice, 'Acme &amp; Co');
+        $row = $this->collectedRow($line, 'Acme &amp; Co', 'Acme & Co');
+
+        $result = app(RepairDoubleEscapedInvoiceDescriptions::class)->applyRepair($row);
+
+        $this->assertSame(RepairDoubleEscapedInvoiceDescriptions::WRITE_DONE, $result);
+        $this->assertSame('Acme & Co', $this->rawDescription($line->id));
+        $this->assertSame(1, InvoiceLineDescriptionRepair::count());
+    }
+
+    public function test_apply_revert_refuses_when_invoice_left_draft_after_selection(): void
+    {
+        $invoice = $this->makeInvoice();
+        $line = $this->makeLine($invoice, 'Acme &amp; Co');
+        $this->artisan(self::COMMAND, ['--write' => true, '--yes' => true])->assertSuccessful();
+        $this->assertSame('Acme & Co', $this->rawDescription($line->id));
+        $entry = InvoiceLineDescriptionRepair::where('invoice_line_id', $line->id)->firstOrFail();
+
+        // Ledger selected it as revertable while draft; finalized before the write.
+        $invoice->update(['status' => InvoiceStatus::Posted]);
+
+        $result = app(RepairDoubleEscapedInvoiceDescriptions::class)->applyRevert($entry);
+
+        $this->assertSame(RepairDoubleEscapedInvoiceDescriptions::WRITE_SKIPPED_INELIGIBLE, $result);
+        $this->assertSame('Acme & Co', $this->rawDescription($line->id));
+        $this->assertNull($entry->fresh()->reverted_at);
     }
 
     // -------------------------------------------------------------------------

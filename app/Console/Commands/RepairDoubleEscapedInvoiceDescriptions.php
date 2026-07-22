@@ -56,6 +56,13 @@ class RepairDoubleEscapedInvoiceDescriptions extends Command
 
     private const LOG_PREFIX = '[InvoiceDescriptionRepair]';
 
+    // Outcomes of a single write attempt at the transaction choke point.
+    public const WRITE_DONE = 'done';
+
+    public const WRITE_SKIPPED_INELIGIBLE = 'skipped_ineligible';
+
+    public const WRITE_SKIPPED_CONCURRENT = 'skipped_concurrent';
+
     public function handle(): int
     {
         $write = (bool) $this->option('write');
@@ -81,10 +88,12 @@ class RepairDoubleEscapedInvoiceDescriptions extends Command
         // semantics are certain (MariaDB's ci collation would let SQL equality
         // match a hypothetical 'DRAFT'): only a draft, never soft-deleted,
         // never carrying an external billing id, is repairable.
-        $eligible = $matches->filter(fn ($row) => $row->invoice_status === InvoiceStatus::Draft->value
-            && $row->invoice_deleted_at === null
-            && $row->qbo_invoice_id === null
-            && $row->stripe_invoice_id === null);
+        $eligible = $matches->filter(fn ($row) => $this->isDraftUnsynced(
+            $row->invoice_status,
+            $row->invoice_deleted_at,
+            $row->qbo_invoice_id,
+            $row->stripe_invoice_id,
+        ));
 
         $anomalies = $matches->filter(fn ($row) => $row->invoice_status === InvoiceStatus::Draft->value
             && $row->invoice_deleted_at === null
@@ -158,38 +167,42 @@ class RepairDoubleEscapedInvoiceDescriptions extends Command
         }
 
         $repaired = 0;
+        $skippedIneligible = 0;
         foreach ($repairable as $row) {
-            $done = DB::transaction(function () use ($row) {
-                // Guarded write: only lands if the description is still the
-                // exact value the dry-run reported (no concurrent edit).
-                $updated = DB::table('invoice_lines')
-                    ->where('id', $row->line_id)
-                    ->where('description', $row->description)
-                    ->update(['description' => $row->after, 'updated_at' => now()]);
+            $result = $this->applyRepair($row);
 
-                if ($updated !== 1) {
-                    return false;
-                }
+            if ($result === self::WRITE_SKIPPED_INELIGIBLE) {
+                $skippedIneligible++;
+                $this->warn(sprintf(
+                    '  line #%d (invoice %s): parent invoice left the draft/unsynced allowlist after the survey — skipped (fail closed).',
+                    $row->line_id,
+                    $row->invoice_number,
+                ));
 
-                InvoiceLineDescriptionRepair::create([
-                    'invoice_line_id' => $row->line_id,
-                    'invoice_id' => $row->invoice_id,
-                    'description_before' => $row->description,
-                    'description_after' => $row->after,
-                    'invoice_status_at_repair' => $row->invoice_status,
-                ]);
+                continue;
+            }
 
-                return true;
-            });
-
-            if (! $done) {
+            if ($result === self::WRITE_SKIPPED_CONCURRENT) {
                 $this->warn(sprintf('  line #%d changed concurrently — skipped.', $row->line_id));
 
                 continue;
             }
 
-            Log::info(self::LOG_PREFIX." Repaired line #{$row->line_id} (invoice {$row->invoice_number}): \"{$row->description}\" -> \"{$row->after}\"");
+            // Redacted: the ledger and the operator's on-screen preview already
+            // hold the full before/after. Persisted logs carry id + lengths
+            // only, so client billing free-text is not duplicated into logs.
+            Log::info(self::LOG_PREFIX.sprintf(
+                ' Repaired line #%d (invoice #%d): %d -> %d chars [ledgered]',
+                $row->line_id,
+                $row->invoice_id,
+                mb_strlen($row->description),
+                mb_strlen($row->after),
+            ));
             $repaired++;
+        }
+
+        if ($skippedIneligible > 0) {
+            $this->warn(sprintf('%d line(s) were skipped at the write point (invoice finalized/synced/deleted after the survey).', $skippedIneligible));
         }
 
         $this->info(sprintf('Repaired %d line(s). Every change is recorded in invoice_line_description_repairs.', $repaired));
@@ -284,35 +297,146 @@ class RepairDoubleEscapedInvoiceDescriptions extends Command
         }
 
         $reverted = 0;
+        $skippedIneligible = 0;
         foreach ($revertable as $entry) {
-            $done = DB::transaction(function () use ($entry) {
-                $updated = DB::table('invoice_lines')
-                    ->where('id', $entry->invoice_line_id)
-                    ->where('description', $entry->description_after)
-                    ->update(['description' => $entry->description_before, 'updated_at' => now()]);
+            $result = $this->applyRevert($entry);
 
-                if ($updated !== 1) {
-                    return false;
-                }
+            if ($result === self::WRITE_SKIPPED_INELIGIBLE) {
+                $skippedIneligible++;
+                $this->warn(sprintf(
+                    '  line #%d: parent invoice left the draft/unsynced allowlist after selection — skipped (fail closed).',
+                    $entry->invoice_line_id,
+                ));
 
-                $entry->update(['reverted_at' => now()]);
+                continue;
+            }
 
-                return true;
-            });
-
-            if (! $done) {
+            if ($result === self::WRITE_SKIPPED_CONCURRENT) {
                 $this->warn(sprintf('  line #%d changed concurrently — skipped.', $entry->invoice_line_id));
 
                 continue;
             }
 
-            Log::info(self::LOG_PREFIX." Reverted line #{$entry->invoice_line_id}: \"{$entry->description_after}\" -> \"{$entry->description_before}\"");
+            Log::info(self::LOG_PREFIX.sprintf(
+                ' Reverted line #%d (invoice #%d): %d -> %d chars',
+                $entry->invoice_line_id,
+                $entry->invoice_id,
+                mb_strlen($entry->description_after),
+                mb_strlen($entry->description_before),
+            ));
             $reverted++;
+        }
+
+        if ($skippedIneligible > 0) {
+            $this->warn(sprintf('%d revert(s) were skipped at the write point (invoice finalized/synced/deleted after selection).', $skippedIneligible));
         }
 
         $this->info(sprintf('Reverted %d repair(s).', $reverted));
 
         return self::SUCCESS;
+    }
+
+    // -------------------------------------------------------------------------
+    // Write choke point — eligibility is re-proven HERE, under a row lock,
+    // immediately before every mutation (psa-946hr review psa-0kw21/psa-p4bg4).
+    // The pre-scan allowlist is only a snapshot; option-(b) forbids EVER
+    // rewriting a non-draft invoice, so the guard lives at the write, not the
+    // scan. A concurrent finalize/sync/soft-delete between survey and now is
+    // caught here and the row is left untouched.
+    // -------------------------------------------------------------------------
+
+    /**
+     * Repair one line inside a transaction that first LOCKS and re-checks the
+     * parent invoice. Returns a WRITE_* outcome; never rewrites a line whose
+     * invoice left the draft/unsynced allowlist between survey and write.
+     */
+    public function applyRepair(object $row): string
+    {
+        return DB::transaction(function () use ($row) {
+            $invoice = DB::table('invoices')
+                ->where('id', $row->invoice_id)
+                ->lockForUpdate()
+                ->first(['status', 'deleted_at', 'qbo_invoice_id', 'stripe_invoice_id']);
+
+            if (! $this->invoiceRowIsDraftUnsynced($invoice)) {
+                return self::WRITE_SKIPPED_INELIGIBLE;
+            }
+
+            // Line guard: only lands if the description is still the exact value
+            // the survey read (no concurrent edit to the line itself).
+            $updated = DB::table('invoice_lines')
+                ->where('id', $row->line_id)
+                ->where('description', $row->description)
+                ->update(['description' => $row->after, 'updated_at' => now()]);
+
+            if ($updated !== 1) {
+                return self::WRITE_SKIPPED_CONCURRENT;
+            }
+
+            InvoiceLineDescriptionRepair::create([
+                'invoice_line_id' => $row->line_id,
+                'invoice_id' => $row->invoice_id,
+                'description_before' => $row->description,
+                'description_after' => $row->after,
+                'invoice_status_at_repair' => $invoice->status,
+            ]);
+
+            return self::WRITE_DONE;
+        });
+    }
+
+    /**
+     * Undo one ledgered repair inside a transaction that first LOCKS and
+     * re-checks the parent invoice — the option-(b) rule applies in reverse:
+     * once an invoice is finalized, even our own earlier repair is part of the
+     * record and must not be undone.
+     */
+    public function applyRevert(InvoiceLineDescriptionRepair $entry): string
+    {
+        return DB::transaction(function () use ($entry) {
+            $invoice = DB::table('invoices')
+                ->where('id', $entry->invoice_id)
+                ->lockForUpdate()
+                ->first(['status', 'deleted_at', 'qbo_invoice_id', 'stripe_invoice_id']);
+
+            if (! $this->invoiceRowIsDraftUnsynced($invoice)) {
+                return self::WRITE_SKIPPED_INELIGIBLE;
+            }
+
+            $updated = DB::table('invoice_lines')
+                ->where('id', $entry->invoice_line_id)
+                ->where('description', $entry->description_after)
+                ->update(['description' => $entry->description_before, 'updated_at' => now()]);
+
+            if ($updated !== 1) {
+                return self::WRITE_SKIPPED_CONCURRENT;
+            }
+
+            $entry->update(['reverted_at' => now()]);
+
+            return self::WRITE_DONE;
+        });
+    }
+
+    /**
+     * The fail-closed allowlist as a SINGLE predicate, byte-strict against RAW
+     * DB values (no enum cast, no SQL collation): a repairable invoice is a
+     * non-deleted 'draft' carrying no external billing id. Consulted at BOTH
+     * the pre-scan and the write choke point so the two can never drift apart.
+     */
+    private function isDraftUnsynced($status, $deletedAt, $qboInvoiceId, $stripeInvoiceId): bool
+    {
+        return $status === InvoiceStatus::Draft->value
+            && $deletedAt === null
+            && $qboInvoiceId === null
+            && $stripeInvoiceId === null;
+    }
+
+    /** Null-safe write-point form of isDraftUnsynced() (a vanished invoice is not repairable). */
+    private function invoiceRowIsDraftUnsynced(?object $invoice): bool
+    {
+        return $invoice !== null
+            && $this->isDraftUnsynced($invoice->status, $invoice->deleted_at, $invoice->qbo_invoice_id, $invoice->stripe_invoice_id);
     }
 
     // -------------------------------------------------------------------------
