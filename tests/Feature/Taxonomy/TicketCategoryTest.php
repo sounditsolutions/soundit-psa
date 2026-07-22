@@ -7,6 +7,7 @@ use App\Enums\SopStatus;
 use App\Models\Ticket;
 use App\Models\TicketCategory;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Tests\TestCase;
 
@@ -130,32 +131,48 @@ class TicketCategoryTest extends TestCase
         $this->assertFalse($reviewedNoText->hasSop());
     }
 
-    public function test_taxonomy_migrations_roll_back_and_reapply_cleanly_on_sqlite(): void
+    public function test_taxonomy_migrations_roll_back_via_the_real_runner_on_a_file_sqlite_db(): void
     {
-        // RefreshDatabase has already migrated the full stack for this test, so the
-        // taxonomy schema is present.
-        $this->assertTrue(Schema::hasColumn('tickets', 'category_id'));
-        $this->assertTrue(Schema::hasTable('ticket_categories'));
+        // Faithful to the path gus runs in prod: drive Laravel's REAL migrator
+        // (migrate / migrate:rollback) against a FILE-backed SQLite database — not the
+        // :memory: default, and not the migration objects called in isolation (whose
+        // DROP COLUMN behaviour proved environment-sensitive and so was not a reliable
+        // guard). This test is RED if the redundant explicit category_id index is
+        // reintroduced — SQLite refuses `DROP COLUMN category_id` while the column is
+        // still indexed ("error in index tickets_category_id_index after drop column")
+        // — and GREEN at the fixed migration, whose FK-backed index (MariaDB) is
+        // sufficient and needs no explicit duplicate.
+        $dbPath = tempnam(sys_get_temp_dir(), 'taxonomy_rollback_');
+        // tempnam() already created an empty file at $dbPath; a 0-byte file is a valid
+        // empty SQLite database, so the migrator can build the schema straight into it.
 
-        $addCategoryId = require database_path('migrations/2026_07_22_000002_add_category_id_to_tickets_table.php');
-        $createCategories = require database_path('migrations/2026_07_22_000001_create_ticket_categories_table.php');
+        config()->set('database.connections.taxonomy_rollback_sqlite', [
+            'driver' => 'sqlite',
+            'database' => $dbPath,
+            'prefix' => '',
+            'foreign_key_constraints' => true,
+        ]);
 
-        // Rollback runs newest-first (000002 then 000001). The 000002 down() is the
-        // one the architecture review flagged: a redundant explicit category_id index
-        // made SQLite refuse to DROP COLUMN category_id (the column was still
-        // "indexed"), so `migrate:rollback` threw. The FK's own index already covers
-        // lookups on MariaDB, so the explicit one only existed to break this path.
-        $addCategoryId->down();
-        $this->assertFalse(Schema::hasColumn('tickets', 'category_id'), 'category_id dropped on rollback');
+        try {
+            $this->artisan('migrate:fresh', [
+                '--database' => 'taxonomy_rollback_sqlite',
+                '--force' => true,
+            ])->assertSuccessful();
 
-        $createCategories->down();
-        $this->assertFalse(Schema::hasTable('ticket_categories'), 'ticket_categories dropped on rollback');
+            // Rollback runs newest-first; the two taxonomy migrations sort last, so
+            // --step=2 rolls back 000002 (add category_id) then 000001 (create table).
+            $this->artisan('migrate:rollback', [
+                '--database' => 'taxonomy_rollback_sqlite',
+                '--step' => 2,
+                '--force' => true,
+            ])->assertSuccessful();
 
-        // Re-apply so the shared in-memory schema is whole again for sibling tests —
-        // the DDL above auto-commits under SQLite, which RefreshDatabase cannot undo.
-        $createCategories->up();
-        $addCategoryId->up();
-        $this->assertTrue(Schema::hasColumn('tickets', 'category_id'));
-        $this->assertTrue(Schema::hasTable('ticket_categories'));
+            $schema = Schema::connection('taxonomy_rollback_sqlite');
+            $this->assertFalse($schema->hasColumn('tickets', 'category_id'), 'category_id dropped on rollback');
+            $this->assertFalse($schema->hasTable('ticket_categories'), 'ticket_categories dropped on rollback');
+        } finally {
+            DB::purge('taxonomy_rollback_sqlite');
+            @unlink($dbPath);
+        }
     }
 }
