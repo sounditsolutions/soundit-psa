@@ -166,4 +166,106 @@ class TicketCategoryAssignmentTest extends TestCase
 
         $this->assertNull($ticket->refresh()->category_id);
     }
+
+    // ── RETIRED-NODE PRESERVATION (psa-alzsw R1 must-fix) ──
+    //
+    // The picker lists only ACTIVE nodes and the form always posts category_id.
+    // Without a grandfather, a ticket already sitting on a soft-retired node
+    // would post blank on any unrelated save and silently null its node. The
+    // fix: the picker re-surfaces the ticket's OWN current node (marked
+    // "(retired)", pre-selected) and validation lets that one exact id through,
+    // so an unrelated save re-posts the current id (a no-op) instead of blank.
+
+    public function test_the_picker_includes_the_tickets_own_retired_node_preselected(): void
+    {
+        $retired = TicketCategory::create(['name' => 'Legacy Symptom', 'is_active' => false]);
+        $ticket = Ticket::factory()->create(['category_id' => $retired->id]);
+
+        $resp = $this->actingAs(User::factory()->create())
+            ->get(route('tickets.show', $ticket))
+            ->assertOk();
+
+        // Re-surfaced, flagged retired, and pre-selected so the form re-posts it.
+        $resp->assertSee('Legacy Symptom (retired)');
+        $resp->assertSee('value="'.$retired->id.'" selected', false);
+    }
+
+    public function test_a_subject_only_save_preserves_a_current_retired_node(): void
+    {
+        // The node is soft-retired AFTER the ticket was placed on it.
+        $retired = TicketCategory::create(['name' => 'Legacy Symptom', 'is_active' => false]);
+        $ticket = Ticket::factory()->create(['category_id' => $retired->id]);
+
+        // The form re-posts the current (retired) id alongside the edited field.
+        $this->actingAs(User::factory()->create())
+            ->patch(route('tickets.update', $ticket), [
+                'subject' => 'Changed subject only',
+                'category_id' => $retired->id,
+            ])
+            ->assertSessionHasNoErrors()
+            ->assertRedirect();
+
+        $ticket->refresh();
+        $this->assertSame($retired->id, $ticket->category_id); // NOT nulled
+        $this->assertSame('Changed subject only', $ticket->subject);
+    }
+
+    public function test_an_explicit_clear_nulls_the_node_and_records_staff(): void
+    {
+        ['leaf' => $node] = $this->tree();
+        $ticket = Ticket::factory()->create(['category_id' => $node->id]);
+
+        // Selecting the blank option ON PURPOSE must still clear + attribute Staff.
+        $this->actingAs(User::factory()->create())
+            ->patch(route('tickets.update', $ticket), [
+                'subject' => $ticket->subject,
+                'category_id' => '',
+            ])
+            ->assertSessionHasNoErrors()
+            ->assertRedirect();
+
+        $ticket->refresh();
+        $this->assertNull($ticket->category_id);
+        $this->assertSame(TicketCategoryChangeSource::Staff, $ticket->category_source);
+        $this->assertDatabaseHas('ticket_category_change_logs', [
+            'ticket_id' => $ticket->id,
+            'new_category_id' => null,
+            'source' => 'staff',
+        ]);
+    }
+
+    public function test_a_different_inactive_node_is_rejected_even_when_the_current_is_retired(): void
+    {
+        // Grandfathering is narrow: ONLY the ticket's own current id is let
+        // through, never inactive nodes at large.
+        $currentRetired = TicketCategory::create(['name' => 'Current Retired', 'is_active' => false]);
+        $otherRetired = TicketCategory::create(['name' => 'Other Retired', 'is_active' => false]);
+        $ticket = Ticket::factory()->create(['category_id' => $currentRetired->id]);
+
+        $this->actingAs(User::factory()->create())
+            ->patch(route('tickets.update', $ticket), [
+                'subject' => $ticket->subject,
+                'category_id' => $otherRetired->id,
+            ])
+            ->assertSessionHasErrors('category_id');
+
+        $this->assertSame($currentRetired->id, $ticket->refresh()->category_id); // untouched
+    }
+
+    // ── LABEL ASSOCIATION (psa-alzsw R1 must-fix, a11y) ──
+
+    public function test_the_edit_cluster_selects_have_programmatic_labels(): void
+    {
+        $this->tree();
+        $ticket = Ticket::factory()->create();
+
+        $resp = $this->actingAs(User::factory()->create())
+            ->get(route('tickets.show', $ticket))
+            ->assertOk();
+
+        // Each of the three edit-cluster selects has a bound <label for="...">.
+        $resp->assertSee('for="editCategoryNode"', false);
+        $resp->assertSee('for="editCategory"', false);
+        $resp->assertSee('for="editSubcategory"', false);
+    }
 }

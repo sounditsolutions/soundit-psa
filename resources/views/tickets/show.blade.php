@@ -649,7 +649,7 @@
                     </div>
                     <div class="row g-2 mb-2">
                         <div class="col-6">
-                            <label class="form-label small text-muted mb-1">Category</label>
+                            <label for="editCategory" class="form-label small text-muted mb-1">Category</label>
                             <select name="category" class="form-select form-select-sm" id="editCategory">
                                 <option value="">-- None --</option>
                                 @foreach(array_keys($categories) as $cat)
@@ -660,7 +660,7 @@
                             </select>
                         </div>
                         <div class="col-6">
-                            <label class="form-label small text-muted mb-1">Subcategory</label>
+                            <label for="editSubcategory" class="form-label small text-muted mb-1">Subcategory</label>
                             <select name="subcategory" class="form-select form-select-sm" id="editSubcategory">
                                 <option value="">-- None --</option>
                             </select>
@@ -669,11 +669,24 @@
                     {{-- ITIL taxonomy category (so-0ftg): the node that carries the SOP.
                          Distinct from the legacy free-text category/subcategory above. --}}
                     <div class="mb-2">
-                        <label class="form-label small text-muted mb-1">
+                        <label for="editCategoryNode" class="form-label small text-muted mb-1">
                             SOP Category <span class="fw-normal">(taxonomy)</span>
                         </label>
+                        @php
+                            // The ticket's current node may be soft-retired and so absent
+                            // from the ACTIVE-only $taxonomyNodes list. Re-surface it here,
+                            // pre-selected and flagged, so an unrelated save re-posts this
+                            // exact id (a no-op) instead of the blank option — which would
+                            // silently null a retired node. TicketUpdateRequest grandfathers
+                            // this exact id through validation.
+                            $currentNode = $ticket->categoryNode;
+                            $currentIsRetired = $currentNode && ! $currentNode->is_active;
+                        @endphp
                         <select name="category_id" class="form-select form-select-sm" id="editCategoryNode">
                             <option value="">-- Uncategorized --</option>
+                            @if($currentIsRetired)
+                                <option value="{{ $currentNode->id }}" selected>{{ $currentNode->pathString() }} (retired)</option>
+                            @endif
                             @foreach($taxonomyNodes as $node)
                                 <option value="{{ $node['id'] }}" @selected((int) $ticket->category_id === (int) $node['id'])>{{ $node['path'] }}</option>
                             @endforeach
