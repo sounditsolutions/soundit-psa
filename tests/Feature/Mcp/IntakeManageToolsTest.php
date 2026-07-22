@@ -521,6 +521,41 @@ class IntakeManageToolsTest extends TestCase
         $this->assertSame(0, TechnicianActionLog::where('action_type', 'create_ticket_from_call')->count());
     }
 
+    public function test_link_call_to_ticket_refuses_a_followed_up_spam_dismissed_call(): void
+    {
+        // Same override-invariant as create_ticket_from_call: a call a technician
+        // already followed up on (in particular, marked spam) must not be attached
+        // to a ticket by the AI. Excluding it from list_phone_calls(unlinked) is not
+        // enough — staff MCP can be handed the id directly. The guard belongs on the
+        // write verb.
+        $this->configureAiActor();
+        $ticket = Ticket::factory()->create();
+        $call = $this->makeCall([
+            'call_uuid' => 'call-manage-followedup-link-1',
+            'direction' => CallDirection::Inbound,
+            'from_number' => '+15555550311',
+            'status' => CallStatus::Missed,
+            'started_at' => now()->subMinutes(5),
+            'transcription' => 'SECRET TRANSCRIPT 5',
+        ], $ticket->client_id);
+        $call->followed_up_at = now(); // not fillable — set directly
+        $call->save();
+        $token = $this->token(['link_call_to_ticket'], 'chet');
+
+        $response = $this->callTool($token, 'link_call_to_ticket', [
+            'phone_call_id' => $call->id,
+            'ticket_id' => $ticket->id,
+            'reason' => 'same issue',
+        ]);
+        $response->assertOk();
+        $this->assertTrue((bool) $response->json('result.isError'), 'a followed-up call must be refused');
+        $this->assertStringContainsString('followed up', strtolower((string) $response->json('result.content.0.text')));
+
+        // The dismissal stands: not linked, not audited.
+        $this->assertNull($call->fresh()->ticket_id, 'the dismissed call must not be linked');
+        $this->assertSame(0, TechnicianActionLog::where('action_type', 'link_call_to_ticket')->count());
+    }
+
     // ── cross-cutting: reason + kill-switch ──────────────────────────────────
 
     public function test_manage_verbs_require_reason(): void

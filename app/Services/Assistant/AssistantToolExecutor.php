@@ -1206,7 +1206,10 @@ class AssistantToolExecutor
             // "ticket_id is null". A call a technician followed up on — in
             // particular one marked spam, which stamps followed_up_at AND
             // blocks the caller — is resolved, so it must not surface here as
-            // a ticket candidate. Mirrors PhoneCall::scopeUnfollowedUp().
+            // a ticket candidate. This borrows the followed_up_at half of
+            // PhoneCall::scopeUnfollowedUp() but deliberately NOT its
+            // status IN (Missed, Voicemail) predicate: a completed unknown
+            // call with no ticket is still an intake candidate here.
             $query->whereNull('ticket_id')->whereNull('followed_up_at');
         }
 

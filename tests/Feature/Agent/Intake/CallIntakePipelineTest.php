@@ -149,6 +149,37 @@ class CallIntakePipelineTest extends TestCase
         $this->assertSame($existing->id, $call->fresh()->ticket_id, 'The call stays on its original ticket');
     }
 
+    // ── Test 2b: SKIP-IF-FOLLOWED-UP ─────────────────────────────────────────
+
+    public function test_skips_a_call_a_technician_already_followed_up(): void
+    {
+        Bus::fake();
+        Setting::setValue('intake_enabled', '1');
+
+        // A tech dismissed this call (e.g. marked it spam, which stamps
+        // followed_up_at AND blocks the caller) after transcription queued the
+        // intake job but before it ran. The pipeline must not manufacture or
+        // attach a ticket from a call the human already resolved — the same
+        // invariant the MCP create_ticket_from_call guard enforces.
+        $client = Client::factory()->create();
+        $call = $this->makeCall([
+            'client_id' => $client->id,
+            'call_summary' => 'Buy cheap widgets now!!!',
+        ]);
+        $call->followed_up_at = now(); // resolution marker; not fillable
+        $call->save();
+        $ticketsBefore = Ticket::count();
+
+        // A skipped call never reaches routing.
+        $this->mock(IntakeRouter::class)->shouldReceive('routeContent')->never();
+
+        $this->pipeline()->handle($call);
+
+        $this->assertSame($ticketsBefore, Ticket::count(), 'No ticket may be manufactured from a followed-up call');
+        $this->assertSame(0, $this->intakeRouteRuns()->count(), 'No intake_route run for a followed-up call');
+        $this->assertNull($call->fresh()->ticket_id, 'The dismissed call must not be linked');
+    }
+
     // ── Test 3: RESOLVED + held (threshold null) ─────────────────────────────
 
     public function test_resolved_held_attach_creates_phone_ticket_and_awaiting_approval_run(): void

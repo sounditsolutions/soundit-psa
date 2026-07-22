@@ -1811,6 +1811,13 @@ class StaffPsaActionToolExecutor
             return ['error' => 'Ticket not found'];
         }
 
+        // A call a technician already followed up on (in particular, marked spam)
+        // is resolved — attaching it to a ticket silently undoes that decision.
+        // Same override-invariant as create_ticket_from_call (psa-mgok).
+        if ($call->isFollowedUp()) {
+            return ['error' => 'Phone call was already followed up on by a technician (followed_up_at is set) — it may have been dismissed as spam. Refusing to link it to a ticket; clear the follow-up state first if this is a genuine request.'];
+        }
+
         DB::transaction(function () use ($call, $ticket, $actorLabel, $reason): void {
             $this->phoneCallService->linkCallToTicketWithNote($call, $ticket->id, "Linked via MCP: {$reason}");
             $this->auditEntityExecution(

@@ -62,6 +62,17 @@ class CallIntakePipeline
                 return;
             }
 
+            // ── Stage 2b: skip a call a technician already followed up on ─────
+            // followed_up_at is a human resolution marker (marking a call spam
+            // stamps it AND blocks the caller). A race is reachable: transcription
+            // queues this job, then a tech dismisses the call before it runs — the
+            // job would otherwise attach/create from a call the human resolved,
+            // silently undoing the dismissal. Mirrors the MCP create_ticket_from_call
+            // guard: the AI must not override a human follow-up (psa-mgok).
+            if ($call->isFollowedUp()) {
+                return;
+            }
+
             // ── Stage 3: resolve the caller (pure read, no side effects) ─────
             $resolution = app(CallerResolver::class)->resolve($call);
 
