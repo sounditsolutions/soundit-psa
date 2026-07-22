@@ -176,7 +176,7 @@ class AssistantToolDefinitions
             ],
             [
                 'name' => 'get_ticket_detail',
-                'description' => 'Get details, recent notes, and a summary of any linked phone calls for a ticket by ID. Use to inspect a specific ticket. For full call transcripts, follow up with get_ticket_calls.',
+                'description' => 'Get details, recent notes, and a summary of any linked phone calls for a ticket by ID. Use to inspect a specific ticket. Includes an applicable_sop block: the ticket\'s taxonomy category path and that category\'s FULL standard-operating-procedure text, with its authoring status (a hint only — draft SOPs are still served), last-updated time, and an edit deep-link. A gap marker (no_category / no_sop_text) means the ticket needs a category assigned or the SOP needs authoring — worth fixing as you work. For full call transcripts, follow up with get_ticket_calls.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [

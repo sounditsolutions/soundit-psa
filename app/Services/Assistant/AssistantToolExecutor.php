@@ -18,6 +18,7 @@ use App\Models\InvoiceLine;
 use App\Models\Person;
 use App\Models\PhoneCall;
 use App\Models\Ticket;
+use App\Models\TicketCategory;
 use App\Models\TicketNote;
 use App\Services\Agent\ProposeCloseTool;
 use App\Services\Cipp\CippMcpToolRelay;
@@ -31,6 +32,7 @@ use App\Services\Wiki\WikiAddFactTool;
 use App\Services\Wiki\WikiPageAuthoringTool;
 use App\Support\CippConfig;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Route;
 
 /**
  * Executes tool calls from the AI assistant.
@@ -426,7 +428,9 @@ class AssistantToolExecutor
             return ['error' => 'ticket_id is required'];
         }
 
-        $ticket = Ticket::with(['client:id,name,stage', 'assignee:id,name', 'contact'])->find($ticketId);
+        // categoryNode.parent.parent: the taxonomy tree is depth <= 3, so this
+        // loads the whole ancestor chain pathString() walks in one pass.
+        $ticket = Ticket::with(['client:id,name,stage', 'assignee:id,name', 'contact', 'categoryNode.parent.parent'])->find($ticketId);
         if (! $ticket) {
             return ['error' => 'Ticket not found'];
         }
@@ -470,6 +474,7 @@ class AssistantToolExecutor
             'last_activity_at' => $lastActivityAt?->toDateTimeString(),
             'resolved_at' => $ticket->resolved_at?->toDateTimeString(),
             'resolution' => $ticket->resolution,
+            'applicable_sop' => $this->applicableSopBlock($ticket),
             'recent_notes' => $notes->map(fn (TicketNote $n) => [
                 'type' => $n->note_type?->value,
                 'author' => $n->author?->name ?? $n->author_name ?? 'System',
@@ -492,6 +497,71 @@ class AssistantToolExecutor
                 'has_transcript' => $c->isTranscribed() && ($c->cleaned_transcript || $c->transcription),
             ])->toArray(),
         ];
+    }
+
+    /**
+     * The applicable_sop block (so-0ftg Part 3, psa-id3rt): the ticket's
+     * resolved taxonomy path and that node's FULL SOP text, served on the
+     * DETAIL fetch only — list tools never carry it. sop_status is an
+     * authoring hint shown alongside; it NEVER withholds the text — serving
+     * keys on hasSop() (text presence), so a draft or even a status of "none"
+     * still delivers whatever is written. A missing category or empty SOP
+     * degrades to a gap marker naming the fix (assign a category / author the
+     * SOP) rather than silently omitting the block.
+     *
+     * @return array<string, mixed>
+     */
+    private function applicableSopBlock(Ticket $ticket): array
+    {
+        $node = $ticket->categoryNode;
+
+        if (! $node instanceof TicketCategory) {
+            return [
+                'gap' => 'no_category',
+                'note' => 'No taxonomy category is assigned to this ticket. Assign one so its SOP can be served here.',
+                'category_id' => null,
+                'category_path' => null,
+                'sop_status' => null,
+                'sop_text' => null,
+                'updated_at' => null,
+                'edit_url' => null,
+            ];
+        }
+
+        $base = [
+            'gap' => null,
+            'category_id' => $node->id,
+            'category_path' => $node->pathString(),
+            // Authoring hint ONLY — it never gates sop_text below.
+            'sop_status' => $node->sop_status?->value,
+            'updated_at' => $node->updated_at?->toDateTimeString(),
+            'edit_url' => $this->categoryEditUrl($node),
+        ];
+
+        if (! $node->hasSop()) {
+            return array_merge($base, [
+                'gap' => 'no_sop_text',
+                'note' => 'This category has no SOP text yet — a coverage gap. Use edit_url to author one.',
+                'sop_text' => null,
+            ]);
+        }
+
+        // FULL text by design: the SOP is the payload this block exists to
+        // deliver, so unlike description/notes it is never truncated.
+        return array_merge($base, ['sop_text' => $node->sop_text]);
+    }
+
+    /**
+     * Deep-link into the category editor. The taxonomy CRUD UI (psa-7uynn)
+     * owns the route; until it lands this falls back to the conventional
+     * resourceful path that UI mirrors (license-types.edit), so the link
+     * resolves to the same place either way.
+     */
+    private function categoryEditUrl(TicketCategory $node): string
+    {
+        return Route::has('ticket-categories.edit')
+            ? route('ticket-categories.edit', $node)
+            : url("/ticket-categories/{$node->id}/edit");
     }
 
     private function proposeClose(array $input): array
