@@ -159,15 +159,19 @@ class TicketCategoryTest extends TestCase
                 '--force' => true,
             ])->assertSuccessful();
 
-            // Rollback runs newest-first; the two taxonomy migrations sort last, so
-            // --step=2 rolls back 000002 (add category_id) then 000001 (create table).
+            // Rollback runs newest-first; the taxonomy family sorts last, so
+            // --step=3 rolls back 000003 (create change logs), then 000002 (add
+            // category_id), then 000001 (create ticket_categories). If you add a
+            // taxonomy migration, extend the step count AND the assertions below —
+            // this guard exists to prove the whole family unwinds cleanly.
             $this->artisan('migrate:rollback', [
                 '--database' => 'taxonomy_rollback_sqlite',
-                '--step' => 2,
+                '--step' => 3,
                 '--force' => true,
             ])->assertSuccessful();
 
             $schema = Schema::connection('taxonomy_rollback_sqlite');
+            $this->assertFalse($schema->hasTable('ticket_category_change_logs'), 'ticket_category_change_logs dropped on rollback');
             $this->assertFalse($schema->hasColumn('tickets', 'category_id'), 'category_id dropped on rollback');
             $this->assertFalse($schema->hasTable('ticket_categories'), 'ticket_categories dropped on rollback');
         } finally {
