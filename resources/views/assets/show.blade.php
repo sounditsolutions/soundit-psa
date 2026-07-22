@@ -813,7 +813,11 @@
                                 @foreach($categoryScripts as $script)
                                     <option value="{{ $script->id }}"
                                             data-timeout="{{ $script->default_timeout }}"
-                                            data-description="{{ e($script->description) }}"
+                                            {{-- Single escape only: {{ }} already runs htmlspecialchars.
+                                                 An extra e() encoded the value twice and the change
+                                                 handler's textContent showed '&amp;' literals (psa-946hr).
+                                                 Display-only — this attribute never reaches a form field. --}}
+                                            data-description="{{ $script->description }}"
                                             data-shell="{{ $script->shell }}">
                                         {{ $script->name }}
                                     </option>
