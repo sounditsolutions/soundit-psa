@@ -401,7 +401,7 @@ class PsaTaxonomyToolsTest extends TestCase
         $this->assertSame(1, $item->fresh()->depth());
     }
 
-    public function test_update_rejects_sop_fields_deactivation_and_reactivates_in_place(): void
+    public function test_update_rejects_sop_fields_deactivation_and_reactivation_under_retired_parent(): void
     {
         $this->configureAiActor();
         $parent = TicketCategory::create(['name' => 'Network & Connectivity', 'is_active' => false]);
@@ -418,20 +418,44 @@ class PsaTaxonomyToolsTest extends TestCase
         $this->assertTrue((bool) $off->json('result.isError'));
         $this->assertStringContainsString('retire_ticket_category', (string) $off->json('result.content.0.text'));
 
-        // Reactivating in place under a retired parent is legal on both write
-        // doors: the retired-parent rule governs only NEW attach/move targets
-        // (tree-policy ruling psa-m4bki — retirement is soft, and the web UI
-        // round-trips a child sitting under a retired parent). The parent
-        // itself stays retired.
+        // A retired node may not come back to life under a retired parent
+        // (psa-9mirx ruling, shared guard rule): reactivate the parent first,
+        // or reparent the node.
         $childOn = $this->callTool($token, 'update_ticket_category', ['category_id' => $child->id, 'is_active' => true]);
-        $this->assertFalse((bool) $childOn->json('result.isError'), (string) $childOn->json('result.content.0.text'));
-        $this->assertTrue($child->fresh()->is_active);
-        $this->assertFalse($parent->fresh()->is_active);
+        $this->assertTrue((bool) $childOn->json('result.isError'));
+        $this->assertStringContainsString('Reactivate it first, or reparent this node', (string) $childOn->json('result.content.0.text'));
+        $this->assertFalse($child->fresh()->is_active, 'the refused reactivation must not stick');
 
-        // Reactivating the parent itself needs no special casing either.
+        // The parent is a root — no parent of its own — so it reactivates freely.
         $parentOn = $this->callTool($token, 'update_ticket_category', ['category_id' => $parent->id, 'is_active' => true]);
         $this->assertFalse((bool) $parentOn->json('result.isError'), (string) $parentOn->json('result.content.0.text'));
         $this->assertTrue($parent->fresh()->is_active);
+
+        // With the parent active again, the child's reactivation is legal.
+        $childRetry = $this->callTool($token, 'update_ticket_category', ['category_id' => $child->id, 'is_active' => true]);
+        $this->assertFalse((bool) $childRetry->json('result.isError'), (string) $childRetry->json('result.content.0.text'));
+        $this->assertTrue($child->fresh()->is_active);
+    }
+
+    public function test_update_leaves_active_children_under_a_retired_parent_untouched(): void
+    {
+        // Soft retirement's legal state: an ACTIVE child under a retired
+        // parent. The reactivation rule governs revivals only — metadata
+        // edits (even carrying a redundant is_active=true) still work here.
+        $this->configureAiActor();
+        $parent = TicketCategory::create(['name' => 'Network & Connectivity', 'is_active' => false]);
+        $child = TicketCategory::create(['name' => 'DNS / domain', 'parent_id' => $parent->id]);
+        $token = $this->token(['update_ticket_category']);
+
+        $rename = $this->callTool($token, 'update_ticket_category', [
+            'category_id' => $child->id,
+            'name' => 'DNS & Domain Registration',
+            'is_active' => true,
+        ]);
+        $this->assertFalse((bool) $rename->json('result.isError'), (string) $rename->json('result.content.0.text'));
+        $this->assertSame('DNS & Domain Registration', $child->fresh()->name);
+        $this->assertTrue($child->fresh()->is_active);
+        $this->assertFalse($parent->fresh()->is_active);
     }
 
     public function test_retire_requires_typed_confirm_blocks_active_children_and_audits(): void

@@ -10,7 +10,8 @@ use Tests\TestCase;
 /**
  * The write-layer tree-shape rules for the so-0ftg taxonomy: the schema does
  * not enforce depth <= 3 or acyclicity, so this guard must — for every
- * surface that creates or re-parents nodes (staff UI, later MCP tools).
+ * surface that creates, re-parents, or reactivates nodes (staff UI, MCP
+ * tools).
  */
 class TicketCategoryTreeGuardTest extends TestCase
 {
@@ -104,6 +105,26 @@ class TicketCategoryTreeGuardTest extends TestCase
 
         $this->assertSame($cat->id, $sub->fresh()->parent_id);
         $this->assertNull($this->guard->attachmentError(null, $sub->fresh()));
+    }
+
+    public function test_reactivation_is_refused_under_a_retired_parent(): void
+    {
+        $parent = TicketCategory::create(['name' => 'Legacy', 'is_active' => false]);
+        $child = TicketCategory::create(['name' => 'Fax', 'parent_id' => $parent->id, 'is_active' => false]);
+
+        $error = (string) $this->guard->reactivationError($child->fresh());
+        $this->assertStringContainsString('"Legacy" is retired', $error);
+        $this->assertStringContainsString('Reactivate it first, or reparent this node', $error);
+    }
+
+    public function test_reactivation_is_legal_under_an_active_parent_or_as_root(): void
+    {
+        $parent = TicketCategory::create(['name' => 'Network']);
+        $child = TicketCategory::create(['name' => 'Wi-Fi', 'parent_id' => $parent->id, 'is_active' => false]);
+        $root = TicketCategory::create(['name' => 'Hardware', 'is_active' => false]);
+
+        $this->assertNull($this->guard->reactivationError($child->fresh()));
+        $this->assertNull($this->guard->reactivationError($root->fresh()));
     }
 
     public function test_subtree_height_counts_the_deepest_branch(): void

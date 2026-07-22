@@ -32,10 +32,11 @@ use Illuminate\Validation\Rule;
  * update_ticket_category; SOP content lives on set_ticket_category_sop;
  * deactivation requires the typed-confirm retire_ticket_category.
  *
- * Tree shape (depth <= 3, acyclicity, no retired attach targets) is decided
- * by the shared TicketCategoryTreeGuard — the ONE write guard both doors
- * (this MCP surface and the staff web UI) consult, per the tree-policy
- * ruling (psa-m4bki). Do not reintroduce a local reimplementation here:
+ * Tree shape (depth <= 3, acyclicity, no retired attach targets, no
+ * reactivation under a retired parent) is decided by the shared
+ * TicketCategoryTreeGuard — the ONE write guard both doors (this MCP
+ * surface and the staff web UI) consult, per the tree-policy ruling
+ * (psa-m4bki). Do not reintroduce a local reimplementation here:
  * divergent tree rules across the two write doors are a mis-write vector.
  */
 class StaffPsaTaxonomyToolExecutor
@@ -112,7 +113,7 @@ class StaffPsaTaxonomyToolExecutor
             ],
             [
                 'name' => 'update_ticket_category',
-                'description' => 'Update a taxonomy node\'s structure or metadata immediately: rename, reparent (revalidating depth <= 3 for the node and its whole subtree, refusing cycles and retired parents), description, record_type_hint, sort_order, or reactivate a retired node with is_active=true. Deactivation goes through retire_ticket_category; SOP text and status go through set_ticket_category_sop. Records the AI actor as the editor and writes an action audit row. Requires an explicit token grant.',
+                'description' => 'Update a taxonomy node\'s structure or metadata immediately: rename, reparent (revalidating depth <= 3 for the node and its whole subtree, refusing cycles and retired parents), description, record_type_hint, sort_order, or reactivate a retired node with is_active=true (refused while the node\'s own parent is retired — reactivate the parent first, or reparent this node). Deactivation goes through retire_ticket_category; SOP text and status go through set_ticket_category_sop. Records the AI actor as the editor and writes an action audit row. Requires an explicit token grant.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -122,7 +123,7 @@ class StaffPsaTaxonomyToolExecutor
                         'description' => ['type' => 'string', 'description' => 'Optional replacement description.'],
                         'record_type_hint' => ['type' => 'string', 'enum' => ['incident', 'request', 'mixed'], 'description' => 'Optional replacement ITIL hint.'],
                         'sort_order' => ['type' => 'integer', 'description' => 'Optional replacement sibling ordering.'],
-                        'is_active' => ['type' => 'boolean', 'description' => 'Only true is accepted, to reactivate a retired node; deactivation requires retire_ticket_category.'],
+                        'is_active' => ['type' => 'boolean', 'description' => 'Only true is accepted, to reactivate a retired node (refused while its parent is retired); deactivation requires retire_ticket_category.'],
                     ],
                     'required' => ['category_id'],
                 ],
@@ -427,9 +428,15 @@ class StaffPsaTaxonomyToolExecutor
             return ['error' => 'Deactivation goes through retire_ticket_category (typed confirmation), not update_ticket_category.'];
         }
 
-        // Reactivating in place — even under a retired parent — is deliberately
-        // legal: the retired-parent rule governs only NEW attach/move targets
-        // (psa-m4bki), and the web door round-trips exactly this state.
+        // A retired node may not come back to life under a retired parent
+        // (psa-9mirx ruling) — the shared guard owns the rule. Only a genuine
+        // revival is checked: a redundant is_active=true on an already-active
+        // node is soft-retirement's legal state, not a reactivation.
+        if ((bool) ($validated['is_active'] ?? false) && ! $category->is_active) {
+            if ($reactivationError = $this->treeGuard->reactivationError($category)) {
+                return ['error' => $reactivationError];
+            }
+        }
 
         $currentParentId = $category->parent_id !== null ? (int) $category->parent_id : null;
         $reparenting = array_key_exists('parent_id', $validated);
