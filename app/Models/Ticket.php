@@ -42,6 +42,7 @@ class Ticket extends Model
         'priority_order',
         'category',
         'subcategory',
+        'category_id',
         'search_keywords',
         'opened_at',
         'responded_at',
@@ -112,6 +113,16 @@ class Ticket extends Model
     {
         return $this->assets->firstWhere('pivot.is_primary', true)
             ?? $this->assets->first();
+    }
+
+    /**
+     * The structured taxonomy leaf this ticket maps to (so-0ftg). Named
+     * categoryNode(), NOT category(), because the legacy free-text `category`
+     * string column would otherwise shadow the relation on $ticket->category.
+     */
+    public function categoryNode(): BelongsTo
+    {
+        return $this->belongsTo(TicketCategory::class, 'category_id');
     }
 
     public function contract(): BelongsTo
