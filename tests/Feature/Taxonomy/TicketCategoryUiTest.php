@@ -365,6 +365,74 @@ class TicketCategoryUiTest extends TestCase
         $this->assertNull($mover->fresh()->parent_id);
     }
 
+    public function test_update_refuses_reactivation_under_a_retired_parent(): void
+    {
+        // The psa-9mirx ruling's third entry point: reviving a node whose own
+        // parent is retired recreates the same active-under-retired state the
+        // create/reparent rules forbid. The MCP door already refuses via the
+        // shared guard; the web door must agree.
+        $parent = TicketCategory::create(['name' => 'Legacy', 'is_active' => false]);
+        $child = TicketCategory::create(['name' => 'Fax modems', 'parent_id' => $parent->id, 'is_active' => false]);
+
+        $this->actingAs($this->user)
+            ->patch(route('ticket-categories.update', $child), ['is_active' => '1'])
+            ->assertSessionHasErrors('is_active');
+
+        $this->assertFalse($child->fresh()->is_active, 'the refused reactivation must not stick');
+    }
+
+    public function test_update_refuses_reactivation_even_when_the_same_request_reparents_away(): void
+    {
+        // The guard reads the node's CURRENT parent, so a single request that
+        // both revives and reparents to a legal target is still refused — on
+        // both doors. Reparent first, then reactivate.
+        $parent = TicketCategory::create(['name' => 'Legacy', 'is_active' => false]);
+        $child = TicketCategory::create(['name' => 'Fax modems', 'parent_id' => $parent->id, 'is_active' => false]);
+        $haven = TicketCategory::create(['name' => 'Networking']);
+
+        $this->actingAs($this->user)
+            ->patch(route('ticket-categories.update', $child), [
+                'is_active' => '1',
+                'parent_id' => $haven->id,
+            ])
+            ->assertSessionHasErrors('is_active');
+
+        $this->assertFalse($child->fresh()->is_active);
+        $this->assertSame($parent->id, $child->fresh()->parent_id);
+    }
+
+    public function test_update_allows_reactivation_at_root_and_under_an_active_parent(): void
+    {
+        $parent = TicketCategory::create(['name' => 'Legacy', 'is_active' => false]);
+        $child = TicketCategory::create(['name' => 'Fax modems', 'parent_id' => $parent->id, 'is_active' => false]);
+
+        // The parent is a root — no parent of its own — so it revives freely.
+        $this->actingAs($this->user)->patch(route('ticket-categories.update', $parent), ['is_active' => '1']);
+        $this->assertTrue($parent->fresh()->is_active);
+
+        // With the parent active again, the child's reactivation is legal.
+        $this->actingAs($this->user)->patch(route('ticket-categories.update', $child), ['is_active' => '1']);
+        $this->assertTrue($child->fresh()->is_active);
+    }
+
+    public function test_update_with_redundant_is_active_leaves_active_children_of_a_retired_parent_untouched(): void
+    {
+        // Soft retirement's legal state: an ACTIVE child under a retired
+        // parent. The reactivation rule governs revivals only — an in-place
+        // edit carrying a redundant is_active=1 must not be refused.
+        $parent = TicketCategory::create(['name' => 'Legacy', 'is_active' => false]);
+        $child = TicketCategory::create(['name' => 'Fax modems', 'parent_id' => $parent->id]);
+
+        $this->actingAs($this->user)
+            ->patch(route('ticket-categories.update', $child), ['name' => 'Fax & modems', 'is_active' => '1'])
+            ->assertRedirect(route('ticket-categories.show', $child))
+            ->assertSessionHasNoErrors();
+
+        $this->assertSame('Fax & modems', $child->fresh()->name);
+        $this->assertTrue($child->fresh()->is_active);
+        $this->assertFalse($parent->fresh()->is_active);
+    }
+
     public function test_create_page_omits_retired_parents_but_keeps_their_active_children(): void
     {
         [$cat, $sub] = $this->makeTree();

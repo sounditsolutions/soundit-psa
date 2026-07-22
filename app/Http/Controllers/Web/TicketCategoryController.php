@@ -176,6 +176,18 @@ class TicketCategoryController extends Controller
             'is_active' => ['sometimes', 'boolean'],
         ]);
 
+        // A retired node may not come back to life under a retired parent
+        // (psa-9mirx ruling) — the shared guard owns the rule, and the MCP
+        // door applies the same check. Only a genuine revival is guarded: a
+        // redundant is_active=1 on an already-active node is soft-retirement's
+        // legal state, not a reactivation.
+        if ((bool) ($validated['is_active'] ?? false) && ! $ticketCategory->is_active) {
+            if ($error = $this->guard->reactivationError($ticketCategory)) {
+                return redirect()->route('ticket-categories.show', $ticketCategory)
+                    ->withInput()->withErrors(['is_active' => $error]);
+            }
+        }
+
         if (array_key_exists('parent_id', $validated)) {
             $parent = ! empty($validated['parent_id'])
                 ? TicketCategory::find($validated['parent_id'])
