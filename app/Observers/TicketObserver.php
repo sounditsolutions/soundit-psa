@@ -11,6 +11,7 @@ use App\Jobs\RunTriagePipeline;
 use App\Jobs\SendT2TCallback;
 use App\Models\TechnicianRun;
 use App\Models\Ticket;
+use App\Models\TicketCategoryChangeLog;
 use App\Services\NotificationService;
 use App\Services\Signals\SignalHub;
 use App\Support\T2TConfig;
@@ -58,6 +59,22 @@ class TicketObserver
 
     public function updated(Ticket $ticket): void
     {
+        // Taxonomy change log (so-0ftg Part 4): every tickets.category_id move
+        // is recorded here — the one seam ALL writers pass through (triage
+        // mapping, web UI, future MCP tools) — so Phase-1 mapping refinement
+        // gets its override data without each writer opting in. Never lets a
+        // broken log write take a ticket save down with it, but screams.
+        if ($ticket->wasChanged('category_id')) {
+            try {
+                TicketCategoryChangeLog::recordFor($ticket);
+            } catch (\Throwable $e) {
+                Log::error('[TicketObserver] Failed to record category change log', [
+                    'ticket_id' => $ticket->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
+
         // T2T callback — only for HelpdeskButton tickets, on a status change.
         if ($ticket->source === TicketSource::HelpdeskButton && $ticket->wasChanged('status')) {
             $callbackUrl = T2TConfig::get('callback_url');

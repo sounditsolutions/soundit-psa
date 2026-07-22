@@ -347,6 +347,9 @@ class TriageToolDefinitions
             [
                 'name' => 'set_ticket_category',
                 'description' => 'Sets the ticket category and subcategory. You MUST call this tool to classify the ticket type. '
+                    .'Where the pair has a confident mapping, this also places the ticket on the SOP taxonomy — the result\'s '
+                    .'"taxonomy" block reports the assigned node path, a "gap" (no confident mapping; expected for many pairs), '
+                    .'or "kept_existing" (a person already categorized the ticket; not overwritten). '
                     .'Categories: '.self::categoryDescription(),
                 'input_schema' => [
                     'type' => 'object',

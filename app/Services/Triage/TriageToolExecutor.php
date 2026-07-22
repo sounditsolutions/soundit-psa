@@ -2,12 +2,15 @@
 
 namespace App\Services\Triage;
 
+use App\Enums\TicketCategoryChangeSource;
 use App\Enums\TicketPriority;
 use App\Enums\TicketStatus;
 use App\Models\Asset;
 use App\Models\Person;
 use App\Models\TacticalAsset;
 use App\Models\Ticket;
+use App\Models\TicketCategory;
+use App\Models\TicketCategoryChangeLog;
 use App\Models\TicketNote;
 use App\Services\Cipp\HandlesCippTools;
 use App\Services\Comet\CometClient;
@@ -463,13 +466,90 @@ class TriageToolExecutor
 
         $this->ticket->update($updates);
 
+        // so-0ftg Part 4: the same classification read also coarsely places the
+        // ticket on the SOP taxonomy — mapping, not a second classifier.
+        $taxonomy = $this->applyTaxonomyMapping($category, $subcategory);
+
         Log::info('[Triage] AI set ticket category', [
             'ticket_id' => $this->ticket->id,
             'category' => $category,
             'subcategory' => $subcategory,
+            'taxonomy_status' => $taxonomy['status'],
+            'taxonomy_path' => $taxonomy['path'],
         ]);
 
-        return ['success' => true, 'category' => $category, 'subcategory' => $subcategory];
+        return [
+            'success' => true,
+            'category' => $category,
+            'subcategory' => $subcategory,
+            'taxonomy' => $taxonomy,
+        ];
+    }
+
+    /**
+     * Coarse triage->taxonomy mapping (so-0ftg Part 4). Reuses the legacy
+     * pair the loop just wrote: resolves it through TaxonomyNodeMapper and
+     * points tickets.category_id at the mapped node so the SOP surfaces on
+     * the next get_ticket_detail. Three hard rules:
+     *
+     *  - A node a human chose is never overwritten OR cleared — triage only
+     *    touches category_id when it is unset or when the change log says
+     *    triage itself set it last. Unknown history counts as human-owned.
+     *  - An unmapped pair degrades to a GAP (null), including clearing a
+     *    stale triage-owned node after a reclassification — never a guess.
+     *  - Every write goes through runAsTriage() so the observer's change log
+     *    attributes it correctly (that log is Phase 1's refinement data).
+     *
+     * @return array{status: string, category_id: int|null, path: string|null, note: string|null}
+     */
+    private function applyTaxonomyMapping(string $category, ?string $subcategory): array
+    {
+        $currentId = $this->ticket->category_id;
+
+        if ($currentId !== null
+            && TicketCategoryChangeLog::latestSourceFor($this->ticket) !== TicketCategoryChangeSource::Triage) {
+            $current = TicketCategory::find($currentId);
+
+            return [
+                'status' => 'kept_existing',
+                'category_id' => $currentId,
+                'path' => $current?->pathString(),
+                'note' => 'A person already assigned this ticket\'s taxonomy category; triage does not overwrite it.',
+            ];
+        }
+
+        $node = TaxonomyNodeMapper::resolve($category, $subcategory);
+
+        if ($node === null) {
+            if ($currentId !== null) {
+                TicketCategoryChangeLog::runAsTriage(fn () => $this->ticket->update(['category_id' => null]));
+
+                return [
+                    'status' => 'gap',
+                    'category_id' => null,
+                    'path' => null,
+                    'note' => 'This classification pair has no confident taxonomy mapping; the previous triage-assigned category was cleared.',
+                ];
+            }
+
+            return [
+                'status' => 'gap',
+                'category_id' => null,
+                'path' => null,
+                'note' => 'This classification pair has no confident taxonomy mapping yet — the ticket stays a visible coverage gap.',
+            ];
+        }
+
+        if ($node->id !== $currentId) {
+            TicketCategoryChangeLog::runAsTriage(fn () => $this->ticket->update(['category_id' => $node->id]));
+        }
+
+        return [
+            'status' => 'mapped',
+            'category_id' => $node->id,
+            'path' => $node->pathString(),
+            'note' => null,
+        ];
     }
 
     private function setTicketKeywords(array $input): array
