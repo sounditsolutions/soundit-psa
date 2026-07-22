@@ -382,13 +382,17 @@ class QboSyncService
         $qboInvoice = $response['Invoice'] ?? $response;
 
         if ($isUpdate) {
-            // UPDATE: refresh tax/total and sync timestamp, keep current status
-            $invoice->update([
+            // UPDATE: refresh tax/total + sync timestamp, keep current status.
+            // Route through the same locked write-point as CREATE
+            // (transitionToSynced: false) so a void that commits mid-push cannot
+            // be re-inflated by this stale tax/total either — every push writer
+            // re-checks at the write, not only the newest one (psa-946hr).
+            $invoice->recordPushResult([
                 'tax' => $qboInvoice['TxnTaxDetail']['TotalTax'] ?? $invoice->tax,
                 'total' => $qboInvoice['TotalAmt'] ?? $invoice->subtotal,
                 'qbo_synced_at' => now(),
                 'qbo_sync_error' => null,
-            ]);
+            ], transitionToSynced: false);
         } else {
             // CREATE: store QBO IDs and transition to Synced — but never clobber
             // a Paid/Void status a concurrent Mark-as-Paid/void (psa-8yhp) may

@@ -242,27 +242,54 @@ class Invoice extends Model
     }
 
     /**
-     * Atomically record a billing-backend push result on the CREATE path.
+     * Atomically record a billing-backend push result at the invoice row.
      *
-     * Persists $attributes and transitions the invoice to Synced — but NEVER
-     * clobbers a terminal Paid/Void status that a concurrent writer (e.g. a
-     * manual Mark-as-Paid, psa-8yhp) may have committed while the push's API
-     * call was in flight. The row is re-read under lock so this write-point
-     * re-check serialises with InvoiceService::markPaid()'s own locked check:
-     * psa-946hr's rule that EVERY financial-status writer sharing the invariant
-     * re-checks at the write, not only the newest one. When the status is
-     * preserved, the backend id in $attributes is still recorded, so the
-     * external invoice is not orphaned — a Paid invoice legitimately carries a
-     * backend id (that is exactly how backend-synced-then-paid invoices look).
+     * The single guarded write-point every push writer funnels through — QBO
+     * create AND update, Stripe create — so no push can clobber a terminal
+     * state a concurrent writer committed while the backend API call was in
+     * flight. The row is re-read under lock, so this re-check serialises with
+     * InvoiceService::markPaid()'s own locked check: psa-946hr's rule that
+     * EVERY financial-status writer sharing the invariant re-checks at the
+     * write, not only the newest one.
      *
-     * @param  array<string, mixed>  $attributes  Backend ids/tax/timestamps to persist. The `status` key is set here, not by the caller.
+     * Two terminal states are protected, each a different way (psa-8yhp):
+     *
+     * - Paid (manual Mark-as-Paid won the race): status is preserved, not
+     *   overwritten back to Synced. The backend id in $attributes is still
+     *   recorded, so the external invoice is not orphaned — a Paid invoice
+     *   legitimately carries a backend id (exactly how backend-synced-then-paid
+     *   invoices look), and its live tax/total are legitimate too.
+     *
+     * - Void (a void committed mid-push): status is preserved AND every
+     *   reportable money field (subtotal/tax/total/total_cost/margin) is dropped
+     *   from the write. InvoiceVoidService has already zeroed those and
+     *   snapshotted the originals into pre_void_*, so aggregates exclude the
+     *   invoice structurally; writing the backend's live tax/total back would
+     *   re-inflate a voided invoice and silently re-enter it into Outstanding /
+     *   profitability totals while it still reads as Void (psa-la350 R2). The
+     *   backend id/url/timestamp are still recorded, so the external invoice is
+     *   flagged for reconciliation, not orphaned — PSA Void state and backend
+     *   state cannot silently diverge.
+     *
+     * @param  array<string, mixed>  $attributes  Backend ids/tax/timestamps to persist. The `status` key is managed here, not by the caller.
+     * @param  bool  $transitionToSynced  CREATE (true) transitions a live invoice to Synced; UPDATE/re-push (false) keeps the current status. Terminal Paid/Void are preserved regardless.
      */
-    public function recordPushResult(array $attributes): void
+    public function recordPushResult(array $attributes, bool $transitionToSynced = true): void
     {
-        DB::transaction(function () use ($attributes) {
+        DB::transaction(function () use ($attributes, $transitionToSynced) {
             $locked = static::whereKey($this->getKey())->lockForUpdate()->first();
 
-            if (! in_array($locked->status, [InvoiceStatus::Paid, InvoiceStatus::Void], true)) {
+            if ($locked->status === InvoiceStatus::Void) {
+                // Never re-inflate a zeroed, voided invoice — drop every
+                // reportable money field but still record the backend id below.
+                unset(
+                    $attributes['subtotal'],
+                    $attributes['tax'],
+                    $attributes['total'],
+                    $attributes['total_cost'],
+                    $attributes['margin'],
+                );
+            } elseif ($transitionToSynced && $locked->status !== InvoiceStatus::Paid) {
                 $attributes['status'] = InvoiceStatus::Synced;
             }
 
