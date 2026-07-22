@@ -26,6 +26,7 @@ use App\Services\Wiki\HandlesWikiTools;
 use App\Support\ControlDConfig;
 use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -490,66 +491,97 @@ class TriageToolExecutor
      * Coarse triage->taxonomy mapping (so-0ftg Part 4). Reuses the legacy
      * pair the loop just wrote: resolves it through TaxonomyNodeMapper and
      * points tickets.category_id at the mapped node so the SOP surfaces on
-     * the next get_ticket_detail. Three hard rules:
+     * the next get_ticket_detail. Four hard rules:
      *
-     *  - A node a human chose is never overwritten OR cleared — triage only
-     *    touches category_id when it is unset or when the change log says
-     *    triage itself set it last. Unknown history counts as human-owned.
+     *  - Ownership is decided from FRESH database state, never from the
+     *    executor's cached model: the read-decide-write runs in one
+     *    transaction holding a row lock on the ticket. A stale snapshot let
+     *    triage clobber a category a person assigned mid-loop (psa-p4zdp).
+     *  - A node a human chose is never overwritten OR cleared, and a node a
+     *    human CLEARED stays cleared — triage only writes when category_id
+     *    is unset with no Staff row as the latest log entry, or when the log
+     *    says triage itself wrote last. Unknown history counts as human-owned.
      *  - An unmapped pair degrades to a GAP (null), including clearing a
      *    stale triage-owned node after a reclassification — never a guess.
      *  - Every write goes through runAsTriage() so the observer's change log
-     *    attributes it correctly (that log is Phase 1's refinement data).
+     *    attributes it correctly (that log is Phase 1's refinement data), and
+     *    lands on the freshly-read model so the log's previous_* snapshots
+     *    reflect what the database actually held.
      *
      * @return array{status: string, category_id: int|null, path: string|null, note: string|null}
      */
     private function applyTaxonomyMapping(string $category, ?string $subcategory): array
     {
-        $currentId = $this->ticket->category_id;
+        return DB::transaction(function () use ($category, $subcategory): array {
+            // Fresh row under FOR UPDATE — $this->ticket may predate concurrent
+            // writes. withTrashed() mirrors Eloquent's own save path (which
+            // bypasses global scopes), so a soft-deleted ticket behaves the
+            // same as every other category_id write against it.
+            $fresh = Ticket::withTrashed()->whereKey($this->ticket->getKey())->lockForUpdate()->first();
 
-        if ($currentId !== null
-            && TicketCategoryChangeLog::latestSourceFor($this->ticket) !== TicketCategoryChangeSource::Triage) {
-            $current = TicketCategory::find($currentId);
+            if ($fresh === null) {
+                return [
+                    'status' => 'gap',
+                    'category_id' => null,
+                    'path' => null,
+                    'note' => 'The ticket row no longer exists; no taxonomy category was written.',
+                ];
+            }
 
-            return [
-                'status' => 'kept_existing',
-                'category_id' => $currentId,
-                'path' => $current?->pathString(),
-                'note' => 'A person already assigned this ticket\'s taxonomy category; triage does not overwrite it.',
-            ];
-        }
+            $currentId = $fresh->category_id;
+            $latestSource = TicketCategoryChangeLog::latestSourceFor($fresh);
 
-        $node = TaxonomyNodeMapper::resolve($category, $subcategory);
+            // Human-owned: a present node triage did not write last, or a null
+            // a person explicitly chose (their clear is the latest log row).
+            $humanOwned = ($currentId !== null && $latestSource !== TicketCategoryChangeSource::Triage)
+                || ($currentId === null && $latestSource === TicketCategoryChangeSource::Staff);
 
-        if ($node === null) {
-            if ($currentId !== null) {
-                TicketCategoryChangeLog::runAsTriage(fn () => $this->ticket->update(['category_id' => null]));
+            if ($humanOwned) {
+                $current = $currentId !== null ? TicketCategory::find($currentId) : null;
+
+                return [
+                    'status' => 'kept_existing',
+                    'category_id' => $currentId,
+                    'path' => $current?->pathString(),
+                    'note' => $currentId !== null
+                        ? 'A person already assigned this ticket\'s taxonomy category; triage does not overwrite it.'
+                        : 'A person cleared this ticket\'s taxonomy category; triage does not reassign it.',
+                ];
+            }
+
+            $node = TaxonomyNodeMapper::resolve($category, $subcategory);
+
+            if ($node === null) {
+                if ($currentId !== null) {
+                    TicketCategoryChangeLog::runAsTriage(fn () => $fresh->update(['category_id' => null]));
+
+                    return [
+                        'status' => 'gap',
+                        'category_id' => null,
+                        'path' => null,
+                        'note' => 'This classification pair has no confident taxonomy mapping; the previous triage-assigned category was cleared.',
+                    ];
+                }
 
                 return [
                     'status' => 'gap',
                     'category_id' => null,
                     'path' => null,
-                    'note' => 'This classification pair has no confident taxonomy mapping; the previous triage-assigned category was cleared.',
+                    'note' => 'This classification pair has no confident taxonomy mapping yet — the ticket stays a visible coverage gap.',
                 ];
             }
 
+            if ($node->id !== $currentId) {
+                TicketCategoryChangeLog::runAsTriage(fn () => $fresh->update(['category_id' => $node->id]));
+            }
+
             return [
-                'status' => 'gap',
-                'category_id' => null,
-                'path' => null,
-                'note' => 'This classification pair has no confident taxonomy mapping yet — the ticket stays a visible coverage gap.',
+                'status' => 'mapped',
+                'category_id' => $node->id,
+                'path' => $node->pathString(),
+                'note' => null,
             ];
-        }
-
-        if ($node->id !== $currentId) {
-            TicketCategoryChangeLog::runAsTriage(fn () => $this->ticket->update(['category_id' => $node->id]));
-        }
-
-        return [
-            'status' => 'mapped',
-            'category_id' => $node->id,
-            'path' => $node->pathString(),
-            'note' => null,
-        ];
+        });
     }
 
     private function setTicketKeywords(array $input): array

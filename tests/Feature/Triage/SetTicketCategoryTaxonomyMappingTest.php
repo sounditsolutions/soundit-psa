@@ -20,7 +20,10 @@ use Tests\TestCase;
  *    Triage-sourced row (Phase-1's refinement data);
  *  - an unmapped pair is an honest gap — and clears a stale triage-owned
  *    node after reclassification;
- *  - a node a person chose is NEVER overwritten or cleared by triage;
+ *  - a node a person chose is NEVER overwritten or cleared by triage — even
+ *    when the person set (or cleared) it AFTER the executor cached its Ticket
+ *    model: ownership is decided from fresh DB state, not the snapshot
+ *    (psa-p4zdp);
  *  - unknown history (category_id set, no log rows) counts as human-owned.
  */
 class SetTicketCategoryTaxonomyMappingTest extends TestCase
@@ -159,6 +162,69 @@ class SetTicketCategoryTaxonomyMappingTest extends TestCase
         $log = TicketCategoryChangeLog::sole();
         $this->assertSame(TicketCategoryChangeSource::Staff, $log->source);
         $this->assertSame($staff->id, $log->changed_by);
+    }
+
+    public function test_race_human_category_set_after_executor_construction_is_preserved(): void
+    {
+        $ticket = Ticket::factory()->create();
+
+        // The triage loop's executor is constructed FIRST — its cached Ticket
+        // model reads category_id = null (the psa-p4zdp TOCTOU window).
+        $executor = new TriageToolExecutor($ticket);
+
+        // Mid-loop, a staff member categorizes the ticket through a FRESH model.
+        $staff = User::factory()->create();
+        $this->actingAs($staff);
+        Ticket::findOrFail($ticket->id)->update(['category_id' => $this->malware->id]);
+        auth()->logout();
+
+        // The stale executor now classifies to a DIFFERENT node. Ownership must
+        // be decided from the database, not the cached null snapshot, so the
+        // human's node survives. Deliberately NO refresh of the executor's
+        // ticket — the stale view IS the scenario under test.
+        $result = $executor->execute('set_ticket_category', ['category' => 'Security', 'subcategory' => 'Phishing']);
+
+        $this->assertSame('kept_existing', $result['taxonomy']['status']);
+        $this->assertSame($this->malware->id, $result['taxonomy']['category_id']);
+        $this->assertSame('Security & EDR / Malware/ransomware', $result['taxonomy']['path']);
+        $this->assertSame($this->malware->id, $ticket->refresh()->category_id);
+
+        // The log still holds ONLY the human's row, with true DB snapshots.
+        $log = TicketCategoryChangeLog::sole();
+        $this->assertSame(TicketCategoryChangeSource::Staff, $log->source);
+        $this->assertSame($staff->id, $log->changed_by);
+        $this->assertNull($log->previous_category_id);
+        $this->assertSame($this->malware->id, $log->new_category_id);
+        $this->assertSame('Security & EDR / Malware/ransomware', $log->new_path);
+    }
+
+    public function test_a_human_cleared_node_is_not_reassigned_by_triage(): void
+    {
+        $ticket = Ticket::factory()->create();
+
+        // Triage owned the node first...
+        $this->setCategory($ticket, 'Security', 'Phishing');
+
+        // ...then a person deliberately cleared it (latest log row = Staff).
+        $staff = User::factory()->create();
+        $this->actingAs($staff);
+        $ticket->refresh()->update(['category_id' => null]);
+        auth()->logout();
+
+        // A later triage classification must not undo the human's clear: a
+        // fresh null whose latest change is Staff-sourced is human-owned.
+        $result = $this->setCategory($ticket->refresh(), 'Security', 'Malware');
+
+        $this->assertSame('kept_existing', $result['taxonomy']['status']);
+        $this->assertNull($result['taxonomy']['category_id']);
+        $this->assertNull($result['taxonomy']['path']);
+        $this->assertNull($ticket->refresh()->category_id);
+
+        // Triage assign + human clear — triage added nothing after.
+        $logs = TicketCategoryChangeLog::orderBy('id')->get();
+        $this->assertCount(2, $logs);
+        $this->assertSame(TicketCategoryChangeSource::Staff, $logs[1]->source);
+        $this->assertNull($logs[1]->new_category_id);
     }
 
     public function test_unknown_history_counts_as_human_owned(): void
