@@ -8,6 +8,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Support\Facades\DB;
 
 class Invoice extends Model
 {
@@ -238,6 +239,39 @@ class Invoice extends Model
         return $this->status === InvoiceStatus::Posted
             && $this->qbo_invoice_id === null
             && $this->stripe_invoice_id === null;
+    }
+
+    /**
+     * Atomically record a billing-backend push result on the CREATE path.
+     *
+     * Persists $attributes and transitions the invoice to Synced — but NEVER
+     * clobbers a terminal Paid/Void status that a concurrent writer (e.g. a
+     * manual Mark-as-Paid, psa-8yhp) may have committed while the push's API
+     * call was in flight. The row is re-read under lock so this write-point
+     * re-check serialises with InvoiceService::markPaid()'s own locked check:
+     * psa-946hr's rule that EVERY financial-status writer sharing the invariant
+     * re-checks at the write, not only the newest one. When the status is
+     * preserved, the backend id in $attributes is still recorded, so the
+     * external invoice is not orphaned — a Paid invoice legitimately carries a
+     * backend id (that is exactly how backend-synced-then-paid invoices look).
+     *
+     * @param  array<string, mixed>  $attributes  Backend ids/tax/timestamps to persist. The `status` key is set here, not by the caller.
+     */
+    public function recordPushResult(array $attributes): void
+    {
+        DB::transaction(function () use ($attributes) {
+            $locked = static::whereKey($this->getKey())->lockForUpdate()->first();
+
+            if (! in_array($locked->status, [InvoiceStatus::Paid, InvoiceStatus::Void], true)) {
+                $attributes['status'] = InvoiceStatus::Synced;
+            }
+
+            $locked->update($attributes);
+
+            // Keep the caller's in-memory model consistent with the committed row.
+            $this->setRawAttributes($locked->getAttributes(), true);
+            $this->syncOriginal();
+        });
     }
 
     /**

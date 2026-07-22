@@ -164,12 +164,15 @@ class StripeSyncService
             $tax = $this->centsToDollars($finalized['tax'] ?? 0);
             $total = $this->centsToDollars($finalized['total'] ?? 0);
 
-            $invoice->update([
+            // Never clobber a Paid/Void status a concurrent Mark-as-Paid/void
+            // (psa-8yhp) may have committed while our Stripe API round-trip was
+            // in flight. recordPushResult re-reads under lock and preserves a
+            // terminal status; the id is still recorded so Stripe is not orphaned.
+            $invoice->recordPushResult([
                 'stripe_invoice_id' => $stripeInvoiceId,
                 'stripe_invoice_url' => $finalized['hosted_invoice_url'] ?? null,
                 'tax' => $tax,
                 'total' => $total,
-                'status' => InvoiceStatus::Synced,
                 'stripe_synced_at' => now(),
                 'stripe_sync_error' => null,
             ]);

@@ -390,13 +390,16 @@ class QboSyncService
                 'qbo_sync_error' => null,
             ]);
         } else {
-            // CREATE: store QBO IDs and transition to Synced
-            $invoice->update([
+            // CREATE: store QBO IDs and transition to Synced — but never clobber
+            // a Paid/Void status a concurrent Mark-as-Paid/void (psa-8yhp) may
+            // have committed while our API call was in flight. recordPushResult
+            // re-reads under lock and preserves a terminal status; the id is
+            // still recorded so the QBO invoice is not orphaned.
+            $invoice->recordPushResult([
                 'qbo_invoice_id' => $qboInvoice['Id'] ?? null,
                 'qbo_doc_number' => $qboInvoice['DocNumber'] ?? null,
                 'tax' => $qboInvoice['TxnTaxDetail']['TotalTax'] ?? 0,
                 'total' => $qboInvoice['TotalAmt'] ?? $invoice->subtotal,
-                'status' => InvoiceStatus::Synced,
                 'qbo_synced_at' => now(),
                 'qbo_sync_error' => null,
             ]);
