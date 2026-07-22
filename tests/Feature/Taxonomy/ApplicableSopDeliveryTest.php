@@ -116,21 +116,23 @@ class ApplicableSopDeliveryTest extends TestCase
         $this->assertSame('Old but valid steps', $block['sop_text']);
     }
 
-    public function test_edit_link_prefers_the_named_route_once_the_taxonomy_ui_registers_it(): void
+    public function test_edit_link_follows_the_named_route_registered_by_the_taxonomy_ui(): void
     {
-        // The CRUD UI leg (psa-7uynn) owns the real route. Registering the name
-        // at a DIFFERENT path here proves the link follows the named route when
-        // present rather than the conventional fallback.
-        Route::get('/settings/taxonomy/{ticketCategory}/edit', fn () => 'ok')
-            ->name('ticket-categories.edit');
-        Route::getRoutes()->refreshNameLookups();
-
+        // Pre-UI, this test registered the name at a decoy path to prove the
+        // link prefers a named route over the conventional fallback. Now the
+        // CRUD UI (psa-7uynn) registers ticket-categories.edit at boot, and
+        // Laravel's name lookup is first-wins (RouteCollection::addLookups and
+        // refreshNameLookups both skip names already taken), so a late decoy
+        // re-registration can never displace the real route — that proof is
+        // unsatisfiable by construction. The durable contract stands instead:
+        // edit_url IS the URL the registered editor route generates.
         $leaf = $this->leaf(['sop_text' => 'steps']);
         $ticket = Ticket::factory()->create(['category_id' => $leaf->id]);
 
         $block = $this->detail($ticket)['applicable_sop'];
 
-        $this->assertStringContainsString("/settings/taxonomy/{$leaf->id}/edit", $block['edit_url']);
+        $this->assertTrue(Route::has('ticket-categories.edit'), 'the taxonomy CRUD UI must register the named editor route');
+        $this->assertSame(route('ticket-categories.edit', $leaf), $block['edit_url']);
     }
 
     public function test_list_tools_never_carry_the_applicable_sop_block(): void
