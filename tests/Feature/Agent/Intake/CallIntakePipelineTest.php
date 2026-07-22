@@ -180,6 +180,37 @@ class CallIntakePipelineTest extends TestCase
         $this->assertNull($call->fresh()->ticket_id, 'The dismissed call must not be linked');
     }
 
+    // ── Test 2c: TOCTOU — followed up DURING routing ─────────────────────────
+
+    public function test_skips_a_call_followed_up_during_routing(): void
+    {
+        Bus::fake();
+        Setting::setValue('intake_enabled', '1');
+
+        $client = Client::factory()->create();
+        $call = $this->makeCall(['client_id' => $client->id, 'call_summary' => 'Might be spam.']);
+        $ticketsBefore = Ticket::count();
+
+        // The race: routeContent() calls the AI (a wide window). A technician
+        // dismisses the call — stamping followed_up_at — DURING that window, after
+        // the Stage-2b guard already passed. Only a fresh re-check immediately
+        // before the mutation can catch it. Simulated as a routeContent side effect.
+        $this->mock(IntakeRouter::class)
+            ->shouldReceive('routeContent')
+            ->once()
+            ->andReturnUsing(function () use ($call) {
+                PhoneCall::whereKey($call->id)->update(['followed_up_at' => now()]);
+
+                return new IntakeDecision('create', null, 0.95, 'looks like a new issue');
+            });
+
+        $this->pipeline()->handle($call);
+
+        $this->assertSame($ticketsBefore, Ticket::count(), 'a call dismissed during routing must not create a ticket');
+        $this->assertNull($call->fresh()->ticket_id, 'the dismissed call must not be linked');
+        $this->assertSame(0, $this->intakeRouteRuns()->count(), 'no intake_route run for a call resolved mid-flight');
+    }
+
     // ── Test 3: RESOLVED + held (threshold null) ─────────────────────────────
 
     public function test_resolved_held_attach_creates_phone_ticket_and_awaiting_approval_run(): void

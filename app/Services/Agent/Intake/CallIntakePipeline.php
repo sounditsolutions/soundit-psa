@@ -99,6 +99,18 @@ class CallIntakePipeline
             $body = (string) ($call->call_summary ?: $call->cleaned_transcript ?: $call->transcription ?: '');
 
             $decision = app(IntakeRouter::class)->routeContent($clientId, $subject, $body, 'call:'.$call->id, 'phone call');
+
+            // ── Stage 5b: TOCTOU re-check (psa-mgok re-review) ────────────────
+            // routeContent() may have called the AI — a WIDE window during which a
+            // technician can dismiss / mark this call followed-up. The Stage-2b guard
+            // ran before that window and is now stale, and every mutation below acts
+            // off the pre-routing $call. Re-read the resolution marker fresh here,
+            // immediately before any attach/create (no slow op intervenes), and bail
+            // if the human resolved it meanwhile — the same invariant, later window.
+            if ($call->fresh()?->isFollowedUp()) {
+                return;
+            }
+
             $threshold = AgentConfig::intakeAttachAutoThreshold();
 
             // GRADUATED auto-attach — only when confident AND the threshold is set.
