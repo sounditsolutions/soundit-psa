@@ -38,6 +38,39 @@ class AssetDetailTest extends TestCase
         $resp->assertOk();
     }
 
+    public function test_tactical_script_description_attribute_is_escaped_exactly_once(): void
+    {
+        // psa-946hr: the script picker ran e() inside {{ }}, so a description
+        // containing '&' rendered as data-description="Reboot &amp;amp; verify"
+        // and the helper text under the select showed the '&amp;' literal.
+        // Display-only (the attribute feeds textContent, never a form field),
+        // but the same double-escape shape corrupted invoice lines, so the
+        // single-escape is pinned here too.
+        $user = User::factory()->create();
+        $asset = Asset::factory()->create();
+        $ta = TacticalAsset::create([
+            'asset_id' => $asset->id,
+            'agent_id' => 'test-agent-uuid',
+            'hostname' => $asset->hostname,
+        ]);
+        $asset->update(['tactical_asset_id' => $ta->id]);
+
+        \App\Models\TacticalScript::create([
+            'tactical_script_id' => 4601,
+            'name' => 'Reboot Sequence',
+            'description' => 'Reboot & verify',
+            'shell' => 'powershell',
+            'category' => 'Maintenance',
+            'default_timeout' => 120,
+            'hidden' => false,
+        ]);
+
+        $html = $this->actingAs($user)->get(route('assets.show', $asset))->assertOk()->getContent();
+
+        $this->assertStringContainsString('data-description="Reboot &amp; verify"', $html);
+        $this->assertStringNotContainsString('&amp;amp;', $html);
+    }
+
     public function test_asset_detail_200s_when_tactical_local_ips_is_a_proper_array(): void
     {
         $user = User::factory()->create();
