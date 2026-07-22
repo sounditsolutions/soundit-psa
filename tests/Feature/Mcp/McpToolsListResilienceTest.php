@@ -45,43 +45,7 @@ class McpToolsListResilienceTest extends TestCase
 
         $this->assertLessThanOrEqual(3, $cippQueries, $sql);
 
-        // Budget raised 25 -> 45 by psa-wzjzz (measured 43, +2 margin). Two contributions,
-        // both constant and neither an N+1:
-        //
-        //  1. The six vendor availability predicates now consult their master switch
-        //     (Setting::getValue is uncached, one query per read) — ~6 more than the old
-        //     credentials-only checks. In exchange the Ninja and Level lanes no longer make a
-        //     LIVE HTTP round-trip to decide availability: two network calls traded for a few
-        //     single-row indexed reads.
-        //  2. This test now configures the CIPP MCP relay (configureCippMcpRelay()), so the
-        //     214-row dynamic catalog is GENUINELY ASSEMBLED. Before the re-review fix it was
-        //     not: publication gated on isEnabled() (default '1') while the relay was never
-        //     configured, so the catalog path was skipped and this assertion — and the N+1
-        //     guard below — silently exercised nothing. Configuring the relay is what makes
-        //     the guard real; the extra reads are the cost of the path actually running.
-        //
-        // The sharp assertion above (dynamic CIPP catalog <= 3 queries) is the real N+1 guard
-        // and is now genuinely exercised: the count moved with FIXED constants, not with the
-        // 214-tool fixture size.
-        //
-        // MEMOIZATION WAS CONSIDERED AND REJECTED. McpToolRegistry::memoized() would collapse
-        // these reads, but it keys its reset on spl_object_id(app('request')), which never
-        // changes in a long-running queue worker — the memo would never reset. Caching the
-        // answer to "is this integration switched off?" in a daemon that runs triage is how
-        // you reintroduce exactly the defect this bead fixes: an operator flips the switch
-        // off and the worker keeps publishing the vendor's tools until someone restarts it.
-        // A few indexed reads are the cheaper mistake.
-        //
-        // *** CROSS-PR INTERACTION — THIS LINE CONFLICTS WITH PR #297, AND THE COMBINED IS
-        // MEASURED. *** psa-vydpz (PR #297) edits this same assertion to 36 (its toolAllowed()
-        // liveness conjunct resolves the live surface once per list). The two COMPOUND: that
-        // conjunct runs per candidate tool over the now-genuinely-assembled 214-row dynamic
-        // catalog this test configures. Measured on a scratch merge of both branches at
-        // 26da514 + psa-vydpz: *** 68 queries. Set 70 (+2 margin) when the SECOND of the two
-        // merges. *** Neither 45 nor 36 is right once both land; taking either side verbatim
-        // goes red. (Supersedes the earlier 46/48 figure — that was measured before this test
-        // configured the relay, so the dynamic catalog was not being assembled.)
-        $this->assertLessThanOrEqual(45, count($queries), $sql);
+        $this->assertLessThanOrEqual(70, count($queries), $sql);
     }
 
     public function test_tools_list_repairs_dynamic_cipp_schema_before_publishing(): void

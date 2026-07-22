@@ -366,9 +366,13 @@ class McpStaffController extends Controller
             $allTools,
             $staffToken instanceof McpStaffToken ? $staffToken : null,
         );
+        // Resolved once for the whole filter: toolAllowed()'s liveness conjunct would
+        // otherwise re-assemble the live surface for every tool in the list.
+        $liveLookup = $this->liveToolNameLookup();
+
         $allTools = array_values(array_filter(
             $allTools,
-            fn (array $tool): bool => $this->toolAllowed($request, (string) ($tool['name'] ?? '')),
+            fn (array $tool): bool => $this->toolAllowed($request, (string) ($tool['name'] ?? ''), $liveLookup),
         ));
 
         // find_persons / find_assets accept an OPTIONAL client_id — they
@@ -1872,7 +1876,37 @@ class McpStaffController extends Controller
         return is_numeric($clientId) ? (int) $clientId : null;
     }
 
-    private function toolAllowed(Request $request, string $toolName): bool
+    /**
+     * Live-name lookup for a liveness check. tools/list calls toolAllowed() once per tool
+     * and McpToolSurface::liveToolNames() re-assembles both surfaces on every call, so the
+     * list path passes ONE precomputed lookup down instead of paying N full assemblies.
+     *
+     * *** DELIBERATELY NOT CACHED ON THE INSTANCE OR IN A STATIC. THIS WAS TRIED AND IT WAS
+     * WRONG. *** A `private ?array $liveToolNameLookup` memo looked request-scoped — a
+     * controller is resolved per request, so it "could not" outlive one — and
+     * McpToolSurfaceDiscoveryTest caught it going STALE ACROSS CALLS anyway: configure an
+     * integration between two calls and the second still answered from the first's snapshot,
+     * classifying a now-live granted tool as merely available_ungranted.
+     *
+     * That is the whole defect class this conjunct exists to close, reintroduced by the
+     * optimisation meant to support it: a cached answer to "is this tool live" lets a
+     * switched-off integration stay callable, and a switched-ON one stay refused. The scope
+     * of the memo is therefore the CALL that needs it and nothing wider.
+     *
+     * @return array<string, true>
+     */
+    private function liveToolNameLookup(): array
+    {
+        return array_fill_keys(McpToolSurface::liveToolNames(), true);
+    }
+
+    /**
+     * @param  array<string, true>|null  $liveLookup  precomputed live-name lookup; pass it
+     *                                                when calling this in a loop, omit it
+     *                                                for a single check so the answer is
+     *                                                always resolved fresh.
+     */
+    private function toolAllowed(Request $request, string $toolName, ?array $liveLookup = null): bool
     {
         $token = $request->attributes->get('mcp_staff_token');
         if (! $token instanceof McpStaffToken) {
@@ -1881,8 +1915,36 @@ class McpStaffController extends Controller
 
         // Transport built-ins: identity and surface discovery are always
         // callable — a token that cannot see its own scope cannot self-heal.
+        // They are assembled outside the grant catalog, so they are also
+        // legitimately absent from the live surface and must be exempted from
+        // the liveness check below or a caller loses the very tools it would
+        // use to find out why something was refused.
         if ($toolName === self::WHOAMI_TOOL || $toolName === self::TOOL_SURFACE_TOOL) {
             return true;
+        }
+
+        // LIVENESS (psa-vydpz). A grant says the OPERATOR permitted this tool; it does not
+        // say the tool EXISTS on this deployment. Without this conjunct the two were
+        // conflated, and a tool that was granted but never published stayed callable by
+        // name — the advertised surface understating what a token would actually do. At
+        // filing: 137 of a 208-tool catalog were grantable but never published, 52 of those
+        // reached real work, and three reached live outbound vendor HTTP.
+        //
+        // *** THIS IS WHAT MAKES "OFF" MEAN OFF ON MCP. *** psa-wzjzz takes a switched-off
+        // integration's tools out of the live surface; gating publication alone only HIDES
+        // them, because tools/list and tools/call were reading different sources. Refusing a
+        // not-live name here is what actually disables it.
+        //
+        // Deliberately placed BEFORE the family branches: it is a property of the
+        // deployment, not of the token's scope, so no grant of any shape may outrun it —
+        // including the legacy full-surface token, which grants everything by construction
+        // and for which liveness is the only remaining constraint.
+        //
+        // liveToolNames() is the UNION of the general and client-scoped surfaces, so this
+        // flat check cannot refuse a client-scoped tool on a general call. The executors'
+        // own self-gates stay exactly as they are, as defence in depth.
+        if (! isset(($liveLookup ?? $this->liveToolNameLookup())[$toolName])) {
+            return false;
         }
 
         if ($token->allowedTools !== null && ! in_array($toolName, McpToolRegistry::allToolNames(), true)) {

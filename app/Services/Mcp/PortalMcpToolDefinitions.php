@@ -2,6 +2,8 @@
 
 namespace App\Services\Mcp;
 
+use App\Support\McpInputSchema;
+
 /**
  * Tool surface for the portal MCP server. Every tool operates on behalf of the
  * authenticated portal Person and is scoped server-side to that Person's client
@@ -121,10 +123,38 @@ class PortalMcpToolDefinitions
         ];
     }
 
+    /**
+     * The tools this server will actually publish — tools() minus any whose input schema
+     * does not validate.
+     *
+     * *** THIS EXISTS SO THE LIST PATH AND THE CALL PATH CANNOT DISAGREE (psa-vydpz). ***
+     * McpPortalController::listTools() dropped schema-invalid tools while callTool() gated
+     * on handles(), which read the UNFILTERED list. A dropped tool therefore stayed
+     * callable: unpublished but live, the same publish-vs-dispatch split this bead closes
+     * on the staff server.
+     *
+     * It was LATENT, not exploitable — all six shipped schemas validate and tools() is
+     * static PHP literals, so no config or vendor input can invalidate one. But this
+     * surface carries WRITES (create_ticket, add_my_ticket_reply), and the day a seventh
+     * tool lands with a malformed schema it would silently become unpublished-but-callable.
+     * Fixing the shape now costs nothing; discovering it later costs a written row.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public static function publishableTools(): array
+    {
+        return array_values(array_filter(
+            self::tools(),
+            fn (array $tool): bool => McpInputSchema::validationErrors(
+                $tool['input_schema'] ?? ['type' => 'object', 'properties' => new \stdClass]
+            ) === [],
+        ));
+    }
+
     /** @return array<int, string> */
     public static function names(): array
     {
-        return array_column(self::tools(), 'name');
+        return array_column(self::publishableTools(), 'name');
     }
 
     public static function handles(string $toolName): bool

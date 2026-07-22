@@ -912,6 +912,12 @@ class DynamicCippMcpToolsTest extends TestCase
     public function test_a_curated_name_collision_is_inert_even_when_explicitly_granted(): void
     {
         $this->configureCippMcp();
+        // Same reason as the sibling above: the curated CIPP tools publish only when the
+        // REST side is configured too. Without these the curated tool is not LIVE, and
+        // since psa-vydpz a not-live name is refused at the gate — so this test would go
+        // green without ever reaching the collision it exists to prove inert.
+        Setting::setValue('cipp_client_id', 'rest-client');
+        Setting::setEncrypted('cipp_client_secret', 'rest-secret');
         $this->createStaleTenantWideMailboxRulesRow();
         $client = Client::factory()->create(['cipp_tenant_domain' => 'acme.example']);
         McpToolRegistry::flushMemoized();

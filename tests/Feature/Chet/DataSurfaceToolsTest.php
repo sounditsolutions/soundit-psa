@@ -14,6 +14,7 @@ use App\Services\Cipp\CippClient;
 use App\Services\Graph\GraphClient;
 use App\Services\Tactical\TacticalClient;
 use App\Support\McpConfig;
+use App\Support\McpToolSurface;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Testing\TestResponse;
 use Mockery;
@@ -562,6 +563,21 @@ class DataSurfaceToolsTest extends TestCase
         $response->assertOk();
         $this->assertTrue((bool) $response->json('result.isError'));
         $this->assertStringContainsString('not allowed for this token', (string) $response->json('result.content.0.text'));
+
+        // psa-vydpz NOTE — WHICH GUARD REFUSES THIS CHANGED, AND THE ASSERTION ABOVE CANNOT
+        // TELL. tactical_run_diagnostic is unpublished by design, so the liveness conjunct in
+        // toolAllowed() now refuses it BEFORE the `str_starts_with('tactical_')` fence that
+        // this test was written to pin — and both produce the identical message.
+        //
+        // The property under test (a scoped Chet token cannot reach this tool) is intact and
+        // now doubly enforced, but this test would stay green if the fence were deleted.
+        // Recorded rather than silently inherited: the refusal is defence in depth, and the
+        // fence is pinned on its own by the tactical suite, not by this assertion.
+        $this->assertNotContains(
+            'tactical_run_diagnostic',
+            McpToolSurface::liveToolNames(),
+            'context for the refusal above: this tool is not live, so liveness refuses it first'
+        );
     }
 
     public function test_list_teams_chats_discovers_durable_known_conversations_without_users_chats_or_member_gate(): void
