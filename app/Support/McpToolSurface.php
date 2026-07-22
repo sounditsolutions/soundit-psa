@@ -21,8 +21,10 @@ use App\Services\Chet\OperatorBridgeTools;
  *  - granted             — in this token's allowlist and live: callable now.
  *  - available_ungranted — built and configured, not in this token: an
  *    operator token grant enables it.
- *  - unavailable_config  — built but its integration is not configured on
- *    this instance: an infrastructure/config change, not a token grant.
+ *  - unavailable_config  — built but its integration is switched off or not
+ *    configured on this instance: re-enabling it in Settings > Integrations
+ *    or adding its credentials, not a token grant. Both causes land here, so
+ *    the copy must name both remedies (psa-wzjzz made the switch a gate).
  *  - (absent from the catalog — the tool does not exist: a development build.)
  *
  * The live assembly here is the SAME code path `tools/list` uses (the
@@ -55,7 +57,7 @@ class McpToolSurface
         return [
             self::STATE_GRANTED => 'In this token\'s allowlist and live on this instance — callable now.',
             self::STATE_AVAILABLE_UNGRANTED => 'Built and configured on this instance but not in this token\'s allowlist — an operator token grant enables it.',
-            self::STATE_UNAVAILABLE_CONFIG => 'Built but its integration is not configured on this instance — an infrastructure/config change, not a token grant.',
+            self::STATE_UNAVAILABLE_CONFIG => 'Built but its integration is switched off or not configured on this instance — the remedy is re-enabling it in Settings > Integrations or adding its credentials, not a token grant.',
         ];
     }
 
@@ -97,12 +99,35 @@ class McpToolSurface
      */
     public static function liveClientScopedToolDefinitions(): array
     {
+        // CIPP publishes on TWO paths, and each must be gated on the SAME predicate its
+        // executor uses — publish and dispatch answering one question, not two (psa-wzjzz).
+        //
+        //   - Static curated writes (cippWriteTools) execute against the CIPP REST API
+        //     (CippClient), whose liveness is isEnabled() && isConfigured().
+        //   - The DYNAMIC catalog (dynamicCippRead/WriteTools) executes through
+        //     CippMcpDynamicToolExecutor, which refuses on !isMcpRelayEnabled()
+        //     (= isEnabled() && cipp_mcp_enabled && isMcpConfigured()) — a DIFFERENT
+        //     subsystem with its own sub-switch and credentials.
+        //
+        // The first cut of this fix gated the dynamic rows on isEnabled() alone. That closed
+        // the cipp_enabled='0' bypass but left a new split: with the integration on and the
+        // relay sub-switch off, the tool published as live and then refused at execution.
+        // Gating each path on its own executor's predicate removes the divergence by
+        // construction — there is no state where one says live and the other refuses.
+        //
+        // Gating happens at THIS publication site, not inside the dynamicCipp* helpers,
+        // because those also feed McpToolRegistry::groups() — the GRANT CATALOG, deliberately
+        // ungated so a tool can be pre-granted before its integration is switched on. Gating
+        // the helper would conflate "grantable" with "live".
+        $cippRestLive = CippConfig::isEnabled() && CippConfig::isConfigured();
+        $cippMcpLive = CippConfig::isMcpRelayEnabled();
+
         return array_merge(
             AssistantToolDefinitions::getTools(hasClient: true),
             ChetDataSurfaceTools::clientTools(),
-            McpToolRegistry::dynamicCippReadTools(),
-            McpToolRegistry::dynamicCippWriteTools(),
-            (CippConfig::isEnabled() && CippConfig::isConfigured()) ? McpToolRegistry::cippWriteTools() : [],
+            $cippMcpLive ? McpToolRegistry::dynamicCippReadTools() : [],
+            $cippMcpLive ? McpToolRegistry::dynamicCippWriteTools() : [],
+            $cippRestLive ? McpToolRegistry::cippWriteTools() : [],
             TacticalConfig::isConfigured() ? McpToolRegistry::tacticalActionTools() : [],
         );
     }

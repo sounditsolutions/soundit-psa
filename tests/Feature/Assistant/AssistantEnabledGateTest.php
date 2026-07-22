@@ -10,11 +10,8 @@ use App\Models\User;
 use App\Services\Assistant\AssistantService;
 use App\Services\Assistant\AssistantToolDefinitions;
 use App\Services\Assistant\AssistantToolExecutor;
-use App\Services\Level\LevelClient;
-use App\Services\Ninja\NinjaClient;
 use App\Support\AssistantConfig;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Mockery\MockInterface;
 use Tests\TestCase;
 
 /**
@@ -581,12 +578,23 @@ class AssistantEnabledGateTest extends TestCase
      */
     private function forceVendorLanesOn(): void
     {
-        $this->mock(NinjaClient::class, function (MockInterface $m): void {
-            $m->shouldReceive('isHealthy')->andReturn(true);
-        });
-        $this->mock(LevelClient::class, function (MockInterface $m): void {
-            $m->shouldReceive('isHealthy')->andReturn(true);
-        });
+        // psa-wzjzz: availability is now "switched on AND configured" for every lane, so a
+        // fixture that only supplies credentials no longer switches anything on. Ninja and
+        // Level used to be forced on here by mocking isHealthy(); that probe is gone from
+        // the tool-surface path entirely, and mocks for a call that never happens fail
+        // SILENTLY OPEN under Mockery (zero calls is not an error), so they were removed
+        // rather than left to read like they were still doing something.
+        //
+        // ninja_enabled must be written explicitly — it is the one lane that defaults to
+        // '0' (offboarding, psa-u97k). Every other switch defaults to '1'.
+        Setting::setValue('ninja_enabled', '1');
+        Setting::setValue('ninja_client_id', 'ninja-client-id');
+        Setting::setEncrypted('ninja_client_secret', 'ninja-client-secret');
+
+        // Level has no settings row in the test environment and its env fallback
+        // (services.level.api_key) is null under APP_ENV=testing, so isConfigured() is
+        // false unless this is written.
+        Setting::setEncrypted('level_api_key', 'test-level-key');
 
         Setting::setEncrypted('mesh_api_key', 'test-mesh-key');
 

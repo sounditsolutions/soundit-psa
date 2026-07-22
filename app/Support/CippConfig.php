@@ -47,9 +47,18 @@ class CippConfig
             && Setting::getValue('cipp_device_sync_enabled', '0') === '1';
     }
 
+    /**
+     * psa-wzjzz: this was the ONLY member of this family that did not consult the CIPP
+     * master switch — isContactSyncEnabled(), isDeviceSyncEnabled() and
+     * isMcpCatalogSyncEnabled() all open with self::isEnabled(), and this one did not.
+     * The omission let the dynamic CIPP MCP relay keep executing with cipp_enabled='0',
+     * so the executor could not act as defence in depth behind the publication gate.
+     * `cipp_mcp_enabled` is a sub-switch of the integration, not an alternative to it.
+     */
     public static function isMcpRelayEnabled(): bool
     {
-        return Setting::getValue('cipp_mcp_enabled', '0') === '1'
+        return self::isEnabled()
+            && Setting::getValue('cipp_mcp_enabled', '0') === '1'
             && self::isMcpConfigured();
     }
 
