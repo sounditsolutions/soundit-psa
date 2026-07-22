@@ -2403,10 +2403,10 @@ class StaffPsaActionToolExecutor
     /** @return array<string, mixed>|null */
     private function validateTicketUpdatePayload(array $arguments): ?array
     {
-        $allowed = ['ticket_id', 'subject', 'description', 'priority', 'type', 'reason'];
+        $allowed = ['ticket_id', 'subject', 'description', 'priority', 'type', 'category_id', 'reason'];
         $unexpected = array_values(array_diff(array_keys($arguments), $allowed));
         if ($unexpected !== []) {
-            return ['error' => 'update_ticket accepts only subject, description, priority, and type'];
+            return ['error' => 'update_ticket accepts only subject, description, priority, type, and category_id'];
         }
 
         $validator = Validator::make($arguments, [
@@ -2414,6 +2414,11 @@ class StaffPsaActionToolExecutor
             'description' => ['sometimes', 'nullable', 'string'],
             'priority' => ['sometimes', 'required', Rule::enum(\App\Enums\TicketPriority::class)],
             'type' => ['sometimes', 'required', Rule::enum(\App\Enums\TicketType::class)],
+            // ITIL taxonomy node (so-0ftg) — mirrors the web form's rule: an
+            // ACTIVE node only (retired/unknown rejected at the write). Nullable
+            // clears it. category_source is stamped by TicketObserver (System on
+            // this no-auth-web-user surface), never from tool input.
+            'category_id' => ['sometimes', 'nullable', Rule::exists('ticket_categories', 'id')->where('is_active', true)],
             'reason' => ['sometimes', 'nullable', 'string'],
         ]);
 

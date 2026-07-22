@@ -508,7 +508,7 @@ class McpToolRegistry
     {
         return [
             'name' => 'update_ticket',
-            'description' => 'Update the current ticket subject, description, priority, or type immediately. The server derives the ticket client from ticket_id, validates the same ticket edit rules as the web form, and writes an action audit row. Requires an explicit token grant.',
+            'description' => 'Update the current ticket subject, description, priority, type, or ITIL taxonomy category immediately. The server derives the ticket client from ticket_id, validates the same ticket edit rules as the web form, and writes an action audit row. Requires an explicit token grant.',
             'input_schema' => [
                 'type' => 'object',
                 'properties' => [
@@ -533,6 +533,10 @@ class McpToolRegistry
                         'type' => 'string',
                         'enum' => ['incident', 'service_request', 'change', 'problem'],
                         'description' => 'Optional ticket type.',
+                    ],
+                    'category_id' => [
+                        'type' => ['integer', 'null'],
+                        'description' => 'Optional ITIL taxonomy category node id — sets/changes the category whose SOP surfaces on get_ticket_detail. Must be an ACTIVE node (get it from the taxonomy read tools); a retired or unknown node is rejected. Pass null to clear (Uncategorized). An agent-set category is authoritative — triage will not overwrite it.',
                     ],
                     'reason' => [
                         'type' => 'string',
