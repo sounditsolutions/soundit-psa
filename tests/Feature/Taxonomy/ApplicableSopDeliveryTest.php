@@ -153,10 +153,10 @@ class ApplicableSopDeliveryTest extends TestCase
         $executor = new AssistantToolExecutor(clientId: $client->id, userId: $user->id);
 
         $lists = [
-            'search_all_tickets' => $executor->execute('search_all_tickets', ['query' => 'popup']),
-            'list_open_tickets' => $executor->execute('list_open_tickets', []),
-            'list_my_tickets' => $executor->execute('list_my_tickets', []),
-            'search_tickets' => $executor->execute('search_tickets', ['query' => 'popup']),
+            'search_all_tickets' => $executor->execute('search_all_tickets', ['query' => 'popup'])['tickets'],
+            'list_open_tickets' => $executor->execute('list_open_tickets', [])['tickets'],
+            'list_my_tickets' => $executor->execute('list_my_tickets', [])['tickets'],
+            'search_tickets' => $executor->execute('search_tickets', ['query' => 'popup'])['tickets'],
         ];
 
         foreach ($lists as $tool => $rows) {

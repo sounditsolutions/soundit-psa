@@ -31,6 +31,7 @@ use App\Services\Wiki\HandlesWikiTools;
 use App\Services\Wiki\WikiAddFactTool;
 use App\Services\Wiki\WikiPageAuthoringTool;
 use App\Support\CippConfig;
+use App\Support\PaginatesTicketLists;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Route;
 
@@ -42,6 +43,7 @@ class AssistantToolExecutor
 {
     use HandlesCippTools;
     use HandlesWikiTools;
+    use PaginatesTicketLists;
 
     private ?Ticket $ticket;
 
@@ -312,26 +314,29 @@ class AssistantToolExecutor
     private function searchAllTickets(array $input): array
     {
         $query = $input['query'] ?? '';
-        $limit = min($input['limit'] ?? 15, 30);
 
-        $tickets = $this->ticketQuery()
+        $builder = $this->ticketQuery()
+            ->with(['client', 'assignee'])
             ->search($query)
             ->when($input['status'] ?? null, fn ($q, $s) => $q->where('status', $s))
-            ->orderByDesc('created_at')
-            ->limit($limit)
-            ->get(['id', 'subject', 'status', 'priority', 'client_id', 'assignee_id', 'created_at']);
+            ->orderByDesc('created_at');
 
-        return $tickets->map(fn (Ticket $t) => [
-            'id' => $t->id,
-            'display_id' => $t->display_id,
-            'subject' => $t->subject,
-            'status' => $t->status->value,
-            'priority' => $t->priority->value,
-            'client' => $t->client?->name,
-            'assignee' => $t->assignee?->name,
-            'created_at' => $t->created_at?->toDateTimeString(),
-            'age' => $t->created_at?->diffForHumans(),
-        ])->toArray();
+        return $this->paginatedTicketList(
+            $builder,
+            $input,
+            ['id', 'subject', 'status', 'priority', 'client_id', 'assignee_id', 'created_at'],
+            fn (Ticket $t) => [
+                'id' => $t->id,
+                'display_id' => $t->display_id,
+                'subject' => $t->subject,
+                'status' => $t->status->value,
+                'priority' => $t->priority->value,
+                'client' => $t->client?->name,
+                'assignee' => $t->assignee?->name,
+                'created_at' => $t->created_at?->toDateTimeString(),
+                'age' => $t->created_at?->diffForHumans(),
+            ],
+        );
     }
 
     private function listMyTickets(array $input): array
@@ -340,10 +345,10 @@ class AssistantToolExecutor
             return ['error' => 'No user context'];
         }
 
-        $limit = min($input['limit'] ?? 20, 50);
         $openStatuses = ['new', 'in_progress', 'pending_client', 'pending_third_party'];
 
-        $tickets = $this->ticketQuery()
+        $builder = $this->ticketQuery()
+            ->with(['client'])
             ->where('assignee_id', $this->userId)
             ->when(
                 $input['status'] ?? null,
@@ -351,29 +356,31 @@ class AssistantToolExecutor
                 fn ($q) => $q->whereIn('status', $openStatuses)
             )
             ->orderByRaw($this->priorityOrderSql())
-            ->orderBy('created_at')
-            ->limit($limit)
-            ->get(['id', 'subject', 'status', 'priority', 'client_id', 'source', 'created_at']);
+            ->orderBy('created_at');
 
-        return $tickets->map(fn (Ticket $t) => [
-            'id' => $t->id,
-            'display_id' => $t->display_id,
-            'subject' => $t->subject,
-            'status' => $t->status->value,
-            'priority' => $t->priority->value,
-            'client' => $t->client?->name,
-            'source' => $t->source?->value,
-            'created_at' => $t->created_at?->toDateTimeString(),
-            'age' => $t->created_at?->diffForHumans(),
-        ])->toArray();
+        return $this->paginatedTicketList(
+            $builder,
+            $input,
+            ['id', 'subject', 'status', 'priority', 'client_id', 'source', 'created_at'],
+            fn (Ticket $t) => [
+                'id' => $t->id,
+                'display_id' => $t->display_id,
+                'subject' => $t->subject,
+                'status' => $t->status->value,
+                'priority' => $t->priority->value,
+                'client' => $t->client?->name,
+                'source' => $t->source?->value,
+                'created_at' => $t->created_at?->toDateTimeString(),
+                'age' => $t->created_at?->diffForHumans(),
+            ],
+        );
     }
 
     private function listOpenTickets(array $input): array
     {
-        $limit = min($input['limit'] ?? 20, 50);
         $openStatuses = ['new', 'in_progress', 'pending_client', 'pending_third_party'];
 
-        $query = $this->ticketQuery()->whereIn('status', $openStatuses);
+        $query = $this->ticketQuery()->with(['client', 'assignee'])->whereIn('status', $openStatuses);
 
         if ($input['assignee'] ?? null) {
             $query->whereHas('assignee', fn ($q) => $q->where('name', 'like', '%'.$input['assignee'].'%'));
@@ -411,23 +418,24 @@ class AssistantToolExecutor
             $query->orderByRaw($this->priorityOrderSql())->orderBy('created_at');
         }
 
-        $tickets = $query
-            ->limit($limit)
-            ->get(['id', 'subject', 'status', 'priority', 'client_id', 'assignee_id', 'source', 'created_at', 'updated_at']);
-
-        return $tickets->map(fn (Ticket $t) => [
-            'id' => $t->id,
-            'display_id' => $t->display_id,
-            'subject' => $t->subject,
-            'status' => $t->status->value,
-            'priority' => $t->priority->value,
-            'client' => $t->client?->name,
-            'assignee' => $t->assignee?->name,
-            'source' => $t->source?->value,
-            'created_at' => $t->created_at?->toDateTimeString(),
-            'updated_at' => $t->updated_at?->toDateTimeString(),
-            'age' => $t->created_at?->diffForHumans(),
-        ])->toArray();
+        return $this->paginatedTicketList(
+            $query,
+            $input,
+            ['id', 'subject', 'status', 'priority', 'client_id', 'assignee_id', 'source', 'created_at', 'updated_at'],
+            fn (Ticket $t) => [
+                'id' => $t->id,
+                'display_id' => $t->display_id,
+                'subject' => $t->subject,
+                'status' => $t->status->value,
+                'priority' => $t->priority->value,
+                'client' => $t->client?->name,
+                'assignee' => $t->assignee?->name,
+                'source' => $t->source?->value,
+                'created_at' => $t->created_at?->toDateTimeString(),
+                'updated_at' => $t->updated_at?->toDateTimeString(),
+                'age' => $t->created_at?->diffForHumans(),
+            ],
+        );
     }
 
     private function getTicketDetail(array $input): array
@@ -708,24 +716,26 @@ class AssistantToolExecutor
         }
 
         $query = $input['query'] ?? '';
-        $limit = min($input['limit'] ?? 10, 20);
 
-        $tickets = Ticket::where('client_id', $this->clientId)
+        $builder = Ticket::where('client_id', $this->clientId)
             ->search($query)
-            ->orderByDesc('created_at')
-            ->limit($limit)
-            ->get(['id', 'subject', 'status', 'priority', 'resolution', 'created_at', 'resolved_at']);
+            ->orderByDesc('created_at');
 
-        return $tickets->map(fn (Ticket $t) => [
-            'id' => $t->id,
-            'display_id' => $t->display_id,
-            'subject' => $t->subject,
-            'status' => $t->status->value,
-            'priority' => $t->priority->value,
-            'resolution' => $t->resolution ? mb_substr($t->resolution, 0, 500) : null,
-            'created_at' => $t->created_at?->toDateTimeString(),
-            'resolved_at' => $t->resolved_at?->toDateTimeString(),
-        ])->toArray();
+        return $this->paginatedTicketList(
+            $builder,
+            $input,
+            ['id', 'subject', 'status', 'priority', 'resolution', 'created_at', 'resolved_at'],
+            fn (Ticket $t) => [
+                'id' => $t->id,
+                'display_id' => $t->display_id,
+                'subject' => $t->subject,
+                'status' => $t->status->value,
+                'priority' => $t->priority->value,
+                'resolution' => $t->resolution ? mb_substr($t->resolution, 0, 500) : null,
+                'created_at' => $t->created_at?->toDateTimeString(),
+                'resolved_at' => $t->resolved_at?->toDateTimeString(),
+            ],
+        );
     }
 
     private function getTicketNotes(array $input): array

@@ -114,7 +114,11 @@ class AssistantToolDefinitions
                         ],
                         'limit' => [
                             'type' => 'integer',
-                            'description' => 'Max results (default 15, max 30)',
+                            'description' => 'Max results per page (default 20, max 100).',
+                        ],
+                        'offset' => [
+                            'type' => 'integer',
+                            'description' => 'Results to skip for paging (default 0). The result includes a pagination block (total, has_more) so you can page.',
                         ],
                     ],
                     'required' => ['query'],
@@ -133,7 +137,11 @@ class AssistantToolDefinitions
                         ],
                         'limit' => [
                             'type' => 'integer',
-                            'description' => 'Max results (default 20, max 50)',
+                            'description' => 'Max results per page (default 20, max 100).',
+                        ],
+                        'offset' => [
+                            'type' => 'integer',
+                            'description' => 'Results to skip for paging (default 0). The result includes a pagination block (total, has_more) so you can page.',
                         ],
                     ],
                     'required' => [],
@@ -151,7 +159,7 @@ class AssistantToolDefinitions
                         ],
                         'updated_since' => [
                             'type' => 'string',
-                            'description' => 'Only tickets last modified at or after this ISO-8601 timestamp (e.g. 2026-07-12T08:00:00Z). Returns them newest-touch first, so you can poll for new replies/changes without re-fetching every ticket. Capped at limit (max 50); if a wide window may exceed that, poll more often or narrow the window.',
+                            'description' => 'Only tickets last modified at or after this ISO-8601 timestamp (e.g. 2026-07-12T08:00:00Z). Returns them newest-touch first, so you can poll for new replies/changes without re-fetching every ticket. Capped at limit (max 100); if a wide window may exceed that, page with offset or narrow the window.',
                         ],
                         'priority' => [
                             'type' => 'string',
@@ -168,7 +176,11 @@ class AssistantToolDefinitions
                         ],
                         'limit' => [
                             'type' => 'integer',
-                            'description' => 'Max results (default 20, max 50)',
+                            'description' => 'Max results per page (default 20, max 100).',
+                        ],
+                        'offset' => [
+                            'type' => 'integer',
+                            'description' => 'Results to skip for paging (default 0). The result includes a pagination block (total, has_more) so you can page.',
                         ],
                     ],
                     'required' => [],
@@ -246,7 +258,11 @@ class AssistantToolDefinitions
                         ],
                         'limit' => [
                             'type' => 'integer',
-                            'description' => 'Max results to return (default 10, max 20)',
+                            'description' => 'Max results per page (default 20, max 100).',
+                        ],
+                        'offset' => [
+                            'type' => 'integer',
+                            'description' => 'Results to skip for paging (default 0). The result includes a pagination block (total, has_more) so you can page.',
                         ],
                     ],
                     'required' => ['query'],

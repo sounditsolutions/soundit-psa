@@ -310,7 +310,7 @@ class ProspectAiVisibilityTest extends TestCase
 
         $this->assertSame($ticket->id, $general->execute('get_ticket_detail', ['ticket_id' => $ticket->id])['id']);
         $this->assertTrue(
-            collect($general->execute('list_open_tickets', []))->pluck('id')->contains($ticket->id),
+            collect($general->execute('list_open_tickets', [])['tickets'])->pluck('id')->contains($ticket->id),
             'Prospect ticket missing from Chet open-ticket list.',
         );
         $this->assertTrue(
@@ -319,7 +319,7 @@ class ProspectAiVisibilityTest extends TestCase
         );
 
         $this->assertTrue(
-            collect($clientScoped->execute('search_tickets', ['query' => 'Shared tool keyword']))->pluck('id')->contains($ticket->id),
+            collect($clientScoped->execute('search_tickets', ['query' => 'Shared tool keyword'])['tickets'])->pluck('id')->contains($ticket->id),
             'Prospect ticket missing from client-scoped Chet search.',
         );
         $this->assertSame('Prospect note body', $clientScoped->execute('get_ticket_notes', ['ticket_id' => $ticket->id])[0]['body']);

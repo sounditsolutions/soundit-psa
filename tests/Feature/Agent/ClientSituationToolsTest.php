@@ -80,7 +80,7 @@ class ClientSituationToolsTest extends TestCase
         $this->assertIsArray($result);
         $this->assertArrayNotHasKey('error', $result);
 
-        $ids = array_column($result, 'id');
+        $ids = array_column($result['tickets'], 'id');
         $this->assertContains($mine->id, $ids, "The current client's sibling must be listed.");
         $this->assertNotContains($foreign->id, $ids, "A different client's ticket must never leak.");
     }
@@ -95,7 +95,7 @@ class ClientSituationToolsTest extends TestCase
 
         $result = $this->executor($current)->execute('list_client_tickets', ['status' => 'open']);
 
-        $ids = array_column($result, 'id');
+        $ids = array_column($result['tickets'], 'id');
         $this->assertNotContains($current->id, $ids, 'The current ticket must not list itself.');
     }
 
@@ -110,8 +110,8 @@ class ClientSituationToolsTest extends TestCase
         // NO 'query' param — this is exactly what search_tickets could not do.
         $result = $this->executor($current)->execute('list_client_tickets', ['status' => 'open']);
 
-        $this->assertNotEmpty($result);
-        $subjects = array_column($result, 'subject');
+        $this->assertNotEmpty($result['tickets']);
+        $subjects = array_column($result['tickets'], 'subject');
         $this->assertContains('Mailbox migration follow-up', $subjects);
     }
 
@@ -129,9 +129,9 @@ class ClientSituationToolsTest extends TestCase
 
         $result = $this->executor($current)->execute('list_client_tickets', ['status' => 'closed']);
 
-        $this->assertNotEmpty($result);
-        $this->assertArrayHasKey('resolution', $result[0], 'A closed row must carry a resolution field.');
-        $resolutions = array_column($result, 'resolution');
+        $this->assertNotEmpty($result['tickets']);
+        $this->assertArrayHasKey('resolution', $result['tickets'][0], 'A closed row must carry a resolution field.');
+        $resolutions = array_column($result['tickets'], 'resolution');
         $this->assertContains('Replaced the stale GlobalProtect profile and rebooted.', $resolutions);
     }
 
@@ -147,7 +147,7 @@ class ClientSituationToolsTest extends TestCase
 
         $result = $this->executor($current)->execute('list_client_tickets', ['status' => 'closed']);
 
-        $resolutions = array_column($result, 'resolution');
+        $resolutions = array_column($result['tickets'], 'resolution');
         $this->assertContains('[withheld]', $resolutions, 'An injection phrase in the resolution must be withheld.');
         foreach ($resolutions as $r) {
             $this->assertStringNotContainsString('ignore all previous instructions', (string) $r);
@@ -164,8 +164,8 @@ class ClientSituationToolsTest extends TestCase
 
         $result = $this->executor($current)->execute('list_client_tickets', ['status' => 'open']);
 
-        $this->assertNotEmpty($result);
-        $this->assertArrayNotHasKey('resolution', $result[0], 'Open rows must not include resolution (closed-only).');
+        $this->assertNotEmpty($result['tickets']);
+        $this->assertArrayNotHasKey('resolution', $result['tickets'][0], 'Open rows must not include resolution (closed-only).');
     }
 
     // ── 4. status='pending' is exactly the pending pair ───────────────────────
@@ -182,16 +182,16 @@ class ClientSituationToolsTest extends TestCase
 
         $result = $this->executor($current)->execute('list_client_tickets', ['status' => 'pending']);
 
-        $ids = array_column($result, 'id');
+        $ids = array_column($result['tickets'], 'id');
         $this->assertContains($pc->id, $ids);
         $this->assertContains($ptp->id, $ids);
         $this->assertNotContains($new->id, $ids, 'New is not pending.');
         $this->assertNotContains($inProgress->id, $ids, 'InProgress is not pending.');
     }
 
-    // ── 5. limit hard-capped at 20 ────────────────────────────────────────────
+    // ── 5. limit hard-capped at the uniform ticket-list ceiling (100) ─────────
 
-    public function test_limit_is_hard_capped_at_twenty(): void
+    public function test_limit_is_hard_capped_at_one_hundred(): void
     {
         $client = Client::factory()->create();
         $current = $this->current($client);
@@ -200,11 +200,14 @@ class ClientSituationToolsTest extends TestCase
             $this->sibling($client, TicketStatus::New);
         }
 
-        $result = $this->executor($current)->execute('list_client_tickets', ['status' => 'open', 'limit' => 100]);
+        // The uniform ticket-list cap is 100 (was 20); an over-cap request clamps
+        // to 100 rather than running unbounded (psa-ti6n9).
+        $result = $this->executor($current)->execute('list_client_tickets', ['status' => 'open', 'limit' => 5000]);
 
-        $this->assertIsArray($result);
-        $this->assertLessThanOrEqual(20, count($result), 'limit must be hard-capped at 20.');
-        $this->assertCount(20, $result);
+        $this->assertSame(100, $result['pagination']['limit'], 'limit must be hard-capped at 100.');
+        // All 25 open siblings fit inside the clamped page.
+        $this->assertCount(25, $result['tickets']);
+        $this->assertSame(25, $result['pagination']['total']);
     }
 
     // ── 6. Default-deny: an unknown tool name ─────────────────────────────────

@@ -99,7 +99,11 @@ class TriageToolDefinitions
                         ],
                         'limit' => [
                             'type' => 'integer',
-                            'description' => 'Max results to return (default 20, max 20).',
+                            'description' => 'Max results per page (default 20, max 100).',
+                        ],
+                        'offset' => [
+                            'type' => 'integer',
+                            'description' => 'Results to skip for paging (default 0). The result includes a pagination block (total, has_more) so you can page.',
                         ],
                     ],
                     'required' => [],
@@ -277,7 +281,11 @@ class TriageToolDefinitions
                         ],
                         'limit' => [
                             'type' => 'integer',
-                            'description' => 'Max results to return (default 10, max 20)',
+                            'description' => 'Max results per page (default 20, max 100).',
+                        ],
+                        'offset' => [
+                            'type' => 'integer',
+                            'description' => 'Results to skip for paging (default 0). The result includes a pagination block (total, has_more) so you can page.',
                         ],
                     ],
                     'required' => ['query'],

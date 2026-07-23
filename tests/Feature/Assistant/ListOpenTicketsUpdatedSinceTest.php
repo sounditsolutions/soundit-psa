@@ -41,7 +41,7 @@ class ListOpenTicketsUpdatedSinceTest extends TestCase
         $result = (new AssistantToolExecutor(clientId: $client->id))
             ->execute('list_open_tickets', ['updated_since' => now()->subMinutes(30)->toIso8601String()]);
 
-        $ids = array_column($result, 'id');
+        $ids = array_column($result['tickets'], 'id');
         $this->assertNotContains($stale->id, $ids, 'a ticket last touched before the cutoff is excluded');
         $this->assertContains($recent->id, $ids);
         $this->assertContains($freshest->id, $ids);
@@ -50,8 +50,8 @@ class ListOpenTicketsUpdatedSinceTest extends TestCase
         $this->assertSame([$freshest->id, $recent->id], $ids);
 
         // updated_at is surfaced so the agent can see the last-touch time.
-        $this->assertArrayHasKey('updated_at', $result[0]);
-        $this->assertNotNull($result[0]['updated_at']);
+        $this->assertArrayHasKey('updated_at', $result['tickets'][0]);
+        $this->assertNotNull($result['tickets'][0]['updated_at']);
     }
 
     public function test_omitting_updated_since_preserves_the_default_unfiltered_listing(): void
@@ -63,7 +63,7 @@ class ListOpenTicketsUpdatedSinceTest extends TestCase
         $result = (new AssistantToolExecutor(clientId: $client->id))
             ->execute('list_open_tickets', []);
 
-        $this->assertCount(2, $result, 'without updated_since, all open tickets are returned');
+        $this->assertCount(2, $result['tickets'], 'without updated_since, all open tickets are returned');
     }
 
     public function test_unparseable_updated_since_returns_a_clear_error(): void

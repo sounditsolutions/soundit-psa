@@ -354,8 +354,8 @@ class ClientSituationIntegrationTest extends TestCase
         // ── (b) all three drill-down tools on the FIRST client's ticket ──
         $tickets = $this->executor($current)->execute('list_client_tickets', ['status' => 'all']);
         $this->assertArrayNotHasKey('error', $tickets);
-        $ticketIds = array_column($tickets, 'id');
-        $ticketSubjects = array_column($tickets, 'subject');
+        $ticketIds = array_column($tickets['tickets'], 'id');
+        $ticketSubjects = array_column($tickets['tickets'], 'subject');
         $this->assertContains($mineOpen->id, $ticketIds);
         $this->assertNotContains($otherOpen->id, $ticketIds, "list_client_tickets must not leak another client's ticket.");
         $this->assertNotContains($otherClosed->id, $ticketIds);

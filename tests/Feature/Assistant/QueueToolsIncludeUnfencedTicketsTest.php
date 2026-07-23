@@ -83,7 +83,7 @@ class QueueToolsIncludeUnfencedTicketsTest extends TestCase
         [$control, $nullClient, $inactive, $deleted] = $this->buildProbeQueue();
 
         $result = (new AssistantToolExecutor)->execute('list_open_tickets', []);
-        $ids = array_column($result, 'id');
+        $ids = array_column($result['tickets'], 'id');
 
         $this->assertContains($control->id, $ids);
         $this->assertContains($nullClient->id, $ids, 'unresolved-intake (null client) ticket must appear');
@@ -96,7 +96,7 @@ class QueueToolsIncludeUnfencedTicketsTest extends TestCase
         [$control, $nullClient, $inactive, $deleted] = $this->buildProbeQueue();
 
         $result = (new AssistantToolExecutor)->execute('search_all_tickets', ['query' => self::PROBE, 'limit' => 30]);
-        $ids = array_column($result, 'id');
+        $ids = array_column($result['tickets'], 'id');
 
         $this->assertContains($control->id, $ids);
         $this->assertContains($nullClient->id, $ids, 'search across "all tickets in the PSA" must include the null-client intake ticket');
@@ -110,7 +110,7 @@ class QueueToolsIncludeUnfencedTicketsTest extends TestCase
         [$control, $nullClient, $inactive, $deleted] = $this->buildProbeQueue(assigneeId: $user->id);
 
         $result = (new AssistantToolExecutor(userId: $user->id))->execute('list_my_tickets', []);
-        $ids = array_column($result, 'id');
+        $ids = array_column($result['tickets'], 'id');
 
         $this->assertContains($control->id, $ids);
         $this->assertContains($nullClient->id, $ids, 'a ticket assigned to me must appear even with no client');

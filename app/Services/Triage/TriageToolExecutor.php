@@ -24,6 +24,7 @@ use App\Services\Tactical\TacticalClient;
 use App\Services\Tactical\TacticalFieldMap;
 use App\Services\Wiki\HandlesWikiTools;
 use App\Support\ControlDConfig;
+use App\Support\PaginatesTicketLists;
 use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\DB;
@@ -37,6 +38,7 @@ class TriageToolExecutor
 {
     use HandlesCippTools;
     use HandlesWikiTools;
+    use PaginatesTicketLists;
 
     private Ticket $ticket;
 
@@ -162,26 +164,28 @@ class TriageToolExecutor
     private function searchTickets(array $input): array
     {
         $query = $input['query'] ?? '';
-        $limit = min($input['limit'] ?? 10, 20);
 
         // CLIENT-SCOPED: only search tickets for this client
-        $tickets = Ticket::where('client_id', $this->clientId)
+        $builder = Ticket::where('client_id', $this->clientId)
             ->search($query)
             ->where('id', '!=', $this->ticket->id) // Exclude current ticket
-            ->orderByDesc('created_at')
-            ->limit($limit)
-            ->get(['id', 'subject', 'status', 'priority', 'resolution', 'created_at', 'resolved_at']);
+            ->orderByDesc('created_at');
 
-        return $tickets->map(fn (Ticket $t) => [
-            'id' => $t->id,
-            'display_id' => $t->display_id,
-            'subject' => $t->subject,
-            'status' => $t->status->value,
-            'priority' => $t->priority->value,
-            'resolution' => $t->resolution ? mb_substr($t->resolution, 0, 500) : null,
-            'created_at' => $t->created_at?->toDateTimeString(),
-            'resolved_at' => $t->resolved_at?->toDateTimeString(),
-        ])->toArray();
+        return $this->paginatedTicketList(
+            $builder,
+            $input,
+            ['id', 'subject', 'status', 'priority', 'resolution', 'created_at', 'resolved_at'],
+            fn (Ticket $t) => [
+                'id' => $t->id,
+                'display_id' => $t->display_id,
+                'subject' => $t->subject,
+                'status' => $t->status->value,
+                'priority' => $t->priority->value,
+                'resolution' => $t->resolution ? mb_substr($t->resolution, 0, 500) : null,
+                'created_at' => $t->created_at?->toDateTimeString(),
+                'resolved_at' => $t->resolved_at?->toDateTimeString(),
+            ],
+        );
     }
 
     /**
@@ -201,7 +205,6 @@ class TriageToolExecutor
     {
         try {
             $status = $input['status'] ?? 'open';
-            $limit = max(1, min((int) ($input['limit'] ?? 20), 20));
 
             $query = Ticket::where('client_id', $this->clientId)
                 ->where('id', '!=', $this->ticket->id);
@@ -215,28 +218,29 @@ class TriageToolExecutor
                 default => $query->open(), // 'open' and any unexpected value → the safe default
             };
 
-            $tickets = $query->orderByDesc('opened_at')
-                ->limit($limit)
-                ->get(['id', 'halo_id', 'subject', 'status', 'priority', 'opened_at', 'resolution']);
-
             $includeResolution = $status === 'closed';
 
-            return $tickets->map(function (Ticket $t) use ($includeResolution): array {
-                $row = [
-                    'id' => $t->id,
-                    'display_id' => $t->display_id,
-                    'subject' => ClientSituationContextBuilder::scrub($t->subject, 120),
-                    'status' => $t->status->value,
-                    'priority' => $t->priority->value,
-                    'opened_at' => $t->opened_at?->toIso8601String(),
-                ];
+            return $this->paginatedTicketList(
+                $query->orderByDesc('opened_at'),
+                $input,
+                ['id', 'halo_id', 'subject', 'status', 'priority', 'opened_at', 'resolution'],
+                function (Ticket $t) use ($includeResolution): array {
+                    $row = [
+                        'id' => $t->id,
+                        'display_id' => $t->display_id,
+                        'subject' => ClientSituationContextBuilder::scrub($t->subject, 120),
+                        'status' => $t->status->value,
+                        'priority' => $t->priority->value,
+                        'opened_at' => $t->opened_at?->toIso8601String(),
+                    ];
 
-                if ($includeResolution) {
-                    $row['resolution'] = ClientSituationContextBuilder::scrub($t->resolution, 600);
-                }
+                    if ($includeResolution) {
+                        $row['resolution'] = ClientSituationContextBuilder::scrub($t->resolution, 600);
+                    }
 
-                return $row;
-            })->toArray();
+                    return $row;
+                },
+            );
         } catch (\Throwable) {
             return ['error' => 'lookup failed'];
         }
