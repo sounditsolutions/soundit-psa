@@ -4,9 +4,11 @@ namespace App\Services\Chet;
 
 use App\Services\Huntress\HuntressReadOnlyToolset;
 use App\Services\Tactical\TacticalReadOnlyToolset;
+use App\Services\Unifi\UnifiReadOnlyToolset;
 use App\Support\HuntressConfig;
 use App\Support\TacticalConfig;
 use App\Support\TeamsBotConfig;
+use App\Support\UnifiConfig;
 
 class ChetDataSurfaceTools
 {
@@ -26,15 +28,27 @@ class ChetDataSurfaceTools
             $tools = array_merge($tools, HuntressReadOnlyToolset::generalDefinitions());
         }
 
+        // UniFi network telemetry ships dormant, and OFF=OFF: isAvailable() is the
+        // master switch AND the key, so switching UniFi off withdraws these tools.
+        if (UnifiConfig::isAvailable()) {
+            $tools = array_merge($tools, UnifiReadOnlyToolset::generalDefinitions());
+        }
+
         return $tools;
     }
 
     /** @return array<int, array<string, mixed>> */
     public static function clientTools(): array
     {
-        return TacticalConfig::isConfigured()
+        $tools = TacticalConfig::isConfigured()
             ? TacticalReadOnlyToolset::clientDefinitions()
             : [];
+
+        if (UnifiConfig::isAvailable()) {
+            $tools = array_merge($tools, UnifiReadOnlyToolset::clientDefinitions());
+        }
+
+        return $tools;
     }
 
     /** @return array<int, array<string, mixed>> */
@@ -51,6 +65,7 @@ class ChetDataSurfaceTools
         return array_merge(
             TacticalReadOnlyToolset::definitions(),
             HuntressReadOnlyToolset::definitions(),
+            UnifiReadOnlyToolset::definitions(),
         );
     }
 
@@ -58,12 +73,14 @@ class ChetDataSurfaceTools
     {
         return TeamsChatReadToolset::handles($toolName)
             || TacticalReadOnlyToolset::handles($toolName)
-            || HuntressReadOnlyToolset::handles($toolName);
+            || HuntressReadOnlyToolset::handles($toolName)
+            || UnifiReadOnlyToolset::handles($toolName);
     }
 
     public static function requiresClient(string $toolName): bool
     {
         return TacticalReadOnlyToolset::requiresClient($toolName)
-            || HuntressReadOnlyToolset::requiresClient($toolName);
+            || HuntressReadOnlyToolset::requiresClient($toolName)
+            || UnifiReadOnlyToolset::requiresClient($toolName);
     }
 }

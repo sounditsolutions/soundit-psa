@@ -1013,6 +1013,50 @@ Receive security incident reports from Huntress as tickets via ConnectWise-compa
 - Assets are linked by hostname match when available
 - Post-remediation updates set tickets to "Resolved" (not "Closed") for human verification
 
+### UniFi (Network Telemetry — read-only)
+
+Give the AI technician read-only visibility into client network and WAN/ISP state, so an
+internet or access-point fault can be evidenced without opening the UniFi console by hand.
+
+Uses the **UniFi Site Manager API** (`https://api.ui.com`) — one API key covers every
+console the UI account administers, so no per-site VPN or network reachability is needed.
+
+1. Sign in at [unifi.ui.com](https://unifi.ui.com) with the account that administers your
+   clients' consoles, and create an API key (**Settings > Admins & Users >** your admin
+   **> Control Plane API Key**)
+2. Settings > Integrations > UniFi — paste the **API Key** and switch UniFi **on**
+   (`unifi_enabled`, off by default)
+3. Map each client to its UniFi site — `unifi_site_id`, plus `unifi_host_id` for its
+   console. The `unifi_list_sites` MCP tool lists every available site annotated with its
+   mapped PSA client, which is the easiest way to find the ids.
+
+**Settings keys:** `unifi_api_key` (encrypted), `unifi_enabled`, `unifi_base_url`
+(optional override, defaults to `https://api.ui.com`).
+
+**MCP tools** (all read-only, and **ungranted by default** — grant them per token under
+Settings > MCP Tokens):
+
+| Tool | Scope | Returns |
+|------|-------|---------|
+| `unifi_list_sites` | Account-wide | Site metadata + mapped PSA client (or null). Metadata only — no telemetry |
+| `unifi_get_site_health` | Mapped client | ISP name, WAN uptime %, open internet issues, gateway model, device counts |
+| `unifi_list_devices` | Mapped client | Gateways/switches/APs with up-down status, model, IP, firmware |
+| `unifi_get_isp_metrics` | Mapped client | WAN latency, packet loss, downtime and throughput per 5m or 1h period |
+
+**Notes:**
+- **Read-only by design.** No write, config or restart capability is implemented. The
+  vendor's generic console passthrough endpoint is deliberately not exposed.
+- **OFF=OFF.** Switching `unifi_enabled` off withdraws the tools from the AI surface
+  entirely — it does not merely stop background work.
+- **Telemetry is mapped-sites-only.** Health, device and ISP data are returned only for
+  clients mapped to a UniFi site; site *metadata* is account-wide so unmapped sites can
+  be discovered and mapped.
+- Device state is reported per **console**, not per site — UniFi does not tag devices with
+  a site. If one console is mapped to more than one PSA client, `unifi_list_devices`
+  refuses rather than attributing another client's hardware.
+- ISP metric retention is set by the vendor: 5-minute samples for at least 24 hours,
+  1-hour samples for at least 30 days.
+
 ### Servosity (Backup Licensing)
 
 Syncs backup account counts (M365 mailboxes, DR servers, etc.) from Servosity for license billing.

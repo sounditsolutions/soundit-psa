@@ -159,15 +159,29 @@ class TicketCategoryTest extends TestCase
                 '--force' => true,
             ])->assertSuccessful();
 
-            // Rollback runs newest-first; the taxonomy family sorts last, so
-            // --step=4 rolls back 000004 (add category_source), then 000003
-            // (create change logs), then 000002 (add category_id), then 000001
-            // (create ticket_categories). If you add a taxonomy migration,
-            // extend the step count AND the assertions below — this guard
-            // exists to prove the whole family unwinds cleanly.
+            // Rollback runs newest-first and must unwind the whole taxonomy family:
+            // 000004 (add category_source), 000003 (create change logs), 000002 (add
+            // category_id), 000001 (create ticket_categories).
+            //
+            // The step count is DERIVED, not hard-coded. It used to be a literal 4 on
+            // the assumption that the taxonomy family sorts last — but that made this
+            // guard fail for the next unrelated migration anyone added after it (the
+            // first was 2026_07_23_230000_add_unifi_mapping_to_clients), reporting
+            // "ticket_categories dropped on rollback" for a change that never touched
+            // taxonomy. Counting from the first taxonomy migration keeps the guard
+            // honest without making every later migration edit this file.
+            $ran = DB::connection('taxonomy_rollback_sqlite')
+                ->table('migrations')
+                ->orderBy('id')
+                ->pluck('migration')
+                ->all();
+
+            $firstTaxonomy = array_search('2026_07_22_000001_create_ticket_categories_table', $ran, true);
+            $this->assertNotFalse($firstTaxonomy, 'the taxonomy migrations did not run');
+
             $this->artisan('migrate:rollback', [
                 '--database' => 'taxonomy_rollback_sqlite',
-                '--step' => 4,
+                '--step' => count($ran) - (int) $firstTaxonomy,
                 '--force' => true,
             ])->assertSuccessful();
 

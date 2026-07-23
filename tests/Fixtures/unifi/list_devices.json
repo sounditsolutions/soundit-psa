@@ -1,0 +1,41 @@
+{
+  "data": [
+    {
+      "hostId": "900A6F00301100000000074A6BA90000000007A3387E0000000063EC9853:123456789",
+      "hostName": "unifi.yourdomain.com",
+      "devices": [
+        {
+          "id": "F4E2C6C23F13",
+          "mac": "F4E2C6C23F13",
+          "name": "unifi.yourdomain.com",
+          "model": "UDM SE",
+          "shortname": "UDMPROSE",
+          "ip": "192.168.1.226",
+          "productLine": "network",
+          "status": "online",
+          "version": "4.1.13",
+          "firmwareStatus": "upToDate",
+          "updateAvailable": null,
+          "isConsole": true,
+          "isManaged": true,
+          "startupTime": "2024-06-19T13:41:43Z",
+          "adoptionTime": null,
+          "note": null,
+          "uidb": {
+            "guid": "0fd8c390-a0e8-4cb2-b93a-7b3051c83c46",
+            "id": "e85485da-54c3-4906-8f19-3cef4116ff02",
+            "images": {
+              "default": "3008400039c483c496f4ad820242c447",
+              "nopadding": "67b553529d0e523ca9dd4826076c5f3f",
+              "topology": "8371ecdda1f00f1636a2eefadf0d7d47"
+            }
+          }
+        }
+      ],
+      "updatedAt": "2026-06-15T07:21:27Z"
+    }
+  ],
+  "httpStatusCode": 200,
+  "traceId": "a7dc15e0eb4527142d7823515b15f87d",
+  "nextToken": "ba8e384e-3308-4236-b344-7357657351ca"
+}

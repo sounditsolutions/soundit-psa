@@ -32,6 +32,8 @@ class Client extends Model
         'cipp_compliance_policies',
         'cipp_mail_security_synced_at',
         'huntress_organization_id',
+        'unifi_site_id',
+        'unifi_host_id',
         'servosity_company_id',
         'controld_org_id',
         'zorus_customer_id',

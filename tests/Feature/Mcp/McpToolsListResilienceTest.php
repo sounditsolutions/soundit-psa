@@ -45,7 +45,19 @@ class McpToolsListResilienceTest extends TestCase
 
         $this->assertLessThanOrEqual(3, $cippQueries, $sql);
 
-        $this->assertLessThanOrEqual(70, count($queries), $sql);
+        // Coarse total-query backstop behind the precise CIPP guard above. It is a
+        // CONSTANT budget, not a per-tool one — this list is built from a 214-tool
+        // dynamic catalog, so anything that scales with catalog size blows past it
+        // immediately rather than nudging it.
+        //
+        // Raised 70 -> 72 for the UniFi read surface (psa-1ynqc): every vendor config
+        // helper reads its settings uncached, and ChetDataSurfaceTools consults
+        // UnifiConfig::isAvailable() once in generalTools() and once in clientTools().
+        // That is +2 flat and stays +2 whatever the catalog size — verified by this
+        // test still passing against 214 tools. Only ever raise this for a similarly
+        // constant, understood cost; a jump that tracks catalog size is the N+1 this
+        // guard exists to catch.
+        $this->assertLessThanOrEqual(72, count($queries), $sql);
     }
 
     public function test_tools_list_repairs_dynamic_cipp_schema_before_publishing(): void

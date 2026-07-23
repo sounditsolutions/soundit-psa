@@ -4,6 +4,7 @@ namespace App\Services\Chet;
 
 use App\Services\Huntress\HuntressReadOnlyToolset;
 use App\Services\Tactical\TacticalReadOnlyToolset;
+use App\Services\Unifi\UnifiReadOnlyToolset;
 
 class ChetDataSurfaceToolExecutor
 {
@@ -19,6 +20,14 @@ class ChetDataSurfaceToolExecutor
 
         if (HuntressReadOnlyToolset::handles($toolName)) {
             return app(HuntressReadOnlyToolset::class)->execute($toolName, $input, $clientId);
+        }
+
+        if (UnifiReadOnlyToolset::handles($toolName)) {
+            if (UnifiReadOnlyToolset::requiresClient($toolName) && $clientId === null) {
+                return ['error' => 'client_id is required for '.$toolName.'.'];
+            }
+
+            return app(UnifiReadOnlyToolset::class)->execute($toolName, $input, $clientId);
         }
 
         if (TeamsChatReadToolset::handles($toolName)) {
