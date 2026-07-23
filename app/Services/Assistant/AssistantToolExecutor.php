@@ -17,6 +17,7 @@ use App\Models\Invoice;
 use App\Models\InvoiceLine;
 use App\Models\Person;
 use App\Models\PhoneCall;
+use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Models\TicketCategory;
 use App\Models\TicketNote;
@@ -26,6 +27,7 @@ use App\Services\Cipp\HandlesCippTools;
 use App\Services\Level\LevelClient;
 use App\Services\Mesh\MeshClient;
 use App\Services\Ninja\NinjaClient;
+use App\Services\Technician\Cockpit\CockpitQuery;
 use App\Services\TicketService;
 use App\Services\Wiki\HandlesWikiTools;
 use App\Services\Wiki\WikiAddFactTool;
@@ -159,6 +161,7 @@ class AssistantToolExecutor
             'get_phone_call' => [ToolEffect::Read, static fn (self $x, array $in) => $x->getPhoneCall($in)],
             'list_invoices' => [ToolEffect::Read, static fn (self $x, array $in) => $x->listInvoices($in)],
             'get_invoice' => [ToolEffect::Read, static fn (self $x, array $in) => $x->getInvoice($in)],
+            'get_staged_action_status' => [ToolEffect::Read, static fn (self $x, array $in) => $x->getStagedActionStatus($in)],
 
             // NinjaRMM tools
             'ninja_search_devices' => [ToolEffect::Read, static fn (self $x, array $in) => $x->ninjaSearchDevices($in)],
@@ -1558,6 +1561,74 @@ class AssistantToolExecutor
                 'prepaid_time_minutes' => $line->prepaid_time_minutes,
                 'quantity_source' => $line->quantity_source,
             ])->toArray(),
+        ];
+    }
+
+    /**
+     * psa-gq7by: read-only visibility over the staged/held action lane, so a
+     * caller can see what it proposed that a human has not decided yet instead
+     * of guessing or re-proposing.
+     *
+     * PENDING is CockpitQuery::PENDING_STATES — the SAME set behind the cockpit
+     * badge — so this answer can never drift from what the human is looking at.
+     *
+     * Metadata ONLY: proposed_content is client-facing draft text that belongs in
+     * the cockpit approval UI, not in a status read, so it is never emitted.
+     * pending_total is counted inside the caller's own scope (not globally), so a
+     * client-fenced caller learns nothing about other clients' queues.
+     */
+    private function getStagedActionStatus(array $input): array
+    {
+        $scoped = TechnicianRun::query()->whereIn('state', CockpitQuery::PENDING_STATES);
+
+        // client_id is the constructor-derived scope, never a raw $input argument.
+        if ($this->clientId) {
+            $scoped->where('client_id', $this->clientId);
+        }
+
+        $pendingTotal = (clone $scoped)->count();
+
+        if (($state = $input['state'] ?? null) !== null) {
+            if (! in_array($state, CockpitQuery::PENDING_STATES, true)) {
+                return ['error' => 'state must be one of: '.implode(', ', CockpitQuery::PENDING_STATES)];
+            }
+            $scoped->where('state', $state);
+        }
+
+        if ($actionType = $input['action_type'] ?? null) {
+            $scoped->where('action_type', (string) $actionType);
+        }
+
+        if ($ticketId = $input['ticket_id'] ?? null) {
+            $scoped->where('ticket_id', (int) $ticketId);
+        }
+
+        $limit = max(1, min((int) ($input['limit'] ?? 25), 50));
+
+        $rows = $scoped->with(['ticket:id,subject', 'client:id,name'])
+            ->orderBy('created_at')
+            ->limit($limit)
+            ->get()
+            ->map(fn (TechnicianRun $run) => [
+                'id' => $run->id,
+                'action_type' => $run->action_type,
+                'state' => $run->state->value,
+                'ticket_id' => $run->ticket_id,
+                'ticket_subject' => $run->ticket?->subject,
+                'client_id' => $run->client_id,
+                'client' => $run->client?->name,
+                'confidence' => $run->confidence,
+                'drafted_by' => $run->drafterDisplayName(),
+                'created_at' => $run->created_at?->toIso8601String(),
+                // Only meaningful for the offline-queue lane; null elsewhere.
+                'expires_at' => $run->expires_at?->toIso8601String(),
+                'coalesce_count' => $run->coalesce_count,
+            ])->toArray();
+
+        return [
+            'pending_total' => $pendingTotal,
+            'count' => count($rows),
+            'staged_actions' => $rows,
         ];
     }
 

@@ -943,6 +943,41 @@ class McpToolRegistry
             self::getPhoneCallTool(),
             self::listInvoicesTool(),
             self::getInvoiceTool(),
+            self::getStagedActionStatusTool(),
+        ];
+    }
+
+    /**
+     * psa-gq7by: read-only visibility over the staged/held action lane, so a
+     * caller can see what it has proposed that is still waiting on a human
+     * decision instead of guessing or re-proposing. Metadata only — the drafted
+     * body stays in the approval UI.
+     *
+     * @return array<string, mixed>
+     */
+    public static function getStagedActionStatusTool(): array
+    {
+        return [
+            'name' => 'get_staged_action_status',
+            'description' => 'List staged/held actions that are still awaiting a human decision, with their current state. Read-only visibility over the approval queue: what was proposed, on which ticket, and whether it is awaiting approval, flagged, queued for an offline device, or expired and needing re-confirmation. Returns metadata only, never the drafted message body. Filter by state, action_type, ticket_id, or client_id.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'state' => [
+                        'type' => 'string',
+                        'enum' => ['awaiting_approval', 'flagged', 'queued_offline', 'expired'],
+                        'description' => 'Filter to one pending state. Omit for every pending state.',
+                    ],
+                    'action_type' => [
+                        'type' => 'string',
+                        'description' => 'Filter by action type, e.g. propose_close, stage_email, flag_attention, tactical_stage_reboot.',
+                    ],
+                    'ticket_id' => ['type' => 'integer', 'description' => 'Only staged actions on this ticket.'],
+                    'client_id' => ['type' => 'integer', 'description' => 'Optional: scope to one client. Omit for the cross-client queue.'],
+                    'limit' => ['type' => 'integer', 'description' => 'Max rows (default 25, cap 50).'],
+                ],
+                'required' => [],
+            ],
         ];
     }
 
