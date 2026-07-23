@@ -31,9 +31,14 @@ use Illuminate\Support\Facades\Log;
  *     site, each tagged {hostId, siteId}. We filter to the caller's site ourselves;
  *     handing the response back unfiltered would leak every other client's WAN data.
  *  2. GET /v1/devices is grouped by HOST and carries NO siteId anywhere. A device is
- *     therefore only attributable to a client through its console. Where one console
- *     serves several mapped clients that attribution does not exist upstream, so
- *     unifi_list_devices REFUSES instead of guessing.
+ *     therefore only attributable to a client through its console, and ONLY when that
+ *     console serves exactly ONE UniFi site. unifi_list_devices proves that upstream
+ *     (siteIdsOnHost) before returning anything and REFUSES otherwise.
+ *     The test that matters: counting how many PSA CLIENTS share the console is NOT
+ *     sufficient — a console carrying two UniFi sites where only one is mapped passes
+ *     that check, and every device on the console would then be returned under the
+ *     mapped client. The question is how many SITES the console serves, not how many
+ *     of them we happen to have mapped. (Caught in review as psa-51mhv R1.)
  *
  * READ-ONLY. The spec also exposes /v1/connector/consoles/{id}/*path — a generic
  * passthrough to a console's local Network API supporting POST/PUT/PATCH/DELETE. It is
@@ -54,6 +59,16 @@ class UnifiReadOnlyToolset
 
     /** Bounds the page walk when locating a client's site by id. */
     private const MAX_SITE_LOOKUP_PAGES = 20;
+
+    /**
+     * Durations the vendor documents per interval, first entry = default. 5-minute
+     * samples are retained at least 24h; 1-hour samples at least 30 days. Source:
+     * the `duration` parameter description in the Site Manager OpenAPI spec.
+     */
+    private const DURATIONS_BY_TYPE = [
+        '5m' => ['24h'],
+        '1h' => ['7d', '30d'],
+    ];
 
     public function __construct(
         private readonly ChetDataSurfaceTextSanitizer $textSanitizer,
@@ -284,19 +299,36 @@ class UnifiReadOnlyToolset
             return ['error' => 'That UniFi console is mapped to more than one PSA client ('.implode(', ', $sharing).') and UniFi does not report a site for each device, so devices cannot be attributed to a single client. Map each client to its own console, or read device state in the UniFi UI.'];
         }
 
+        // THE ACTUAL BOUNDARY: how many UniFi SITES this console serves — not how many
+        // of them we happen to have mapped. /v1/devices is host-grained with no siteId
+        // on any row, so devices are attributable to one client only when the console
+        // serves exactly one site. The PSA-mapping check above is a weaker signal: a
+        // console with two sites where only ONE is mapped passes it, and we would then
+        // return the unmapped site's hardware under this client. Prove uniqueness
+        // upstream and fail closed on anything else.
         try {
-            $response = $this->client()->listDevices();
-            $groups = $this->rows($response);
+            $siteIds = $this->siteIdsOnHost($hostId);
         } catch (\Throwable $e) {
             return $this->apiError($e);
         }
 
-        // Filter to this console client-side. The upstream `hostIds[]` query parameter
-        // is deliberately not used: scoping we perform ourselves is scoping we can test.
-        $groups = array_values(array_filter(
-            $groups,
-            fn ($group) => ($group['hostId'] ?? null) === $hostId,
-        ));
+        if (count($siteIds) === 0) {
+            return ['error' => "No UniFi site was found on the console mapped to {$client->name} (unifi_host_id). Verify the console mapping — device attribution cannot be confirmed without it."];
+        }
+
+        if (count($siteIds) > 1) {
+            return ['error' => 'That UniFi console serves more than one UniFi site ('.count($siteIds).'), and UniFi does not report a site for each device, so devices cannot be attributed to a single client. Read device state in the UniFi UI, or split the sites across separate consoles.'];
+        }
+
+        if ($siteIds[0] !== $client->unifi_site_id) {
+            return ['error' => "{$client->name} is mapped to site {$client->unifi_site_id}, but its mapped console serves a different site ({$siteIds[0]}). Correct the unifi_site_id / unifi_host_id mapping before reading devices."];
+        }
+
+        try {
+            $groups = $this->deviceGroupsForHost($hostId);
+        } catch (\Throwable $e) {
+            return $this->apiError($e);
+        }
 
         $devices = $this->client()->flattenDevices($groups);
 
@@ -358,17 +390,42 @@ class UnifiReadOnlyToolset
             return ['error' => "Unsupported interval type '{$type}'. UniFi reports ISP metrics as '5m' (retained at least 24h) or '1h' (retained at least 30 days)."];
         }
 
-        $params = [];
+        // The vendor's time-window contract is enforced HERE, not left to prose in the
+        // schema. Forwarding a bad combination just earns a vendor error that an agent
+        // under incident pressure then retries; a crisp local refusal naming the
+        // accepted shapes is cheaper and actionable (UX review psa-zsn8p R1).
         $begin = trim((string) ($input['begin_timestamp'] ?? ''));
         $end = trim((string) ($input['end_timestamp'] ?? ''));
+        $duration = trim((string) ($input['duration'] ?? ''));
+        $hasExplicitWindow = $begin !== '' || $end !== '';
 
-        if ($begin !== '' && $end !== '') {
-            // The vendor documents duration and begin/end as mutually exclusive.
+        if ($hasExplicitWindow && $duration !== '') {
+            return ['error' => 'duration and begin_timestamp/end_timestamp are mutually exclusive — pass one or the other. Accepted shapes: type=5m with duration=24h; type=1h with duration=7d or 30d; or begin_timestamp+end_timestamp (RFC3339) with duration omitted.'];
+        }
+
+        if ($hasExplicitWindow && ($begin === '' || $end === '')) {
+            return ['error' => 'An explicit window needs both begin_timestamp and end_timestamp (RFC3339, e.g. 2026-07-23T13:35:00Z). Pass both, or use duration instead.'];
+        }
+
+        $params = [];
+
+        if ($hasExplicitWindow) {
             $params['beginTimestamp'] = $begin;
             $params['endTimestamp'] = $end;
         } else {
-            $duration = trim((string) ($input['duration'] ?? ''));
-            $params['duration'] = $duration !== '' ? $duration : ($type === '5m' ? '24h' : '7d');
+            $allowed = self::DURATIONS_BY_TYPE[$type];
+            $duration = $duration !== '' ? $duration : $allowed[0];
+
+            if (! in_array($duration, $allowed, true)) {
+                return ['error' => "duration '{$duration}' is not available at {$type} resolution. UniFi retains ".
+                    implode(' or ', $allowed)." for type={$type}; ".
+                    ($type === '5m'
+                        ? 'use type=1h for windows longer than 24h'
+                        : 'use type=5m for a 24h window').
+                    ', or pass begin_timestamp+end_timestamp instead.'];
+            }
+
+            $params['duration'] = $duration;
         }
 
         try {
@@ -441,10 +498,84 @@ class UnifiReadOnlyToolset
         }
 
         if (empty($client->unifi_site_id)) {
-            return ['error' => "{$client->name} is not mapped to a UniFi site. Map the client first (Settings > UniFi Site Mapping); unifi_list_sites shows the sites available to map."];
+            // Name a remediation that EXISTS. This used to point at a "Settings > UniFi
+            // Site Mapping" screen, which no build ships yet (psa-g5l80) — an agent that
+            // followed it dead-ended. Until that page lands, the real path is: discover
+            // the id with unifi_list_sites, then set the column.
+            return ['error' => "{$client->name} is not mapped to a UniFi site. Run unifi_list_sites to find the site id, then have an operator set clients.unifi_site_id (and unifi_host_id for device reads) for this client. There is no self-service mapping screen yet, so this needs someone with database or console access."];
         }
 
         return $client;
+    }
+
+    /**
+     * Every /v1/devices host-group belonging to one console, walking the cursor.
+     *
+     * /v1/devices IS paginated (pageSize + nextToken). Reading only the first page and
+     * filtering it to our host meant that a console landing on page 2 produced a clean
+     * empty device list — the exact "confident empty answer" this file's own docblock
+     * forbids. Walk the pages instead.
+     *
+     * Filtering is done here rather than via the upstream `hostIds[]` query parameter:
+     * scoping we perform ourselves is scoping we can test, and the parameter's array
+     * encoding is not something to guess at.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private function deviceGroupsForHost(string $hostId): array
+    {
+        $params = ['pageSize' => '100'];
+        $groups = [];
+
+        for ($page = 0; $page < self::MAX_SITE_LOOKUP_PAGES; $page++) {
+            $response = $this->client()->listDevices($params);
+
+            foreach ($this->rows($response) as $group) {
+                if (($group['hostId'] ?? null) === $hostId) {
+                    $groups[] = $group;
+                }
+            }
+
+            $next = $this->nextPageToken($response);
+            if ($next === null) {
+                break;
+            }
+            $params['nextToken'] = $next;
+        }
+
+        return $groups;
+    }
+
+    /**
+     * Every UniFi site id served by one console, walking the cursor a bounded number
+     * of pages. Used to prove device attribution is unambiguous before any device is
+     * returned — see the boundary note in listDevices().
+     *
+     * @return array<int, string>
+     */
+    private function siteIdsOnHost(string $hostId): array
+    {
+        $params = ['pageSize' => '100'];
+        $siteIds = [];
+
+        for ($page = 0; $page < self::MAX_SITE_LOOKUP_PAGES; $page++) {
+            $response = $this->client()->listSites($params);
+
+            foreach ($this->rows($response) as $row) {
+                $siteId = $row['siteId'] ?? null;
+                if (($row['hostId'] ?? null) === $hostId && is_string($siteId) && $siteId !== '') {
+                    $siteIds[$siteId] = true;
+                }
+            }
+
+            $next = $this->nextPageToken($response);
+            if ($next === null) {
+                break;
+            }
+            $params['nextToken'] = $next;
+        }
+
+        return array_keys($siteIds);
     }
 
     /**

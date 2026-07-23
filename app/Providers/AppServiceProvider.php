@@ -25,6 +25,7 @@ use App\Services\Level\LevelClient;
 use App\Services\Mesh\MeshClient;
 use App\Services\Ninja\NinjaClient;
 use App\Services\Tactical\TacticalClient;
+use App\Services\Unifi\UnifiClient;
 use App\Support\AppTimezone;
 use App\Support\CippConfig;
 use App\Support\HuntressConfig;
@@ -118,6 +119,12 @@ class AppServiceProvider extends ServiceProvider
         // TacticalClient reads its (encrypted) config from Settings in its own
         // constructor, so a plain zero-arg singleton mirrors NinjaClient/MeshClient.
         $this->app->singleton(TacticalClient::class);
+
+        // UnifiClient's constructor takes an unbound array, so it is NOT auto-resolvable
+        // — without this binding every live unifi_* tool call would fail before reaching
+        // the API (the tool tests bind a mock, which hid it). fromConfig() reads the
+        // encrypted key from Settings, mirroring the Huntress/Mesh closures above.
+        $this->app->singleton(UnifiClient::class, fn () => UnifiClient::fromConfig());
 
         $this->app->singleton(CippClient::class, function ($app) {
             return new CippClient(

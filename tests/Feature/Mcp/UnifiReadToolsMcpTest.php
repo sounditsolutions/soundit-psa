@@ -112,6 +112,24 @@ class UnifiReadToolsMcpTest extends TestCase
         $this->assertNotContains('unifi_list_sites', $names, 'switching UniFi off must withdraw its tools');
     }
 
+    public function test_unifi_client_resolves_from_the_container_without_a_manual_binding(): void
+    {
+        // ARCH review (psa-5rizk) R1: UnifiClient's constructor takes an unbound array,
+        // so app(UnifiClient::class) threw in production — every live unifi_* call would
+        // have failed before reaching the API. The other tests bind a mock, which hid
+        // it exactly. This one deliberately does NOT bind anything.
+        $this->configureUnifi();
+
+        $client = app(UnifiClient::class);
+
+        $this->assertInstanceOf(UnifiClient::class, $client);
+        // And it resolves even when UniFi is unconfigured — construction must not depend
+        // on settings being present, only calls do.
+        Setting::where('key', 'unifi_api_key')->delete();
+        app()->forgetInstance(UnifiClient::class);
+        $this->assertInstanceOf(UnifiClient::class, app(UnifiClient::class));
+    }
+
     public function test_get_site_health_roundtrips_and_stays_scoped_to_the_mapped_site(): void
     {
         $this->configureUnifi();
