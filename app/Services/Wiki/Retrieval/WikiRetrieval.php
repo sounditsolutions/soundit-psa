@@ -6,7 +6,6 @@ use App\Enums\WikiFactStatus;
 use App\Enums\WikiPageKind;
 use App\Models\WikiFact;
 use App\Models\WikiPage;
-use App\Services\Wiki\Mining\WikiRedactor;
 use App\Services\Wiki\WikiCascadeService;
 use App\Services\Wiki\WikiSearchService;
 
@@ -14,15 +13,14 @@ use App\Services\Wiki\WikiSearchService;
  * Spec §6 retrieval boundary. ALL AI consumers read wiki content through this service
  * so the two hard rules hold in one place: (1) structured serving — facts as delimited
  * records with JSON-encoded free-text values; (2) cross-client isolation — null scope
- * returns GLOBAL ONLY. Page bodies are scanned before serving (they include
- * human-authored prose that never passed the mining scan).
+ * returns GLOBAL ONLY. Page bodies are served as authored: the scan()-based
+ * content-safety hard-block was removed per psa-fctq (see safeEnvelope()).
  */
 class WikiRetrieval
 {
     public function __construct(
         private readonly WikiSearchService $search,
         private readonly WikiCascadeService $cascade,
-        private readonly WikiRedactor $redactor,
     ) {}
 
     /** @return array<int, array{slug:string,title:string,kind:string,scope:string,updated:?string}> */
@@ -58,7 +56,7 @@ class WikiRetrieval
         return $blocks === [] ? 'No matching wiki content.' : implode("\n", $blocks);
     }
 
-    /** Returns the merged cascade view (§4.5); body scanned before return. */
+    /** Returns the merged cascade view (§4.5); body served as authored (see safeEnvelope()). */
     public function getPageView(string $slug, ?int $clientId): ?array
     {
         if ($clientId !== null) {
@@ -128,12 +126,12 @@ class WikiRetrieval
 
     private function safeEnvelope(WikiPage $page, string $body): array
     {
-        // Page bodies contain human-authored / site_notes-imported prose that never
-        // passed the mining scan(). Don't serve raw text into an AI prompt (§6/§13).
-        if ($this->redactor->scan($body) !== []) {
-            $body = '[Wiki page body withheld: failed content-safety scan]';
-        }
-
+        // Content-safety hard-block removed per psa-fctq (Charlie full-off): the scan()
+        // gate here was false-positiving legit staff runbooks (offboarding, host-isolate,
+        // agent-uninstall) and withholding the body. The real body is always served now.
+        // Injection is still covered downstream (PromptFence + wrap-as-data + the
+        // AI-context scan in ContextBuilder); credentials are scrubbed at authoring/mining
+        // by WikiRedactor::redact().
         return ['slug' => $page->slug, 'title' => $page->title, 'kind' => $page->kind->value, 'body_md' => $body];
     }
 

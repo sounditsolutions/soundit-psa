@@ -4,18 +4,18 @@ namespace App\Services\Wiki;
 
 use App\Enums\WikiScope;
 use App\Models\WikiPage;
-use App\Services\Wiki\Mining\WikiRedactor;
 use Illuminate\Support\Str;
 
 class WikiExportService
 {
-    public function __construct(private readonly WikiRedactor $redactor) {}
-
     /**
      * Walk wiki pages to an Obsidian-shaped vault.
      *
      * Security controls:
-     *   F1 — page bodies are scanned on egress; a scan hit writes a placeholder and records the slug.
+     *   F1 — REMOVED per psa-fctq (Charlie full-off): the scan()-based content-safety
+     *        hard-block on egress was false-positiving legit staff runbooks, so page
+     *        bodies are now written as authored. The `withheld` return key is retained
+     *        (contract stability) but is always empty.
      *   F2 — output path is fenced inside storage/app, never under public/ (the web docroot).
      *
      * @return array{path:string,written:int,withheld:array<int,string>}
@@ -47,13 +47,11 @@ class WikiExportService
                 throw new \RuntimeException("Export failed to create {$dir}");
             }
 
-            // SECURITY (gate F1): page bodies carry human/site_notes/pre-merge prose never
-            // output-scanned — don't write a secret/injection to a plaintext vault.
+            // Content-safety hard-block removed per psa-fctq (Charlie full-off): the
+            // scan() egress gate was false-positiving legit staff runbooks. The real body
+            // is always written now. $withheld stays in the return contract (always empty).
+            // Credentials are scrubbed at authoring/mining by WikiRedactor::redact().
             $body = $page->body_md;
-            if ($this->redactor->scan($body) !== []) {
-                $body = '[Wiki page body withheld: failed content-safety scan]';
-                $withheld[] = $page->slug;
-            }
 
             $file = $dir.'/'.basename($page->slug).'.md';
             file_put_contents($file, $this->frontmatter($page)."\n".$body);

@@ -128,14 +128,12 @@ class WikiPageAuthoringTool
             return ['error' => $validationError];
         }
 
-        if ($this->hasHardBlockViolation([$title, $body, $summary])) {
-            return ['error' => 'Submitted wiki page failed content safety scan.'];
-        }
-
-        // psa-tk87: credential-shaped strings in otherwise-legitimate runbook/SOP
-        // prose are scrubbed to [REDACTED:credential] rather than hard-blocking the
-        // whole page. The secret value never reaches storage; the prose is preserved.
-        // Injection/marker violations are already refused above and never reach here.
+        // Credential-shaped strings in runbook/SOP prose are scrubbed to
+        // [REDACTED:credential] here (psa-tk87) — the secret value never reaches storage,
+        // the surrounding prose is preserved. The injection/marker content-safety
+        // hard-block that used to run before this point was REMOVED per psa-fctq (Charlie
+        // full-off): it was false-positiving legit staff runbooks. Injection is still
+        // covered downstream (wrap-as-data + the AI-context scan in ContextBuilder).
         return [
             'actor' => $actor,
             'slug' => $slug,
@@ -168,31 +166,6 @@ class WikiPageAuthoringTool
         }
 
         return null;
-    }
-
-    /**
-     * Injection- and marker-class violations on AI output are genuine prompt
-     * injection or fact-splice corruption and must never be stored — hard-block.
-     * Credential-class hits are NOT blocked here: the caller scrubs them via
-     * WikiRedactor::redact() so the value becomes [REDACTED:credential] and the
-     * page proceeds (psa-tk87). Mirrors the class partition in WikiFactController.
-     *
-     * @param  array<int, string>  $values
-     */
-    private function hasHardBlockViolation(array $values): bool
-    {
-        foreach ($values as $value) {
-            if ($value === '') {
-                continue;
-            }
-            foreach ($this->redactor->scan($value) as $violation) {
-                if ($violation['class'] !== 'credential') {
-                    return true;
-                }
-            }
-        }
-
-        return false;
     }
 
     private function withAiMarker(string $body, User $actor): string
