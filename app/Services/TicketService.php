@@ -516,7 +516,7 @@ class TicketService
     public function getTicketList(array $filters): LengthAwarePaginator
     {
         $query = Ticket::query()
-            ->with(['client', 'assignee', 'latestTriageRun', 'assets'])
+            ->with(['client', 'assignee', 'latestTriageRun', 'assets', 'categoryNode.parent.parent'])
             ->withSum('notes', 'time_minutes')
             ->withCount('triageRuns');
 

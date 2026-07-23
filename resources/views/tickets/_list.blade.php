@@ -260,6 +260,9 @@
                         @if(!$columns || in_array('type', $columns))
                         <th>Type</th>
                         @endif
+                        @if(!$columns || in_array('category', $columns))
+                        <th>Category</th>
+                        @endif
                         @if(!$columns || in_array('source', $columns))
                         <th>Source</th>
                         @endif
@@ -360,6 +363,9 @@
                                 <i class="bi {{ $ticket->type->icon() }} me-1"></i>{{ $ticket->type->label() }}
                             </td>
                             @endif
+                            @if(!$columns || in_array('category', $columns))
+                            <td class="small"><x-ticket-category-badge :node="$ticket->categoryNode" /></td>
+                            @endif
                             @if(!$columns || in_array('source', $columns))
                             <td class="small text-muted">{{ $ticket->source->label() }}</td>
                             @endif
@@ -433,6 +439,7 @@
                 @endif
                 <div class="d-flex flex-wrap align-items-center gap-2 small">
                     <span class="badge {{ $ticket->status->badgeClass() }}">{{ $ticket->status->label() }}</span>
+                    @if($ticket->categoryNode)<x-ticket-category-badge :node="$ticket->categoryNode" />@endif
                     <span class="text-muted d-inline-flex align-items-center gap-1" onclick="event.stopPropagation()">
                         <i class="bi bi-person"></i><x-user-badge :user="$ticket->assignee" fallback="Unassigned" />
                     </span>
