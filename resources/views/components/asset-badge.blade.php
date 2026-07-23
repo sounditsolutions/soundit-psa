@@ -46,6 +46,10 @@
     }
 
     function onEnter(e) {
+        // Guard: these are capture-phase listeners on `document`, so they fire for
+        // every node entered — including non-Element targets (the document node, text
+        // nodes) that have no .closest(). Bail before touching it. (psa-txh4)
+        if (!(e.target instanceof Element)) return;
         const wrapper = e.target.closest('.asset-badge-wrapper[data-asset-id]');
         if (!wrapper) {
             // Check if entering the popover body itself
@@ -104,6 +108,9 @@
     }
 
     function onLeave(e) {
+        // Same capture-phase guard as onEnter — mouseleave into a non-Element node
+        // (document/text) would otherwise throw on .closest(). (psa-txh4)
+        if (!(e.target instanceof Element)) return;
         const wrapper = e.target.closest('.asset-badge-wrapper[data-asset-id]');
         const popover = e.target.closest('.popover');
         if (wrapper || popover) {
