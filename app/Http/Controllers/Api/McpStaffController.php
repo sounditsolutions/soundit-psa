@@ -225,6 +225,10 @@ class McpStaffController extends Controller
         // expose internal cost/margin — Charlie's explicit ruling, 2026-07-20.
         'list_invoices',
         'get_invoice',
+        // psa-gq7by: staged/held action visibility. Cross-client like the pairs
+        // above, client_id an optional filter. Metadata only — never the drafted
+        // body, which stays in the cockpit approval UI.
+        'get_staged_action_status',
     ];
 
     /**

@@ -44,19 +44,29 @@ class CockpitQuery
      */
     public const DIRECT_CLOSE_WINDOW_HOURS = 48;
 
+    /**
+     * The states that mean "a human still owes this a decision" — the single
+     * definition of PENDING. Everything the away operator should see on the nav
+     * badge: executable proposals (AwaitingApproval), held flags (Flagged), and
+     * — bd psa-xr84 — offline-queued actions (QueuedOffline, cancellable) plus
+     * Expired ones that need an explicit re-confirm, so an expired action can't
+     * go unnoticed by an operator who never opens /cockpit.
+     *
+     * Public because the get_staged_action_status MCP read (psa-gq7by) reports
+     * the same set: an agent asking "what is still awaiting a human?" must never
+     * drift from the number the cockpit badge shows that human.
+     */
+    public const PENDING_STATES = [
+        TechnicianRunState::AwaitingApproval->value,
+        TechnicianRunState::Flagged->value,
+        TechnicianRunState::QueuedOffline->value,
+        TechnicianRunState::Expired->value,
+    ];
+
     public function pendingCount(): int
     {
-        // Everything the away operator should see on the nav badge: executable
-        // proposals (AwaitingApproval), held flags (Flagged), and — bd psa-xr84 —
-        // offline-queued actions (QueuedOffline, cancellable) plus Expired ones that
-        // need an explicit re-confirm, so an expired action can't go unnoticed by an
-        // operator who never opens /cockpit. Matches counts()'s pending/total fold-in.
-        return TechnicianRun::whereIn('state', [
-            TechnicianRunState::AwaitingApproval->value,
-            TechnicianRunState::Flagged->value,
-            TechnicianRunState::QueuedOffline->value,
-            TechnicianRunState::Expired->value,
-        ])->count();
+        // Matches counts()'s pending/total fold-in.
+        return TechnicianRun::whereIn('state', self::PENDING_STATES)->count();
     }
 
     /** @return array{replies:int,closures:int,actions:int,intake:int,flagged:int,needs:int,queued:int,pending:int,total:int} */
