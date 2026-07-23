@@ -199,17 +199,23 @@ class Asset extends Model
     // ── Accessors ──
 
     /**
-     * Status badge: Online, Offline, or Unknown.
+     * Status badge: Online, Stale, Offline, or Unknown.
      *
      * When rmm_online is set (by Level or Ninja sync), it is the authoritative source.
      * Level: direct boolean from API/webhooks (real-time).
      * Ninja: derived from lastContact heartbeat freshness (updated every 5 min).
+     * A frozen rmm_online=true whose last_seen_at has aged past the staleness
+     * window reads "Stale" rather than a false "Online" (see isRmmDataStale).
      * Falls back to last_seen_at timestamp for non-RMM assets.
      */
     public function getStatusBadgeAttribute(): string
     {
         if ($this->rmm_online !== null) {
-            return $this->rmm_online ? 'Online' : 'Offline';
+            if ($this->rmm_online) {
+                return $this->isRmmDataStale() ? 'Stale' : 'Online';
+            }
+
+            return 'Offline';
         }
 
         if (! $this->last_seen_at) {
@@ -217,6 +223,34 @@ class Asset extends Model
         }
 
         return $this->last_seen_at->diffInMinutes(now()) <= 15 ? 'Online' : 'Offline';
+    }
+
+    /**
+     * Whether a still-"online" RMM state can no longer be trusted because the
+     * sync that maintains rmm_online/last_seen_at has gone quiet. A genuinely
+     * online device is seen every few minutes (Ninja heartbeat ~5m, Level
+     * real-time), so a last_seen_at older than the threshold while rmm_online is
+     * still true means the sync froze — the "Online" is stale, not real. Only
+     * gates a true rmm_online: a stale Offline is not the hazard. (psa-wedk)
+     */
+    public function isRmmDataStale(): bool
+    {
+        if (! $this->last_seen_at) {
+            return false;
+        }
+
+        return $this->last_seen_at->diffInHours(now()) >= self::rmmStaleAfterHours();
+    }
+
+    /**
+     * Hours after which an "online" RMM asset with no fresh last_seen_at is
+     * treated as Stale. Configurable via the asset_rmm_stale_after_hours
+     * setting; default 24h — comfortably above every sync's cadence, so a
+     * healthy device never trips it. (psa-wedk)
+     */
+    public static function rmmStaleAfterHours(): int
+    {
+        return max(1, (int) (Setting::getValue('asset_rmm_stale_after_hours') ?: 24));
     }
 
     public function getControldStatusLabelAttribute(): ?string

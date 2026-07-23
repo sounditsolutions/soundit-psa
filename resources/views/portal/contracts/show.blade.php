@@ -185,10 +185,15 @@
                                 <td>{{ $asset->hostname ?? $asset->name }}</td>
                                 <td class="text-muted">{{ $asset->asset_type ?? '—' }}</td>
                                 <td>
-                                    @if($asset->rmm_online)
+                                    @php $assetStatus = $asset->statusBadge; @endphp
+                                    @if($assetStatus === 'Online')
                                         <span class="badge bg-success">Online</span>
-                                    @else
+                                    @elseif($assetStatus === 'Stale')
+                                        <span class="badge bg-warning text-dark" title="Based on monitoring data that hasn't refreshed recently — this device's status may be out of date">Stale</span>
+                                    @elseif($assetStatus === 'Offline')
                                         <span class="badge bg-secondary">Offline</span>
+                                    @else
+                                        <span class="badge bg-secondary">Unknown</span>
                                     @endif
                                 </td>
                             </tr>

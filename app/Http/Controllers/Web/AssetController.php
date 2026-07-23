@@ -1260,6 +1260,7 @@ class AssetController extends Controller
         $statusLabel = $asset->statusBadge;
         $statusColor = match ($statusLabel) {
             'Online' => '#198754',
+            'Stale' => '#ffc107',
             'Offline' => '#dc3545',
             default => '#6c757d',
         };

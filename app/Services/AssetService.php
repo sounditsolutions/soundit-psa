@@ -45,7 +45,15 @@ class AssetService
         // Status (rmm_online column)
         if (! empty($filters['status'])) {
             match ($filters['status']) {
-                'online' => $query->where('rmm_online', true),
+                // "online" must exclude assets whose rmm_online froze true while the
+                // sync went quiet — a last_seen_at older than the staleness window is
+                // Stale, not Online (psa-wedk). A null last_seen_at fails open to online,
+                // matching Asset::isRmmDataStale().
+                'online' => $query->where('rmm_online', true)
+                    ->where(function ($q) {
+                        $q->whereNull('last_seen_at')
+                            ->orWhere('last_seen_at', '>', now()->subHours(Asset::rmmStaleAfterHours()));
+                    }),
                 'offline' => $query->where('rmm_online', false),
                 'unknown' => $query->whereNull('rmm_online'),
                 default => null,

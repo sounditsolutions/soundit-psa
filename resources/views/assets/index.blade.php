@@ -63,6 +63,8 @@
                                     <span class="badge bg-success" title="Online per RMM">Online</span>
                                 @elseif($status === 'Offline')
                                     <span class="badge bg-danger" title="Offline per RMM">Offline</span>
+                                @elseif($status === 'Stale')
+                                    <span class="badge bg-warning text-dark" title="RMM data is stale — last seen beyond the staleness window; status may be out of date">Stale</span>
                                 @else
                                     <span class="badge bg-secondary" title="No RMM status available">Unknown</span>
                                 @endif
