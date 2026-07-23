@@ -130,6 +130,23 @@ class Ticket extends Model
         return $this->belongsTo(TicketCategory::class, 'category_id');
     }
 
+    /**
+     * The shared category payload the ticket-list MCP tools emit per row
+     * (psa-717bn), mirroring getTicketDetail's applicable_sop shape: the leaf id
+     * plus the full taxonomy path, or nulls when unset. Null-safe; a retired
+     * node still resolves its path. Eager-load categoryNode.parent.parent on the
+     * list query so pathString() walks the ancestor chain without an N+1.
+     */
+    public function categoryFields(): array
+    {
+        $node = $this->categoryNode;
+
+        return [
+            'category_id' => $node?->id,
+            'category_path' => $node?->pathString(),
+        ];
+    }
+
     public function contract(): BelongsTo
     {
         return $this->belongsTo(Contract::class);
