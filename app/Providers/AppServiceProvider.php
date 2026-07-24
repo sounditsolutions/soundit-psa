@@ -7,11 +7,13 @@ use App\Models\Asset;
 use App\Models\Invoice;
 use App\Models\Person;
 use App\Models\Setting;
+use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Models\TicketNote;
 use App\Observers\AssetObserver;
 use App\Observers\InvoiceObserver;
 use App\Observers\PersonObserver;
+use App\Observers\TechnicianRunObserver;
 use App\Observers\TicketNoteObserver;
 use App\Observers\TicketObserver;
 use App\Services\Agent\SignificanceGate;
@@ -187,6 +189,7 @@ class AppServiceProvider extends ServiceProvider
         Person::observe(PersonObserver::class);
         Ticket::observe(TicketObserver::class);
         TicketNote::observe(TicketNoteObserver::class);
+        TechnicianRun::observe(TechnicianRunObserver::class);
 
         // Register timezone display helpers.
         // DB always stores UTC; toAppTz() converts to the configured display timezone.

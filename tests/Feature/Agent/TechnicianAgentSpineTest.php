@@ -55,6 +55,11 @@ class TechnicianAgentSpineTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        // Tier-1 (psa-2f0bg): selectively fake ONLY the staged-action notification job.
+        // These tests' subject is the agent's own synchronous behaviour; the observer's
+        // async notify on AwaitingApproval is a separate concern with its own test
+        // (StagedActionNotificationTest). Faking just this job leaves all other jobs live.
+        \Illuminate\Support\Facades\Bus::fake([\App\Jobs\NotifyStagedActionAwaitingApproval::class]);
         // First user = AI actor (TechnicianConfig::aiActorUserId() falls back to first user).
         User::factory()->create();
     }
