@@ -3,6 +3,7 @@
 namespace Tests\Feature\Mcp;
 
 use App\Enums\PersonType;
+use App\Enums\TechnicianRunState;
 use App\Models\Client;
 use App\Models\Person;
 use App\Models\Setting;
@@ -213,13 +214,69 @@ class CippStagedPasswordResetTest extends TestCase
             ]]);
         $this->app->instance(CippRestWriteClient::class, $approving);
 
+        // postJson, NOT post: the JSON path is the one that actually delivers the
+        // one-time secret. The redirect fallback discards it, so asserting against
+        // that would have proven nothing about credential delivery (arch review
+        // psa-oqfc1 R1 caught exactly that in my first version of this test).
         $approver = User::factory()->create();
-        $response = $this->actingAs($approver)->post(route('cockpit.approve', $run));
+        $approval = $this->actingAs($approver)->postJson(route('cockpit.approve', $run));
 
-        $response->assertRedirect();
+        $this->assertTrue((bool) $approval->json('ok'));
+        $this->assertSame('executed', $approval->json('status'));
+
+        // The credential reaches the APPROVER here...
+        $this->assertSame('Temp-Pass-123!', $approval->json('secret'));
+        // ...and nowhere else: not in the human-readable message, not on the run.
+        $this->assertStringNotContainsString('Temp-Pass-123!', (string) $approval->json('message'));
 
         $run->refresh();
-        $this->assertNotSame('pending', $run->status, 'the run must leave the pending state on approval');
+        $this->assertSame(TechnicianRunState::Done->value, (string) $run->state->value);
+        $this->assertStringNotContainsString('Temp-Pass-123!', json_encode($run->proposed_meta) ?: '');
+        $this->assertStringNotContainsString('Temp-Pass-123!', (string) $run->proposed_content);
+    }
+
+    /**
+     * SECURITY review (psa-smh26) R1, second gate: a recent reset for the same target
+     * must block approval of a held one, so a duplicate proposal staged from another
+     * ticket cannot mint a second credential moments later.
+     */
+    public function test_approval_is_refused_while_the_target_is_in_reset_cooldown(): void
+    {
+        $this->configureCipp();
+        $this->configureAiActor();
+        $fixture = $this->cippFixture();
+        $run = $this->stageAndGetRun($fixture);
+
+        // A direct reset for this same person happens before the held one is approved.
+        $direct = Mockery::mock(CippRestWriteClient::class);
+        $direct->shouldReceive('resetUserPassword')->once()
+            ->andReturn(['success' => true, 'status' => 200, 'body' => [
+                'Results' => ['copyField' => 'First-Pass-1!', 'state' => 'success'],
+            ]]);
+        $this->app->instance(CippRestWriteClient::class, $direct);
+
+        $this->callTool(
+            McpConfig::rotateStaffToken(allowedTools: [self::TOOL.':immediate'], label: 'opsbot'),
+            self::TOOL,
+            [
+                'client_id' => $fixture['client']->id,
+                'person_id' => $fixture['contact']->id,
+                'confirm_upn' => 'alex@acme.example',
+                'reason' => 'Reset directly first.',
+                'staged' => false,
+            ],
+        )->assertOk();
+
+        // Now approving the held proposal must be refused, not mint a second password.
+        $blocked = Mockery::mock(CippRestWriteClient::class);
+        $blocked->shouldNotReceive('resetUserPassword');
+        $this->app->instance(CippRestWriteClient::class, $blocked);
+
+        $approver = User::factory()->create();
+        $approval = $this->actingAs($approver)->postJson(route('cockpit.approve', $run));
+
+        $this->assertFalse((bool) $approval->json('ok'));
+        $this->assertNull($approval->json('secret'));
     }
 
     /**
@@ -262,6 +319,125 @@ class CippStagedPasswordResetTest extends TestCase
         // Second approval of the same run: the claim is already taken, so no second
         // upstream call. Mockery's ->once() is the assertion.
         $this->actingAs($approver)->post(route('cockpit.approve', $run));
+    }
+
+    /**
+     * Stage a reset and return the held run, with the vendor mocked to refuse any call.
+     */
+    private function stageAndGetRun(array $fixture): TechnicianRun
+    {
+        $staging = Mockery::mock(CippRestWriteClient::class);
+        $staging->shouldNotReceive('resetUserPassword');
+        $this->app->instance(CippRestWriteClient::class, $staging);
+
+        $token = McpConfig::rotateStaffToken(allowedTools: [self::TOOL.':staged'], label: 'opsbot');
+        $this->callTool($token, self::TOOL, [
+            'client_id' => $fixture['client']->id,
+            'person_id' => $fixture['contact']->id,
+            'ticket_id' => $fixture['ticket']->id,
+            'confirm_upn' => 'alex@acme.example',
+            'reason' => 'Held for approval.',
+            'staged' => true,
+        ])->assertOk();
+
+        return TechnicianRun::query()->where('action_type', self::STAGED)->firstOrFail();
+    }
+
+    /**
+     * SECURITY review (psa-smh26) R1. A proposal can sit held for hours. If the
+     * kill-switch is engaged in the meantime, approving it must NOT punch through the
+     * emergency stop — and this is a credential-changing operation, so it is the worst
+     * one to let through. The gates the STAGING call passed are not a substitute for
+     * re-checking at approval time.
+     */
+    public function test_approval_is_refused_while_the_kill_switch_is_engaged(): void
+    {
+        $this->configureCipp();
+        $this->configureAiActor();
+        $fixture = $this->cippFixture();
+        $run = $this->stageAndGetRun($fixture);
+
+        // Engaged AFTER the proposal was staged.
+        Setting::setValue('technician_kill_switch', '1');
+
+        $blocked = Mockery::mock(CippRestWriteClient::class);
+        $blocked->shouldNotReceive('resetUserPassword');
+        $this->app->instance(CippRestWriteClient::class, $blocked);
+
+        $approver = User::factory()->create();
+        $this->actingAs($approver)->post(route('cockpit.approve', $run));
+
+        // The proposal must remain live rather than being consumed by the refusal.
+        $run->refresh();
+        $this->assertNotSame(TechnicianRunState::Done->value, (string) $run->state->value);
+    }
+
+    // ── review findings: the lists that must agree, and the agent contract ────
+
+    /**
+     * UX review (psa-u2yjj) R1: a staged password reset rendered as "Reply" in the
+     * cockpit. resources/views/cockpit/index.blade.php carries a badge map for staged
+     * action types and anything absent falls through to the default
+     * ['Reply', bi-send, primary-subtle] arm — so a destructive account action was
+     * labelled like a customer email, and the badge is the scan affordance under load.
+     *
+     * This is the FOURTH hand-maintained list that must agree with STAGED_TO_DIRECT
+     * (with the executor's definitions() and TechnicianCockpitController's approve
+     * match). Guard all of them structurally rather than fixing this one entry, so the
+     * next staged action cannot be mislabelled the same way.
+     */
+    public function test_every_staged_action_type_has_its_own_cockpit_badge(): void
+    {
+        $blade = (string) file_get_contents(resource_path('views/cockpit/index.blade.php'));
+
+        $missing = [];
+        foreach (array_keys(McpToolModes::stagedToCanonical()) as $stagedType) {
+            if (! str_contains($blade, "'{$stagedType}'")) {
+                $missing[] = $stagedType;
+            }
+        }
+
+        $this->assertSame([], $missing, implode("\n", [
+            'These staged action types have no cockpit badge, so they fall through to the',
+            'default "Reply" badge and a destructive action reads like a customer email.',
+            'Add an arm to the badge map in resources/views/cockpit/index.blade.php.',
+            'Offenders: '.implode(', ', $missing),
+        ]));
+    }
+
+    public function test_every_staged_action_type_can_actually_be_approved(): void
+    {
+        // The third list: TechnicianCockpitController's approve match. An unlisted type
+        // fails closed with a 422 — right default, but it means a staged action nobody
+        // can approve, which is a dead proposal rather than a safe one.
+        $controller = (string) file_get_contents(app_path('Http/Controllers/Web/TechnicianCockpitController.php'));
+
+        $missing = [];
+        foreach (array_keys(McpToolModes::stagedToCanonical()) as $stagedType) {
+            if (! str_contains($controller, "'{$stagedType}'")) {
+                $missing[] = $stagedType;
+            }
+        }
+
+        $this->assertSame([], $missing, 'staged types with no approve arm (they would 422): '.implode(', ', $missing));
+    }
+
+    /**
+     * UX review (psa-u2yjj) R1: the canonical tool's description opened with "return a
+     * newly generated temporary password", so an agent calling it with staged=true
+     * could sit waiting for a credential that will never arrive.
+     */
+    public function test_the_canonical_tool_description_says_a_staged_call_returns_no_password(): void
+    {
+        $definition = collect(\App\Services\Mcp\StaffCippWriteToolExecutor::definitions())
+            ->firstWhere('name', self::TOOL);
+
+        $this->assertNotNull($definition);
+        $description = (string) $definition['description'];
+
+        $this->assertStringContainsString('NO PASSWORD', $description);
+        $this->assertStringContainsString('approv', $description, 'must say a human approves first');
+        $this->assertStringContainsString('do not wait for a credential', $description);
     }
 
     // ── the immediate path still works when explicitly granted ────────────────
