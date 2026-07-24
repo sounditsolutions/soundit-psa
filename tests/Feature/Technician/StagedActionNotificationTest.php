@@ -209,6 +209,62 @@ class StagedActionNotificationTest extends TestCase
         $this->assertStringNotContainsString('encrypted_payload', $all);
     }
 
+    /**
+     * ARCH + SECURITY review (psa-xm8c2 / psa-3pq0f, converged): the job runs later on
+     * a worker, so the run may have been approved/denied/superseded by then. Emailing
+     * the proposed content of an already-decided action both misinforms the operator
+     * and leaks content for an action that never happened. The job must re-check the
+     * persisted state and no-op if it has left AwaitingApproval.
+     *
+     * @dataProvider decidedStateProvider
+     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('decidedStateProvider')]
+    public function test_a_run_that_left_awaiting_approval_before_the_worker_runs_does_not_notify(string $state): void
+    {
+        $fixture = $this->fixture();
+        $run = $this->stage($fixture);
+
+        // Simulate the operator (or a supersede) deciding it before the worker picks up.
+        $run->update(['state' => $state]);
+
+        $notifier = Mockery::mock(OperatorNotifier::class);
+        $notifier->shouldNotReceive('notify');
+        $this->app->instance(OperatorNotifier::class, $notifier);
+
+        (new NotifyStagedActionAwaitingApproval($run->id))->handle(app(OperatorNotifier::class));
+
+        $this->assertTrue(true); // the shouldNotReceive expectation is the assertion
+    }
+
+    /** @return array<string, array{0: string}> */
+    public static function decidedStateProvider(): array
+    {
+        return [
+            'done' => [TechnicianRunState::Done->value],
+            'denied' => [TechnicianRunState::Denied->value],
+            'superseded' => [TechnicianRunState::Superseded->value],
+        ];
+    }
+
+    public function test_the_subject_and_body_use_a_human_action_label_not_a_raw_slug(): void
+    {
+        // UX review (psa-90ix3): cipp_stage_reset_user_password is implementation
+        // language. The operator-facing copy must read as plain English.
+        $fixture = $this->fixture();
+        $run = $this->stage($fixture, 'cipp_stage_reset_user_password',
+            'Reset the Microsoft 365 password for alex@acme.example.');
+
+        $captured = $this->captureNotification($run);
+        $all = $captured['subject']."\n".$captured['body'];
+
+        $this->assertStringContainsString('CIPP password reset', $all);
+        $this->assertStringNotContainsString('cipp_stage_reset_user_password', $all,
+            'the raw action_type slug must not appear in operator-facing copy');
+        // Subject leads with the human action + client/ticket (decide-from-lockscreen).
+        $this->assertStringContainsString('CIPP password reset approval', $captured['subject']);
+        $this->assertStringContainsString('Acme Co', $captured['subject']);
+    }
+
     public function test_a_vanished_run_is_a_no_op_rather_than_a_failed_job(): void
     {
         $notifier = Mockery::mock(OperatorNotifier::class);

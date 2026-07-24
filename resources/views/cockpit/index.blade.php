@@ -13,7 +13,12 @@
     $initialSummary = "{$counts['replies']} replies · {$counts['closures']} closures · {$counts['actions']} actions · {$counts['intake']} intake · {$counts['flagged']} flagged · {$counts['needs']} need you";
 
     $badgeFor = function ($run): array {
-        return match ($run->action_type) {
+        // Label comes from the single source (App\Support\StagedActionLabels) so the
+        // cockpit and the staged-action notification (psa-2f0bg) can never show a
+        // different name for the same action. The match below owns only the visual
+        // classes + icon; its inline label string is superseded by the override and is
+        // kept byte-identical by StagedActionLabelsTest. (psa-2f0bg UX review psa-90ix3.)
+        $badge = match ($run->action_type) {
             'propose_close' => ['bg-warning-subtle text-warning-emphasis border border-warning-subtle', 'Proposed close', 'bi-archive'],
             'propose_merge' => ['bg-warning-subtle text-warning-emphasis border border-warning-subtle', 'Proposed merge', 'bi-intersect'],
             'propose_resolution' => ['bg-info-subtle text-info-emphasis border border-info-subtle', 'Proposed resolution', 'bi-send'],
@@ -54,6 +59,9 @@
             'direct_close' => ['bg-warning-subtle text-warning-emphasis border border-warning-subtle', 'Closed directly', 'bi-archive'],
             default => ['bg-primary-subtle text-primary-emphasis border border-primary-subtle', 'Reply', 'bi-send'],
         };
+        $badge[1] = \App\Support\StagedActionLabels::humanLabel($run->action_type);
+
+        return $badge;
     };
 
     $confidenceClass = function ($run): string {

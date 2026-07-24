@@ -2,8 +2,10 @@
 
 namespace App\Jobs;
 
+use App\Enums\TechnicianRunState;
 use App\Models\TechnicianRun;
 use App\Services\Technician\Notify\OperatorNotifier;
+use App\Support\StagedActionLabels;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -41,9 +43,16 @@ class NotifyStagedActionAwaitingApproval implements ShouldQueue
     {
         $run = TechnicianRun::with(['ticket.client'])->find($this->runId);
 
-        // Denied, superseded or deleted between staging and the worker picking this up:
-        // a stale notification is worse than none, so this is a no-op, not a failure.
-        if ($run === null) {
+        // The job runs LATER, on a worker, so the run may have moved on since it was
+        // staged. Two ways it can be gone, both a no-op rather than a failure — a stale
+        // notification is worse than none:
+        //   - deleted entirely (null), or
+        //   - approved / denied / superseded, i.e. no longer AwaitingApproval.
+        // The second was the arch+security REVISE (psa-xm8c2 / psa-3pq0f): emailing the
+        // proposed content of an action that has ALREADY been decided both misinforms
+        // the operator and leaks content for an action that never happened. Re-check the
+        // persisted state here — it is the source of truth for the approval wait.
+        if ($run === null || ! $this->isAwaitingApproval($run)) {
             return;
         }
 
@@ -51,12 +60,13 @@ class NotifyStagedActionAwaitingApproval implements ShouldQueue
         $client = $ticket?->client;
         $clientName = $client?->name ?? 'Unknown client';
         $subjectLine = $ticket?->subject ?? '(no subject)';
+        $actionLabel = StagedActionLabels::humanLabel($run->action_type);
 
-        $subject = "Approval needed: {$run->action_type} for {$clientName} (ticket #{$run->ticket_id})";
+        $subject = "{$actionLabel} approval: {$clientName} ticket #{$run->ticket_id}";
 
         $body = implode("\n", array_filter([
             "{$clientName} — ticket #{$run->ticket_id}: {$subjectLine}",
-            "Action awaiting your approval: {$run->action_type}",
+            "Awaiting your approval: {$actionLabel}",
             '',
             'What it will do:',
             trim((string) $run->proposed_content) !== '' ? trim((string) $run->proposed_content) : '(no proposed content recorded)',
@@ -74,6 +84,15 @@ class NotifyStagedActionAwaitingApproval implements ShouldQueue
      * this job does NOT summarise or rewrite it (no AI step); making that first line
      * decision-grade is the agent's job, not the notifier's.
      */
+    private function isAwaitingApproval(TechnicianRun $run): bool
+    {
+        $state = $run->state;
+
+        return $state instanceof TechnicianRunState
+            ? $state === TechnicianRunState::AwaitingApproval
+            : $state === TechnicianRunState::AwaitingApproval->value;
+    }
+
     private function reasonLine(TechnicianRun $run): ?string
     {
         $meta = is_array($run->proposed_meta) ? $run->proposed_meta : [];
