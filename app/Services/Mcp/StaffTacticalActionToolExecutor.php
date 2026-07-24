@@ -88,6 +88,7 @@ class StaffTacticalActionToolExecutor
         'tactical_open_remote_control' => 60,
         'tactical_refresh_device_snapshot' => 60,
         'tactical_start_service' => 120,
+        'tactical_stage_start_service' => 120,
         'tactical_stop_service' => 300,
         'tactical_stage_stop_service' => 300,
         'tactical_restart_service' => 300,
@@ -107,6 +108,7 @@ class StaffTacticalActionToolExecutor
         'tactical_stage_shutdown' => 'tactical_shutdown_device',
         'tactical_stage_recover_mesh' => 'tactical_recover_mesh',
         'tactical_stage_maintenance' => 'tactical_set_maintenance',
+        'tactical_stage_start_service' => 'tactical_start_service',
         'tactical_stage_stop_service' => 'tactical_stop_service',
         'tactical_stage_restart_service' => 'tactical_restart_service',
         'tactical_stage_install_approved_patches' => 'tactical_install_approved_patches',
@@ -138,6 +140,7 @@ class StaffTacticalActionToolExecutor
             self::remoteControlTool(),
             self::refreshSnapshotTool(),
             self::startServiceTool(),
+            self::stageStartServiceTool(),
             self::stopServiceTool(),
             self::stageStopServiceTool(),
             self::restartServiceTool(),
@@ -1801,6 +1804,17 @@ class StaffTacticalActionToolExecutor
             'Start one Windows service on a server-derived endpoint immediately using Tactical POST services/{agent_id}/{svcname}/ with sv_action=start. Requires an explicit token grant, reason, kill-switch, current service-list resolution, dedup/cooldown, and audited TacticalActionService dispatch.',
             array_merge(self::targetProperties(), self::serviceSelectorProperties()),
             ['reason', 'service_name'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function stageStartServiceTool(): array
+    {
+        return self::tool(
+            'tactical_stage_start_service',
+            'Stage a Windows service start for cockpit approval instead of starting it now. Approval revalidates ticket, asset, kill-switch, cooldown, and current service scope before dispatch.',
+            array_merge(self::targetProperties(ticket: true), self::serviceSelectorProperties()),
+            ['ticket_id', 'reason', 'service_name'],
         );
     }
 

@@ -30,6 +30,7 @@
             'tactical_stage_shutdown' => ['bg-danger text-white', 'Tactical shutdown', 'bi-power'],
             'tactical_stage_recover_mesh' => ['bg-danger text-white', 'Tactical recovery', 'bi-tools'],
             'tactical_stage_maintenance' => ['bg-danger text-white', 'Tactical maintenance', 'bi-wrench-adjustable'],
+            'tactical_stage_start_service' => ['bg-success text-white', 'Tactical start service', 'bi-play-circle'],
             'tactical_stage_stop_service' => ['bg-danger text-white', 'Tactical stop service', 'bi-stop-circle'],
             'tactical_stage_restart_service' => ['bg-danger text-white', 'Tactical restart service', 'bi-arrow-repeat'],
             'tactical_stage_install_approved_patches' => ['bg-danger text-white', 'Tactical patch install', 'bi-cloud-download'],

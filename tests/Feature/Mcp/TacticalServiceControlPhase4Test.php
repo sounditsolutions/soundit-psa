@@ -356,6 +356,129 @@ class TacticalServiceControlPhase4Test extends TestCase
         ]);
     }
 
+    // ── psa-aji2o: stage-gate tactical_start_service (Charlie GO / so-1jq4) ──
+
+    /** Registering the staged twin flips start_service into the fail-closed mode gate. */
+    public function test_start_service_is_stageable_and_alias_round_trips(): void
+    {
+        $this->assertTrue(McpToolModes::isStageable('tactical_start_service'));
+        $this->assertSame('tactical_start_service', McpToolModes::canonicalForAlias('tactical_stage_start_service'));
+        $this->assertSame('tactical_stage_start_service', McpToolModes::stagedInternalFor('tactical_start_service'));
+    }
+
+    public function test_staged_start_service_is_held_then_approval_dispatches_start(): void
+    {
+        $this->configureTactical();
+        $approver = $this->configureAiActor();
+        $fixture = $this->endpointFixture();
+        $token = $this->token(['tactical_stage_start_service']);
+
+        $tactical = Mockery::mock(TacticalClient::class);
+        $tactical->shouldReceive('getServices')->twice()->with('agent-1')->andReturn($this->services());
+        $tactical->shouldReceive('controlService')->once()->with('agent-1', 'Spooler', 'start')->andReturn('The service was started successfully');
+        $this->app->instance(TacticalClient::class, $tactical);
+
+        $response = $this->callTool($token, 'tactical_stage_start_service', [
+            'client_id' => $fixture['client']->id,
+            'ticket_id' => $fixture['ticket']->id,
+            'hostname' => 'PC-01',
+            'service_name' => 'Print Spooler',
+            'reason' => 'Start spooler only after cockpit approval.',
+        ]);
+
+        $response->assertOk();
+        $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
+        $this->assertSame(0, TacticalActionLog::count(), 'Nothing executes while the proposal is held.');
+
+        $run = TechnicianRun::where('action_type', 'tactical_stage_start_service')->firstOrFail();
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->state);
+        $this->assertDatabaseHas('technician_action_logs', [
+            'action_type' => 'tactical_stage_start_service',
+            'result_status' => 'awaiting_approval',
+            'ticket_id' => $fixture['ticket']->id,
+            'client_id' => $fixture['client']->id,
+        ]);
+
+        $result = app(TechnicianApprovalService::class)->approveStagedTacticalAction($run, $approver->id);
+
+        $this->assertSame('executed', $result->status);
+        $this->assertSame(TechnicianRunState::Done, $run->fresh()->state);
+        $this->assertDatabaseHas('tactical_action_logs', [
+            'action_key' => 'tactical.service_start',
+            'agent_id' => 'agent-1',
+            'asset_id' => $fixture['asset']->id,
+            'ticket_id' => $fixture['ticket']->id,
+            'result_status' => 'ok',
+        ]);
+    }
+
+    /**
+     * THE fail-closed proof (Charlie's "checked = safe-staged"): a staged-only grant
+     * that asks for immediate execution is auto-downgraded to a held proposal — the
+     * upstream start call is NEVER made without human approval.
+     */
+    public function test_staged_only_grant_downgrades_an_immediate_start_call(): void
+    {
+        $this->configureTactical();
+        $this->configureAiActor();
+        $fixture = $this->endpointFixture();
+        $token = $this->token(['tactical_start_service:staged']);
+
+        $tactical = Mockery::mock(TacticalClient::class);
+        $tactical->shouldReceive('getServices')->atLeast()->once()->with('agent-1')->andReturn($this->services());
+        $tactical->shouldNotReceive('controlService'); // no immediate mutation
+        $this->app->instance(TacticalClient::class, $tactical);
+
+        $response = $this->callTool($token, 'tactical_start_service', [
+            'client_id' => $fixture['client']->id,
+            'ticket_id' => $fixture['ticket']->id,
+            'hostname' => 'PC-01',
+            'service_name' => 'Print Spooler',
+            'reason' => 'Start the spooler now.',
+            'staged' => false,
+        ]);
+
+        $response->assertOk();
+        $result = $this->decodedResult($response);
+        $this->assertTrue((bool) ($result['downgraded_to_staged'] ?? false), 'immediate call without the immediate grant must downgrade to staged');
+        $this->assertSame(0, TacticalActionLog::count());
+
+        $run = TechnicianRun::where('action_type', 'tactical_stage_start_service')->firstOrFail();
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->state);
+    }
+
+    /** An explicit immediate grant still executes now — the capability is preserved, just gated. */
+    public function test_immediate_grant_still_executes_start_now(): void
+    {
+        $this->configureTactical();
+        $this->configureAiActor();
+        $fixture = $this->endpointFixture();
+        $token = $this->token(['tactical_start_service:immediate']);
+
+        $tactical = Mockery::mock(TacticalClient::class);
+        $tactical->shouldReceive('getServices')->once()->with('agent-1')->andReturn($this->services());
+        $tactical->shouldReceive('controlService')->once()->with('agent-1', 'Spooler', 'start')->andReturn('The service was started successfully');
+        $this->app->instance(TacticalClient::class, $tactical);
+
+        $response = $this->callTool($token, 'tactical_start_service', [
+            'client_id' => $fixture['client']->id,
+            'hostname' => 'PC-01',
+            'service_name' => 'Spooler',
+            'ticket_id' => $fixture['ticket']->id,
+            'reason' => 'Start the print spooler now.',
+            'staged' => false,
+        ]);
+
+        $response->assertOk();
+        $result = $this->decodedResult($response);
+        $this->assertTrue((bool) ($result['success'] ?? false), (string) $response->json('result.content.0.text'));
+        $this->assertArrayNotHasKey('downgraded_to_staged', $result);
+        $this->assertDatabaseHas('tactical_action_logs', [
+            'action_key' => 'tactical.service_start',
+            'result_status' => 'ok',
+        ]);
+    }
+
     public function test_set_service_start_type_uses_allowlist_and_resolved_service(): void
     {
         $this->configureTactical();
