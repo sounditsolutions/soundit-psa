@@ -3,9 +3,11 @@
 namespace App\Services\Chet;
 
 use App\Services\Huntress\HuntressReadOnlyToolset;
+use App\Services\ScreenConnect\ScreenConnectReadOnlyToolset;
 use App\Services\Tactical\TacticalReadOnlyToolset;
 use App\Services\Unifi\UnifiReadOnlyToolset;
 use App\Support\HuntressConfig;
+use App\Support\ScreenConnectConfig;
 use App\Support\TacticalConfig;
 use App\Support\TeamsBotConfig;
 use App\Support\UnifiConfig;
@@ -48,6 +50,13 @@ class ChetDataSurfaceTools
             $tools = array_merge($tools, UnifiReadOnlyToolset::clientDefinitions());
         }
 
+        // ScreenConnect session-state reads ship dormant, and OFF=OFF: they answer
+        // from the local webhook snapshot, but a switched-off integration must not
+        // keep answering, so isAvailable() gates the live surface here too.
+        if (ScreenConnectConfig::isAvailable()) {
+            $tools = array_merge($tools, ScreenConnectReadOnlyToolset::clientDefinitions());
+        }
+
         return $tools;
     }
 
@@ -66,6 +75,7 @@ class ChetDataSurfaceTools
             TacticalReadOnlyToolset::definitions(),
             HuntressReadOnlyToolset::definitions(),
             UnifiReadOnlyToolset::definitions(),
+            ScreenConnectReadOnlyToolset::definitions(),
         );
     }
 
@@ -74,13 +84,15 @@ class ChetDataSurfaceTools
         return TeamsChatReadToolset::handles($toolName)
             || TacticalReadOnlyToolset::handles($toolName)
             || HuntressReadOnlyToolset::handles($toolName)
-            || UnifiReadOnlyToolset::handles($toolName);
+            || UnifiReadOnlyToolset::handles($toolName)
+            || ScreenConnectReadOnlyToolset::handles($toolName);
     }
 
     public static function requiresClient(string $toolName): bool
     {
         return TacticalReadOnlyToolset::requiresClient($toolName)
             || HuntressReadOnlyToolset::requiresClient($toolName)
-            || UnifiReadOnlyToolset::requiresClient($toolName);
+            || UnifiReadOnlyToolset::requiresClient($toolName)
+            || ScreenConnectReadOnlyToolset::requiresClient($toolName);
     }
 }

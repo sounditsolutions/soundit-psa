@@ -1103,6 +1103,22 @@ Webhook-based integration for real-time device status, activity audit, and remot
 **Scheduled commands:**
 - `screenconnect:count-licenses` — daily at 05:30, counts Access agents per client
 
+**MCP tools** (read-only, and **ungranted by default** — grant them per token under
+Settings > MCP Tokens). Both answer from the local webhook-fed snapshot; no live
+ScreenConnect call is made:
+
+| Tool | Scope | Returns |
+|------|-------|---------|
+| `screenconnect_get_session_state` | Client | One device's online/offline flag with when that state was reported, last webhook activity, session id/link, and recent session events — distinguishes an idle machine from a dead one |
+| `screenconnect_list_devices` | Client | ScreenConnect-linked devices with per-device state + report time, and fleet totals by online/offline/unknown |
+
+**Notes:**
+- **OFF=OFF.** Switching the integration off withdraws the tools from the AI surface
+  entirely — the local snapshot stops answering too.
+- **State is event-driven.** Online/offline reflects the last Connected/Disconnected
+  webhook, not a live poll; every answer pairs the flag with its report timestamp, and
+  an online flag older than 24h carries an explicit staleness warning.
+
 ### AppRiver / OpenText (M365 Licensing)
 
 Syncs M365 subscription seat counts from AppRiver (reseller-side view). Shows assigned vs total for utilization tracking. Supports inline seat count changes for onboarding/offboarding.

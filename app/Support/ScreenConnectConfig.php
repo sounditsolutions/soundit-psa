@@ -26,6 +26,16 @@ class ScreenConnectConfig
         return ! empty(self::get('base_url')) && ! empty(self::get('webhook_secret'));
     }
 
+    /**
+     * Both the switch and the config — the predicate the AI tool surface gates on.
+     * OFF=OFF (CLAUDE.md): switching ScreenConnect off withdraws its screenconnect_*
+     * tools from the model, not just the webhook intake.
+     */
+    public static function isAvailable(): bool
+    {
+        return self::isEnabled() && self::isConfigured();
+    }
+
     public static function baseUrl(): ?string
     {
         return self::get('base_url');
