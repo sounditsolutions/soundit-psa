@@ -1974,7 +1974,7 @@
         @endif
 
         {{-- Recent Tickets --}}
-        @php $recentTickets = $asset->tickets()->with('assignee')->latest('updated_at')->limit(15)->get(); @endphp
+        @php $recentTickets = $asset->tickets()->with(['assignee', 'categoryNode.parent.parent'])->latest('updated_at')->limit(15)->get(); @endphp
         @if($recentTickets->isNotEmpty())
         <div class="card shadow-sm">
             <div class="card-header d-flex justify-content-between align-items-center">
@@ -1991,6 +1991,7 @@
                             <th>Subject</th>
                             <th>Priority</th>
                             <th>Status</th>
+                            <th>Category</th>
                             <th>Assignee</th>
                             <th>Updated</th>
                         </tr>
@@ -2012,6 +2013,7 @@
                                     @endif
                                 </td>
                                 <td><span class="badge {{ $ticket->status->badgeClass() }}">{{ $ticket->status->label() }}</span></td>
+                                <td class="small"><x-ticket-category-badge :node="$ticket->categoryNode" /></td>
                                 <td class="small">{{ $ticket->assignee?->name ?? '-' }}</td>
                                 <td class="small">{{ $ticket->updated_at?->diffForHumans() }}</td>
                             </tr>
@@ -2034,6 +2036,7 @@
                         <div class="small text-muted mb-2">{{ $ticket->display_id }}</div>
                         <div class="d-flex flex-wrap align-items-center gap-2 small">
                             <span class="badge {{ $ticket->status->badgeClass() }}">{{ $ticket->status->label() }}</span>
+                            @if($ticket->categoryNode)<x-ticket-category-badge :node="$ticket->categoryNode" />@endif
                             <span class="text-muted d-inline-flex align-items-center gap-1">
                                 <i class="bi bi-person"></i>{{ $ticket->assignee?->name ?? 'Unassigned' }}
                             </span>

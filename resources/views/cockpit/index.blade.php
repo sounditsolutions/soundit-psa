@@ -146,6 +146,7 @@
                             <div class="d-flex flex-wrap align-items-center gap-2 mb-1">
                                 <span class="fw-semibold">{{ $outcome->ticket->subject ?? 'Ticket #'.$outcome->ticket->id }}</span>
                                 @if($outcome->ticket->client)<span class="badge rounded-pill bg-light text-dark border">{{ $outcome->ticket->client->name }}</span>@endif
+                                @if($outcome->ticket->categoryNode)<x-ticket-category-badge :node="$outcome->ticket->categoryNode" />@endif
                                 <span class="ms-auto text-muted">{{ optional($outcome->at)->diffForHumans() }}</span>
                             </div>
                             <div class="text-muted">{{ $outcome->note }}</div>
@@ -182,6 +183,7 @@
                                         @if($run->ticket?->client)
                                             <span class="badge rounded-pill bg-light text-dark border">{{ $run->ticket->client->name }}</span>
                                         @endif
+                                        @if($run->ticket?->categoryNode)<x-ticket-category-badge :node="$run->ticket->categoryNode" />@endif
                                         <span class="badge rounded-pill {{ $badge[0] }}"><i class="bi {{ $badge[2] }} me-1"></i>{{ $badge[1] }}</span>
                                         <span class="ms-auto text-muted">{{ optional($run->created_at)->diffForHumans() }}</span>
                                     </div>
@@ -221,6 +223,7 @@
                             @if($run->ticket?->client)
                                 <span class="badge rounded-pill bg-light text-dark border">{{ $run->ticket->client->name }}</span>
                             @endif
+                            @if($run->ticket?->categoryNode)<x-ticket-category-badge :node="$run->ticket->categoryNode" />@endif
                             <span class="badge rounded-pill {{ $badge[0] }}"><i class="bi {{ $badge[2] }} me-1"></i>{{ $badge[1] }}</span>
                             <span class="ms-auto text-muted">{{ optional($run->created_at)->diffForHumans() }}</span>
                         </div>
@@ -364,6 +367,7 @@
                                     @if($run->ticket?->client)
                                         <span class="badge rounded-pill bg-light text-dark border">{{ $run->ticket->client->name }}</span>
                                     @endif
+                                    @if($run->ticket?->categoryNode)<x-ticket-category-badge :node="$run->ticket->categoryNode" />@endif
                                     <span class="badge rounded-pill {{ $badge[0] }}"><i class="bi {{ $badge[2] }} me-1"></i>{{ $badge[1] }}</span>
                                 </div>
                                 <div class="text-muted small text-truncate">
@@ -422,6 +426,7 @@
                             @if($run->ticket?->client)
                                 <span class="badge rounded-pill bg-danger-subtle text-danger-emphasis border border-danger-subtle">{{ $run->ticket->client->name }}</span>
                             @endif
+                            @if($run->ticket?->categoryNode)<x-ticket-category-badge :node="$run->ticket->categoryNode" />@endif
                             <span class="badge rounded-pill {{ $badge[0] }}"><i class="bi {{ $badge[2] }} me-1"></i>{{ $badge[1] }}</span>
                             <span class="ms-auto text-muted">{{ optional($run->created_at)->diffForHumans() }}</span>
                         </div>
@@ -547,6 +552,7 @@
                             @if($run->ticket?->client)
                                 <span class="badge rounded-pill bg-light text-dark border">{{ $run->ticket->client->name }}</span>
                             @endif
+                            @if($run->ticket?->categoryNode)<x-ticket-category-badge :node="$run->ticket->categoryNode" />@endif
                             @php($flagMeta = $run->proposed_meta ?? [])
                             @php($flagCategory = \App\Enums\FlagAttentionCategory::fromInput($flagMeta['category'] ?? null))
                             @php($suppressedEscalation = ($flagMeta['escalation']['status'] ?? null) === 'suppressed')
@@ -604,6 +610,7 @@
                                 @if($run->ticket?->client)
                                     <span class="badge rounded-pill bg-light text-dark border">{{ $run->ticket->client->name }}</span>
                                 @endif
+                                @if($run->ticket?->categoryNode)<x-ticket-category-badge :node="$run->ticket->categoryNode" />@endif
                                 <span class="badge rounded-pill {{ $badge[0] }}"><i class="bi {{ $badge[2] }} me-1"></i>{{ $badge[1] }}</span>
                             </div>
                             <p class="text-muted small mb-2">
@@ -643,6 +650,7 @@
                                 @if($run->ticket?->client)
                                     <span class="badge rounded-pill bg-light text-dark border">{{ $run->ticket->client->name }}</span>
                                 @endif
+                                @if($run->ticket?->categoryNode)<x-ticket-category-badge :node="$run->ticket->categoryNode" />@endif
                                 <span class="badge rounded-pill {{ $badge[0] }}"><i class="bi {{ $badge[2] }} me-1"></i>{{ $badge[1] }}</span>
                             </div>
                             <p class="text-muted small mb-2">
@@ -671,6 +679,7 @@
                     <div class="card-body py-2 d-flex flex-wrap align-items-center gap-2 small">
                         <span class="fw-semibold">{{ $ticket->subject }}</span>
                         @if($ticket->client)<span class="badge rounded-pill bg-light text-dark border">{{ $ticket->client->name }}</span>@endif
+                        @if($ticket->categoryNode)<x-ticket-category-badge :node="$ticket->categoryNode" />@endif
                         <span class="ms-auto text-muted">{{ optional($ticket->updated_at)->diffForHumans() }}</span>
                         <i class="bi bi-chevron-right text-muted"></i>
                     </div>

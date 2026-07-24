@@ -102,7 +102,7 @@ class EmailController extends Controller
 
     public function show(Email $email)
     {
-        $email->load(['client', 'person', 'user', 'ticket']);
+        $email->load(['client', 'person', 'user', 'ticket', 'ticket.categoryNode.parent.parent']);
 
         // Mark as read
         if (! $email->is_read) {

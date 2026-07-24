@@ -56,7 +56,7 @@ class ProspectController extends Controller
     public function converted(Client $client)
     {
         $openTickets = $client->tickets()
-            ->with('notes')
+            ->with(['notes', 'categoryNode.parent.parent'])
             ->orderByDesc('opened_at')
             ->get()
             ->filter(fn ($t) => $t->status->isOpen());

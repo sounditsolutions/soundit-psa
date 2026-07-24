@@ -1225,7 +1225,7 @@ PROMPT;
      */
     public function getEmailList(array $filters): LengthAwarePaginator
     {
-        $query = Email::with(['client', 'person', 'user', 'ticket' => fn ($q) => $q->select('id', 'halo_id', 'subject')])
+        $query = Email::with(['client', 'person', 'user', 'ticket' => fn ($q) => $q->select('id', 'halo_id', 'subject', 'category_id'), 'ticket.categoryNode.parent.parent'])
             ->orderByDesc('received_at');
 
         $preset = $filters['preset'] ?? null;

@@ -84,7 +84,7 @@ class PersonController extends Controller
         $person->load('client', 'additionalEmailAddresses', 'assets');
 
         $recentTickets = $person->tickets()
-            ->with('client')
+            ->with(['client', 'categoryNode.parent.parent'])
             ->orderByDesc('updated_at')
             ->limit(5)
             ->get();
