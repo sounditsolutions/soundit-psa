@@ -11,6 +11,7 @@ use App\Models\Asset;
 use App\Models\Person;
 use App\Models\Ticket;
 use App\Services\TicketService;
+use App\Support\PaginatesTicketLists;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Log;
 
@@ -34,6 +35,15 @@ use Illuminate\Support\Facades\Log;
  */
 class PortalMcpToolExecutor
 {
+    use PaginatesTicketLists;
+
+    /**
+     * Columns ticketSummary() reads (display_id needs id + halo_id). The
+     * PaginatesTicketLists trait adds category_id and eager-loads the category
+     * ancestor chain itself.
+     */
+    private const TICKET_LIST_SELECT = ['id', 'halo_id', 'subject', 'status', 'priority', 'created_at', 'updated_at'];
+
     private readonly int $clientId;
 
     private readonly bool $companyWideAccess;
@@ -82,18 +92,16 @@ class PortalMcpToolExecutor
     /** @return array<string, mixed> */
     private function listMyOpenTickets(array $input): array
     {
-        $limit = $this->clampLimit($input['limit'] ?? 25, 50);
-
-        $tickets = $this->ticketScope()
+        $query = $this->ticketScope()
             ->open()
-            ->orderByDesc('updated_at')
-            ->limit($limit)
-            ->get();
+            ->orderByDesc('updated_at');
 
-        return [
-            'count' => $tickets->count(),
-            'tickets' => $tickets->map(fn (Ticket $t) => $this->ticketSummary($t))->all(),
-        ];
+        return $this->paginatedTicketList(
+            $query,
+            $input,
+            self::TICKET_LIST_SELECT,
+            fn (Ticket $t) => $this->ticketSummary($t),
+        );
     }
 
     /** @return array<string, mixed> */
@@ -104,7 +112,7 @@ class PortalMcpToolExecutor
             return ['error' => 'A ticket_id is required.'];
         }
 
-        $ticket = $this->ticketScope()->whereKey($id)->first();
+        $ticket = $this->ticketScope()->with('categoryNode.parent.parent')->whereKey($id)->first();
         if (! $ticket) {
             return ['error' => 'Ticket not found.'];
         }
@@ -121,7 +129,7 @@ class PortalMcpToolExecutor
             ])
             ->all();
 
-        return array_merge($this->ticketSummary($ticket), [
+        return array_merge($this->ticketSummary($ticket), $ticket->categoryFields(), [
             'description' => $this->clean($ticket->description, 3000),
             'notes' => $notes,
         ]);
@@ -130,23 +138,21 @@ class PortalMcpToolExecutor
     /** @return array<string, mixed> */
     private function searchMyTickets(array $input): array
     {
-        $query = trim((string) ($input['query'] ?? ''));
-        if ($query === '') {
+        $term = trim((string) ($input['query'] ?? ''));
+        if ($term === '') {
             return ['error' => 'A query is required.'];
         }
 
-        $limit = $this->clampLimit($input['limit'] ?? 25, 50);
+        $query = $this->ticketScope()
+            ->search($term)
+            ->orderByDesc('updated_at');
 
-        $tickets = $this->ticketScope()
-            ->search($query)
-            ->orderByDesc('updated_at')
-            ->limit($limit)
-            ->get();
-
-        return [
-            'count' => $tickets->count(),
-            'tickets' => $tickets->map(fn (Ticket $t) => $this->ticketSummary($t))->all(),
-        ];
+        return $this->paginatedTicketList(
+            $query,
+            $input,
+            self::TICKET_LIST_SELECT,
+            fn (Ticket $t) => $this->ticketSummary($t),
+        );
     }
 
     /** @return array<string, mixed> */
@@ -262,7 +268,16 @@ class PortalMcpToolExecutor
         return $query;
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * The base ticket summary. The ITIL category is deliberately NOT included
+     * here — callers merge Ticket::categoryFields() around it (the
+     * PaginatesTicketLists trait for the paginated lists, an explicit merge in
+     * getMyTicket) so the category path is computed exactly once per row on each
+     * path. Folding it in here would make the trait's own categoryFields() merge
+     * redundant work on every list row.
+     *
+     * @return array<string, mixed>
+     */
     private function ticketSummary(Ticket $ticket): array
     {
         return [

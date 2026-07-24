@@ -29,6 +29,7 @@ class PortalDashboardController extends Controller
             ->sum('total');
 
         $recentTickets = (clone $ticketQuery)
+            ->with('categoryNode.parent.parent')
             ->latest('updated_at')
             ->limit(5)
             ->get();

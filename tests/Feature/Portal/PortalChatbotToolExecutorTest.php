@@ -63,7 +63,9 @@ class PortalChatbotToolExecutorTest extends TestCase
         $subjects = array_column($result['tickets'], 'subject');
         $this->assertContains('My printer is down', $subjects);
         $this->assertNotContains('SECRET other client issue', $subjects);
-        $this->assertSame(1, $result['count']);
+        // list_tickets now returns the uniform {tickets, pagination} envelope
+        // (psa-ti6n9); total is the in-scope count that `count` used to carry.
+        $this->assertSame(1, $result['pagination']['total']);
     }
 
     public function test_list_tickets_without_company_wide_access_shows_only_own_tickets(): void
@@ -94,7 +96,7 @@ class PortalChatbotToolExecutorTest extends TestCase
         $result = (new PortalChatbotToolExecutor(clientId: $client->id, companyWideAccess: true, personId: $me->id))
             ->execute('list_tickets', ['status' => 'all']);
 
-        $this->assertSame(2, $result['count']);
+        $this->assertSame(2, $result['pagination']['total']);
     }
 
     public function test_get_ticket_refuses_another_clients_ticket(): void

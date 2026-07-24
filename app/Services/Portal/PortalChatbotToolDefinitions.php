@@ -27,7 +27,7 @@ class PortalChatbotToolDefinitions
             ],
             [
                 'name' => 'list_tickets',
-                'description' => 'List support tickets on this account. Returns id, subject, status, priority and dates. Use the ticket id with get_ticket to read the full conversation.',
+                'description' => 'List support tickets on this account. Returns id, subject, status, priority, category and dates. Results are paged and carry a pagination summary (total, returned, has_more). Use the ticket id with get_ticket to read the full conversation.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -38,7 +38,11 @@ class PortalChatbotToolDefinitions
                         ],
                         'limit' => [
                             'type' => 'integer',
-                            'description' => 'Maximum tickets to return (default 15, max 30).',
+                            'description' => 'Maximum tickets to return per page (1-100, default 20).',
+                        ],
+                        'offset' => [
+                            'type' => 'integer',
+                            'description' => 'Number of tickets to skip, for paging through results (default 0).',
                         ],
                     ],
                 ],

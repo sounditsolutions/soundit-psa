@@ -21,13 +21,17 @@ class PortalMcpToolDefinitions
         return [
             [
                 'name' => 'list_my_open_tickets',
-                'description' => 'List your open support tickets (newest activity first). Returns only tickets you are allowed to see.',
+                'description' => 'List your open support tickets (newest activity first). Returns only tickets you are allowed to see. Each ticket includes its category path; the result is paged and carries a pagination summary (total, returned, has_more).',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
                         'limit' => [
                             'type' => 'integer',
-                            'description' => 'Maximum number of tickets to return (1-50, default 25).',
+                            'description' => 'Maximum number of tickets to return per page (1-100, default 20).',
+                        ],
+                        'offset' => [
+                            'type' => 'integer',
+                            'description' => 'Number of tickets to skip, for paging through results (default 0).',
                         ],
                     ],
                     'required' => [],
@@ -49,7 +53,7 @@ class PortalMcpToolDefinitions
             ],
             [
                 'name' => 'search_my_tickets',
-                'description' => 'Search your support tickets by keyword (subject, description, resolution, category, or linked device). Returns only tickets you are allowed to see.',
+                'description' => 'Search your support tickets by keyword (subject, description, resolution, category, or linked device). Returns only tickets you are allowed to see. Each ticket includes its category path; the result is paged and carries a pagination summary (total, returned, has_more).',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -59,7 +63,11 @@ class PortalMcpToolDefinitions
                         ],
                         'limit' => [
                             'type' => 'integer',
-                            'description' => 'Maximum number of tickets to return (1-50, default 25).',
+                            'description' => 'Maximum number of tickets to return per page (1-100, default 20).',
+                        ],
+                        'offset' => [
+                            'type' => 'integer',
+                            'description' => 'Number of tickets to skip, for paging through results (default 0).',
                         ],
                     ],
                     'required' => ['query'],

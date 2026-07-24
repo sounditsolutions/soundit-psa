@@ -46,7 +46,10 @@ class PortalTicketController extends Controller
             $query->where('subject', 'like', '%'.$search.'%');
         }
 
-        $tickets = $query->latest('updated_at')->paginate(25)->withQueryString();
+        $tickets = $query->with('categoryNode.parent.parent')
+            ->latest('updated_at')
+            ->paginate(25)
+            ->withQueryString();
 
         return view('portal.tickets.index', compact('tickets', 'tab', 'search'));
     }

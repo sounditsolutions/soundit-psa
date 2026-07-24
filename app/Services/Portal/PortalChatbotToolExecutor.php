@@ -9,6 +9,7 @@ use App\Models\Asset;
 use App\Models\Contract;
 use App\Models\Invoice;
 use App\Models\Ticket;
+use App\Support\PaginatesTicketLists;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -32,6 +33,11 @@ use Illuminate\Support\Facades\Log;
  */
 class PortalChatbotToolExecutor
 {
+    use PaginatesTicketLists;
+
+    /** Columns ticketSummary() reads; the trait adds category_id + eager-loads the ancestor chain. */
+    private const TICKET_LIST_SELECT = ['id', 'subject', 'status', 'priority', 'created_at', 'updated_at'];
+
     /** Invoice statuses a portal contact may see (mirrors PortalInvoiceController). */
     private const PORTAL_INVOICE_STATUSES = [
         InvoiceStatus::Posted,
@@ -91,7 +97,6 @@ class PortalChatbotToolExecutor
 
     private function listTickets(array $input): array
     {
-        $limit = $this->clampLimit($input['limit'] ?? 15, 30);
         $status = strtolower((string) ($input['status'] ?? 'open'));
 
         $query = $this->ticketScope();
@@ -103,12 +108,14 @@ class PortalChatbotToolExecutor
         }
         // 'all' (or anything else) → no status filter.
 
-        $tickets = $query->orderByDesc('updated_at')->limit($limit)->get();
+        $query->orderByDesc('updated_at');
 
-        return [
-            'count' => $tickets->count(),
-            'tickets' => $tickets->map(fn (Ticket $t) => $this->ticketSummary($t))->all(),
-        ];
+        return $this->paginatedTicketList(
+            $query,
+            $input,
+            self::TICKET_LIST_SELECT,
+            fn (Ticket $t) => $this->ticketSummary($t),
+        );
     }
 
     private function getTicket(array $input): array
@@ -118,7 +125,7 @@ class PortalChatbotToolExecutor
             return ['error' => 'A ticket_id is required.'];
         }
 
-        $ticket = $this->ticketScope()->where('id', $id)->first();
+        $ticket = $this->ticketScope()->with('categoryNode.parent.parent')->where('id', $id)->first();
         if (! $ticket) {
             return ['error' => 'Ticket not found.'];
         }
@@ -135,7 +142,7 @@ class PortalChatbotToolExecutor
             ])
             ->all();
 
-        return array_merge($this->ticketSummary($ticket), [
+        return array_merge($this->ticketSummary($ticket), $ticket->categoryFields(), [
             'description' => $this->clean($ticket->description, 3000),
             'notes' => $notes,
         ]);
@@ -242,6 +249,13 @@ class PortalChatbotToolExecutor
         return $query;
     }
 
+    /**
+     * The base ticket summary. The ITIL category is deliberately NOT included
+     * here — callers merge Ticket::categoryFields() around it (the
+     * PaginatesTicketLists trait for the paginated list, an explicit merge in
+     * getTicket) so the category path is computed exactly once per row on each
+     * path, rather than folded in here and then recomputed by the trait.
+     */
     private function ticketSummary(Ticket $ticket): array
     {
         return [

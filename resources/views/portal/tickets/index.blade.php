@@ -61,6 +61,7 @@
                             <th>Subject</th>
                             <th>Status</th>
                             <th>Priority</th>
+                            <th>Category</th>
                             <th>Created</th>
                             <th>Updated</th>
                         </tr>
@@ -72,6 +73,7 @@
                                 <td>{{ Str::limit($ticket->subject, 80) }}</td>
                                 <td><span class="badge {{ $ticket->status->badgeClass() }}">{{ $ticket->status->label() }}</span></td>
                                 <td><span class="badge {{ $ticket->priority?->badgeClass() ?? 'bg-secondary' }}">{{ $priorityLabel($ticket->priority) }}</span></td>
+                                <td><x-ticket-category-badge :node="$ticket->categoryNode" /></td>
                                 <td class="text-muted small">{{ $ticket->opened_at?->toAppTz()->format('M j, Y') ?? $ticket->created_at->toAppTz()->format('M j, Y') }}</td>
                                 <td class="text-muted small">{{ $ticket->updated_at->toAppTz()->diffForHumans() }}</td>
                             </tr>

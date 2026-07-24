@@ -99,6 +99,7 @@
                                     <th>#</th>
                                     <th>Subject</th>
                                     <th>Status</th>
+                                    <th>Category</th>
                                     <th>Updated</th>
                                 </tr>
                             </thead>
@@ -108,6 +109,7 @@
                                         <td class="text-muted">{{ $ticket->id }}</td>
                                         <td>{{ Str::limit($ticket->subject, 60) }}</td>
                                         <td><span class="badge {{ $ticket->status->badgeClass() }}">{{ $ticket->status->label() }}</span></td>
+                                        <td><x-ticket-category-badge :node="$ticket->categoryNode" /></td>
                                         <td class="text-muted small">{{ $ticket->updated_at->toAppTz()->format('M j') }}</td>
                                     </tr>
                                 @endforeach
