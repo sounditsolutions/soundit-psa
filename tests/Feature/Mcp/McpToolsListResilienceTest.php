@@ -57,7 +57,13 @@ class McpToolsListResilienceTest extends TestCase
         // test still passing against 214 tools. Only ever raise this for a similarly
         // constant, understood cost; a jump that tracks catalog size is the N+1 this
         // guard exists to catch.
-        $this->assertLessThanOrEqual(72, count($queries), $sql);
+        //
+        // Raised 72 -> 76 for the Zorus read surface (psa-5wg2i): ZorusConfig::
+        // isAvailable() is consulted in clientTools(), which tools/list assembles
+        // twice (the published list + the liveness lookup), and zorus_enabled
+        // defaults ON so the encrypted-key read always follows the switch read —
+        // 2 queries x 2 assemblies = +4 flat, independent of catalog size.
+        $this->assertLessThanOrEqual(76, count($queries), $sql);
     }
 
     public function test_tools_list_repairs_dynamic_cipp_schema_before_publishing(): void

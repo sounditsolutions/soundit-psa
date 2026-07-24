@@ -5,10 +5,12 @@ namespace App\Services\Chet;
 use App\Services\Huntress\HuntressReadOnlyToolset;
 use App\Services\Tactical\TacticalReadOnlyToolset;
 use App\Services\Unifi\UnifiReadOnlyToolset;
+use App\Services\Zorus\ZorusReadOnlyToolset;
 use App\Support\HuntressConfig;
 use App\Support\TacticalConfig;
 use App\Support\TeamsBotConfig;
 use App\Support\UnifiConfig;
+use App\Support\ZorusConfig;
 
 class ChetDataSurfaceTools
 {
@@ -48,6 +50,11 @@ class ChetDataSurfaceTools
             $tools = array_merge($tools, UnifiReadOnlyToolset::clientDefinitions());
         }
 
+        // Zorus DNS filtering reads over synced data — OFF=OFF, same as UniFi.
+        if (ZorusConfig::isAvailable()) {
+            $tools = array_merge($tools, ZorusReadOnlyToolset::clientDefinitions());
+        }
+
         return $tools;
     }
 
@@ -66,6 +73,7 @@ class ChetDataSurfaceTools
             TacticalReadOnlyToolset::definitions(),
             HuntressReadOnlyToolset::definitions(),
             UnifiReadOnlyToolset::definitions(),
+            ZorusReadOnlyToolset::definitions(),
         );
     }
 
@@ -74,13 +82,15 @@ class ChetDataSurfaceTools
         return TeamsChatReadToolset::handles($toolName)
             || TacticalReadOnlyToolset::handles($toolName)
             || HuntressReadOnlyToolset::handles($toolName)
-            || UnifiReadOnlyToolset::handles($toolName);
+            || UnifiReadOnlyToolset::handles($toolName)
+            || ZorusReadOnlyToolset::handles($toolName);
     }
 
     public static function requiresClient(string $toolName): bool
     {
         return TacticalReadOnlyToolset::requiresClient($toolName)
             || HuntressReadOnlyToolset::requiresClient($toolName)
-            || UnifiReadOnlyToolset::requiresClient($toolName);
+            || UnifiReadOnlyToolset::requiresClient($toolName)
+            || ZorusReadOnlyToolset::requiresClient($toolName);
     }
 }

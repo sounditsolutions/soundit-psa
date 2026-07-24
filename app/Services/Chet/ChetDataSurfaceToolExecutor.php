@@ -5,6 +5,7 @@ namespace App\Services\Chet;
 use App\Services\Huntress\HuntressReadOnlyToolset;
 use App\Services\Tactical\TacticalReadOnlyToolset;
 use App\Services\Unifi\UnifiReadOnlyToolset;
+use App\Services\Zorus\ZorusReadOnlyToolset;
 
 class ChetDataSurfaceToolExecutor
 {
@@ -28,6 +29,14 @@ class ChetDataSurfaceToolExecutor
             }
 
             return app(UnifiReadOnlyToolset::class)->execute($toolName, $input, $clientId);
+        }
+
+        if (ZorusReadOnlyToolset::handles($toolName)) {
+            if (ZorusReadOnlyToolset::requiresClient($toolName) && $clientId === null) {
+                return ['error' => 'client_id is required for '.$toolName.'.'];
+            }
+
+            return app(ZorusReadOnlyToolset::class)->execute($toolName, $input, $clientId);
         }
 
         if (TeamsChatReadToolset::handles($toolName)) {
