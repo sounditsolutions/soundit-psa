@@ -392,6 +392,9 @@ class TacticalServiceControlPhase4Test extends TestCase
 
         $run = TechnicianRun::where('action_type', 'tactical_stage_start_service')->firstOrFail();
         $this->assertSame(TechnicianRunState::AwaitingApproval, $run->state);
+        // The staged approval card must name the EXACT service (product + UX review, PR #311 R1)
+        // — an approver deciding "start a service" has to see which one.
+        $this->assertStringContainsString('Start service Spooler', (string) $run->proposed_content);
         $this->assertDatabaseHas('technician_action_logs', [
             'action_type' => 'tactical_stage_start_service',
             'result_status' => 'awaiting_approval',

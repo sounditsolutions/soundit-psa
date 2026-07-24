@@ -1525,7 +1525,7 @@ class StaffTacticalActionToolExecutor
             'tactical_shutdown_device' => (new ShutdownAction)->summary([]).' Target: '.$this->targetHostname($asset).'.',
             'tactical_recover_mesh' => 'Recover Mesh agent services on '.$this->targetHostname($asset).'.',
             'tactical_set_maintenance' => (new SetMaintenanceAction)->summary($params).' on '.$this->targetHostname($asset).'.',
-            'tactical_stop_service', 'tactical_restart_service' => $action->summary($params).' on '.$this->targetHostname($asset).'.',
+            'tactical_start_service', 'tactical_stop_service', 'tactical_restart_service' => $action->summary($params).' on '.$this->targetHostname($asset).'.',
             'tactical_install_approved_patches' => 'Install approved Windows patches on '.$this->targetHostname($asset).'.',
             default => "{$stageTool} for ".$this->targetHostname($asset).'.',
         };
