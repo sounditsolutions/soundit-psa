@@ -29,6 +29,7 @@ class StaffCippWriteToolExecutor
 
     /** @var array<string, string> */
     private const STAGED_TO_DIRECT = [
+        'cipp_stage_reset_user_password' => 'cipp_reset_user_password',
         'cipp_stage_disable_user_sign_in' => 'cipp_disable_user_sign_in',
         'cipp_stage_enable_user_sign_in' => 'cipp_enable_user_sign_in',
         'cipp_stage_revoke_user_sessions' => 'cipp_revoke_user_sessions',
@@ -479,6 +480,7 @@ class StaffCippWriteToolExecutor
             self::reassignOneDriveTool(),
             self::stageReassignOneDriveTool(),
             self::resetUserPasswordTool(),
+            self::stageResetUserPasswordTool(),
             self::createUserTool(),
             self::stageCreateUserTool(),
             self::editUserTool(),
@@ -522,8 +524,18 @@ class StaffCippWriteToolExecutor
             return ['error' => 'CIPP is not enabled or configured'];
         }
 
-        if ($name === 'cipp_reset_user_password') {
-            return $this->executeResetPassword($name, $arguments, $clientId, $actorLabel);
+        // Password reset keeps a DEDICATED pair of paths rather than falling through to
+        // the generic stage/direct tail — but it is now shaped like every other family
+        // (psa-g4y9f). The direct executor must stay bespoke because a reset is
+        // NON-IDEMPOTENT: executeDirect()'s alreadyExecuted() short-circuit would answer
+        // a repeat reset with {success, idempotent} and NO PASSWORD, which is a silent
+        // failure on a credential-issuing operation. The staging half is what was
+        // missing: without it the capability had no staged twin at all, so a ':staged'
+        // grant had nothing to dispatch to and the mode gate never engaged.
+        if ((self::STAGED_TO_DIRECT[$name] ?? $name) === 'cipp_reset_user_password') {
+            return isset(self::STAGED_TO_DIRECT[$name])
+                ? $this->stageResetPasswordAction($name, $arguments, $clientId, $actorLabel)
+                : $this->executeResetPassword($name, $arguments, $clientId, $actorLabel);
         }
 
         if (in_array(self::STAGED_TO_DIRECT[$name] ?? $name, self::PROVISIONING_TOOLS, true)) {
@@ -555,6 +567,16 @@ class StaffCippWriteToolExecutor
     {
         if (! self::isStagedActionType($run->action_type) || ! $run->claimForExecution()) {
             return new TechnicianApprovalResult('already_handled');
+        }
+
+        // Password reset needs its own approve path for the same reason it needs its own
+        // direct path: it reads a CREDENTIAL back from upstream. The generic tail calls
+        // executeUpstream(), which returns void, so the temp password would be minted and
+        // then dropped. TechnicianApprovalResult::$secret is the existing one-time
+        // delivery channel (built for cipp_create_user) — the credential reaches the
+        // approving human and is never stored, logged, or audited.
+        if ((self::STAGED_TO_DIRECT[$run->action_type] ?? '') === 'cipp_reset_user_password') {
+            return $this->approveResetPasswordStagedRun($run, $approverId);
         }
 
         if (in_array(self::STAGED_TO_DIRECT[$run->action_type] ?? '', self::PROVISIONING_TOOLS, true)) {
@@ -804,6 +826,221 @@ class StaffCippWriteToolExecutor
     }
 
     /** @return array<string, mixed> */
+    /**
+     * Approve a held password reset (psa-g4y9f). Mints the credential ON APPROVAL and
+     * hands it to the approving human via TechnicianApprovalResult::$secret — the same
+     * one-time channel cipp_create_user uses. The agent that staged the proposal never
+     * sees it, which is the security improvement over the immediate path.
+     *
+     * The run was already claimed by approveStagedRun(), so a second approval of the
+     * same run is short-circuited there as already_handled — that is what preserves
+     * non-idempotency correctly: one approval, one new password.
+     */
+    private function approveResetPasswordStagedRun(TechnicianRun $run, int $approverId): TechnicianApprovalResult
+    {
+        try {
+            $payload = $this->decryptRunPayload($run);
+            if ($payload === null) {
+                $run->releaseClaim();
+
+                return $this->declined('The held payload could not be read; deny this proposal and re-stage it.');
+            }
+
+            $directTool = (string) ($payload['direct_tool'] ?? '');
+            if ((self::STAGED_TO_DIRECT[$run->action_type] ?? null) !== $directTool) {
+                $run->releaseClaim();
+
+                return $this->declined('The held payload does not match this action type; deny this proposal and re-stage it.');
+            }
+
+            $client = Client::find((int) ($payload['client_id'] ?? 0));
+            if (! $client || (int) $client->id !== (int) $run->client_id) {
+                $run->releaseClaim();
+
+                return $this->declined('The proposal\'s client could not be re-verified; deny this proposal and re-stage it.');
+            }
+
+            // Scope is re-resolved at approval time, never trusted from the payload.
+            $tenant = $this->resolver->resolveCippTenant($client);
+            $person = $this->resolver->resolveCippPerson($client->id, $payload['person_id'] ?? null);
+            $ticket = $this->resolver->resolveTicketForHeldAction($client->id, $payload['ticket_id'] ?? null);
+
+            $params = is_array($payload['params'] ?? null) ? $payload['params'] : [];
+            $mustChange = (bool) ($params['must_change'] ?? true);
+            $contentHash = $this->contentHash($run->action_type, $client->id, $person->person->id, $ticket?->id, $params);
+
+            try {
+                $upstream = $this->client->resetUserPassword($tenant, $person->userPrincipalName, $mustChange);
+            } catch (CippClientException $e) {
+                $run->releaseClaim();
+                $this->auditAttempt($run->action_type, 'error', $client->id, $ticket, $person, null, $contentHash, $this->safeFailureSummary($run->action_type, $e), $this->approverLabel($approverId), $run->id, $approverId);
+
+                return $this->declined('CIPP password reset failed; no password was returned. The proposal is still open — retry or deny it.');
+            }
+
+            $results = is_array($upstream['body']['Results'] ?? null) ? $upstream['body']['Results'] : [];
+            $password = (isset($results['copyField']) && is_string($results['copyField']) && $results['copyField'] !== '')
+                ? $results['copyField']
+                : null;
+
+            // must_change is a boolean, not a credential — safe to audit. The password
+            // is NEVER written here (mirrors executeResetPassword).
+            $mustChangeLabel = $mustChange ? 'true' : 'false';
+            $this->auditAttempt($run->action_type, 'executed', $client->id, $ticket, $person, null, $contentHash, "Operator-approved {$run->action_type} executed (must_change={$mustChangeLabel}) for {$person->userPrincipalName}. Temp password delivered once to the approver; never stored.", $this->approverLabel($approverId), $run->id, $approverId);
+            $run->advanceTo(TechnicianRunState::Done);
+
+            $message = 'Reset the Microsoft 365 password for '.$person->userPrincipalName.'.';
+            $message .= $password !== null
+                ? ' The temporary password is shown once here and never stored — relay it over a secure channel.'
+                : ' CIPP reported success but returned no password value; if PwPush is configured the credential may be delivered as a link — verify in CIPP.';
+
+            return new TechnicianApprovalResult(
+                'executed',
+                message: mb_substr($this->redactor->redactString($message), 0, 500),
+                secret: $password,
+            );
+        } catch (CippWriteScopeException $e) {
+            $run->releaseClaim();
+
+            return $this->declined($e->getMessage());
+        }
+    }
+
+    /**
+     * Staged path for the password reset (psa-g4y9f). Mirrors stageAction() with two
+     * deliberate differences, both forced by the fact that a reset mints a credential:
+     *
+     *  1. NO alreadyExecuted() short-circuit. stageAction() answers a repeat with
+     *     "Already executed identical action recently; no new proposal was staged" —
+     *     correct for an idempotent write, WRONG here: a second reset request after one
+     *     already executed must be allowed to stage a fresh proposal, because the point
+     *     of a reset is to mint a NEW password. The liveAwaitingRun() dedupe and the
+     *     proposal cooldown are kept — an identical proposal still pending approval is
+     *     genuinely the same ask, and the cooldown still stops runaway staging.
+     *  2. must_change rides in the held payload, so approval executes the operator's
+     *     reviewed intent rather than re-reading a default.
+     *
+     * No password exists at staging time and none is stored. The credential is minted
+     * on approval and shown to the approving human — never returned to the agent.
+     *
+     * @return array<string, mixed>
+     */
+    private function stageResetPasswordAction(string $tool, array $arguments, int $clientId, string $actorLabel): array
+    {
+        // requireTicket: TRUE — a proposal hangs off a ticket, unlike the direct path.
+        $context = $this->context($tool, $arguments, $clientId, $actorLabel, requireTicket: true);
+        if (isset($context['error'])) {
+            return ['error' => $context['error']];
+        }
+
+        /** @var Client $client */
+        $client = $context['client'];
+        /** @var ResolvedCippPerson $person */
+        $person = $context['person'];
+        /** @var Ticket $ticket */
+        $ticket = $context['ticket'];
+        $reason = (string) $context['reason'];
+        $directTool = self::STAGED_TO_DIRECT[$tool];
+
+        try {
+            $mustChange = array_key_exists('must_change', $arguments)
+                ? $this->booleanValue($arguments['must_change'], 'must_change')
+                : true;
+        } catch (CippWriteScopeException $e) {
+            return ['error' => $e->getMessage()];
+        }
+
+        $params = ['must_change' => $mustChange];
+        $contentHash = $this->contentHash($tool, $client->id, $person->person->id, $ticket->id, $params);
+
+        // Deliberately NO alreadyExecuted() check here — see the docblock.
+        $liveAwaitingRun = $this->liveAwaitingRun($ticket->id, $tool, $contentHash);
+        if ($liveAwaitingRun !== null) {
+            return [
+                'success' => true,
+                'idempotent' => true,
+                'ticket_id' => $ticket->id,
+                'ticket_display_id' => $ticket->display_id,
+                'run_id' => $liveAwaitingRun->id,
+                'message' => 'Already staged; awaiting approval.',
+            ];
+        }
+
+        if ($this->proposalCooldownActive($tool, $ticket, $person, null, self::COOLDOWNS[$directTool] ?? 300)) {
+            $this->auditAttempt($tool, 'blocked', $client->id, $ticket, $person, null, $contentHash, "{$tool} cooldown active; staged proposal refused.", $actorLabel);
+
+            return ['error' => "{$tool} cooldown active for this target; no proposal was staged."];
+        }
+
+        $meta = [
+            'drafted_by' => $actorLabel,
+            'reasons' => [$reason],
+            'direct_tool' => $directTool,
+            'person_id' => $person->person->id,
+            'license_type_id' => null,
+            'redacted_params' => $params,
+            'sensitive_inputs' => $this->sensitiveInputsForStagedAction($directTool, $params),
+            'encrypted_payload' => Crypt::encryptString(json_encode([
+                'direct_tool' => $directTool,
+                'client_id' => $client->id,
+                'person_id' => $person->person->id,
+                'ticket_id' => $ticket->id,
+                'params' => $params,
+            ], JSON_THROW_ON_ERROR)),
+        ];
+
+        $mustChangeLabel = $mustChange ? 'yes' : 'no';
+        $proposedContent = "Reset the Microsoft 365 password for {$person->userPrincipalName}"
+            ." (must change at next sign-in: {$mustChangeLabel}).\nReason: ".$reason;
+
+        $run = TechnicianRun::firstOrCreate(
+            [
+                'ticket_id' => $ticket->id,
+                'action_type' => $tool,
+                'content_hash' => $contentHash,
+            ],
+            [
+                'client_id' => $client->id,
+                'state' => TechnicianRunState::AwaitingApproval,
+                'proposed_content' => $proposedContent,
+                'proposed_meta' => $meta,
+                'confidence' => null,
+                'tokens_used' => 0,
+            ],
+        );
+
+        if (! $run->wasRecentlyCreated && $run->state !== TechnicianRunState::AwaitingApproval) {
+            // A previously superseded/denied proposal for identical content: revive it
+            // rather than dead-end as idempotent (bd psa-k4s0 Root B).
+            $run->update([
+                'state' => TechnicianRunState::AwaitingApproval->value,
+                'proposed_content' => $proposedContent,
+                'proposed_meta' => $meta,
+                'confidence' => null,
+                'tokens_used' => 0,
+            ]);
+        } elseif (! $run->wasRecentlyCreated) {
+            return [
+                'success' => true,
+                'idempotent' => true,
+                'ticket_id' => $ticket->id,
+                'ticket_display_id' => $ticket->display_id,
+                'run_id' => $run->id,
+                'message' => 'Already staged; awaiting approval.',
+            ];
+        }
+
+        $this->auditAttempt($tool, 'awaiting_approval', $client->id, $ticket, $person, null, $contentHash, "MCP staged {$tool}: {$reason}", $actorLabel, $run->id);
+
+        return [
+            'success' => true,
+            'ticket_id' => $ticket->id,
+            'ticket_display_id' => $ticket->display_id,
+            'run_id' => $run->id,
+            'message' => 'Staged for cockpit approval. The temporary password is generated on approval and shown to the approver.',
+        ];
+    }
+
     private function stageAction(string $tool, array $arguments, int $clientId, string $actorLabel): array
     {
         $context = $this->context($tool, $arguments, $clientId, $actorLabel, requireTicket: true);
@@ -4870,6 +5107,17 @@ class StaffCippWriteToolExecutor
             'Reset the Microsoft 365 password for one server-derived CIPP user and return a newly generated temporary password. The password is generated by CIPP/Microsoft and returned only in this tool result — it is never written to any log or audit record. Defaults to must-change-at-next-sign-in. Relay the password to the user over a secure channel and have them change it at first sign-in. Requires an explicit token grant, reason, confirm_upn friction, kill-switch, cooldown, and TechnicianActionLog audit. Consequential: performs a live credential reset immediately.',
             array_merge(self::personProperties(), self::resetUserPasswordProperties()),
             ['person_id', 'confirm_upn', 'reason'],
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function stageResetUserPasswordTool(): array
+    {
+        return self::tool(
+            'cipp_stage_reset_user_password',
+            'Stage a Microsoft 365 password reset for cockpit approval. The MCP call makes NO CIPP upstream call and no password exists yet; approval revalidates client, ticket, tenant, and person scope, then generates the temporary password and shows it to the APPROVING HUMAN — it is never returned to the caller of this tool. Use this when a reset is warranted but a person should confirm it first.',
+            array_merge(self::personProperties(ticket: true), self::resetUserPasswordProperties()),
+            ['person_id', 'ticket_id', 'confirm_upn', 'reason'],
         );
     }
 

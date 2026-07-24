@@ -83,6 +83,7 @@ class TechnicianCockpitController extends Controller
             'tactical_stage_install_approved_patches' => $service->approveStagedTacticalAction($run, (int) auth()->id()),
             'tactical_stage_reset_patch_policies',
             'tactical_stage_run_policy_task_all' => $service->approveStagedTacticalAdminAction($run, (int) auth()->id()),
+            'cipp_stage_reset_user_password',
             'cipp_stage_disable_user_sign_in',
             'cipp_stage_enable_user_sign_in',
             'cipp_stage_revoke_user_sessions',
