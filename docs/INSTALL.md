@@ -1024,11 +1024,15 @@ console the UI account administers, so no per-site VPN or network reachability i
 1. Sign in at [unifi.ui.com](https://unifi.ui.com) with the account that administers your
    clients' consoles, and create an API key (**Settings > Admins & Users >** your admin
    **> Control Plane API Key**)
-2. Settings > Integrations > UniFi — paste the **API Key** and switch UniFi **on**
-   (`unifi_enabled`, off by default)
-3. Map each client to its UniFi site — `unifi_site_id`, plus `unifi_host_id` for its
-   console. The `unifi_list_sites` MCP tool lists every available site annotated with its
-   mapped PSA client, which is the easiest way to find the ids.
+2. Settings > Integrations > UniFi (RMM tab) — paste the **API Key**, click **Test
+   Connection**, and switch UniFi **on** (`unifi_enabled`, off by default). An optional
+   **Base URL** override is available for non-default endpoints; blank means the default.
+3. Click **Site Mapping** to map each UniFi site to its PSA client (**Auto-Match by
+   Name** matches sites whose UniFi display name equals a client name). Saving a mapping
+   stores the pair `unifi_site_id` + `unifi_host_id` — the owning console, which device
+   reads require; the console id is resolved server-side from the vendor's site listing,
+   never from the form. The `unifi_list_sites` MCP tool shows the same list agent-side,
+   annotated with each site's mapped PSA client.
 
 **Settings keys:** `unifi_api_key` (encrypted), `unifi_enabled`, `unifi_base_url`
 (optional override, defaults to `https://api.ui.com`).

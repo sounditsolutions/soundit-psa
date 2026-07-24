@@ -409,6 +409,13 @@ Route::middleware('auth')->group(function () {
     Route::post('/settings/integrations/huntress/cw', [IntegrationsController::class, 'updateHuntressCw'])->name('settings.integrations.huntress-cw.update');
     Route::post('/settings/integrations/huntress/cw/generate-key', [IntegrationsController::class, 'generateHuntressCwKey'])->name('settings.integrations.huntress-cw.generate-key');
 
+    // UniFi credentials + Site Mapping (writes clients.unifi_site_id + unifi_host_id as a pair)
+    Route::get('/settings/integrations/unifi/sites', [\App\Http\Controllers\Web\UnifiSiteController::class, 'index'])->name('settings.unifi-sites.index');
+    Route::post('/settings/integrations/unifi/sites', [\App\Http\Controllers\Web\UnifiSiteController::class, 'update'])->name('settings.unifi-sites.update');
+    Route::get('/settings/integrations/unifi/sites/auto-match', [\App\Http\Controllers\Web\UnifiSiteController::class, 'autoMatch'])->name('settings.unifi-sites.auto-match');
+    Route::post('/settings/integrations/unifi', [IntegrationsController::class, 'updateUnifi'])->name('settings.integrations.unifi.update');
+    Route::post('/settings/integrations/unifi/test', [IntegrationsController::class, 'testUnifi'])->name('settings.integrations.unifi.test');
+
     // Settings — Servosity
     Route::post('/settings/integrations/servosity', [IntegrationsController::class, 'updateServosity'])->name('settings.integrations.servosity.update');
     Route::post('/settings/integrations/servosity/test', [IntegrationsController::class, 'testServosity'])->name('settings.integrations.servosity.test');

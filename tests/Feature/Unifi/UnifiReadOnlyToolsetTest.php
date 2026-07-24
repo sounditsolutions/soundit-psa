@@ -219,16 +219,17 @@ class UnifiReadOnlyToolsetTest extends TestCase
 
     public function test_the_not_mapped_error_names_a_remediation_that_actually_exists(): void
     {
-        // UX review (psa-zsn8p) R1: the copy pointed the operator at a
-        // "Settings > UniFi Site Mapping" screen this PR does not ship, so the recovery
-        // loop dead-ended. An agent-facing error must name a path that exists today.
+        // UX review (psa-zsn8p) R1 set the rule: an agent-facing error must name a
+        // recovery path that exists in the build. Originally that meant NOT naming a
+        // settings screen (none shipped); psa-g5l80 shipped Settings → Integrations →
+        // UniFi → Site Mapping, so the copy now points there and this test pins it.
         $client = Client::factory()->create(['name' => 'Acme Co', 'unifi_site_id' => null]);
         $this->bindClientReturning([]);
 
         $error = $this->toolset()->execute('unifi_get_site_health', ['client_id' => $client->id])['error'];
 
-        $this->assertStringNotContainsStringIgnoringCase('Settings >', $error, 'must not advertise a settings screen that does not exist');
-        $this->assertStringContainsString('unifi_site_id', $error, 'name the field an operator actually sets');
+        $this->assertStringContainsString('Site Mapping', $error, 'name the mapping screen that now exists (psa-g5l80)');
+        $this->assertStringContainsString('unifi_site_id', $error, 'name the field the mapping writes');
         $this->assertStringContainsString('unifi_list_sites', $error, 'and the tool that discovers the id');
     }
 

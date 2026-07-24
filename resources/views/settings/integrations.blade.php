@@ -1199,6 +1199,97 @@
             </div>
         </div>
 
+        {{-- UniFi Site Manager Card --}}
+        <div class="card card-static shadow-sm mb-4">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <div>
+                    <i class="bi bi-router me-2"></i>UniFi Site Manager
+                </div>
+                @if($unifiConnected ?? false)
+                    <span class="badge bg-success">Connected</span>
+                @elseif($unifiConfigured ?? false)
+                    <span class="badge bg-warning text-dark">Not tested</span>
+                @else
+                    <span class="badge bg-secondary">Not configured</span>
+                @endif
+            </div>
+            <div class="card-body">
+                <p class="text-muted small mb-3">
+                    Read-only network telemetry from the UniFi Site Manager cloud API &mdash; WAN/ISP health, device
+                    status and site metrics, surfaced as MCP tools for the AI technician. One API key covers every
+                    console the UniFi account administers; no per-site network reachability is needed.
+                </p>
+                <div class="alert alert-light border small mb-3">
+                    <strong>Setup:</strong>
+                    <ol class="mb-0 ps-3 mt-1">
+                        <li>Sign in at <strong>unifi.ui.com</strong> with the account that administers your clients' consoles, and create an API key (<strong>Settings &rarr; Admins &amp; Users &rarr;</strong> your admin <strong>&rarr; Control Plane API Key</strong>).</li>
+                        <li>Enter the API Key below and click <strong>Save</strong>, then <strong>Test Connection</strong>.</li>
+                        <li>Click <strong>Site Mapping</strong> to map UniFi sites to your clients (or use <strong>Auto-Match by Name</strong>). Mapping a site also records its console, which device reads require.</li>
+                        <li>Switch the integration <strong>on</strong> &mdash; it ships off, and telemetry tools are only offered to the AI for mapped clients.</li>
+                    </ol>
+                </div>
+
+                <form method="POST" action="{{ route('settings.integrations.unifi.update') }}">
+                    @csrf
+
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label for="unifi_api_key" class="form-label">API Key</label>
+                            <input type="password"
+                                   class="form-control"
+                                   id="unifi_api_key"
+                                   name="api_key"
+                                   value=""
+                                   placeholder="{{ ($unifiConfigured ?? false) ? '••••••••' : 'Enter API key' }}">
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label for="unifi_base_url" class="form-label">Base URL <span class="text-muted">(optional override)</span></label>
+                            <input type="url"
+                                   class="form-control"
+                                   id="unifi_base_url"
+                                   name="base_url"
+                                   value="{{ $unifiBaseUrl }}"
+                                   placeholder="https://api.ui.com">
+                        </div>
+                    </div>
+
+                    <div class="d-flex gap-2">
+                        <button type="submit" class="btn btn-primary btn-sm">Save UniFi Settings</button>
+                        <button type="button" class="btn btn-outline-secondary" id="test-unifi-btn"
+                                onclick="testConnection('unifi')">
+                            <i class="bi bi-plug me-1"></i>Test Connection
+                        </button>
+                    </div>
+                    <div id="test-result-unifi" class="alert mt-2" style="display:none;"></div>
+                </form>
+
+                @if($unifiConnected ?? false)
+                <div class="mt-3 pt-3 border-top">
+                    <a href="{{ route('settings.unifi-sites.index') }}" class="btn btn-outline-primary btn-sm">
+                        <i class="bi bi-diagram-3 me-1"></i>Site Mapping
+                    </a>
+                </div>
+                @endif
+
+                @if($unifiConfigured)
+                <div class="border-top pt-3 mt-3">
+                    <form method="POST" action="{{ route('settings.integrations.toggle') }}">
+                        @csrf
+                        <input type="hidden" name="integration" value="unifi">
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" name="enabled" value="1"
+                                   id="unifi_enabled" {{ $unifiEnabled ? 'checked' : '' }} onchange="this.form.submit()">
+                            <label class="form-check-label" for="unifi_enabled">
+                                Integration enabled
+                                <small class="text-muted d-block">Turning this off also withdraws UniFi tools from MCP &mdash; turn it back on to restore them.</small>
+                            </label>
+                        </div>
+                    </form>
+                </div>
+                @endif
+            </div>
+        </div>
+
         </div>{{-- /rmm tab --}}
 
         {{-- ============================================================ --}}
@@ -4174,6 +4265,7 @@ function testConnection(service) {
         mesh: '{{ route("settings.integrations.mesh.test") }}',
         cipp: '{{ route("settings.integrations.cipp.test") }}',
         huntress: '{{ route("settings.integrations.huntress.test") }}',
+        unifi: '{{ route("settings.integrations.unifi.test") }}',
         servosity: '{{ route("settings.integrations.servosity.test") }}',
         controld: '{{ route("settings.integrations.controld.test") }}',
         zorus: '{{ route("settings.integrations.zorus.test") }}',

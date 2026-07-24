@@ -185,4 +185,51 @@ class UnifiClientReadTest extends TestCase
 
         $client->listSites();
     }
+
+    // ── allSites: the operator-surface cursor walk (psa-g5l80) ─────────────────
+
+    private function sitesPage(array $siteIds, ?string $nextToken): Response
+    {
+        $rows = array_map(fn (string $id) => ['siteId' => $id, 'hostId' => 'host-1'], $siteIds);
+
+        return new Response(200, ['Content-Type' => 'application/json'], json_encode([
+            'data' => $rows,
+            'httpStatusCode' => 200,
+            'traceId' => 'trace',
+            'nextToken' => $nextToken,
+        ]));
+    }
+
+    public function test_all_sites_walks_the_cursor_and_concatenates_every_page(): void
+    {
+        $client = $this->clientReturning([
+            $this->sitesPage(['site-1', 'site-2'], 'cursor-2'),
+            $this->sitesPage(['site-3'], null),
+        ]);
+
+        $rows = $client->allSites();
+
+        $this->assertSame(['site-1', 'site-2', 'site-3'], array_column($rows, 'siteId'));
+
+        // The second request must carry the first page's top-level nextToken as the
+        // cursor param — the vendor's cursor is NOT nested under `pagination`.
+        parse_str($this->lastRequest()->getUri()->getQuery(), $query);
+        $this->assertSame('cursor-2', $query['nextToken']);
+    }
+
+    public function test_all_sites_throws_on_cap_exhaustion_rather_than_returning_a_partial_list(): void
+    {
+        // A mapping screen missing sites it never fetched would read as "those sites
+        // are gone" — cap exhaustion with a cursor still outstanding must SCREAM.
+        $client = $this->clientReturning([
+            $this->sitesPage(['site-1'], 'cursor-2'),
+            $this->sitesPage(['site-2'], 'cursor-3'),
+            $this->sitesPage(['site-3'], 'cursor-4'),
+        ]);
+
+        $this->expectException(UnifiClientException::class);
+        $this->expectExceptionMessage('incomplete');
+
+        $client->allSites(maxPages: 2);
+    }
 }

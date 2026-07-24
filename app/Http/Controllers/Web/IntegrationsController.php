@@ -29,6 +29,7 @@ use App\Support\T2TConfig;
 use App\Support\TacticalConfig;
 use App\Support\TechnicianConfig;
 use App\Support\TranscriptionConfig;
+use App\Support\UnifiConfig;
 use App\Support\ZorusConfig;
 use GuzzleHttp\Client as GuzzleClient;
 use Illuminate\Contracts\Cache\Repository as CacheInterface;
@@ -53,11 +54,14 @@ class IntegrationsController extends Controller
      * AI just lost those tools, and "not offered" looks identical to "broken" from the
      * agent's side.
      *
-     * Deliberately NOT applied to the whole $allowed list. Only these six are gated at
+     * Deliberately NOT applied to the whole $allowed list. Six of these are gated at
      * TriageToolDefinitions' publication choke point; the rest (stripe, graph, plivo,
      * t2t, huntress, …) touch no AI surface, and claiming otherwise would send the
      * operator hunting for a tool loss that never happened. ControlD and Zorus publish
-     * to triage ONLY — the staff Assistant and MCP never carried their tools.
+     * to triage ONLY — the staff Assistant and MCP never carried their tools. UniFi's
+     * gate lives at a different choke point (ChetDataSurfaceTools, on
+     * UnifiConfig::isAvailable()) and publishes to the staff MCP surface ONLY — same
+     * operator consequence, so it is named here too.
      */
     private const AI_GATING_INTEGRATIONS = [
         'ninja' => 'AI triage, the Assistant, and MCP',
@@ -66,6 +70,7 @@ class IntegrationsController extends Controller
         'cipp' => 'AI triage, the Assistant, and MCP',
         'controld' => 'AI triage',
         'zorus' => 'AI triage',
+        'unifi' => 'MCP',
     ];
 
     public function index(NinjaClient $ninja, LevelClient $level)
@@ -124,6 +129,13 @@ class IntegrationsController extends Controller
         // Huntress
         $huntressConfigured = HuntressConfig::isConfigured();
         $huntressConnected = (bool) $fmtTs(Setting::getValue('huntress_connected_at'));
+
+        // UniFi
+        $unifiConfigured = UnifiConfig::isConfigured();
+        $unifiConnected = (bool) $fmtTs(Setting::getValue('unifi_connected_at'));
+        // Raw stored override (may be blank) — the card shows the default as a
+        // placeholder, so a blank input honestly means "using the default".
+        $unifiBaseUrl = Setting::getValue('unifi_base_url', '');
 
         // Servosity
         $servosityConfigured = ServosityConfig::isConfigured();
@@ -242,6 +254,7 @@ class IntegrationsController extends Controller
         $cippDeviceSyncEnabled = CippConfig::isDeviceSyncEnabled();
         $cippMcpCatalogSyncEnabled = CippConfig::isMcpCatalogSyncEnabled();
         $huntressEnabled = HuntressConfig::isEnabled();
+        $unifiEnabled = UnifiConfig::isEnabled();
         $servosityEnabled = ServosityConfig::isEnabled();
         $controldEnabled = ControlDConfig::isEnabled();
         $zorusEnabled = ZorusConfig::isEnabled();
@@ -421,6 +434,7 @@ class IntegrationsController extends Controller
             'levelHasApiKey', 'levelConnected', 'levelConnectedAt', 'levelWebhookSecret', 'levelHasInstallAccountToken', 'levelEnabled',
             'meshHasApiKey', 'meshBaseUrl', 'meshConnected', 'meshEnabled',
             'huntressConfigured', 'huntressConnected', 'huntressEnabled',
+            'unifiConfigured', 'unifiConnected', 'unifiBaseUrl', 'unifiEnabled',
             'servosityConfigured', 'servosityConnected', 'servosityConnectedAt', 'servosityEnabled',
             'controldConfigured', 'controldConnected', 'controldEnabled',
             'zorusConfigured', 'zorusConnected', 'zorusEnabled',
@@ -456,7 +470,7 @@ class IntegrationsController extends Controller
     public function toggleIntegration(Request $request)
     {
         $allowed = [
-            'ninja', 'level', 'mesh', 'cipp', 'cipp_mcp', 'cipp_contact_sync', 'cipp_device_sync', 'cipp_mcp_catalog_sync', 'huntress', 'servosity', 'controld', 'zorus', 'appriver', 'printix',
+            'ninja', 'level', 'mesh', 'cipp', 'cipp_mcp', 'cipp_contact_sync', 'cipp_device_sync', 'cipp_mcp_catalog_sync', 'huntress', 'unifi', 'servosity', 'controld', 'zorus', 'appriver', 'printix',
             'plivo', 'graph', 'stripe', 't2t', 'ai', 'screenconnect', 'tactical',
         ];
 
@@ -1332,6 +1346,49 @@ class IntegrationsController extends Controller
         return redirect()->route('settings.integrations')
             ->with('success', 'New Huntress CW credentials generated. Copy them into the Huntress portal — the private key will not be shown again.')
             ->with('huntress_cw_generated', $key);
+    }
+
+    // --- UniFi ---
+
+    public function updateUnifi(Request $request)
+    {
+        $validated = $request->validate([
+            'api_key' => 'nullable|string|min:1|max:500',
+            'base_url' => 'nullable|url|max:255',
+        ]);
+
+        if (! empty($validated['api_key'])) {
+            Setting::setEncrypted('unifi_api_key', $validated['api_key']);
+        }
+
+        // Unlike the key (blank = keep the stored secret), a blank base URL CLEARS the
+        // override — it is an optional escape hatch, and UnifiConfig::baseUrl() falls
+        // back to the default cloud endpoint when the stored value is empty.
+        Setting::setValue('unifi_base_url', trim((string) ($validated['base_url'] ?? '')));
+
+        return redirect()->route('settings.integrations')
+            ->with('success', 'UniFi settings saved.');
+    }
+
+    public function testUnifi()
+    {
+        if (! UnifiConfig::isConfigured()) {
+            return response()->json(['success' => false, 'message' => 'API key not configured.']);
+        }
+
+        try {
+            if (app(\App\Services\Unifi\UnifiClient::class)->isHealthy()) {
+                Setting::setValue('unifi_connected_at', now()->toDateTimeString());
+
+                return response()->json(['success' => true, 'message' => 'Connected to UniFi Site Manager!']);
+            }
+
+            return response()->json(['success' => false, 'message' => 'UniFi API returned an error. Check your API key.']);
+        } catch (\Throwable $e) {
+            Log::warning('[UniFi] Test connection failed', ['error' => $e->getMessage()]);
+
+            return response()->json(['success' => false, 'message' => 'Could not connect to UniFi. Check your API key and base URL.']);
+        }
     }
 
     // --- Servosity ---

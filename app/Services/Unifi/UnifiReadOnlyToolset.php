@@ -506,11 +506,11 @@ class UnifiReadOnlyToolset
         }
 
         if (empty($client->unifi_site_id)) {
-            // Name a remediation that EXISTS. This used to point at a "Settings > UniFi
-            // Site Mapping" screen, which no build ships yet (psa-g5l80) — an agent that
-            // followed it dead-ended. Until that page lands, the real path is: discover
-            // the id with unifi_list_sites, then set the column.
-            return ['error' => "{$client->name} is not mapped to a UniFi site. Run unifi_list_sites to find the site id, then have an operator set clients.unifi_site_id (and unifi_host_id for device reads) for this client. There is no self-service mapping screen yet, so this needs someone with database or console access."];
+            // Name a remediation that EXISTS (UX rule from psa-zsn8p R1 — this copy
+            // once pointed at a screen no build shipped and dead-ended the agent).
+            // psa-g5l80 shipped that screen: Settings → Integrations → UniFi → Site
+            // Mapping, which writes clients.unifi_site_id + unifi_host_id as a pair.
+            return ['error' => "{$client->name} is not mapped to a UniFi site. An operator can map it in Settings → Integrations → UniFi → Site Mapping, which sets clients.unifi_site_id (and unifi_host_id, needed for device reads) from the live site list. To find the right site first, run unifi_list_sites — it annotates every site with its mapped PSA client."];
         }
 
         return $client;

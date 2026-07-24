@@ -147,6 +147,47 @@ class UnifiClient
     }
 
     /**
+     * Every site row across all administered consoles, walking the nextToken cursor.
+     *
+     * Built for OPERATOR surfaces (the Settings site-mapping page, psa-g5l80) that need
+     * the whole account picture at once. The termination contract matches
+     * UnifiReadOnlyToolset::walkPages: a null/absent top-level `nextToken` means the
+     * cursor is exhausted, and hitting $maxPages with a cursor still outstanding THROWS
+     * rather than returning a partial list — a mapping screen missing sites it never
+     * fetched would read as "those sites are gone" (psa-smns1 / psa-2mgit R2 rejected
+     * exactly that confident-partial-answer shape on the tool surface).
+     *
+     * @return array<int, array<string, mixed>> raw site rows exactly as the vendor shapes them
+     */
+    public function allSites(int $maxPages = 20): array
+    {
+        $rows = [];
+        $params = ['pageSize' => '100'];
+
+        for ($page = 0; $page < $maxPages; $page++) {
+            $response = $this->listSites($params);
+
+            foreach ((array) $response['data'] as $row) {
+                if (is_array($row)) {
+                    $rows[] = $row;
+                }
+            }
+
+            $next = $response['nextToken'] ?? null;
+            if (! is_string($next) || $next === '') {
+                return $rows;
+            }
+
+            $params['nextToken'] = $next;
+        }
+
+        throw new UnifiClientException(
+            "UniFi returned more than {$maxPages} pages of sites and the scan was stopped at that safe limit, ".
+            'so this answer would be incomplete. Refusing rather than reporting a partial result.'
+        );
+    }
+
+    /**
      * Flatten the host-grouped /v1/devices payload into a device list, carrying the
      * owning host's id and name down onto each row so a flat device stays attributable.
      *
