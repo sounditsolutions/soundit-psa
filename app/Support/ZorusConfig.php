@@ -23,4 +23,14 @@ class ZorusConfig
     {
         return ! empty(self::get('api_key'));
     }
+
+    /**
+     * Both the switch and the credentials — the predicate the AI tool surface
+     * gates on (OFF=OFF, psa-wzjzz): switching Zorus off withdraws its tools,
+     * it does not merely stop the syncs.
+     */
+    public static function isAvailable(): bool
+    {
+        return self::isEnabled() && self::isConfigured();
+    }
 }

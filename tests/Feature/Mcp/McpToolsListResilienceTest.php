@@ -64,7 +64,14 @@ class McpToolsListResilienceTest extends TestCase
         // screenconnect_enabled read while the integration is off — but the request
         // assembles the client-scoped surface twice (the published list and the
         // liveness lookup), so the flat cost is +2, independent of catalog size.
-        $this->assertLessThanOrEqual(74, count($queries), $sql);
+        //
+        // Raised 74 -> 78 for the Zorus read surface (psa-5wg2i): ZorusConfig::
+        // isAvailable() is consulted in clientTools(), which tools/list assembles
+        // twice (the published list + the liveness lookup), and zorus_enabled
+        // defaults ON so the encrypted-key read always follows the switch read —
+        // 2 queries x 2 assemblies = +4 flat, independent of catalog size. The two
+        // surfaces are additive: 72 base + 2 (ScreenConnect) + 4 (Zorus) = 78.
+        $this->assertLessThanOrEqual(78, count($queries), $sql);
     }
 
     public function test_tools_list_repairs_dynamic_cipp_schema_before_publishing(): void
