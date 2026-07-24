@@ -451,6 +451,77 @@ class CippStagedPasswordResetTest extends TestCase
         $this->assertNull($approval->json('secret'));
     }
 
+    /**
+     * SECURITY review (psa-6dnfd) R3: the cooldown lookup used an unanchored LIKE on a
+     * summary whose target key has no delimiter, so "person #1" matched "person #10:".
+     * Within one client that falsely blocks a reset for the WRONG person.
+     */
+    public function test_a_reset_for_one_person_does_not_block_a_different_person(): void
+    {
+        $this->configureCipp();
+        $this->configureAiActor();
+        $fixture = $this->cippFixture();
+
+        // A second person on the same client whose id extends the first's digits.
+        $others = [];
+        for ($i = 0; $i < 12; $i++) {
+            $others[] = Person::create([
+                'client_id' => $fixture['client']->id,
+                'person_type' => PersonType::User,
+                'first_name' => 'User'.$i,
+                'last_name' => 'Acme',
+                'email' => "user{$i}@acme.example",
+                'cipp_user_id' => "user-x{$i}",
+                'cipp_upn' => "user{$i}@acme.example",
+                'is_active' => true,
+            ]);
+        }
+        $extended = null;
+        foreach ($others as $p) {
+            if (str_starts_with((string) $p->id, (string) $fixture['contact']->id) && $p->id !== $fixture['contact']->id) {
+                $extended = $p;
+                break;
+            }
+        }
+        $this->assertNotNull($extended, 'need a person whose id extends the first as a string prefix');
+
+        // Reset the EXTENDED-id person first (e.g. person #10).
+        $first = Mockery::mock(CippRestWriteClient::class);
+        $first->shouldReceive('resetUserPassword')->once()
+            ->andReturn(['success' => true, 'status' => 200, 'body' => [
+                'Results' => ['copyField' => 'Other-Pass-1!', 'state' => 'success'],
+            ]]);
+        $this->app->instance(CippRestWriteClient::class, $first);
+
+        $token = McpConfig::rotateStaffToken(allowedTools: [self::TOOL.':immediate'], label: 'opsbot');
+        $this->callTool($token, self::TOOL, [
+            'client_id' => $fixture['client']->id,
+            'person_id' => $extended->id,
+            'confirm_upn' => $extended->cipp_upn,
+            'reason' => 'Reset the other user.',
+            'staged' => false,
+        ])->assertOk();
+
+        // The SHORTER-id person (e.g. person #1) must NOT be blocked by it.
+        $second = Mockery::mock(CippRestWriteClient::class);
+        $second->shouldReceive('resetUserPassword')->once()
+            ->andReturn(['success' => true, 'status' => 200, 'body' => [
+                'Results' => ['copyField' => 'Mine-Pass-1!', 'state' => 'success'],
+            ]]);
+        $this->app->instance(CippRestWriteClient::class, $second);
+
+        $response = $this->callTool($token, self::TOOL, [
+            'client_id' => $fixture['client']->id,
+            'person_id' => $fixture['contact']->id,
+            'confirm_upn' => 'alex@acme.example',
+            'reason' => 'Different person entirely.',
+            'staged' => false,
+        ]);
+
+        $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
+        $this->assertSame('Mine-Pass-1!', $this->decoded($response)['temporary_password'] ?? null);
+    }
+
     // ── review findings: the lists that must agree, and the agent contract ────
 
     /**

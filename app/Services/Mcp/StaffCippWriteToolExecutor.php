@@ -4092,7 +4092,14 @@ class StaffCippWriteToolExecutor
             ->where('client_id', $clientId)
             ->where('created_at', '>=', now()->subSeconds($cooldownSeconds))
             ->where('result_status', 'executed')
-            ->where('summary', 'like', '%'.$this->targetKey($person, null).'%')
+            // PREFIX-anchored, not '%...%' (security review psa-6dnfd R3). targetKey()
+            // returns "person #<id>" with no delimiter, and auditSummary() prefixes the
+            // summary with "<targetKey>: ". An unanchored LIKE therefore matches across
+            // people — "person #1" matches "person #10:" — and also matches a target key
+            // that merely appears inside another entry's free-text reason. Both would
+            // falsely block a reset for the wrong user. Anchoring to the real prefix
+            // "person #<id>:" makes the match exact and index-friendly.
+            ->where('summary', 'like', $this->targetKey($person, null).':%')
             ->exists();
     }
 
