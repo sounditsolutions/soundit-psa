@@ -12,12 +12,14 @@ use App\Models\Alert;
 use App\Models\Client;
 use App\Models\PhoneCall;
 use App\Models\Ticket;
+use App\Models\TicketCategory;
 use App\Models\User;
 use App\Services\Briefing\BriefingAssembler;
 use App\Support\AppTimezone;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Str;
 use Tests\TestCase;
 
 class BriefingAssemblerTest extends TestCase
@@ -240,5 +242,84 @@ class BriefingAssemblerTest extends TestCase
         $this->assertFalse($content->isEmpty);
         $this->assertFalse($content->aiSuggestionsIncluded);
         $this->assertStringNotContainsString('Suggested next actions', $content->body);
+    }
+
+    public function test_ticket_rows_show_taxonomy_category_in_both_digest_sections(): void
+    {
+        $tech = User::factory()->tech()->create();
+        $client = Client::factory()->create(['primary_tech_id' => $tech->id, 'is_active' => true]);
+
+        $root = TicketCategory::create(['name' => 'Hardware']);
+        $mid = TicketCategory::create(['name' => 'Laptop', 'parent_id' => $root->id]);
+        $openNode = TicketCategory::create(['name' => 'Battery swelling', 'parent_id' => $mid->id]);
+        $slaNode = TicketCategory::create(['name' => 'Overheating', 'parent_id' => $mid->id]);
+
+        // Categorised, due in the future → renders only in the "open tickets" section.
+        $this->openTicket($tech, $client, [
+            'subject' => 'Battery bulging',
+            'category_id' => $openNode->id,
+            'due_at' => now()->addDays(3),
+        ]);
+
+        // Categorised, past due + unresolved → SLA-risk today (also appears in the open list).
+        $this->openTicket($tech, $client, [
+            'subject' => 'Fan screaming',
+            'category_id' => $slaNode->id,
+            'due_at' => now()->subHour(),
+        ]);
+
+        // Uncategorised → must still render, with no stray category segment, never error.
+        $uncat = $this->openTicket($tech, $client, [
+            'subject' => 'No category here',
+            'category_id' => null,
+            'due_at' => now()->addDays(3),
+        ]);
+
+        $body = $this->assembler()->assemble($tech)->body;
+
+        // The SLA-risk section carries the SLA ticket's FULL taxonomy path.
+        $slaBlock = Str::between($body, '⚠️ SLA risk today', '### Your open tickets');
+        $this->assertStringContainsString('Hardware / Laptop / Overheating', $slaBlock);
+
+        // The open-tickets section carries the open ticket's full path.
+        $openBlock = Str::after($body, '### Your open tickets');
+        $this->assertStringContainsString('Hardware / Laptop / Battery swelling', $openBlock);
+
+        // Null-safe: the uncategorised ticket renders, and the human digest adds no category noise.
+        $this->assertStringContainsString($uncat->display_id, $body);
+        $this->assertStringNotContainsString('uncategorized', $body);
+    }
+
+    public function test_ai_context_includes_ticket_category(): void
+    {
+        $tech = User::factory()->tech()->create();
+        $client = Client::factory()->create(['primary_tech_id' => $tech->id, 'is_active' => true]);
+
+        $root = TicketCategory::create(['name' => 'Software']);
+        $leaf = TicketCategory::create(['name' => 'Outlook crash', 'parent_id' => $root->id]);
+
+        $this->openTicket($tech, $client, [
+            'subject' => 'Outlook keeps crashing',
+            'category_id' => $leaf->id,
+            'due_at' => now()->subHour(), // also SLA-risk
+        ]);
+        $this->openTicket($tech, $client, [
+            'subject' => 'No node ticket',
+            'category_id' => null,
+            'due_at' => now()->addDays(2),
+        ]);
+
+        // Mirror what assemble() passes into buildAiContext: eager-loaded collections.
+        $open = Ticket::open()->assignedTo($tech->id)->with('categoryNode.parent.parent')->get();
+        $sla = $open->filter(fn (Ticket $t) => $t->due_at !== null && $t->due_at->lte(now()))->values();
+
+        $method = new \ReflectionMethod(BriefingAssembler::class, 'buildAiContext');
+        $method->setAccessible(true);
+        $context = $method->invoke($this->assembler(), $open, $sla, collect(), collect());
+
+        // The agent sees the full path for a classified ticket…
+        $this->assertStringContainsString('Software / Outlook crash', $context);
+        // …and an explicit marker when a ticket carries no taxonomy node.
+        $this->assertStringContainsString('uncategorized', $context);
     }
 }

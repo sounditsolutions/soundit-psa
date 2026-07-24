@@ -25,6 +25,7 @@ use App\Models\Setting;
 use App\Models\TechnicianActionLog;
 use App\Models\TechnicianRun;
 use App\Models\Ticket;
+use App\Models\TicketCategory;
 use App\Models\TicketNote;
 use App\Models\User;
 use App\Services\Agent\TechnicianAgent;
@@ -1270,5 +1271,76 @@ class ClientSituationContextTest extends TestCase
         $this->assertStringContainsString('PLAIN-OPEN-SIBLING', $block);
         $this->assertStringNotContainsString('Already in motion', $block);
         $this->assertStringNotContainsString('👤', $block);
+    }
+
+    // ── psa-717bn.6: the taxonomy category rides every ticket-list render site ──
+
+    public function test_open_tickets_context_shows_taxonomy_category(): void
+    {
+        $this->enableFlag();
+        $client = Client::factory()->create();
+        $current = $this->current($client);
+
+        $root = TicketCategory::create(['name' => 'Network']);
+        $node = TicketCategory::create(['name' => 'VPN', 'parent_id' => $root->id]);
+        $this->sibling($client, ['subject' => 'VPN keeps dropping', 'category_id' => $node->id]);
+
+        $block = (string) $this->situationBlock(
+            ContextBuilder::buildForTicket($current, includeClientSituation: true)
+        );
+
+        $this->assertStringContainsString('Open tickets (1):', $block);
+        $this->assertStringContainsString('Network / VPN', $block);
+    }
+
+    public function test_closed_history_context_shows_taxonomy_category(): void
+    {
+        $this->enableFlag();
+        $client = Client::factory()->create();
+        $current = $this->current($client);
+
+        $root = TicketCategory::create(['name' => 'Email']);
+        $node = TicketCategory::create(['name' => 'Spam filter', 'parent_id' => $root->id]);
+        $this->sibling($client, [
+            'subject' => 'Legit mail quarantined',
+            'status' => TicketStatus::Closed,
+            'category_id' => $node->id,
+            'resolved_at' => now()->subDay(),
+        ]);
+
+        $block = (string) $this->situationBlock(
+            ContextBuilder::buildForTicket($current, includeClientSituation: true)
+        );
+
+        // A closed sibling is absent from the open list, so a path here proves the
+        // closed-history render site carries the taxonomy category.
+        $this->assertStringContainsString('Closed history', $block);
+        $this->assertStringContainsString('Email / Spam filter', $block);
+    }
+
+    public function test_engaged_sibling_context_shows_taxonomy_category(): void
+    {
+        $this->enableFlag();
+        $client = Client::factory()->create();
+        $current = $this->current($client);
+
+        $root = TicketCategory::create(['name' => 'Access']);
+        $node = TicketCategory::create(['name' => 'Password reset', 'parent_id' => $root->id]);
+        $assignee = User::factory()->tech()->create();
+        $this->sibling($client, [
+            'subject' => 'Locked out',
+            'assignee_id' => $assignee->id,
+            'category_id' => $node->id,
+        ]);
+
+        $block = (string) $this->situationBlock(
+            ContextBuilder::buildForTicket($current, includeClientSituation: true)
+        );
+
+        // Isolate the 👤 in-motion sibling line — the category rides that specific render site.
+        $engagedLine = collect(explode("\n", $block))
+            ->first(fn (string $l) => str_contains($l, '👤'));
+        $this->assertNotNull($engagedLine, 'expected an in-motion human sibling line');
+        $this->assertStringContainsString('Access / Password reset', $engagedLine);
     }
 }

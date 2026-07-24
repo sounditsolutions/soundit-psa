@@ -48,7 +48,7 @@ class BriefingAssembler
 
         $openTickets = Ticket::open()
             ->assignedTo($technician->id)
-            ->with('client')
+            ->with(['client', 'categoryNode.parent.parent'])
             ->orderBy('priority_order')
             ->get();
 
@@ -142,7 +142,7 @@ class BriefingAssembler
                         ->where('response_due_at', '<=', $endOfLocalDayUtc);
                 });
             })
-            ->with('client')
+            ->with(['client', 'categoryNode.parent.parent'])
             ->orderBy('priority_order')
             ->get();
     }
@@ -190,12 +190,14 @@ class BriefingAssembler
             $lines[] = "### ⚠️ SLA risk today ({$slaRisk->count()})";
             $lines[] = '';
             foreach ($slaRisk as $ticket) {
+                $category = $ticket->categoryNode?->pathString();
                 $lines[] = sprintf(
-                    '- **[%s] %s** — %s · %s · %s ([view](%s))',
+                    '- **[%s] %s** — %s · %s%s · %s ([view](%s))',
                     $ticket->display_id,
                     $ticket->subject,
                     $ticket->client?->name ?? 'No client',
                     $ticket->priority->label(),
+                    $category !== null ? ' · '.$category : '',
                     $this->slaPhrase($ticket, $now),
                     route('tickets.show', $ticket),
                 );
@@ -209,12 +211,14 @@ class BriefingAssembler
             $limit = BriefingConfig::maxTicketsListed();
             foreach ($openTickets->take($limit) as $ticket) {
                 $opened = $ticket->opened_at ?? $ticket->created_at;
+                $category = $ticket->categoryNode?->pathString();
                 $lines[] = sprintf(
-                    '- **[%s] %s** — %s · %s · opened %s ([view](%s))',
+                    '- **[%s] %s** — %s · %s%s · opened %s ([view](%s))',
                     $ticket->display_id,
                     $ticket->subject,
                     $ticket->client?->name ?? 'No client',
                     $ticket->priority->label(),
+                    $category !== null ? ' · '.$category : '',
                     $opened ? $opened->diffForHumans() : 'unknown',
                     route('tickets.show', $ticket),
                 );
@@ -356,11 +360,12 @@ class BriefingAssembler
         $lines[] = 'SLA at risk today ('.$slaRisk->count().'):';
         foreach ($slaRisk->take(10) as $ticket) {
             $lines[] = sprintf(
-                '- [%s] %s (%s, %s, %s)',
+                '- [%s] %s (%s, %s, %s, %s)',
                 $ticket->display_id,
                 $ticket->subject,
                 $ticket->client?->name ?? 'no client',
                 $ticket->priority->label(),
+                $ticket->categoryNode?->pathString() ?? 'uncategorized',
                 $this->slaPhrase($ticket, now()),
             );
         }
@@ -370,11 +375,12 @@ class BriefingAssembler
         foreach ($openTickets->take(15) as $ticket) {
             $opened = $ticket->opened_at ?? $ticket->created_at;
             $lines[] = sprintf(
-                '- [%s] %s (%s, %s, opened %s)',
+                '- [%s] %s (%s, %s, %s, opened %s)',
                 $ticket->display_id,
                 $ticket->subject,
                 $ticket->client?->name ?? 'no client',
                 $ticket->priority->label(),
+                $ticket->categoryNode?->pathString() ?? 'uncategorized',
                 $opened ? $opened->diffForHumans() : 'unknown',
             );
         }
