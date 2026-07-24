@@ -119,8 +119,11 @@ class CallController extends Controller
                         });
                 })
                 ->orderByDesc('updated_at')
+                // category_id is the categoryNode FK — selected so categoryFields()
+                // resolves; ancestor chain eager-loaded so pathString() never N+1s.
+                ->with('categoryNode.parent.parent')
                 ->limit(5)
-                ->get(['id', 'halo_id', 'subject', 'status', 'opened_at', 'updated_at'])
+                ->get(['id', 'halo_id', 'subject', 'status', 'opened_at', 'updated_at', 'category_id'])
                 ->map(fn ($t) => [
                     'id' => $t->id,
                     'display_id' => $t->display_id,
@@ -128,7 +131,7 @@ class CallController extends Controller
                     'status' => $t->status->label(),
                     'status_badge' => $t->status->badgeClass(),
                     'url' => route('tickets.show', $t),
-                ])
+                ] + $t->categoryFields())
                 ->values()
                 ->all();
         }

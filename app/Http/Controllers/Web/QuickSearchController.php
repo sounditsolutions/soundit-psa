@@ -40,6 +40,8 @@ class QuickSearchController extends Controller
                     'icon' => 'bi-building',
                 ]);
 
+            // category_id is the categoryNode FK — selected so categoryFields()
+            // resolves; ancestor chain eager-loaded so pathString() never N+1s.
             $tickets = Ticket::where(function ($q2) use ($q, $like) {
                 $q2->where('subject', 'like', $like);
                 if (is_numeric($q)) {
@@ -47,14 +49,15 @@ class QuickSearchController extends Controller
                 }
             })
                 ->orderByDesc('updated_at')
+                ->with('categoryNode.parent.parent')
                 ->limit(5)
-                ->get(['id', 'subject'])
+                ->get(['id', 'subject', 'category_id'])
                 ->map(fn ($t) => [
                     'label' => $t->display_id.' '.\Illuminate\Support\Str::limit($t->subject, 40),
                     'url' => route('tickets.show', $t),
                     'type' => 'ticket',
                     'icon' => 'bi-ticket-perforated',
-                ]);
+                ] + $t->categoryFields());
 
             $people = Person::where(function ($q2) use ($like) {
                 $q2->where('first_name', 'like', $like)

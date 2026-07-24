@@ -308,11 +308,14 @@ class TicketController extends Controller
             $query->search($request->input('q'));
         }
 
+        // category_id is the categoryNode FK — selected so categoryFields()
+        // resolves; ancestor chain eager-loaded so pathString() never N+1s.
         $tickets = $query
             ->withCount(['notes', 'phoneCalls', 'assets'])
+            ->with('categoryNode.parent.parent')
             ->orderBy('updated_at', 'desc')
             ->limit(15)
-            ->get(['id', 'subject', 'status', 'priority', 'client_id']);
+            ->get(['id', 'subject', 'status', 'priority', 'client_id', 'category_id']);
 
         // Batch-fetch email counts
         $emailCounts = Email::whereIn('ticket_id', $tickets->pluck('id'))
@@ -331,7 +334,7 @@ class TicketController extends Controller
             'calls_count' => $t->phone_calls_count,
             'emails_count' => $emailCounts[$t->id] ?? 0,
             'assets_count' => $t->assets_count,
-        ]));
+        ] + $t->categoryFields()));
     }
 
     public function bulkAction(Request $request)
