@@ -154,21 +154,16 @@ class ScreenConnectSyncService
             }
         }
 
-        // 3. Match by hostname without client scope (fallback)
-        if ($hostname) {
-            $shortHostname = explode('.', $hostname)[0];
-
-            $asset = Asset::whereRaw('LOWER(hostname) = ? OR LOWER(name) = ?', [
-                mb_strtolower($shortHostname),
-                mb_strtolower($shortHostname),
-            ])
-                ->first();
-
-            if ($asset) {
-                return $asset;
-            }
-        }
-
+        // No client-scoped match. We deliberately do NOT fall back to an unscoped
+        // hostname match. With two clients sharing a short hostname (e.g. WS-FRONT-01)
+        // and a webhook whose company is missing or unmatched, an unscoped match attaches
+        // this session — and its online state, client version, and activity — to whichever
+        // client's asset is first, leaking one client's data under another (psa-ikzqz,
+        // found by the psa-514da security lens). A hostname alone is not attributable to a
+        // client anyway: the device may belong to a client that isn't in the PSA and only
+        // coincidentally shares a hostname. So we fail closed — the session stays unlinked
+        // until an evidenced (session-id or company-scoped) webhook, or a manual link,
+        // resolves it. This is a data-boundary refusal, not a missed match.
         return null;
     }
 
