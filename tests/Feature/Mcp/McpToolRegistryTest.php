@@ -187,6 +187,25 @@ class McpToolRegistryTest extends TestCase
         $this->assertArrayHasKey('huntress', McpToolRegistry::integrationGroups(), 'Huntress reads must render under their own card');
     }
 
+    public function test_screenconnect_reads_are_registry_backed_and_mapped_to_a_screenconnect_card(): void
+    {
+        $screenconnectReads = [
+            'screenconnect_get_session_state',
+            'screenconnect_list_devices',
+        ];
+
+        $integrationNames = array_column(McpToolRegistry::groups()['integration']['tools'], 'name');
+
+        foreach ($screenconnectReads as $tool) {
+            $this->assertContains($tool, $integrationNames, "{$tool} should be in the normal integration tier");
+            $this->assertContains($tool, McpToolRegistry::allToolNames(), "{$tool} should be token-grantable");
+            $this->assertSame('screenconnect', McpToolRegistry::integrationForToolName($tool), "{$tool} must route to the screenconnect integration");
+        }
+
+        $this->assertArrayHasKey('screenconnect', McpToolRegistry::integrationMeta(), 'a ScreenConnect card must exist on the token page');
+        $this->assertArrayHasKey('screenconnect', McpToolRegistry::integrationGroups(), 'ScreenConnect reads must render under their own card');
+    }
+
     public function test_all_tool_names_is_flat_deduped_superset(): void
     {
         $all = McpToolRegistry::allToolNames();

@@ -57,7 +57,14 @@ class McpToolsListResilienceTest extends TestCase
         // test still passing against 214 tools. Only ever raise this for a similarly
         // constant, understood cost; a jump that tracks catalog size is the N+1 this
         // guard exists to catch.
-        $this->assertLessThanOrEqual(72, count($queries), $sql);
+        //
+        // Raised 72 -> 74 for the ScreenConnect read surface (psa-mjf6x):
+        // ScreenConnectConfig::isAvailable() is consulted in clientTools() only (no
+        // general ScreenConnect tools) and short-circuits after the single
+        // screenconnect_enabled read while the integration is off — but the request
+        // assembles the client-scoped surface twice (the published list and the
+        // liveness lookup), so the flat cost is +2, independent of catalog size.
+        $this->assertLessThanOrEqual(74, count($queries), $sql);
     }
 
     public function test_tools_list_repairs_dynamic_cipp_schema_before_publishing(): void

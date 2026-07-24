@@ -3,6 +3,7 @@
 namespace App\Services\Chet;
 
 use App\Services\Huntress\HuntressReadOnlyToolset;
+use App\Services\ScreenConnect\ScreenConnectReadOnlyToolset;
 use App\Services\Tactical\TacticalReadOnlyToolset;
 use App\Services\Unifi\UnifiReadOnlyToolset;
 
@@ -28,6 +29,14 @@ class ChetDataSurfaceToolExecutor
             }
 
             return app(UnifiReadOnlyToolset::class)->execute($toolName, $input, $clientId);
+        }
+
+        if (ScreenConnectReadOnlyToolset::handles($toolName)) {
+            if (ScreenConnectReadOnlyToolset::requiresClient($toolName) && $clientId === null) {
+                return ['error' => 'client_id is required for '.$toolName.'.'];
+            }
+
+            return app(ScreenConnectReadOnlyToolset::class)->execute($toolName, $input, $clientId);
         }
 
         if (TeamsChatReadToolset::handles($toolName)) {
