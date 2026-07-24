@@ -11,6 +11,7 @@ use App\Models\License;
 use App\Models\LicenseType;
 use App\Models\PrepayTransaction;
 use App\Models\Ticket;
+use App\Models\TicketCategory;
 use App\Services\ClientReportService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
@@ -44,11 +45,15 @@ class ClientReportServiceTest extends TestCase
         $client = Client::create(['name' => 'Acme Corp']);
         $start = $this->weekStart;
 
+        // Both in-week tickets share one taxonomy node so the report groups them by
+        // its path — the report now reads the taxonomy category, not the legacy string.
+        $hardware = TicketCategory::create(['name' => 'Hardware']);
+
         // In-week #1: response 30m, resolution 24h, SLA met.
         Ticket::factory()->create([
             'client_id' => $client->id,
             'subject' => 'Printer offline',
-            'category' => 'Hardware',
+            'category_id' => $hardware->id,
             'priority' => TicketPriority::P2->value,
             'status' => TicketStatus::Resolved->value,
             'opened_at' => $start->copy()->addDay()->setTime(9, 0),
@@ -61,7 +66,7 @@ class ClientReportServiceTest extends TestCase
         Ticket::factory()->create([
             'client_id' => $client->id,
             'subject' => 'Laptop will not boot',
-            'category' => 'Hardware',
+            'category_id' => $hardware->id,
             'priority' => TicketPriority::P3->value,
             'status' => TicketStatus::Closed->value,
             'opened_at' => $start->copy()->addDays(2)->setTime(8, 0),
@@ -124,6 +129,38 @@ class ClientReportServiceTest extends TestCase
         $data = $this->service()->gatherData($client, $start, $this->weekEnd());
 
         $this->assertSame(1, $data['themes']['Uncategorized']);
+    }
+
+    public function test_recurring_themes_and_table_use_taxonomy_path_not_legacy_category(): void
+    {
+        $client = Client::create(['name' => 'Acme Corp']);
+        $start = $this->weekStart;
+
+        $root = TicketCategory::create(['name' => 'Hardware']);
+        $leaf = TicketCategory::create(['name' => 'Desktops', 'parent_id' => $root->id]);
+
+        // Carries BOTH the legacy free-text category AND the new taxonomy node — the
+        // report must surface the taxonomy path and never the legacy string.
+        Ticket::factory()->create([
+            'client_id' => $client->id,
+            'subject' => 'PC no power',
+            'category' => 'LegacyFreeText',
+            'category_id' => $leaf->id,
+            'status' => TicketStatus::Resolved->value,
+            'opened_at' => $start->copy()->addDay(),
+            'resolved_at' => $start->copy()->addDay()->addHour(),
+        ]);
+
+        $data = $this->service()->gatherData($client, $start, $this->weekEnd());
+        $md = $this->service()->weeklyReport($client, $start)['markdown'];
+
+        // Recurring-themes grouping keys on the taxonomy path, not the legacy string.
+        $this->assertArrayHasKey('Hardware / Desktops', $data['themes']);
+        $this->assertArrayNotHasKey('LegacyFreeText', $data['themes']);
+
+        // The resolved-tickets table cell shows the taxonomy path, not the legacy string.
+        $this->assertStringContainsString('Hardware / Desktops', $md);
+        $this->assertStringNotContainsString('LegacyFreeText', $md);
     }
 
     public function test_prepay_burn_aggregates_consumption_ledger_within_week(): void
@@ -246,10 +283,11 @@ class ClientReportServiceTest extends TestCase
         $client = Client::create(['name' => 'Acme Corp']);
         $start = $this->weekStart;
 
+        $network = TicketCategory::create(['name' => 'Network']);
         Ticket::factory()->create([
             'client_id' => $client->id,
             'subject' => 'VPN tunnel down',
-            'category' => 'Network',
+            'category_id' => $network->id,
             'priority' => TicketPriority::P1->value,
             'status' => TicketStatus::Resolved->value,
             'opened_at' => $start->copy()->addDay(),

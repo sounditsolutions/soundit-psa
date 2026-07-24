@@ -82,6 +82,7 @@ PROMPT;
         $closed = Ticket::forClient($client->id)
             ->whereIn('status', [TicketStatus::Resolved, TicketStatus::Closed])
             ->whereBetween('resolved_at', [$start, $end])
+            ->with('categoryNode.parent.parent')
             ->orderBy('resolved_at')
             ->get();
 
@@ -108,7 +109,10 @@ PROMPT;
                 'id' => $t->id,
                 'subject' => $t->subject,
                 'priority' => $t->priority,
-                'category' => $t->category,
+                // The ITIL taxonomy path (psa-717bn) — NOT the legacy free-text
+                // $t->category string. Null-safe: uncategorised → null → grouped
+                // under "Uncategorized" / rendered as "—" downstream.
+                'category' => $t->categoryNode?->pathString(),
                 'response_mins' => $responseMins,
                 'resolution_mins' => $resolutionMins,
                 'sla_met' => $slaMet,

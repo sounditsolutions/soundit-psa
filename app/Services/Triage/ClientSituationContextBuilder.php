@@ -53,6 +53,8 @@ class ClientSituationContextBuilder
 
     private const MAX_SUBJECT = 120;
 
+    private const MAX_CATEGORY = 160;
+
     private const MAX_CALL_SUMMARY = 400;
 
     private const MAX_ENGAGED = 5;
@@ -140,6 +142,25 @@ class ClientSituationContextBuilder
     }
 
     /**
+     * " · Full / Taxonomy / Path" for the ticket's ITIL category node (psa-717bn), or
+     * '' when unset — so an uncategorised ticket adds no trailing noise. Scrubbed through
+     * the same safe() guard as every other field this builder surfaces to the agent.
+     * Relies on the caller eager-loading categoryNode.parent.parent (depth<=3) so
+     * pathString() walks in-memory.
+     */
+    private function categorySegment(Ticket $t): string
+    {
+        $node = $t->categoryNode;
+        if ($node === null) {
+            return '';
+        }
+
+        $path = $this->safe($node->pathString(), self::MAX_CATEGORY);
+
+        return $path !== '' ? ' · '.$path : '';
+    }
+
+    /**
      * Other open tickets for this client (excluding the current one), priority then age,
      * capped at MAX_OPEN. The header carries the FULL open count; only the top N render.
      */
@@ -154,14 +175,16 @@ class ClientSituationContextBuilder
             }
 
             // Priority asc ('p1'..'p4' sort lexically into severity order), then oldest first.
-            $top = $q->orderBy('priority')->orderBy('opened_at')->limit(self::MAX_OPEN)->get();
+            $top = $q->orderBy('priority')->orderBy('opened_at')
+                ->with('categoryNode.parent.parent')
+                ->limit(self::MAX_OPEN)->get();
 
             $lines = ["Open tickets ({$count}):"];
             foreach ($top as $t) {
                 $subject = $this->safe($t->subject, self::MAX_SUBJECT);
                 $opened = $t->opened_at?->diffForHumans() ?? '';
                 // display_id self-prefixes (#… for Halo, T-… native) — render AS-IS.
-                $lines[] = "- {$t->display_id} {$subject} · {$t->status->value} · {$opened}";
+                $lines[] = "- {$t->display_id} {$subject} · {$t->status->value} · {$opened}".$this->categorySegment($t);
             }
 
             return implode("\n", $lines);
@@ -342,7 +365,7 @@ class ClientSituationContextBuilder
         $siblings = Ticket::forClient($clientId)->open()
             ->where('id', '!=', $current->id)
             ->orderBy('priority')->orderBy('opened_at')
-            ->with('assignee')
+            ->with(['assignee', 'categoryNode.parent.parent'])
             ->limit(50) // render breaks at MAX_ENGAGED; bound the load for high-volume clients
             ->get();
 
@@ -388,7 +411,7 @@ class ClientSituationContextBuilder
             }
 
             // display_id self-prefixes (#… for Halo, T-… native) — render AS-IS.
-            $lines[] = "👤 {$t->display_id} — ".implode(', ', $bits);
+            $lines[] = "👤 {$t->display_id} — ".implode(', ', $bits).$this->categorySegment($t);
 
             if (count($lines) >= self::MAX_ENGAGED) {
                 break;
@@ -455,6 +478,7 @@ class ClientSituationContextBuilder
                 ->closed()
                 ->where('id', '!=', $current->id)
                 ->orderByRaw('COALESCE(resolved_at, closed_at, updated_at) DESC')
+                ->with('categoryNode.parent.parent')
                 ->limit(self::MAX_CLOSED)
                 ->get();
 
@@ -472,7 +496,7 @@ class ClientSituationContextBuilder
                     $resolution = $t->resolution !== null
                         ? ' — '.$this->safe($t->resolution, self::MAX_RESOLUTION)
                         : '';
-                    $lines[] = "- {$t->display_id} {$subject} · resolved {$resolvedTime}{$resolution}";
+                    $lines[] = "- {$t->display_id} {$subject} · resolved {$resolvedTime}{$resolution}".$this->categorySegment($t);
                 }
                 $parts[] = implode("\n", $lines);
             }
