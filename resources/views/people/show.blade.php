@@ -345,6 +345,7 @@
                                     <th>ID</th>
                                     <th>Subject</th>
                                     <th>Status</th>
+                                    <th>Category</th>
                                     <th>Updated</th>
                                 </tr>
                             </thead>
@@ -358,6 +359,7 @@
                                             </a>
                                         </td>
                                         <td><span class="badge {{ $ticket->status->badgeClass() }}">{{ $ticket->status->label() }}</span></td>
+                                        <td class="small"><x-ticket-category-badge :node="$ticket->categoryNode" /></td>
                                         <td class="small">{{ $ticket->updated_at?->diffForHumans() }}</td>
                                     </tr>
                                 @endforeach

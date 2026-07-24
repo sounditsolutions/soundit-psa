@@ -96,8 +96,8 @@
     if (!in_array($activeTab ?? '', ['tickets', 'assets', 'people', 'contracts', 'licenses'])) {
         // True open-ticket count for the badge (uncapped); $openTickets stays a 5-row preview.
         $openTicketsCount = $client->tickets()->open()->count();
-        $openTickets = $client->tickets()->open()->orderByDesc('updated_at')->limit(5)->get();
-        $closedTickets = $client->tickets()->closed()->orderByDesc('updated_at')->limit(3)->get();
+        $openTickets = $client->tickets()->open()->with('categoryNode.parent.parent')->orderByDesc('updated_at')->limit(5)->get();
+        $closedTickets = $client->tickets()->closed()->with('categoryNode.parent.parent')->orderByDesc('updated_at')->limit(3)->get();
         $allRecent = $openTickets->merge($closedTickets);
     } else {
         $openTicketsCount = 0;
@@ -544,6 +544,7 @@
                                             <th>Subject</th>
                                             <th>Priority</th>
                                             <th>Status</th>
+                                            <th>Category</th>
                                             <th>Updated</th>
                                         </tr>
                                     </thead>
@@ -558,6 +559,7 @@
                                                 </td>
                                                 <td><span class="badge {{ $ticket->priority->badgeClass() }}">{{ $ticket->priority->label() }}</span></td>
                                                 <td><span class="badge {{ $ticket->status->badgeClass() }}">{{ $ticket->status->label() }}</span></td>
+                                                <td class="small"><x-ticket-category-badge :node="$ticket->categoryNode" /></td>
                                                 <td class="small">{{ $ticket->updated_at?->diffForHumans() }}</td>
                                             </tr>
                                         @endforeach

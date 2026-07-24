@@ -90,6 +90,7 @@
                             {{ $ticket->display_id }}
                         </a>
                         <span class="ms-2 text-body">{{ $ticket->subject }}</span>
+                        @if($ticket->categoryNode)<span class="ms-2"><x-ticket-category-badge :node="$ticket->categoryNode" /></span>@endif
                     </div>
                     <span class="badge {{ $ticket->status->badgeClass() }} ms-2 flex-shrink-0">
                         {{ $ticket->status->label() }}

@@ -558,7 +558,7 @@ class PhoneCallService
      */
     public function getRecentCalls(int $limit = 50, array $filters = []): Collection
     {
-        $query = PhoneCall::with(['answeredBy', 'client', 'person', 'ticket'])->orderByDesc('started_at');
+        $query = PhoneCall::with(['answeredBy', 'client', 'person', 'ticket', 'ticket.categoryNode.parent.parent'])->orderByDesc('started_at');
 
         if (! empty($filters['status'])) {
             if ($filters['status'] === 'needs-follow-up') {

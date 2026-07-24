@@ -125,7 +125,7 @@ class CockpitQuery
         return TechnicianRun::query()
             ->where('action_type', 'flag_attention')
             ->where('state', TechnicianRunState::Flagged->value)
-            ->with(['ticket.client'])
+            ->with(['ticket.client', 'ticket.categoryNode.parent.parent'])
             ->orderBy('created_at')
             ->get();
     }
@@ -192,7 +192,7 @@ class CockpitQuery
             // flag_attention runs are Flagged-state so excluded by the state filter above,
             // but explicitly excluded here for clarity and future-safety.
             ->whereNotIn('action_type', ['intake_route', 'flag_attention'])
-            ->with(['ticket.client', 'ticket.contact'])
+            ->with(['ticket.client', 'ticket.contact', 'ticket.categoryNode.parent.parent'])
             ->get()
             ->sortBy(fn (TechnicianRun $run) => [
                 // Lane 0 = client-facing text approvals; Lane 1 = structural proposals.
@@ -213,7 +213,7 @@ class CockpitQuery
     {
         return TechnicianRun::query()
             ->where('state', TechnicianRunState::QueuedOffline->value)
-            ->with(['ticket.client', 'ticket.contact'])
+            ->with(['ticket.client', 'ticket.contact', 'ticket.categoryNode.parent.parent'])
             ->orderBy('expires_at')
             ->get();
     }
@@ -230,7 +230,7 @@ class CockpitQuery
     {
         return TechnicianRun::query()
             ->where('state', TechnicianRunState::Expired->value)
-            ->with(['ticket.client', 'ticket.contact'])
+            ->with(['ticket.client', 'ticket.contact', 'ticket.categoryNode.parent.parent'])
             ->orderBy('updated_at', 'desc')
             ->get();
     }
@@ -253,7 +253,7 @@ class CockpitQuery
             ->where('state', TechnicianRunState::Done->value)
             ->where('created_at', '>=', now()->subHours(self::DIRECT_CLOSE_WINDOW_HOURS))
             ->whereHas('ticket', fn ($q) => $q->where('status', TicketStatus::Closed->value))
-            ->with(['ticket.client'])
+            ->with(['ticket.client', 'ticket.categoryNode.parent.parent'])
             ->orderByDesc('created_at')
             ->get();
     }
@@ -284,7 +284,7 @@ class CockpitQuery
                         ->where('ai_authored', true)
                         ->where('note_type', NoteType::Reply->value);
                 }))
-            ->with(['client', 'contact'])
+            ->with(['client', 'contact', 'categoryNode.parent.parent'])
             ->orderBy('updated_at')
             ->get();
     }
@@ -345,7 +345,7 @@ class CockpitQuery
             ->whereIn('id', $ticketIds)
             ->whereIn('status', $this->openStatuses())
             ->whereHas('client', fn ($q) => $q->where('is_active', true))
-            ->with('client')
+            ->with(['client', 'categoryNode.parent.parent'])
             ->get()
             ->keyBy('id');
 

@@ -1,4 +1,7 @@
-{{-- Expects: ticket with optional eager-loaded client, assignee --}}
+{{-- Expects: ticket with optional eager-loaded client, assignee, categoryNode.parent.parent.
+     Category is popover-only on this compact chip (psa-717bn.4 design call: dense
+     contexts get the path on hover, not a visible column) and appears only when the
+     caller eager-loaded categoryNode — never lazy-loads. --}}
 @props(['ticket' => null, 'link' => true, 'popover' => true, 'fallback' => '—'])
 
 @if($ticket)
@@ -17,6 +20,7 @@
             . ($ticket->priority ? ' <span class="badge ' . $ticket->priority->badgeClass() . '" style="font-size:.7rem">' . e($ticket->priority->label()) . '</span>' : '')
             . ($ticket->relationLoaded('client') && $ticket->client ? '<br><small class="text-muted">Client:</small> ' . e($ticket->client->name) : '')
             . ($ticket->relationLoaded('assignee') && $ticket->assignee ? '<br><small class="text-muted">Assignee:</small> ' . e($ticket->assignee->name) : '')
+            . ($ticket->relationLoaded('categoryNode') && $ticket->categoryNode ? '<br><small class="text-muted">Category:</small> ' . e($ticket->categoryNode->pathString()) . ($ticket->categoryNode->is_active ? '' : ' <em class="text-muted">(retired)</em>') : '')
             . ($ticket->opened_at ? '<br><small class="text-muted">Opened:</small> ' . e($ticket->opened_at->diffForHumans()) : '')
             : '';
     @endphp
