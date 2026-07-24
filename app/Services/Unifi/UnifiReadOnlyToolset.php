@@ -407,6 +407,14 @@ class UnifiReadOnlyToolset
             return ['error' => 'An explicit window needs both begin_timestamp and end_timestamp (RFC3339, e.g. 2026-07-23T13:35:00Z). Pass both, or use duration instead.'];
         }
 
+        // Validate the timestamps locally rather than letting a malformed string reach
+        // the vendor as a query param (psa-2mgit R2, non-blocking note).
+        foreach (['begin_timestamp' => $begin, 'end_timestamp' => $end] as $field => $value) {
+            if ($value !== '' && ! $this->isRfc3339($value)) {
+                return ['error' => "{$field} must be an RFC3339 timestamp, e.g. 2026-07-23T13:35:00Z. Received: ".mb_substr($value, 0, 40)];
+            }
+        }
+
         $params = [];
 
         if ($hasExplicitWindow) {
@@ -524,26 +532,66 @@ class UnifiReadOnlyToolset
      */
     private function deviceGroupsForHost(string $hostId): array
     {
-        $params = ['pageSize' => '100'];
         $groups = [];
 
-        for ($page = 0; $page < self::MAX_SITE_LOOKUP_PAGES; $page++) {
-            $response = $this->client()->listDevices($params);
-
-            foreach ($this->rows($response) as $group) {
-                if (($group['hostId'] ?? null) === $hostId) {
-                    $groups[] = $group;
+        $this->walkPages(
+            'devices',
+            fn (array $params) => $this->client()->listDevices($params),
+            function (array $rows) use ($hostId, &$groups) {
+                foreach ($rows as $group) {
+                    if (($group['hostId'] ?? null) === $hostId) {
+                        $groups[] = $group;
+                    }
                 }
+            },
+        );
+
+        return $groups;
+    }
+
+    /**
+     * Walk a cursor-paginated endpoint, handing each page's rows to $consume.
+     *
+     * The whole point of this helper is to distinguish NORMAL cursor exhaustion
+     * (nextToken null — we saw everything) from CAP exhaustion (we gave up with a
+     * cursor still outstanding). Returning what we had in the second case produces a
+     * partial answer wearing a success shape, which this surface must never do.
+     *
+     * For siteIdsOnHost() it is worse than cosmetic: a second site on a page we never
+     * fetched would leave the console looking single-site, letting the device
+     * uniqueness guard pass and attributing a whole console's hardware to the wrong
+     * client. Both the arch and security lanes independently found this (psa-smns1 /
+     * psa-2mgit R2), which is why it throws rather than warns.
+     *
+     * $consume may return false to stop early — that is a satisfied search, not a
+     * degraded read, so it does not throw.
+     *
+     * @param  callable(array<string, mixed>): array<string, mixed>  $fetch
+     * @param  callable(array<int, array<string, mixed>>): (bool|null)  $consume
+     */
+    private function walkPages(string $label, callable $fetch, callable $consume): void
+    {
+        $params = ['pageSize' => '100'];
+
+        for ($page = 0; $page < self::MAX_SITE_LOOKUP_PAGES; $page++) {
+            $response = $fetch($params);
+
+            if ($consume($this->rows($response)) === false) {
+                return;
             }
 
             $next = $this->nextPageToken($response);
             if ($next === null) {
-                break;
+                return;
             }
+
             $params['nextToken'] = $next;
         }
 
-        return $groups;
+        throw new UnifiClientException(
+            'UniFi returned more than '.self::MAX_SITE_LOOKUP_PAGES." pages of {$label} and the scan was stopped at that safe limit, ".
+            'so this answer would be incomplete. Refusing rather than reporting a partial result.'
+        );
     }
 
     /**
@@ -555,25 +603,33 @@ class UnifiReadOnlyToolset
      */
     private function siteIdsOnHost(string $hostId): array
     {
-        $params = ['pageSize' => '100'];
         $siteIds = [];
 
-        for ($page = 0; $page < self::MAX_SITE_LOOKUP_PAGES; $page++) {
-            $response = $this->client()->listSites($params);
+        $this->walkPages(
+            'sites',
+            fn (array $params) => $this->client()->listSites($params),
+            function (array $rows) use ($hostId, &$siteIds) {
+                foreach ($rows as $row) {
+                    if (($row['hostId'] ?? null) !== $hostId) {
+                        continue;
+                    }
 
-            foreach ($this->rows($response) as $row) {
-                $siteId = $row['siteId'] ?? null;
-                if (($row['hostId'] ?? null) === $hostId && is_string($siteId) && $siteId !== '') {
+                    $siteId = $row['siteId'] ?? null;
+
+                    // A row on THIS console with no usable site id makes attribution
+                    // unprovable: it may be a second site, in which case skipping it
+                    // would let a multi-site console pass the uniqueness guard. Fail
+                    // closed instead of ignoring it (psa-2mgit R2).
+                    if (! is_string($siteId) || $siteId === '') {
+                        throw new UnifiClientException(
+                            'UniFi returned a site on this console with no usable site id, so device attribution cannot be proven. Refusing the read.'
+                        );
+                    }
+
                     $siteIds[$siteId] = true;
                 }
-            }
-
-            $next = $this->nextPageToken($response);
-            if ($next === null) {
-                break;
-            }
-            $params['nextToken'] = $next;
-        }
+            },
+        );
 
         return array_keys($siteIds);
     }
@@ -585,25 +641,28 @@ class UnifiReadOnlyToolset
      */
     private function findSiteRow(string $siteId): ?array
     {
-        $params = ['pageSize' => '100'];
+        $found = null;
 
-        for ($page = 0; $page < self::MAX_SITE_LOOKUP_PAGES; $page++) {
-            $response = $this->client()->listSites($params);
+        // Cap exhaustion throws (see walkPages): giving up early would turn an
+        // unreached later page into a confident "site not found", which is a different
+        // and wrong answer.
+        $this->walkPages(
+            'sites',
+            fn (array $params) => $this->client()->listSites($params),
+            function (array $rows) use ($siteId, &$found) {
+                foreach ($rows as $row) {
+                    if (($row['siteId'] ?? null) === $siteId) {
+                        $found = $row;
 
-            foreach ($this->rows($response) as $row) {
-                if (($row['siteId'] ?? null) === $siteId) {
-                    return $row;
+                        return false; // satisfied search, stop without throwing
+                    }
                 }
-            }
 
-            $next = $this->nextPageToken($response);
-            if ($next === null) {
                 return null;
-            }
-            $params['nextToken'] = $next;
-        }
+            },
+        );
 
-        return null;
+        return $found;
     }
 
     /** @return \Illuminate\Support\Collection<string, Client> PSA clients keyed by unifi_site_id. */
@@ -649,6 +708,26 @@ class UnifiReadOnlyToolset
         $limit = $this->positiveInt($input['limit'] ?? null) ?? $default;
 
         return max(1, min($limit, $max));
+    }
+
+    /**
+     * RFC3339 as the vendor spells it in its examples: 2024-06-30T13:35:00Z, with an
+     * optional fractional part and either Z or a numeric offset. Parsed as well as
+     * pattern-matched so 2026-02-31T00:00:00Z is rejected rather than forwarded.
+     */
+    private function isRfc3339(string $value): bool
+    {
+        if (! preg_match('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/', $value)) {
+            return false;
+        }
+
+        try {
+            new \DateTimeImmutable($value);
+        } catch (\Exception) {
+            return false;
+        }
+
+        return \DateTime::getLastErrors() === false || (\DateTime::getLastErrors()['warning_count'] ?? 0) === 0;
     }
 
     private function positiveInt(mixed $value): ?int

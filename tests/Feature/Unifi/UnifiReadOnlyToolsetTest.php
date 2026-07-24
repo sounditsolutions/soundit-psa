@@ -422,6 +422,128 @@ class UnifiReadOnlyToolsetTest extends TestCase
         $this->assertArrayNotHasKey('devices', $result);
     }
 
+    // ── pagination cap exhaustion must fail LOUD ──────────────────────────────
+
+    /**
+     * A page that always hands back another cursor, so the walk can only ever end by
+     * hitting the safety cap — never by natural cursor exhaustion.
+     *
+     * @param  array<int, array<string, mixed>>  $rows
+     * @return array<int, Response>
+     */
+    private function endlessPages(array $rows, int $count = 25): array
+    {
+        $pages = [];
+        for ($i = 0; $i < $count; $i++) {
+            $pages[] = $this->jsonResponse([
+                'data' => $rows,
+                'httpStatusCode' => 200,
+                'nextToken' => "cursor-{$i}",
+            ]);
+        }
+
+        return $pages;
+    }
+
+    /**
+     * ARCH review (psa-smns1) R2: the bounded walks returned whatever they had when the
+     * page cap was reached with a cursor still outstanding — a partial answer wearing a
+     * success shape. For siteIdsOnHost that is worse than cosmetic: an unseen SECOND
+     * site on a later page would let the device uniqueness guard pass and attribute a
+     * whole console's hardware to the wrong client. Cap exhaustion must be an error.
+     */
+    public function test_site_lookup_that_exhausts_the_page_cap_errors_instead_of_reporting_not_found(): void
+    {
+        $client = Client::factory()->create(['unifi_site_id' => self::SITE_A, 'unifi_host_id' => self::HOST_A]);
+        // Pages full of OTHER sites, endlessly — ours is never reached.
+        $this->bindClientReturning($this->endlessPages([
+            ['siteId' => 'someone-else', 'hostId' => self::HOST_B, 'meta' => [], 'statistics' => []],
+        ]));
+
+        $result = $this->toolset()->execute('unifi_get_site_health', ['client_id' => $client->id]);
+
+        $this->assertArrayHasKey('error', $result);
+        $this->assertStringContainsStringIgnoringCase('incomplete', $result['error']);
+        $this->assertStringNotContainsStringIgnoringCase('not found', $result['error'], 'cap exhaustion is not the same answer as "no such site"');
+    }
+
+    public function test_device_read_that_exhausts_the_page_cap_errors_instead_of_under_reporting(): void
+    {
+        $client = Client::factory()->create(['unifi_site_id' => self::SITE_A, 'unifi_host_id' => self::HOST_A]);
+
+        $this->bindClientReturning(array_merge(
+            // site-uniqueness pre-check resolves cleanly on one page...
+            [$this->sitesOn([self::SITE_A => self::HOST_A])],
+            // ...then the device walk never terminates.
+            $this->endlessPages([['hostId' => self::HOST_B, 'hostName' => 'other', 'devices' => []]]),
+        ));
+
+        $result = $this->toolset()->execute('unifi_list_devices', ['client_id' => $client->id]);
+
+        $this->assertArrayHasKey('error', $result);
+        $this->assertStringContainsStringIgnoringCase('incomplete', $result['error']);
+        $this->assertArrayNotHasKey('devices', $result);
+        $this->assertArrayNotHasKey('count', $result, 'a partial device list must not be presented as a count');
+    }
+
+    public function test_site_uniqueness_check_that_exhausts_the_page_cap_refuses_the_device_read(): void
+    {
+        // THE SECURITY EDGE: if the walk gives up early having seen only one site on
+        // this console, the uniqueness guard would wrongly pass and devices would be
+        // attributed to this client. It must refuse instead.
+        $client = Client::factory()->create(['unifi_site_id' => self::SITE_A, 'unifi_host_id' => self::HOST_A]);
+
+        $this->bindClientReturning($this->endlessPages([
+            ['siteId' => self::SITE_A, 'hostId' => self::HOST_A, 'meta' => [], 'statistics' => []],
+        ]));
+
+        $result = $this->toolset()->execute('unifi_list_devices', ['client_id' => $client->id]);
+
+        $this->assertArrayHasKey('error', $result);
+        $this->assertStringContainsStringIgnoringCase('incomplete', $result['error']);
+        $this->assertArrayNotHasKey('devices', $result);
+    }
+
+    public function test_a_host_row_with_no_usable_site_id_makes_attribution_unprovable_and_refuses(): void
+    {
+        // SECURITY review (psa-2mgit) R2: a row on THIS console carrying a null/empty
+        // siteId was silently skipped. If that row is a real second site, the console
+        // is multi-site but we would count one, pass the uniqueness guard, and hand
+        // over its hardware. Unprovable attribution must fail closed, not fall through.
+        $client = Client::factory()->create(['unifi_site_id' => self::SITE_A, 'unifi_host_id' => self::HOST_A]);
+
+        $this->bindClientReturning([$this->jsonResponse([
+            'data' => [
+                ['siteId' => self::SITE_A, 'hostId' => self::HOST_A, 'meta' => [], 'statistics' => []],
+                ['siteId' => null, 'hostId' => self::HOST_A, 'meta' => [], 'statistics' => []],
+            ],
+            'httpStatusCode' => 200,
+        ])]);
+
+        $result = $this->toolset()->execute('unifi_list_devices', ['client_id' => $client->id]);
+
+        $this->assertArrayHasKey('error', $result);
+        $this->assertArrayNotHasKey('devices', $result);
+    }
+
+    public function test_isp_metrics_reject_a_timestamp_that_is_not_rfc3339(): void
+    {
+        // SECURITY review (psa-2mgit) R2, non-blocking note: explicit begin/end strings
+        // reached the vendor unvalidated. Cheap to close locally.
+        $client = Client::factory()->create(['unifi_site_id' => self::SITE_A]);
+        $this->bindClientReturning([]);
+
+        $result = $this->toolset()->execute('unifi_get_isp_metrics', [
+            'client_id' => $client->id,
+            'type' => '5m',
+            'begin_timestamp' => 'yesterday',
+            'end_timestamp' => '2026-07-23T01:00:00Z',
+        ]);
+
+        $this->assertArrayHasKey('error', $result);
+        $this->assertStringContainsString('RFC3339', $result['error']);
+    }
+
     // ── gating ────────────────────────────────────────────────────────────────
 
     public function test_every_tool_refuses_when_the_integration_is_switched_off(): void
