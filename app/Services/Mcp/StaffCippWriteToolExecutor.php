@@ -774,7 +774,9 @@ class StaffCippWriteToolExecutor
 
         $contentHash = $this->contentHash($tool, $client->id, $person->person->id, $ticket?->id, ['must_change' => $mustChange]);
 
-        if ($this->cooldownActive($tool, $client->id, $person, null, self::COOLDOWNS[$tool] ?? 300)) {
+        // Shared across both paths: a held approval audits under the STAGED name, so a
+        // single-name lookup would miss it here (security review psa-eerg4 R2).
+        if ($this->resetCooldownActive($client->id, $person, self::COOLDOWNS[$tool] ?? 300)) {
             $this->auditAttempt($tool, 'blocked', $client->id, $ticket, $person, null, $contentHash, "{$tool} cooldown active; upstream call refused.", $actorLabel);
 
             return ['error' => "{$tool} cooldown active for this target; no reset was performed. Wait before retrying a password reset."];
@@ -883,7 +885,7 @@ class StaffCippWriteToolExecutor
                 return $this->declined('Technician kill-switch engaged; the staged password reset was refused.');
             }
 
-            if ($this->cooldownActive($directTool, $client->id, $person, null, self::COOLDOWNS[$directTool] ?? 300)) {
+            if ($this->resetCooldownActive($client->id, $person, self::COOLDOWNS[$directTool] ?? 300)) {
                 $this->auditAttempt($run->action_type, 'blocked', $client->id, $ticket, $person, null, $contentHash, 'Password reset cooldown active for this target; approval refused before upstream call.', $this->approverLabel($approverId), $run->id, $approverId);
                 $run->releaseClaim();
 
@@ -4061,6 +4063,36 @@ class StaffCippWriteToolExecutor
             ->where('created_at', '>=', now()->subSeconds($cooldownSeconds))
             ->whereIn('result_status', ['executed', 'awaiting_approval'])
             ->where('summary', 'like', '%'.$this->targetKey($person, $license).'%')
+            ->exists();
+    }
+
+    /**
+     * Password-reset cooldown, checked across BOTH execution paths (security review
+     * psa-eerg4 R2).
+     *
+     * cooldownActive() filters action_type to one exact name. A DIRECT reset audits as
+     * cipp_reset_user_password, but a HELD approval audits as
+     * cipp_stage_reset_user_password (auditAttempt uses $run->action_type, which is
+     * correct provenance — the audit should record which path ran). So a single-name
+     * lookup is asymmetric: it catches direct→held, but a held approval is invisible to
+     * a later direct reset or to another held reset from a different ticket, and a
+     * second credential can be minted inside the window the cooldown exists to close.
+     *
+     * Matches EXECUTED rows only, deliberately: an awaiting_approval row has not minted
+     * a password, and counting it would make a proposal block its own approval.
+     */
+    private function resetCooldownActive(int $clientId, ResolvedCippPerson $person, int $cooldownSeconds): bool
+    {
+        if ($cooldownSeconds <= 0) {
+            return false;
+        }
+
+        return TechnicianActionLog::query()
+            ->whereIn('action_type', ['cipp_reset_user_password', 'cipp_stage_reset_user_password'])
+            ->where('client_id', $clientId)
+            ->where('created_at', '>=', now()->subSeconds($cooldownSeconds))
+            ->where('result_status', 'executed')
+            ->where('summary', 'like', '%'.$this->targetKey($person, null).'%')
             ->exists();
     }
 

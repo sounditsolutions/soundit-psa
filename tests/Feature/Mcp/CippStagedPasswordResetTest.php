@@ -372,6 +372,85 @@ class CippStagedPasswordResetTest extends TestCase
         $this->assertNotSame(TechnicianRunState::Done->value, (string) $run->state->value);
     }
 
+    /** Stage a held reset and approve it, leaving an EXECUTED held reset in the log. */
+    private function stageAndApprove(array $fixture, string $password): void
+    {
+        $run = $this->stageAndGetRun($fixture);
+
+        $approving = Mockery::mock(CippRestWriteClient::class);
+        $approving->shouldReceive('resetUserPassword')->once()
+            ->andReturn(['success' => true, 'status' => 200, 'body' => [
+                'Results' => ['copyField' => $password, 'state' => 'success'],
+            ]]);
+        $this->app->instance(CippRestWriteClient::class, $approving);
+
+        $this->actingAs(User::factory()->create())->postJson(route('cockpit.approve', $run));
+    }
+
+    /**
+     * SECURITY review (psa-eerg4) R2 — the cooldown was ASYMMETRIC. A direct reset
+     * audits as cipp_reset_user_password but a held approval audits as
+     * cipp_stage_reset_user_password, and cooldownActive() filters one exact name. So
+     * direct -> held was covered while held -> direct was not: a held approval was
+     * invisible to a later direct reset, and a second credential could be minted inside
+     * the window the cooldown exists to close.
+     */
+    public function test_an_executed_held_reset_blocks_a_later_direct_reset(): void
+    {
+        $this->configureCipp();
+        $this->configureAiActor();
+        $fixture = $this->cippFixture();
+
+        $this->stageAndApprove($fixture, 'Held-Pass-1!');
+
+        // A direct reset for the same person must now be refused.
+        $blocked = Mockery::mock(CippRestWriteClient::class);
+        $blocked->shouldNotReceive('resetUserPassword');
+        $this->app->instance(CippRestWriteClient::class, $blocked);
+
+        $response = $this->callTool(
+            McpConfig::rotateStaffToken(allowedTools: [self::TOOL.':immediate'], label: 'opsbot'),
+            self::TOOL,
+            [
+                'client_id' => $fixture['client']->id,
+                'person_id' => $fixture['contact']->id,
+                'confirm_upn' => 'alex@acme.example',
+                'reason' => 'Second reset moments later.',
+                'staged' => false,
+            ],
+        );
+
+        $this->assertTrue((bool) $response->json('result.isError'));
+        $this->assertStringContainsString('cooldown', (string) $response->json('result.content.0.text'));
+    }
+
+    /** The other half of the same asymmetry: held -> held, from a different ticket. */
+    public function test_an_executed_held_reset_blocks_approving_a_second_held_reset(): void
+    {
+        $this->configureCipp();
+        $this->configureAiActor();
+        $fixture = $this->cippFixture();
+
+        $this->stageAndApprove($fixture, 'Held-Pass-1!');
+
+        // A second proposal for the same person, staged from a DIFFERENT ticket.
+        $second = $fixture;
+        $second['ticket'] = Ticket::factory()->for($fixture['client'])->create([
+            'contact_id' => $fixture['contact']->id,
+            'subject' => 'Second reset request',
+        ]);
+        $run2 = $this->stageAndGetRun($second);
+
+        $blocked = Mockery::mock(CippRestWriteClient::class);
+        $blocked->shouldNotReceive('resetUserPassword');
+        $this->app->instance(CippRestWriteClient::class, $blocked);
+
+        $approval = $this->actingAs(User::factory()->create())->postJson(route('cockpit.approve', $run2));
+
+        $this->assertFalse((bool) $approval->json('ok'), 'a second held reset must not mint another credential in the window');
+        $this->assertNull($approval->json('secret'));
+    }
+
     // ── review findings: the lists that must agree, and the agent contract ────
 
     /**
