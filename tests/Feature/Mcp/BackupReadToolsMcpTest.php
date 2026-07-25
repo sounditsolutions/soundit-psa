@@ -6,6 +6,7 @@ use App\Models\Asset;
 use App\Models\Client;
 use App\Models\Setting;
 use App\Services\Comet\CometClient;
+use App\Services\Servosity\ServosityClient;
 use App\Support\McpConfig;
 use App\Support\McpToolRegistry;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -15,7 +16,8 @@ use Tests\TestCase;
 /**
  * Comet + Servosity backup reads over the real /api/mcp/staff boundary
  * (psa-z30dv): grant-gating, ships-ungranted, OFF=OFF/dormant-until-configured,
- * registry routing, a live tools/call roundtrip, and the cross-client check the
+ * registry routing, live tools/call roundtrips for BOTH vendors (including the
+ * delivered freshness/unknown contract), and the cross-client check the
  * server-wide Comet admin API makes mandatory.
  */
 class BackupReadToolsMcpTest extends TestCase
@@ -25,7 +27,7 @@ class BackupReadToolsMcpTest extends TestCase
     private const BACKUP_READS = [
         'comet_get_backup_posture',
         'comet_list_backup_jobs',
-        'servosity_get_backup_status',
+        'servosity_get_backup_posture',
     ];
 
     private function configureComet(): void
@@ -76,16 +78,22 @@ class BackupReadToolsMcpTest extends TestCase
         return json_decode((string) $response->json('result.content.0.text'), true) ?? [];
     }
 
+    /**
+     * Vendor-wire JSON through the SDK's own parser (vendor/cometbackup/
+     * comet-php-sdk/Comet/BackupJobDetail.php) — the producer contract, so a
+     * wrong field name fails the asserts instead of matching the code under
+     * test (CLAUDE.md fixture rule).
+     */
     private function cometJob(string $deviceId, int $status): \Comet\BackupJobDetail
     {
-        $job = new \Comet\BackupJobDetail;
-        $job->DeviceID = $deviceId;
-        $job->Classification = \Comet\Def::JOB_CLASSIFICATION_BACKUP;
-        $job->Status = $status;
-        $job->StartTime = now()->subHours(6)->timestamp;
-        $job->EndTime = now()->subHours(5)->timestamp;
-
-        return $job;
+        return \Comet\BackupJobDetail::createFromJSON(json_encode([
+            'Username' => 'acme-backup',
+            'DeviceID' => $deviceId,
+            'Classification' => \Comet\Def::JOB_CLASSIFICATION_BACKUP,
+            'Status' => $status,
+            'StartTime' => now()->subHours(6)->timestamp,
+            'EndTime' => now()->subHours(5)->timestamp,
+        ], JSON_THROW_ON_ERROR));
     }
 
     public function test_backup_reads_are_registry_grantable_and_route_to_an_integration(): void
@@ -106,7 +114,7 @@ class BackupReadToolsMcpTest extends TestCase
         $names = array_column($this->listTools($scopedToken), 'name');
         $this->assertContains('comet_get_backup_posture', $names);
         $this->assertNotContains('comet_list_backup_jobs', $names, 'ungranted backup tools stay hidden');
-        $this->assertNotContains('servosity_get_backup_status', $names, 'ungranted backup tools stay hidden');
+        $this->assertNotContains('servosity_get_backup_posture', $names, 'ungranted backup tools stay hidden');
 
         // A legacy full-surface token (no explicit allowlist) must NOT gain the reads.
         $legacyNames = array_column($this->listTools(McpConfig::rotateStaffToken()), 'name');
@@ -133,7 +141,7 @@ class BackupReadToolsMcpTest extends TestCase
 
         $this->assertContains('comet_get_backup_posture', $names);
         $this->assertContains('comet_list_backup_jobs', $names);
-        $this->assertNotContains('servosity_get_backup_status', $names, 'an unconfigured Servosity must not ride in on Comet');
+        $this->assertNotContains('servosity_get_backup_posture', $names, 'an unconfigured Servosity must not ride in on Comet');
     }
 
     public function test_the_servosity_master_switch_withdraws_its_tool_even_when_configured(): void
@@ -142,9 +150,9 @@ class BackupReadToolsMcpTest extends TestCase
         Setting::setEncrypted('servosity_api_token', 't');
         Setting::setValue('servosity_enabled', '0');
 
-        $names = array_column($this->listTools($this->token(['servosity_get_backup_status'])), 'name');
+        $names = array_column($this->listTools($this->token(['servosity_get_backup_posture'])), 'name');
 
-        $this->assertNotContains('servosity_get_backup_status', $names, 'switching Servosity off must withdraw its tool');
+        $this->assertNotContains('servosity_get_backup_posture', $names, 'switching Servosity off must withdraw its tool');
     }
 
     public function test_an_ungranted_call_is_refused_at_the_boundary(): void
@@ -199,6 +207,82 @@ class BackupReadToolsMcpTest extends TestCase
         $this->assertSame(1, $result['summary']['last_backup_failed']);
         $this->assertSame('last_backup_failed', $result['devices'][0]['job_state']);
         $this->assertNotNull($result['jobs_checked_at']);
+        // Canonical freshness trio delivered end-to-end.
+        $this->assertArrayHasKey('data_as_of', $result);
+        $this->assertArrayHasKey('data_stale', $result);
+        $this->assertArrayHasKey('freshness_note', $result);
+    }
+
+    public function test_an_unknown_comet_status_is_delivered_as_unknown_not_failed(): void
+    {
+        // The service-level contract must survive the transport: an
+        // unrecognised vendor code reaches the agent as last_backup_unknown.
+        $this->configureComet();
+        $client = Client::factory()->create(['name' => 'Acme', 'comet_group_id' => 'grp-acme']);
+        Asset::factory()->create([
+            'client_id' => $client->id,
+            'hostname' => 'ACME-PC-01',
+            'comet_username' => 'acme-backup',
+            'comet_device_id' => 'acme-dev',
+            'comet_backup_enabled' => true,
+            'backup_synced_at' => now()->subHours(2),
+        ]);
+
+        $this->mock(CometClient::class)
+            ->shouldReceive('getJobsForUser')
+            ->with('acme-backup')
+            ->andReturn([$this->cometJob('acme-dev', 8500)]);
+
+        $result = $this->decodedResult($this->callTool($this->token(['comet_get_backup_posture']), 'comet_get_backup_posture', [
+            'client_id' => $client->id,
+        ]));
+
+        $this->assertSame('last_backup_unknown', $result['devices'][0]['job_state']);
+        $this->assertSame(1, $result['summary']['last_backup_unknown']);
+        $this->assertSame(0, $result['summary']['last_backup_failed']);
+    }
+
+    public function test_servosity_backup_posture_roundtrips_over_the_mcp_boundary(): void
+    {
+        $this->configureServosity();
+        $client = Client::factory()->create(['name' => 'Acme', 'servosity_company_id' => 42]);
+        Asset::factory()->create([
+            'client_id' => $client->id,
+            'hostname' => 'ACME-SRV-01',
+            'servosity_backup_enabled' => true,
+            'servosity_dr_backup_id' => 501,
+        ]);
+
+        // Envelopes per the official OpenAPI (count + results REQUIRED).
+        $this->mock(ServosityClient::class)
+            ->shouldReceive('get')
+            ->andReturnUsing(fn (string $endpoint) => str_starts_with($endpoint, 'companies/summary-ng')
+                ? ['count' => 1, 'next' => null, 'previous' => null, 'results' => [
+                    ['id' => 42, 'name' => 'Company 42', 'account_counts' => ['DRS' => 1], 'issue_counts' => ['Backup' => 0]],
+                ]]
+                : ['count' => 1, 'next' => null, 'previous' => null, 'results' => [
+                    ['id' => 501, 'device_name' => 'ACME-SRV-01', 'agent_session_id' => 'sess-1', 'state' => 'ACTIVE', 'product_type' => 'DR_SERVER'],
+                ]]);
+
+        $response = $this->callTool($this->token(['servosity_get_backup_posture']), 'servosity_get_backup_posture', [
+            'client_id' => $client->id,
+        ]);
+
+        $response->assertOk();
+        $this->assertFalse($response->json('result.isError'));
+
+        $result = $this->decodedResult($response);
+        $this->assertSame('Acme', $result['psa_client_name']);
+        $this->assertSame('ok', $result['live']['status']);
+        $this->assertSame(['DRS' => 1], $result['live']['account_counts']);
+        $this->assertSame('verified_live', $result['devices'][0]['upstream_check'], 'the live reconciliation must survive the transport');
+        // The honesty contract delivered end-to-end: job history unavailable,
+        // canonical freshness trio, and the unverifiable provisioning plane.
+        $this->assertFalse($result['job_run_history']['available']);
+        $this->assertArrayHasKey('data_as_of', $result);
+        $this->assertArrayHasKey('data_stale', $result);
+        $this->assertArrayHasKey('freshness_note', $result);
+        $this->assertNull($result['provisioning_freshness']['data_stale']);
     }
 
     public function test_backup_reads_stay_scoped_over_the_mcp_boundary(): void
@@ -243,5 +327,8 @@ class BackupReadToolsMcpTest extends TestCase
         $this->assertStringNotContainsString('RIVAL-SECRET-HOST', $raw, "another client's hostname crossed the MCP boundary");
         $this->assertStringNotContainsString('rival-dev', $raw, "another client's device id crossed the MCP boundary");
         $this->assertStringNotContainsString('rival-backup', $raw, "another client's username crossed the MCP boundary");
+        // Minimization: even the resolved client's own vendor identifiers stay out.
+        $this->assertStringNotContainsString('acme-backup', $raw, 'the Comet username must not cross the MCP boundary');
+        $this->assertStringNotContainsString('grp-acme', $raw, 'the Comet group id must not cross the MCP boundary');
     }
 }

@@ -9,6 +9,8 @@ use App\Models\Client;
 use App\Services\Chet\ChetDataSurfaceTextSanitizer;
 use App\Support\CometConfig;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Comet Backup read tools for the staff MCP surface (psa-z30dv).
@@ -19,18 +21,25 @@ use Carbon\Carbon;
  * human opening the Comet console. Read-only; any backup write/trigger surface
  * is a separate bead and a separate operator decision.
  *
- * TWO DATA PLANES, EACH WITH ITS OWN FRESHNESS (psa-47vxh idiom):
+ * TWO DATA PLANES, EACH WITH ITS OWN FRESHNESS (canonical psa-47vxh idiom):
  *  - SYNCED columns (comet_username/comet_device_id/comet_backup_enabled,
  *    backup_*_bytes, backup_synced_at) land daily via CometBackupSyncService.
- *    Their header carries data_as_of = the OLDEST known sync stamp across the
- *    fleet — the freshest the whole reading can honestly claim — and
- *    data_stale is true when that is beyond the threshold OR any device's
- *    stamp is unknown. Every row is self-describing (synced_at + stale).
+ *    The payload carries the canonical trio: data_as_of = the OLDEST
+ *    trustworthy sync stamp across the fleet (the freshest the whole reading
+ *    can honestly claim), data_stale = true when that is beyond the threshold
+ *    OR any device's stamp is unknown (missing or FUTURE-dated — a future
+ *    stamp is bad data, never fresh), and an always-present freshness_note.
+ *    Every row is self-describing (synced_at + stale).
  *  - LIVE job history comes from the Comet server API at call time
- *    (jobs_checked_at). A failed lookup NEVER degrades to an empty job list —
- *    a confident "no failures" an agent cannot tell from a real all-clear is
- *    the exact false-clear CLAUDE.md's vendor-shape rules exist to prevent.
- *    Affected devices scream job_state=unavailable instead.
+ *    (jobs_checked_at = the oldest real fetch time backing the answer; a
+ *    short-lived cache bounds vendor request volume, and a cache-served answer
+ *    never claims to be fresher than its fetch). A failed lookup NEVER
+ *    degrades to an empty job list — a confident "no failures" an agent cannot
+ *    tell from a real all-clear is the exact false-clear CLAUDE.md's
+ *    vendor-shape rules exist to prevent. Affected devices scream
+ *    job_state=unavailable instead, and an unrecognised vendor status code is
+ *    a first-class last_backup_unknown — never silently counted as failed,
+ *    never as passing.
  *
  * VENDOR SHAPE — read from the SDK source, not guessed (CLAUDE.md rule):
  * job objects are \Comet\BackupJobDetail (vendor/cometbackup/comet-php-sdk/
@@ -40,16 +49,18 @@ use Carbon\Carbon;
  * Classifications and statuses are RANGES per Comet/Def.php:610-841 —
  * backup = JOB_CLASSIFICATION_BACKUP (4001), success = 5000-5999, running =
  * 6000-6999, failed = 7000-7999 (timeout/warning/error/quota/missed-schedule/
- * cancelled/skipped/abandoned). Do not copy the exact-match constants from
- * CometJobService/CometAlertService here — they predate this reading of the
- * vendor source and are under review for exactly that.
+ * cancelled/skipped/abandoned). Do not copy the legacy exact-match constants
+ * that CometJobService/CometAlertService used historically — they predate this
+ * reading of the vendor source (corrected separately under psa-enpew).
  *
  * DATA BOUNDARY: the Comet admin API is server-wide (AdminGetJobsForUser has
  * no per-client scoping), so OUR scoping IS the boundary — usernames are taken
  * only from the resolved client's synced asset rows, and returned jobs are
  * kept only when their DeviceID matches one of that client's registered
  * devices. Scope resolves from clients.comet_group_id via the PSA client row,
- * never from tool input.
+ * never from tool input. Vendor account identifiers stay minimized: Comet
+ * usernames and the group id are used internally but never echoed into the
+ * payload or logs.
  */
 class CometReadOnlyToolset
 {
@@ -73,13 +84,27 @@ class CometReadOnlyToolset
      */
     private const MAX_USERNAME_LOOKUPS = 25;
 
+    /**
+     * After this many CONSECUTIVE failed username lookups the remaining
+     * usernames are not attempted (their devices read not_queried, loudly) —
+     * a dark Comet server must cost two bounded timeouts, not 25 of them.
+     */
+    private const BREAK_AFTER_CONSECUTIVE_FAILURES = 2;
+
+    /** Live results are cached briefly so an agent loop cannot fan out into unbounded vendor request volume. */
+    private const JOBS_CACHE_SECONDS = 60;
+
+    /** Failures are cached even shorter — loud unknowns, but no re-hammering a struggling server. */
+    private const JOBS_FAILURE_CACHE_SECONDS = 30;
+
     private const MAX_DEVICE_ROWS = 100;
 
     private const MAX_JOB_ROWS = 50;
 
     private const MAX_ALERT_ROWS = 10;
 
-    private const SYNCED_SOURCE_NOTE = 'Registration, enabled flags and storage bytes are synced Comet data from the PSA database (refreshed by the daily Comet backup sync), not a live query — check data_as_of and each row\'s synced_at. Job history and job outcomes are LIVE from the Comet server as of jobs_checked_at.';
+    /** Canonical always-present freshness_note (psa-47vxh idiom). */
+    private const SYNCED_FRESHNESS_NOTE = 'data_as_of/data_stale cover the SYNCED columns (registration, enabled flags, storage bytes — refreshed by the daily Comet backup sync): data_as_of is the OLDEST trustworthy sync stamp across the fleet, and data_stale is true when any device\'s stamp is missing, future-dated, or older than '.self::STALE_AFTER_HOURS.'h (each row carries its own synced_at + stale). Job outcomes are LIVE from the Comet server as of jobs_checked_at (the oldest fetch time backing this answer; null when no job lookup ran).';
 
     public function __construct(
         private readonly ChetDataSurfaceTextSanitizer $textSanitizer,
@@ -97,7 +122,7 @@ class CometReadOnlyToolset
         return [
             [
                 'name' => 'comet_get_backup_posture',
-                'description' => "Get a PSA client's Comet Backup posture, per device: whether backup is enabled and the device is registered with the Comet server, the LIVE outcome and time of each device's most recent backup job (succeeded / failed / running / no jobs observed), days since last success, storage usage, active backup-failure alerts, and how fresh every part of the answer is. Start here for any 'are this client's backups OK' question. Devices whose job history could not be fetched are reported as unavailable — treat their backup state as UNKNOWN, never as passing; absence of a failure here is not evidence of success.",
+                'description' => "Get a PSA client's Comet Backup posture, per device: whether backup is enabled and the device is registered with the Comet server, the LIVE outcome and time of each device's most recent backup job (succeeded / failed / running / unknown / no jobs observed), days since last success, storage usage, active backup-failure alerts, and how fresh every part of the answer is. Start here for any 'are this client's backups OK' question. Devices whose job history could not be fetched are reported as unavailable, and an unrecognised vendor status code is reported as last_backup_unknown — treat both as UNKNOWN, never as passing and never as a confirmed failure; absence of a failure here is not evidence of success.",
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -175,7 +200,7 @@ class CometReadOnlyToolset
         $result['device_count'] = $devices->count();
 
         if ($devices->isEmpty()) {
-            $result['note'] = "{$client->name} is mapped to Comet group {$client->comet_group_id} but no PSA assets carry Comet backup state (no device is registered or flagged backup-enabled). "
+            $result['note'] = "{$client->name} is mapped to a Comet group but no PSA assets carry Comet backup state (no device is registered or flagged backup-enabled). "
                 .'Possible causes: the daily Comet backup sync has not run yet, no Comet devices report under this group, or Comet devices did not match any PSA asset by hostname. Verify in the Comet console before treating this as no coverage.';
             $result['active_backup_alerts'] = $this->activeAlerts($client);
 
@@ -191,29 +216,29 @@ class CometReadOnlyToolset
             ->unique()->sort()->values();
         $queriedUsernames = $usernames->take(self::MAX_USERNAME_LOOKUPS);
 
-        [$jobsByDevice, $failedUsernames] = $this->fetchBackupJobsByDevice($queriedUsernames->all());
+        $lookup = $this->fetchBackupJobsByDevice($queriedUsernames->all(), backupOnly: true);
 
         $rows = [];
         $counts = [
             'last_backup_succeeded' => 0, 'last_backup_failed' => 0, 'last_backup_running' => 0,
-            'no_backup_jobs_observed' => 0, 'job_data_unavailable' => 0, 'not_queried' => 0,
-            'pending_registration' => 0,
+            'last_backup_unknown' => 0, 'no_backup_jobs_observed' => 0, 'job_data_unavailable' => 0,
+            'not_queried' => 0, 'pending_registration' => 0,
         ];
 
         // Counts cover the WHOLE fleet; only the emitted rows are capped —
         // a truncated listing must not shrink the summary.
         foreach ($devices as $asset) {
+            $syncedAt = $this->trustworthyPastTime($asset->backup_synced_at);
             $row = [
                 'asset_id' => $asset->id,
                 'hostname' => $asset->hostname,
                 'asset_name' => $asset->name,
                 'backup_enabled_flag' => (bool) $asset->comet_backup_enabled,
                 'registered' => ! empty($asset->comet_device_id),
-                'comet_username' => $asset->comet_username,
                 'cloud_bytes' => $asset->backup_cloud_bytes,
                 'local_bytes' => $asset->backup_local_bytes,
-                'synced_at' => $asset->backup_synced_at?->toIso8601ZuluString(),
-                'stale' => $asset->backup_synced_at === null || $this->isStale($asset->backup_synced_at),
+                'synced_at' => $syncedAt?->toIso8601ZuluString(),
+                'stale' => $this->isStale($syncedAt),
             ];
 
             if (empty($asset->comet_device_id)) {
@@ -226,14 +251,14 @@ class CometReadOnlyToolset
                 $row['job_state'] = 'unavailable';
                 $row['job_state_note'] = 'Device is registered but carries no synced Comet username, so its job history cannot be looked up. Re-run the Comet backup sync.';
                 $counts['job_data_unavailable']++;
-            } elseif (! $queriedUsernames->contains($asset->comet_username)) {
-                $row['job_state'] = 'not_queried';
-                $counts['not_queried']++;
-            } elseif (in_array($asset->comet_username, $failedUsernames, true)) {
+            } elseif (in_array($asset->comet_username, $lookup['failed'], true)) {
                 $row['job_state'] = 'unavailable';
                 $counts['job_data_unavailable']++;
+            } elseif (! $queriedUsernames->contains($asset->comet_username) || in_array($asset->comet_username, $lookup['skipped'], true)) {
+                $row['job_state'] = 'not_queried';
+                $counts['not_queried']++;
             } else {
-                $row = array_merge($row, $this->devicePosture($jobsByDevice[$asset->comet_device_id] ?? []));
+                $row = array_merge($row, $this->devicePosture($lookup['jobs_by_device'][$asset->comet_device_id] ?? []));
                 $counts[$row['job_state']]++;
             }
 
@@ -250,16 +275,22 @@ class CometReadOnlyToolset
             'local_bytes' => (int) $registered->sum(fn (Asset $asset): int => (int) $asset->backup_local_bytes),
         ];
 
-        $result['jobs_checked_at'] = now()->toIso8601ZuluString();
+        $result['jobs_checked_at'] = $lookup['oldest_fetched_at'];
         if ($usernames->count() > $queriedUsernames->count()) {
             $result['job_lookup_truncated'] = true;
             $result['job_lookup_note'] = 'This client has '.$usernames->count().' distinct Comet usernames; only the first '.self::MAX_USERNAME_LOOKUPS
                 .' were queried. Devices under the rest are marked not_queried — their backup state is UNKNOWN, not passing.';
         }
-        if ($failedUsernames !== []) {
-            $result['job_lookup_failures'] = $failedUsernames;
-            $result['job_lookup_failure_note'] = 'Job history could not be fetched for '.count($failedUsernames)
-                .' Comet username(s). Devices under them are marked unavailable — their backup state is UNKNOWN, not passing. Check the Comet server and retry, or verify in the Comet console.';
+        if ($lookup['failed'] !== []) {
+            $result['job_lookup_failed_count'] = count($lookup['failed']);
+            $result['job_lookup_failure_note'] = 'Job history could not be fetched for '.count($lookup['failed'])
+                .' Comet backup account(s). Devices under them are marked unavailable — their backup state is UNKNOWN, not passing. Check the Comet server and retry, or verify in the Comet console.';
+        }
+        if ($lookup['skipped'] !== []) {
+            $result['job_lookup_skipped_count'] = count($lookup['skipped']);
+            $result['job_lookup_skipped_note'] = 'After '.self::BREAK_AFTER_CONSECUTIVE_FAILURES
+                .' consecutive lookup failures the remaining '.count($lookup['skipped'])
+                .' backup account(s) were not attempted (the Comet server appears unreachable). Their devices are marked not_queried — UNKNOWN, not passing.';
         }
 
         $result['active_backup_alerts'] = $this->activeAlerts($client);
@@ -298,14 +329,15 @@ class CometReadOnlyToolset
             return ['error' => "'{$asset->hostname}' is registered with Comet but carries no synced Comet username, so its job history cannot be looked up. Re-run the Comet backup sync."];
         }
 
-        [$jobsByDevice, $failedUsernames] = $this->fetchBackupJobsByDevice([$asset->comet_username], allClassifications: true);
-        if ($failedUsernames !== []) {
+        $fetch = $this->fetchJobsForUsername($asset->comet_username);
+        if ($fetch['status'] !== 'ok') {
             // Never degrade a failed lookup into an empty job list — an agent
             // cannot tell that apart from "no jobs", which reads as all-clear.
             return ['error' => "Comet job lookup failed for '{$asset->hostname}' — job history is UNAVAILABLE, not empty. Treat this device's backup state as unknown and verify in the Comet console."];
         }
 
-        $jobs = collect($jobsByDevice[$asset->comet_device_id] ?? [])
+        $jobs = collect($fetch['jobs'])
+            ->filter(fn (array $job): bool => $job['device_id'] === $asset->comet_device_id)
             ->sortByDesc(fn (array $job): int => $job['start_ts'])
             ->values();
 
@@ -319,8 +351,7 @@ class CometReadOnlyToolset
         $result = $this->header($client);
         $result['hostname'] = $asset->hostname;
         $result['asset_id'] = $asset->id;
-        $result['comet_username'] = $asset->comet_username;
-        $result['jobs_checked_at'] = now()->toIso8601ZuluString();
+        $result['jobs_checked_at'] = $fetch['fetched_at'];
         $result['days'] = $days;
         $result['job_count'] = $recent->count();
         $result['truncated'] = $recent->count() > self::MAX_JOB_ROWS;
@@ -342,60 +373,116 @@ class CometReadOnlyToolset
     // ── live job fetch + classification (vendor shape: see class docblock) ─────
 
     /**
+     * One username's normalized job rows, briefly cached (JOBS_CACHE_SECONDS)
+     * so an agent loop cannot fan out into unbounded AdminGetJobsForUser
+     * volume; failures are cached shorter (JOBS_FAILURE_CACHE_SECONDS) — still
+     * loud, no re-hammering. fetched_at is stamped at real fetch time so a
+     * cache-served answer never claims to be fresher than it is. Logs are
+     * redacted: exception class + code only — no vendor message (may embed the
+     * server URL or response text) and no username (vendor account
+     * identifier).
+     *
+     * @return array{status: 'ok'|'failed', jobs?: array<int, array<string, mixed>>, fetched_at: string}
+     */
+    private function fetchJobsForUsername(string $username): array
+    {
+        $key = 'comet_reads:jobs:'.sha1($username);
+        $cached = Cache::get($key);
+        if (is_array($cached) && isset($cached['status'])) {
+            return $cached;
+        }
+
+        try {
+            $jobs = app(CometClient::class)->getJobsForUser($username);
+        } catch (\Throwable $e) {
+            Log::warning('[Comet reads] job lookup failed', ['exception' => $e::class, 'code' => $e->getCode()]);
+            $result = ['status' => 'failed', 'fetched_at' => now()->toIso8601ZuluString()];
+            Cache::put($key, $result, self::JOBS_FAILURE_CACHE_SECONDS);
+
+            return $result;
+        }
+
+        $normalized = [];
+        foreach ($jobs as $job) {
+            $deviceId = (string) ($job->DeviceID ?? '');
+            if ($deviceId === '') {
+                continue;
+            }
+
+            $classification = (int) ($job->Classification ?? 0);
+            $status = (int) ($job->Status ?? 0);
+            $normalized[] = [
+                'device_id' => $deviceId,
+                'classification' => $classification,
+                'is_backup' => $classification === \Comet\Def::JOB_CLASSIFICATION_BACKUP,
+                'status' => $status,
+                'category' => $this->statusCategory($status),
+                'start_ts' => (int) ($job->StartTime ?? 0),
+                'end_ts' => (int) ($job->EndTime ?? 0),
+                'total_size' => (int) ($job->TotalSize ?? 0),
+                'upload_size' => (int) ($job->UploadSize ?? 0),
+                'total_files' => (int) ($job->TotalFiles ?? 0),
+            ];
+        }
+
+        $result = ['status' => 'ok', 'jobs' => $normalized, 'fetched_at' => now()->toIso8601ZuluString()];
+        Cache::put($key, $result, self::JOBS_CACHE_SECONDS);
+
+        return $result;
+    }
+
+    /**
      * Fetch jobs for the given usernames and partition them per DeviceID.
-     * Returns [jobsByDeviceId, failedUsernames]. A username whose fetch throws
-     * lands in failedUsernames — callers must surface that loudly, never as an
-     * empty list.
+     * A username whose fetch fails lands in `failed` — callers must surface
+     * that loudly, never as an empty list. After BREAK_AFTER_CONSECUTIVE_FAILURES
+     * consecutive failures the rest are `skipped` without an attempt (a dark
+     * server costs two bounded timeouts, not 25). oldest_fetched_at is the
+     * oldest real fetch time backing the answer — the freshest the whole
+     * reading can honestly claim under caching.
      *
      * @param  array<int, string>  $usernames
-     * @return array{0: array<string, array<int, array<string, mixed>>>, 1: array<int, string>}
+     * @return array{jobs_by_device: array<string, array<int, array<string, mixed>>>, failed: array<int, string>, skipped: array<int, string>, oldest_fetched_at: ?string}
      */
-    private function fetchBackupJobsByDevice(array $usernames, bool $allClassifications = false): array
+    private function fetchBackupJobsByDevice(array $usernames, bool $backupOnly): array
     {
         $jobsByDevice = [];
         $failed = [];
-        $client = app(CometClient::class);
+        $skipped = [];
+        $oldestFetchedAt = null;
+        $consecutiveFailures = 0;
 
         foreach ($usernames as $username) {
-            try {
-                $jobs = $client->getJobsForUser($username);
-            } catch (\Throwable $e) {
-                \Illuminate\Support\Facades\Log::warning("[Comet reads] getJobsForUser({$username}) failed: {$e->getMessage()}");
-                $failed[] = $username;
+            if ($consecutiveFailures >= self::BREAK_AFTER_CONSECUTIVE_FAILURES) {
+                $skipped[] = $username;
 
                 continue;
             }
 
-            foreach ($jobs as $job) {
-                $deviceId = (string) ($job->DeviceID ?? '');
-                if ($deviceId === '') {
-                    continue;
-                }
+            $fetch = $this->fetchJobsForUsername($username);
+            // ISO-8601 Zulu strings compare chronologically as strings.
+            if ($oldestFetchedAt === null || $fetch['fetched_at'] < $oldestFetchedAt) {
+                $oldestFetchedAt = $fetch['fetched_at'];
+            }
 
-                $classification = (int) ($job->Classification ?? 0);
-                $isBackup = $classification === \Comet\Def::JOB_CLASSIFICATION_BACKUP;
-                if (! $allClassifications && ! $isBackup) {
+            if ($fetch['status'] !== 'ok') {
+                $failed[] = $username;
+                $consecutiveFailures++;
+
+                continue;
+            }
+            $consecutiveFailures = 0;
+
+            foreach ($fetch['jobs'] as $job) {
+                if ($backupOnly && ! $job['is_backup']) {
                     // Posture is about BACKUP outcomes; a successful retention or
                     // restore pass must not read as "backup succeeded".
                     continue;
                 }
-
-                $status = (int) ($job->Status ?? 0);
-                $jobsByDevice[$deviceId][] = [
-                    'classification' => $classification,
-                    'is_backup' => $isBackup,
-                    'status' => $status,
-                    'category' => $this->statusCategory($status),
-                    'start_ts' => (int) ($job->StartTime ?? 0),
-                    'end_ts' => (int) ($job->EndTime ?? 0),
-                    'total_size' => (int) ($job->TotalSize ?? 0),
-                    'upload_size' => (int) ($job->UploadSize ?? 0),
-                    'total_files' => (int) ($job->TotalFiles ?? 0),
-                ];
+                $jobsByDevice[$job['device_id']][] = $job;
             }
         }
 
-        return [$jobsByDevice, $failed];
+        return ['jobs_by_device' => $jobsByDevice, 'failed' => $failed, 'skipped' => $skipped, 'oldest_fetched_at' => $oldestFetchedAt];
     }
 
     /**
@@ -424,12 +511,15 @@ class CometReadOnlyToolset
             $daysSinceSuccess = (int) $this->timestamp($lastSuccess['start_ts'])?->diffInDays(now());
         }
 
-        return [
+        $posture = [
+            // UNKNOWN is a first-class outcome: an unrecognised vendor status
+            // code must not be asserted as a failure the vendor never reported
+            // (and never as passing) — the agent relays it as unknown.
             'job_state' => match ($last['category']) {
                 'success' => 'last_backup_succeeded',
                 'failed' => 'last_backup_failed',
                 'running' => 'last_backup_running',
-                default => 'last_backup_failed', // unknown status code: treat as not-good, never as passing
+                default => 'last_backup_unknown',
             },
             'last_backup_at' => $this->timestamp($last['start_ts'])?->toIso8601ZuluString(),
             'last_backup_status' => $this->statusLabel($last['status']),
@@ -438,6 +528,12 @@ class CometReadOnlyToolset
             'last_backup_failure_at' => $lastFailure !== null ? $this->timestamp($lastFailure['start_ts'])?->toIso8601ZuluString() : null,
             'days_since_last_success' => $daysSinceSuccess,
         ];
+
+        if ($posture['job_state'] === 'last_backup_unknown') {
+            $posture['job_state_note'] = 'The most recent backup job reports a status code this integration does not recognise — its outcome is UNKNOWN: not passing, and not a confirmed failure either. Verify this device in the Comet console.';
+        }
+
+        return $posture;
     }
 
     /** @param array<string, mixed> $job */
@@ -462,7 +558,8 @@ class CometReadOnlyToolset
 
     /**
      * Status RANGES per vendor Comet/Def.php:708-841. An unrecognised code maps
-     * to 'unknown', which every caller treats as not-good.
+     * to 'unknown', which surfaces as a first-class last_backup_unknown state —
+     * never success, never an asserted failure.
      */
     private function statusCategory(int $status): string
     {
@@ -614,34 +711,35 @@ class CometReadOnlyToolset
         return "No Comet-registered asset with hostname '{$hostname}' exists for this client. Check the spelling, or call comet_get_backup_posture to see this client's Comet devices.";
     }
 
-    // ── freshness (psa-47vxh idiom: oldest-known, any-unknown ⇒ stale) ─────────
+    // ── freshness (canonical psa-47vxh idiom) ──────────────────────────────────
 
     /** @return array<string, mixed> */
     private function header(Client $client): array
     {
+        // Minimized on purpose: no vendor group id or usernames — PSA ids and
+        // hostnames are the working identifiers on this surface.
         return [
             'psa_client_id' => $client->id,
             'psa_client_name' => $client->name,
-            'comet_group_id' => $client->comet_group_id,
-            'data_source' => self::SYNCED_SOURCE_NOTE,
         ];
     }
 
     /**
-     * Freshness of the SYNCED columns: data_as_of is the OLDEST known sync
-     * stamp across the fleet — the freshest the whole reading can honestly
+     * Freshness of the SYNCED columns: data_as_of is the OLDEST trustworthy
+     * sync stamp across the fleet — the freshest the whole reading can honestly
      * claim — and data_stale is true when that is beyond the threshold OR any
-     * device's stamp is unknown.
+     * device's stamp is unknown (missing or future-dated). freshness_note is
+     * always present (canonical envelope).
      *
      * @param  \Illuminate\Support\Collection<int, Asset>  $devices
-     * @return array{data_as_of: ?string, data_stale: bool}
+     * @return array{data_as_of: ?string, data_stale: bool, freshness_note: string}
      */
     private function syncedFreshness(\Illuminate\Support\Collection $devices): array
     {
         $oldest = null;
         $hasUnknown = $devices->isEmpty();
         foreach ($devices as $device) {
-            $syncedAt = $device->backup_synced_at;
+            $syncedAt = $this->trustworthyPastTime($device->backup_synced_at);
             if ($syncedAt === null) {
                 $hasUnknown = true;
 
@@ -652,17 +750,22 @@ class CometReadOnlyToolset
             }
         }
 
-        $freshness = [
+        return [
             'data_as_of' => $oldest?->toIso8601ZuluString(),
             'data_stale' => $hasUnknown || $this->isStale($oldest),
+            'freshness_note' => self::SYNCED_FRESHNESS_NOTE,
         ];
+    }
 
-        if ($freshness['data_stale']) {
-            $freshness['staleness_note'] = 'At least one device\'s synced Comet data is older than '.self::STALE_AFTER_HOURS
-                .'h or has no sync stamp — registration, enabled flags and storage bytes may be out of date. Job outcomes above are live and unaffected.';
-        }
-
-        return $freshness;
+    /**
+     * A DB sync stamp is trustworthy only when it is a real PAST time — a
+     * future-dated stamp (writer bug or clock skew) must read as unknown and
+     * therefore stale, never fresh (canonical psa-47vxh rule;
+     * UnifiReadOnlyToolset::parseTimestamp is the string-input sibling).
+     */
+    private function trustworthyPastTime(?Carbon $timestamp): ?Carbon
+    {
+        return ($timestamp === null || $timestamp->gt(now())) ? null : $timestamp;
     }
 
     private function isStale(?Carbon $timestamp): bool

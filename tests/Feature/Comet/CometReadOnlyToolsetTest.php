@@ -18,10 +18,11 @@ use Tests\TestCase;
 /**
  * Comet backup read toolset (psa-z30dv): client-scoped posture + job history.
  *
- * Job fixtures are REAL \Comet\BackupJobDetail objects with \Comet\Def constants
- * — the SDK ships the vendor shape, so the fixtures cannot drift from it
- * (CLAUDE.md fixture rule). The cross-client tests lead deliberately: the Comet
- * admin API is server-wide, so OUR device partitioning is the entire boundary.
+ * Job fixtures are vendor-shaped JSON deserialized through the SDK's OWN parser
+ * (CLAUDE.md fixture rule: producer-derived, never authored to match the code
+ * under test) — see job() for the mechanism. The cross-client tests lead
+ * deliberately: the Comet admin API is server-wide, so OUR device partitioning
+ * is the entire boundary.
  */
 class CometReadOnlyToolsetTest extends TestCase
 {
@@ -64,21 +65,29 @@ class CometReadOnlyToolsetTest extends TestCase
         ], $overrides));
     }
 
-    /** Build a vendor-shaped job. Values default to a fresh successful backup. */
+    /**
+     * Build a vendor-shaped job by deserializing vendor-wire JSON through the
+     * SDK's own parser (vendor/cometbackup/comet-php-sdk/Comet/
+     * BackupJobDetail.php — createFromJSON/inflateFrom). The SDK is the
+     * producer contract: a wrong field name in this fixture lands in
+     * __unknown_properties and leaves the typed property at its default, so the
+     * value asserts below fail instead of silently agreeing with the
+     * implementation (CLAUDE.md fixture rule). Defaults are a fresh successful
+     * backup.
+     */
     private function job(array $attrs = []): \Comet\BackupJobDetail
     {
-        $job = new \Comet\BackupJobDetail;
-        $job->Username = $attrs['username'] ?? 'acme-backup';
-        $job->DeviceID = $attrs['device'] ?? 'dev-1';
-        $job->Classification = $attrs['classification'] ?? \Comet\Def::JOB_CLASSIFICATION_BACKUP;
-        $job->Status = $attrs['status'] ?? \Comet\Def::JOB_STATUS_STOP_SUCCESS;
-        $job->StartTime = $attrs['start'] ?? now()->subHours(6)->timestamp;
-        $job->EndTime = $attrs['end'] ?? now()->subHours(5)->timestamp;
-        $job->TotalSize = $attrs['total_size'] ?? 1000;
-        $job->UploadSize = $attrs['upload_size'] ?? 500;
-        $job->TotalFiles = $attrs['total_files'] ?? 10;
-
-        return $job;
+        return \Comet\BackupJobDetail::createFromJSON(json_encode([
+            'Username' => $attrs['username'] ?? 'acme-backup',
+            'DeviceID' => $attrs['device'] ?? 'dev-1',
+            'Classification' => $attrs['classification'] ?? \Comet\Def::JOB_CLASSIFICATION_BACKUP,
+            'Status' => $attrs['status'] ?? \Comet\Def::JOB_STATUS_STOP_SUCCESS,
+            'StartTime' => $attrs['start'] ?? now()->subHours(6)->timestamp,
+            'EndTime' => $attrs['end'] ?? now()->subHours(5)->timestamp,
+            'TotalSize' => $attrs['total_size'] ?? 1000,
+            'UploadSize' => $attrs['upload_size'] ?? 500,
+            'TotalFiles' => $attrs['total_files'] ?? 10,
+        ], JSON_THROW_ON_ERROR));
     }
 
     /** @param array<string, array<int, \Comet\BackupJobDetail>|\Throwable> $byUsername */
@@ -223,6 +232,7 @@ class CometReadOnlyToolsetTest extends TestCase
         $this->assertSame(3, $result['summary']['registered']);
         $this->assertSame(1, $result['summary']['last_backup_succeeded']);
         $this->assertSame(1, $result['summary']['last_backup_failed']);
+        $this->assertSame(0, $result['summary']['last_backup_unknown']);
         $this->assertSame(1, $result['summary']['no_backup_jobs_observed']);
         $this->assertSame(1, $result['summary']['pending_registration']);
     }
@@ -247,8 +257,10 @@ class CometReadOnlyToolsetTest extends TestCase
         $this->assertSame('last_backup_failed', $result['devices'][0]['job_state']);
     }
 
-    public function test_an_unrecognised_status_code_is_never_read_as_success(): void
+    public function test_an_unrecognised_status_code_is_a_first_class_unknown_not_a_failure(): void
     {
+        // The vendor never reported a failure — asserting one is as wrong as
+        // asserting success. UNKNOWN must be machine-readable and counted.
         $this->configureComet();
         $client = $this->mappedClient('Acme');
         $this->cometAsset($client, ['hostname' => 'WEIRD-HOST', 'comet_device_id' => 'dev-1']);
@@ -257,8 +269,13 @@ class CometReadOnlyToolsetTest extends TestCase
 
         $result = $this->toolset()->execute('comet_get_backup_posture', [], $client->id);
 
-        $this->assertNotSame('last_backup_succeeded', $result['devices'][0]['job_state']);
-        $this->assertStringContainsString('Unknown', $result['devices'][0]['last_backup_status']);
+        $this->assertSame('last_backup_unknown', $result['devices'][0]['job_state']);
+        $this->assertSame(1, $result['summary']['last_backup_unknown']);
+        $this->assertSame(0, $result['summary']['last_backup_failed'], 'an unknown outcome must not be counted as a failure');
+        $this->assertSame(0, $result['summary']['last_backup_succeeded'], 'an unknown outcome must never read as passing');
+        $this->assertStringContainsString('Unknown (code 8500)', $result['devices'][0]['last_backup_status']);
+        $this->assertStringContainsString('UNKNOWN', $result['devices'][0]['job_state_note']);
+        $this->assertStringContainsString('Comet console', $result['devices'][0]['job_state_note']);
     }
 
     public function test_a_failed_job_lookup_screams_unavailable_instead_of_reading_as_clean(): void
@@ -272,9 +289,52 @@ class CometReadOnlyToolsetTest extends TestCase
         $result = $this->toolset()->execute('comet_get_backup_posture', [], $client->id);
 
         $this->assertSame('unavailable', $result['devices'][0]['job_state']);
-        $this->assertSame(['acme-backup'], $result['job_lookup_failures']);
+        $this->assertSame(1, $result['job_lookup_failed_count']);
         $this->assertStringContainsString('UNKNOWN, not passing', $result['job_lookup_failure_note']);
         $this->assertSame(1, $result['summary']['job_data_unavailable']);
+        // Vendor account identifiers stay out of the payload even on failure.
+        $this->assertStringNotContainsString('acme-backup', json_encode($result), 'the failing Comet username must not cross the agent boundary');
+    }
+
+    public function test_repeated_lookup_failures_trip_the_circuit_breaker_loudly(): void
+    {
+        // A dark Comet server must cost two bounded timeouts, not one per
+        // username — and the skipped remainder must scream not_queried.
+        $this->configureComet();
+        $client = $this->mappedClient('Acme');
+        $this->cometAsset($client, ['hostname' => 'HOST-A', 'comet_device_id' => 'dev-a', 'comet_username' => 'a-backup']);
+        $this->cometAsset($client, ['hostname' => 'HOST-B', 'comet_device_id' => 'dev-b', 'comet_username' => 'b-backup']);
+        $this->cometAsset($client, ['hostname' => 'HOST-C', 'comet_device_id' => 'dev-c', 'comet_username' => 'c-backup']);
+
+        $mock = $this->mock(CometClient::class);
+        $mock->shouldReceive('getJobsForUser')->times(2)->andThrow(new CometClientException('Comet API error: timeout'));
+
+        $result = $this->toolset()->execute('comet_get_backup_posture', [], $client->id);
+
+        $this->assertSame(2, $result['summary']['job_data_unavailable']);
+        $this->assertSame(1, $result['summary']['not_queried']);
+        $this->assertSame(2, $result['job_lookup_failed_count']);
+        $this->assertSame(1, $result['job_lookup_skipped_count']);
+        $this->assertStringContainsString('UNKNOWN, not passing', $result['job_lookup_skipped_note']);
+    }
+
+    public function test_job_lookups_are_briefly_cached_to_bound_vendor_request_volume(): void
+    {
+        // One agent looping the tool must not translate 1:1 into vendor calls;
+        // and a cache-served answer must not claim a fresher jobs_checked_at.
+        $this->configureComet();
+        $client = $this->mappedClient('Acme');
+        $this->cometAsset($client, ['hostname' => 'HOST-A', 'comet_device_id' => 'dev-1']);
+
+        $mock = $this->mock(CometClient::class);
+        $mock->shouldReceive('getJobsForUser')->once()->with('acme-backup')
+            ->andReturn([$this->job(['device' => 'dev-1'])]);
+
+        $first = $this->toolset()->execute('comet_get_backup_posture', [], $client->id);
+        $second = $this->toolset()->execute('comet_get_backup_posture', [], $client->id);
+
+        $this->assertSame('last_backup_succeeded', $second['devices'][0]['job_state']);
+        $this->assertSame($first['jobs_checked_at'], $second['jobs_checked_at'], 'a cached answer must carry its real fetch time');
     }
 
     public function test_synced_freshness_uses_oldest_known_and_any_unknown_makes_it_stale(): void
@@ -289,12 +349,52 @@ class CometReadOnlyToolsetTest extends TestCase
         $result = $this->toolset()->execute('comet_get_backup_posture', [], $client->id);
         $this->assertSame($oldest->toIso8601ZuluString(), $result['data_as_of'], 'data_as_of must be the OLDEST known sync stamp');
         $this->assertFalse($result['data_stale']);
+        // The canonical envelope always carries its note, fresh or stale.
+        $this->assertStringContainsString('data_as_of', $result['freshness_note']);
 
         // A device with no stamp at all makes the whole synced reading stale.
         $this->cometAsset($client, ['comet_device_id' => 'dev-3', 'backup_synced_at' => null]);
         $result = $this->toolset()->execute('comet_get_backup_posture', [], $client->id);
         $this->assertTrue($result['data_stale']);
         $this->assertTrue(collect($result['devices'])->firstWhere('synced_at', null)['stale']);
+    }
+
+    public function test_a_future_dated_sync_stamp_is_unknown_never_fresh(): void
+    {
+        // A stamp in the future is bad data (writer bug or clock skew) — the
+        // canonical psa-47vxh rule: it must read unknown/stale, never fresh.
+        $this->configureComet();
+        $client = $this->mappedClient('Acme');
+        $valid = now()->subHours(2)->startOfSecond();
+        $this->cometAsset($client, ['comet_device_id' => 'dev-1', 'backup_synced_at' => $valid]);
+        $future = $this->cometAsset($client, ['comet_device_id' => 'dev-2', 'backup_synced_at' => now()->addDay()]);
+        $this->mockJobs([]);
+
+        $result = $this->toolset()->execute('comet_get_backup_posture', [], $client->id);
+
+        $this->assertTrue($result['data_stale'], 'a future-dated stamp must force the synced reading stale');
+        $this->assertSame($valid->toIso8601ZuluString(), $result['data_as_of'], 'a future stamp must not become data_as_of');
+        $futureRow = collect($result['devices'])->firstWhere('asset_id', $future->id);
+        $this->assertNull($futureRow['synced_at'], 'an untrustworthy stamp is reported as unknown, not echoed');
+        $this->assertTrue($futureRow['stale']);
+    }
+
+    public function test_payloads_omit_vendor_account_identifiers(): void
+    {
+        // Comet usernames and the group id are lookup plumbing, not answer
+        // content — PSA asset ids + hostnames are the working identifiers.
+        $this->configureComet();
+        $client = $this->mappedClient('Acme');
+        $this->cometAsset($client, ['hostname' => 'ACME-PC-01', 'comet_device_id' => 'dev-1']);
+        $this->mockJobs(['acme-backup' => [$this->job(['device' => 'dev-1'])]]);
+
+        $posture = json_encode($this->toolset()->execute('comet_get_backup_posture', [], $client->id));
+        $this->assertStringNotContainsString('acme-backup', $posture, 'the Comet username must not cross the agent boundary');
+        $this->assertStringNotContainsString('grp-acme', $posture, 'the Comet group id must not cross the agent boundary');
+
+        $jobs = json_encode($this->toolset()->execute('comet_list_backup_jobs', ['hostname' => 'ACME-PC-01'], $client->id));
+        $this->assertStringNotContainsString('acme-backup', $jobs);
+        $this->assertStringNotContainsString('grp-acme', $jobs);
     }
 
     public function test_a_mapped_client_with_no_backup_devices_gets_an_explanatory_note_not_a_clean_empty(): void
@@ -453,6 +553,20 @@ class CometReadOnlyToolsetTest extends TestCase
         $result = $this->toolset()->execute('comet_list_backup_jobs', ['hostname' => 'RIVAL-ONLY-HOST'], $acme->id);
 
         $this->assertStringContainsString('No Comet-registered asset', $result['error']);
+    }
+
+    public function test_the_comet_http_client_has_bounded_timeouts(): void
+    {
+        // The SDK's default Guzzle client has NO timeout (Comet/Server.php) —
+        // a slow or dark Comet server must fail loudly, never hang the MCP
+        // request that fans out one job lookup per username.
+        $this->configureComet();
+
+        $server = (new \ReflectionProperty(CometClient::class, 'server'))->getValue(new CometClient);
+        $guzzle = (new \ReflectionProperty(\Comet\Server::class, 'client'))->getValue($server);
+
+        $this->assertGreaterThan(0, (float) $guzzle->getConfig('timeout'), 'the Comet HTTP client must carry a bounded request timeout');
+        $this->assertGreaterThan(0, (float) $guzzle->getConfig('connect_timeout'), 'the Comet HTTP client must carry a bounded connect timeout');
     }
 
     public function test_an_unknown_tool_name_is_an_error(): void

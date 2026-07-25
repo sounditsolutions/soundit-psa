@@ -16,6 +16,24 @@ class CometClient
         $password = CometConfig::get('comet_admin_password');
 
         $this->server = new \Comet\Server($url, $user, $password);
+
+        // The SDK's default Guzzle client sets NO connect/request timeout
+        // (vendor/cometbackup/comet-php-sdk/Comet/Server.php constructor), so a
+        // slow or dark Comet server would hold callers — including MCP requests
+        // fanning out one AdminGetJobsForUser per username — indefinitely.
+        // Rebuild it via the SDK's setClient() seam with the same defaults plus
+        // bounded timeouts; failures then surface as loud errors/unknowns
+        // instead of hangs (psa-z30dv).
+        $this->server->setClient(new \GuzzleHttp\Client([
+            'headers' => [
+                'User-Agent' => 'comet-php-sdk/1.x',
+                'Accept-Encoding' => 'gzip',
+            ],
+            'allow_redirects' => false,
+            'decode_content' => true,
+            'connect_timeout' => 10,
+            'timeout' => 30,
+        ]));
     }
 
     public function listUsersFull(): array
