@@ -2,13 +2,17 @@
 
 namespace App\Services\Chet;
 
+use App\Services\Comet\CometReadOnlyToolset;
 use App\Services\Huntress\HuntressReadOnlyToolset;
 use App\Services\ScreenConnect\ScreenConnectReadOnlyToolset;
+use App\Services\Servosity\ServosityReadOnlyToolset;
 use App\Services\Tactical\TacticalReadOnlyToolset;
 use App\Services\Unifi\UnifiReadOnlyToolset;
 use App\Services\Zorus\ZorusReadOnlyToolset;
+use App\Support\CometConfig;
 use App\Support\HuntressConfig;
 use App\Support\ScreenConnectConfig;
+use App\Support\ServosityConfig;
 use App\Support\TacticalConfig;
 use App\Support\TeamsBotConfig;
 use App\Support\UnifiConfig;
@@ -64,6 +68,18 @@ class ChetDataSurfaceTools
             $tools = array_merge($tools, ZorusReadOnlyToolset::clientDefinitions());
         }
 
+        // Comet backup posture reads (psa-z30dv). For Comet, configured IS the
+        // master switch (CometConfig::isEnabled() = isConfigured(); no separate
+        // toggle exists) — unconfigured means withdrawn, so OFF=OFF holds.
+        if (CometConfig::isEnabled()) {
+            $tools = array_merge($tools, CometReadOnlyToolset::clientDefinitions());
+        }
+
+        // Servosity backup posture reads (psa-z30dv) — OFF=OFF, same as Zorus.
+        if (ServosityConfig::isAvailable()) {
+            $tools = array_merge($tools, ServosityReadOnlyToolset::clientDefinitions());
+        }
+
         return $tools;
     }
 
@@ -84,6 +100,8 @@ class ChetDataSurfaceTools
             UnifiReadOnlyToolset::definitions(),
             ScreenConnectReadOnlyToolset::definitions(),
             ZorusReadOnlyToolset::definitions(),
+            CometReadOnlyToolset::definitions(),
+            ServosityReadOnlyToolset::definitions(),
         );
     }
 
@@ -94,7 +112,9 @@ class ChetDataSurfaceTools
             || HuntressReadOnlyToolset::handles($toolName)
             || UnifiReadOnlyToolset::handles($toolName)
             || ScreenConnectReadOnlyToolset::handles($toolName)
-            || ZorusReadOnlyToolset::handles($toolName);
+            || ZorusReadOnlyToolset::handles($toolName)
+            || CometReadOnlyToolset::handles($toolName)
+            || ServosityReadOnlyToolset::handles($toolName);
     }
 
     public static function requiresClient(string $toolName): bool
@@ -103,6 +123,8 @@ class ChetDataSurfaceTools
             || HuntressReadOnlyToolset::requiresClient($toolName)
             || UnifiReadOnlyToolset::requiresClient($toolName)
             || ScreenConnectReadOnlyToolset::requiresClient($toolName)
-            || ZorusReadOnlyToolset::requiresClient($toolName);
+            || ZorusReadOnlyToolset::requiresClient($toolName)
+            || CometReadOnlyToolset::requiresClient($toolName)
+            || ServosityReadOnlyToolset::requiresClient($toolName);
     }
 }

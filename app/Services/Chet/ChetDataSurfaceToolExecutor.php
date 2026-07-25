@@ -2,8 +2,10 @@
 
 namespace App\Services\Chet;
 
+use App\Services\Comet\CometReadOnlyToolset;
 use App\Services\Huntress\HuntressReadOnlyToolset;
 use App\Services\ScreenConnect\ScreenConnectReadOnlyToolset;
+use App\Services\Servosity\ServosityReadOnlyToolset;
 use App\Services\Tactical\TacticalReadOnlyToolset;
 use App\Services\Unifi\UnifiReadOnlyToolset;
 use App\Services\Zorus\ZorusReadOnlyToolset;
@@ -46,6 +48,22 @@ class ChetDataSurfaceToolExecutor
             }
 
             return app(ZorusReadOnlyToolset::class)->execute($toolName, $input, $clientId);
+        }
+
+        if (CometReadOnlyToolset::handles($toolName)) {
+            if (CometReadOnlyToolset::requiresClient($toolName) && $clientId === null) {
+                return ['error' => 'client_id is required for '.$toolName.'.'];
+            }
+
+            return app(CometReadOnlyToolset::class)->execute($toolName, $input, $clientId);
+        }
+
+        if (ServosityReadOnlyToolset::handles($toolName)) {
+            if (ServosityReadOnlyToolset::requiresClient($toolName) && $clientId === null) {
+                return ['error' => 'client_id is required for '.$toolName.'.'];
+            }
+
+            return app(ServosityReadOnlyToolset::class)->execute($toolName, $input, $clientId);
         }
 
         if (TeamsChatReadToolset::handles($toolName)) {

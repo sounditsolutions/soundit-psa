@@ -222,7 +222,7 @@ class McpToolRegistry
             'unifi' => ['label' => 'UniFi', 'blurb' => 'Network, WAN/ISP & device telemetry (read-only)', 'icon' => 'bi-router', 'accent' => '#0559c9'],
             'screenconnect' => ['label' => 'ScreenConnect', 'blurb' => 'Remote-access session & online state (read-only)', 'icon' => 'bi-display', 'accent' => '#ea580c'],
             'teams' => ['label' => 'Teams & Operator', 'blurb' => 'Teams chat reads & the operator bridge', 'icon' => 'bi-chat-dots', 'accent' => '#4b53bc'],
-            'other' => ['label' => 'Other integrations', 'blurb' => 'Level · Mailprotector · Comet · Control D · Zorus · DNS', 'icon' => 'bi-plugin', 'accent' => '#7c3aed'],
+            'other' => ['label' => 'Other integrations', 'blurb' => 'Level · Mailprotector · Comet · Servosity · Control D · Zorus · DNS', 'icon' => 'bi-plugin', 'accent' => '#7c3aed'],
             'wiki' => ['label' => 'Wiki & runbooks', 'blurb' => 'Client wiki & internal SOP / runbook store', 'icon' => 'bi-journal-text', 'accent' => '#b45309'],
         ];
     }
@@ -244,6 +244,7 @@ class McpToolRegistry
             str_starts_with($name, 'wiki_') => 'wiki',
             str_starts_with($name, 'mesh_'),
             str_starts_with($name, 'comet_'),
+            str_starts_with($name, 'servosity_'),
             str_starts_with($name, 'controld_'),
             str_starts_with($name, 'zorus_'),
             str_starts_with($name, 'dns_'),

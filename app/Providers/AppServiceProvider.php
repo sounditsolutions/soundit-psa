@@ -26,12 +26,14 @@ use App\Services\Huntress\HuntressClient;
 use App\Services\Level\LevelClient;
 use App\Services\Mesh\MeshClient;
 use App\Services\Ninja\NinjaClient;
+use App\Services\Servosity\ServosityClient;
 use App\Services\Tactical\TacticalClient;
 use App\Services\Unifi\UnifiClient;
 use App\Support\AppTimezone;
 use App\Support\CippConfig;
 use App\Support\HuntressConfig;
 use App\Support\MeshConfig;
+use App\Support\ServosityConfig;
 use Illuminate\Pagination\Paginator;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Auth;
@@ -127,6 +129,14 @@ class AppServiceProvider extends ServiceProvider
         // the API (the tool tests bind a mock, which hid it). fromConfig() reads the
         // encrypted key from Settings, mirroring the Huntress/Mesh closures above.
         $this->app->singleton(UnifiClient::class, fn () => UnifiClient::fromConfig());
+
+        // ServosityClient's constructor also takes an unbound array (same trap the
+        // UnifiClient note above records) — the servosity_* MCP reads resolve it
+        // from the container, so it must be bound or every live call fails first.
+        $this->app->singleton(ServosityClient::class, fn () => new ServosityClient([
+            'api_token' => ServosityConfig::get('api_token'),
+            'base_url' => ServosityConfig::get('base_url'),
+        ]));
 
         $this->app->singleton(CippClient::class, function ($app) {
             return new CippClient(

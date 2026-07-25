@@ -39,6 +39,16 @@ class ServosityConfig
     }
 
     /**
+     * The OFF=OFF predicate the MCP tool surface gates on (mirrors
+     * ZorusConfig::isAvailable): a switched-off integration must not keep
+     * answering, and an unconfigured one cannot.
+     */
+    public static function isAvailable(): bool
+    {
+        return self::isEnabled() && self::isConfigured();
+    }
+
+    /**
      * Generate a TOTP code from the stored secret (RFC 6238).
      * Returns null if no TOTP secret is configured.
      */

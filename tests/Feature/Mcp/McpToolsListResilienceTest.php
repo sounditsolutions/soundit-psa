@@ -71,7 +71,14 @@ class McpToolsListResilienceTest extends TestCase
         // defaults ON so the encrypted-key read always follows the switch read —
         // 2 queries x 2 assemblies = +4 flat, independent of catalog size. The two
         // surfaces are additive: 72 base + 2 (ScreenConnect) + 4 (Zorus) = 78.
-        $this->assertLessThanOrEqual(78, count($queries), $sql);
+        //
+        // Raised 78 -> 84 for the backup read surfaces (psa-z30dv), both consulted
+        // in clientTools() x 2 assemblies: CometConfig::isEnabled() short-circuits
+        // after the single comet_server_url read while unconfigured (+2; a configured
+        // Comet costs +4 more, still flat), and ServosityConfig::isAvailable() always
+        // pays the switch read plus the encrypted-token read because servosity_enabled
+        // defaults ON (+4). 78 + 2 (Comet) + 4 (Servosity) = 84, catalog-size-independent.
+        $this->assertLessThanOrEqual(84, count($queries), $sql);
     }
 
     public function test_tools_list_repairs_dynamic_cipp_schema_before_publishing(): void
