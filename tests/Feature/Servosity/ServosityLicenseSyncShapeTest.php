@@ -177,6 +177,16 @@ class ServosityLicenseSyncShapeTest extends TestCase
             'account_counts as JSON array' => ['{"count":1,"next":null,"previous":null,"results":[{"id":42,"name":"Company 42","account_counts":[],"issue_counts":{}}]}'],
             'account_counts with a string value' => ['{"count":1,"next":null,"previous":null,"results":[{"id":42,"name":"Company 42","account_counts":{"DRS":"2"},"issue_counts":{}}]}'],
             'issue_counts as JSON array' => ['{"count":1,"next":null,"previous":null,"results":[{"id":42,"name":"Company 42","account_counts":{},"issue_counts":[]}]}'],
+            // The DRF pagination cursor is part of the documented envelope
+            // (`next`: URI string or null) and decides list COMPLETENESS —
+            // every undocumented variant must abort exactly like any other
+            // envelope drift, all-or-nothing (psa-z30dv R6).
+            'next as boolean false' => ['{"count":200,"next":false,"previous":null,"results":['.self::WIRE_COMPANY_42.']}'],
+            'next as zero' => ['{"count":200,"next":0,"previous":null,"results":['.self::WIRE_COMPANY_42.']}'],
+            'next as empty string' => ['{"count":200,"next":"","previous":null,"results":['.self::WIRE_COMPANY_42.']}'],
+            'next as JSON array' => ['{"count":200,"next":[],"previous":null,"results":['.self::WIRE_COMPANY_42.']}'],
+            'next as JSON object' => ['{"count":200,"next":{},"previous":null,"results":['.self::WIRE_COMPANY_42.']}'],
+            'next as non-URI string' => ['{"count":200,"next":"not-a-uri","previous":null,"results":['.self::WIRE_COMPANY_42.']}'],
         ];
     }
 
@@ -217,6 +227,55 @@ class ServosityLicenseSyncShapeTest extends TestCase
         $this->assertGreaterThan(0, $result->errors);
         $this->assertSame(0, $result->deactivated);
         $this->assertSame(0, $result->created + $result->updated, 'all-or-nothing: even the valid page-1 row must not land');
+        $license->refresh();
+        $this->assertSame(5, $license->quantity);
+        $this->assertTrue($oldStamp->equalTo($license->synced_at));
+    }
+
+    public function test_wire_a_falsey_undocumented_next_cannot_end_the_walk_and_zero_unseen_pages(): void
+    {
+        // The sync-side face of psa-z30dv.18: count=200 with next=false must
+        // not read as "last page" — that is a complete-list claim from an
+        // unproven cursor, and every mapped client on the unseen pages would
+        // then be "missing from Servosity" and zeroed with a FRESH stamp.
+        $this->mappedClient('Acme', 42);
+        $beta = $this->mappedClient('Beta LLC', 77); // lives on the unseen pages
+        $oldStamp = now()->subDays(3)->startOfSecond();
+        $betaLicense = $this->servosityLicense($beta, 'pro', 9, $oldStamp);
+        $this->bindRealClientReplaying(
+            '{"count":200,"next":false,"previous":null,"results":['.self::WIRE_COMPANY_42.']}',
+        );
+
+        $result = $this->runSync();
+
+        $this->assertGreaterThan(0, $result->errors, 'an unproven completeness cursor must abort loudly');
+        $this->assertSame(0, $result->deactivated, 'unseen clients must never be zeroed on an unproven complete-list claim');
+        $this->assertSame(0, $result->created + $result->updated, 'all-or-nothing: the valid page-1 row must not land either');
+        $betaLicense->refresh();
+        $this->assertSame(9, $betaLicense->quantity);
+        $this->assertSame('active', $betaLicense->status);
+        $this->assertTrue($oldStamp->equalTo($betaLicense->synced_at), 'no fresh stamp on an unproven walk');
+    }
+
+    public function test_wire_an_invalid_string_next_is_drift_at_page_one_not_a_mis_walked_cursor(): void
+    {
+        // A non-empty string that is not a URI passed the old string-vs-null
+        // check; its unparseable query then reset the page cursor, so the
+        // walk silently re-fetched from the top — a mis-walked list
+        // (duplicated and skipped pages) that could still complete and
+        // WRITE. The cursor must be proven at page 1, before it is acted on.
+        $client = $this->mappedClient('Acme', 42);
+        $oldStamp = now()->subDays(3)->startOfSecond();
+        $license = $this->servosityLicense($client, 'dr_server', 5, $oldStamp);
+        $this->bindRealClientReplaying(
+            '{"count":2,"next":"not-a-uri","previous":null,"results":['.self::WIRE_COMPANY_42.']}',
+            '{"count":2,"next":null,"previous":null,"results":[{"id":77,"name":"Company 77","account_counts":{"Pro":9},"issue_counts":{}}]}',
+        );
+
+        $result = $this->runSync();
+
+        $this->assertGreaterThan(0, $result->errors, 'an unprovable cursor is drift, not a page to fetch');
+        $this->assertSame(0, $result->created + $result->updated, 'no row from a mis-walked list may land');
         $license->refresh();
         $this->assertSame(5, $license->quantity);
         $this->assertTrue($oldStamp->equalTo($license->synced_at));

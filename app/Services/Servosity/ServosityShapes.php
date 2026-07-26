@@ -26,15 +26,22 @@ namespace App\Services\Servosity;
  *    company_not_found. Per-page assertDrfEnvelope() (this class) + row
  *    object/integer-id proof; the requested company's REQUIRED count maps
  *    proven by validatedIntMap() (definitions.CompanySummaryNg) with per-map
- *    degradation to null + a why note. Failure → status schema_drift /
- *    unavailable, maps null — never a zero.
+ *    degradation to null + a why note. Page-walk COMPLETENESS —
+ *    company_not_found and the truncation caveat are complete-list claims —
+ *    is decided ONLY by the shared pagination proof (provenNextUrl(),
+ *    enforced per page inside assertDrfEnvelope()): an undocumented `next`
+ *    is drift for the whole read, never "last page" and never "more pages".
+ *    Failure → status schema_drift / unavailable, maps null — never a zero.
  * 2. (a) ServosityReadOnlyToolset::liveDrBackups() — GET dr-backups/?company=N
  *    → MCP live_dr_backups rows, per-device upstream_check (verified_live /
  *    upstream_missing), agent_linked. assertDrfEnvelope() + the toolset's
  *    assertDrBackupRows(): every documented DRBackup field the read consumes
  *    is proven by TYPE (incl. nested AgentSession.agent_session_id and
  *    ShadowProtectKey product_key/product_type), and the row's company URI
- *    must be a well-formed URI resolving to the REQUESTED company. Any
+ *    must be a well-formed URI resolving to the REQUESTED company. The
+ *    truncation decision — feeding upstream_missing vs unverified and the
+ *    "verified zero" copy, both complete-list claims — consumes the SAME
+ *    pagination proof (provenNextUrl()) plus the proven integer count. Any
  *    failure → the whole read is schema_drift, every device unverified, no
  *    row projected.
  * 3. (b) ServosityReadOnlyToolset::jobRunHistory() — GET
@@ -48,17 +55,19 @@ namespace App\Services\Servosity;
  *    UI, MCP synced_account_counts (with the freshness trio), license-type
  *    billing quantities, and deactivateMissingClients() zeroing.
  *    Identity-preserving decode; per page assertDrfEnvelope() + strict
- *    assertCompanySummaryRow() (this class) + a type-proven next URL and a
- *    bounded page walk that THROWS rather than truncating (a truncated list
- *    must never read as "client gone" and zero its licenses). Any violation
+ *    assertCompanySummaryRow() (this class) + the SAME shared pagination
+ *    proof as the live seams (provenNextUrl(): the documented URI string or
+ *    null, URI format enforced — not a separate weaker check) and a bounded
+ *    page walk that THROWS rather than truncating (a truncated list must
+ *    never read as "client gone" and zero its licenses). Any violation
  *    aborts the sync before any write: no upsert, no deactivation, no
  *    synced_at stamp — the read surface then serves the OLD counts with
  *    their honest staleness, never a freshly-stamped zero.
  * 5. (a) ServosityClient::getCompanies() → ServosityCompanyController +
- *    ClientIntegrationService (Settings mapping surfaces): same validator as
- *    seam 4. Drift throws ServosityShapeDriftException (a
- *    ServosityClientException), which those surfaces already catch into an
- *    error banner — a drifted response can no longer render as an empty
+ *    ClientIntegrationService (Settings mapping surfaces): same validator +
+ *    pagination proof as seam 4. Drift throws ServosityShapeDriftException
+ *    (a ServosityClientException), which those surfaces already catch into
+ *    an error banner — a drifted response can no longer render as an empty
  *    "no companies" list.
  * 6. (a, claim-limited) ServosityClient::isHealthy() → Integrations "Test
  *    connection" / servosity_connected_at. The claim is only "API reachable
@@ -84,13 +93,52 @@ final class ServosityShapes
      * the identity-preserving decode (ServosityClient::getJson()), so `{}`
      * and `[]` are distinguishable here: a top-level JSON array, a `results`
      * that is a JSON object (even an empty `{}`), or a non-integer `count`
-     * are each drift — never read as zero rows.
+     * are each drift — never read as zero rows. The proof includes the
+     * pagination cursor (provenNextUrl() below): an envelope whose `next`
+     * is unproven fails HERE, before any consumer can cache it as ok or
+     * read a completeness claim from it.
      */
     public static function assertDrfEnvelope(mixed $response, string $endpoint): void
     {
         if (! $response instanceof \stdClass || ! is_int($response->count ?? null) || ! is_array($response->results ?? null)) {
             throw new ServosityShapeDriftException("Servosity {$endpoint} response did not match the documented envelope (a JSON object with integer count + array results required).");
         }
+        self::provenNextUrl($response, $endpoint);
+    }
+
+    /**
+     * The documented DRF pagination cursor, proven before ANY completeness
+     * claim (psa-z30dv.17/.18): both documented list endpoints declare
+     * `next` as a string with format uri, x-nullable — so the only
+     * documented values are a URI string and null (absence is the same
+     * serializer "no value"). Consumers read `next` as a COMPLETENESS
+     * claim — "was that the whole list?" — which decides verified zeros,
+     * company_not_found, upstream_missing, truncation caveats and license
+     * deactivation, so an unproven cursor is drift for the whole read in
+     * BOTH directions: a falsey non-null value (false / 0 / "") must not
+     * end a walk as "complete", and truthy junk (array / object / non-URI
+     * string) must not read as "more pages" either. Returns the proven
+     * cursor: null = the documented end of the list, string = a well-formed
+     * absolute http(s) URL for the next page. assertDrfEnvelope() runs this
+     * proof on every envelope; consumers re-read the cursor ONLY through
+     * this method — never from the raw field. `previous` is declared the
+     * same way but consumed by NO seam, so it is deliberately not policed
+     * (the consumed-field rule; unconsumed optional fields are a projection
+     * ceiling, not a drift axis).
+     */
+    public static function provenNextUrl(\stdClass $response, string $endpoint): ?string
+    {
+        $next = $response->next ?? null;
+        if ($next === null) {
+            return null;
+        }
+        if (! is_string($next)
+            || filter_var($next, FILTER_VALIDATE_URL) === false
+            || ! in_array(strtolower((string) parse_url($next, PHP_URL_SCHEME)), ['https', 'http'], true)) {
+            throw new ServosityShapeDriftException("Servosity {$endpoint} response carried a next-page cursor that is neither the documented URI string nor null — list completeness cannot be read from an unproven cursor.");
+        }
+
+        return $next;
     }
 
     /**

@@ -1121,4 +1121,100 @@ class ServosityReadOnlyToolsetTest extends TestCase
         $this->assertStringContainsString('verified zero', $result['live_dr_backups']['note']);
         $this->assertSame('unverifiable', $result['job_run_history']['status'], 'even a verified-zero DR list earns no job-state claim');
     }
+
+    // ── Pagination cursor: completeness is a truth claim (psa-z30dv R6) ───────
+
+    /**
+     * Undocumented `next` cursors as RAW wire fragments (psa-z30dv.17/.18):
+     * both documented list envelopes declare `next` as a URI string or null
+     * (format uri, x-nullable — official OpenAPI), and the live consumers
+     * read it as a COMPLETENESS claim ("was that the whole list?"). A falsey
+     * non-null value (false / 0 / "") used to pass the envelope proof and
+     * read as "no next page" — minting a verified zero, a company_not_found,
+     * or an upstream_missing from a response that violates the documented
+     * shape — while truthy junk read as mere truncation. Every variant is
+     * drift for the whole section, never a completeness answer in either
+     * direction.
+     *
+     * @return array<string, array{0: string}>
+     */
+    public static function undocumentedNextWireProvider(): array
+    {
+        return [
+            'next false' => ['false'],
+            'next zero' => ['0'],
+            'next empty string' => ['""'],
+            'next JSON array' => ['[]'],
+            'next JSON object' => ['{}'],
+            'next non-URI string' => ['"not-a-uri"'],
+            'next non-http(s) URI' => ['"ftp://api.servosity.example/api/v1/dr-backups/?page=2"'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('undocumentedNextWireProvider')]
+    public function test_wire_an_undocumented_next_at_the_dr_seam_is_drift_never_verified_zero_or_upstream_missing(string $rawNext): void
+    {
+        // The exact psa-z30dv.18 probe: {"count":0,"results":[],"next":0}
+        // passed the envelope proof, empty(0) read as "no next page", and the
+        // section answered ok + "verified zero" — with a locally recorded
+        // account absent from that apparently-complete list reading
+        // upstream_missing.
+        $this->configureServosity();
+        $client = $this->mappedClient('Acme');
+        $this->enabledAsset($client, ['hostname' => 'DONE-HOST', 'servosity_dr_backup_id' => 501]);
+        $this->bindRealClientReplaying(
+            self::WIRE_SUMMARY_OK,
+            '{"count":0,"next":'.$rawNext.',"previous":null,"results":[]}',
+        );
+
+        $result = $this->toolset()->execute('servosity_get_backup_posture', [], $client->id);
+
+        $this->assertSame('schema_drift', $result['live_dr_backups']['status'], 'an unproven pagination cursor must degrade the whole section');
+        $this->assertStringContainsString('Do not read this as zero', $result['live_dr_backups']['note']);
+        $this->assertArrayNotHasKey('count', $result['live_dr_backups'], 'no count claim may survive an unproven cursor');
+        $this->assertSame('unverified', collect($result['devices'])->firstWhere('hostname', 'DONE-HOST')['upstream_check'],
+            'an unproven page must neither verify the local record nor contradict it (no upstream_missing)');
+        $this->assertStringNotContainsString('verified zero', json_encode($result));
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('undocumentedNextWireProvider')]
+    public function test_wire_an_undocumented_next_at_the_summary_seam_is_drift_not_company_not_found(string $rawNext): void
+    {
+        // The psa-z30dv.17 face of the same defect: a malformed falsey next
+        // ended the summary walk as "complete", and the requested company's
+        // absence from that unproven list became a freshly-stamped
+        // company_not_found; truthy junk instead read as a bounded-pages
+        // truncation. Neither claim may come from an unproven cursor.
+        $this->configureServosity();
+        $client = $this->mappedClient('Acme');
+        $this->bindRealClientReplaying(
+            '{"count":0,"next":'.$rawNext.',"previous":null,"results":[]}',
+            '{"count":1,"next":null,"previous":null,"results":['.self::WIRE_DR_ROW_OK.']}',
+        );
+
+        $result = $this->toolset()->execute('servosity_get_backup_posture', [], $client->id);
+
+        $this->assertSame('schema_drift', $result['live']['status'], 'an unproven pagination cursor must not read as a complete company list');
+        $this->assertStringContainsString('Do not read this as zero', $result['live']['note']);
+        $this->assertSame('ok', $result['live_dr_backups']['status'], 'the DR seam answered well-formed and stays independent');
+    }
+
+    public function test_wire_a_proven_uri_next_walks_the_summary_pages_to_the_company(): void
+    {
+        // The positive counter-case: a DOCUMENTED URI-string cursor is a
+        // proven "more pages" answer — the walk continues, and the company
+        // found on page 2 answers ok, complete, with no truncation caveat.
+        $this->configureServosity();
+        $client = $this->mappedClient('Acme');
+        $this->bindRealClientReplaying(
+            '{"count":2,"next":"https://api.servosity.example/api/v1/companies/summary-ng/?page=2","previous":null,"results":[{"id":77,"name":"Company 77","account_counts":{},"issue_counts":{}}]}',
+            self::WIRE_SUMMARY_OK,
+            '{"count":0,"next":null,"previous":null,"results":[]}',
+        );
+
+        $result = $this->toolset()->execute('servosity_get_backup_posture', [], $client->id);
+
+        $this->assertSame('ok', $result['live']['status'], 'a proven URI cursor is a documented more-pages answer, not drift');
+        $this->assertSame(['DRS' => 2], $result['live']['account_counts']);
+    }
 }

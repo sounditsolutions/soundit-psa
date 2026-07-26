@@ -159,8 +159,10 @@ class ServosityClient
      * synced_at stamps — and the Settings mapping surfaces, so every page is
      * proven against the documented producer shape BEFORE any caller can act
      * on it (psa-z30dv.15; seams 4–5 in ServosityShapes): identity-preserving
-     * decode, DRF envelope, strict CompanySummaryNg rows, and a type-proven
-     * `next` URL. Any violation THROWS (ServosityShapeDriftException) so the
+     * decode, DRF envelope, strict CompanySummaryNg rows, and the shared
+     * pagination proof (ServosityShapes::provenNextUrl() — the documented
+     * URI string or null, URI format enforced; the same seam the live reads
+     * consume). Any violation THROWS (ServosityShapeDriftException) so the
      * caller aborts — it never receives a collapsed or partial list it would
      * read as "these clients are gone". All-or-nothing: the throw happens
      * before this method returns, so a caller either gets the fully-proven
@@ -190,17 +192,19 @@ class ServosityClient
                 $allCompanies[] = json_decode(json_encode($row), true);
             }
 
-            // Documented: `next` is a URI string or null. Anything else must
-            // not be read as "last page" — stopping early truncates the list.
-            $nextUrl = $response->next ?? null;
+            // Completeness is read ONLY through the shared pagination proof
+            // (an undocumented cursor — wrong type OR a non-URI string —
+            // already failed the envelope proof above, before any row could
+            // land): a proven null is the documented end of the walk, and a
+            // proven URI is the only cursor ever acted on. The old
+            // string-vs-null check here let a non-URI string reset the page
+            // cursor and silently re-walk from the top (psa-z30dv R6).
+            $nextUrl = ServosityShapes::provenNextUrl($response, $endpoint);
             if ($nextUrl === null) {
                 return $allCompanies;
             }
-            if (! is_string($nextUrl) || $nextUrl === '') {
-                throw new ServosityShapeDriftException("Servosity {$endpoint} response carried a next URL that is neither the documented URI string nor null — refusing to treat it as the last page.");
-            }
-            // Keep the same relative endpoint; adopt the next URL's query
-            // (the page cursor).
+            // Keep the same relative endpoint; adopt the proven next URL's
+            // query (the page cursor).
             parse_str(parse_url($nextUrl, PHP_URL_QUERY) ?: '', $params);
         }
 

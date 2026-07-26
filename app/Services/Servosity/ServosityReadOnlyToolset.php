@@ -70,6 +70,17 @@ use Illuminate\Support\Facades\Log;
  *    state with rows that belong to (or claim) another tenant.
  *    ServosityDeploymentService consumes id / device_name / agent_session_id
  *    in production.
+ *  - DRF pagination (both list endpoints): `next` is documented as a URI
+ *    string or null (format uri, x-nullable). Completeness — "was that the
+ *    whole list?" — is itself a truth claim (it decides verified zeros,
+ *    company_not_found, upstream_missing and truncation caveats), so the
+ *    cursor is proven by ServosityShapes::provenNextUrl() (enforced inside
+ *    every assertDrfEnvelope()) and consumed ONLY through it. An
+ *    undocumented value is drift for the whole section in BOTH directions:
+ *    false/0/"" must not read as "no next page" (psa-z30dv.18:
+ *    {"count":0,"results":[],"next":0} minted a verified zero +
+ *    upstream_missing) and array/object/non-URI junk must not read as mere
+ *    truncation.
  * A response missing a REQUIRED container, or carrying a wrong-typed required
  * field, is SCHEMA DRIFT and is reported as an explicit unknown/unavailable
  * state — never as a clean zero/empty.
@@ -357,9 +368,15 @@ class ServosityReadOnlyToolset
             $ids[$row->id] = true;
         }
 
-        // DRF pagination: a non-null `next` or a total count beyond this page
-        // means more accounts exist upstream than we saw.
-        $listTruncated = ! empty($response->next) || $response->count > count($validRows);
+        // DRF pagination: completeness is a truth claim (it decides the
+        // "verified zero" copy and upstream_missing vs unverified), so the
+        // cursor is read ONLY through the shared proof path — an
+        // undocumented `next` already failed assertDrfEnvelope() inside the
+        // fetch closure and can never reach this line as an ok result. More
+        // accounts exist upstream when a proven next page exists or the
+        // proven total count exceeds this page.
+        $listTruncated = ServosityShapes::provenNextUrl($response, 'dr-backups/') !== null
+            || $response->count > count($validRows);
 
         $assetsByHostname = $enabledDevices->keyBy(
             fn (Asset $asset): string => mb_strtolower((string) $asset->hostname),
@@ -485,7 +502,11 @@ class ServosityReadOnlyToolset
 
             $rows = array_merge($rows, array_values($response->results));
 
-            if (empty($response->next)) {
+            // Completeness is read ONLY through the shared pagination proof
+            // (an undocumented cursor threw at the envelope proof above): a
+            // proven null is the documented end of the list, a proven URI
+            // means another page exists.
+            if (ServosityShapes::provenNextUrl($response, 'companies/summary-ng/') === null) {
                 return ['rows' => $rows, 'list_truncated' => false];
             }
         }
