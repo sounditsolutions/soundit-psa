@@ -335,6 +335,24 @@ assert_json t13b "unpointed wrong-target child feeds nothing — parent starves 
 assert_json t13b "control: child leg with no ids in title still counts via hierarchy" \
     '.population[] | select(.id == "psa-tgtc") | .verdict == "OK" and .inputs_working == 1'
 
+# ---- T13c: an id in TARGET position contradicts; an id in prose does not -------
+# (R3 must-fix 2, .5 repro: armed psa-impl with working child psa-impl.1 titled
+# "… re-review — incorporates context from sibling psa-sibling" ALARMED with
+# input_count=0 — any same-prefix id anywhere in the title read as a
+# contradictory target.) The SAME sibling id drives both halves of this board:
+# mentioned in prose (psa-impl.1) it is incidental and the child counts via
+# hierarchy; named in target position (psa-wrng.1, colon form) it contradicts
+# and the parent starves loudly. The distinction is the review-title target
+# grammar measured from the live board, not the mere presence of an id.
+run_detector t13c 1 --input "$FIX/board-sibling-ref.json" --now 2026-07-26T03:00:00Z --no-state --json
+assert_json t13c "incidental sibling reference does not contradict — child counts (the exact R3 repro)" \
+    '.population[] | select(.id == "psa-impl") | .verdict == "OK" and .input_count == 1 and .inputs_working == 1'
+assert_json t13c "the counted leg is the sibling-referencing child itself" \
+    '.population[] | select(.id == "psa-impl") | .inputs[0].id == "psa-impl.1"'
+assert_json t13c "the same id in TARGET position still contradicts — parent starves and alarms" \
+    '.alarms == ["psa-wrng"] and (.population[] | select(.id == "psa-wrng") | .input_count == 0)'
+assert_json t13c "no unknown noise from the distinction" '.unknown == []'
+
 # ---- T14: state persistence is strict — corruption is exit 2, never a reset -----
 echo 'not json {' >"$TMP/state-corrupt.json"
 run_detector t14a 2 --input "$FIX/board-chatter-a.json" --now 2026-07-26T10:00:30Z --state-file "$TMP/state-corrupt.json"
@@ -427,15 +445,19 @@ run_detector t14r 2 --input "$FIX/board-working.json" --now 2026-07-26T02:50:00Z
 assert_text t14r "a dangling symlinked state path is refused, not silently created over" "DETECTOR-ERROR.*symlink"
 
 # ---- T15: live acquisition seam (fake gc on PATH) — completeness must be proven -
-# The SQL side serves ID-SET payloads (R2 must-fix 1: count equality is not a
-# completeness proof); sql-seq lists payload filenames, consumed head-first
-# with the last line repeating (mirrors the old counts sequencing).
+# The SQL side serves CONSUMED-ROW payloads (R2 must-fix 1: count equality is
+# not a completeness proof; R3 must-fix 1: id-set equality is not a semantic
+# proof — the row's consumed fields must match too), mirroring the real
+# producer shape: every selected column present, assignee null when unset,
+# metadata the raw JSON object string ("{}" when empty). sql-seq lists payload
+# filenames, consumed head-first with the last line repeating (mirrors the old
+# counts sequencing).
 FAKE_GC_DIR="$TMP/fake-gc"
 mkdir -p "$FAKE_GC_DIR/bin"
 export FAKE_GC_DIR
 cat >"$FAKE_GC_DIR/bin/gc" <<'FAKE'
 #!/usr/bin/env bash
-# fake gc: serves a canned board + a scripted id-payload sequence for seam tests.
+# fake gc: serves a canned board + a scripted row-payload sequence for seam tests.
 case "$*" in
     *"sql --json"*)
         [ -e "$FAKE_GC_DIR/sql-fail" ] && exit 1
@@ -475,44 +497,53 @@ run_fake_gc() { # <name> <expected_exit> [detector args...]
 
 cp "$FIX/board-working.json" "$FAKE_GC_DIR/board.json"
 N="$(jq 'length' "$FAKE_GC_DIR/board.json")"
-jq '[.[] | {id: .id}]' "$FAKE_GC_DIR/board.json" >"$FAKE_GC_DIR/ids-good.json"
-jq '. + [{id: "psa-phantom-row"}]' "$FAKE_GC_DIR/ids-good.json" >"$FAKE_GC_DIR/ids-moved.json"
+# sql_rows_of <board-file> — the consumed-row SQL payload the real producer
+# would serve for that board (measured shape, 2026-07-26: all selected columns
+# on every row; assignee null when unset; metadata a raw JSON object string).
+sql_rows_of() {
+    jq '[.[] | {id, status, assignee: (.assignee // null), title,
+                metadata: ((.metadata // {}) | tojson)}]' "$1"
+}
+sql_rows_of "$FAKE_GC_DIR/board.json" >"$FAKE_GC_DIR/rows-good.json"
+jq '. + [{id: "psa-phantom-row", status: "open", assignee: null,
+          title: "Phantom row — fixture-genericized", metadata: "{}"}]' \
+    "$FAKE_GC_DIR/rows-good.json" >"$FAKE_GC_DIR/rows-moved.json"
 
-echo 'ids-good.json' >"$FAKE_GC_DIR/sql-seq"
+echo 'rows-good.json' >"$FAKE_GC_DIR/sql-seq"
 run_fake_gc t15a 0 --now 2026-07-26T02:50:00Z --no-state --json
-assert_json t15a "live path healthy when both id sets match the list" \
+assert_json t15a "live path healthy when both row projections match the list" \
     ".ok == true and .board_beads == $N"
 
-printf '%s\n' 'ids-moved.json' 'ids-good.json' >"$FAKE_GC_DIR/sql-seq"
+printf '%s\n' 'rows-moved.json' 'rows-good.json' >"$FAKE_GC_DIR/sql-seq"
 run_fake_gc t15b 0 --now 2026-07-26T02:50:00Z --no-state --json
-assert_json t15b "transient id-set race (board moved) retries and recovers" '.ok == true'
+assert_json t15b "transient row race (board moved) retries and recovers" '.ok == true'
 assert_err t15b "the retry is visible on stderr" "completeness not yet proven"
 
-echo 'ids-moved.json' >"$FAKE_GC_DIR/sql-seq"
+echo 'rows-moved.json' >"$FAKE_GC_DIR/sql-seq"
 run_fake_gc t15c 2 --now 2026-07-26T02:50:00Z --no-state --json
-assert_json t15c "persistent id-set mismatch is machine-readable non-green" \
+assert_json t15c "persistent row mismatch is machine-readable non-green" \
     '.ok == false and (.error | test("completeness could not be proven"))'
 assert_json t15c "the divergence names the id the list never served" \
     '.error | test("psa-phantom-row")'
 
 : >"$FAKE_GC_DIR/sql-fail"
 run_fake_gc t15d 2 --now 2026-07-26T02:50:00Z --no-state
-assert_text t15d "SQL id path failure is a detector error" "id corroboration failed"
+assert_text t15d "SQL row path failure is a detector error" "row corroboration failed"
 rm -f "$FAKE_GC_DIR/sql-fail"
 
 : >"$FAKE_GC_DIR/sql-garbage"
 run_fake_gc t15e 2 --now 2026-07-26T02:50:00Z --no-state
-assert_text t15e "unrecognisable SQL id payload is a detector error" "unrecognised payload"
+assert_text t15e "unrecognisable SQL row payload is a detector error" "unrecognised payload"
 rm -f "$FAKE_GC_DIR/sql-garbage"
 
 echo '[]' >"$FAKE_GC_DIR/board.json"
-echo '[]' >"$FAKE_GC_DIR/ids-empty.json"
-echo 'ids-empty.json' >"$FAKE_GC_DIR/sql-seq"
+echo '[]' >"$FAKE_GC_DIR/rows-empty.json"
+echo 'rows-empty.json' >"$FAKE_GC_DIR/sql-seq"
 run_fake_gc t15f 2 --now 2026-07-26T02:50:00Z --no-state
 assert_text t15f "a corroborated EMPTY board is still the so-2ck1 signature, exit 2" "so-2ck1"
 
 cp "$FIX/board-working.json" "$FAKE_GC_DIR/board.json"
-echo 'ids-good.json' >"$FAKE_GC_DIR/sql-seq"
+echo 'rows-good.json' >"$FAKE_GC_DIR/sql-seq"
 : >"$FAKE_GC_DIR/list-fail"
 run_fake_gc t15g 2 --now 2026-07-26T02:50:00Z --no-state
 assert_text t15g "list path failure is a detector error" "board scan failed"
@@ -521,7 +552,7 @@ rm -f "$FAKE_GC_DIR/list-fail"
 # The exact R2 repro (.3 finding 1): cardinality matches — SQL says two beads,
 # the list serves two rows — but the list duplicated a valid bystander and
 # OMITTED the gate-armed bead. The old COUNT bracket read this as complete and
-# printed a confident all-clear (exit 0, population 0). Id-set corroboration
+# printed a confident all-clear (exit 0, population 0). Row corroboration
 # must refuse it, and the error must name the omitted bead.
 jq -n '[
   { id: "psa-bystd1",
@@ -530,13 +561,57 @@ jq -n '[
     assignee: "worker-session-x",
     updated_at: "2026-07-26T02:00:00Z" }
 ] | . + .' >"$FAKE_GC_DIR/board.json"
-jq -n '[{id: "psa-armed1"}, {id: "psa-bystd1"}]' >"$FAKE_GC_DIR/ids-true.json"
-echo 'ids-true.json' >"$FAKE_GC_DIR/sql-seq"
+jq -n '[
+  { id: "psa-armed1", status: "open", assignee: "psa/review-lead",
+    title: "Armed bead — fixture-genericized",
+    metadata: ({review_gate: "", review_gate_head: "aaaa001", review_gate_reviews: ""} | tojson) },
+  { id: "psa-bystd1", status: "closed", assignee: "worker-session-x",
+    title: "Bystander bead — fixture-genericized", metadata: "{}" }
+]' >"$FAKE_GC_DIR/rows-true.json"
+echo 'rows-true.json' >"$FAKE_GC_DIR/sql-seq"
 run_fake_gc t15h 2 --now 2026-07-26T02:50:00Z --no-state --json
 assert_json t15h "duplicated-bystander board with matching cardinality is refused" \
     '.ok == false and (.error | test("completeness could not be proven"))'
 assert_json t15h "the omitted gate-armed bead is named" '.error | test("psa-armed1")'
 assert_json t15h "the duplicated bystander is named" '.error | test("duplicated_in_list.*psa-bystd1")'
+
+# The exact R3 repro (.5 must-fix 1): the id set matches PERFECTLY — SQL and
+# list agree on [psa-armed1, psa-bystd1], no duplicates — but the list served
+# the armed bead's id on a syntactically valid closed/bystander-shaped row
+# (status+assignee substituted, gate metadata elided — a serializer silently
+# dropping the consumed fields). Under id-set corroboration this was a
+# confident false green: exit 0, ok:true, population 0. The consumed-row
+# projection must refuse it and name the row AND its diverged fields.
+jq -n '[
+  { id: "psa-armed1",
+    title: "Armed bead — fixture-genericized",
+    status: "closed",
+    assignee: "worker-session-x",
+    updated_at: "2026-07-26T02:00:00Z" },
+  { id: "psa-bystd1",
+    title: "Bystander bead — fixture-genericized",
+    status: "closed",
+    assignee: "worker-session-x",
+    updated_at: "2026-07-26T02:00:00Z" }
+]' >"$FAKE_GC_DIR/board.json"
+echo 'rows-true.json' >"$FAKE_GC_DIR/sql-seq"
+run_fake_gc t15i 2 --now 2026-07-26T02:50:00Z --no-state --json
+assert_json t15i "id-matching board with elided/substituted consumed fields is refused, never green" \
+    '.ok == false and (.error | test("completeness could not be proven"))'
+assert_json t15i "the substituted row is named under rows_mismatched" \
+    '.error | test("rows_mismatched.*psa-armed1")'
+assert_json t15i "the diverged fields are named (status, assignee, gate head)" \
+    '.error | test("\"fields\":\\[\"as\",\"rgh\",\"st\"\\]")'
+
+# SQL metadata column that is not a JSON object string: producer drift, not a
+# race — refused immediately, naming the id, never retried into a timeout.
+jq -n '[{id: "psa-armed1", status: "open", assignee: null,
+         title: "Armed bead — fixture-genericized", metadata: "not json {"}]' \
+    >"$FAKE_GC_DIR/rows-badmeta.json"
+echo 'rows-badmeta.json' >"$FAKE_GC_DIR/sql-seq"
+run_fake_gc t15j 2 --now 2026-07-26T02:50:00Z --no-state
+assert_text t15j "unparseable sql metadata is a detector error naming the id" \
+    "sql metadata column is not a JSON object for id psa-armed1"
 
 # ---- T16: fixture minimization guard — the corpus stays projected + genericized -
 # (R1 must-fix 3 + R2 must-fix 4: a later live capture must not silently

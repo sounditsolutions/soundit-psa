@@ -26,13 +26,28 @@
 #   part of "review-lead"), at least one perspective keyword (product / ux / a11y
 #   / arch / correctness / security / safety), and either the target id
 #   word-bounded in the title, or a child id of the target (<target>.<n>) whose
-#   title does NOT name a different target. Hierarchy alone must not override
-#   contradictory title evidence (review R2 rule): a child bead titled as a
-#   review of ANOTHER id-shaped target is not a leg of this target — if pointed
-#   at via review_gate_reviews it becomes MISPOINTED (invalid input → UNKNOWN),
-#   and unpointed it simply does not feed this gate. "Id-shaped" is measured
-#   from the board itself: a token whose <prefix>- matches a prefix observed in
-#   the board's own ids (so ordinary hyphenated words never trip it).
+#   title does NOT name a different target IN TARGET POSITION. Hierarchy alone
+#   must not override contradictory title evidence (review R2 rule): a child
+#   bead TITLED AS A REVIEW OF another id-shaped target is not a leg of this
+#   target — if pointed at via review_gate_reviews it becomes MISPOINTED
+#   (invalid input → UNKNOWN), and unpointed it simply does not feed this gate.
+#   But an id merely MENTIONED in a review title is incidental prose, not a
+#   target (review R3 rule — live example: "Architecture re-review r6:
+#   psa-uw2o @ 69449b9 — … psa-0lvh3 closable? …" reviews psa-uw2o and only
+#   references psa-0lvh3): it must not turn a legitimate child leg into a
+#   contradiction. "Target position" is the review-title grammar measured from
+#   every review-shaped title on the live board (2026-07-26, three forms, no
+#   others observed):
+#       colon form:  "… review[ Rn][ (annotation)]: <id> …"   (optionally
+#                    "PR #NNN / " between the colon and the id)
+#       direct form: "[RE-]REVIEW <id> [/ …] — <PERSPECTIVE>"
+#       paren form:  "… review (<id>) [round n] — <lens>"
+#   ("review of <id>" was checked and is NOT a leg-title target form on this
+#   board — both live occurrences are prose in non-leg titles.) "Id-shaped" is
+#   measured from the board itself: a token whose <prefix>- matches a prefix
+#   observed in the board's own ids (so ordinary hyphenated words never trip
+#   it). A title that names the target id anywhere still always counts:
+#   positive title evidence beats hierarchy and beats incidental foreign ids.
 #   Input VALIDITY (review R1 + R2 rules — apparent inputs are not evidence):
 #       * a leg that is open/in_progress (or blocked/deferred) is a reviewer
 #         WORKING — valid, suppresses starvation; the alarm is for ZERO inputs,
@@ -76,25 +91,42 @@
 #   EMPTY board result is treated as a DETECTOR ERROR (exit 2), never as all-clear:
 #   this rig's board is never legitimately empty.
 #
-# COMPLETENESS PROOF (live path; review R1 + R2 rules — a partial read must
-# never become green, and COUNT EQUALITY IS NOT A COMPLETENESS PROOF: a list
+# COMPLETENESS PROOF (live path; review R1 + R2 + R3 rules — a partial read
+# must never become green; COUNT EQUALITY IS NOT A COMPLETENESS PROOF (a list
 # that duplicates one valid row while omitting the gate-armed row passes any
-# cardinality check). Board acquisition is therefore corroborated at the ID-SET
-# level over TWO independent read paths (the rig's own so-2ck1 discipline):
-#       ids-1:  gc bd --rig <rig> sql --json 'SELECT id FROM issues'
+# cardinality check); and ID-SET EQUALITY IS NOT A SEMANTIC PROOF (a list that
+# serves the right id on a row whose gate/population fields were elided or
+# substituted — a serializer silently dropping metadata/assignee — passes any
+# id check while the armed bead silently leaves the population). Board
+# acquisition is therefore corroborated at the CONSUMED-ROW level over TWO
+# independent read paths (the rig's own so-2ck1 discipline):
+#       rows-1: gc bd --rig <rig> sql --json
+#                 'SELECT id, status, assignee, title, metadata FROM issues'
 #       list:   the scan path above
-#       ids-2:  the same SELECT again
-#   The read is accepted only when sorted(ids-1) == sorted(list ids) ==
-#   sorted(ids-2) — the SQL path and the list serialisation path agree on the
-#   full id MULTISET (membership, duplicates, and count all at once; id is the
-#   primary key, so the SQL side is duplicate-free by construction), and the
-#   board did not move during the read. A mismatch is retried up to 3 times (a
-#   live board legitimately moves); persistent mismatch, a failed/unrecognisable
-#   SELECT, or a zero-id set is a DETECTOR ERROR (exit 2) — completeness could
-#   not be proven, and the error names the duplicated / missing / unexpected
-#   ids so the responder does not re-derive them. Both paths were verified to
-#   agree exactly on the live rig (1936 == 1936 COUNT on 2026-07-26; id-set
-#   equality re-verified live the same day).
+#       rows-2: the same SELECT again
+#   Each side is projected to the DECISION-CONSUMED fields — id, status,
+#   assignee, title, and the three consumed metadata keys review_gate /
+#   review_gate_head / review_gate_reviews (absent/null normalised to "";
+#   the SQL metadata column is the raw JSON object string, "{}" when empty —
+#   measured from the producer, all 2005 live rows 2026-07-26, where both
+#   paths agreed exactly on every projected field). The read is accepted only
+#   when sorted(rows-1) == sorted(list rows) == sorted(rows-2) — membership,
+#   duplicates, count, AND the consumed payload of every row, all at once (id
+#   is the primary key, so the SQL side is duplicate-free by construction),
+#   and the board did not move during the read. Deliberately NOT in the
+#   projection, because their loss is loud rather than green: notes (elision
+#   turns a closed leg into closed_no_notes → UNKNOWN, a dropping serializer
+#   cannot INVENT a VERDICT line, and notes are unbounded-size + append-hot —
+#   bracketing them would triple the read and thrash the retry loop) and
+#   updated_at (elision fails the row contract → exit 2; substitution only
+#   skews a clock whose backstop is the state file's observed-starved clock,
+#   able to delay a WATCH→ALARM crossing but never to manufacture OK — and it
+#   churns on every bead write, which would make brackets spuriously fail).
+#   A mismatch is retried up to 3 times (a live board legitimately moves);
+#   persistent mismatch, a failed/unrecognisable SELECT, or a zero-row set is
+#   a DETECTOR ERROR (exit 2) — completeness could not be proven, and the
+#   error names the duplicated / missing / unexpected ids AND the per-field
+#   divergence of mismatched rows so the responder does not re-derive them.
 #   --input files bypass corroboration (a static file cannot truncate in flight;
 #   it IS the board by definition) but get the full row contract below,
 #   INCLUDING duplicate-id rejection.
@@ -264,22 +296,42 @@ trap 'rm -rf "$WORK_DIR"' EXIT
 BOARD_FILE="$WORK_DIR/board.json"
 
 # ---- acquire the board -------------------------------------------------------
-# Second read path for completeness corroboration: the full id set, not a count
-# (review R2 — count equality is defeated by a duplicated row substituting an
-# omitted one). Writes the SORTED id array (JSON) to $1 (a file, not stdout —
-# die() inside $(...) would be swallowed by the subshell). id is the primary
-# key, so this path is duplicate-free by construction.
-sql_ids_into() {
-    local out_file="$1" payload
-    if ! payload="$(gc bd --rig "$RIG" sql --json 'SELECT id FROM issues' 2>"$WORK_DIR/sql.err")"; then
+# Second read path for completeness corroboration: the full CONSUMED-ROW
+# projection, not a count (review R2 — count equality is defeated by a
+# duplicated row substituting an omitted one) and not the id set alone (review
+# R3 — id equality is defeated by a row whose gate/population fields were
+# elided or substituted while its id survived). Writes the SORTED projected-row
+# array (JSON) to $1 (a file, not stdout — die() inside $(...) would be
+# swallowed by the subshell). id is the primary key, so this path is
+# duplicate-free by construction. The SELECT reads the same issues table,
+# still read-only; the metadata column arrives as the raw JSON object string
+# ("{}" when empty — measured, all 2005 live rows 2026-07-26, zero
+# unparseable), so a non-object value is producer drift, not a race: die, do
+# not retry.
+consumed_projection() {
+    # jq filter: one board row (metadata already an OBJECT) → consumed fields.
+    printf '%s' '{id, st: (.status? // ""), as: (.assignee? // ""), ti: (.title? // ""),
+                  rg: (.m.review_gate? // ""), rgh: (.m.review_gate_head? // ""), rgr: (.m.review_gate_reviews? // "")}'
+}
+sql_rows_into() {
+    local out_file="$1" payload bad_meta
+    if ! payload="$(gc bd --rig "$RIG" sql --json 'SELECT id, status, assignee, title, metadata FROM issues' 2>"$WORK_DIR/sql.err")"; then
         sed 's/^/  gc-sql: /' "$WORK_DIR/sql.err" >&2 || true
-        die "board id corroboration failed: gc bd --rig $RIG sql exited non-zero — completeness cannot be proven"
+        die "board row corroboration failed: gc bd --rig $RIG sql exited non-zero — completeness cannot be proven"
     fi
-    if ! jq -e '(type == "array") and all(.[]; (type == "object") and ((.id | type) == "string") and (.id != ""))' \
+    if ! jq -e '(type == "array") and all(.[];
+                (type == "object") and ((.id | type) == "string") and (.id != "")
+                and has("status") and has("assignee") and has("title") and has("metadata"))' \
             >/dev/null 2>&1 <<<"$payload"; then
-        die "board id corroboration returned an unrecognised payload (want [{\"id\": <non-empty string>}, …]) — completeness cannot be proven"
+        die "board row corroboration returned an unrecognised payload (want [{id, status, assignee, title, metadata}, …] with non-empty string ids) — completeness cannot be proven"
     fi
-    jq '[.[].id] | sort' <<<"$payload" >"$out_file"
+    # fromjson? yields an EMPTY STREAM on parse failure (not null) — a bare
+    # fromjson?|type would drop the bad row from this check instead of
+    # catching it, so normalise the failure to null first.
+    bad_meta="$(jq -r '[.[] | select((((.metadata // "{}") | (fromjson? // null)) | type) != "object") | .id] | first // ""' <<<"$payload")"
+    [ -z "$bad_meta" ] \
+        || die "board row corroboration: sql metadata column is not a JSON object for id $bad_meta — the consumed gate fields cannot be corroborated"
+    jq "[.[] | .m = ((.metadata // \"{}\") | fromjson) | $(consumed_projection)] | sort" <<<"$payload" >"$out_file"
 }
 
 if [ -n "$INPUT_FILE" ]; then
@@ -289,11 +341,12 @@ if [ -n "$INPUT_FILE" ]; then
         || die "board payload is not a JSON array — refusing to evaluate (never all-clear on a bad read)"
 else
     # THE RELIABLE SCAN PATH — verbatim; see header before changing anything here.
-    # Bracketed by two independent id-set reads: accept only when the sorted id
-    # multiset of the list equals BOTH bracketing SQL id sets exactly.
+    # Bracketed by two independent consumed-row reads: accept only when the
+    # sorted projected-row multiset of the list equals BOTH bracketing SQL
+    # projections exactly — ids AND the consumed payload of every row.
     PROVEN=0
     for ATTEMPT in 1 2 3; do
-        sql_ids_into "$WORK_DIR/ids-pre.json"
+        sql_rows_into "$WORK_DIR/rows-pre.json"
         if ! gc bd --rig "$RIG" list --all --include-gates --limit 0 --json \
                 >"$BOARD_FILE" 2>"$WORK_DIR/gc.err"; then
             sed 's/^/  gc: /' "$WORK_DIR/gc.err" >&2 || true
@@ -301,29 +354,43 @@ else
         fi
         jq -e 'type == "array"' "$BOARD_FILE" >/dev/null 2>&1 \
             || die "board payload is not a JSON array — refusing to evaluate (never all-clear on a bad read)"
-        # Tolerant id extraction (rows are contract-validated after acquisition):
-        # a row with a missing/non-string id yields null here, which can never
-        # match a SQL id, so a malformed live read still fails corroboration.
-        jq '[.[] | (.id? // null)] | sort' "$BOARD_FILE" >"$WORK_DIR/ids-list.json"
-        sql_ids_into "$WORK_DIR/ids-post.json"
-        if jq -en --slurpfile pre "$WORK_DIR/ids-pre.json" --slurpfile lst "$WORK_DIR/ids-list.json" --slurpfile post "$WORK_DIR/ids-post.json" \
+        # Tolerant projection (rows are contract-validated after acquisition):
+        # a non-object row projects from {}, so its null id can never match a
+        # SQL id, and non-object metadata projects to a sentinel gate value no
+        # SQL row can carry — a malformed live read still fails corroboration.
+        jq "[.[] | (if type == \"object\" then . else {} end)
+                 | .m = ((.metadata? // {}) | if type == \"object\" then . else {review_gate: \"\\u0000non-object-metadata\"} end)
+                 | $(consumed_projection)] | sort" "$BOARD_FILE" >"$WORK_DIR/rows-list.json"
+        sql_rows_into "$WORK_DIR/rows-post.json"
+        if jq -en --slurpfile pre "$WORK_DIR/rows-pre.json" --slurpfile lst "$WORK_DIR/rows-list.json" --slurpfile post "$WORK_DIR/rows-post.json" \
                 '($pre[0] == $lst[0]) and ($post[0] == $lst[0])' >/dev/null 2>&1; then
             PROVEN=1
             break
         fi
-        echo "WARN: board completeness not yet proven (sql-pre=$(jq 'length' "$WORK_DIR/ids-pre.json") list-rows=$(jq 'length' "$WORK_DIR/ids-list.json") sql-post=$(jq 'length' "$WORK_DIR/ids-post.json") — id sets differ), attempt $ATTEMPT/3" >&2
+        echo "WARN: board completeness not yet proven (sql-pre=$(jq 'length' "$WORK_DIR/rows-pre.json") list-rows=$(jq 'length' "$WORK_DIR/rows-list.json") sql-post=$(jq 'length' "$WORK_DIR/rows-post.json") — consumed-row projections differ), attempt $ATTEMPT/3" >&2
     done
     if [ "$PROVEN" -ne 1 ]; then
-        # Name the divergence so the responder does not re-derive it.
-        ID_DIVERGENCE="$(jq -rn --slurpfile pre "$WORK_DIR/ids-pre.json" --slurpfile lst "$WORK_DIR/ids-list.json" '
+        # Name the divergence so the responder does not re-derive it: id-level
+        # drift (duplicated / missing / unexpected) AND field-level drift on
+        # rows whose id matched but whose consumed payload did not (review R3
+        # — the id-preserving elided/substituted row).
+        ID_DIVERGENCE="$(jq -rn --slurpfile pre "$WORK_DIR/rows-pre.json" --slurpfile lst "$WORK_DIR/rows-list.json" '
             ($pre[0]) as $S | ($lst[0]) as $L
-            | { sql_ids: ($S | length),
+            | ($S | map(.id)) as $Sids | ($L | map(.id)) as $Lids
+            | { sql_rows: ($S | length),
                 list_rows: ($L | length),
-                duplicated_in_list: ([$L | group_by(.) | .[] | select(length > 1) | .[0]] | .[0:5]),
-                missing_from_list: (($S - $L) | .[0:5]),
-                unexpected_in_list: ((($L | unique) - $S) | .[0:5]) }
+                duplicated_in_list: ([$Lids | group_by(.) | .[] | select(length > 1) | .[0]] | .[0:5]),
+                missing_from_list: (($Sids - $Lids) | .[0:5]),
+                unexpected_in_list: ((($Lids | unique) - $Sids) | .[0:5]),
+                rows_mismatched: ([ ($S | map({key: .id, value: .}) | from_entries) as $SM
+                                    | ($L | map({key: (.id // "\u0000null-id"), value: .}) | from_entries) as $LM
+                                    | ($SM | keys[]) | select(($LM[.] != null) and ($SM[.] != $LM[.]))
+                                    | . as $id
+                                    | { id: $id,
+                                        fields: [ ($SM[$id] | keys[]) | select($SM[$id][.] != $LM[$id][.]) ],
+                                        sql: $SM[$id], list: $LM[$id] } ] | .[0:3]) }
             | tojson' 2>/dev/null || echo '{}')"
-        die "board completeness could not be proven after 3 attempts — the list id set never matched the SQL id set: $ID_DIVERGENCE — a partial, duplicated, or substituted read must never become green"
+        die "board completeness could not be proven after 3 attempts — the list rows never matched the SQL consumed-row projection: $ID_DIVERGENCE — a partial, duplicated, substituted, or field-elided read must never become green"
     fi
 fi
 
@@ -464,16 +531,30 @@ def has_verdict_decision:
     (. // "") | test("(^|\\n)[ \\t]*VERDICT[ \\t]*:[ \\t]*(APPROVE|REVISE|PROCEED|PASS)\\b");
 def notes_text: (.notes // "");
 
-# Id-shaped tokens in a title, judged by the id grammar of the board itself: a
-# token <prefix>-<rest>[.n…] is id-shaped only when <prefix> matches a prefix
-# observed in the real board ids — so hyphenated prose ("re-review",
-# "data-safety", "starved-gate") never trips it, while a foreign "psa-xyz"
-# does even when that bead is absent from the board (the wrong-target title in
-# the R2 repro named a bead that did not exist on the two-row board).
-def idish_tokens($title):
-    [ ($title // "") | scan("[A-Za-z][A-Za-z0-9]*-[A-Za-z0-9]+(?:\\.[0-9]+)*") ] | unique;
+# Ids a review title names AS ITS TARGET — not ids it merely mentions. The
+# grammar is measured from every review-shaped title on the live board
+# (2026-07-26; see header): the target id sits immediately after the review
+# keyword phrase in one of three forms — "review[ stuff]: [PR #N / ]<id>"
+# (colon form; the annotation segment never crosses a colon or an em-dash),
+# "REVIEW <id>" (direct form), "review (<id>)" (paren form). An id anywhere
+# else is incidental prose (review R3 rule — a live child leg said "…
+# incorporates context from sibling <id>" and must not read as a contradictory
+# target). \breview keeps "preview…"/"reviewer…" from anchoring the grammar;
+# (?!-lead) keeps the agent name "review-lead" out of it, as everywhere else.
+def id_regex: "[A-Za-z][A-Za-z0-9]*-[A-Za-z0-9]+(?:\\.[0-9]+)*";
+def titled_target_ids($title):
+    ($title // "") as $t
+    | ([ $t | match("\\breview(?!-lead)[^:—]{0,40}:[ \\t]*(?:PR[ \\t]*#[0-9]+[ \\t]*/[ \\t]*)?(" + id_regex + ")"; "ig") ]
+       + [ $t | match("\\breview(?!-lead)[ \\t]*\\(?[ \\t]*(" + id_regex + ")"; "ig") ])
+    | map(.captures[0].string) | unique;
+# Judged id-shaped by the id grammar of the board itself: a token
+# <prefix>-<rest>[.n…] counts only when <prefix> matches a prefix observed in
+# the real board ids — so hyphenated prose ("re-review", "data-safety",
+# "starved-gate") never trips it, while a foreign "psa-xyz" does even when
+# that bead is absent from the board (the wrong-target title in the R2 repro
+# named a bead that did not exist on the two-row board).
 def foreign_target_ids($tid; $own_id; $title; $prefixes):
-    idish_tokens($title)
+    titled_target_ids($title)
     | map(select(
           (split("-")[0] as $p | ($prefixes | index($p)) != null)
           and (. != $tid)
@@ -501,9 +582,11 @@ def pointers_of:
       | $t.id as $tid
       # Identified review legs of this target (title-shape; any status). The
       # child-id arm holds ONLY while the title names no different id-shaped
-      # target — hierarchy alone must not override contradictory title
-      # evidence (review R2). A title that mentions the target explicitly
-      # always counts: positive title evidence beats an incidental foreign id.
+      # target IN TARGET POSITION — hierarchy alone must not override
+      # contradictory title evidence (review R2), but an id that merely
+      # appears in prose is incidental, not a contradiction (review R3). A
+      # title that mentions the target explicitly always counts: positive
+      # title evidence beats hierarchy and beats incidental foreign ids.
       | ($bd | map(select(
             (.id != $tid)
             and looks_like_review(.title)

@@ -1,0 +1,49 @@
+[
+  {
+    "id": "psa-impl",
+    "title": "Parent work bead whose child leg references a sibling in prose (fixture-genericized)",
+    "status": "open",
+    "assignee": "psa/review-lead",
+    "updated_at": "2026-07-26T02:00:00Z",
+    "notes": "Fixture-genericized notes.",
+    "metadata": {
+      "review_gate": "",
+      "review_gate_head": "ffff001",
+      "review_gate_reviews": ""
+    }
+  },
+  {
+    "id": "psa-impl.1",
+    "title": "ARCHITECTURE/CORRECTNESS re-review — incorporates context from sibling psa-sibling",
+    "status": "in_progress",
+    "assignee": "architect-reviewer-session-x",
+    "updated_at": "2026-07-26T02:30:00Z"
+  },
+  {
+    "id": "psa-sibling",
+    "title": "Neighbouring work bead referenced in prose (fixture-genericized)",
+    "status": "open",
+    "assignee": "worker-session-x",
+    "updated_at": "2026-07-26T02:00:00Z"
+  },
+  {
+    "id": "psa-wrng",
+    "title": "Parent work bead whose child leg names the sibling AS ITS TARGET (fixture-genericized)",
+    "status": "open",
+    "assignee": "psa/review-lead",
+    "updated_at": "2026-07-26T02:00:00Z",
+    "notes": "Fixture-genericized notes.",
+    "metadata": {
+      "review_gate": "",
+      "review_gate_head": "ffff002",
+      "review_gate_reviews": ""
+    }
+  },
+  {
+    "id": "psa-wrng.1",
+    "title": "ARCHITECTURE/CORRECTNESS re-review: psa-sibling @ ffff002 — genericized",
+    "status": "in_progress",
+    "assignee": "architect-reviewer-session-x",
+    "updated_at": "2026-07-26T02:30:00Z"
+  }
+]

@@ -183,6 +183,24 @@ name — deliberately does NOT exist on the board, exactly like the repro.
   id-shaped target at all still counts via hierarchy (the arm is tightened,
   not removed).
 
+### `board-sibling-ref.json` — target position vs incidental mention (synthetic)
+Invented rows in the projected shape (psa-qqaka R3 must-fix 2, from the R3
+architecture review's controlled repro: a working child leg titled
+`… re-review — incorporates context from sibling psa-sibling` read as a
+contradictory target purely because a same-prefix id appeared SOMEWHERE in
+the title — parent ALARM with `input_count=0` instead of evidence). The SAME
+sibling id drives both halves:
+- `psa-impl` / `psa-impl.1`: the child mentions `psa-sibling` in prose — an
+  incidental reference, NOT a target. The child counts via hierarchy; the
+  parent is healthy (OK, 1 working input).
+- `psa-wrng` / `psa-wrng.1`: the child names `psa-sibling` in TARGET position
+  (`… re-review: psa-sibling @ …`, the colon form of the measured
+  review-title grammar) — a real contradiction. The child is not a leg; the
+  parent starves and ALARMS.
+The distinction is the review-title target grammar measured from every
+review-shaped title on the live board (colon / direct / paren forms — see the
+detector header), not the mere presence of an id-shaped token.
+
 ### `board-empty.json` / `board-invalid.json`
 `[]` and malformed JSON. A degraded read must exit 2 and SCREAM (this rig's
 board is never legitimately empty — an empty result is the so-2ck1 silent
