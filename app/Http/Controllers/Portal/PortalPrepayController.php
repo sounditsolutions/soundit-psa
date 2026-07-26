@@ -234,6 +234,12 @@ class PortalPrepayController extends Controller
 
         return response()->json([
             'payment_url' => $paymentUrl,
+            // Payability signal (psa-bl36l R4/A): lets the confirmation poll stop
+            // and render a truthful terminal state when a Posted order is voided
+            // mid-poll, instead of forever promising a payment link.
+            'client_payable' => $invoice->status->isClientPayable(),
+            'status_label' => $invoice->status->portalLabel(),
+            'status_badge' => $invoice->status->portalBadgeClass(),
             'subtotal' => (float) $invoice->subtotal,
             'tax' => (float) ($invoice->tax ?? 0),
             'total' => (float) $invoice->total,

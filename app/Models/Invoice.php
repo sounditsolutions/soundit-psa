@@ -281,14 +281,24 @@ class Invoice extends Model
 
             if ($locked->status === InvoiceStatus::Void) {
                 // Never re-inflate a zeroed, voided invoice — drop every
-                // reportable money field but still record the backend id below.
+                // reportable money field. Also (psa-bl36l R4/B): never store a
+                // live hosted payment URL on a void row (a push that finalized
+                // just as the void committed must not leave a payable link the
+                // client can reach), and never clear a divergence sync error a
+                // void propagation recorded. The backend id/timestamp are still
+                // recorded below so the external invoice is flagged, not orphaned.
                 unset(
                     $attributes['subtotal'],
                     $attributes['tax'],
                     $attributes['total'],
                     $attributes['total_cost'],
                     $attributes['margin'],
+                    $attributes['stripe_sync_error'],
+                    $attributes['qbo_sync_error'],
                 );
+                if (array_key_exists('stripe_invoice_url', $attributes)) {
+                    $attributes['stripe_invoice_url'] = null;
+                }
             } elseif ($transitionToSynced && $locked->status !== InvoiceStatus::Paid) {
                 $attributes['status'] = InvoiceStatus::Synced;
             }

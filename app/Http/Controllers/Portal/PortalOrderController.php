@@ -189,6 +189,11 @@ class PortalOrderController extends Controller
 
         return response()->json([
             'payment_url' => $paymentUrl,
+            // Payability signal (psa-bl36l R4/A): stop the poll + show a terminal
+            // state when a Posted order is voided mid-poll.
+            'client_payable' => $invoice->status->isClientPayable(),
+            'status_label' => $invoice->status->portalLabel(),
+            'status_badge' => $invoice->status->portalBadgeClass(),
             'subtotal' => (float) $invoice->subtotal,
             'tax' => (float) ($invoice->tax ?? 0),
             'total' => (float) $invoice->total,

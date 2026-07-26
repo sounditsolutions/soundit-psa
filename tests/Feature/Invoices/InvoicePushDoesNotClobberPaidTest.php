@@ -284,25 +284,29 @@ class InvoicePushDoesNotClobberPaidTest extends TestCase
 
     public function test_stripe_push_does_not_reinflate_a_voided_invoice(): void
     {
+        // STRENGTHENED by psa-bl36l R4/B: a push on an ALREADY-voided invoice is
+        // now REFUSED before any Stripe create — no live hosted invoice is minted
+        // (or emailed) for a voided invoice (R3 security finding .2#1). The core
+        // psa-8yhp invariant still holds: the local invoice stays void+zeroed and
+        // is never re-inflated. (The mid-flight-void race — void committing DURING
+        // the push — is compensated instead; see InvoiceStripeVoidPropagationTest.)
         $client = Client::factory()->create(['stripe_customer_id' => 'cus_void_race']);
         $invoice = $this->makeInvoice(['client_id' => $client->id, 'tax' => '40.00', 'total' => '540.00']);
 
         $stripe = \Mockery::mock(StripeClient::class);
-        $stripe->shouldReceive('createInvoice')->andReturn(['id' => 'in_void_race']);
-        $stripe->shouldReceive('createInvoiceItem')->andReturn([]);
-        $stripe->shouldReceive('finalizeInvoice')->andReturn([
-            'tax' => 4000,
-            'total' => 54000,
-            'hosted_invoice_url' => 'https://pay.example/in_void_race',
-        ]);
+        $stripe->shouldNotReceive('createInvoice');
+        $stripe->shouldNotReceive('finalizeInvoice');
 
         $this->voidUnderneath($invoice);
 
-        (new StripeSyncService($stripe))->pushInvoiceToStripe($invoice);
+        try {
+            (new StripeSyncService($stripe))->pushInvoiceToStripe($invoice);
+            $this->fail('Expected a refusal to push an already-voided invoice.');
+        } catch (\App\Services\Stripe\StripeClientException $e) {
+            // expected — voided invoices are not pushed
+        }
 
-        $fresh = $invoice->fresh();
-        $this->assertStillVoidAndZeroed($fresh);
-        $this->assertSame('in_void_race', $fresh->stripe_invoice_id);
+        $this->assertStillVoidAndZeroed($invoice->fresh());
     }
 
     public function test_total_based_aggregate_excludes_a_voided_invoice_after_a_stale_push(): void

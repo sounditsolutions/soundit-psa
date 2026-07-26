@@ -64,6 +64,10 @@ enum InvoiceStatus: string
     {
         return match ($this) {
             self::Paid => 'Paid',
+            // A voided invoice is not "Unpaid" — it is cancelled and not payable.
+            // Labelling it Unpaid contradicts the confirmation's "not payable"
+            // copy on a voided portal order (psa-bl36l R3.3).
+            self::Void => 'Void',
             default => 'Unpaid',
         };
     }
@@ -73,6 +77,7 @@ enum InvoiceStatus: string
     {
         return match ($this) {
             self::Paid => 'bg-success',
+            self::Void => 'bg-secondary',
             default => 'bg-warning text-dark',
         };
     }

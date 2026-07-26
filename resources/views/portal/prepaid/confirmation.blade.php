@@ -45,7 +45,7 @@
                     </tr>
                     <tr>
                         <td class="text-muted">Status</td>
-                        <td><span class="badge {{ $invoice->status->portalBadgeClass() }}">{{ $invoice->status->portalLabel() }}</span></td>
+                        <td><span id="orderStatusBadge" class="badge {{ $invoice->status->portalBadgeClass() }}">{{ $invoice->status->portalLabel() }}</span></td>
                     </tr>
                 </table>
             </div>
@@ -128,6 +128,18 @@ document.addEventListener('DOMContentLoaded', function() {
                         '<p class="mb-2">Ready to pay?</p>' +
                         '<a href="' + data.payment_url + '" target="_blank" class="btn btn-accent btn-lg">' +
                         '<i class="bi bi-credit-card me-1"></i>Pay Now — ' + fmt(data.total) + '</a></div></div>';
+                } else if (data.client_payable === false) {
+                    // Terminal: no longer payable (e.g. staff voided it mid-poll).
+                    // Stop polling and tell the truth (psa-bl36l R4/A).
+                    section.innerHTML = '<div class="alert alert-secondary">' +
+                        '<i class="bi bi-info-circle me-1"></i>' +
+                        "This order's invoice is " + String(data.status_label || '').toLowerCase() +
+                        ' and is not payable — no payment is due. If you have questions, please contact us.</div>';
+                    var badge = document.getElementById('orderStatusBadge');
+                    if (badge && data.status_label) {
+                        badge.textContent = data.status_label;
+                        badge.className = 'badge ' + (data.status_badge || '');
+                    }
                 } else {
                     attempts++;
                     if (attempts >= maxAttempts) {

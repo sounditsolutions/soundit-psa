@@ -240,6 +240,14 @@ class InvoiceController extends Controller
                 ->with('error', 'Invoice has not been pushed to Stripe.');
         }
 
+        // Fresh-status gate (psa-bl36l R4/B): never email a payment link for a
+        // locally-voided invoice — a stale "Email to Client" action must not
+        // deliver a live hosted page to the client after staff voided it.
+        if ($invoice->fresh()->status === InvoiceStatus::Void) {
+            return redirect()->route('invoices.show', $invoice)
+                ->with('error', 'This invoice is voided in Sound PSA — it was not emailed. If its Stripe page may still be live, void invoice '.$invoice->stripe_invoice_id.' in Stripe.');
+        }
+
         $client = new \App\Services\Stripe\StripeClient([
             'secret_key' => StripeConfig::get('secret_key'),
         ]);
