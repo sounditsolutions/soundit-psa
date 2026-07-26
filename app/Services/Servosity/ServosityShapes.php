@@ -27,12 +27,17 @@ namespace App\Services\Servosity;
  *    object/integer-id proof; the requested company's REQUIRED count maps
  *    proven by validatedIntMap() (definitions.CompanySummaryNg) with per-map
  *    degradation to null + a why note. Page-walk COMPLETENESS —
- *    company_not_found and the truncation caveat are complete-list claims —
- *    is decided ONLY by the shared pagination proof (provenNextUrl(),
- *    enforced per page inside assertDrfEnvelope(), origin/path-bound to the
- *    resolved request URL): an undocumented `next` — wrong type, non-URI,
- *    or a URI that does not continue THIS request — is drift for the whole
- *    read, never "last page" and never "more pages".
+ *    company_not_found is a complete-list claim — is decided ONLY by the
+ *    shared pagination proof (provenNextUrl(), enforced per page inside
+ *    assertDrfEnvelope(), origin/path-bound to the resolved request URL)
+ *    PLUS the walk-level loop guard (psa-z30dv R8, .23): the walk consumes
+ *    each proven cursor as its next request, refuses one that repeats a
+ *    request already issued (self-loop / oscillation), and treats exceeding
+ *    its page bound as drift — the only complete outcome is the documented
+ *    null cursor. An undocumented `next` — wrong type, non-URI, a URI that
+ *    does not continue THIS request, or one that revisits or never ends the
+ *    walk — is drift for the whole read, never "last page", never "more
+ *    pages", and never a truncated company_not_found.
  *    Failure → status schema_drift / unavailable, maps null — never a zero.
  * 2. (a) ServosityReadOnlyToolset::liveDrBackups() — GET dr-backups/?company=N
  *    → MCP live_dr_backups rows, per-device upstream_check (verified_live /

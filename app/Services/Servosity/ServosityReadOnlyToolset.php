@@ -84,7 +84,16 @@ use Illuminate\Support\Facades\Log;
  *    request — the configured origin + this exact endpoint path, from
  *    ServosityClient::resolvedRequestUrl() — must not steer or complete the
  *    walk (psa-z30dv.22: an unrelated-origin cursor minted
- *    company_not_found from a foreign-steered list).
+ *    company_not_found from a foreign-steered list). A PROVEN cursor must
+ *    also ADVANCE (psa-z30dv R8, .23): the summary walk consumes each
+ *    proven cursor as its next request (the getCompanies()
+ *    follow-the-cursor idiom) and refuses one that repeats a request this
+ *    walk already issued, and exceeding MAX_SUMMARY_PAGES without the
+ *    documented null end is equally drift — a same-origin, same-path
+ *    cursor that self-looped passed every prior proof, burned the page
+ *    bound, and minted a freshly-stamped company_not_found from an
+ *    UNFINISHED walk. The walk's only complete outcome is the documented
+ *    null; company_not_found is reachable only from a walk that got there.
  * A response missing a REQUIRED container, or carrying a wrong-typed required
  * field, is SCHEMA DRIFT and is reported as an explicit unknown/unavailable
  * state — never as a clean zero/empty. A schema_drift section publishes NO
@@ -118,7 +127,14 @@ class ServosityReadOnlyToolset
     /** Failures are cached even shorter — loud unknowns, but no re-hammering a struggling API. */
     private const LIVE_FAILURE_CACHE_SECONDS = 30;
 
-    /** Page-walk bound for the account-wide company summary (DRF pagination). */
+    /**
+     * Page-walk bound for the account-wide company summary (DRF pagination).
+     * Exceeding it is DRIFT, not truncation (psa-z30dv R8): the walk throws
+     * — the same abort-not-truncate posture as
+     * ServosityClient::MAX_COMPANY_PAGES — rather than letting a
+     * never-ending cursor chain mint company_not_found from an unfinished
+     * list.
+     */
     private const MAX_SUMMARY_PAGES = 20;
 
     private const LIVE_PAGE_SIZE = 100;
@@ -289,18 +305,26 @@ class ServosityReadOnlyToolset
      * Live account/issue counts for this company from companies/summary-ng —
      * page-walked with per-page envelope validation, both count maps validated
      * against the documented CompanySummaryNg shape (REQUIRED integer maps).
+     * The walk follows proven cursors and completes ONLY at the documented
+     * null end — loops and bound exhaustion are whole-section drift (see
+     * fetchAllSummaryRows), so every claim below rests on a finished walk.
      *
      * @return array<string, mixed>
      */
     private function liveCompanyState(Client $client): array
     {
-        $fetch = $this->cachedLiveFetch('servosity_reads:companies', fn (): array => $this->fetchAllSummaryRows());
+        // Cache key versioned: the cached value's shape changed in R8 (a
+        // plain proven-complete row list — the walk now throws instead of
+        // returning a truncated one) and a stale file-cache entry in the old
+        // {rows, list_truncated} shape would misread under this consumer as
+        // an empty list, i.e. a false company_not_found.
+        $fetch = $this->cachedLiveFetch('servosity_reads:companies:v2', fn (): array => $this->fetchAllSummaryRows());
 
         if ($fetch['status'] !== 'ok') {
             return $this->liveFailurePayload($fetch, 'account/issue counts', 'the synced counts above may be out of date');
         }
 
-        ['rows' => $rows, 'list_truncated' => $listTruncated] = $fetch['value'];
+        $rows = $fetch['value'];
 
         $companyId = (int) $client->servosity_company_id;
         $company = collect($rows)->first(
@@ -308,15 +332,14 @@ class ServosityReadOnlyToolset
         );
 
         if ($company === null) {
-            $note = "Servosity's live company list does not contain this client's mapped company. The mapping may be stale or the company removed — verify in the Servosity console. This is NOT an all-clear.";
-            if ($listTruncated) {
-                $note .= ' The company list was truncated at '.self::MAX_SUMMARY_PAGES.' pages, so absence here is not conclusive.';
-            }
-
+            // Reachable ONLY from a walk that reached the documented end of
+            // the list — fetchAllSummaryRows() throws on cursor loops and on
+            // bound exhaustion (psa-z30dv R8) — so absence IS a
+            // complete-list observation and keeps its stamp.
             return [
                 'status' => 'company_not_found',
                 'live_checked_at' => $fetch['fetched_at'],
-                'note' => $note,
+                'note' => "Servosity's live company list does not contain this client's mapped company. The mapping may be stale or the company removed — verify in the Servosity console. This is NOT an all-clear.",
             ];
         }
 
@@ -501,21 +524,35 @@ class ServosityReadOnlyToolset
 
     /**
      * Walk the account-wide company summary pages with per-page envelope AND
-     * row validation. Bounded at MAX_SUMMARY_PAGES; the bound is reported,
-     * never silent. A malformed row is drift for the whole read — filtering
-     * bad rows out would turn malformed evidence into apparent truth, and a
-     * dropped row containing OUR company would read as company_not_found.
+     * row validation, CONSUMING the proven pagination cursor (psa-z30dv R8,
+     * .23): after page one, each request adopts the just-proven next URL's
+     * query — the same follow-the-cursor idiom as
+     * ServosityClient::getCompanies() — and the loop guard refuses a cursor
+     * that repeats a request this walk already issued. The ONLY complete
+     * outcome is the documented null cursor; a self-looping or oscillating
+     * cursor, and a walk that exceeds MAX_SUMMARY_PAGES without ending, are
+     * each drift for the whole read. The pre-R8 counter-driven walk returned
+     * those as mere truncation, and the requested company's absence from
+     * that UNFINISHED list minted a freshly-stamped company_not_found — the
+     * psa-z30dv.23 gate blocker. A malformed row is equally drift for the
+     * whole read — filtering bad rows out would turn malformed evidence into
+     * apparent truth, and a dropped row containing OUR company would read as
+     * company_not_found.
      *
-     * @return array{rows: array<int, array<string, mixed>>, list_truncated: bool}
+     * @return array<int, \stdClass>
      */
     private function fetchAllSummaryRows(): array
     {
         $client = $this->client();
-        $requestUrl = $client->resolvedRequestUrl('companies/summary-ng/');
+        $endpoint = 'companies/summary-ng/';
+        $requestUrl = $client->resolvedRequestUrl($endpoint);
         $rows = [];
+        $params = ['page' => 1, 'page_size' => self::LIVE_PAGE_SIZE];
+        $requested = [];
         for ($page = 1; $page <= self::MAX_SUMMARY_PAGES; $page++) {
-            $response = $client->getJson('companies/summary-ng/', ['page' => $page, 'page_size' => self::LIVE_PAGE_SIZE]);
-            ServosityShapes::assertDrfEnvelope($response, 'companies/summary-ng/', $requestUrl);
+            $requested[self::pageIdentity($params)] = true;
+            $response = $client->getJson($endpoint, $params);
+            ServosityShapes::assertDrfEnvelope($response, $endpoint, $requestUrl);
 
             foreach ($response->results as $row) {
                 if (! $row instanceof \stdClass || ! is_int($row->id ?? null)) {
@@ -528,14 +565,41 @@ class ServosityReadOnlyToolset
             // Completeness is read ONLY through the shared pagination proof
             // (an undocumented cursor — wrong type or one that does not
             // continue this request — threw at the envelope proof above): a
-            // proven null is the documented end of the list, a proven URI
-            // means another page exists.
-            if (ServosityShapes::provenNextUrl($response, 'companies/summary-ng/', $requestUrl) === null) {
-                return ['rows' => $rows, 'list_truncated' => false];
+            // proven null is the documented end of the list, and a proven
+            // URI is consumed as the next request.
+            $nextUrl = ServosityShapes::provenNextUrl($response, $endpoint, $requestUrl);
+            if ($nextUrl === null) {
+                return $rows;
+            }
+            // A proven cursor is same-origin and same-path by construction,
+            // so a repeated request identity can only mean the server's
+            // pagination is not the documented advancing sequence — and a
+            // walk that revisits pages can never prove where the list ends.
+            parse_str(parse_url($nextUrl, PHP_URL_QUERY) ?: '', $params);
+            if (isset($requested[self::pageIdentity($params)])) {
+                throw new ServosityShapeDriftException('Servosity companies/summary-ng/ returned a next-page cursor that repeats a page this walk already requested (a pagination loop) — a looping walk never reaches the documented end of the list, so no completeness or company-absence claim can be made from it.');
             }
         }
 
-        return ['rows' => $rows, 'list_truncated' => true];
+        throw new ServosityShapeDriftException('Servosity companies/summary-ng/ pagination did not reach its documented end within '.self::MAX_SUMMARY_PAGES.' pages — an unfinished walk cannot prove list completeness, so no company-absence or count claim can be made from it.');
+    }
+
+    /**
+     * The identity of one summary-page request: its query parameters,
+     * key-sorted and serialized, so the same parameters in a different order
+     * are the same request. The walk's loop guard checks each adopted cursor
+     * against the identities already issued. Must never claim two DIFFERENT
+     * requests are the same (that would false-drift a legitimate walk);
+     * distinct-looking identities that alias the same server page are
+     * backstopped by MAX_SUMMARY_PAGES.
+     *
+     * @param  array<string, mixed>  $params
+     */
+    private static function pageIdentity(array $params): string
+    {
+        ksort($params);
+
+        return http_build_query($params);
     }
 
     /**
@@ -727,7 +791,8 @@ class ServosityReadOnlyToolset
      *
      * The two failure states carry deliberately different freshness
      * (psa-z30dv R7, .22): schema_drift publishes NO live_checked_at — an
-     * uninterpretable response is not an observation, and a stamp here would
+     * uninterpretable response, or a page walk that never reached its
+     * documented end (R8), is not an observation, and a stamp here would
      * let the drift block read as a timestamped completed check — while
      * unavailable keeps its stamp, which records only when the ATTEMPT
      * failed and strengthens no claim about upstream state.
@@ -740,7 +805,7 @@ class ServosityReadOnlyToolset
         if ($fetch['status'] === 'schema_drift') {
             return [
                 'status' => 'schema_drift',
-                'note' => "Live {$what} are UNKNOWN — Servosity answered with a response that does not match its documented shape (possible API change; details in the application log). No live_checked_at is published: an uninterpretable answer is not an observation. Do not read this as zero/none; {$consequence}. Verify in the Servosity console.",
+                'note' => "Live {$what} are UNKNOWN — Servosity answered with a response that does not match its documented shape or pagination contract (a malformed shape, or a page walk that looped or never reached its documented end; details in the application log). No live_checked_at is published: an uninterpretable answer is not an observation. Do not read this as zero/none; {$consequence}. Verify in the Servosity console.",
             ];
         }
 

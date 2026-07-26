@@ -1029,15 +1029,31 @@ class ServosityReadOnlyToolsetTest extends TestCase
      */
     private function bindRealClientReplaying(string ...$rawBodies): void
     {
+        $unusedHistory = [];
+        $this->bindRealClientReplayingWithHistory($unusedHistory, ...$rawBodies);
+    }
+
+    /**
+     * Same binding, but also records every request the walk actually issues
+     * (Guzzle history middleware) — the only way to assert WHICH page a
+     * request asked for, since the MockHandler replays by order regardless
+     * of query.
+     *
+     * @param  array<int, array{request: \Psr\Http\Message\RequestInterface}>  $history
+     */
+    private function bindRealClientReplayingWithHistory(array &$history, string ...$rawBodies): void
+    {
         $queue = array_map(
             fn (string $body) => new \GuzzleHttp\Psr7\Response(200, ['Content-Type' => 'application/json'], $body),
             $rawBodies,
         );
+        $stack = \GuzzleHttp\HandlerStack::create(new \GuzzleHttp\Handler\MockHandler($queue));
+        $stack->push(\GuzzleHttp\Middleware::history($history));
 
         $this->app->instance(ServosityClient::class, new ServosityClient([
             'api_token' => 'fixture-token',
             'base_url' => 'https://api.servosity.example',
-            'handler' => \GuzzleHttp\HandlerStack::create(new \GuzzleHttp\Handler\MockHandler($queue)),
+            'handler' => $stack,
         ]));
     }
 
@@ -1338,5 +1354,162 @@ class ServosityReadOnlyToolsetTest extends TestCase
 
         $this->assertSame('ok', $result['live']['status'], 'a proven URI cursor is a documented more-pages answer, not drift');
         $this->assertSame(['DRS' => 2], $result['live']['account_counts']);
+    }
+
+    // ── Pagination loops and bound exhaustion (psa-z30dv R8, .23) ─────────────
+    //
+    // The R7 gate blocker: a cursor can be a well-formed URI on OUR origin
+    // and OUR endpoint path — passing every R6/R7 proof — and still never
+    // take the walk anywhere: pointing back at a page already requested
+    // (self-loop, oscillation) or advancing forever past the page bound. The
+    // pre-R8 counter-driven walk returned all of those as mere truncation,
+    // and the requested company's absence from that UNFINISHED list minted a
+    // freshly-stamped company_not_found — a definitive-sounding status from
+    // a walk that never legitimately ended. The only complete outcome of the
+    // walk is the documented null cursor; everything else is whole-section
+    // schema_drift with no live_checked_at, no count keys, and no
+    // company_not_found. Each test's queue holds the summary bodies PLUS the
+    // one DR body: dr-backups reading `ok` proves the walk stopped issuing
+    // summary requests exactly where the guard says — a cursor-following
+    // walk without the guard would consume the DR body as a summary page and
+    // leave the DR seam to fail on an empty queue (unavailable, not ok).
+
+    /** One well-formed summary page: $rows JSON fragments, cursor verbatim (null or a quoted URL). */
+    private static function wireSummaryPage(string $rawNext, string ...$rowJson): string
+    {
+        return '{"count":2100,"next":'.$rawNext.',"previous":null,"results":['.implode(',', $rowJson).']}';
+    }
+
+    private const WIRE_ROW_77 = '{"id":77,"name":"Company 77","account_counts":{},"issue_counts":{}}';
+
+    private const WIRE_ROW_88 = '{"id":88,"name":"Company 88","account_counts":{},"issue_counts":{}}';
+
+    public function test_wire_a_self_looping_summary_cursor_is_drift_not_company_not_found(): void
+    {
+        // The exact psa-z30dv.23 probe class: page 1's cursor is same-origin,
+        // same-path — and repeats the request that produced it. The walk must
+        // refuse it BEFORE issuing a second summary request.
+        $this->configureServosity();
+        $client = $this->mappedClient('Acme', 42);
+        $this->bindRealClientReplaying(
+            self::wireSummaryPage('"https://api.servosity.example/api/v1/companies/summary-ng/?page=1&page_size=100"', self::WIRE_ROW_77),
+            '{"count":1,"next":null,"previous":null,"results":['.self::WIRE_DR_ROW_OK.']}',
+        );
+
+        $result = $this->toolset()->execute('servosity_get_backup_posture', [], $client->id);
+
+        $this->assertSame('schema_drift', $result['live']['status'], 'a self-looping cursor can never reach the documented end — drift, not a completeness answer');
+        $this->assertStringNotContainsString('company_not_found', json_encode($result['live']), 'an unfinished walk must not claim the company is absent');
+        $this->assertArrayNotHasKey('live_checked_at', $result['live'], 'a walk that never ended is not an observation — no freshness stamp');
+        $this->assertArrayNotHasKey('account_counts', $result['live'], 'no count key may survive a looping walk');
+        $this->assertStringContainsString('Do not read this as zero', $result['live']['note']);
+        $this->assertSame('ok', $result['live_dr_backups']['status'],
+            'exactly one summary request may be issued — a walk still following the loop would have swallowed the DR body');
+    }
+
+    public function test_wire_an_oscillating_summary_cursor_pair_is_drift_not_company_not_found(): void
+    {
+        // Two pages pointing at each other: page 1 → page 2 → page 1. The
+        // second cursor repeats an already-issued request and must be refused
+        // before a third summary request goes out.
+        $this->configureServosity();
+        $client = $this->mappedClient('Acme', 42);
+        $this->bindRealClientReplaying(
+            self::wireSummaryPage('"https://api.servosity.example/api/v1/companies/summary-ng/?page=2&page_size=100"', self::WIRE_ROW_77),
+            self::wireSummaryPage('"https://api.servosity.example/api/v1/companies/summary-ng/?page=1&page_size=100"', self::WIRE_ROW_88),
+            '{"count":1,"next":null,"previous":null,"results":['.self::WIRE_DR_ROW_OK.']}',
+        );
+
+        $result = $this->toolset()->execute('servosity_get_backup_posture', [], $client->id);
+
+        $this->assertSame('schema_drift', $result['live']['status'], 'an oscillating cursor pair can never reach the documented end');
+        $this->assertStringNotContainsString('company_not_found', json_encode($result['live']));
+        $this->assertArrayNotHasKey('live_checked_at', $result['live']);
+        $this->assertArrayNotHasKey('account_counts', $result['live']);
+        $this->assertSame('ok', $result['live_dr_backups']['status'],
+            'exactly two summary requests may be issued — a walk still oscillating would have swallowed the DR body');
+    }
+
+    public function test_wire_a_summary_walk_that_exhausts_its_page_bound_is_drift_not_a_truncated_company_not_found(): void
+    {
+        // Every cursor is novel and proven — the list just never ends within
+        // the 20-page bound (MAX_SUMMARY_PAGES). Absence from an unfinished
+        // walk was previously served as company_not_found + live_checked_at
+        // with a prose truncation caveat an agent may skip; it must be
+        // whole-section drift with no stamp and no truncation half-claim.
+        $this->configureServosity();
+        $client = $this->mappedClient('Acme', 42);
+        $pages = [];
+        for ($n = 1; $n <= 20; $n++) {
+            $pages[] = self::wireSummaryPage(
+                '"https://api.servosity.example/api/v1/companies/summary-ng/?page='.($n + 1).'&page_size=100"',
+                '{"id":'.(1000 + $n).',"name":"Company '.(1000 + $n).'","account_counts":{},"issue_counts":{}}',
+            );
+        }
+        $this->bindRealClientReplaying(...[
+            ...$pages,
+            '{"count":1,"next":null,"previous":null,"results":['.self::WIRE_DR_ROW_OK.']}',
+        ]);
+
+        $result = $this->toolset()->execute('servosity_get_backup_posture', [], $client->id);
+
+        $this->assertSame('schema_drift', $result['live']['status'], 'a walk that never reached the documented end cannot answer completeness');
+        $this->assertStringNotContainsString('company_not_found', json_encode($result['live']));
+        $this->assertStringNotContainsString('truncated', json_encode($result['live']), 'no truncation half-claim may soften the unknown');
+        $this->assertArrayNotHasKey('live_checked_at', $result['live'], 'an unfinished walk is not an observation — no freshness stamp');
+        $this->assertArrayNotHasKey('account_counts', $result['live'], 'no count key may survive an exhausted walk');
+        $this->assertSame('ok', $result['live_dr_backups']['status'],
+            'the walk must stop at the bound — a walk still following cursors would have swallowed the DR body');
+    }
+
+    public function test_wire_a_looping_cursor_poisons_the_walk_even_when_the_company_was_already_found(): void
+    {
+        // The mirror of the foreign-cursor found-on-page-1 pin: our company
+        // sits on page 1 with real counts, but the walk's pagination regime
+        // is broken — nothing from an unprovable walk may be served, found
+        // company included.
+        $this->configureServosity();
+        $client = $this->mappedClient('Acme', 42);
+        $this->bindRealClientReplaying(
+            self::wireSummaryPage(
+                '"https://api.servosity.example/api/v1/companies/summary-ng/?page=1&page_size=100"',
+                '{"id":42,"name":"Company 42","account_counts":{"DRS":2},"issue_counts":{"Backup":0}}',
+            ),
+            '{"count":1,"next":null,"previous":null,"results":['.self::WIRE_DR_ROW_OK.']}',
+        );
+
+        $result = $this->toolset()->execute('servosity_get_backup_posture', [], $client->id);
+
+        $this->assertSame('schema_drift', $result['live']['status'], 'a looping walk is drift for the WHOLE section — even with the company on page 1');
+        $this->assertArrayNotHasKey('account_counts', $result['live'], 'counts from an unprovable walk must not be served');
+        $this->assertArrayNotHasKey('live_checked_at', $result['live']);
+        $this->assertSame('ok', $result['live_dr_backups']['status'], 'the DR seam answered well-formed and stays independent');
+    }
+
+    public function test_wire_the_summary_walk_consumes_the_proven_cursor_query_not_a_self_derived_page_counter(): void
+    {
+        // The positive half of the loop guard (psa-z30dv R8): the walk must
+        // FOLLOW the proven cursor — adopt its query verbatim as the next
+        // request, the getCompanies() idiom — not run its own page counter
+        // beside it. A distinctive page_size in the cursor proves which one
+        // the second request came from.
+        $this->configureServosity();
+        $client = $this->mappedClient('Acme', 42);
+        $history = [];
+        $this->bindRealClientReplayingWithHistory(
+            $history,
+            self::wireSummaryPage('"https://api.servosity.example/api/v1/companies/summary-ng/?page=2&page_size=55"', self::WIRE_ROW_77),
+            self::WIRE_SUMMARY_OK,
+            '{"count":1,"next":null,"previous":null,"results":['.self::WIRE_DR_ROW_OK.']}',
+        );
+
+        $result = $this->toolset()->execute('servosity_get_backup_posture', [], $client->id);
+
+        $this->assertSame('ok', $result['live']['status']);
+        $this->assertSame(['DRS' => 2], $result['live']['account_counts'], 'the company found via the followed cursor answers ok');
+        $this->assertCount(3, $history, 'two summary pages + one DR page');
+        $this->assertSame('page=1&page_size=100', $history[0]['request']->getUri()->getQuery());
+        $this->assertSame('page=2&page_size=55', $history[1]['request']->getUri()->getQuery(),
+            'the second request must carry the proven cursor\'s query — not a self-derived page counter');
     }
 }
