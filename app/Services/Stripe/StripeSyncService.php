@@ -11,6 +11,7 @@ use App\Models\Sku;
 use App\Services\InvoiceVoidService;
 use App\Services\SyncResult;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
@@ -103,10 +104,12 @@ class StripeSyncService
             throw new StripeClientException($error);
         }
 
-        // Replay/stale guard (psa-bl36l R4/B): never mint a live hosted Stripe
-        // invoice for a locally-voided invoice — e.g. a captured "Push & Email
-        // Client" POST replayed after staff voided it. Refuse before any Stripe
-        // create so no payable page/email is produced.
+        // Replay guard (psa-bl36l R4/B): a captured "Push & Email Client" POST
+        // replayed after staff voided must not mint a live hosted Stripe
+        // invoice. This early fresh() read is a CHEAP REFUSAL only — it avoids
+        // creating a doomed upstream invoice in the common replay case. It is
+        // NOT the safety mechanism: the locked recordPushResult() boundary
+        // below is what actually serializes with a concurrent void (R5).
         if ($invoice->fresh()->status === InvoiceStatus::Void) {
             $error = 'Invoice is voided in Sound PSA — it was not pushed to Stripe.';
             // Column-scoped: never clobber the committed Void via a stale model.
@@ -166,74 +169,155 @@ class StripeSyncService
 
             // 3. Finalize
             $finalized = $this->stripeClient->finalizeInvoice($stripeInvoiceId);
-
-            // 4. Mid-flight void guard (psa-bl36l R4/B): a void may have committed
-            // while our create/finalize round-trip was in flight. Do NOT email a
-            // live page or record a payable URL — compensate by voiding the
-            // just-created Stripe invoice (matching-id/status confirmation),
-            // record loudly, and surface it as a failure. Checked BEFORE the email
-            // so a stale local state never triggers a client email.
-            if ($invoice->fresh()->status === InvoiceStatus::Void) {
-                $compensated = false;
-                try {
-                    $r = $this->stripeClient->voidInvoice($stripeInvoiceId);
-                    $compensated = ($r['id'] ?? null) === $stripeInvoiceId && ($r['status'] ?? null) === 'void';
-                } catch (StripeClientException $ce) {
-                    Log::warning('[StripeSync] Mid-flight-push compensating void failed', [
-                        'invoice_id' => $invoice->id, 'stripe_invoice_id' => $stripeInvoiceId, 'error' => $ce->getMessage(),
-                    ]);
-                }
-                $msg = $compensated
-                    ? 'Invoice was voided in Sound PSA during the Stripe push; the created Stripe invoice '.$stripeInvoiceId.' was voided upstream to compensate and was NOT emailed.'
-                    : 'Invoice was voided in Sound PSA during the Stripe push; the created Stripe invoice '.$stripeInvoiceId.' could NOT be confirmed voided and may still be live — void it manually in Stripe. It was NOT emailed.';
-                Log::warning('[StripeSync] Voided-during-push compensation', [
-                    'invoice_id' => $invoice->id, 'stripe_invoice_id' => $stripeInvoiceId, 'compensated' => $compensated,
-                ]);
-                // Keep the id for reconciliation, NULL the URL (kill the page),
-                // stamp provenance, record the loud error. No email, no money.
-                // COLUMN-SCOPED query-builder write: a plain $invoice->update() on
-                // this stale in-flight model would re-write its stale Posted status
-                // over the concurrently-committed Void and re-inflate it (the
-                // psa-8yhp class). Touch only these provenance columns; never status/money.
-                Invoice::where('id', $invoice->id)->update([
-                    'stripe_invoice_id' => $stripeInvoiceId,
-                    'stripe_invoice_url' => null,
-                    'stripe_synced_at' => now(),
-                    'stripe_sync_error' => $msg,
-                ]);
-                $invoice->refresh();
-
-                throw new StripeClientException($msg);
-            }
-
-            // 5. Send email to client if requested — only now that the locked
-            // local state still permits it.
-            if ($sendEmail) {
-                $this->stripeClient->sendInvoice($stripeInvoiceId);
-            }
-
-            // 6. Read back tax and totals
-            $tax = $this->centsToDollars($finalized['tax'] ?? 0);
-            $total = $this->centsToDollars($finalized['total'] ?? 0);
-
-            // Never clobber a Paid/Void status a concurrent Mark-as-Paid/void
-            // (psa-8yhp) may have committed while our Stripe API round-trip was
-            // in flight. recordPushResult re-reads under lock, preserves a terminal
-            // status, and on Void nulls the URL + keeps any divergence error
-            // (psa-bl36l R4/B residual-race backstop); the id is still recorded so
-            // Stripe is not orphaned.
-            $invoice->recordPushResult([
-                'stripe_invoice_id' => $stripeInvoiceId,
-                'stripe_invoice_url' => $finalized['hosted_invoice_url'] ?? null,
-                'tax' => $tax,
-                'total' => $total,
-                'stripe_synced_at' => now(),
-                'stripe_sync_error' => null,
-            ]);
         } catch (StripeClientException $e) {
             $invoice->update(['stripe_sync_error' => $e->getMessage()]);
             throw $e;
         }
+
+        // 4. Read back tax and totals
+        $tax = $this->centsToDollars($finalized['tax'] ?? 0);
+        $total = $this->centsToDollars($finalized['total'] ?? 0);
+
+        // 5. THE LOCKED RESULT/SEND BOUNDARY (psa-bl36l R5). One row-locked
+        // write — shared with InvoiceVoidService, which locks the same row —
+        // decides atomically what is recorded AND whether the email may go out.
+        // No unlocked fresh() check can provide this: a void is either
+        //  - committed BEFORE this boundary → the locked re-read sees Void,
+        //    keeps money zeroed, stores NO payable URL, preserves any
+        //    divergence error, and we compensate below (never email); or
+        //  - committed AFTER this boundary → it serializes behind this lock,
+        //    reads the stripe_invoice_id recorded HERE (durable before any
+        //    email can be in flight), and its own propagation voids the
+        //    upstream invoice. Linearizably the push simply happened first.
+        // recordPushResult also still preserves a concurrent Paid (psa-8yhp).
+        $wasVoid = $invoice->recordPushResult([
+            'stripe_invoice_id' => $stripeInvoiceId,
+            'stripe_invoice_url' => $finalized['hosted_invoice_url'] ?? null,
+            'tax' => $tax,
+            'total' => $total,
+            'stripe_synced_at' => now(),
+            'stripe_sync_error' => null,
+        ]);
+
+        if ($wasVoid) {
+            $this->compensateVoidedPush($invoice, $stripeInvoiceId);
+        }
+
+        // 6. Email — only with the committed boundary's authorization. From the
+        // moment that boundary committed, the id is durable, so a void landing
+        // in this residual window kills the upstream page itself (see above).
+        if ($sendEmail) {
+            try {
+                $this->stripeClient->sendInvoice($stripeInvoiceId);
+            } catch (StripeClientException $e) {
+                // The push itself SUCCEEDED (id/URL recorded, invoice live) —
+                // say exactly that, not a generic "sync failed" that reads as
+                // if nothing reached Stripe.
+                $message = 'Invoice '.$invoice->invoice_number.' was pushed to Stripe but the email could not be sent ('.$e->getMessage().') — use "Email to Client" on the invoice page to retry.';
+                Invoice::where('id', $invoice->id)->update(['stripe_sync_error' => $message]);
+                $invoice->refresh();
+
+                throw new StripeClientException($message, $e->getCode(), $e);
+            }
+        }
+    }
+
+    /**
+     * A local void won the locked push boundary while our Stripe
+     * create/finalize round-trip was in flight: the just-created upstream
+     * invoice must never reach the client. recordPushResult() already recorded
+     * the id, stored NO URL, kept the money zeroed, and preserved any existing
+     * divergence error — this voids the upstream invoice and settles the
+     * durable provenance:
+     *
+     * - Compensation CONFIRMED (response identifies the SAME invoice in
+     *   status=void): upstream is exactly as converged as a normal void
+     *   propagation, so NO durable divergence error may persist (R4 MF3) — the
+     *   aborted push is surfaced ONCE via the thrown message (the controller
+     *   flash), while the invoice page truthfully shows convergence instead of
+     *   a permanent "Stripe may not reflect this void yet" alarm.
+     * - UNCONFIRMED (failure, wrong id, or unproven status): the page may
+     *   still be live — record a loud durable stripe_sync_error.
+     *
+     * Writes are COLUMN-SCOPED query-builder updates: a plain
+     * $invoice->update() on the stale in-flight model could re-write its stale
+     * pre-void attributes over the concurrently-committed Void (psa-8yhp
+     * class). Always throws — the push was aborted either way, and no email is
+     * ever sent on this path.
+     */
+    private function compensateVoidedPush(Invoice $invoice, string $stripeInvoiceId): never
+    {
+        $compensated = false;
+        try {
+            $r = $this->stripeClient->voidInvoice($stripeInvoiceId);
+            $compensated = ($r['id'] ?? null) === $stripeInvoiceId && ($r['status'] ?? null) === 'void';
+        } catch (StripeClientException $ce) {
+            Log::warning('[StripeSync] Mid-flight-push compensating void failed', [
+                'invoice_id' => $invoice->id, 'stripe_invoice_id' => $stripeInvoiceId, 'error' => $ce->getMessage(),
+            ]);
+        }
+
+        Log::warning('[StripeSync] Voided-during-push compensation', [
+            'invoice_id' => $invoice->id, 'stripe_invoice_id' => $stripeInvoiceId, 'compensated' => $compensated,
+        ]);
+
+        if ($compensated) {
+            Invoice::where('id', $invoice->id)->update([
+                'stripe_synced_at' => now(),
+                'stripe_sync_error' => null,
+            ]);
+            $invoice->refresh();
+
+            throw new StripeClientException('Invoice was voided in Sound PSA during the Stripe push; the created Stripe invoice '.$stripeInvoiceId.' was voided upstream to compensate and was NOT emailed.');
+        }
+
+        $message = 'Invoice was voided in Sound PSA during the Stripe push; the created Stripe invoice '.$stripeInvoiceId.' could NOT be confirmed voided and may still be live — void it manually in Stripe. It was NOT emailed.';
+        Invoice::where('id', $invoice->id)->update([
+            'stripe_synced_at' => now(),
+            'stripe_sync_error' => $message,
+        ]);
+        $invoice->refresh();
+
+        throw new StripeClientException($message);
+    }
+
+    /**
+     * Email the hosted Stripe invoice to the client — the standalone "Email to
+     * Client" action (the push path emails inside pushInvoiceToStripe()).
+     *
+     * Authorization is a LOCKED read at the send boundary (psa-bl36l R5), not a
+     * caller-side status check: InvoiceVoidService locks this same row, so a
+     * void that committed first is ALWAYS seen here and refused — an unlocked
+     * fresh() could miss a void mid-commit and email a cancelled invoice's
+     * live page. A void landing after this boundary reads the (long-durable)
+     * stripe_invoice_id and kills the upstream page itself; only that
+     * irreducible network sub-window remains, and it reconciles.
+     *
+     * The Void refusal deliberately writes NO stripe_sync_error: refusing to
+     * send changed nothing upstream, and overwriting would clobber the
+     * per-cause divergence error a void propagation recorded (e.g. paid →
+     * reconcile/refund).
+     */
+    public function sendInvoiceEmail(Invoice $invoice): void
+    {
+        if (! $invoice->stripe_invoice_id) {
+            throw new StripeClientException('Invoice '.$invoice->invoice_number.' has not been pushed to Stripe, so there is no Stripe invoice email to send.');
+        }
+
+        $status = DB::transaction(function () use ($invoice) {
+            $locked = Invoice::withTrashed()->whereKey($invoice->getKey())
+                ->lockForUpdate()->firstOrFail();
+            $invoice->setRawAttributes($locked->getAttributes(), true);
+            $invoice->syncOriginal();
+
+            return $locked->status;
+        });
+
+        if ($status === InvoiceStatus::Void) {
+            throw new StripeClientException('This invoice is voided in Sound PSA — it was not emailed. If its Stripe page may still be live, void invoice '.$invoice->stripe_invoice_id.' in Stripe.');
+        }
+
+        $this->stripeClient->sendInvoice($invoice->stripe_invoice_id);
     }
 
     // ── Payment Status Pull ──

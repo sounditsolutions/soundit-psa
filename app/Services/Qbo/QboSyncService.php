@@ -477,9 +477,11 @@ class QboSyncService
         // sums invoice_lines.amount with no status filter, relying on that
         // zeroing). The locked-read decides this: the bead contract is "drop
         // line writes when the LOCKED row is Void". A void committing in the
-        // sub-window after that read still reports live here — closing that hard
-        // needs a consistent invoice-first lock order in InvoiceVoidService too
-        // (tracked separately); it self-heals on the next void/sync.
+        // sub-window after that read still reports live here — InvoiceVoidService
+        // now takes the invoice-first row lock (psa-bl36l R5), but these line
+        // updates run OUTSIDE that protocol, so closing the sub-window hard still
+        // needs this writer to join it (tracked separately, psa-oc5q2); it
+        // self-heals on the next void/sync.
         if (! $wasVoid) {
             $this->syncLineItemsFromQbo($invoice, $qboInvoice);
         }

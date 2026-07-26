@@ -233,30 +233,23 @@ class InvoiceController extends Controller
             ->with('success', 'Invoice refreshed from Stripe.');
     }
 
-    public function sendFromStripe(Invoice $invoice)
+    public function sendFromStripe(Invoice $invoice, StripeSyncService $stripeSyncService)
     {
         if (! $invoice->stripe_invoice_id) {
             return redirect()->route('invoices.show', $invoice)
                 ->with('error', 'Invoice has not been pushed to Stripe.');
         }
 
-        // Fresh-status gate (psa-bl36l R4/B): never email a payment link for a
-        // locally-voided invoice — a stale "Email to Client" action must not
-        // deliver a live hosted page to the client after staff voided it.
-        if ($invoice->fresh()->status === InvoiceStatus::Void) {
-            return redirect()->route('invoices.show', $invoice)
-                ->with('error', 'This invoice is voided in Sound PSA — it was not emailed. If its Stripe page may still be live, void invoice '.$invoice->stripe_invoice_id.' in Stripe.');
-        }
-
-        $client = new \App\Services\Stripe\StripeClient([
-            'secret_key' => StripeConfig::get('secret_key'),
-        ]);
-
+        // Send authorization lives at the service's LOCKED boundary
+        // (StripeSyncService::sendInvoiceEmail, psa-bl36l R5): a void that
+        // committed first is always seen there and refused — an unlocked
+        // fresh() check here could be raced past mid-commit and email a
+        // cancelled invoice's live page.
         try {
-            $client->sendInvoice($invoice->stripe_invoice_id);
+            $stripeSyncService->sendInvoiceEmail($invoice);
         } catch (StripeClientException $e) {
             return redirect()->route('invoices.show', $invoice)
-                ->with('error', 'Failed to send email: '.$e->getMessage());
+                ->with('error', $e->getMessage());
         }
 
         return redirect()->route('invoices.show', $invoice)
@@ -363,15 +356,20 @@ class InvoiceController extends Controller
                             try {
                                 $qboSyncService->voidInvoiceInQbo($invoice);
                             } catch (\Throwable $e) {
-                                $reconcileFailures[] = $ref.' (QuickBooks)';
+                                $docRef = $invoice->qbo_doc_number ?? $invoice->qbo_invoice_id;
+                                $reconcileFailures[] = $ref.' — QuickBooks: void invoice #'.$docRef.' manually in QuickBooks.';
                                 Log::warning('[Invoice] Bulk void QBO propagation failed', [
                                     'invoice_id' => $invoice->id, 'error' => $e->getMessage(),
                                 ]);
                             }
                         }
-                        // Uniform Stripe seam (handles unconfigured-but-linked loudly, MF3/MF4).
-                        if ($this->propagateVoidToStripe($invoice)) {
-                            $reconcileFailures[] = $ref.' (Stripe)';
+                        // Uniform Stripe seam (handles unconfigured-but-linked loudly,
+                        // MF3/MF4). Carry the per-cause action VERBATIM (R4 MF2): a
+                        // paid Stripe invoice needs "reconcile or refund" — a blanket
+                        // "void it manually" is impossible for paid and contradicts
+                        // the durable sync error on the same invoice.
+                        if ($stripeWarning = $this->propagateVoidToStripe($invoice)) {
+                            $reconcileFailures[] = $ref.' — Stripe: '.$stripeWarning;
                         }
                         break;
 
@@ -405,10 +403,12 @@ class InvoiceController extends Controller
 
         $summary = implode(', ', $parts).'.';
         if ($reconcileFailures !== []) {
-            // The local void succeeded for these, but the billing backend still
-            // shows them live — name them so the operator can reconcile (MF7).
-            $summary .= ' Voided locally but the billing backend was not updated for: '
-                .implode(', ', $reconcileFailures).' — void these manually in the billing backend (the payment page may still be live).';
+            // The local void succeeded for these, but a billing backend still
+            // needs attention — name each invoice WITH its own cause/action
+            // (paid → reconcile/refund; open/API failure → the page may still
+            // be live) so bulk copy cannot drift from single (MF7 + R4 MF2).
+            $summary .= ' Voided locally but the billing backend was not updated: '
+                .implode(' ', $reconcileFailures);
         }
 
         $hasProblem = $failed > 0 || $reconcileFailures !== [];

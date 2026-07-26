@@ -82,11 +82,6 @@ enum InvoiceStatus: string
         };
     }
 
-    public function isUnpaidForPortal(): bool
-    {
-        return $this !== self::Paid;
-    }
-
     /**
      * May a client be offered a payment action (Pay Online / hosted Payment
      * Page) for an invoice in this status?

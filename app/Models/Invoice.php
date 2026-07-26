@@ -271,15 +271,26 @@ class Invoice extends Model
      *   flagged for reconciliation, not orphaned — PSA Void state and backend
      *   state cannot silently diverge.
      *
+     * This locked write is also the Stripe push's send/result AUTHORIZATION
+     * boundary (psa-bl36l R5): pushInvoiceToStripe() calls it BEFORE any client
+     * email and consults the return value — and InvoiceVoidService locks this
+     * same row — so "void committed before the boundary" means compensation and
+     * no email, while "void committed after the boundary" reads the id recorded
+     * here and propagates the void upstream itself. An unlocked fresh() check
+     * cannot provide that ordering; this is the seam that does.
+     *
      * @param  array<string, mixed>  $attributes  Backend ids/tax/timestamps to persist. The `status` key is managed here, not by the caller.
      * @param  bool  $transitionToSynced  CREATE (true) transitions a live invoice to Synced; UPDATE/re-push (false) keeps the current status. Terminal Paid/Void are preserved regardless.
+     * @return bool true when the locked row was Void — the push lost the race: money/URL/error-clear were dropped (id/timestamp still recorded) and the caller must not perform any further client-visible side effect (no email); the Stripe caller compensates by voiding the just-created upstream invoice.
      */
-    public function recordPushResult(array $attributes, bool $transitionToSynced = true): void
+    public function recordPushResult(array $attributes, bool $transitionToSynced = true): bool
     {
-        DB::transaction(function () use ($attributes, $transitionToSynced) {
+        return DB::transaction(function () use ($attributes, $transitionToSynced) {
             $locked = static::whereKey($this->getKey())->lockForUpdate()->first();
 
-            if ($locked->status === InvoiceStatus::Void) {
+            $isVoid = $locked->status === InvoiceStatus::Void;
+
+            if ($isVoid) {
                 // Never re-inflate a zeroed, voided invoice — drop every
                 // reportable money field. Also (psa-bl36l R4/B): never store a
                 // live hosted payment URL on a void row (a push that finalized
@@ -308,6 +319,8 @@ class Invoice extends Model
             // Keep the caller's in-memory model consistent with the committed row.
             $this->setRawAttributes($locked->getAttributes(), true);
             $this->syncOriginal();
+
+            return $isVoid;
         });
     }
 

@@ -23,13 +23,33 @@ use Illuminate\Support\Facades\Log;
  * InvoiceObserver's prepay reversal fires off that status change but reads
  * the prepay transaction ledger — not live invoice amounts — so it is
  * unaffected by the zeroing.
+ *
+ * Voiding SERIALIZES with the Stripe push/send authorization boundary
+ * (psa-bl36l R5): it takes the invoice row lock first (invoice-first lock
+ * order, same row Invoice::recordPushResult() and
+ * StripeSyncService::sendInvoiceEmail() lock), so relative to any in-flight
+ * push/send there are exactly two orderings — the void commits first and the
+ * push/send boundary sees Void (compensation, no email), or the boundary
+ * commits first and this locked read sees the CURRENT backend identifiers it
+ * recorded, so the caller propagates the void upstream instead of concluding
+ * "not linked" from a stale snapshot.
  */
 class InvoiceVoidService
 {
     public function void(Invoice $invoice): Invoice
     {
         return DB::transaction(function () use ($invoice) {
-            $invoice->refresh()->load('lines');
+            // Locked current-read, hydrating the CALLER's model (withTrashed
+            // mirrors the old refresh(), which ignored global scopes — the
+            // Stripe import can hand us a soft-deleted invoice). A plain
+            // refresh() here was a snapshot read: it could miss a push result
+            // committed a moment earlier and leave the caller propagating
+            // nothing while the freshly-minted hosted page stayed live.
+            $locked = Invoice::withTrashed()->whereKey($invoice->getKey())
+                ->lockForUpdate()->firstOrFail();
+            $invoice->setRawAttributes($locked->getAttributes(), true);
+            $invoice->syncOriginal();
+            $invoice->load('lines');
 
             // Already void and already zeroed — nothing to do. (A void
             // invoice can regain amounts when a Stripe re-import rewrites

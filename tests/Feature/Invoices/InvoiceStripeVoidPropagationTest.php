@@ -10,6 +10,7 @@ use App\Models\InvoiceLine;
 use App\Models\Person;
 use App\Models\Setting;
 use App\Models\User;
+use App\Services\InvoiceVoidService;
 use App\Services\Qbo\QboClientException;
 use App\Services\Qbo\QboSyncService;
 use App\Services\Stripe\StripeClient;
@@ -32,6 +33,16 @@ use Tests\TestCase;
  * stored payment-page URL, records provenance, and surfaces a hard error
  * (rather than a silent all-clear) when the Stripe invoice cannot be voided —
  * e.g. it is already Paid.
+ *
+ * R5 makes push/send LINEARIZABLE with void: InvoiceVoidService, the push's
+ * result write (Invoice::recordPushResult), and the standalone send
+ * authorization (StripeSyncService::sendInvoiceEmail) all lock the invoice
+ * row, so a void either lands before a push/send boundary (compensation /
+ * refusal — never an email) or after it (the void reads the recorded Stripe id
+ * and kills the upstream page itself). Confirmed compensation is convergence,
+ * not a durable divergence error (MF3); bulk void carries per-cause
+ * reconciliation guidance (MF2); both portal poll endpoints go terminal on a
+ * live Posted→Void transition (MF4).
  */
 class InvoiceStripeVoidPropagationTest extends TestCase
 {
@@ -550,6 +561,38 @@ class InvoiceStripeVoidPropagationTest extends TestCase
         $this->assertSame(InvoiceStatus::Void, $invoice->fresh()->status);
     }
 
+    public function test_bulk_void_paid_stripe_failure_carries_reconcile_refund_guidance(): void
+    {
+        // R4 MF2: bulk must preserve the PER-CAUSE action, not flatten every
+        // Stripe failure into "void these manually … the payment page may still
+        // be live" — impossible advice for a PAID Stripe invoice, and it
+        // contradicts the durable sync error on the same invoice. Single-path
+        // copy is pinned by test_void_route_paid_warning_says_reconcile_and_renders_once;
+        // this pins bulk to the same cause text so the two cannot drift.
+        Setting::setEncrypted('stripe_secret_key', 'sk_test_x');
+        $invoice = $this->makeInvoice([
+            'stripe_invoice_id' => 'in_bulk_paid',
+            'invoice_number' => 'INV-BULK-PAID',
+            'status' => InvoiceStatus::Posted,
+        ]);
+
+        $this->mock(StripeSyncService::class, function ($m) {
+            $m->shouldReceive('voidInvoiceInStripe')->once()
+                ->andThrow(new StripeClientException('Stripe invoice in_bulk_paid is already paid and cannot be voided upstream — reconcile or refund it manually in Stripe.'));
+        });
+
+        $this->actingAs(User::factory()->create())
+            ->post(route('invoices.bulk-action'), ['action' => 'void', 'invoice_ids' => [$invoice->id]])
+            ->assertRedirect(route('invoices.index'))
+            ->assertSessionHas('warning', fn ($w) => str_contains($w, '1 invoice(s) voided')
+                && str_contains($w, 'INV-BULK-PAID')                       // names the invoice
+                && str_contains($w, 'reconcile or refund')                 // the correct action for paid
+                && ! str_contains($w, 'payment page may still be live')    // wrong action for paid
+                && ! str_contains($w, 'void these manually'));             // the old blanket copy
+
+        $this->assertSame(InvoiceStatus::Void, $invoice->fresh()->status);
+    }
+
     // ── MF8: a stale in-flight status pull must not erase a void-propagation error ──
 
     public function test_status_pull_does_not_clear_a_void_propagation_error(): void
@@ -668,6 +711,67 @@ class InvoiceStripeVoidPropagationTest extends TestCase
             ->assertJsonPath('status_label', 'Void');
     }
 
+    // ── R4 MF4: LIVE Posted→Void poll transition, in BOTH portal order flows ──
+
+    public function test_shop_poll_goes_terminal_when_a_posted_order_is_voided_mid_poll(): void
+    {
+        // The sequence the confirmation JS actually lives through: the order is
+        // Posted and awaiting its payment link (the poll keeps running), then
+        // staff void it between polls. The next poll must stop the loop —
+        // payability false, truthful label, and never a pay URL.
+        Setting::setValue('portal_enabled', '1');
+        $client = Client::factory()->create();
+        $person = $this->portalPerson($client);
+        $invoice = $this->makeInvoice([
+            'client_id' => $client->id,
+            'status' => InvoiceStatus::Posted,
+        ]);
+
+        // First poll while Posted: still payable — the JS keeps polling.
+        $this->actingAs($person, 'portal')
+            ->getJson(route('portal.shop.payment-status', $invoice))
+            ->assertOk()
+            ->assertJsonPath('client_payable', true)
+            ->assertJsonPath('payment_url', null);
+
+        // Staff void lands between polls.
+        app(InvoiceVoidService::class)->void($invoice->fresh());
+
+        // Next poll: terminal.
+        $this->actingAs($person, 'portal')
+            ->getJson(route('portal.shop.payment-status', $invoice))
+            ->assertOk()
+            ->assertJsonPath('client_payable', false)
+            ->assertJsonPath('status_label', 'Void')
+            ->assertJsonPath('payment_url', null);
+    }
+
+    public function test_prepaid_poll_goes_terminal_when_a_posted_order_is_voided_mid_poll(): void
+    {
+        Setting::setValue('portal_enabled', '1');
+        $client = Client::factory()->create();
+        $person = $this->portalPerson($client);
+        $invoice = $this->makeInvoice([
+            'client_id' => $client->id,
+            'status' => InvoiceStatus::Posted,
+        ]);
+
+        $this->actingAs($person, 'portal')
+            ->getJson(route('portal.prepaid.payment-status', $invoice))
+            ->assertOk()
+            ->assertJsonPath('client_payable', true)
+            ->assertJsonPath('payment_url', null);
+
+        app(InvoiceVoidService::class)->void($invoice->fresh());
+
+        $this->actingAs($person, 'portal')
+            ->getJson(route('portal.prepaid.payment-status', $invoice))
+            ->assertOk()
+            ->assertJsonPath('client_payable', false)
+            ->assertJsonPath('status_label', 'Void')
+            ->assertJsonPath('payment_url', null);
+    }
+
     // ── R4/B: push/send fresh-locked-status gate (prove the push+send paths) ──
 
     public function test_push_refuses_for_an_already_void_invoice_no_stripe_call(): void
@@ -693,10 +797,15 @@ class InvoiceStripeVoidPropagationTest extends TestCase
 
     public function test_push_compensates_and_does_not_email_when_void_commits_mid_flight(): void
     {
-        // The dangerous race: a push started before Void completes after it. The
-        // just-created Stripe invoice must be voided upstream (compensation), the
-        // client must NOT be emailed, the URL must not be stored, and it must
-        // surface as a loud failure.
+        // The dangerous race: a push started before Void completes after it — here
+        // the void commits before the LOCKED result boundary (recordPushResult),
+        // so the boundary sees Void. The just-created Stripe invoice must be
+        // voided upstream (compensation), the client must NOT be emailed, and no
+        // payable URL may be stored. With compensation CONFIRMED (matching id +
+        // status=void) the upstream is exactly as converged as a normal void
+        // propagation, so NO durable divergence error may persist (R4 MF3): the
+        // aborted push surfaces ONCE via the thrown message (the flash), while
+        // the invoice page truthfully shows convergence.
         $client = Client::factory()->create(['stripe_customer_id' => 'cus_x']);
         $invoice = $this->makeInvoice(['client_id' => $client->id, 'status' => InvoiceStatus::Posted]);
 
@@ -705,9 +814,10 @@ class InvoiceStripeVoidPropagationTest extends TestCase
         $stripe->shouldReceive('createInvoiceItem')->andReturn([]);
         $stripe->shouldReceive('finalizeInvoice')->once()->with('in_mid')
             ->andReturnUsing(function () use ($invoice) {
-                // A concurrent staff Void commits mid-round-trip — a raw update,
-                // not on the in-flight model, exactly like another process.
-                Invoice::where('id', $invoice->id)->update(['status' => InvoiceStatus::Void->value]);
+                // A concurrent staff Void commits mid-round-trip — the REAL void
+                // service on a fresh DB copy, exactly like another process
+                // (zeroes money, snapshots pre-void amounts).
+                app(InvoiceVoidService::class)->void(Invoice::findOrFail($invoice->id));
 
                 return ['id' => 'in_mid', 'status' => 'open', 'hosted_invoice_url' => 'https://invoice.stripe.com/i/pay_mid', 'tax' => 4000, 'total' => 54000];
             });
@@ -721,14 +831,67 @@ class InvoiceStripeVoidPropagationTest extends TestCase
             (new StripeSyncService($stripe))->pushInvoiceToStripe($invoice, true);
             $this->fail('Expected a loud failure after mid-flight void compensation.');
         } catch (StripeClientException $e) {
-            // expected
+            $this->assertStringContainsString('voided upstream to compensate', $e->getMessage());
+            $this->assertStringContainsString('NOT emailed', $e->getMessage());
         }
 
         $fresh = $invoice->fresh();
         $this->assertSame(InvoiceStatus::Void, $fresh->status);
+        $this->assertSame('0.00', $fresh->total);                 // stays zeroed — no re-inflation
         $this->assertNull($fresh->stripe_invoice_url);            // no live pay page stored
         $this->assertSame('in_mid', $fresh->stripe_invoice_id);   // kept for reconciliation
-        $this->assertNotNull($fresh->stripe_sync_error);          // loud
+        $this->assertNull($fresh->stripe_sync_error);             // MF3: confirmed compensation is NOT a divergence
+        $this->assertNotNull($fresh->stripe_synced_at);
+
+        // Operator view: converged, not a permanent false alarm (R4 MF3).
+        $this->actingAs(User::factory()->create())
+            ->get(route('invoices.show', $invoice))
+            ->assertSee('Stripe shows this invoice as voided')
+            ->assertDontSee('may not reflect this void yet');
+    }
+
+    public function test_push_compensation_unconfirmed_records_a_loud_durable_error(): void
+    {
+        // Same race, but the compensating void CANNOT be confirmed (the response
+        // identifies a different invoice). The page may still be live — that IS
+        // a divergence, so the durable error must persist and the operator view
+        // must keep alarming (MF3 reserves silence for CONFIRMED compensation).
+        $client = Client::factory()->create(['stripe_customer_id' => 'cus_x']);
+        $invoice = $this->makeInvoice(['client_id' => $client->id, 'status' => InvoiceStatus::Posted]);
+
+        $stripe = \Mockery::mock(StripeClient::class);
+        $stripe->shouldReceive('createInvoice')->once()->andReturn(['id' => 'in_unc']);
+        $stripe->shouldReceive('createInvoiceItem')->andReturn([]);
+        $stripe->shouldReceive('finalizeInvoice')->once()->with('in_unc')
+            ->andReturnUsing(function () use ($invoice) {
+                app(InvoiceVoidService::class)->void(Invoice::findOrFail($invoice->id));
+
+                return ['id' => 'in_unc', 'status' => 'open', 'hosted_invoice_url' => 'https://invoice.stripe.com/i/pay_unc', 'tax' => 4000, 'total' => 54000];
+            });
+        $stripe->shouldReceive('voidInvoice')->once()->with('in_unc')
+            ->andReturn(['id' => 'in_someone_else', 'status' => 'void']); // NOT proof for in_unc
+        $stripe->shouldNotReceive('sendInvoice');
+
+        try {
+            (new StripeSyncService($stripe))->pushInvoiceToStripe($invoice, true);
+            $this->fail('Expected a loud failure after unconfirmed compensation.');
+        } catch (StripeClientException $e) {
+            $this->assertStringContainsString('could NOT be confirmed voided', $e->getMessage());
+        }
+
+        $fresh = $invoice->fresh();
+        $this->assertSame(InvoiceStatus::Void, $fresh->status);
+        $this->assertNull($fresh->stripe_invoice_url);
+        $this->assertSame('in_unc', $fresh->stripe_invoice_id);
+        $this->assertNotNull($fresh->stripe_sync_error);          // durable divergence
+        $this->assertStringContainsString('could NOT be confirmed voided', $fresh->stripe_sync_error);
+
+        // Operator view: the divergence alarm must persist.
+        $this->actingAs(User::factory()->create())
+            ->get(route('invoices.show', $invoice))
+            ->assertSee('may not reflect this void yet')
+            ->assertSee('could NOT be confirmed voided')
+            ->assertDontSee('Stripe shows this invoice as voided');
     }
 
     public function test_record_push_result_nulls_url_and_keeps_error_on_void(): void
@@ -754,6 +917,202 @@ class InvoiceStripeVoidPropagationTest extends TestCase
         $this->assertNull($fresh->stripe_invoice_url);                     // URL NOT stored
         $this->assertSame('divergence: already paid', $fresh->stripe_sync_error); // error preserved
         $this->assertSame('540.00', $fresh->total);                        // money not re-inflated
+    }
+
+    // ── R5: the locked boundary makes push/send LINEARIZABLE with void ──
+
+    public function test_a_void_landing_after_the_push_boundary_sees_the_recorded_id_and_kills_the_upstream_page(): void
+    {
+        // The residual window: void commits AFTER the locked result boundary,
+        // while the email is in flight. Linearizably the push simply happened
+        // first — and the window is SAFE because the boundary persisted the
+        // Stripe id BEFORE any email could go out, so the void (whose own
+        // locked read sees that id) propagates upstream and kills the page
+        // itself. Nothing is silent: no lost id, no stale clobber of the
+        // committed Void, no surviving payable URL.
+        Setting::setEncrypted('stripe_secret_key', 'sk_test_x');
+        $client = Client::factory()->create(['stripe_customer_id' => 'cus_x']);
+        $invoice = $this->makeInvoice(['client_id' => $client->id, 'status' => InvoiceStatus::Posted]);
+        $staff = User::factory()->create();
+
+        $stripe = \Mockery::mock(StripeClient::class);
+        // The staff void route resolves StripeSyncService from the container —
+        // bind the same mock so its propagation is observable here.
+        $this->app->instance(StripeClient::class, $stripe);
+
+        $stripe->shouldReceive('createInvoice')->once()->andReturn(['id' => 'in_after']);
+        $stripe->shouldReceive('createInvoiceItem')->andReturn([]);
+        $stripe->shouldReceive('finalizeInvoice')->once()->with('in_after')
+            ->andReturn(['id' => 'in_after', 'status' => 'open', 'hosted_invoice_url' => 'https://invoice.stripe.com/i/pay_after', 'tax' => 4000, 'total' => 54000]);
+        $stripe->shouldReceive('sendInvoice')->once()->with('in_after')
+            ->andReturnUsing(function () use ($invoice, $staff) {
+                // The load-bearing ordering: by the time any email can be in
+                // flight, the id is already durable.
+                $this->assertSame('in_after', $invoice->fresh()->stripe_invoice_id);
+
+                // Staff void lands NOW — the full route: local void + upstream
+                // propagation (it must see the freshly-recorded id).
+                $this->actingAs($staff)->post(route('invoices.void', $invoice))->assertRedirect();
+
+                return [];
+            });
+        // The void's OWN propagation kills the just-created upstream invoice.
+        $stripe->shouldReceive('getInvoice')->once()->with('in_after')
+            ->andReturn(['id' => 'in_after', 'status' => 'open']);
+        $stripe->shouldReceive('voidInvoice')->once()->with('in_after')
+            ->andReturn(['id' => 'in_after', 'status' => 'void']);
+
+        // The push itself succeeds — at its boundary the invoice was live.
+        (new StripeSyncService($stripe))->pushInvoiceToStripe($invoice, true);
+
+        $fresh = $invoice->fresh();
+        $this->assertSame(InvoiceStatus::Void, $fresh->status);   // void not clobbered post-boundary
+        $this->assertSame('0.00', $fresh->total);                 // stays zeroed
+        $this->assertNull($fresh->stripe_invoice_url);            // upstream page killed by the void
+        $this->assertSame('in_after', $fresh->stripe_invoice_id);
+        $this->assertNull($fresh->stripe_sync_error);             // confirmed propagation — converged
+    }
+
+    public function test_push_email_failure_after_boundary_records_pushed_but_not_emailed(): void
+    {
+        // The push result is committed BEFORE the email attempt, so an email
+        // failure must not orphan the created Stripe invoice (the pre-R5 flow
+        // recorded nothing on a send failure) and must say exactly what
+        // happened: pushed, not emailed.
+        $client = Client::factory()->create(['stripe_customer_id' => 'cus_x']);
+        $invoice = $this->makeInvoice(['client_id' => $client->id, 'status' => InvoiceStatus::Posted]);
+
+        $stripe = \Mockery::mock(StripeClient::class);
+        $stripe->shouldReceive('createInvoice')->once()->andReturn(['id' => 'in_mailfail']);
+        $stripe->shouldReceive('createInvoiceItem')->andReturn([]);
+        $stripe->shouldReceive('finalizeInvoice')->once()->with('in_mailfail')
+            ->andReturn(['id' => 'in_mailfail', 'status' => 'open', 'hosted_invoice_url' => 'https://invoice.stripe.com/i/pay_mailfail', 'tax' => 4000, 'total' => 54000]);
+        $stripe->shouldReceive('sendInvoice')->once()->with('in_mailfail')
+            ->andThrow(new StripeClientException('smtp exploded'));
+
+        try {
+            (new StripeSyncService($stripe))->pushInvoiceToStripe($invoice, true);
+            $this->fail('Expected the email failure to surface.');
+        } catch (StripeClientException $e) {
+            $this->assertStringContainsString('pushed to Stripe but the email could not be sent', $e->getMessage());
+        }
+
+        $fresh = $invoice->fresh();
+        $this->assertSame(InvoiceStatus::Synced, $fresh->status);                    // push committed
+        $this->assertSame('in_mailfail', $fresh->stripe_invoice_id);                 // not orphaned
+        $this->assertSame('https://invoice.stripe.com/i/pay_mailfail', $fresh->stripe_invoice_url); // live invoice, URL legitimate
+        $this->assertStringContainsString('email could not be sent', $fresh->stripe_sync_error);
+    }
+
+    public function test_send_authorization_reads_the_db_under_lock_not_the_callers_model(): void
+    {
+        // The R4 defect class: an unlocked check-then-act. The send authorization
+        // now happens at a LOCKED read inside the service, so a caller holding a
+        // stale in-memory model (still Synced) whose ROW is already Void must be
+        // refused with no vendor call — and the refusal must NOT clobber the
+        // per-cause divergence error a void propagation recorded.
+        $invoice = $this->makeInvoice([
+            'stripe_invoice_id' => 'in_stale',
+            'stripe_invoice_url' => 'https://invoice.stripe.com/i/pay_stale',
+            'status' => InvoiceStatus::Synced,
+        ]);
+        $stale = Invoice::findOrFail($invoice->id); // in-memory: Synced
+        Invoice::where('id', $invoice->id)->update([ // another process voids + records divergence
+            'status' => InvoiceStatus::Void->value,
+            'stripe_sync_error' => 'already paid — reconcile or refund',
+        ]);
+
+        $stripe = \Mockery::mock(StripeClient::class);
+        $stripe->shouldNotReceive('sendInvoice');
+
+        try {
+            (new StripeSyncService($stripe))->sendInvoiceEmail($stale);
+            $this->fail('Expected a refusal for a voided row despite the stale model.');
+        } catch (StripeClientException $e) {
+            $this->assertStringContainsString('it was not emailed', $e->getMessage());
+        }
+
+        $this->assertSame('already paid — reconcile or refund', $invoice->fresh()->stripe_sync_error);
+    }
+
+    public function test_a_void_landing_after_the_send_authorization_reconciles_via_its_own_propagation(): void
+    {
+        // Send-path residual window: authorization (locked) sees a live invoice,
+        // then a void lands while the vendor send is in flight. The id has been
+        // durable since the original push, so the void's propagation kills the
+        // upstream page — the emailed link goes dead, nothing is silent.
+        Setting::setEncrypted('stripe_secret_key', 'sk_test_x');
+        $invoice = $this->makeInvoice([
+            'stripe_invoice_id' => 'in_sendwin',
+            'stripe_invoice_url' => 'https://invoice.stripe.com/i/pay_sendwin',
+            'status' => InvoiceStatus::Synced,
+        ]);
+        $staff = User::factory()->create();
+
+        $stripe = \Mockery::mock(StripeClient::class);
+        $this->app->instance(StripeClient::class, $stripe);
+
+        $stripe->shouldReceive('sendInvoice')->once()->with('in_sendwin')
+            ->andReturnUsing(function () use ($invoice, $staff) {
+                $this->actingAs($staff)->post(route('invoices.void', $invoice))->assertRedirect();
+
+                return [];
+            });
+        $stripe->shouldReceive('getInvoice')->once()->with('in_sendwin')
+            ->andReturn(['id' => 'in_sendwin', 'status' => 'open']);
+        $stripe->shouldReceive('voidInvoice')->once()->with('in_sendwin')
+            ->andReturn(['id' => 'in_sendwin', 'status' => 'void']);
+
+        // The send succeeds — at its locked boundary the invoice was live.
+        (new StripeSyncService($stripe))->sendInvoiceEmail($invoice);
+
+        $fresh = $invoice->fresh();
+        $this->assertSame(InvoiceStatus::Void, $fresh->status);
+        $this->assertNull($fresh->stripe_invoice_url);   // page killed by the void's propagation
+        $this->assertNull($fresh->stripe_sync_error);    // confirmed — converged
+    }
+
+    public function test_send_route_delegates_to_the_service_send_boundary(): void
+    {
+        // The controller must not carry its own (unlockable) status check — the
+        // service's locked boundary is the single authorization seam.
+        $invoice = $this->makeInvoice([
+            'stripe_invoice_id' => 'in_del',
+            'status' => InvoiceStatus::Synced,
+        ]);
+
+        $this->mock(StripeSyncService::class, function ($m) {
+            $m->shouldReceive('sendInvoiceEmail')->once();
+        });
+
+        $this->actingAs(User::factory()->create())
+            ->post(route('invoices.send-stripe', $invoice))
+            ->assertRedirect(route('invoices.show', $invoice))
+            ->assertSessionHas('success');
+    }
+
+    public function test_void_service_hydrates_current_backend_ids_from_the_locked_row(): void
+    {
+        // "InvoiceVoidService must participate in the same invoice-first
+        // lock/order and return/use current backend identifiers" (R4 security).
+        // A push boundary that committed while the caller's model was stale must
+        // be visible to the void flow — otherwise the caller would conclude
+        // "not Stripe-linked", skip upstream propagation entirely, and leave the
+        // freshly-minted hosted page live.
+        $invoice = $this->makeInvoice(['status' => InvoiceStatus::Posted]); // no Stripe id yet
+        $stale = Invoice::findOrFail($invoice->id);
+        Invoice::where('id', $invoice->id)->update([ // a push boundary commits meanwhile
+            'stripe_invoice_id' => 'in_hydrate',
+            'stripe_invoice_url' => 'https://invoice.stripe.com/i/pay_hydrate',
+            'status' => InvoiceStatus::Synced->value,
+        ]);
+
+        app(InvoiceVoidService::class)->void($stale);
+
+        // The caller's model now carries the CURRENT identifiers for propagation.
+        $this->assertSame('in_hydrate', $stale->stripe_invoice_id);
+        $this->assertSame(InvoiceStatus::Void, $stale->status);
+        $this->assertSame('0.00', $stale->fresh()->total);
     }
 
     public function test_send_from_stripe_route_refuses_for_a_void_invoice(): void
