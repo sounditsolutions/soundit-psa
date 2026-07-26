@@ -68,4 +68,19 @@ class ServosityClientSanitizationTest extends TestCase
             $this->assertStringNotContainsString('SECRET-RESPONSE-BODY', $e->getMessage(), 'response bodies must never cross into exception messages or logs');
         }
     }
+
+    public function test_invalid_json_drift_labels_redact_numeric_vendor_ids(): void
+    {
+        // psa-z30dv.14 (R4 LOW): the shape-drift log line carries this
+        // message verbatim, and numeric path segments are vendor identifiers
+        // (company / DR account ids) — the label must name the seam, never
+        // the identifier.
+        try {
+            ServosityClient::decodeJson('{broken', 'backup-jobs/987654/');
+            $this->fail('expected ServosityShapeDriftException');
+        } catch (ServosityShapeDriftException $e) {
+            $this->assertStringContainsString('backup-jobs/{id}/', $e->getMessage(), 'the seam stays nameable');
+            $this->assertStringNotContainsString('987654', $e->getMessage(), 'the vendor id must be redacted');
+        }
+    }
 }

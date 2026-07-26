@@ -8,6 +8,16 @@ use Illuminate\Support\Facades\Log;
 
 class ServosityClient
 {
+    /**
+     * Bound on the getCompanies() page walk. Generous (100 pages ×
+     * page-size), but a walk that exceeds it THROWS instead of returning a
+     * truncated list: getCompanies() feeds deactivateMissingClients(), and a
+     * silently-truncated list would zero the licenses of every client on the
+     * unseen pages. It also converts a looping/self-referential `next` URL
+     * from an infinite CLI hang into a loud abort.
+     */
+    private const MAX_COMPANY_PAGES = 100;
+
     private Client $http;
 
     private ?string $mfaToken = null;
@@ -144,33 +154,57 @@ class ServosityClient
     /**
      * Get all companies with account counts (auto-paginates).
      *
-     * Uses the summary-ng endpoint which includes account_counts and issue_counts.
-     * Django REST Framework pagination: follow `next` URL until null.
+     * Uses the summary-ng endpoint (account_counts + issue_counts). This
+     * list feeds the license sync — quantities, deactivation decisions and
+     * synced_at stamps — and the Settings mapping surfaces, so every page is
+     * proven against the documented producer shape BEFORE any caller can act
+     * on it (psa-z30dv.15; seams 4–5 in ServosityShapes): identity-preserving
+     * decode, DRF envelope, strict CompanySummaryNg rows, and a type-proven
+     * `next` URL. Any violation THROWS (ServosityShapeDriftException) so the
+     * caller aborts — it never receives a collapsed or partial list it would
+     * read as "these clients are gone". All-or-nothing: the throw happens
+     * before this method returns, so a caller either gets the fully-proven
+     * list or no list.
+     *
+     * Rows come back in the legacy assoc-array view for the existing
+     * consumers — safe only because container identity was proven first: a
+     * `results: {}` or `account_counts: []` has already thrown by the time
+     * the flattening happens.
+     *
+     * Django REST Framework pagination: follow `next` (a full URL) until
+     * null, bounded by MAX_COMPANY_PAGES (exceeding it throws — see the
+     * constant's note).
      */
     public function getCompanies(): array
     {
         $allCompanies = [];
-        $url = 'companies/summary-ng/';
+        $endpoint = 'companies/summary-ng/';
         $params = [];
 
-        do {
-            $response = $this->request('GET', $url, ['query' => $params]);
-
-            $companies = $response['results'] ?? [];
-            $allCompanies = array_merge($allCompanies, $companies);
-
-            // Django REST Framework pagination: `next` is a full URL or null
-            $nextUrl = $response['next'] ?? null;
-
-            if ($nextUrl) {
-                // Extract query params from the full next URL and use them
-                $parsed = parse_url($nextUrl);
-                parse_str($parsed['query'] ?? '', $params);
-                // Keep using the same relative endpoint
+        for ($page = 1; $page <= self::MAX_COMPANY_PAGES; $page++) {
+            $response = $this->getJson($endpoint, $params);
+            ServosityShapes::assertDrfEnvelope($response, $endpoint);
+            foreach ($response->results as $row) {
+                ServosityShapes::assertCompanySummaryRow($row);
+                // Proven — the identity-collapsing assoc view is now safe.
+                $allCompanies[] = json_decode(json_encode($row), true);
             }
-        } while ($nextUrl);
 
-        return $allCompanies;
+            // Documented: `next` is a URI string or null. Anything else must
+            // not be read as "last page" — stopping early truncates the list.
+            $nextUrl = $response->next ?? null;
+            if ($nextUrl === null) {
+                return $allCompanies;
+            }
+            if (! is_string($nextUrl) || $nextUrl === '') {
+                throw new ServosityShapeDriftException("Servosity {$endpoint} response carried a next URL that is neither the documented URI string nor null — refusing to treat it as the last page.");
+            }
+            // Keep the same relative endpoint; adopt the next URL's query
+            // (the page cursor).
+            parse_str(parse_url($nextUrl, PHP_URL_QUERY) ?: '', $params);
+        }
+
+        throw new ServosityClientException('Servosity companies/summary-ng/ pagination exceeded '.self::MAX_COMPANY_PAGES.' pages; aborting rather than acting on a possibly-incomplete company list.');
     }
 
     /**
@@ -249,24 +283,6 @@ class ServosityClient
     }
 
     /**
-     * Get the job-run records for one DR backup account.
-     *
-     * Endpoint per the official OpenAPI (retrieved 2026-07-26,
-     * https://api.servosity.com/docs/?format=openapi): GET
-     * /backup-jobs/{backup_id}/ (operationId api_v1_backup-jobs_list). Its 200
-     * response declares NO schema, so callers must treat the shape as
-     * unproven: recognise the API's standard DRF list envelope at most, treat
-     * anything read from it as an UNVERIFIED observation, and never project
-     * fields out of the rows (psa-z30dv vendor-shape rule). Returns the
-     * identity-preserving decode (see getJson()) so `{}`/`[]` drift is
-     * detectable.
-     */
-    public function getBackupJobs(int $backupId): mixed
-    {
-        return $this->getJson("backup-jobs/{$backupId}/");
-    }
-
-    /**
      * Internal request method: the legacy assoc-array view. JSON objects and
      * arrays both become PHP arrays here — fine for the write/sync callers
      * that consume known-present keys, but validating reads must use
@@ -336,12 +352,15 @@ class ServosityClient
      * but with something no documented shape covers. Thrown as
      * ServosityShapeDriftException so the read surface reports schema_drift,
      * while legacy ServosityClientException catches still contain it (it is a
-     * subclass). Message carries our endpoint string only — never body text.
+     * subclass). Message carries our endpoint string only — never body text —
+     * and numeric path segments are redacted: they are vendor identifiers
+     * (company / DR account ids), and this message lands verbatim in drift
+     * logs, which must name the seam, not the identifier (psa-z30dv.14).
      */
     private static function invalidJson(string $endpoint, \JsonException $e): ServosityShapeDriftException
     {
         return new ServosityShapeDriftException(
-            "Servosity {$endpoint} response was not valid JSON.", 0, $e
+            'Servosity '.preg_replace('/\d+/', '{id}', $endpoint).' response was not valid JSON.', 0, $e
         );
     }
 
