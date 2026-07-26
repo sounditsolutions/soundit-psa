@@ -253,16 +253,35 @@ class BackupReadToolsMcpTest extends TestCase
             'servosity_dr_backup_id' => 501,
         ]);
 
-        // Envelopes per the official OpenAPI (count + results REQUIRED).
-        $this->mock(ServosityClient::class)
-            ->shouldReceive('get')
+        // Envelopes per the official OpenAPI (count + results REQUIRED); the
+        // DR row carries the full documented DRBackup shape (company,
+        // agent_session, shadowprotect_keys, device_name, product_type,
+        // encryption_key are REQUIRED). Job-run records are an undocumented
+        // shape — the row keys here must never be projected.
+        $servosity = $this->mock(ServosityClient::class);
+        $servosity->shouldReceive('get')
             ->andReturnUsing(fn (string $endpoint) => str_starts_with($endpoint, 'companies/summary-ng')
                 ? ['count' => 1, 'next' => null, 'previous' => null, 'results' => [
                     ['id' => 42, 'name' => 'Company 42', 'account_counts' => ['DRS' => 1], 'issue_counts' => ['Backup' => 0]],
                 ]]
                 : ['count' => 1, 'next' => null, 'previous' => null, 'results' => [
-                    ['id' => 501, 'device_name' => 'ACME-SRV-01', 'agent_session_id' => 'sess-1', 'state' => 'ACTIVE', 'product_type' => 'DR_SERVER'],
+                    [
+                        'id' => 501,
+                        'device_name' => 'ACME-SRV-01',
+                        'agent_session_id' => 'sess-1',
+                        'state' => 'ACTIVE',
+                        'product_type' => 'DR_SERVER',
+                        'company' => 'https://api.servosity.example/api/v1/companies/42/',
+                        'agent_session' => 'https://api.servosity.example/api/v1/agent-sessions/sess-1/',
+                        'shadowprotect_keys' => [],
+                        'encryption_key' => 'fake-fixture-encryption-key',
+                    ],
                 ]]);
+        $servosity->shouldReceive('getBackupJobs')->with(501)
+            ->andReturn(['count' => 2, 'next' => null, 'previous' => null, 'results' => [
+                ['undocumented_key' => 'never-projected-1'],
+                ['undocumented_key' => 'never-projected-2'],
+            ]]);
 
         $response = $this->callTool($this->token(['servosity_get_backup_posture']), 'servosity_get_backup_posture', [
             'client_id' => $client->id,
@@ -276,9 +295,17 @@ class BackupReadToolsMcpTest extends TestCase
         $this->assertSame('ok', $result['live']['status']);
         $this->assertSame(['DRS' => 1], $result['live']['account_counts']);
         $this->assertSame('verified_live', $result['devices'][0]['upstream_check'], 'the live reconciliation must survive the transport');
-        // The honesty contract delivered end-to-end: job history unavailable,
+        // The honesty contract delivered end-to-end: live job-run RECORD
+        // counts with outcomes still UNKNOWN (undocumented record shape),
         // canonical freshness trio, and the unverifiable provisioning plane.
-        $this->assertFalse($result['job_run_history']['available']);
+        $this->assertSame('checked', $result['job_run_history']['status']);
+        $this->assertSame('records_observed', $result['job_run_history']['accounts'][0]['status']);
+        $this->assertSame(2, $result['job_run_history']['accounts'][0]['runs_on_record']);
+        $this->assertStringContainsString('UNKNOWN', $result['job_run_history']['note']);
+        $payload = json_encode($result);
+        $this->assertStringNotContainsString('never-projected', $payload, 'undocumented record contents must not cross the MCP boundary');
+        $this->assertStringNotContainsString('fake-fixture-encryption-key', $payload, 'credential-shaped DR fields must not cross the MCP boundary');
+        $this->assertStringNotContainsString('dr_backup_id', $payload, 'vendor account ids are internal plumbing only');
         $this->assertArrayHasKey('data_as_of', $result);
         $this->assertArrayHasKey('data_stale', $result);
         $this->assertArrayHasKey('freshness_note', $result);

@@ -20,19 +20,24 @@ use Illuminate\Support\Facades\Log;
  * and what Servosity reports live right now (account counts, issue counts, DR
  * backup accounts — reconciled back to each PSA device via upstream_check).
  *
- * WHAT IT DELIBERATELY DOES NOT CLAIM: job-level run history. The vendor's
- * official API DOES document job endpoints — GET backup-jobs/{backup_id}/,
- * backup-job-status/{backup_id}/{backup_date}/, dr-backups/{id}/latest-success/
- * and dr-backups/{id}/failures/ (official OpenAPI at
- * https://api.servosity.com/docs/?format=openapi, retrieved 2026-07-25) — but
- * their RESPONSE shapes cannot be trusted from the spec alone: the two
- * backup-job endpoints declare no response schema at all, and the custom-action
- * schemas contradict their own summaries (latest-success declares the DRBackup
- * ViewSet default while its summary says it returns a date). Per CLAUDE.md's
- * vendor-shape rules we do not project fields from a guessed shape; those reads
- * wait on a captured authenticated payload (follow-up bead on psa-z30dv). Until
- * then the payload's job_run_history block says so, rather than letting an
- * absence of failures read as verified-good (the psa-z30dv acceptance line).
+ * JOB-RUN HISTORY — READ LIVE, PROJECTED ONLY AS FAR AS THE SPEC PROVES
+ * (psa-z30dv.5): job_run_history queries GET backup-jobs/{backup_id}/ live for
+ * each DR backup account in the live list (official OpenAPI at
+ * https://api.servosity.com/docs/?format=openapi, retrieved 2026-07-26). That
+ * endpoint's 200 response declares NO schema, so the read recognises at most
+ * the API's standard DRF list envelope (count + results — the documented
+ * convention on every typed list in the same spec) and reports HOW MANY
+ * job-run records exist per account; record CONTENTS (outcome, timing) are
+ * NEVER projected — no documented shape exists to read them against, so a
+ * guessed field name is exactly the psa-7lgo defect. Run outcomes therefore
+ * stay UNKNOWN until a captured authenticated payload proves the record shape
+ * (follow-up bead psa-bh1i4). The remaining job endpoints stay unread for
+ * concrete, non-premise reasons: backup-job-status/{backup_id}/{backup_date}/
+ * needs a backup_date that only a job-run record's contents could supply;
+ * dr-backups/{id}/latest-success/ declares the DRBackup ViewSet default while
+ * its summary says it returns a date; dr-backups/{id}/failures/ declares a
+ * single SPXBackupFailure object for a plural list action. Contradictory
+ * declarations are not a shape.
  *
  * VENDOR SHAPE — from the official OpenAPI spec (the producer for a
  * closed-source vendor), cross-checked against the running production
@@ -83,6 +88,19 @@ class ServosityReadOnlyToolset
     private const LIVE_PAGE_SIZE = 100;
 
     /**
+     * Job-run record lookups are one vendor call per DR backup account; this
+     * caps the fan-out of a single tool execution. The cap is reported
+     * (accounts_truncated), never silent.
+     */
+    private const MAX_JOB_ACCOUNT_QUERIES = 25;
+
+    /**
+     * Consecutive job-lookup failures before the remaining accounts are marked
+     * not_queried instead of hammered (mirrors the Comet read circuit breaker).
+     */
+    private const JOB_QUERY_BREAKER_FAILURES = 2;
+
+    /**
      * Vendor count-map keys are vendor-controlled text crossing into an agent
      * context; a real product key ("DRS", "Mailboxes") is short and plain, so
      * anything else is treated as schema drift rather than passed through.
@@ -114,7 +132,7 @@ class ServosityReadOnlyToolset
         return [
             [
                 'name' => 'servosity_get_backup_posture',
-                'description' => "Get a PSA client's Servosity backup posture: per-device enabled/provisioning state reconciled against a LIVE query of Servosity's DR backup accounts (each device's upstream_check: verified_live / upstream_missing / unverified / not_provisioned), synced backup account counts by product (with freshness), and live account + open-issue counts. IMPORTANT: Servosity job-level run history (did the last backup run, did it succeed) is NOT available through this integration — the response's job_run_history block explains why. Never infer 'backups are healthy' from an absence of failures here; issue counts and upstream_check are the strongest signals available, and job-level state must be verified in the Servosity console. Every section carries its own freshness (data_as_of/data_stale or live_checked_at); any status of unavailable/schema_drift/company_not_found means UNKNOWN — not zero, not passing.",
+                'description' => "Get a PSA client's Servosity backup posture: per-device enabled/provisioning state reconciled against a LIVE query of Servosity's DR backup accounts (each device's upstream_check: verified_live / upstream_missing / unverified / not_provisioned), synced backup account counts by product (with freshness), live account + open-issue counts, and a live job_run_history block that reports HOW MANY job-run records Servosity holds per DR account (records_observed / no_runs_on_record / shape_unrecognized / unavailable / not_queried). IMPORTANT: run record COUNTS are the strongest job-level claim available — the vendor does not document the record shape, so run OUTCOMES (did the last backup succeed) are UNKNOWN here and must be verified in the Servosity console. Never infer 'backups are healthy' from an absence of failures in this answer. Every section carries its own freshness (data_as_of/data_stale or live_checked_at); any status of unavailable/schema_drift/shape_unrecognized/company_not_found means UNKNOWN — not zero, not passing.",
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -182,12 +200,14 @@ class ServosityReadOnlyToolset
         $result['enabled_device_count'] = $devices->count();
         $result['provisioned_count'] = $devices->whereNotNull('servosity_dr_backup_id')->count();
         $result['pending_provisioning_count'] = $devices->whereNull('servosity_dr_backup_id')->count();
+        // Vendor identifiers stay minimized (psa-z30dv.6): the raw DR backup
+        // account id is reconciliation plumbing, not something any documented
+        // agent workflow needs — it never crosses into the payload.
         $result['devices'] = $devices->take(self::MAX_DEVICE_ROWS)->map(fn (Asset $asset): array => [
             'asset_id' => $asset->id,
             'hostname' => $asset->hostname,
             'asset_name' => $asset->name,
             'asset_type' => $asset->asset_type,
-            'dr_backup_id' => $asset->servosity_dr_backup_id,
             // Enabled with no DR account yet = the agent never registered — a
             // "configured but not running" finding, not a detail.
             'provisioning_state' => $asset->servosity_dr_backup_id !== null ? 'provisioned' : 'pending_agent_registration',
@@ -234,14 +254,8 @@ class ServosityReadOnlyToolset
         $result['live'] = $live;
         $result['live_dr_backups'] = $drInfo['payload'];
 
-        // ── the structural honesty block (the acceptance line of psa-z30dv) ───
-        $result['job_run_history'] = [
-            'available' => false,
-            'note' => 'Servosity job-level run history (whether the last backup ran and whether it succeeded) is not available through this PSA integration yet. '
-                .'The vendor API does document job endpoints (backup-jobs/{backup_id}/, backup-job-status/{backup_id}/{backup_date}/, dr-backups/{id}/latest-success/ and /failures/), '
-                .'but their response shapes are not reliably documented in the official spec, so per this repo\'s vendor-shape rules they are not read until a captured real payload proves the shape. '
-                .'This answer covers configuration/provisioning posture and account/issue counts only. Do NOT infer "backups are healthy" from the absence of failures here — verify job-level state in the Servosity console.',
-        ];
+        // ── live job-run record counts (the honest maximum for this vendor) ───
+        $result['job_run_history'] = $this->jobRunHistory($drInfo);
 
         return $result;
     }
@@ -306,10 +320,11 @@ class ServosityReadOnlyToolset
      * Live DR backup accounts for this company, matched back to PSA assets by
      * hostname. Proves which per-device backup accounts EXIST upstream and
      * whether each is linked to an agent; the returned id set feeds each
-     * device's upstream_check.
+     * device's upstream_check and the ids drive the job-run record lookups.
+     * The raw account ids are internal plumbing only — never in the payload.
      *
      * @param  \Illuminate\Support\Collection<int, Asset>  $enabledDevices
-     * @return array{payload: array<string, mixed>, ids: ?array<int, true>, truncated: bool}
+     * @return array{payload: array<string, mixed>, ids: ?array<int, true>, accounts: array<int, array{device_name: ?string, matched_hostname: ?string}>, truncated: bool}
      */
     private function liveDrBackups(Client $client, \Illuminate\Support\Collection $enabledDevices): array
     {
@@ -317,6 +332,7 @@ class ServosityReadOnlyToolset
         $fetch = $this->cachedLiveFetch("servosity_reads:dr_backups:{$companyId}", function () use ($companyId): array {
             $response = $this->client()->get('dr-backups/', ['company' => $companyId, 'page_size' => self::LIVE_PAGE_SIZE]);
             $this->assertDrfEnvelope($response, 'dr-backups/');
+            $this->assertDrBackupRows($response['results']);
 
             return $response;
         });
@@ -325,18 +341,17 @@ class ServosityReadOnlyToolset
             return [
                 'payload' => $this->liveFailurePayload($fetch, 'DR backup accounts', 'per-device provisioning could not be verified upstream (every device\'s upstream_check reads unverified)'),
                 'ids' => null,
+                'accounts' => [],
                 'truncated' => false,
             ];
         }
 
         $response = $fetch['value'];
-        $validRows = array_values(array_filter($response['results'], 'is_array'));
+        $validRows = $response['results'];
 
         $ids = [];
         foreach ($validRows as $row) {
-            if (is_numeric($row['id'] ?? null)) {
-                $ids[(int) $row['id']] = true;
-            }
+            $ids[(int) $row['id']] = true;
         }
 
         // DRF pagination: a non-null `next` or a total count beyond this page
@@ -347,17 +362,25 @@ class ServosityReadOnlyToolset
             fn (Asset $asset): string => mb_strtolower((string) $asset->hostname),
         );
 
+        $accounts = [];
         $rows = collect($validRows)
             ->take(self::MAX_DR_BACKUP_ROWS)
-            ->map(function (array $row) use ($assetsByHostname): array {
-                $deviceName = is_scalar($row['device_name'] ?? null) ? (string) $row['device_name'] : '';
+            ->map(function (array $row) use ($assetsByHostname, &$accounts): array {
+                $deviceName = (string) $row['device_name'];
                 $matched = $deviceName !== '' ? $assetsByHostname->get(mb_strtolower($deviceName)) : null;
-                $productType = $row['product_type'] ?? null;
+                $productType = $row['product_type'];
+                $safeName = $this->textSanitizer->sanitizeNullable('Servosity device name', $deviceName, 200);
+
+                $accounts[(int) $row['id']] = [
+                    'device_name' => $safeName,
+                    'matched_hostname' => $matched?->hostname,
+                ];
 
                 return [
-                    'dr_backup_id' => is_numeric($row['id'] ?? null) ? (int) $row['id'] : null,
                     // Vendor free text at this trust boundary — travels fenced.
-                    'device_name' => $this->textSanitizer->sanitizeNullable('Servosity device name', $deviceName, 200),
+                    // The raw DR account id is deliberately absent (internal
+                    // reconciliation plumbing only, psa-z30dv.6).
+                    'device_name' => $safeName,
                     'agent_linked' => ! empty($row['agent_session_id']),
                     // Documented on the DRBackup list serializer (official spec);
                     // product_type is enum-checked, state has no documented
@@ -388,7 +411,7 @@ class ServosityReadOnlyToolset
             $payload['note'] = $baseNote;
         }
 
-        return ['payload' => $payload, 'ids' => $ids, 'truncated' => $listTruncated];
+        return ['payload' => $payload, 'ids' => $ids, 'accounts' => $accounts, 'truncated' => $listTruncated];
     }
 
     /**
@@ -413,12 +436,124 @@ class ServosityReadOnlyToolset
         return $drInfo['truncated'] ? 'unverified' : 'upstream_missing';
     }
 
+    /**
+     * Live job-run RECORD COUNTS per DR backup account, from GET
+     * backup-jobs/{backup_id}/ — the endpoint is documented in the official
+     * OpenAPI but its 200 response declares NO schema, so this read recognises
+     * at most the API's standard DRF list envelope and NEVER projects fields
+     * out of the records (see the class docblock). Per-account statuses:
+     * records_observed (envelope recognised, N records exist), no_runs_on_record
+     * (envelope recognised, zero records), shape_unrecognized (the response
+     * matched no recognisable form — says nothing), unavailable (request
+     * failed), not_queried (circuit breaker or account cap). Each lookup is
+     * briefly cached like every other live read.
+     *
+     * @param  array{payload: array<string, mixed>, ids: ?array<int, true>, accounts: array<int, array{device_name: ?string, matched_hostname: ?string}>, truncated: bool}  $drInfo
+     * @return array<string, mixed>
+     */
+    private function jobRunHistory(array $drInfo): array
+    {
+        $contract = 'Record counts prove how many job-run records Servosity holds per account; the vendor does not document the record shape, so record CONTENTS (outcome, timing) are never read and run outcomes remain UNKNOWN until a captured real payload proves the shape. Verify run outcomes in the Servosity console. Do NOT infer "backups are healthy" from anything in this block.';
+
+        if ($drInfo['ids'] === null) {
+            return [
+                'status' => 'not_checked',
+                'note' => 'Job-run records could not be checked: the live DR backup account list was unavailable or malformed, so there are no account ids to query. Job-level state is UNKNOWN. '.$contract,
+            ];
+        }
+
+        if ($drInfo['accounts'] === []) {
+            return [
+                'status' => 'no_accounts',
+                'note' => 'Servosity reports no DR backup accounts for this company, so there are no job-run records to look up. '.$contract,
+            ];
+        }
+
+        $rows = [];
+        $consecutiveFailures = 0;
+        $breakerOpen = false;
+        $oldestCheckedAt = null;
+        $queried = array_slice($drInfo['accounts'], 0, self::MAX_JOB_ACCOUNT_QUERIES, true);
+
+        foreach ($queried as $backupId => $account) {
+            $row = [
+                'device_name' => $account['device_name'],
+                'matched_hostname' => $account['matched_hostname'],
+            ];
+
+            if ($breakerOpen) {
+                $row['status'] = 'not_queried';
+                $row['note'] = 'Not queried: earlier job-record lookups failed consecutively, so the rest were skipped rather than hammering a struggling API. Job-run state for this account is UNKNOWN.';
+                $rows[] = $row;
+
+                continue;
+            }
+
+            $fetch = $this->cachedLiveFetch(
+                "servosity_reads:backup_jobs:{$backupId}",
+                function () use ($backupId): array {
+                    $response = $this->client()->getBackupJobs($backupId);
+                    // No documented shape exists for this endpoint; the API's
+                    // standard list envelope is the most that can be recognised.
+                    // Anything else — including the invalid-JSON-to-[] collapse
+                    // — is an unrecognisable answer, never zero records.
+                    $this->assertDrfEnvelope($response, 'backup-jobs/{backup_id}/');
+
+                    return ['records' => $response['count']];
+                },
+            );
+
+            if ($fetch['status'] === 'ok') {
+                $consecutiveFailures = 0;
+                $records = $fetch['value']['records'];
+                $row['status'] = $records === 0 ? 'no_runs_on_record' : 'records_observed';
+                $row['runs_on_record'] = $records;
+                if ($records === 0) {
+                    $row['note'] = 'Servosity holds zero job-run records for this account (recognised envelope, verified zero) — backups may never have run here.';
+                }
+            } else {
+                $consecutiveFailures++;
+                $row['status'] = $fetch['status'] === 'schema_drift' ? 'shape_unrecognized' : 'unavailable';
+                $row['note'] = $fetch['status'] === 'schema_drift'
+                    ? 'The backup-jobs endpoint answered in a form this integration does not recognise (it has no documented response shape). Job-run state for this account is UNKNOWN — not zero.'
+                    : 'The backup-jobs endpoint could not be queried (network or API error). Job-run state for this account is UNKNOWN — not zero.';
+            }
+
+            $checkedAt = $fetch['fetched_at'];
+            if ($oldestCheckedAt === null || $checkedAt < $oldestCheckedAt) {
+                $oldestCheckedAt = $checkedAt;
+            }
+
+            if ($consecutiveFailures >= self::JOB_QUERY_BREAKER_FAILURES) {
+                $breakerOpen = true;
+            }
+
+            $rows[] = $row;
+        }
+
+        $result = [
+            'status' => 'checked',
+            'live_checked_at' => $oldestCheckedAt,
+            'accounts' => $rows,
+            'accounts_truncated' => count($drInfo['accounts']) > self::MAX_JOB_ACCOUNT_QUERIES,
+            'note' => 'Live job-run record counts from the vendor backup-jobs endpoint. '.$contract,
+        ];
+
+        if ($result['accounts_truncated']) {
+            $result['note'] .= ' Only the first '.self::MAX_JOB_ACCOUNT_QUERIES.' accounts were queried this call.';
+        }
+
+        return $result;
+    }
+
     // ── live fetch plumbing (validation, caching, redaction) ───────────────────
 
     /**
-     * Walk the account-wide company summary pages with per-page envelope
-     * validation. Bounded at MAX_SUMMARY_PAGES; the bound is reported, never
-     * silent.
+     * Walk the account-wide company summary pages with per-page envelope AND
+     * row validation. Bounded at MAX_SUMMARY_PAGES; the bound is reported,
+     * never silent. A malformed row is drift for the whole read — filtering
+     * bad rows out would turn malformed evidence into apparent truth, and a
+     * dropped row containing OUR company would read as company_not_found.
      *
      * @return array{rows: array<int, array<string, mixed>>, list_truncated: bool}
      */
@@ -429,7 +564,13 @@ class ServosityReadOnlyToolset
             $response = $this->client()->get('companies/summary-ng/', ['page' => $page, 'page_size' => self::LIVE_PAGE_SIZE]);
             $this->assertDrfEnvelope($response, 'companies/summary-ng/');
 
-            $rows = array_merge($rows, array_values(array_filter($response['results'], 'is_array')));
+            foreach ($response['results'] as $row) {
+                if (! is_array($row) || ! is_int($row['id'] ?? null)) {
+                    throw new ServosityShapeDriftException('Servosity companies/summary-ng/ returned a row that is not an object with an integer id (documented CompanySummaryNg shape).');
+                }
+            }
+
+            $rows = array_merge($rows, array_values($response['results']));
 
             if (empty($response['next'])) {
                 return ['rows' => $rows, 'list_truncated' => false];
@@ -449,6 +590,44 @@ class ServosityReadOnlyToolset
     {
         if (! is_array($response) || ! is_int($response['count'] ?? null) || ! is_array($response['results'] ?? null)) {
             throw new ServosityShapeDriftException("Servosity {$endpoint} response did not match the documented envelope (count + results required).");
+        }
+    }
+
+    /**
+     * Every consumed DR row must match the documented DRBackup shape —
+     * definitions.DRBackup in the official OpenAPI REQUIRES company,
+     * agent_session, shadowprotect_keys, device_name, product_type and
+     * encryption_key, and list rows carry the read-only integer id we
+     * reconcile with. A row failing this is drift for the WHOLE read: a
+     * fragment like {"id": 501} must never mark a device verified_live on the
+     * id alone, and silently dropping it would be filtering malformed evidence
+     * into apparent truth (psa-z30dv.5). Presence/type checks only — the
+     * values of the credential-shaped fields are never read, logged or
+     * projected.
+     */
+    private function assertDrBackupRows(array $results): void
+    {
+        foreach ($results as $row) {
+            if (! is_array($row)) {
+                throw new ServosityShapeDriftException('Servosity dr-backups/ returned a row that is not an object (documented DRBackup shape).');
+            }
+            if (! is_int($row['id'] ?? null)) {
+                throw new ServosityShapeDriftException('Servosity dr-backups/ returned a row without an integer id (documented DRBackup shape).');
+            }
+            if (! is_string($row['device_name'] ?? null)) {
+                throw new ServosityShapeDriftException('Servosity dr-backups/ returned a row without a string device_name (REQUIRED in the documented DRBackup shape).');
+            }
+            if (! is_string($row['product_type'] ?? null)) {
+                throw new ServosityShapeDriftException('Servosity dr-backups/ returned a row without a string product_type (REQUIRED in the documented DRBackup shape).');
+            }
+            if (! is_string($row['company'] ?? null) && ! is_int($row['company'] ?? null)) {
+                throw new ServosityShapeDriftException('Servosity dr-backups/ returned a row without its REQUIRED company field (documented DRBackup shape).');
+            }
+            foreach (['agent_session', 'shadowprotect_keys', 'encryption_key'] as $requiredKey) {
+                if (! array_key_exists($requiredKey, $row)) {
+                    throw new ServosityShapeDriftException("Servosity dr-backups/ returned a row missing its REQUIRED {$requiredKey} field (documented DRBackup shape).");
+                }
+            }
         }
     }
 

@@ -61,8 +61,12 @@ class CometClient
         try {
             return $this->server->AdminGetJobsForUser($username);
         } catch (\Exception $e) {
-            Log::error("[Comet] getJobsForUser({$username}) failed: {$e->getMessage()}");
-            throw new CometClientException("Comet API error: {$e->getMessage()}", $e->getCode(), $e);
+            // Redacted (psa-z30dv.6): the username is a vendor account
+            // identifier and the exception message can embed the server URL —
+            // neither belongs in application logs or in the thrown message.
+            // The raw exception stays chained for a debugger.
+            Log::error('[Comet] getJobsForUser failed', ['exception' => $e::class, 'code' => $e->getCode()]);
+            throw new CometClientException("Comet API job lookup failed (code {$e->getCode()})", $e->getCode(), $e);
         }
     }
 

@@ -94,10 +94,7 @@ class ServosityClient
                 }
             }
 
-            Log::warning("[ServosityClient] {$method} {$endpoint} failed: {$e->getMessage()}");
-            throw new ServosityClientException(
-                "Servosity API error: {$e->getMessage()}", $e->getCode(), $e
-            );
+            throw $this->sanitizedFailure($method, $endpoint, $e);
         }
 
         // Cache signed MFA token from response for subsequent requests
@@ -233,6 +230,21 @@ class ServosityClient
     }
 
     /**
+     * Get the job-run records for one DR backup account.
+     *
+     * Endpoint per the official OpenAPI (retrieved 2026-07-26,
+     * https://api.servosity.com/docs/?format=openapi): GET
+     * /backup-jobs/{backup_id}/ (operationId api_v1_backup-jobs_list). Its 200
+     * response declares NO schema, so callers must treat the shape as
+     * unproven: recognise the API's standard DRF list envelope at most, and
+     * never project fields out of the rows (psa-z30dv vendor-shape rule).
+     */
+    public function getBackupJobs(int $backupId): array
+    {
+        return $this->get("backup-jobs/{$backupId}/");
+    }
+
+    /**
      * Internal request method.
      */
     private function request(string $method, string $endpoint, array $options = []): array
@@ -240,14 +252,34 @@ class ServosityClient
         try {
             $response = $this->http->request($method, $endpoint, $options);
         } catch (GuzzleException $e) {
-            Log::warning("[ServosityClient] {$method} {$endpoint} failed: {$e->getMessage()}");
-            throw new ServosityClientException(
-                "Servosity API error: {$e->getMessage()}", $e->getCode(), $e
-            );
+            throw $this->sanitizedFailure($method, $endpoint, $e);
         }
 
         $body = (string) $response->getBody();
 
         return json_decode($body, true) ?? [];
+    }
+
+    /**
+     * One sanitized seam for every failed vendor request (psa-z30dv.6): a
+     * Guzzle exception message embeds the full request URL and can quote the
+     * response body — configured hosts, tokens in query strings, customer
+     * text. Neither the log line nor the thrown exception's message may carry
+     * it; only bounded structural fields travel (our own relative endpoint
+     * string, exception class, HTTP/transport code). The raw exception stays
+     * chained as ->getPrevious() for a debugger, which does not hit logs.
+     */
+    private function sanitizedFailure(string $method, string $endpoint, GuzzleException $e): ServosityClientException
+    {
+        Log::warning('[ServosityClient] request failed', [
+            'method' => $method,
+            'endpoint' => $endpoint,
+            'exception' => $e::class,
+            'code' => $e->getCode(),
+        ]);
+
+        return new ServosityClientException(
+            "Servosity API request failed: {$method} {$endpoint} (code {$e->getCode()})", $e->getCode(), $e
+        );
     }
 }

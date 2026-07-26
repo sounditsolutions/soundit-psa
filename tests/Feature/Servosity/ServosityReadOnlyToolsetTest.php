@@ -16,14 +16,17 @@ use Tests\TestCase;
 /**
  * Servosity backup read tool (psa-z30dv). Live fixtures are derived from the
  * vendor's OFFICIAL OpenAPI spec (https://api.servosity.com/docs/?format=openapi
- * — the producer for a closed-source vendor), cross-checked against the fields
- * production code consumes: the DRF envelope REQUIRES count + results;
- * CompanySummaryNg REQUIRES account_counts + issue_counts as integer maps;
- * dr-backups rows are DRBackup (id, device_name required, agent_session_id,
- * state, product_type enum). The tool's defining property is HONESTY about
- * degraded evidence: malformed/missing shapes must scream schema_drift or
- * unavailable, and job-level run history must say it is unavailable — never
- * read as all-clear.
+ * — the producer for a closed-source vendor, retrieved 2026-07-26): the DRF
+ * envelope REQUIRES count + results; CompanySummaryNg REQUIRES name +
+ * account_counts + issue_counts (integer maps) with a read-only integer id;
+ * definitions.DRBackup REQUIRES company, agent_session, shadowprotect_keys,
+ * device_name, product_type and encryption_key, with a read-only integer id —
+ * drRow() carries that full documented shape. backup-jobs/{backup_id}/ is
+ * documented with NO response schema, so its fixtures are the API's standard
+ * list envelope wrapping rows whose keys the code must never read. The tool's
+ * defining property is HONESTY about degraded evidence: malformed/missing
+ * shapes must scream schema_drift/shape_unrecognized or unavailable — never
+ * read as a clean zero or an all-clear.
  */
 class ServosityReadOnlyToolsetTest extends TestCase
 {
@@ -80,11 +83,15 @@ class ServosityReadOnlyToolsetTest extends TestCase
     }
 
     /**
-     * Route the toolset's two live endpoints. Each argument is a RAW response
+     * Route the toolset's live endpoints. Each argument is a RAW response
      * (or a throwable): the toolset must do its own envelope validation, so the
-     * tests hand it exactly what the wire would carry.
+     * tests hand it exactly what the wire would carry. backup-jobs lookups are
+     * routed per DR account id via $jobResponses (default: a recognised
+     * envelope holding zero records); a \Throwable simulates a request failure.
+     *
+     * @param  array<int, array|\Throwable>  $jobResponses
      */
-    private function mockServosity(array|\Throwable $summaryResponse, array|\Throwable|null $drResponse = null): void
+    private function mockServosity(array|\Throwable $summaryResponse, array|\Throwable|null $drResponse = null, array $jobResponses = []): void
     {
         $drResponse ??= $this->drfPage();
         $mock = $this->mock(ServosityClient::class);
@@ -102,6 +109,14 @@ class ServosityReadOnlyToolsetTest extends TestCase
 
             return $drResponse;
         });
+        $mock->shouldReceive('getBackupJobs')->andReturnUsing(function (int $backupId) use ($jobResponses) {
+            $response = $jobResponses[$backupId] ?? $this->drfPage();
+            if ($response instanceof \Throwable) {
+                throw $response;
+            }
+
+            return $response;
+        });
     }
 
     /** The documented DRF envelope: count + results are REQUIRED (official OpenAPI). */
@@ -111,18 +126,35 @@ class ServosityReadOnlyToolsetTest extends TestCase
     }
 
     /**
-     * A CompanySummaryNg row per the official spec: account_counts and
-     * issue_counts are REQUIRED integer maps.
+     * A CompanySummaryNg row per the official spec: name, account_counts and
+     * issue_counts are REQUIRED (integer maps), id is the read-only integer.
      */
     private function companyRow(int $id, array $accountCounts = ['DRS' => 2, 'DRD' => 5], mixed $issueCounts = ['Backup' => 0]): array
     {
         return ['id' => $id, 'name' => 'Company '.$id, 'account_counts' => $accountCounts, 'issue_counts' => $issueCounts];
     }
 
-    /** A DRBackup list row per the official spec (device_name is required). */
+    /**
+     * A DRBackup list row carrying the FULL documented shape —
+     * definitions.DRBackup REQUIRES company, agent_session, shadowprotect_keys,
+     * device_name, product_type and encryption_key (official OpenAPI, retrieved
+     * 2026-07-26), plus the read-only id/state/agent_session_id the code
+     * consumes. Credential-shaped values are obviously fake; the code must
+     * never read them.
+     */
     private function drRow(int $id, string $deviceName, ?string $agentSessionId = 'sess-1', string $state = 'ACTIVE', string $productType = 'DR_SERVER'): array
     {
-        return ['id' => $id, 'device_name' => $deviceName, 'agent_session_id' => $agentSessionId, 'state' => $state, 'product_type' => $productType];
+        return [
+            'id' => $id,
+            'device_name' => $deviceName,
+            'agent_session_id' => $agentSessionId,
+            'state' => $state,
+            'product_type' => $productType,
+            'company' => 'https://api.servosity.example/api/v1/companies/42/',
+            'agent_session' => $agentSessionId !== null ? "https://api.servosity.example/api/v1/agent-sessions/{$agentSessionId}/" : null,
+            'shadowprotect_keys' => [],
+            'encryption_key' => 'fake-fixture-encryption-key-never-projected',
+        ];
     }
 
     // ── The data boundary: client scoping (build + keep these FIRST) ──────────
@@ -218,26 +250,138 @@ class ServosityReadOnlyToolsetTest extends TestCase
         $this->assertStringContainsString('not available', $result['error']);
     }
 
-    // ── What the tool may claim, and what it must refuse to claim ─────────────
+    // ── Job-run history: read live, projected only as far as the spec proves ──
 
-    public function test_job_run_history_is_always_declared_unavailable_with_the_real_reason(): void
+    public function test_job_run_records_are_counted_live_but_record_contents_are_never_projected(): void
     {
-        // The acceptance line of psa-z30dv: never imply verified-good from an
-        // absence of failure. The vendor DOES document job endpoints — the
-        // honest reason job history is unavailable is that their response
-        // shapes are unproven, and the copy must say that, not claim the
-        // capability does not exist upstream.
+        // backup-jobs/{backup_id}/ has NO documented response shape, so the
+        // read recognises the API's standard list envelope at most: it may
+        // report HOW MANY records exist, and must never read a field out of
+        // them — a guessed field name is the psa-7lgo defect.
         $this->configureServosity();
         $client = $this->mappedClient('Acme');
-        $this->mockServosity($this->drfPage($this->companyRow(42)));
+        $this->enabledAsset($client, ['hostname' => 'DONE-HOST', 'servosity_dr_backup_id' => 501]);
+        $this->mockServosity(
+            $this->drfPage($this->companyRow(42)),
+            $this->drfPage($this->drRow(501, 'DONE-HOST')),
+            [501 => $this->drfPage(
+                ['undocumented_key' => 'undocumented-value-1', 'status' => 'Success'],
+                ['undocumented_key' => 'undocumented-value-2', 'status' => 'Failure'],
+                ['undocumented_key' => 'undocumented-value-3', 'status' => 'Failure'],
+            )],
+        );
+
+        $result = $this->toolset()->execute('servosity_get_backup_posture', [], $client->id);
+        $history = $result['job_run_history'];
+
+        $this->assertSame('checked', $history['status']);
+        $this->assertNotNull($history['live_checked_at']);
+        $this->assertCount(1, $history['accounts']);
+        $account = $history['accounts'][0];
+        $this->assertSame('records_observed', $account['status']);
+        $this->assertSame(3, $account['runs_on_record']);
+        $this->assertSame('DONE-HOST', $account['matched_hostname']);
+        $this->assertStringContainsString('UNKNOWN', $history['note']);
+        $this->assertStringContainsString('Servosity console', $history['note']);
+
+        $payload = json_encode($result);
+        $this->assertStringNotContainsString('undocumented-value', $payload, 'record contents must never be projected');
+        $this->assertStringNotContainsString('Failure', $payload, 'a guessed outcome field must never cross the boundary');
+    }
+
+    public function test_zero_job_run_records_is_a_verified_zero_with_its_own_warning(): void
+    {
+        $this->configureServosity();
+        $client = $this->mappedClient('Acme');
+        $this->mockServosity(
+            $this->drfPage($this->companyRow(42)),
+            $this->drfPage($this->drRow(501, 'DONE-HOST')),
+            [501 => $this->drfPage()],
+        );
+
+        $result = $this->toolset()->execute('servosity_get_backup_posture', [], $client->id);
+        $account = $result['job_run_history']['accounts'][0];
+
+        $this->assertSame('no_runs_on_record', $account['status']);
+        $this->assertSame(0, $account['runs_on_record']);
+        $this->assertStringContainsString('may never have run', $account['note']);
+    }
+
+    public function test_an_unrecognisable_job_response_is_shape_unrecognized_never_zero_records(): void
+    {
+        // ServosityClient collapses invalid JSON to []; with no documented
+        // shape for this endpoint, anything that is not the standard envelope
+        // says NOTHING — it must never read as "zero records".
+        $this->configureServosity();
+        $client = $this->mappedClient('Acme');
+        $this->mockServosity(
+            $this->drfPage($this->companyRow(42)),
+            $this->drfPage($this->drRow(501, 'DONE-HOST')),
+            [501 => []],
+        );
+
+        $result = $this->toolset()->execute('servosity_get_backup_posture', [], $client->id);
+        $account = $result['job_run_history']['accounts'][0];
+
+        $this->assertSame('shape_unrecognized', $account['status']);
+        $this->assertArrayNotHasKey('runs_on_record', $account);
+        $this->assertStringContainsString('UNKNOWN — not zero', $account['note']);
+    }
+
+    public function test_a_failed_job_lookup_is_unavailable_and_consecutive_failures_open_the_breaker(): void
+    {
+        // Two consecutive failed lookups must stop the fan-out (not_queried),
+        // mirroring the Comet read circuit breaker — loud, but no hammering.
+        $this->configureServosity();
+        $client = $this->mappedClient('Acme');
+        $boom = new ServosityClientException('Servosity API request failed: GET backup-jobs/501/ (code 500)');
+        $this->mockServosity(
+            $this->drfPage($this->companyRow(42)),
+            $this->drfPage(
+                $this->drRow(501, 'HOST-A'),
+                $this->drRow(502, 'HOST-B'),
+                $this->drRow(503, 'HOST-C'),
+            ),
+            [501 => $boom, 502 => $boom, 503 => $this->drfPage()],
+        );
+
+        $result = $this->toolset()->execute('servosity_get_backup_posture', [], $client->id);
+        $accounts = $result['job_run_history']['accounts'];
+
+        // Accounts keep the DR-list order: HOST-A, HOST-B, HOST-C.
+        $this->assertSame('unavailable', $accounts[0]['status']);
+        $this->assertSame('unavailable', $accounts[1]['status']);
+        $this->assertSame('not_queried', $accounts[2]['status'], 'the breaker must skip the rest after consecutive failures');
+        $this->assertStringContainsString('UNKNOWN', $accounts[2]['note']);
+    }
+
+    public function test_job_history_is_not_checked_when_the_dr_account_list_is_degraded(): void
+    {
+        // No trustworthy account list means no ids to query — the block says
+        // so instead of silently disappearing.
+        $this->configureServosity();
+        $client = $this->mappedClient('Acme');
+        $this->mockServosity(
+            $this->drfPage($this->companyRow(42)),
+            ['unexpected' => 'shape'],
+        );
 
         $result = $this->toolset()->execute('servosity_get_backup_posture', [], $client->id);
 
-        $this->assertFalse($result['job_run_history']['available']);
-        $this->assertStringContainsString('not available through this PSA integration', $result['job_run_history']['note']);
-        $this->assertStringContainsString('backup-jobs/{backup_id}/', $result['job_run_history']['note'], 'the note must name the documented endpoints rather than deny they exist');
-        $this->assertStringContainsString('Do NOT infer', $result['job_run_history']['note']);
-        $this->assertStringContainsString('Servosity console', $result['job_run_history']['note']);
+        $this->assertSame('not_checked', $result['job_run_history']['status']);
+        $this->assertStringContainsString('UNKNOWN', $result['job_run_history']['note']);
+    }
+
+    public function test_job_history_reports_no_accounts_when_the_dr_list_is_a_verified_zero(): void
+    {
+        $this->configureServosity();
+        $client = $this->mappedClient('Acme');
+        $this->mockServosity($this->drfPage($this->companyRow(42)), $this->drfPage());
+
+        $result = $this->toolset()->execute('servosity_get_backup_posture', [], $client->id);
+
+        $this->assertSame('no_accounts', $result['job_run_history']['status']);
+        $this->assertStringContainsString('no DR backup accounts', $result['job_run_history']['note']);
     }
 
     public function test_provisioning_posture_separates_provisioned_from_pending_and_reconciles_upstream(): void
@@ -392,6 +536,201 @@ class ServosityReadOnlyToolsetTest extends TestCase
         $this->assertStringContainsString('UNKNOWN, not zero', $result['live']['account_counts_note']);
     }
 
+    /**
+     * The full drift matrix for both REQUIRED count maps (psa-z30dv.5-.8):
+     * missing, null, and wrong-container-type (string / number /
+     * object-of-objects) must each degrade to schema_drift with the map null —
+     * never status=ok, never a zero-shaped []. The why-copy must tell missing
+     * from malformed accurately.
+     *
+     * @return array<string, array{0: string, 1: mixed, 2: string}>
+     */
+    public static function driftedCountMapProvider(): array
+    {
+        $cases = [];
+        foreach (['account_counts', 'issue_counts'] as $map) {
+            $cases["{$map} missing"] = [$map, '__ABSENT__', 'missing from the response'];
+            $cases["{$map} null"] = [$map, null, 'missing from the response'];
+            $cases["{$map} string"] = [$map, 'DRS: 2', 'not an object of counts'];
+            $cases["{$map} number"] = [$map, 7, 'not an object of counts'];
+            $cases["{$map} object-of-objects"] = [$map, ['DRS' => ['count' => 2]], 'carrying a non-integer value'];
+        }
+
+        return $cases;
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('driftedCountMapProvider')]
+    public function test_every_missing_null_or_wrong_type_count_map_is_schema_drift_not_zero(string $map, mixed $variant, string $expectedWhy): void
+    {
+        $this->configureServosity();
+        $client = $this->mappedClient('Acme');
+
+        $company = ['id' => 42, 'name' => 'Company 42', 'account_counts' => ['DRS' => 2], 'issue_counts' => ['Backup' => 0]];
+        if ($variant === '__ABSENT__') {
+            unset($company[$map]);
+        } else {
+            $company[$map] = $variant;
+        }
+        $this->mockServosity($this->drfPage($company));
+
+        $result = $this->toolset()->execute('servosity_get_backup_posture', [], $client->id);
+
+        $this->assertSame('schema_drift', $result['live']['status'], "a degraded {$map} must never be status=ok");
+        $this->assertNull($result['live'][$map], 'a drifted map is null, never an empty zero-shaped array');
+        $this->assertStringContainsString('UNKNOWN, not zero', $result['live'][$map.'_note']);
+        $this->assertStringContainsString($expectedWhy, $result['live'][$map.'_note'], 'the copy must tell missing from malformed');
+    }
+
+    /**
+     * The same matrix for the REQUIRED results envelope field, at every
+     * projection seam that reads one: the company summary, the DR backup list,
+     * and the job-run record lookup. missing / null / wrong-type results (and
+     * a non-integer count) are envelope drift — plus the reachable
+     * invalid-JSON-to-[] collapse in ServosityClient, which arrives as a
+     * missing envelope.
+     *
+     * @return array<string, array{0: mixed}>
+     */
+    public static function driftedEnvelopeProvider(): array
+    {
+        return [
+            'results missing' => [['count' => 1, 'next' => null, 'previous' => null]],
+            'results null' => [['count' => 1, 'next' => null, 'previous' => null, 'results' => null]],
+            'results string' => [['count' => 1, 'next' => null, 'previous' => null, 'results' => 'DONE-HOST']],
+            'results number' => [['count' => 1, 'next' => null, 'previous' => null, 'results' => 7]],
+            'count non-integer' => [['count' => '1', 'next' => null, 'previous' => null, 'results' => []]],
+            'invalid JSON collapsed to []' => [[]],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('driftedEnvelopeProvider')]
+    public function test_a_degraded_summary_results_envelope_is_schema_drift(mixed $envelope): void
+    {
+        $this->configureServosity();
+        $client = $this->mappedClient('Acme');
+        $this->mockServosity($envelope);
+
+        $result = $this->toolset()->execute('servosity_get_backup_posture', [], $client->id);
+
+        $this->assertSame('schema_drift', $result['live']['status']);
+        $this->assertStringContainsString('Do not read this as zero', $result['live']['note']);
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('driftedEnvelopeProvider')]
+    public function test_a_degraded_dr_backups_results_envelope_is_schema_drift_and_devices_unverified(mixed $envelope): void
+    {
+        $this->configureServosity();
+        $client = $this->mappedClient('Acme');
+        $this->enabledAsset($client, ['hostname' => 'DONE-HOST', 'servosity_dr_backup_id' => 501]);
+        $this->mockServosity($this->drfPage($this->companyRow(42)), $envelope);
+
+        $result = $this->toolset()->execute('servosity_get_backup_posture', [], $client->id);
+
+        $this->assertSame('schema_drift', $result['live_dr_backups']['status']);
+        $this->assertStringContainsString('Do not read this as zero', $result['live_dr_backups']['note']);
+        $this->assertSame('unverified', collect($result['devices'])->firstWhere('hostname', 'DONE-HOST')['upstream_check']);
+        $this->assertSame('not_checked', $result['job_run_history']['status'], 'no trustworthy account list means job records cannot be checked');
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('driftedEnvelopeProvider')]
+    public function test_a_degraded_job_records_envelope_is_shape_unrecognized_never_zero_records(mixed $envelope): void
+    {
+        $this->configureServosity();
+        $client = $this->mappedClient('Acme');
+        $this->mockServosity(
+            $this->drfPage($this->companyRow(42)),
+            $this->drfPage($this->drRow(501, 'DONE-HOST')),
+            [501 => $envelope],
+        );
+
+        $result = $this->toolset()->execute('servosity_get_backup_posture', [], $client->id);
+        $account = $result['job_run_history']['accounts'][0];
+
+        $this->assertSame('shape_unrecognized', $account['status']);
+        $this->assertArrayNotHasKey('runs_on_record', $account);
+    }
+
+    // ── DR row shape: a fragment must never become verified truth ─────────────
+
+    public function test_a_dr_row_carrying_only_an_id_is_drift_not_verified_live(): void
+    {
+        // The psa-z30dv.5 adversarial case: {"id": 501} passes the envelope
+        // check but is missing every REQUIRED DRBackup field. It must degrade
+        // the WHOLE read — never mark the device verified_live on the id alone.
+        $this->configureServosity();
+        $client = $this->mappedClient('Acme');
+        $this->enabledAsset($client, ['hostname' => 'DONE-HOST', 'servosity_dr_backup_id' => 501]);
+        $this->mockServosity(
+            $this->drfPage($this->companyRow(42)),
+            $this->drfPage(['id' => 501]),
+        );
+
+        $result = $this->toolset()->execute('servosity_get_backup_posture', [], $client->id);
+
+        $this->assertSame('schema_drift', $result['live_dr_backups']['status']);
+        $this->assertSame('unverified', collect($result['devices'])->firstWhere('hostname', 'DONE-HOST')['upstream_check'],
+            'a malformed row must never verify a device');
+    }
+
+    public function test_a_non_object_dr_row_is_drift_not_silently_filtered(): void
+    {
+        // Silently filtering a malformed row turns malformed evidence into
+        // apparent truth (and its absence would read upstream_missing — a
+        // false contradiction).
+        $this->configureServosity();
+        $client = $this->mappedClient('Acme');
+        $this->enabledAsset($client, ['hostname' => 'DONE-HOST', 'servosity_dr_backup_id' => 501]);
+        $this->mockServosity(
+            $this->drfPage($this->companyRow(42)),
+            ['count' => 1, 'next' => null, 'previous' => null, 'results' => ['not-an-object']],
+        );
+
+        $result = $this->toolset()->execute('servosity_get_backup_posture', [], $client->id);
+
+        $this->assertSame('schema_drift', $result['live_dr_backups']['status']);
+        $this->assertSame('unverified', collect($result['devices'])->firstWhere('hostname', 'DONE-HOST')['upstream_check']);
+    }
+
+    public function test_a_dr_row_missing_a_required_credential_field_is_drift_without_leaking_it(): void
+    {
+        $this->configureServosity();
+        $client = $this->mappedClient('Acme');
+        $row = $this->drRow(501, 'DONE-HOST');
+        unset($row['encryption_key']);
+        $this->mockServosity($this->drfPage($this->companyRow(42)), $this->drfPage($row));
+
+        $result = $this->toolset()->execute('servosity_get_backup_posture', [], $client->id);
+
+        $this->assertSame('schema_drift', $result['live_dr_backups']['status']);
+        $this->assertStringNotContainsString('fake-fixture-encryption-key', json_encode($result), 'credential-shaped values must never be projected');
+    }
+
+    public function test_a_non_object_summary_row_is_drift_not_silently_filtered(): void
+    {
+        // A dropped summary row containing OUR company would otherwise read
+        // company_not_found — a false conclusion built on filtered evidence.
+        $this->configureServosity();
+        $client = $this->mappedClient('Acme');
+        $this->mockServosity(['count' => 2, 'next' => null, 'previous' => null, 'results' => ['garbage', $this->companyRow(42)]]);
+
+        $result = $this->toolset()->execute('servosity_get_backup_posture', [], $client->id);
+
+        $this->assertSame('schema_drift', $result['live']['status']);
+    }
+
+    public function test_a_summary_row_without_an_integer_id_is_drift(): void
+    {
+        $this->configureServosity();
+        $client = $this->mappedClient('Acme');
+        $row = $this->companyRow(42);
+        unset($row['id']);
+        $this->mockServosity($this->drfPage($row));
+
+        $result = $this->toolset()->execute('servosity_get_backup_posture', [], $client->id);
+
+        $this->assertSame('schema_drift', $result['live']['status']);
+    }
+
     public function test_non_integer_or_prompt_shaped_count_values_are_drift_and_never_cross_raw(): void
     {
         // The documented shape is an integer per key. A string value is drift —
@@ -427,6 +766,7 @@ class ServosityReadOnlyToolsetTest extends TestCase
         $this->assertStringContainsString('UNAVAILABLE', $result['live']['note']);
         $this->assertSame('unavailable', $result['live_dr_backups']['status']);
         $this->assertSame('unverified', collect($result['devices'])->firstWhere('hostname', 'DONE-HOST')['upstream_check'], 'no live list means no upstream claim');
+        $this->assertSame('not_checked', $result['job_run_history']['status'], 'no account list means no job-record lookups');
         $this->assertStringNotContainsString('internal-vault', $payload, 'vendor URLs must not cross the agent boundary');
         $this->assertStringNotContainsString('sekret123', $payload, 'vendor error detail must not cross the agent boundary');
     }
@@ -478,17 +818,21 @@ class ServosityReadOnlyToolsetTest extends TestCase
         $this->assertSame('ok', $result['live_dr_backups']['status']);
         $this->assertSame(2, $result['live_dr_backups']['count']);
 
-        $rows = collect($result['live_dr_backups']['dr_backups'])->keyBy('dr_backup_id');
-        $this->assertTrue($rows[501]['agent_linked']);
-        $this->assertSame($asset->id, $rows[501]['matched_asset_id']);
-        $this->assertSame('DONE-HOST', $rows[501]['matched_hostname']);
-        $this->assertSame('DR_SERVER', $rows[501]['product_type'], 'a documented enum value passes verbatim');
-        $this->assertStringContainsString('ACTIVE', $rows[501]['state']);
-        $this->assertFalse($rows[502]['agent_linked']);
-        $this->assertNull($rows[502]['matched_asset_id']);
-        $this->assertStringContainsString('UNTRUSTED SERVOSITY DEVICE NAME', $rows[502]['device_name'], 'vendor free text must travel fenced');
-        $this->assertStringContainsString('UNTRUSTED SERVOSITY PRODUCT TYPE', $rows[502]['product_type'], 'an undocumented enum value is untrusted text');
+        $rows = collect($result['live_dr_backups']['dr_backups']);
+        $matched = $rows->firstWhere('matched_asset_id', $asset->id);
+        $unmatched = $rows->firstWhere('matched_asset_id', null);
+        $this->assertTrue($matched['agent_linked']);
+        $this->assertSame('DONE-HOST', $matched['matched_hostname']);
+        $this->assertSame('DR_SERVER', $matched['product_type'], 'a documented enum value passes verbatim');
+        $this->assertStringContainsString('ACTIVE', $matched['state']);
+        $this->assertFalse($unmatched['agent_linked']);
+        $this->assertStringContainsString('UNTRUSTED SERVOSITY DEVICE NAME', $unmatched['device_name'], 'vendor free text must travel fenced');
+        $this->assertStringContainsString('UNTRUSTED SERVOSITY PRODUCT TYPE', $unmatched['product_type'], 'an undocumented enum value is untrusted text');
         $this->assertTrue($result['live_dr_backups']['truncated'], 'a non-null DRF next URL means more pages exist');
+
+        // Vendor account ids are reconciliation plumbing (psa-z30dv.6) — no
+        // payload row may carry one.
+        $this->assertStringNotContainsString('dr_backup_id', json_encode($result));
 
         // Truncated list: an absent id proves nothing about upstream state.
         $this->assertSame('verified_live', collect($result['devices'])->firstWhere('hostname', 'DONE-HOST')['upstream_check']);
