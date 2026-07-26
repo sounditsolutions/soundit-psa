@@ -465,10 +465,24 @@ class QboSyncService
             $updates['status'] = InvoiceStatus::Paid;
         }
 
-        $invoice->update($updates);
+        // Route the final write through the locked guard: a local void that
+        // committed during the GET above must not be re-inflated by this stale
+        // read-back tax/total or flipped to Paid (psa-qfhc5). Mirrors the
+        // push-path guard (recordPushResult).
+        $wasVoid = $invoice->recordStatusPullResult($updates);
 
-        // Sync line item details (description, quantity, unit_price, amount)
-        $this->syncLineItemsFromQbo($invoice, $qboInvoice);
+        // Line-item detail sync (description, quantity, unit_price, amount) —
+        // skipped when the guarded write found the row Void, so a mid-round-trip
+        // void's zeroed line amounts are not re-inflated (ProfitabilityService
+        // sums invoice_lines.amount with no status filter, relying on that
+        // zeroing). The locked-read decides this: the bead contract is "drop
+        // line writes when the LOCKED row is Void". A void committing in the
+        // sub-window after that read still reports live here — closing that hard
+        // needs a consistent invoice-first lock order in InvoiceVoidService too
+        // (tracked separately); it self-heals on the next void/sync.
+        if (! $wasVoid) {
+            $this->syncLineItemsFromQbo($invoice, $qboInvoice);
+        }
     }
 
     /**

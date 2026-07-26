@@ -302,6 +302,55 @@ class Invoice extends Model
     }
 
     /**
+     * Apply a billing-backend STATUS-PULL result under a row lock, refusing to
+     * re-inflate a locally voided invoice (psa-qfhc5).
+     *
+     * The pull writers (QboSyncService::syncInvoiceStatusFromQbo,
+     * StripeSyncService::syncInvoiceStatusFromStripe) check status BEFORE the
+     * vendor GET, then write the read-back tax/total — and possibly status=Paid
+     * (QBO Balance==0 / Stripe "paid") — AFTER the network round-trip. A local
+     * InvoiceVoidService::void() committing mid-round-trip would otherwise be
+     * re-inflated: its zeroed money re-entered into sum-safe aggregates, or its
+     * Void flipped to Paid. This mirrors the push-path guard (recordPushResult):
+     * re-read the row under lock and, when the committed row is Void, drop every
+     * reportable money field AND any status write — the void service has already
+     * zeroed the money, snapshotted the originals into pre_void_*, and "PSA wins
+     * for void". Provenance fields (the caller's *_synced_at / *_sync_error) are
+     * kept: they record that the vendor was contacted, not the invoice's money.
+     *
+     * @param  array<string, mixed>  $attributes  Read-back money/status/provenance to persist.
+     * @return bool true if the locked row was Void — money and status were dropped,
+     *              and the caller MUST skip any dependent line-amount write.
+     */
+    public function recordStatusPullResult(array $attributes): bool
+    {
+        return DB::transaction(function () use ($attributes) {
+            $locked = static::whereKey($this->getKey())->lockForUpdate()->first();
+
+            $isVoid = $locked->status === InvoiceStatus::Void;
+
+            if ($isVoid) {
+                unset(
+                    $attributes['subtotal'],
+                    $attributes['tax'],
+                    $attributes['total'],
+                    $attributes['total_cost'],
+                    $attributes['margin'],
+                    $attributes['status'],
+                );
+            }
+
+            $locked->update($attributes);
+
+            // Keep the caller's in-memory model consistent with the committed row.
+            $this->setRawAttributes($locked->getAttributes(), true);
+            $this->syncOriginal();
+
+            return $isVoid;
+        });
+    }
+
+    /**
      * Status label for display, accounting for the computed "Overdue" state.
      *
      * Overdue is not a stored status — an unpaid Posted invoice past its due

@@ -234,7 +234,11 @@ class StripeSyncService
             $updates['status'] = InvoiceStatus::Paid;
         }
 
-        $invoice->update($updates);
+        // Route the final write through the locked guard: a local void that
+        // committed during the GET above must not be re-inflated by this stale
+        // read-back tax/total or flipped to Paid (psa-qfhc5). Mirrors the
+        // push-path guard (recordPushResult).
+        $invoice->recordStatusPullResult($updates);
     }
 
     public function syncAllUnpaidInvoices(): int
