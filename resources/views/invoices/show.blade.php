@@ -136,12 +136,24 @@
             <strong>This invoice is void.</strong>
             The amounts below are the original pre-void values, shown intentionally for reference —
             this invoice's reportable value is $0.00 and it is excluded from revenue and profitability totals.
+            {{-- Each linked billing backend renders INDEPENDENTLY, its
+                 convergence claim conditioned on its OWN durable sync error
+                 (psa-bl36l R6): a dual-linked invoice must not imply QBO
+                 converged merely because qbo_invoice_id exists, nor drop the
+                 proven Stripe state because QBO rendered first. --}}
             @if($invoice->qbo_invoice_id)
-                QuickBooks shows this invoice as $0.00.
-            @elseif($invoice->stripe_invoice_id && ! $invoice->stripe_sync_error)
-                Stripe shows this invoice as voided.
-            @elseif($invoice->stripe_invoice_id)
-                Stripe may not reflect this void yet — see the sync error below.
+                @if($invoice->qbo_sync_error)
+                    QuickBooks may not reflect this void yet — see the sync error below.
+                @else
+                    QuickBooks shows this invoice as $0.00.
+                @endif
+            @endif
+            @if($invoice->stripe_invoice_id)
+                @if($invoice->stripe_sync_error)
+                    Stripe may not reflect this void yet — see the sync error below.
+                @else
+                    Stripe shows this invoice as voided.
+                @endif
             @endif
         </div>
     </div>

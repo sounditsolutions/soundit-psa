@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Enums\InvoiceStatus;
+use App\Enums\PushRecordOutcome;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -281,12 +282,32 @@ class Invoice extends Model
      *
      * @param  array<string, mixed>  $attributes  Backend ids/tax/timestamps to persist. The `status` key is managed here, not by the caller.
      * @param  bool  $transitionToSynced  CREATE (true) transitions a live invoice to Synced; UPDATE/re-push (false) keeps the current status. Terminal Paid/Void are preserved regardless.
-     * @return bool true when the locked row was Void — the push lost the race: money/URL/error-clear were dropped (id/timestamp still recorded) and the caller must not perform any further client-visible side effect (no email); the Stripe caller compensates by voiding the just-created upstream invoice.
+     * @return PushRecordOutcome Recorded (live row, full result written), RowVoided (money/URL/error-clear dropped; the caller must compensate and never email), or DuplicateId (NOTHING written; the caller must void its own just-created upstream invoice). QBO callers ignore the return value.
      */
-    public function recordPushResult(array $attributes, bool $transitionToSynced = true): bool
+    public function recordPushResult(array $attributes, bool $transitionToSynced = true): PushRecordOutcome
     {
         return DB::transaction(function () use ($attributes, $transitionToSynced) {
             $locked = static::whereKey($this->getKey())->lockForUpdate()->first();
+
+            // A concurrent push already recorded a DIFFERENT Stripe invoice id
+            // (two pushes admitted before either recorded): this attempt's
+            // created object is a duplicate the row must never point at. Write
+            // NOTHING — the id, the URL, and any per-cause divergence error on
+            // the row belong to the winning attempt's chain (psa-bl36l R6;
+            // re-pointing the link is how a paid divergence for the first id
+            // lost its only anchor in the R5 security repro). Stripe-only by
+            // design: QBO's UPDATE path re-records the SAME id, its CREATE
+            // flow never races itself today, and widening this guard would
+            // silently change QBO semantics this bead has not proven.
+            $incomingStripeId = $attributes['stripe_invoice_id'] ?? null;
+            if ($incomingStripeId !== null
+                && $locked->stripe_invoice_id !== null
+                && $locked->stripe_invoice_id !== $incomingStripeId) {
+                $this->setRawAttributes($locked->getAttributes(), true);
+                $this->syncOriginal();
+
+                return PushRecordOutcome::DuplicateId;
+            }
 
             $isVoid = $locked->status === InvoiceStatus::Void;
 
@@ -320,7 +341,7 @@ class Invoice extends Model
             $this->setRawAttributes($locked->getAttributes(), true);
             $this->syncOriginal();
 
-            return $isVoid;
+            return $isVoid ? PushRecordOutcome::RowVoided : PushRecordOutcome::Recorded;
         });
     }
 
