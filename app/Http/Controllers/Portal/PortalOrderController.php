@@ -138,7 +138,7 @@ class PortalOrderController extends Controller
         $paymentUrl = null;
         $awaitingSync = false;
 
-        if ($invoice->stripe_invoice_url) {
+        if ($invoice->stripe_invoice_url && $invoice->status->isClientPayable()) {
             $paymentUrl = $invoice->stripe_invoice_url;
         } elseif ($invoice->qbo_invoice_id && PortalConfig::billingUrl()) {
             $paymentUrl = PortalConfig::billingUrl().'/portal/pay/?invoiceNumber='
@@ -169,7 +169,7 @@ class PortalOrderController extends Controller
         $invoice = $invoice->fresh();
         $paymentUrl = null;
 
-        if ($invoice->stripe_invoice_url) {
+        if ($invoice->stripe_invoice_url && $invoice->status->isClientPayable()) {
             $paymentUrl = $invoice->stripe_invoice_url;
         } elseif ($invoice->qbo_invoice_id && PortalConfig::billingUrl()) {
             $paymentUrl = PortalConfig::billingUrl().'/portal/pay/?invoiceNumber='

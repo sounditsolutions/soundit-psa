@@ -298,6 +298,10 @@ class InvoiceController extends Controller
         $succeeded = 0;
         $failed = 0;
         $skipped = 0;
+        // Invoices whose LOCAL void committed but a billing-backend propagation
+        // failed — reported as reconciliation warnings, never as a plain failure
+        // that hides the local mutation (psa-bl36l MF7).
+        $reconcileFailures = [];
 
         $stripeSyncService = StripeConfig::isConfigured()
             ? new StripeSyncService(new StripeClient(['secret_key' => StripeConfig::get('secret_key')]))
@@ -339,17 +343,28 @@ class InvoiceController extends Controller
 
                             continue 2;
                         }
+                        // The local void is the primary action; if IT throws the
+                        // outer catch counts a genuine failure. Once it commits the
+                        // invoice IS voided — a backend propagation failure below
+                        // must not flip that to "failed" (psa-bl36l MF7).
                         $voidService->void($invoice);
-                        if ($invoice->qbo_invoice_id) {
-                            $qboSyncService->voidInvoiceInQbo($invoice);
-                        }
-                        // Propagate to Stripe too, so a bulk void doesn't leave a
-                        // live payment page behind (psa-bl36l). A throw here is
-                        // caught below and counted as failed, same as QBO.
-                        if ($invoice->stripe_invoice_id && $stripeSyncService) {
-                            $stripeSyncService->voidInvoiceInStripe($invoice);
-                        }
                         $succeeded++;
+
+                        $ref = $invoice->invoice_number ?: '#'.$invoice->id;
+                        if ($invoice->qbo_invoice_id) {
+                            try {
+                                $qboSyncService->voidInvoiceInQbo($invoice);
+                            } catch (\Throwable $e) {
+                                $reconcileFailures[] = $ref.' (QuickBooks)';
+                                Log::warning('[Invoice] Bulk void QBO propagation failed', [
+                                    'invoice_id' => $invoice->id, 'error' => $e->getMessage(),
+                                ]);
+                            }
+                        }
+                        // Uniform Stripe seam (handles unconfigured-but-linked loudly, MF3/MF4).
+                        if ($this->propagateVoidToStripe($invoice)) {
+                            $reconcileFailures[] = $ref.' (Stripe)';
+                        }
                         break;
 
                     case 'mark_paid':
@@ -380,8 +395,18 @@ class InvoiceController extends Controller
             $parts[] = "{$skipped} skipped";
         }
 
+        $summary = implode(', ', $parts).'.';
+        if ($reconcileFailures !== []) {
+            // The local void succeeded for these, but the billing backend still
+            // shows them live — name them so the operator can reconcile (MF7).
+            $summary .= ' Voided locally but the billing backend was not updated for: '
+                .implode(', ', $reconcileFailures).' — void these manually in the billing backend (the payment page may still be live).';
+        }
+
+        $hasProblem = $failed > 0 || $reconcileFailures !== [];
+
         return redirect()->route('invoices.index')
-            ->with($failed > 0 ? 'warning' : 'success', implode(', ', $parts).'.');
+            ->with($hasProblem ? 'warning' : 'success', $summary);
     }
 
     public function markPaid(Invoice $invoice)
@@ -395,7 +420,41 @@ class InvoiceController extends Controller
             ->with('success', 'Invoice marked as paid.');
     }
 
-    public function void(Invoice $invoice, QboSyncService $syncService, InvoiceVoidService $voidService, StripeSyncService $stripeSyncService)
+    /**
+     * Propagate a local void to Stripe for a linked invoice — the SINGLE seam
+     * shared by void() and bulkAction() so the two paths cannot drift
+     * (psa-bl36l MF3/MF4). Returns null when there is nothing to do or the void
+     * converged; a human-readable warning otherwise (a durable stripe_sync_error
+     * is recorded in every failure case). A linked invoice whose Stripe
+     * credentials are unavailable is a LOUD, recorded failure — never a silent
+     * skip that leaves the hosted payment page live.
+     */
+    private function propagateVoidToStripe(Invoice $invoice): ?string
+    {
+        if (! $invoice->stripe_invoice_id) {
+            return null; // not Stripe-linked
+        }
+
+        if (! StripeConfig::isConfigured()) {
+            $message = 'Stripe is not configured, so invoice '.$invoice->stripe_invoice_id.' could not be voided upstream — the hosted payment page may still be live; void it manually in Stripe.';
+            $invoice->update(['stripe_sync_error' => $message]);
+
+            return $message;
+        }
+
+        try {
+            app(StripeSyncService::class)->voidInvoiceInStripe($invoice);
+
+            return null;
+        } catch (StripeClientException $e) {
+            // The service already recorded a durable, per-cause stripe_sync_error
+            // (paid → reconcile/refund; else → page may still be live). Surface it
+            // verbatim rather than a hardcoded "void manually" that lies for paid.
+            return $e->getMessage();
+        }
+    }
+
+    public function void(Invoice $invoice, QboSyncService $syncService, InvoiceVoidService $voidService)
     {
         if ($invoice->status === InvoiceStatus::Void) {
             return redirect()->route('invoices.show', $invoice)
@@ -404,28 +463,28 @@ class InvoiceController extends Controller
 
         $voidService->void($invoice);
 
-        // Push void to QBO if this invoice was synced there
+        // Attempt every linked backend INDEPENDENTLY after the local void — a
+        // failure in one must not short-circuit propagation to another, and each
+        // failure is aggregated so the operator sees the full reconciliation
+        // picture (psa-bl36l MF4).
+        $warnings = [];
+
         if ($invoice->qbo_invoice_id) {
             try {
                 $syncService->voidInvoiceInQbo($invoice);
             } catch (QboClientException $e) {
                 $docRef = $invoice->qbo_doc_number ?? $invoice->qbo_invoice_id;
-
-                return redirect()->route('invoices.show', $invoice)
-                    ->with('warning', "Invoice voided in Sound PSA. QBO void failed — you may need to void invoice #{$docRef} manually in QuickBooks.");
+                $warnings[] = "QBO void failed — void invoice #{$docRef} manually in QuickBooks.";
             }
         }
 
-        // Push void to Stripe if this invoice was pushed there — otherwise the
-        // hosted payment page stays live and the client can still pay a voided
-        // invoice (psa-bl36l).
-        if ($invoice->stripe_invoice_id && StripeConfig::isConfigured()) {
-            try {
-                $stripeSyncService->voidInvoiceInStripe($invoice);
-            } catch (StripeClientException $e) {
-                return redirect()->route('invoices.show', $invoice)
-                    ->with('warning', "Invoice voided in Sound PSA. Stripe void failed — the client payment page may still be live; void invoice {$invoice->stripe_invoice_id} manually in Stripe.");
-            }
+        if ($stripeWarning = $this->propagateVoidToStripe($invoice)) {
+            $warnings[] = 'Stripe: '.$stripeWarning;
+        }
+
+        if ($warnings !== []) {
+            return redirect()->route('invoices.show', $invoice)
+                ->with('warning', 'Invoice voided in Sound PSA. '.implode(' ', $warnings));
         }
 
         return redirect()->route('invoices.show', $invoice)

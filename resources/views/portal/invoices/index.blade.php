@@ -31,7 +31,7 @@
                                 <td class="text-end">${{ number_format($invoice->total, 2) }}</td>
                                 <td><span class="badge {{ $invoice->status->portalBadgeClass() }}">{{ $invoice->status->portalLabel() }}</span></td>
                                 <td class="text-end">
-                                    @if($invoice->stripe_invoice_url && $invoice->status->isUnpaidForPortal())
+                                    @if($invoice->stripe_invoice_url && $invoice->status->isClientPayable())
                                         <a href="{{ $invoice->stripe_invoice_url }}" target="_blank" class="btn btn-sm btn-accent">Pay Online</a>
                                     @endif
                                 </td>

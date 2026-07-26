@@ -81,4 +81,25 @@ enum InvoiceStatus: string
     {
         return $this !== self::Paid;
     }
+
+    /**
+     * May a client be offered a payment action (Pay Online / hosted Payment
+     * Page) for an invoice in this status?
+     *
+     * True ONLY for a finalized, unpaid, still-owed invoice: Posted or Synced.
+     * Explicitly false for Void (psa-bl36l — a voided invoice's hosted URL is
+     * retained as a forensic/reconciliation record, but must never be handed to
+     * a client as a live pay link), Paid (already settled), and Draft/PendingSync
+     * (not finalized / not pushed to the backend). Gate every payment-affordance
+     * renderer and payment-URL API response on THIS, never on a non-null
+     * stripe_invoice_url alone — the URL surviving is not proof the invoice is
+     * payable.
+     */
+    public function isClientPayable(): bool
+    {
+        return match ($this) {
+            self::Posted, self::Synced => true,
+            default => false,
+        };
+    }
 }

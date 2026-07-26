@@ -122,6 +122,13 @@
     </div>
 @endif
 
+@if(session('info'))
+    <div class="alert alert-info alert-dismissible fade show">
+        {{ session('info') }}
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    </div>
+@endif
+
 @if($invoice->isVoidWithSnapshot())
     <div class="alert alert-danger d-flex align-items-start" role="alert">
         <i class="bi bi-x-octagon-fill me-2 mt-1"></i>
@@ -131,8 +138,10 @@
             this invoice's reportable value is $0.00 and it is excluded from revenue and profitability totals.
             @if($invoice->qbo_invoice_id)
                 QuickBooks shows this invoice as $0.00.
-            @elseif($invoice->stripe_invoice_id)
+            @elseif($invoice->stripe_invoice_id && ! $invoice->stripe_sync_error)
                 Stripe shows this invoice as voided.
+            @elseif($invoice->stripe_invoice_id)
+                Stripe may not reflect this void yet — see the sync error below.
             @endif
         </div>
     </div>
@@ -249,10 +258,11 @@
     {{-- Right column: Totals + Payment + QBO info --}}
     <div class="col-lg-4">
         @php
-            // No payment link for voided invoices — there is nothing to pay.
+            // Only offer a payment link for a genuinely payable invoice (psa-bl36l):
+            // never for Void (URL retained only as an audit record) or Paid.
             $paymentUrl = null;
             $paymentProvider = null;
-            if ($invoice->status !== \App\Enums\InvoiceStatus::Void) {
+            if ($invoice->status->isClientPayable()) {
                 if ($invoice->stripe_invoice_url) {
                     $paymentUrl = $invoice->stripe_invoice_url;
                     $paymentProvider = 'Stripe';
@@ -354,7 +364,7 @@
                             <th class="text-muted">Last Synced</th>
                             <td>{{ $invoice->stripe_synced_at?->diffForHumans() ?? '-' }}</td>
                         </tr>
-                        @if($invoice->stripe_invoice_url)
+                        @if($invoice->stripe_invoice_url && $invoice->status->isClientPayable())
                             <tr>
                                 <th class="text-muted">Payment Page</th>
                                 <td>

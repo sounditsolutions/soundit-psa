@@ -247,13 +247,15 @@ class StripeSyncService
      * the Stripe hosted payment page live and payable while Sound PSA shows the
      * invoice as Void/$0.
      *
-     * Voids an open Stripe invoice upstream and clears the stored payment-page
-     * URL (the show view renders "Payment Page" off it). An already
-     * void/uncollectible invoice is idempotently accepted. A PAID Stripe invoice
-     * cannot be voided — rather than fail closed into a silent all-clear (the
-     * false "reconciled" this bug is about), it records a durable sync error and
-     * throws so the operator is told to reconcile/refund manually. A
-     * vendor/network failure is likewise recorded and rethrown.
+     * Voids an open OR uncollectible Stripe invoice upstream (both are voidable;
+     * only `void` is terminal) and clears the stored payment-page URL once the
+     * void is CONFIRMED (the show view renders "Payment Page" off it). An already
+     * `void` invoice is idempotently accepted. A PAID Stripe invoice cannot be
+     * voided — rather than fail closed into a silent all-clear (the false
+     * "reconciled" this bug is about), it records a durable sync error and throws
+     * so the operator is told to reconcile/refund manually. A missing/unexpected
+     * status, an unconfirmed void response, and a vendor/network failure are all
+     * likewise recorded and thrown — never swallowed into a false success.
      *
      * Writes only provenance + the payment URL (never money/status), so it has
      * none of the status-pull re-inflation TOCTOU (psa-qfhc5) and needs no
@@ -272,10 +274,23 @@ class StripeSyncService
             throw $e;
         }
 
-        $stripeStatus = $stripeInvoice['status'] ?? '';
+        $stripeStatus = $stripeInvoice['status'] ?? null;
 
-        // Already terminal upstream — record convergence, do not double-void.
-        if (in_array($stripeStatus, ['void', 'uncollectible'], true)) {
+        // MF2 — a degraded read must SCREAM (CLAUDE.md): StripeClient maps a
+        // malformed 2xx body to [], so a missing/blank status is drift, not a
+        // no-op. Never fall through to voiding an unknown state and reporting
+        // success (the false all-clear this whole fix exists to prevent).
+        if (! is_string($stripeStatus) || $stripeStatus === '') {
+            $message = 'Stripe returned no status for invoice '.$invoice->stripe_invoice_id.'; the hosted payment page may still be live — void it manually in Stripe.';
+            Log::warning('[StripeSync] Missing Stripe status on void', ['invoice_id' => $invoice->id]);
+            $invoice->update(['stripe_sync_error' => $message]);
+
+            throw new StripeClientException($message);
+        }
+
+        // Only `void` is terminal in Stripe. Record convergence, do not re-void.
+        // NB: `uncollectible` is deliberately NOT here — see below.
+        if ($stripeStatus === 'void') {
             $invoice->update([
                 'stripe_synced_at' => now(),
                 'stripe_sync_error' => null,
@@ -298,11 +313,43 @@ class StripeSyncService
             throw new StripeClientException($message);
         }
 
+        // MF1/MF2 — void ONLY the explicitly voidable states. Stripe's lifecycle
+        // (https://docs.stripe.com/invoicing/overview): the /void endpoint accepts
+        // `open` OR `uncollectible`, and `uncollectible` is NOT terminal (it can
+        // still go paid/void), so it must be voided like an open invoice, not
+        // accepted as converged. Any other state (draft/unknown/future) is
+        // refused loudly rather than blindly voided.
+        if (! in_array($stripeStatus, ['open', 'uncollectible'], true)) {
+            $message = 'Stripe invoice '.$invoice->stripe_invoice_id.' is in an unexpected state ('.$stripeStatus.') and was not voided; the hosted payment page may still be live — check it manually in Stripe.';
+            Log::warning('[StripeSync] Unexpected Stripe status on void', [
+                'invoice_id' => $invoice->id,
+                'status' => $stripeStatus,
+            ]);
+            $invoice->update(['stripe_sync_error' => $message]);
+
+            throw new StripeClientException($message);
+        }
+
         try {
-            $this->stripeClient->voidInvoice($invoice->stripe_invoice_id);
+            $result = $this->stripeClient->voidInvoice($invoice->stripe_invoice_id);
         } catch (StripeClientException $e) {
-            $invoice->update(['stripe_sync_error' => $e->getMessage()]);
-            throw $e;
+            $message = 'Stripe void could not be completed for invoice '.$invoice->stripe_invoice_id.' ('.$e->getMessage().'); the hosted payment page may still be live — void it manually in Stripe.';
+            $invoice->update(['stripe_sync_error' => $message]);
+
+            throw new StripeClientException($message, $e->getCode(), $e);
+        }
+
+        // MF2 — only record convergence (and kill the URL) once the void is
+        // CONFIRMED. An empty/unconfirmed 2xx must not read as success.
+        if (($result['status'] ?? null) !== 'void') {
+            $message = 'Stripe did not confirm the void of invoice '.$invoice->stripe_invoice_id.'; the hosted payment page may still be live — void it manually in Stripe.';
+            Log::warning('[StripeSync] Unconfirmed Stripe void response', [
+                'invoice_id' => $invoice->id,
+                'response_status' => $result['status'] ?? null,
+            ]);
+            $invoice->update(['stripe_sync_error' => $message]);
+
+            throw new StripeClientException($message);
         }
 
         Log::info('[StripeSync] Invoice voided in Stripe', [

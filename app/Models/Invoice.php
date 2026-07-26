@@ -315,8 +315,10 @@ class Invoice extends Model
      * re-read the row under lock and, when the committed row is Void, drop every
      * reportable money field AND any status write — the void service has already
      * zeroed the money, snapshotted the originals into pre_void_*, and "PSA wins
-     * for void". Provenance fields (the caller's *_synced_at / *_sync_error) are
-     * kept: they record that the vendor was contacted, not the invoice's money.
+     * for void". The *_synced_at stamp is kept (the vendor WAS contacted), but a
+     * *_sync_error CLEAR is dropped on a Void row (psa-bl36l MF8): a refused pull
+     * converged nothing, so it must not erase a divergence error a concurrent
+     * void propagation recorded.
      *
      * @param  array<string, mixed>  $attributes  Read-back money/status/provenance to persist.
      * @return bool true if the locked row was Void — money and status were dropped,
@@ -337,6 +339,15 @@ class Invoice extends Model
                     $attributes['total_cost'],
                     $attributes['margin'],
                     $attributes['status'],
+                    // psa-bl36l MF8: a refused stale pull converged NOTHING, so it
+                    // must not clear a sync error. The pull writers set
+                    // *_sync_error => null on the happy path; keeping that on a
+                    // Void row would erase a divergence signal a concurrent void
+                    // propagation (voidInvoiceInStripe / voidInvoiceInQbo) just
+                    // recorded — the exact audit TOCTOU that hides a paid-but-voided
+                    // invoice. Preserve whatever error is already on the row.
+                    $attributes['stripe_sync_error'],
+                    $attributes['qbo_sync_error'],
                 );
             }
 

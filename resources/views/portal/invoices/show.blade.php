@@ -21,7 +21,7 @@
             </div>
             <div class="text-end">
                 <span class="badge {{ $invoice->status->portalBadgeClass() }}">{{ $invoice->status->portalLabel() }}</span>
-                @if($invoice->stripe_invoice_url && $invoice->status->isUnpaidForPortal())
+                @if($invoice->stripe_invoice_url && $invoice->status->isClientPayable())
                     <div class="mt-2">
                         <a href="{{ $invoice->stripe_invoice_url }}" target="_blank" class="btn btn-sm btn-accent">
                             <i class="bi bi-credit-card me-1"></i>Pay Online
