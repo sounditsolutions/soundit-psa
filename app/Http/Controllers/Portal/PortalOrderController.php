@@ -134,18 +134,24 @@ class PortalOrderController extends Controller
         $invoice->load('lines', 'client');
 
         // Determine payment link state (mirrors the prepay confirmation).
+        // Never surface ANY payment affordance — Stripe URL, QBO billing link, or
+        // an "awaiting sync" promise — for a non-payable invoice, e.g. one staff
+        // voided after the order (psa-bl36l R2A). isClientPayable() is the single
+        // predicate the whole decision hangs on, not just the Stripe arm.
         $client = $invoice->client;
         $paymentUrl = null;
         $awaitingSync = false;
 
-        if ($invoice->stripe_invoice_url && $invoice->status->isClientPayable()) {
-            $paymentUrl = $invoice->stripe_invoice_url;
-        } elseif ($invoice->qbo_invoice_id && PortalConfig::billingUrl()) {
-            $paymentUrl = PortalConfig::billingUrl().'/portal/pay/?invoiceNumber='
-                .urlencode($invoice->invoice_number)
-                .'&transactionAmount='.number_format($invoice->total, 2, '.', '');
-        } elseif ($client?->stripe_customer_id || $client?->qbo_customer_id) {
-            $awaitingSync = true;
+        if ($invoice->status->isClientPayable()) {
+            if ($invoice->stripe_invoice_url) {
+                $paymentUrl = $invoice->stripe_invoice_url;
+            } elseif ($invoice->qbo_invoice_id && PortalConfig::billingUrl()) {
+                $paymentUrl = PortalConfig::billingUrl().'/portal/pay/?invoiceNumber='
+                    .urlencode($invoice->invoice_number)
+                    .'&transactionAmount='.number_format($invoice->total, 2, '.', '');
+            } elseif ($client?->stripe_customer_id || $client?->qbo_customer_id) {
+                $awaitingSync = true;
+            }
         }
 
         return view('portal.shop.confirmation', [
@@ -169,12 +175,16 @@ class PortalOrderController extends Controller
         $invoice = $invoice->fresh();
         $paymentUrl = null;
 
-        if ($invoice->stripe_invoice_url && $invoice->status->isClientPayable()) {
-            $paymentUrl = $invoice->stripe_invoice_url;
-        } elseif ($invoice->qbo_invoice_id && PortalConfig::billingUrl()) {
-            $paymentUrl = PortalConfig::billingUrl().'/portal/pay/?invoiceNumber='
-                .urlencode($invoice->invoice_number)
-                .'&transactionAmount='.number_format($invoice->total, 2, '.', '');
+        // Gate the whole provider decision on payability, never the Stripe arm
+        // alone — a Void invoice must never return a pay URL (psa-bl36l R2A).
+        if ($invoice->status->isClientPayable()) {
+            if ($invoice->stripe_invoice_url) {
+                $paymentUrl = $invoice->stripe_invoice_url;
+            } elseif ($invoice->qbo_invoice_id && PortalConfig::billingUrl()) {
+                $paymentUrl = PortalConfig::billingUrl().'/portal/pay/?invoiceNumber='
+                    .urlencode($invoice->invoice_number)
+                    .'&transactionAmount='.number_format($invoice->total, 2, '.', '');
+            }
         }
 
         return response()->json([

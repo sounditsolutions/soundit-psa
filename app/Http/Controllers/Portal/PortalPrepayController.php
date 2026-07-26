@@ -150,19 +150,23 @@ class PortalPrepayController extends Controller
         $totalPrepaidMinutes = (int) $invoice->lines->sum('prepaid_time_minutes');
         $totalHours = round($totalPrepaidMinutes / 60, 1);
 
-        // Determine payment link state
+        // Determine payment link state. Gate the WHOLE decision (Stripe URL, QBO
+        // billing link, and the "awaiting sync" promise) on payability, so a Void
+        // invoice offers no pay link and no "payment coming" (psa-bl36l R2A).
         $client = $invoice->client;
         $paymentUrl = null;
         $awaitingSync = false;
 
-        if ($invoice->stripe_invoice_url && $invoice->status->isClientPayable()) {
-            $paymentUrl = $invoice->stripe_invoice_url;
-        } elseif ($invoice->qbo_invoice_id && PortalConfig::billingUrl()) {
-            $paymentUrl = PortalConfig::billingUrl().'/portal/pay/?invoiceNumber='
-                .urlencode($invoice->invoice_number)
-                .'&transactionAmount='.number_format($invoice->total, 2, '.', '');
-        } elseif ($client?->stripe_customer_id || $client?->qbo_customer_id) {
-            $awaitingSync = true;
+        if ($invoice->status->isClientPayable()) {
+            if ($invoice->stripe_invoice_url) {
+                $paymentUrl = $invoice->stripe_invoice_url;
+            } elseif ($invoice->qbo_invoice_id && PortalConfig::billingUrl()) {
+                $paymentUrl = PortalConfig::billingUrl().'/portal/pay/?invoiceNumber='
+                    .urlencode($invoice->invoice_number)
+                    .'&transactionAmount='.number_format($invoice->total, 2, '.', '');
+            } elseif ($client?->stripe_customer_id || $client?->qbo_customer_id) {
+                $awaitingSync = true;
+            }
         }
 
         return view('portal.prepaid.confirmation', [
@@ -217,12 +221,15 @@ class PortalPrepayController extends Controller
         $invoice = $invoice->fresh();
         $paymentUrl = null;
 
-        if ($invoice->stripe_invoice_url && $invoice->status->isClientPayable()) {
-            $paymentUrl = $invoice->stripe_invoice_url;
-        } elseif ($invoice->qbo_invoice_id && PortalConfig::billingUrl()) {
-            $paymentUrl = PortalConfig::billingUrl().'/portal/pay/?invoiceNumber='
-                .urlencode($invoice->invoice_number)
-                .'&transactionAmount='.number_format($invoice->total, 2, '.', '');
+        // Gate the whole provider decision on payability (psa-bl36l R2A).
+        if ($invoice->status->isClientPayable()) {
+            if ($invoice->stripe_invoice_url) {
+                $paymentUrl = $invoice->stripe_invoice_url;
+            } elseif ($invoice->qbo_invoice_id && PortalConfig::billingUrl()) {
+                $paymentUrl = PortalConfig::billingUrl().'/portal/pay/?invoiceNumber='
+                    .urlencode($invoice->invoice_number)
+                    .'&transactionAmount='.number_format($invoice->total, 2, '.', '');
+            }
         }
 
         return response()->json([

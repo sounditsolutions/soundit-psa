@@ -79,6 +79,14 @@
                         <span class="text-muted">Preparing payment link...</span>
                     </div>
                 </div>
+            @elseif(! $invoice->status->isClientPayable())
+                {{-- The invoice is no longer payable (e.g. staff voided it). Give a
+                     truthful terminal state — do NOT promise a payment link that will
+                     never come or poll for one (psa-bl36l R2D). --}}
+                <div class="alert alert-secondary">
+                    <i class="bi bi-info-circle me-1"></i>
+                    This order's invoice is {{ strtolower($invoice->status->label()) }} and is not payable — no payment is due. If you have questions, please contact us.
+                </div>
             @else
                 <div class="alert alert-info">
                     <i class="bi bi-info-circle me-1"></i>
@@ -88,9 +96,13 @@
         </div>
 
         <div class="d-flex justify-content-between">
+            @if($invoice->status !== \App\Enums\InvoiceStatus::Void)
             <a href="{{ route('portal.invoices.show', $invoice) }}" class="btn btn-outline-primary btn-sm">
                 <i class="bi bi-receipt me-1"></i>View Invoice
             </a>
+            @else
+            <span></span>
+            @endif
             <a href="{{ route('portal.dashboard') }}" class="btn btn-outline-secondary btn-sm">
                 <i class="bi bi-house me-1"></i>Back to Dashboard
             </a>

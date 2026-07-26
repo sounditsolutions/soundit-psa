@@ -276,13 +276,18 @@ class StripeSyncService
 
         $stripeStatus = $stripeInvoice['status'] ?? null;
 
-        // MF2 — a degraded read must SCREAM (CLAUDE.md): StripeClient maps a
-        // malformed 2xx body to [], so a missing/blank status is drift, not a
-        // no-op. Never fall through to voiding an unknown state and reporting
-        // success (the false all-clear this whole fix exists to prevent).
-        if (! is_string($stripeStatus) || $stripeStatus === '') {
-            $message = 'Stripe returned no status for invoice '.$invoice->stripe_invoice_id.'; the hosted payment page may still be live — void it manually in Stripe.';
-            Log::warning('[StripeSync] Missing Stripe status on void', ['invoice_id' => $invoice->id]);
+        // MF2/R2B — a degraded read must SCREAM (CLAUDE.md). The response must BE
+        // the invoice we asked about, carrying a usable status: a missing/blank
+        // status OR a mismatched id is drift, not a no-op. Never fall through to
+        // voiding an unknown/other object and reporting success (the false
+        // all-clear this whole fix exists to prevent).
+        if (($stripeInvoice['id'] ?? null) !== $invoice->stripe_invoice_id
+            || ! is_string($stripeStatus) || $stripeStatus === '') {
+            $message = 'Stripe returned an unexpected response for invoice '.$invoice->stripe_invoice_id.'; the hosted payment page may still be live — void it manually in Stripe.';
+            Log::warning('[StripeSync] Unexpected Stripe GET response on void', [
+                'invoice_id' => $invoice->id,
+                'response_id' => $stripeInvoice['id'] ?? null,
+            ]);
             $invoice->update(['stripe_sync_error' => $message]);
 
             throw new StripeClientException($message);
@@ -339,12 +344,15 @@ class StripeSyncService
             throw new StripeClientException($message, $e->getCode(), $e);
         }
 
-        // MF2 — only record convergence (and kill the URL) once the void is
-        // CONFIRMED. An empty/unconfirmed 2xx must not read as success.
-        if (($result['status'] ?? null) !== 'void') {
+        // MF2/R2B — record convergence (and kill the URL) only once the void is
+        // CONFIRMED for THIS invoice: the response must identify the same invoice
+        // in status=void. A response for another id, or an empty/unconfirmed body,
+        // must not read as success.
+        if (($result['id'] ?? null) !== $invoice->stripe_invoice_id || ($result['status'] ?? null) !== 'void') {
             $message = 'Stripe did not confirm the void of invoice '.$invoice->stripe_invoice_id.'; the hosted payment page may still be live — void it manually in Stripe.';
             Log::warning('[StripeSync] Unconfirmed Stripe void response', [
                 'invoice_id' => $invoice->id,
+                'response_id' => $result['id'] ?? null,
                 'response_status' => $result['status'] ?? null,
             ]);
             $invoice->update(['stripe_sync_error' => $message]);

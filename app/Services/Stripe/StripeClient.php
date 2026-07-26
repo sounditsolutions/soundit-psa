@@ -12,8 +12,9 @@ class StripeClient
 
     public function __construct(
         private readonly array $config,
+        ?Client $http = null,
     ) {
-        $this->http = new Client([
+        $this->http = $http ?? new Client([
             'base_uri' => 'https://api.stripe.com',
             'timeout' => 30,
         ]);
@@ -230,8 +231,24 @@ class StripeClient
             }
 
             $body = (string) $response->getBody();
+            $decoded = json_decode($body, true);
 
-            return json_decode($body, true) ?? [];
+            // A well-formed Stripe response is a JSON object. An empty body is a
+            // legitimate no-content result, but a JSON SCALAR (true/1/"ok") or
+            // malformed body must NOT be coerced to [] — that reads downstream as
+            // "no data" and, worse, a scalar would hit this method's `array` return
+            // type as a TypeError that bypasses every StripeClientException catch,
+            // leaving a locally-voided invoice with no recorded sync error
+            // (psa-bl36l R2C). Convert every non-object shape to a StripeClientException
+            // so callers record and surface it.
+            if (is_array($decoded)) {
+                return $decoded;
+            }
+            if ($body === '') {
+                return [];
+            }
+
+            throw new StripeClientException('Stripe returned a non-object response body: '.substr($body, 0, 120));
         }
 
         throw new StripeClientException('Stripe request failed after max retries');

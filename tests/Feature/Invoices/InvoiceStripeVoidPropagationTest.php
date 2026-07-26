@@ -136,30 +136,86 @@ class InvoiceStripeVoidPropagationTest extends TestCase
         $this->assertNull($fresh->stripe_sync_error);
     }
 
-    public function test_void_screams_on_missing_or_unknown_stripe_status(): void
+    public function test_void_screams_on_missing_unknown_or_mismatched_stripe_get(): void
     {
-        // A malformed 2xx (StripeClient maps bad JSON to []) or an unexpected
-        // status must NOT fall through to voiding-and-reporting-success. A
-        // degraded read must SCREAM (CLAUDE.md), not fail open into false convergence.
-        foreach ([[], ['id' => 'in_x'], ['id' => 'in_x', 'status' => 'future_state']] as $i => $payload) {
+        // A missing status, an unexpected status, OR a response identifying a
+        // DIFFERENT invoice must NOT fall through to voiding-and-reporting-success.
+        // A degraded read must SCREAM (CLAUDE.md), not fail open (MF2 + R2B GET identity).
+        $cases = [
+            'empty' => [],                                            // no id, no status
+            'no_status' => ['id' => '__SELF__'],                      // right invoice, no status
+            'unknown_status' => ['id' => '__SELF__', 'status' => 'wat'], // right invoice, unknown status
+            'wrong_id' => ['id' => 'in_someone_else', 'status' => 'open'], // different invoice
+        ];
+
+        foreach ($cases as $name => $payload) {
             $invoice = $this->makeInvoice([
-                'stripe_invoice_id' => 'in_bad'.$i,
-                'stripe_invoice_url' => 'https://invoice.stripe.com/i/pay_bad'.$i,
+                'stripe_invoice_id' => 'in_bad_'.$name,
+                'stripe_invoice_url' => 'https://invoice.stripe.com/i/pay_'.$name,
             ]);
+            if (($payload['id'] ?? null) === '__SELF__') {
+                $payload['id'] = $invoice->stripe_invoice_id;
+            }
+
             $stripe = \Mockery::mock(StripeClient::class);
             $stripe->shouldReceive('getInvoice')->once()->andReturn($payload);
             $stripe->shouldNotReceive('voidInvoice');
 
             try {
                 (new StripeSyncService($stripe))->voidInvoiceInStripe($invoice);
-                $this->fail('Expected a throw for payload index '.$i);
+                $this->fail('Expected a throw for case '.$name);
             } catch (StripeClientException $e) {
                 // expected
             }
 
             $fresh = $invoice->fresh();
-            $this->assertNotNull($fresh->stripe_sync_error, 'error not recorded for payload '.$i);
-            $this->assertSame('https://invoice.stripe.com/i/pay_bad'.$i, $fresh->stripe_invoice_url, 'URL wrongly cleared for payload '.$i);
+            $this->assertNotNull($fresh->stripe_sync_error, 'error not recorded for '.$name);
+            $this->assertSame('https://invoice.stripe.com/i/pay_'.$name, $fresh->stripe_invoice_url, 'URL wrongly cleared for '.$name);
+        }
+    }
+
+    public function test_void_screams_when_the_void_response_is_for_a_different_invoice(): void
+    {
+        // R2B — a /void response identifying ANOTHER invoice (or none) is not proof
+        // the target was voided; it must not clear the URL or record convergence.
+        $invoice = $this->makeInvoice([
+            'stripe_invoice_id' => 'in_me',
+            'stripe_invoice_url' => 'https://invoice.stripe.com/i/pay_me',
+        ]);
+        $stripe = \Mockery::mock(StripeClient::class);
+        $stripe->shouldReceive('getInvoice')->once()->with('in_me')
+            ->andReturn(['id' => 'in_me', 'status' => 'open']);
+        $stripe->shouldReceive('voidInvoice')->once()->with('in_me')
+            ->andReturn(['id' => 'in_someone_else', 'status' => 'void']);
+
+        try {
+            (new StripeSyncService($stripe))->voidInvoiceInStripe($invoice);
+            $this->fail('Expected a throw when the void response is for a different invoice.');
+        } catch (StripeClientException $e) {
+            // expected
+        }
+
+        $fresh = $invoice->fresh();
+        $this->assertNotNull($fresh->stripe_sync_error);
+        $this->assertSame('https://invoice.stripe.com/i/pay_me', $fresh->stripe_invoice_url);
+    }
+
+    public function test_stripe_client_screams_on_a_scalar_json_body(): void
+    {
+        // R2C — a valid-JSON scalar 2xx (true/1/"ok") must become a
+        // StripeClientException, not a TypeError that bypasses every catch and
+        // leaves a locally-voided invoice with no recorded sync error.
+        foreach (['true', '1', '"ok"'] as $body) {
+            $mock = new \GuzzleHttp\Handler\MockHandler([new \GuzzleHttp\Psr7\Response(200, [], $body)]);
+            $http = new \GuzzleHttp\Client(['handler' => \GuzzleHttp\HandlerStack::create($mock)]);
+            $client = new StripeClient(['secret_key' => 'sk_test'], $http);
+
+            try {
+                $client->getInvoice('in_scalar');
+                $this->fail('Expected a StripeClientException for scalar body '.$body);
+            } catch (StripeClientException $e) {
+                $this->assertStringContainsString('non-object', $e->getMessage());
+            }
         }
     }
 
@@ -516,5 +572,62 @@ class InvoiceStripeVoidPropagationTest extends TestCase
         $this->assertSame(InvoiceStatus::Void, $fresh->status);              // not re-inflated
         $this->assertSame('540.00', $fresh->total);                         // stale money write refused
         $this->assertSame('already paid — reconcile', $fresh->stripe_sync_error); // error preserved
+    }
+
+    // ── R2A: the QBO arm + awaitingSync of the portal poll must also gate on payability ──
+
+    public function test_portal_payment_status_poll_returns_no_url_for_a_void_qbo_invoice(): void
+    {
+        // Round 2 caught that only the Stripe arm was gated; a Void invoice with a
+        // qbo_invoice_id + configured billing URL still returned a pay URL.
+        Setting::setValue('portal_enabled', '1');
+        Setting::setValue('portal_billing_url', 'https://billing.example.test');
+        $client = Client::factory()->create();
+        $person = Person::create([
+            'client_id' => $client->id,
+            'person_type' => PersonType::User,
+            'first_name' => 'Portal', 'last_name' => 'User',
+            'email' => 'pollqbo-'.uniqid().'@example.test',
+            'is_active' => true, 'portal_enabled' => true, 'company_wide_access' => true,
+        ]);
+        $invoice = $this->makeInvoice([
+            'client_id' => $client->id,
+            'qbo_invoice_id' => 'qbo_void',
+            'status' => InvoiceStatus::Void,
+        ]);
+
+        $this->actingAs($person, 'portal')
+            ->getJson(route('portal.prepaid.payment-status', $invoice))
+            ->assertOk()
+            ->assertJsonPath('payment_url', null);
+    }
+
+    // ── R2D: a Void portal confirmation must show a truthful terminal state ──
+
+    public function test_portal_prepaid_confirmation_is_terminal_for_a_void_invoice(): void
+    {
+        Setting::setValue('portal_enabled', '1');
+        $client = Client::factory()->create();
+        $person = Person::create([
+            'client_id' => $client->id,
+            'person_type' => PersonType::User,
+            'first_name' => 'Portal', 'last_name' => 'User',
+            'email' => 'conf-'.uniqid().'@example.test',
+            'is_active' => true, 'portal_enabled' => true, 'company_wide_access' => true,
+        ]);
+        $invoice = $this->makeInvoice([
+            'client_id' => $client->id,
+            'stripe_invoice_id' => 'in_conf',
+            'stripe_invoice_url' => 'https://invoice.stripe.com/i/pay_conf',
+            'status' => InvoiceStatus::Void,
+        ]);
+
+        $this->actingAs($person, 'portal')
+            ->get(route('portal.prepaid.confirmation', $invoice))
+            ->assertOk()
+            ->assertDontSee('payment link shortly')   // no false "payment coming"
+            ->assertDontSee('pay_conf')               // no live Stripe pay URL
+            ->assertDontSee('View Invoice')           // dead link (Void 404s in portal) suppressed
+            ->assertSee('not payable');               // truthful terminal state
     }
 }
