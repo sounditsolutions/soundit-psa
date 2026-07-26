@@ -1,0 +1,657 @@
+[
+  {
+    "id": "psa-z30dv",
+    "title": "Backup state is UNVERIFIABLE to the agent: no comet_*/servosity_* read verbs — Chet cannot confirm any client's backup posture",
+    "description": "PROVENANCE: raised by CHET (house-staff-openclaw-c), Mattermost tooling channel 2026-07-25T15:13Z, a …[truncated for fixture]",
+    "notes": "REVISE round 4 @ 4376562 (base main 9b326d4, FF from ca22b43). All three R3 blockers addressed: (.9/.10) assertDrBackupRows enforces every REQUIRED DRBackup field's DOCUMENTED TYPE (company URI string — int rejected; agent_session/encryption_key stdClass; shadowprotect_keys array; non-empty device_name; product_type enum; int id) AND proves row.company URI resolves to the requested company id (foreign-tenant rows = drift, never projected — FOREIGN-TENANT-HOST leak test). drRow()/MCP fixtures rewritten to documented shape (objects as objects, SPX ShadowProtectKey canary; the old string-typed fixture shapes are now regression CASES that must drift). 14 wrong-type row regressions, each green only on R4. (.11) ServosityClient::getJson preserves JSON container identity (objects→stdClass) + invalid JSON THROWS ServosityShapeDriftException (ServosityClientException subclass — legacy catches/isHealthy contain it) instead of collapsing to []; all three seams validate the identity tree: results={} and account_counts/issue_counts=[] are drift at summary/DR/job seams (mock harness now wires every fixture through the production decode; NEW wire-level tests drive raw JSON bodies through a real client via Guzzle handler seam). results=[] / count-map {} pinned as the only verified zeros. (.9) job_run_history: no verified-zero claim from the undocumented envelope — per-account unverified_record_count + schema_documented=false, statuses records_observed/no_records_observed (Comet-dialect 'observed' language, .12 one-dialect preserved), copy says UNVERIFIED observation / NOT a verified zero / UNKNOWN. psa-bh1i4 description refreshed (stale available=false text replaced) + dep-linked to parent. (.10 LOW residual) cache-key vendor ids redacted from failure logs. gc-verify PASS (4347 tests/28786 assertions, pint, secret guard); reviewer adversarial rows re-probed directly — all drift.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "feature",
+    "assignee": "psa/review-lead",
+    "created_at": "2026-07-25T15:37:11.721112441Z",
+    "created_by": "manager-session-x",
+    "updated_at": "2026-07-26T02:43:16.574319819Z",
+    "started_at": "2026-07-25T19:25:39.583365497Z",
+    "metadata": {
+      "branch": "polecat/psa-z30dv",
+      "gc.routed_to": "",
+      "gc.session_name": "polecat-session-x",
+      "gc.work_dir": "/home/operator/town/worktrees/x",
+      "hold": "",
+      "review_gate": "",
+      "review_gate_decider": "",
+      "review_gate_head": "4376562",
+      "review_gate_hold": "",
+      "review_gate_provenance": "",
+      "review_gate_reviews": "psa-z30dv.13,psa-z30dv.14,psa-z30dv.15,psa-z30dv.16",
+      "target": "main",
+      "work_dir": "/home/operator/town/worktrees/x"
+    },
+    "dependencies": [
+      {
+        "issue_id": "psa-z30dv",
+        "depends_on_id": "psa-47vxh",
+        "type": "blocks",
+        "created_at": "2026-07-25T17:03:02Z",
+        "created_by": "manager-so-wisp-z4lw92p",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 1,
+    "comment_count": 15
+  },
+  {
+    "id": "psa-z30dv.16",
+    "title": "UX/A11Y re-review R4 (REGRESSION CHECK ONLY): psa-z30dv @ 4376562 — do new drift states use one dialect?",
+    "description": "*** ROUND 4 — ASYMMETRIC. READ THIS FIRST SO YOU SCOPE YOURSELF CORRECTLY. ***\npsa-z30dv @ 4376562,  …[truncated for fixture]",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "created_at": "2026-07-26T02:42:40.68734643Z",
+    "created_by": "manager-session-x",
+    "updated_at": "2026-07-26T02:43:13.459474614Z",
+    "metadata": {
+      "gc.routed_to": "psa/ux-reviewer"
+    },
+    "dependencies": [
+      {
+        "issue_id": "psa-z30dv.16",
+        "depends_on_id": "psa-z30dv",
+        "type": "parent-child",
+        "created_at": "2026-07-26T02:42:40Z",
+        "created_by": "manager-so-wisp-z4lw92p",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "psa-z30dv"
+  },
+  {
+    "id": "psa-z30dv.15",
+    "title": "PRODUCT re-review R4: psa-z30dv @ 4376562 — do tests now cross the JSON decode boundary?",
+    "description": "*** ROUND 4 — ASYMMETRIC. READ THIS FIRST SO YOU SCOPE YOURSELF CORRECTLY. ***\npsa-z30dv @ 4376562,  …[truncated for fixture]",
+    "status": "in_progress",
+    "priority": 2,
+    "issue_type": "task",
+    "assignee": "product-reviewer-session-x",
+    "created_at": "2026-07-26T02:42:38.36915239Z",
+    "created_by": "manager-session-x",
+    "updated_at": "2026-07-26T02:44:50.382877479Z",
+    "started_at": "2026-07-26T02:44:31.812626567Z",
+    "metadata": {
+      "gc.routed_to": "psa/product-reviewer",
+      "gc.session_name": "polecat-session-x",
+      "gc.work_dir": "/home/operator/town/worktrees/x"
+    },
+    "dependencies": [
+      {
+        "issue_id": "psa-z30dv.15",
+        "depends_on_id": "psa-z30dv",
+        "type": "parent-child",
+        "created_at": "2026-07-26T02:42:38Z",
+        "created_by": "manager-so-wisp-z4lw92p",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "psa-z30dv"
+  },
+  {
+    "id": "psa-z30dv.14",
+    "title": "SECURITY re-review R4: psa-z30dv @ 4376562 — foreign-company row must not reach verified_live",
+    "description": "*** ROUND 4 — ASYMMETRIC. READ THIS FIRST SO YOU SCOPE YOURSELF CORRECTLY. ***\npsa-z30dv @ 4376562,  …[truncated for fixture]",
+    "status": "in_progress",
+    "priority": 2,
+    "issue_type": "task",
+    "assignee": "security-reviewer-session-x",
+    "created_at": "2026-07-26T02:42:35.973011468Z",
+    "created_by": "manager-session-x",
+    "updated_at": "2026-07-26T02:45:03.37177769Z",
+    "started_at": "2026-07-26T02:44:36.70518637Z",
+    "metadata": {
+      "gc.routed_to": "psa/security-reviewer",
+      "gc.session_name": "polecat-session-x",
+      "gc.work_dir": "/home/operator/town/worktrees/x"
+    },
+    "dependencies": [
+      {
+        "issue_id": "psa-z30dv.14",
+        "depends_on_id": "psa-z30dv",
+        "type": "parent-child",
+        "created_at": "2026-07-26T02:42:35Z",
+        "created_by": "manager-so-wisp-z4lw92p",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "psa-z30dv"
+  },
+  {
+    "id": "psa-z30dv.13",
+    "title": "ARCHITECTURE re-review R4: psa-z30dv @ 4376562 — is shape proof now a single precondition, not N call sites?",
+    "description": "*** ROUND 4 — ASYMMETRIC. READ THIS FIRST SO YOU SCOPE YOURSELF CORRECTLY. ***\npsa-z30dv @ 4376562,  …[truncated for fixture]",
+    "status": "in_progress",
+    "priority": 2,
+    "issue_type": "task",
+    "assignee": "architect-reviewer-session-x",
+    "created_at": "2026-07-26T02:42:33.752754331Z",
+    "created_by": "manager-session-x",
+    "updated_at": "2026-07-26T02:45:03.608368874Z",
+    "started_at": "2026-07-26T02:44:38.740382061Z",
+    "metadata": {
+      "gc.routed_to": "psa/architect-reviewer",
+      "gc.session_name": "polecat-session-x",
+      "gc.work_dir": "/home/operator/town/worktrees/x"
+    },
+    "dependencies": [
+      {
+        "issue_id": "psa-z30dv.13",
+        "depends_on_id": "psa-z30dv",
+        "type": "parent-child",
+        "created_at": "2026-07-26T02:42:33Z",
+        "created_by": "manager-so-wisp-z4lw92p",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "psa-z30dv"
+  },
+  {
+    "id": "psa-z30dv.12",
+    "title": "UX/A11Y re-review R3: psa-z30dv @ ca22b43 (VERIFY .8 round-2 findings resolved)",
+    "description": "*** VERIFICATION PASS — ROUND 3. NOT A FRESH REVIEW. ***\npsa-z30dv has been gated REVISE twice: at 0 …[truncated for fixture]",
+    "notes": "UX/A11Y round-3 verification of ca22b43 against predecessor psa-z30dv.8, the round-2 adjudication, DESIGN.md, and psa-enpew @ f306961.\n\nScope: this rework adds no rendered layout or interaction. DESIGN.md's Flat Rule, Signal Gold Rule, Montserrat/Inter typography, focus/keyboard, contrast, and reduced-motion rules are not implicated. The material UX surface is the MCP payload and the text an operator's agent relays to a human.\n\nAssigned findings:\n\n1. RESOLVED — newly validated row-level failures emit relay-ready schema_drift / UNKNOWN copy. ServosityReadOnlyToolset.php:335 sends every DRBackup results row through assertDrBackupRows(); a fragment such as {'id':501}, a non-object row, or a row missing a documented required field throws drift for the whole read. The failure then uses the same liveFailurePayload() path as an invalid results container: status=schema_drift; “Live DR backup accounts are UNKNOWN”; “Do not read this as zero/none”; the consequence explicitly says per-device provisioning could not be verified and every upstream_check is unverified; and the copy directs verification in the Servosity console. job_run_history becomes not_checked and separately explains that the live DR account list was unavailable or malformed, so no account IDs could be queried and job-level state is UNKNOWN. This meets DESIGN.md's Creative North Star “The Operations Desk” and “One operator, full picture”: the uncertainty, affected decision, and next action are together on the decision surface.\n\n2. RESOLVED — row-level validation introduces no second degradation dialect. Both malformed containers and malformed rows travel through cachedLiveFetch(status=schema_drift) and the single liveFailurePayload() vocabulary; device reconciliation stays unverified, and dependent history stays not_checked. Valid empty arrays alone remain status=ok with explicit verified-zero copy. This preserves DESIGN.md's “clarity over chrome” discipline and the Badges/status rule in semantic form: status is carried by explicit text, never by a color-only implication.\n\n3. RESOLVED — the predecessor's required drift fixture matrix is now committed. driftedCountMapProvider covers missing, null, string, number, and object-of-objects for both account_counts and issue_counts, asserting schema_drift, null rather than a clean-empty array, UNKNOWN/not-zero copy, and accurate missing-versus-malformed wording. driftedEnvelopeProvider covers missing/null/string/number results, non-integer count, and invalid-JSON-to-[] at all three seams (summary, DR accounts, job records), while adversarial row tests pin id-only, non-object, and missing-required-field DRBackup rows. The runtime row path was also checked directly for the relay-ready copy above.\n\n4. RESOLVED — no regression in the psa-47vxh-aligned freshness/UNKNOWN contract or “Success” wording. Provisioning freshness remains explicitly UNVERIFIABLE, live sections retain live_checked_at, and unknown Comet outcomes remain last_backup_unknown rather than failed or passing. ca22b43's Comet surface and psa-enpew @ f306961 use the same job_state vocabulary for the shared cases: unavailable, not_queried, no_backup_jobs_observed, and ok; both say UNKNOWN/not passing for degraded reads, and successful jobs are labelled “Success,” not “Completed.” Servosity's records_observed/no_runs_on_record/shape_unrecognized statuses describe its deliberately weaker record-count contract and do not conflict with the Comet outcome vocabulary.\n\nCopy is plain, operational, and free of marketing voice. It says what could not be checked, prevents the false all-clear, states the consequence, and gives the next verification step.\n\nQuality evidence:\n- ca22b43: ServosityReadOnlyToolsetTest, ServosityClientSanitizationTest, BackupReadToolsMcpTest, CometReadOnlyToolsetTest — 102 passed, 387 assertions.\n- psa-enpew @ f306961: TriageCometToolExecutorTest, CometJobServiceTest — 24 passed, 96 assertions.\n\nVERDICT: PROCEED",
+    "status": "closed",
+    "priority": 2,
+    "issue_type": "task",
+    "assignee": "ux-reviewer-session-x",
+    "created_at": "2026-07-26T01:45:34.671178711Z",
+    "created_by": "manager-session-x",
+    "updated_at": "2026-07-26T01:51:34.045404897Z",
+    "started_at": "2026-07-26T01:48:03.526578287Z",
+    "closed_at": "2026-07-26T01:51:16.375853957Z",
+    "close_reason": "UX/A11Y round-3 verification complete — all assigned findings resolved; VERDICT: PROCEED",
+    "metadata": {
+      "gc.routed_to": "psa/ux-reviewer",
+      "gc.session_name": "polecat-session-x",
+      "gc.work_dir": "/home/operator/town/worktrees/x",
+      "gc.work_outcome": "no-op"
+    },
+    "dependencies": [
+      {
+        "issue_id": "psa-z30dv.12",
+        "depends_on_id": "psa-z30dv",
+        "type": "parent-child",
+        "created_at": "2026-07-26T01:45:34Z",
+        "created_by": "manager-so-wisp-z4lw92p",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "psa-z30dv"
+  },
+  {
+    "id": "psa-z30dv.11",
+    "title": "PRODUCT re-review R3: psa-z30dv @ ca22b43 (VERIFY .7 round-2 findings resolved)",
+    "description": "*** VERIFICATION PASS — ROUND 3. NOT A FRESH REVIEW. ***\npsa-z30dv has been gated REVISE twice: at 0 …[truncated for fixture]",
+    "notes": "PRODUCT RE-REVIEW R3 — ca22b43 against 75427d5\n\n1. ACCEPTANCE EVIDENCE — NOT RESOLVED; MERELY IMPROVED. The committed providers now cover missing, null, string, number, and bad nested-value shapes for both count maps, and missing/null/scalar results at all three toolset projection seams. The focused suite passes. But the tests inject already-decoded PHP arrays and do not cover the client decode boundary where the remaining false-clear lives: ServosityClient uses json_decode($body, true), which collapses JSON object and array container identity.\n\nDirect verification at ca22b43:\n- A vendor payload with count=0 and results={} decodes identically to count=0 and results=[]. assertDrfEnvelope accepts it. live_dr_backups can therefore emit status=ok/count=0 with the \"verified zero\" note, and backup-jobs can emit no_runs_on_record, from a wrong-type results object.\n- A documented object count map sent as account_counts:[] (or issue_counts:[]) decodes to [], and validatedIntMap returns map=[] with no error. With the sibling map valid, live.status remains ok and the malformed array reads as verified zero.\n\nThis is the same product-level boundary as the prior blocker: a small-MSP operator still cannot always distinguish \"verified zero coverage/no runs\" from \"the vendor response shape changed and we could not check.\" Preserve JSON object-vs-array identity before normalizing (and reject invalid JSON rather than collapsing it), then add client-through-tool regressions for empty-object results at summary, DR, and job seams and empty-array account_counts/issue_counts. Keep results=[] and count-map={} as the explicit valid-empty counter-cases.\n\n2. ROW-LEVEL FALSE CLEAR — RESOLVED. assertDrBackupRows now validates every consumed DR row before reconciliation; the id-only adversarial row and non-object rows downgrade the whole DR read to schema_drift, devices remain upstream_check=unverified, and job history becomes not_checked. This closes the adjudicated R2 row hole rather than relying only on the envelope validator.\n\n3. COMET UNKNOWN OUTCOMES — RESOLVED / NO REGRESSION. Unrecognized codes remain last_backup_unknown, have their own summary count, and leave last_backup_failed and last_backup_succeeded at zero. Both service and MCP-boundary regressions pass.\n\n4. FRESHNESS-DOMAIN SEPARATION — RESOLVED / NO REGRESSION. provisioning_freshness remains explicitly UNVERIFIABLE, per-device upstream_check is reconciled against the live DR list, live sections carry live_checked_at, and the top-level freshness note scopes data_as_of/data_stale only to synced_account_counts. Service and MCP coverage still pass.\n\nValidation: php artisan test tests/Feature/Comet/CometReadOnlyToolsetTest.php tests/Feature/Servosity/ServosityReadOnlyToolsetTest.php tests/Feature/Mcp/BackupReadToolsMcpTest.php — 101 passed, 377 assertions. Additional direct probe: results={} was ACCEPTED_AS_VALID by assertDrfEnvelope; an empty-list count map returned map=[] / why=null.\n\nVERDICT: REVISE — JSON object/array collapse still turns wrong-type empty containers into verified zero.",
+    "status": "closed",
+    "priority": 2,
+    "issue_type": "task",
+    "assignee": "product-reviewer-session-x",
+    "created_at": "2026-07-26T01:45:32.543059401Z",
+    "created_by": "manager-session-x",
+    "updated_at": "2026-07-26T01:50:53.633272722Z",
+    "started_at": "2026-07-26T01:47:29.246109904Z",
+    "closed_at": "2026-07-26T01:50:46.724498791Z",
+    "close_reason": "Product round-3 verification complete; revision required because JSON object/array container identity is lost before validation, preserving a false verified-zero path.",
+    "metadata": {
+      "gc.routed_to": "psa/product-reviewer",
+      "gc.session_name": "polecat-session-x",
+      "gc.work_dir": "/home/operator/town/worktrees/x",
+      "gc.work_outcome": "shipped"
+    },
+    "dependencies": [
+      {
+        "issue_id": "psa-z30dv.11",
+        "depends_on_id": "psa-z30dv",
+        "type": "parent-child",
+        "created_at": "2026-07-26T01:45:32Z",
+        "created_by": "manager-so-wisp-z4lw92p",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "psa-z30dv"
+  },
+  {
+    "id": "psa-z30dv.10",
+    "title": "SECURITY/DATA-SAFETY re-review R3: psa-z30dv @ ca22b43 (VERIFY .6 round-2 findings resolved)",
+    "description": "*** VERIFICATION PASS — ROUND 3. NOT A FRESH REVIEW. ***\npsa-z30dv has been gated REVISE twice: at 0 …[truncated for fixture]",
+    "notes": "Security/data-safety re-review R3 of psa-z30dv at ca22b43 (base main 9b326d4), limited to predecessor psa-z30dv.6 and the round-2 row-shape adjudication.\n\n1. NOT RESOLVED — HIGH / GATE-BLOCKING: the container drift matrix is now committed and complete, but the DRBackup ROW validator still accepts malformed documented shapes as verified evidence.\n\nCommitted matrix enumeration:\n- account_counts: missing, null, string, number, and object-of-objects are each covered by driftedCountMapProvider and assert schema_drift + null/UNKNOWN.\n- issue_counts: missing, null, string, number, and object-of-objects are each covered by the same provider and assertions.\n- results: missing, null, string, number, non-integer count, and invalid-JSON-collapsed-to-[] are covered by driftedEnvelopeProvider at all three projection seams (company summary, DR list, and job records). The well-formed empty DR list and zero job-record cases are separately pinned as verified-zero counter-cases.\n- Distinguishing check: transplanting the new id-only row regression onto 75427d5 fails with actual live_dr_backups.status=ok, so the R3 row test does exercise the broken R2 behavior. The new client sanitization regression also fails against 75427d5 by exposing the configured host.\n\nRemaining blocker:\n- Official OpenAPI retrieved 2026-07-26 defines DRBackup.agent_session as an AgentSession object, shadowprotect_keys as an array of ShadowProtectKey objects, encryption_key as a DRBackupEncryptionKeyShort object, and company as a URI string. assertDrBackupRows() (ca22b43 lines 608-631) only checks array_key_exists for the first three; it even permits an integer company. It also does not enforce the documented non-empty device_name or product_type enum.\n- The committed supposedly-valid drRow() fixture itself supplies agent_session as a URL string and encryption_key as a string, so green tests are normalizing a malformed vendor row rather than pinning the documented row shape.\n- Exact-commit adversarial proof: I supplied a full row with id/device_name/product_type/company present but agent_session='not-the-documented-object', shadowprotect_keys='not-the-documented-array', and encryption_key='not-the-documented-object'. At ca22b43 the expected schema_drift assertion failed with actual status=ok. Since id 501 is admitted to the internal id set, a local asset carrying servosity_dr_backup_id=501 is then marked verified_live. This is the same false-clear class the round-2 adjudication required R3 to close.\n- Data-scope corollary: the required company field is not checked against the requested company id. A structurally plausible foreign-company row returned by the untrusted vendor response can therefore be projected (including its device name) and can verify a local matching id. The row validator should validate the documented types and prove row.company belongs to the company-scoped request before accepting any row as evidence.\n\n2. RESOLVED — MEDIUM: raw Servosity exception detail is sanitized at the client seam. Both request() and requestWithMfa() route Guzzle failures through sanitizedFailure() before local logging/wrapping; log context is limited to method, relative endpoint, exception class, and code, and the public exception message no longer contains the Guzzle message. The focused client regression passes at ca22b43 and fails against 75427d5. The new getBackupJobs() path reuses request(), so it does not introduce a raw exception-message path.\n\n3. RESOLVED for the predecessor's LOW payload/read-path findings: CometClient::getJobsForUser() no longer logs the username or raw vendor exception message, and Servosity/Comet MCP payloads omit raw usernames, group ids, and dr_backup_id (focused boundary tests pass). Residual LOW hardening: cachedLiveFetch() logs the full cache_key, whose DR/job keys embed servosity_company_id or backupId; redact/hash those identifiers if logs are in scope for identifier minimization, but this is not the gate blocker above.\n\nNo regression found in the already-confirmed R2 items: no auth/guard/grant/client-resolution surface changed; Comet unknown outcomes remain first-class UNKNOWN; freshness planes remain separated; malformed containers still degrade loudly.\n\nVerification:\n- git merge-base --is-ancestor 9b326d4 ca22b43: PASS.\n- git diff --check 75427d5..ca22b43: PASS.\n- Exact ca22b43 focused suites: 102 passed, 387 assertions (ServosityReadOnlyToolsetTest, ServosityClientSanitizationTest, BackupReadToolsMcpTest, CometReadOnlyToolsetTest).\n- R2 transplant spot-check: 2 expected failures (id-only DR row returned ok; raw configured host reached exception message).\n- R3 adversarial wrong-type required-field test: expected schema_drift, actual ok; temporary diagnostic removed and worktree restored clean.\n\nVERDICT: REVISE — malformed required DRBackup field types still produce ok/verified_live, and row.company is not proven to match the requested client scope",
+    "status": "closed",
+    "priority": 2,
+    "issue_type": "task",
+    "assignee": "security-reviewer-session-x",
+    "created_at": "2026-07-26T01:45:30.484457194Z",
+    "created_by": "manager-session-x",
+    "updated_at": "2026-07-26T01:55:01.984932203Z",
+    "started_at": "2026-07-26T01:47:16.011327988Z",
+    "closed_at": "2026-07-26T01:54:44.99918132Z",
+    "close_reason": "Security review complete: REVISE for remaining DRBackup row-shape and client-scope validation gap",
+    "metadata": {
+      "gc.routed_to": "psa/security-reviewer",
+      "gc.session_name": "polecat-session-x",
+      "gc.work_dir": "/home/operator/town/worktrees/x",
+      "gc.work_outcome": "shipped"
+    },
+    "dependencies": [
+      {
+        "issue_id": "psa-z30dv.10",
+        "depends_on_id": "psa-z30dv",
+        "type": "parent-child",
+        "created_at": "2026-07-26T01:45:30Z",
+        "created_by": "manager-so-wisp-z4lw92p",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "psa-z30dv"
+  },
+  {
+    "id": "psa-z30dv.9",
+    "title": "ARCHITECTURE/CORRECTNESS re-review R3: psa-z30dv @ ca22b43 (VERIFY .5 round-2 findings resolved)",
+    "description": "*** VERIFICATION PASS — ROUND 3. NOT A FRESH REVIEW. ***\npsa-z30dv has been gated REVISE twice: at 0 …[truncated for fixture]",
+    "notes": "ARCHITECTURE/CORRECTNESS RE-REVIEW R3 — psa-z30dv @ ca22b43 (base 9b326d4; predecessor psa-z30dv.5 read in full)\n\nVerification performed:\n- Verified ca22b43 is a descendant of both base 9b326d4 and round-2 head 75427d5; the seven-file +733/-95 delta matches the assignment and `git diff --check 9b326d4..ca22b43` is clean.\n- Re-read the official Servosity OpenAPI at https://api.servosity.com/docs/?format=openapi (2026-07-26). `/dr-backups/` documents a required count/results envelope and DRBackup requires company (URI string), agent_session (AgentSession object), shadowprotect_keys (array), device_name (string), product_type (enum string), and encryption_key (DRBackupEncryptionKeyShort object), plus read-only integer id. `/backup-jobs/{backup_id}/` exists, but its 200 response contains only an empty description and declares no schema.\n- At the pinned ca22b43 worktree, the committed focused suites pass: ServosityReadOnlyToolsetTest + ServosityClientSanitizationTest + BackupReadToolsMcpTest = 77 tests / 286 assertions; Pint --test passes on the five inspected implementation/test files. A direct adversarial invocation of the committed shared validator prints `MALFORMED_ROW_ACCEPTED` for a row with id=501, company=42 and null agent_session/shadowprotect_keys/encryption_key.\n\n1. NOT RESOLVED — DR row shape validation is at the correct shared seam, but it is incomplete enough that malformed evidence can still become verified truth.\n- RESOLVED portions: `liveDrBackups()` calls `assertDrBackupRows()` before building IDs (`ServosityReadOnlyToolset.php:332-355`); non-object rows and the predecessor's exact `{id:501}` fragment downgrade the whole read to schema_drift/UNKNOWN; no row is silently filtered; a documented empty results list remains status=ok/count=0 and is explicitly named a verified zero. Those are the right architecture and the focused regressions pass.\n- BLOCKING remaining path: `assertDrBackupRows()` (`:608-630`) allows `company` to be an integer although the producer requires a URI string, and checks only key presence — not documented type — for `agent_session`, `shadowprotect_keys`, and `encryption_key`. Therefore `{id:501, device_name:'DONE-HOST', product_type:'DR_SERVER', company:42, agent_session:null, shadowprotect_keys:null, encryption_key:null}` passes the shared validator. `liveDrBackups()` then inserts id 501 into the trusted ID set (`:352-355`) and `upstreamCheck()` returns `verified_live` (`:430-431`). This is still a reachable malformed-row -> verified_live path, contrary to CLAUDE.md's “degraded read must SCREAM” convention.\n- The claimed “full documented shape” fixture is itself authored to the implementation rather than copied from the producer: `drRow()` (`ServosityReadOnlyToolsetTest.php:145-157`) uses a URL string/null for documented object `agent_session` and a string for documented object `encryption_key`. Its green tests therefore miss the wrong-type path — exactly the CLAUDE.md rule that a mock authored from code under test proves nothing. Enforce the documented top-level types (without inspecting/projecting credential values) and add wrong-type regressions for every required field.\n\n2. NOT RESOLVED — the refuted “structurally unavailable” premise is gone and the real endpoint is called, but its replacement still guesses the vendor response shape.\n- RESOLVED portions: `ServosityClient::getBackupJobs()` calls GET `backup-jobs/{backup_id}/` (`ServosityClient.php:232-245`); `jobRunHistory()` uses it through the cached live-fetch seam with a reported 25-account cap and two-failure breaker (`ServosityReadOnlyToolset.php:454-546`). Request failures are `unavailable`, unrecognised responses are `shape_unrecognized`, outcomes remain explicitly UNKNOWN, and grep finds no stale `available=false`, “not available through this integration”, or “structurally unavailable” assertion in ca22b43 code/tests.\n- BLOCKING convention violation: the official 200 response declares no schema, but `jobRunHistory()` assumes count/results and emits `records_observed` or a “verified zero” `no_runs_on_record` from `count` (`:492-513`). The tests explicitly fabricate that “standard list envelope” (`ServosityReadOnlyToolsetTest.php:16-29, 122-126, 255-308`) rather than use a captured vendor payload; the spec proves the endpoint exists but does not prove those fields or their semantics. This conflicts with CLAUDE.md's mandatory “field names come from the vendor producer” and “fixtures copied from the vendor's real payload” rules. Until psa-bh1i4 captures a real authenticated response, defer record-count claims or treat every response shape as unproven/UNKNOWN; do not call an inferred `count=0` a verified zero.\n- TECH DEBT: psa-bh1i4's durable description is stale after R3 — it still says this tool emits `job_run_history.available=false`, and it is not linked to the parent. Update/link it so the accepted outcome deferral survives handoff accurately.\n\nNo regression observed in the previously settled planes: Comet unknown outcomes, Servosity count-map/container drift handling, freshness separation, staff explicit-grant boundary, standalone/no-tenant architecture, and thin service placement remain intact. No migration, controller, portal-auth, timezone, file-driver, or write-surface change is introduced.\n\nVERDICT: REVISE — documented DRBackup types are not enforced and job-count fixtures still guess an undocumented response envelope",
+    "status": "closed",
+    "priority": 2,
+    "issue_type": "task",
+    "assignee": "architect-reviewer-session-x",
+    "created_at": "2026-07-26T01:45:28.411547695Z",
+    "created_by": "manager-session-x",
+    "updated_at": "2026-07-26T01:54:28.859653039Z",
+    "started_at": "2026-07-26T01:47:58.582989362Z",
+    "closed_at": "2026-07-26T01:54:28.859653039Z",
+    "close_reason": "Architecture/correctness R3 verification completed; verdict REVISE recorded in notes.",
+    "metadata": {
+      "gc.routed_to": "psa/architect-reviewer",
+      "gc.session_name": "polecat-session-x",
+      "gc.work_dir": "/home/operator/town/worktrees/x"
+    },
+    "dependencies": [
+      {
+        "issue_id": "psa-z30dv.9",
+        "depends_on_id": "psa-z30dv",
+        "type": "parent-child",
+        "created_at": "2026-07-26T01:45:28Z",
+        "created_by": "manager-so-wisp-z4lw92p",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "psa-z30dv"
+  },
+  {
+    "id": "psa-z30dv.8",
+    "title": "UX/A11Y re-review: psa-z30dv Comet+Servosity backup read verbs @ 75427d5 (VERIFY .4 findings resolved)",
+    "description": "UX/A11Y re-review of psa-z30dv @ 75427d5 (base main 9b326d4, verified clean fast-forward).\n\n*** THIS …[truncated for fixture]",
+    "notes": "UX/A11Y verification of 75427d5 against predecessor psa-z30dv.4 and DESIGN.md.\n\nScope: this rework still adds no rendered interaction or layout. The Flat Rule, Signal Gold Rule, typography, focus/keyboard, contrast, and reduced-motion rules are not implicated. The material UX surface is the MCP catalog and payload relayed to the operator.\n\nResolved verification items:\n\n1. RESOLVED — Servosity freshness domains are now separate. ServosityReadOnlyToolset.php:202-207 emits provisioning_freshness with data_as_of:null, data_stale:null, and explicit UNVERIFIABLE copy; every device also carries upstream_check reconciled against live_dr_backups, with unverified/upstream_missing/not_provisioned explained on the decision surface. The top-level freshness_note at :99 scopes data_as_of/data_stale to ONLY synced_account_counts. This meets DESIGN.md’s Creative North Star “The Operations Desk” / “One operator, full picture”: uncertainty is visible where the agent decides what to relay.\n\n2. RUNTIME BEHAVIOR RESOLVED — required live containers no longer collapse to clean all-clears. assertDrfEnvelope() at :448-452 rejects a missing, null, or non-array results key; liveFailurePayload() at :497-511 returns schema_drift/unavailable with relay-ready “UNKNOWN,” “Do not read this as zero/none,” consequence, and console-verification copy. validatedIntMap() at :524-545 returns null for absent/non-array/invalid account_counts or issue_counts; liveCompanyState() at :289-301 downgrades the section to schema_drift and names which evidence could not be checked. A well-formed empty DR list remains explicitly distinguished as a verified zero.\n\n3. RESOLVED — unknown Comet statuses are first-class unknowns. CometReadOnlyToolset.php:518-533 emits job_state:last_backup_unknown, increments summary.last_backup_unknown, preserves last_backup_status as Unknown, and states unambiguously that the outcome is neither passing nor a confirmed failure and must be checked in the Comet console. There is no longer a self-contradicting unknown/failed pair.\n\nCross-PR dialect: the current psa-enpew rework worktree (HEAD af73c27 plus its in-progress rework) now emits explicit state=unavailable or state=not_queried, describes both as UNKNOWN/not passing, and reserves state=ok + [] for a successful query that genuinely returned no jobs. That is consistent with this PR’s loud degradation vocabulary; no divergence found.\n\nBlocking acceptance gap:\n\n[P1 verification gap] The bead explicitly requires drift fixtures for missing/null/wrong-type account_counts, issue_counts, and results. The suite at 75427d5 does not contain that matrix. It covers missing account_counts, missing issue_counts, one invalid scalar value inside account_counts, an entirely missing summary envelope, and a DR envelope missing results. It does not pin present-null or wrong-container-type account_counts, present-null or wrong-container-type issue_counts, or present-null/wrong-container-type results. Because these are the exact reachable false-clear seams this verification pass was created to lock down, add data-driven regression cases for all three shapes and all three degradations; assert status, null rather than [], and relay-ready copy (including accurate missing-versus-malformed wording).\n\nQuality evidence: php artisan test tests/Feature/Servosity/ServosityReadOnlyToolsetTest.php tests/Feature/Comet/CometReadOnlyToolsetTest.php tests/Feature/Mcp/BackupReadToolsMcpTest.php — 63 passed, 256 assertions.\n\nVERDICT: REVISE — required null and wrong-type drift fixtures are missing for account_counts, issue_counts, and results",
+    "status": "closed",
+    "priority": 2,
+    "issue_type": "task",
+    "assignee": "ux-reviewer-session-x",
+    "created_at": "2026-07-25T22:15:12.417293505Z",
+    "created_by": "manager-session-x",
+    "updated_at": "2026-07-25T22:21:07.051910281Z",
+    "started_at": "2026-07-25T22:19:48.606084632Z",
+    "closed_at": "2026-07-25T22:20:57.817544469Z",
+    "close_reason": "UX/A11Y verification complete; revision required for the explicit drift-fixture matrix",
+    "metadata": {
+      "gc.routed_to": "psa/ux-reviewer",
+      "gc.session_name": "polecat-session-x",
+      "gc.work_dir": "/home/operator/town/worktrees/x",
+      "gc.work_outcome": "shipped"
+    },
+    "dependencies": [
+      {
+        "issue_id": "psa-z30dv.8",
+        "depends_on_id": "psa-z30dv",
+        "type": "parent-child",
+        "created_at": "2026-07-25T22:15:12Z",
+        "created_by": "manager-so-wisp-z4lw92p",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "psa-z30dv"
+  },
+  {
+    "id": "psa-z30dv.7",
+    "title": "PRODUCT re-review: psa-z30dv Comet+Servosity backup read verbs @ 75427d5 (VERIFY .3 findings resolved)",
+    "description": "PRODUCT re-review of psa-z30dv @ 75427d5 (base main 9b326d4, verified clean fast-forward).\n\n*** THIS …[truncated for fixture]",
+    "notes": "PRODUCT RE-REVIEW — 75427d5 against 9b326d4\n\nVerification result:\n\n1. RESOLVED — unknown Comet outcomes are first-class UNKNOWN, not failures. CometReadOnlyToolset now maps unrecognized codes to job_state=last_backup_unknown, carries a dedicated summary count, leaves last_backup_failed at zero, and adds explicit operator guidance that the outcome is neither passing nor a confirmed failure. The service regression for code 8500 asserts exactly last_backup_unknown/count=1/failed=0/succeeded=0, and the MCP-boundary test asserts the same state survives transport.\n\n2. RESOLVED — Servosity device provisioning no longer borrows freshness from license sync. The top-level data_as_of/data_stale envelope explicitly covers only synced_account_counts. Local enabled/provisioned records have an explicit provisioning_freshness={data_as_of:null,data_stale:null} UNVERIFIABLE contract, while every device carries upstream_check from the live DR-account reconciliation (verified_live/upstream_missing/unverified/not_provisioned) and the live list carries its own live_checked_at. Service tests prove a fresh license sync does not bless the local plane and distinguish provisioned/pending devices; the MCP-boundary test proves verified_live plus the unverifiable provisioning envelope survive transport. Nothing in this plane is called synced without an observation stamp.\n\n3. BLOCKING EVIDENCE GAP — the implementation appears to fail closed for all malformed Servosity containers, but the re-review assignment explicitly requires drift fixtures for missing, null, and wrong-type account_counts, issue_counts, and results. The suite at this head does not provide that matrix:\n- account_counts: missing is covered; null and a wrong-type container are not. The non-integer-entry test exercises bad values inside an array, not a non-array container.\n- issue_counts: missing is covered; null and a wrong-type container are not.\n- results: the summary and DR tests cover absent keys (via [] / an unexpected object); null and wrong-type results containers are not covered.\nThis false-clear boundary is the acceptance bar of the PR, so passing behavior for the currently sampled malformed shapes is insufficient. Add compact data-driven fixtures for all three variants on both required count maps and both response-envelope results fields, asserting schema_drift/UNKNOWN and never status=ok or verified zero. A valid present empty results array should remain the only verified-zero counter-case.\n\n4. CROSS-PR DIALECT — the current psa-enpew rework workspace aligns with this PR: CometJobService now emits explicit ok/unavailable/not_queried states, and the asset surface says an unavailable read is UNKNOWN rather than clean-empty. That work is still uncommitted atop review head af73c27, so the two changes must not be allowed to ship with psa-enpew's pre-rework clean-empty behavior. Do not weaken this PR's loud unavailable/UNKNOWN vocabulary.\n\nValidation: php artisan test tests/Feature/Comet/CometReadOnlyToolsetTest.php tests/Feature/Servosity/ServosityReadOnlyToolsetTest.php tests/Feature/Mcp/BackupReadToolsMcpTest.php — 63 passed, 256 assertions.\n\nVERDICT: REVISE — Required Servosity drift fixtures do not cover null and wrong-type containers.",
+    "status": "closed",
+    "priority": 2,
+    "issue_type": "task",
+    "assignee": "product-reviewer-session-x",
+    "created_at": "2026-07-25T22:15:09.808677662Z",
+    "created_by": "manager-session-x",
+    "updated_at": "2026-07-25T22:20:27.533498489Z",
+    "started_at": "2026-07-25T22:17:07.322389737Z",
+    "closed_at": "2026-07-25T22:20:15.08611917Z",
+    "close_reason": "Product re-review completed; revision required for the explicit Servosity drift-fixture matrix.",
+    "metadata": {
+      "gc.routed_to": "psa/product-reviewer",
+      "gc.session_name": "polecat-session-x",
+      "gc.work_dir": "/home/operator/town/worktrees/x",
+      "gc.work_outcome": "shipped"
+    },
+    "dependencies": [
+      {
+        "issue_id": "psa-z30dv.7",
+        "depends_on_id": "psa-z30dv",
+        "type": "parent-child",
+        "created_at": "2026-07-25T22:15:09Z",
+        "created_by": "manager-so-wisp-z4lw92p",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "psa-z30dv"
+  },
+  {
+    "id": "psa-z30dv.6",
+    "title": "SECURITY/DATA-SAFETY re-review: psa-z30dv Comet+Servosity backup read verbs @ 75427d5 (VERIFY .2 findings resolved)",
+    "description": "SECURITY/DATA-SAFETY re-review of psa-z30dv @ 75427d5 (base main 9b326d4, verified clean fast-forwar …[truncated for fixture]",
+    "notes": "Security/data-safety re-review of psa-z30dv at 75427d5 (base 9b326d4), focused on predecessor psa-z30dv.2.\n\nResolved and re-verified:\n- The original HIGH false-clear runtime path is fixed. ServosityReadOnlyToolset::assertDrfEnvelope() now requires integer count + array results; invalid-JSON collapse to [] becomes schema_drift. validatedIntMap() rejects missing/null/non-array maps, nested/non-integer values, unsafe keys, and oversized maps. Both live sections use explicit UNKNOWN/UNAVAILABLE copy; only a well-formed empty results array yields the verified-zero DR copy.\n- An isolated adversarial matrix at the exact commit exercised account_counts and issue_counts as null/string/number/object-of-objects; results as missing/null/string/number/invalid-JSON []; partial rows with one required map missing; and the valid-empty counter-case. All 40 assertions passed: malformed cases returned schema_drift/UNKNOWN, while only valid [] returned status=ok + verified zero.\n- Predecessor #3 is materially resolved: count values must be integers and keys are bounded/conservative; vendor free text is fenced. #4 is resolved with an explicitly UNVERIFIABLE local provisioning plane plus per-device upstream_check reconciliation. #5 is resolved with bounded timeouts, short result/failure caches, a username cap, and a two-failure circuit breaker.\n- Authorization/scope remains PASS. The rework delta 06b91ec..75427d5 does not touch staff/portal auth, grant assembly, or client-context routing. Full feature tests reconfirm explicit-grant-only, no legacy-token inheritance, OFF=OFF, staff-MCP-only publication, resolved client context winning over conflicting model input, and cross-client isolation. No portal surface or write/trigger path was added; encrypted Servosity credentials and servosity_backup_password remain absent from payloads.\n\nFindings:\n\n1. HIGH / GATE-BLOCKING — the explicitly required drift fixture matrix is not committed.\n   - The assignment requires missing/null/wrong-type fixtures independently for account_counts, issue_counts, and results, including invalid JSON at both projection seams.\n   - The committed ServosityReadOnlyToolsetTest covers missing account_counts, missing issue_counts, one non-integer prompt-shaped value, a missing summary envelope, and a missing DR envelope. It has no null/string/number/object-of-objects cases for both maps and no null/scalar/invalid-JSON results cases.\n   - The independent matrix proves the present implementation behaves safely, but it is temporary review evidence, not durable regression protection. The acceptance brief says partial test compliance is REVISE; land this matrix (a data provider is sufficient) so the exact false-clear class cannot silently return.\n\n2. MEDIUM — predecessor #2 remains live below the sanitized tool layer: raw Servosity exception detail is still written to application logs.\n   - The new cachedLiveFetch() correctly returns generic MCP copy and logs only exception class/code. However, the real AppServiceProvider binding uses ServosityClient, whose request() still logs $e->getMessage() at ServosityClient.php:243 and wraps the same raw text at :245 before the toolset catches it (requestWithMfa has the same pattern at :97-99).\n   - Reproduced with Guzzle: a 500 message contains the full custom base URL and vendor response body (an injected customer-pii-marker appeared verbatim). Thus URLs/response text/possible PII still reach logs on every failed live read, despite the MCP payload regression passing. Sanitize at the client seam or carry structured safe diagnostics only.\n\n3. LOW — predecessor #6 is only partially resolved.\n   - Comet usernames/group IDs and servosity_company_id are removed from payloads, but CometClient::getJobsForUser() still logs the raw username plus exception message at :64-65, and Servosity payloads still expose dr_backup_id at ServosityReadOnlyToolset.php:190 and :358. Internal reconciliation needs the IDs internally, but no agent workflow requiring the raw IDs is documented.\n\nCross-PR dialect:\n- This PR consistently says unavailable/schema_drift/UNKNOWN. psa-enpew's reviewed head af73c27 still collapses Comet job API failure into clean-empty, but its gate is already REVISE and explicitly requires the same unavailable/not_queried/no_jobs vocabulary. Do not land af73c27 unchanged; no weakening of this PR is warranted.\n\nVerification:\n- git merge-base: 9b326d4 is an ancestor of 75427d5.\n- git diff --check 9b326d4..75427d5 and 06b91ec..75427d5: PASS.\n- Exact-commit committed focused suites: 63 passed, 256 assertions (ServosityReadOnlyToolsetTest, BackupReadToolsMcpTest, CometReadOnlyToolsetTest).\n- Exact-commit temporary adversarial supplement: 1 passed, 40 assertions; removed after verification.\n\nVERDICT: REVISE — required null/wrong-type drift fixtures are absent, and raw Servosity exception details still reach application logs",
+    "status": "closed",
+    "priority": 2,
+    "issue_type": "task",
+    "assignee": "security-reviewer-session-x",
+    "created_at": "2026-07-25T22:15:07.14716176Z",
+    "created_by": "manager-session-x",
+    "updated_at": "2026-07-25T22:24:51.883493162Z",
+    "started_at": "2026-07-25T22:17:24.809936853Z",
+    "closed_at": "2026-07-25T22:23:52.996114445Z",
+    "close_reason": "Security re-review complete: REVISE",
+    "metadata": {
+      "gc.routed_to": "psa/security-reviewer",
+      "gc.session_name": "polecat-session-x",
+      "gc.work_dir": "/home/operator/town/worktrees/x"
+    },
+    "dependencies": [
+      {
+        "issue_id": "psa-z30dv.6",
+        "depends_on_id": "psa-z30dv",
+        "type": "parent-child",
+        "created_at": "2026-07-25T22:15:07Z",
+        "created_by": "manager-so-wisp-z4lw92p",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "psa-z30dv"
+  },
+  {
+    "id": "psa-z30dv.5",
+    "title": "ARCHITECTURE/CORRECTNESS re-review: psa-z30dv Comet+Servosity backup read verbs @ 75427d5 (VERIFY .1 findings resolved)",
+    "description": "ARCHITECTURE/CORRECTNESS re-review of psa-z30dv @ 75427d5 (base main 9b326d4, verified clean fast-fo …[truncated for fixture]",
+    "notes": "ARCHITECTURE/CORRECTNESS RE-REVIEW — psa-z30dv @ 75427d5 (base 9b326d4; predecessor psa-z30dv.1 read in full)\n\nVerification performed:\n- Reviewed the full 9b326d4..75427d5 artifact and the 06b91ec..75427d5 rework delta; `git diff --check 9b326d4..75427d5` is clean.\n- Re-fetched the vendor producer at https://api.servosity.com/docs/?format=openapi. It documents GET `/backup-jobs/{backup_id}/` and `/backup-job-status/{backup_id}/{backup_date}/`; their 200 responses are untyped. It also documents the DRF `count` + `results` envelope, CompanySummaryNg required count maps, and DRBackup row requirements.\n- Focused verification at the pinned worktree: 66 tests / 496 assertions passed across CometReadOnlyToolsetTest, ServosityReadOnlyToolsetTest, BackupReadToolsMcpTest, and McpToolsListResilienceTest. Pint `--test` passed on the seven changed implementation/test files inspected.\n- Checked psa-enpew's current rework worktree: its uncommitted CometJobService contract now distinguishes `ok`, `unavailable`, and `not_queried`, and its triage boundary names unavailable history as UNKNOWN.\n\nBLOCKING — assigned job-history verification item is not resolved:\n- `ServosityReadOnlyToolset.php:23-35` still says job history is deliberately not read, `:117` publishes that it is not available through the integration, and `:238-244` still emits the forbidden always-present `job_run_history.available=false` block. The only live calls are `companies/summary-ng/` (`:429`) and `dr-backups/` (`:318`); `/backup-jobs/` and `/backup-job-status/` occur only in prose. This does not satisfy the parent outcome “did it last run / did it succeed” or verification item 1. Deferring it to psa-bh1i4 does not complete this parent.\n- The stale assertion remains throughout the artifact: CLAUDE.md:158 says job history is not read; ServosityReadOnlyToolsetTest.php:223 names `test_job_run_history_is_always_declared_unavailable_with_the_real_reason`; lines 236-240 enforce `available=false`; BackupReadToolsMcpTest.php:279-281 enforces the same at the delivered boundary. The rationale was rewritten from “no consumer exists” to “the OpenAPI responses are untyped,” but the specifically rejected behavior and claim remain. Verification item 2 therefore fails as well.\n- No test exercises either real job endpoint or any endpoint response shape, because the endpoints are never called. There is consequently no vendor-traceable job fixture and no endpoint-failure regression. Verification items 3 and 4 cannot pass.\n\nBLOCKING — a degraded Servosity response can still become an ok-shaped projection:\n- Centralizing top-level validation in `assertDrfEnvelope()` and count-map validation in `validatedIntMap()` is the right seam and fixes the predecessor's missing-container false-clears: missing/malformed `account_counts` or `issue_counts` becomes `schema_drift`, malformed top-level `results` becomes `schema_drift`, and thrown vendor failures become `unavailable` rather than zero.\n- However, `fetchAllSummaryRows()` and `liveDrBackups()` silently discard non-array rows with `array_filter(..., 'is_array')` (`ServosityReadOnlyToolset.php:332-344,432`). More seriously, DRBackup row shape is not validated at all. A documented-envelope response such as `count=1, results=[['id'=>501]]` passes `assertDrfEnvelope()`, returns `live_dr_backups.status=ok`, and can mark a device `upstream_check=verified_live` solely from the id even though the OpenAPI requires `device_name`, `product_type`, `company`, `agent_session`, `shadowprotect_keys`, and `encryption_key`. This is a remaining path from malformed vendor evidence to a confident ok/verified projection, contrary to CLAUDE.md's “degraded read must SCREAM” convention and the bead's cross-cutting acceptance bar. Validate each consumed row at the shared response seam; do not filter malformed evidence into apparent truth.\n- The required drift matrix is incomplete. Tests cover missing map keys, a non-integer value inside an otherwise-array map, and an envelope missing both count/results. They do not cover null and wrong-container-type variants for each of `account_counts`, `issue_counts`, and `results`. The `drRow()` helper (`ServosityReadOnlyToolsetTest.php:122-125`) is hand-authored to the implementation's selected fields and omits multiple OpenAPI-required DRBackup fields, so it is not evidence of the real documented row shape despite the comment. This is explicit fixture debt under CLAUDE.md's vendor-response rule.\n\nResolved/carry-forward items:\n- Comet now has bounded connect/request timeouts at the client seam, bounded/cached lookup fan-out, first-class unknown status, future-timestamp rejection, and the canonical freshness trio. Those predecessor findings are resolved by the rework and covered by passing focused tests.\n- Thin-controller/service placement, explicit-grant staff MCP boundary, standalone-first design, file cache/session assumptions, and the no-multi-tenant decision remain intact; no migration, controller, portal-auth, timezone-display, or write surface is introduced.\n- The current psa-enpew rework's loud unavailable contract is directionally consistent for actual API failures. This PR cannot achieve cross-PR job-history consistency while Servosity never attempts the job read and reports a static `available=false` instead.\n\nVERDICT: REVISE — Servosity job history is still deferred and malformed DR rows can still yield status=ok/verified_live",
+    "status": "closed",
+    "priority": 2,
+    "issue_type": "task",
+    "assignee": "architect-reviewer-session-x",
+    "created_at": "2026-07-25T22:15:04.593002072Z",
+    "created_by": "manager-session-x",
+    "updated_at": "2026-07-25T22:22:41.587127288Z",
+    "started_at": "2026-07-25T22:17:04.978082467Z",
+    "closed_at": "2026-07-25T22:22:30.609855544Z",
+    "close_reason": "Architecture/correctness re-review completed; verdict REVISE recorded in notes.",
+    "metadata": {
+      "gc.routed_to": "psa/architect-reviewer",
+      "gc.session_name": "polecat-session-x",
+      "gc.work_dir": "/home/operator/town/worktrees/x",
+      "gc.work_outcome": "shipped"
+    },
+    "dependencies": [
+      {
+        "issue_id": "psa-z30dv.5",
+        "depends_on_id": "psa-z30dv",
+        "type": "parent-child",
+        "created_at": "2026-07-25T22:15:04Z",
+        "created_by": "manager-so-wisp-z4lw92p",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "psa-z30dv"
+  },
+  {
+    "id": "psa-z30dv.4",
+    "title": "UX/A11Y review: psa-z30dv Comet+Servosity backup read verbs @ 06b91ec",
+    "description": "PERSPECTIVE: ux / a11y — READ THIS SCOPE NOTE FIRST.\n\nThe primary consumer of this change is an AGEN …[truncated for fixture]",
+    "notes": "UX/A11Y review of 06b91ec against DESIGN.md and the landed psa-47vxh UniFi vocabulary.\n\nScope: This diff adds no new rendered interaction, status indicator, or layout. The only human-facing change is the plain registry blurb adding “Servosity,” which is clear. The Flat Rule, Signal Gold Rule, typography, focus/keyboard, contrast, and reduced-motion rules are therefore not implicated. The material UX surface is the MCP catalog and payload consumed by an operator’s agent.\n\nFindings:\n\n[P1] Servosity presents device provisioning as freshness-qualified when it is not. `ServosityReadOnlyToolset.php:57,125-170` says per-device enabled/provisioned state is synced and tells the caller to check `data_as_of` and each row’s `synced_at`, but device rows expose neither `synced_at` nor `stale`; the envelope is computed only from Servosity license rows. The underlying asset flags are deployment writes, not the daily license sync. An agent can therefore read an arbitrarily old `provisioning_state: provisioned` beside `data_stale: false` and confidently call it current. Separate the freshness domains: give device state a real observation timestamp, or mark it structurally unverifiable (`data_as_of: null`, `data_stale: null`, `freshness_note`) and require the live DR section for corroboration. This violates DESIGN.md’s Creative North Star “The Operations Desk” / “One operator, full picture”: the decisive uncertainty must sit on the decision surface, not be implied elsewhere.\n\n[P1] Missing/malformed Servosity live shapes collapse to clean all-clears. `liveCompanyState()` sets `status: ok` and `account_counts: []` when `account_counts` is absent/non-array (`scalarMap()`), while `liveDrBackups()` turns a missing/non-array `results` key into `status: ok`, `count: 0`, and “reports no DR backup accounts.” Those states are indistinguishable from verified zero coverage. Treat absent/malformed required keys as `unknown`/`unavailable` with relay-ready copy, as the implementation already does correctly for missing `issue_counts`. Add drift tests for both seams.\n\n[P1] An unknown Comet job status is asserted as a failure instead of unknown. `devicePosture()` maps the default category to `job_state: last_backup_failed` and increments the failure summary, even though `last_backup_status` says `Unknown (code …)`. Avoiding false success is necessary but not sufficient: this payload can make the agent confidently report a failure that was never established. Add a `last_backup_unknown` state/count and explicit note directing console verification.\n\n[P2] Freshness vocabulary diverges from psa-47vxh. UniFi uses the common envelope `data_as_of`, `data_stale`, `freshness_note`; both new toolsets emit `staleness_note` only in stale cases. Keep `freshness_note` in the same envelope position and meaning across vendors. Also consider renaming `servosity_get_backup_status` to `servosity_get_backup_posture`: “status” suggests last-run outcome, which the description correctly says this integration cannot provide. Comet’s two verb descriptions are otherwise clear and make the start-here/drill-down choice explicit.\n\nPositive notes: Comet lookup failures and no-job results degrade loudly; synced Comet rows carry `synced_at` + `stale`; Servosity’s `job_run_history.available: false` is structurally prominent; errors are generally plain and relay-ready; all added verbs are read-only.\n\nVERDICT: REVISE — unknown or unverified backup data can still be presented as current, empty, or failed",
+    "status": "closed",
+    "priority": 2,
+    "issue_type": "task",
+    "assignee": "ux-reviewer-session-x",
+    "created_at": "2026-07-25T20:33:05.676113196Z",
+    "created_by": "manager-session-x",
+    "updated_at": "2026-07-25T20:38:13.283508102Z",
+    "started_at": "2026-07-25T20:35:19.854159402Z",
+    "closed_at": "2026-07-25T20:38:05.777086808Z",
+    "close_reason": "UX/A11Y review completed; findings and REVISE verdict persisted in notes.",
+    "metadata": {
+      "gc.routed_to": "psa/ux-reviewer",
+      "gc.session_name": "polecat-session-x",
+      "gc.work_dir": "/home/operator/town/worktrees/x",
+      "gc.work_outcome": "shipped"
+    },
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0
+  },
+  {
+    "id": "psa-z30dv.3",
+    "title": "PRODUCT review: psa-z30dv Comet+Servosity backup read verbs @ 06b91ec",
+    "description": "PERSPECTIVE: product.\n\n=== FOCUS ===\n1. DOES IT ANSWER THE ACTUAL QUESTION? The required outcome is  …[truncated for fixture]",
+    "notes": "PRODUCT REVIEW — 06b91ec against 9b326d4\n\nProduct value and scope:\n- This is high-value for a solo owner or small MSP team: backup posture belongs beside client/asset context, and the three focused read verbs avoid both legacy-PSA clutter and write-path scope creep.\n- Comet generally delivers the useful decision in one payload: configured/registered state, latest backup outcome, last success/failure, live observation time, synced-data age, and loud unavailable/no-jobs states. Empty alerts are correctly framed as corroboration only.\n- Servosity is right not to invent a job endpoint. The always-present job_run_history.available=false block is an honest UNKNOWN and is preferable to a plausible all-clear. Keeping write/trigger actions out of this change is correct.\n\nBlocking findings:\n1. Comet turns an unknown vendor outcome into a reported failure. CometReadOnlyToolset.php:427-433 maps the default/unknown category to job_state=last_backup_failed, and the summary then increments last_backup_failed. The same row says last_backup_status=\"Unknown (code …)\", so the machine-readable posture contradicts the label. Conservative does not mean inaccurate: the acceptance contract explicitly permits UNKNOWN. Emit a distinct last_backup_unknown/job_data_unknown state and summary count (with an explanatory note), and assert it in the existing unrecognized-status regression instead of checking only “not succeeded.”\n2. Servosity’s per-device configuration/provisioning posture has no truthful freshness contract. ServosityReadOnlyToolset.php:57 tells the caller to check each row’s synced_at, but the device query/rows at lines 132-149 return neither synced_at nor stale. The top-level data_as_of/data_stale at lines 156-170 is computed only from license rows, so a fresh license sync can make the payload look fresh while enabled/provisioned asset state is unaged local workflow data. This repeats the psa-47vxh contract mismatch: freshness for one signal must not bless another. Either project the live DR-account check into a self-describing per-asset upstream verification state with live_checked_at, or explicitly mark local-only provisioning freshness unknown; do not call it synced unless there is an actual observation stamp. Add service and MCP-boundary assertions for each device’s source/freshness.\n3. Servosity shape drift can still degrade to a clean empty while status says ok. liveCompanyState defaults a missing/non-array account_counts to [] (lines 220-224), and liveDrBackups defaults a missing/non-array results key to [] then says Servosity reports no DR accounts (lines 266-297). That conflates “vendor proved zero” with “expected evidence was absent,” undermining the same absence-is-not-health rule the change otherwise handles well. Validate these required containers and return an explicit shape_drift/unavailable/UNKNOWN state; keep a valid, present empty results array as the legitimate “no DR accounts configured” case.\n\nSimplest product-correct revision: preserve the current three-verb surface and read-only scope. Add truthful unknown states and per-signal freshness; do not add a dashboard, write actions, or a guessed Servosity jobs API.\n\nVERDICT: REVISE — Comet mislabels unknown outcomes as failures and Servosity per-device posture lacks truthful freshness.",
+    "status": "closed",
+    "priority": 2,
+    "issue_type": "task",
+    "assignee": "product-reviewer-session-x",
+    "created_at": "2026-07-25T20:33:03.298113404Z",
+    "created_by": "manager-session-x",
+    "updated_at": "2026-07-25T20:39:47.567258546Z",
+    "started_at": "2026-07-25T20:35:50.666830462Z",
+    "closed_at": "2026-07-25T20:39:35.272364757Z",
+    "close_reason": "Product review completed; verdict recorded in notes.",
+    "metadata": {
+      "gc.routed_to": "psa/product-reviewer",
+      "gc.session_name": "polecat-session-x",
+      "gc.work_dir": "/home/operator/town/worktrees/x",
+      "gc.work_outcome": "shipped"
+    },
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0
+  },
+  {
+    "id": "psa-z30dv.2",
+    "title": "SECURITY/DATA-SAFETY review: psa-z30dv Comet+Servosity backup read verbs @ 06b91ec",
+    "description": "PERSPECTIVE: data-safety / security.\n\n=== FOCUS ===\n1. *** CLIENT-DATA BLAST RADIUS. *** These verbs …[truncated for fixture]",
+    "notes": "Security review of 9b326d4..06b91ec (data-safety / security lens).\n\nAuthorization and scope — PASS:\n- The verbs are exposed only on /api/mcp/staff behind VerifyMcpStaffToken and the existing 120/min transport throttle; they are not published on the portal MCP surface.\n- All three are explicit-grant-only, are not inherited by legacy full-surface tokens, and are withdrawn when their integration is unavailable.\n- client_id is normalized at the MCP boundary and passed as resolved context; the toolset prefers that context over conflicting model input. Local asset/license/alert queries are client_id-scoped. Comet additionally drops server-wide job rows unless DeviceID matches a registered asset for the resolved client.\n- Inputs are parameterized/bounded (positive client IDs, parameterized hostname match, days capped at 90). No mass assignment, SQL/command injection, Blade surface, webhook, or vendor write/trigger path was added.\n- Servosity API/TOTP secrets use encrypted settings; servosity_backup_password has an encrypted model cast and is deliberately excluded. No real secret was committed.\n\nFindings:\n\n1. HIGH — malformed Servosity live responses degrade to confident clean empties instead of UNKNOWN.\n   - ServosityReadOnlyToolset.php:220-235 sets live.status=ok, while scalarMap($company['account_counts'] ?? null) returns [] for a missing/non-array account_counts and silently drops non-scalar values. issue_counts only checks key existence, so null/malformed content is also accepted under status=ok.\n   - ServosityReadOnlyToolset.php:266-300 treats a missing/non-array response.results as [], sets live_dr_backups.status=ok, and emits “Servosity reports no DR backup accounts”. ServosityClient returns [] for invalid JSON, so this is a reachable response-degradation path.\n   - Impact: an upstream schema change, partial response, or invalid JSON can convert “cannot determine coverage/issues” into “no accounts/issues”, precisely the confident-wrong backup posture this bead is meant to eliminate.\n   - Required: validate presence and container/type shape before projecting; mark the affected section schema_drift/unavailable with UNKNOWN copy on any missing/malformed key. Add missing/null/wrong-type fixtures for account_counts, issue_counts, and results.\n\n2. MEDIUM — raw vendor exception details are returned to the agent and written to application logs.\n   - ServosityReadOnlyToolset.php:196-205 and :250-259 logs $e->getMessage() and embeds the first 200 characters in the MCP payload. Guzzle exceptions commonly contain the configured base URL and may contain vendor response text; a custom Servosity URL/infrastructure detail therefore crosses the agent boundary. The underlying ServosityClient already logs the same raw detail, so the new tool duplicates it.\n   - Required: return a generic error/status to MCP, and log only redacted/structured diagnostics (operation + safe status/code/correlation id), never the URL, token, response body, or client PII.\n\n3. MEDIUM — untrusted vendor strings are not consistently fenced or type-validated.\n   - scalarMap() passes string values and all keys in account_counts directly to the AI surface. sanitizeStructure() fences string values in issue_counts but preserves vendor-controlled keys verbatim. A malformed/compromised upstream response can therefore inject prompt-shaped text into the junior-tech context.\n   - Required: account counts should accept only the six production-proven keys and numeric values (or fail as schema drift); sanitize/bound any remaining external keys as well as values.\n\n4. MEDIUM — Servosity per-device “provisioned” state has no freshness or reconciliation despite copy claiming it does.\n   - ServosityReadOnlyToolset.php:132-150 derives provisioned solely from the locally stored servosity_dr_backup_id. ServosityDeploymentService sets that ID once; there is no daily per-device sync stamp or upstream deletion/unlink reconciliation. DATA_SOURCE_NOTE tells the agent to check each row's synced_at, but device rows contain no synced_at.\n   - Impact: an upstream-deleted or unlinked DR backup can continue to read provisioned locally. The live list may contradict it, but the tool does not reconcile or flag that contradiction.\n   - Required: describe this as historical local provisioning state, then reconcile each device against live_dr_backups (upstream_missing / agent_unlinked / verified_live) or add a real freshness stamp.\n\n5. MEDIUM — vendor request amplification is only transport-limited.\n   - One comet_get_backup_posture call can issue 25 AdminGetJobsForUser requests. At the route's 120 calls/min ceiling, a looping/compromised agent can drive up to 3,000 Comet requests/min. Every Servosity call auto-paginates the account-wide company list and then calls dr-backups; there is no per-tool/vendor cooldown, cache, or circuit breaker.\n   - Required: add a short-lived per-client result cache/dedup or vendor-specific limiter/circuit breaker; retain loud UNKNOWN behavior when limited.\n\n6. LOW — payload/log minimization can be tightened.\n   - Comet responses expose comet_group_id, comet_username on every device/history result, and failed usernames; failure logging also records the username. These vendor account identifiers are unnecessary to answer backup posture and expand credential/client-identifier exposure. Servosity likewise returns raw company/DR IDs that are not needed by a read-only junior-tech workflow.\n   - Required: omit vendor scope/account identifiers unless a documented workflow needs them; prefer PSA asset IDs/hostnames and aggregate failure counts.\n\nVerification:\n- git diff --check 9b326d4..06b91ec: PASS.\n- Exact-commit targeted suites: 47 tests passed, 165 assertions (CometReadOnlyToolsetTest, ServosityReadOnlyToolsetTest, BackupReadToolsMcpTest).\n- Four adversarial regressions were run in an isolated temporary worktree and all failed against 06b91ec, confirming: missing account_counts reports status=ok; missing DR results reports status=ok; exception URL/secret-shaped detail is echoed; prompt-shaped account_count strings are returned raw. The temporary test/worktree was removed after verification.\n\nVERDICT: REVISE — Servosity response drift can produce false-clean backup posture, with raw vendor details also crossing the agent boundary",
+    "status": "closed",
+    "priority": 2,
+    "issue_type": "task",
+    "assignee": "security-reviewer-session-x",
+    "created_at": "2026-07-25T20:33:00.970443131Z",
+    "created_by": "manager-session-x",
+    "updated_at": "2026-07-25T20:45:38.615973807Z",
+    "started_at": "2026-07-25T20:35:53.07727779Z",
+    "closed_at": "2026-07-25T20:45:23.186460092Z",
+    "close_reason": "Security review completed; revision required for Servosity false-clean response handling and vendor-detail exposure.",
+    "metadata": {
+      "gc.routed_to": "psa/security-reviewer",
+      "gc.session_name": "polecat-session-x",
+      "gc.work_dir": "/home/operator/town/worktrees/x",
+      "gc.work_outcome": "shipped"
+    },
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0
+  },
+  {
+    "id": "psa-z30dv.1",
+    "title": "ARCHITECTURE/CORRECTNESS review: psa-z30dv Comet+Servosity backup read verbs @ 06b91ec",
+    "description": "PERSPECTIVE: architecture / correctness.\n\n=== FOCUS ===\n1. *** VENDOR SHAPE — DO NOT ACCEPT CODE-AUT …[truncated for fixture]",
+    "notes": "ARCHITECTURE/CORRECTNESS REVIEW — psa-z30dv @ 06b91ec (base 9b326d4)\n\nArtifact and gates:\n- Verified commit 06b91ec710de4f88090ce55e759961086c500b83 and reviewed all 12 changed files.\n- `git diff --check 9b326d4..06b91ec` is clean.\n- Isolated-checkout verification: PHPUnit 50/50 tests passed (405 assertions) across CometReadOnlyToolsetTest, ServosityReadOnlyToolsetTest, BackupReadToolsMcpTest, and McpToolsListResilienceTest; Pint is clean for all 11 changed PHP files.\n\nArchitecture that is right:\n- The feature follows CLAUDE.md's thin-controller convention: business logic lives in vendor service/toolset classes; no controller, migration, write verb, tenant layer, portal-auth surface, or file/session driver is changed.\n- Staff MCP boundaries are preserved: the tools are explicit-grant-only, live publication is config/OFF=OFF gated, the registry remains ungated for pre-granting, and client scope is resolved from the PSA client row rather than a caller-supplied vendor group/company. Registration is complete across AppServiceProvider, McpToolRegistry, ChetDataSurfaceTools, and ChetDataSurfaceToolExecutor. McpToolsListResilienceTest still exercises the delivered tools/list path and documents a flat query-budget increase.\n- The Comet cross-bug check against psa-enpew passes: this code uses SDK `JOB_CLASSIFICATION_BACKUP = 4001` and the 5000/6000/7000 status ranges, filters posture to backup jobs, and does not copy the legacy CLASS_BACKUP=4 or exact-7002 behavior.\n- Keeping Comet and Servosity as separate toolsets is the simpler maintainable design because their live APIs and honesty boundaries differ. A shared vendor-toolset base would be premature. A small shared freshness-envelope helper may be worthwhile, but is not required if both implementations exactly follow the canonical contract.\n\nBLOCKING — Servosity's vendor/provenance conclusion is wrong and misses the parent acceptance outcome:\n- The code/test comments say Servosity is closed-source and job-level run history is \"structurally unavailable\" because no existing production code consumes a jobs endpoint. CLAUDE.md explicitly forbids using existing consumer code as the producer and says a closed-source vendor's official OpenAPI is the next source. Servosity publishes that producer at `https://api.servosity.com/docs/?format=openapi`.\n- That official spec documents GET `/backup-jobs/{backup_id}/`, `/backup-job-status/{backup_id}/{backup_date}/`, `/dr-backups/{id}/latest-success/`, and `/dr-backups/{id}/failures/`. Therefore lines 22-27/177-181 of ServosityReadOnlyToolset cannot claim structural unavailability merely because ServosityClient has no wrapper yet. The parent requires \"did it last run / did it succeed.\" Obtain a captured authenticated payload (the two job endpoints' response bodies are not fully typed in the spec), prove any token/permission limitation, and then either implement the read or report the concrete upstream refusal as UNKNOWN.\n- The test fixtures violate CLAUDE.md's hard-won fixture rule. `companyRow()` and the `drBackups` arrays are hand-authored to match the implementation; the Comet tests similarly instantiate and populate SDK objects rather than deserializing a vendor-produced fixture. \"It is a real SDK object\" does not make invented values a real response, and removed properties could become dynamic properties without failing this test. Derive fixtures from a captured response or vendor serialization/projection and cite the producer. The official schemas `CompanySummaryNg` and `DRBackup` already verify `issue_counts` and `agent_session_id`; the current comments incorrectly say no official producer was available.\n\nBLOCKING — degraded Servosity shapes can still produce a confident empty/all-clear:\n- `liveDrBackups()` treats a response with missing/malformed `results` as `status=ok`, `count=0`, then says Servosity reports no DR accounts. `ServosityClient::request()` also converts invalid JSON to `[]`, which reaches that false-clean branch. Validate the DRF envelope and make missing/malformed `results` UNAVAILABLE/UNKNOWN.\n- `liveCompanyState()` turns missing/malformed `account_counts` into `[]` while keeping `status=ok`; only `issue_counts` gets drift detection. Apply the CLAUDE.md rule consistently to every field needed for the answer and add malformed/missing-envelope regressions.\n\nBLOCKING — freshness does not mirror the canonical psa-47vxh idiom:\n- Both toolsets use `timestamp < now()-48h` only, so a future-dated `backup_synced_at` or `licenses.synced_at` is classified fresh. The canonical UniFi implementation rejects future report times to UNKNOWN/stale. Add future-timestamp rejection and regression coverage.\n- The canonical envelope always carries `data_as_of`, `data_stale`, and `freshness_note`; these toolsets substitute `data_source` and conditionally emit `staleness_note`, creating a second agent-facing idiom.\n- Servosity device rows carry neither an observed/synced timestamp nor `stale`, despite DATA_SOURCE_NOTE saying each row has `synced_at`. `servosity_backup_enabled`/`servosity_dr_backup_id` are local provisioning state and have no freshness stamp. Either add a trustworthy observation timestamp or represent this plane as first-class UNVERIFIABLE (`data_as_of=null`, `data_stale=null`, actionable `freshness_note`) instead of implicitly covering it with license-sync freshness.\n- Comet maps an unrecognized status code to structured `job_state=last_backup_failed` while labeling the status \"Unknown.\" Preserve UNKNOWN as a machine-readable state; conservative must not become confidently false.\n\nBLOCKING — Comet's slow-vendor path is unbounded:\n- The vendor SDK's `Comet\\Server` constructs a default Guzzle client with no connect/overall timeout, and CometClient does not replace it. `comet_get_backup_posture` can make up to 25 sequential live calls, so a slow server can hold the MCP request indefinitely rather than returning explicit unknown/unavailable. Configure bounded connect/request timeouts at the CometClient seam and retain the current loud per-username degradation. Add a timeout-path regression. Servosity has a 15-second per-request timeout; its unbounded `getCompanies()` pagination is remaining latency debt worth bounding separately.\n\nNon-blocking merge debt:\n- psa-enpew now has a fix commit for the legacy Comet constants. If that lands first, remove this PR's new CLAUDE.md wording that those services are still \"under review\" so living documentation does not become stale on merge.\n- BackupReadToolsMcpTest proves a Comet tools/call round-trip but no successful Servosity tools/call round-trip or delivered Servosity freshness fields. Add that boundary coverage with the corrections above; direct toolset tests alone do not prove Chet receives the promised contract.\n\nVERDICT: REVISE — Servosity job/provenance claims are incorrect, degraded shapes and freshness can fail open, and Comet live reads lack a timeout",
+    "status": "closed",
+    "priority": 2,
+    "issue_type": "task",
+    "assignee": "architect-reviewer-session-x",
+    "created_at": "2026-07-25T20:32:58.594551563Z",
+    "created_by": "manager-session-x",
+    "updated_at": "2026-07-25T20:44:41.248044742Z",
+    "started_at": "2026-07-25T20:36:15.257206347Z",
+    "closed_at": "2026-07-25T20:44:24.012166067Z",
+    "close_reason": "Architecture/correctness review complete; VERDICT REVISE persisted in notes",
+    "metadata": {
+      "gc.routed_to": "psa/architect-reviewer",
+      "gc.session_name": "polecat-session-x",
+      "gc.work_dir": "/home/operator/town/worktrees/x",
+      "gc.work_outcome": "shipped"
+    },
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0
+  },
+  {
+    "id": "psa-enpew",
+    "title": "Comet job classification/status codes don't match the vendor SDK — backup-failure alerts likely never fire",
+    "description": "Found while building psa-z30dv (backup read verbs), from the ACTUAL vendor source (vendor/cometbacku …[truncated for fixture]",
+    "notes": "R4 rework of the psa-enpew.12 REVISE gate, head 56184c4 (on f306961, base main 9b326d4). All three .12 blockers addressed, aligned toward psa-z30dv as prescribed: (a)+(c) job_state now carries backup POSTURE in CometReadOnlyToolset::devicePosture's vocabulary verbatim across CometJobService + comet_get_backup_status + comet_get_backup_jobs (last_backup_succeeded/failed/running/unknown, no_backup_jobs_observed, degrading to unavailable; 'ok' retired; missing-username unified to 'unavailable' with machine-readable unavailable_reason; jobs_checked_at retained; asset page + ContextBuilder speak the same tokens; tool copy says only last_backup_succeeded may be relayed as healthy). (b) settings stamp copy: the 'means no backup failures were reported' inference is gone — the card now states the stamps prove delivery/routing only, names both mechanics that break the inference (stale_ignored routes as recognized; alerts-off successes advance recognized while failures raise nothing), and directs health questions to live posture. Cross-PR remainder (psa-z30dv comet_list_backup_jobs bare-error degraded shape) filed as psa-95cdm with the .12 direction. gc-verify PASS: 4289 tests / 28627 assertions, Pint, secret guard.\n\nREVIEW-LEAD SYNTHESIS R4 — psa-enpew @ 56184c4\n\nReviews read from review_gate_reviews: psa-enpew.13, psa-enpew.14, psa-enpew.15, psa-enpew.16.\n\nVERDICTS AND KEY FINDINGS:\n- psa-enpew.13 UX/A11Y: VERDICT: REVISE — psa-z30dv still returns bare degraded list-job errors without job_state/jobs_checked_at, so the required cross-PR state dialect is not unified. It confirms psa-enpew itself now fixes the failed-newest-backup false-OK, aligns job_state posture on this side, uses unavailable for missing username, preserves jobs_checked_at/job_state_note, and removes the false settings all-clear copy.\n- psa-enpew.14 Architecture: VERDICT: PROCEED. R4 did not disturb the accepted ordering/watermark fix; CometAlertService and CometWebhookAlertTest are byte-identical to R3, the no-op success watermark regression remains, and focused tests passed.\n- psa-enpew.15 Security/Data-safety: VERDICT: PROCEED. R4 did not disturb backup-series identity/stale-success safety; missing identity still fails loudly, stale/equal successes cannot resolve active failures, lockForUpdate path remains, and bounded unmatched warnings remain secret-safe.\n- psa-enpew.16 Product: VERDICT: PROCEED from close reason. Accepted disposition and proof-of-life behavior remain intact. Note: the product leg did not persist a notes body, but its close reason carries the verdict and key regression finding.\n\nDECISION:\nThis is not a majority vote. One reviewer raised a blocking concern, and it is in the explicit R4 primary lane: the delivered cross-PR backup-history/list payload contract is still divergent because psa-z30dv's comet_list_backup_jobs has not adopted the shared structured degraded shape. This is also the third rework cycle after the initial gate (R2, R3, R4), with the same cross-PR convergence class still unresolved after prior escalation/adjudication. Per the review-lead directive, I am escalating rather than starting another ordinary revise loop.\n\nSTICKING POINTS FOR MAYOR:\n1. Decide whether psa-enpew may proceed while the remaining list-tool contract gap lives on sibling follow-up psa-95cdm, or whether the original cross-PR blocker requires psa-z30dv to align before this gate can pass.\n2. If the blocker remains in-scope, require psa-z30dv's comet_list_backup_jobs degraded and successful payloads to include the shared machine contract expected by UX: job_state and jobs_checked_at, with unavailable/no_backup_jobs_observed semantics matching the posture/list dialect.\n3. Keep the accepted psa-enpew R4 behavior intact: last_backup_* job_state posture, unavailable for missing username, jobs_checked_at/job_state_note on degraded reads, and the settings copy that limits stamps to delivery/routing proof only.\n\nGATE: ESCALATE",
+    "status": "open",
+    "priority": 1,
+    "issue_type": "bug",
+    "assignee": "psa/review-lead",
+    "created_at": "2026-07-25T19:35:45.837587525Z",
+    "created_by": "gastown__polecat-session-x",
+    "updated_at": "2026-07-26T02:43:11.666588428Z",
+    "started_at": "2026-07-25T20:01:38.949680318Z",
+    "metadata": {
+      "branch": "polecat/psa-enpew",
+      "gc.routed_to": "",
+      "gc.session_name": "polecat-session-x",
+      "gc.work_dir": "/home/operator/town/worktrees/x",
+      "hold": "review_gate_escalated",
+      "review_gate": "escalate",
+      "review_gate_decider": "psa/review-lead",
+      "review_gate_head": "56184c4",
+      "review_gate_provenance": "review-lead synthesis R4 @ 56184c4; reviews psa-enpew.13,.14,.15,.16",
+      "review_gate_reviews": "psa-enpew.13,psa-enpew.14,psa-enpew.15,psa-enpew.16",
+      "target": "main",
+      "work_dir": "/home/operator/town/worktrees/x"
+    },
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 14
+  },
+  {
+    "id": "psa-0pb9m",
+    "title": "macOS endpoints are effectively UNMONITORED: the one Tactical check on every Mac fails on all of them — RMM shows them, nothing verifies them",
+    "description": "PROVENANCE: raised by CHET (house-staff-openclaw-c), Mattermost tooling channel 2026-07-25T15:13Z, a …[truncated for fixture]",
+    "notes": "REVISE ROUND COMPLETE (polecat gastown.nux, 2026-07-26). Branch polecat/psa-0pb9m, new head d6446bd (one commit on top of the reviewed 276c20e; base unchanged 9b326d4). gc-verify PASS (full suite + pint + secret guard). READY FOR RE-GATE at d6446bd — review the delta 276c20e..d6446bd.\n\nMUST-FIX RESPONSE (all four, mapped):\n\n1. EXPLICIT PASSING EVIDENCE (arch#4, product#1, ux#4, ux#3): checksCoverage(total, failing, passing) — verified now REQUIRES passing>0; never failing<total. checksSummary() buckets passing/failing/pending/unknown explicitly (vendor never-run check_result:{} shape pinned in the fixture); checksKnownClean() requires passing===total (all-passing is a per-check claim, not subtraction); new checksFromAgentSummary() owns the vendor dict incl. the severity split (failing=failing+warning+info — the product warning-severity repro now classifies unverified) and the documented vendor caveats (dict passing counts never-run rows; list serializer is cache-backed). New tactical_assets.checks_passing (additive+nullable migration); pre-upgrade rows classify UNKNOWN, never verified. FRESHNESS (ux#3): tactical_list_devices carries data_as_of/data_stale/freshness_note + per-row stale (48h daily-sync threshold, Zorus precedent); insight carries checks_as_of/checks_stale (per-signal, closes the fresh_as_of-hides-stale-checks gap); live check reads carry per-check last_run. Truncation debt fixed: counts/coverage computed over the FULL set before the 50-row slice, with a truncated flag. Boundary regressions added: never-reporting/pending→unverified at MCP (the product repro), warning-severity dict→unverified, legacy-snapshot→unknown, freshness envelope, last_run passthrough.\n\n2. FAIL-CLOSED SHARED BOUNDARY (arch#2#3#6, sec#1, product#2, ux#5): new TacticalCheckPlatformGuard enforced INSIDE TacticalClient::createCheck (the psa-mocr choke point — both existing callers and any future caller pass through it; client-boundary tests prove refusal with ZERO HTTP sent via empty MockHandler queue). Unknown agent platform → REFUSED (remedy: tactical:sync-devices; no override). Provably incompatible agent create → REFUSED outright. Script absent from catalog AND no vendor-meta claim → REFUSED (callers with fresher vendor truth — the MCP's resolved upstream getScripts row, the provisioner's shipped definition — pass an explicit scriptMeta claim). POLICY target with a platform-bound script → REFUSED PRE-WRITE unless acknowledge_platform_risk=true (the refusal names the affected platforms + the exact retry — ux#5's informed second acknowledgement; the old post-write platform_warning is GONE). MCP executor pre-checks retained as defence-in-depth with audited refusals; tool schema + description document the platform gate.\n\n3. NO-CLOBBER + SCOPE-SAFE PROVISIONER (arch#1, sec#3): plan-first — script decision AND target plan resolved read-only BEFORE any write; ambiguity aborts with nothing written (aborted flag in the result). Same-name script reused only on EXACT match (raw body via downloadScript with_snippets=false + shell + supported_platforms); drift → refused naming the reconciliation path (--update-script to overwrite deliberately, or rename theirs); >1 same-name → always refused (ownership collision). --hostname must resolve to exactly ONE agent (refusal lists candidates w/ client ids; --client-id narrowing and new --agent-id exact form); explicitly-named non-Mac/unknown-platform refused; fleet sweeps skip non-Macs silently; EMPTY scope writes nothing (script included). Local TacticalScript catalog row upserted on apply so the boundary guard + platform_mismatch annotations see the managed script immediately. Concurrency non-goal documented (operator-run).\n\n4. SCRIPT/COPY/FIXTURES/RUNBOOK (sec#2, product#3, arch#5, ux#6#7): script renamed \"PSA macOS Disk Capacity Check\" (file psa-macos-disk-capacity-check.sh) — Darwin self-check exits 1 with NOT-DARWIN message (the security reviewer's Linux-execution repro now fails loudly; verified by running it on this Linux box), fixed system PATH exported, report-only probes emit \"unavailable\" instead of vanishing, verdict \"PASS: disk capacity within thresholds\" / \"FAIL: disk capacity - ...\" — never a whole-device HEALTHY claim, and report-only facts are labeled (report-only) in stdout. FIXTURE (arch#5): api_schema.json now pins Agent.plat, the AgentChecksSummary dict (with the two vendor caveats cited to agents/utils.py:145 + serializers cache), Check + CheckResult (status enum passing/failing/pending, last_run, the {} never-run shape cited to checks/models.py:160 + serializers.py:30-34), Script.supported_platforms (scripts/models.py:46) — all verified against a fresh clone of amidaware/tacticalrmm 2026-07-26; TacticalSchemaDriftTest extended to pin every new field + the status vocabulary. VOCABULARY (ux#6): \"none\"=UNMONITORED vs \"unverified\"=coverage cannot currently be demonstrated — distinct everywhere (COVERAGE_NOTE, tool descriptions, INSTALL.md, UI). RUNBOOK (ux#7 + product rollout): INSTALL.md now has the end-to-end apply→verify path (run check, confirm status=passing + coverage=verified at tactical_get_device_checks, what each unverified sub-state means), the LEGACY wrong-platform check cleanup step (platform_mismatch=true rows; provisioner deliberately never deletes), and the new-Mac path (re-run the idempotent provisioner at onboarding). UI (ux#1#2): all-failing renders \"all checks failing — monitoring unverified (N of N)\" in words BEFORE the count on both the eager line and the live panel; unknown is a first-class state (\"checks unknown — health not verified\" with icon, never a muted dash); missing/non-numeric counts can never enter the green branch; green requires every check explicitly passing; partial (passing<total, 0 failing) renders \"P of T passing — rest not reporting\".\n\nFOLLOW-UP FILED: psa-ngrwp (fleet-wide platform_mismatch remediation sweep + new-Mac reconciliation automation — the arch explicit-debt item deliberately out of provisioner scope).\n\nVERIFICATION: scripts/gc-verify.sh PASS; tactical-area suite 679 passed / 3147 assertions; new/updated coverage: client-boundary guard tests (no-HTTP-on-refusal proof), policy ack flow, no-clobber/drift/ambiguity/empty-scope provisioner tests, never-reporting + warning-severity + legacy-unknown MCP boundary regressions, freshness envelope, blade all-failing/unknown/partial states, schema drift pins.\n\nNOTE for worktree hygiene (carried from increment 5): the pre-existing doltlite-maintenance-plus.sh stash on this worktree is untouched — gus-infra territory.",
+    "status": "in_progress",
+    "priority": 2,
+    "issue_type": "bug",
+    "assignee": "gastown__polecat-session-x",
+    "created_at": "2026-07-25T15:36:41.252635401Z",
+    "created_by": "manager-session-x",
+    "updated_at": "2026-07-26T02:27:37.387250311Z",
+    "started_at": "2026-07-25T19:25:38.768900734Z",
+    "metadata": {
+      "branch": "polecat/psa-0pb9m",
+      "gc.routed_to": "psa/gastown.polecat",
+      "gc.session_name": "polecat-session-x",
+      "gc.work_dir": "/home/operator/town/worktrees/x",
+      "hold": "",
+      "review_gate": "revise",
+      "review_gate_decider": "psa/review-lead",
+      "review_gate_head": "d6446bd",
+      "review_gate_provenance": "",
+      "review_gate_reviews": "psa-0pb9m.5,psa-0pb9m.6,psa-0pb9m.7,psa-0pb9m.8",
+      "target": "main",
+      "work_dir": "/home/operator/town/worktrees/x"
+    },
+    "dependencies": [
+      {
+        "issue_id": "psa-0pb9m",
+        "depends_on_id": "psa-47vxh",
+        "type": "blocks",
+        "created_at": "2026-07-25T17:02:59Z",
+        "created_by": "manager-so-wisp-z4lw92p",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 0,
+    "comment_count": 9
+  },
+  {
+    "id": "psa-eu5la",
+    "title": "[BUG] find_assets/find_persons fence on the CLIENT's is_active, not the record's — returns retired assets and OFFBOARDED contacts",
+    "description": "FOUND during the psa-9q05 drift hunt (2026-07-21), SQL verified both sides. This one drifts in BOTH  …[truncated for fixture]",
+    "notes": "BUILT — branch psa-eu5la-active-record-fence @ b5741f4 (== origin tip), off main. Ready for review gate.\n\nFIX (2 src files, +37/-6): find_persons/find_assets now fence on the RECORD's own is_active (default active-only) and DROP the whereHas('client', active()) client fence. Both-directions drift closed: (a) offboarded contacts / retired assets no longer returned by default — the agent can't route a ticket or address an email to a terminated employee; (b) active records at deactivated clients are now returned, honoring the tools' 'across ALL clients' contract. New include_inactive opt-in (default false) preserves the former-employee/retired-asset lookup; scope string states active-only vs including-inactive.\n\nDESIGN: mirrors the web (Web\\PersonController Person::active(); AssetService::getAssetList is_active default) AND the psa-6usr ticket-fence decision (option a: drop the client fence — not a tenant boundary; staff already see every client on the web). include_inactive has precedent on the SAME surface (StaffPsaTaxonomyToolExecutor) + web (show_inactive). Portal executors untouched (their client-lock is separate).\n\nTDD: +6 tests FindToolsActiveRecordFenceTest, watched RED->GREEN (default-exclusion of offboarded/retired; active-at-deactivated-client now returned; include_inactive opt-in). Full suite 4224 passed / 6 skipped / 0 failed. Pint clean.\n\nREVIEW LANES NEEDED (per psa-6usr precedent, identical class): SECURITY + ARCHITECTURE/CORRECTNESS at head b5741f4. UX skippable (no UI surface). PRODUCT: the a-vs-b client-fence call is the same in-lane correctness decision the manager already classified for psa-6usr.\n\nNOT MERGED — I never self-review-gate. gh is unauthed on this box (no GitHub PR); review runs on branch+bead and the refinery merges direct (psa-nbmg). Routing to review-lead next.",
+    "status": "in_progress",
+    "priority": 2,
+    "issue_type": "bug",
+    "assignee": "psa-lead-session-x",
+    "owner": "gus@soundit.local",
+    "created_at": "2026-07-21T01:39:10.982108364Z",
+    "created_by": "psa-lead-session-x",
+    "updated_at": "2026-07-26T01:17:55.697788945Z",
+    "started_at": "2026-07-26T00:33:47.427286774Z",
+    "metadata": {
+      "branch": "psa-eu5la-active-record-fence",
+      "ci": "local-suite-green",
+      "gc.routed_to": "psa/review-lead",
+      "gc.session_name": "polecat-session-x",
+      "gc.work_dir": "/home/operator/town/worktrees/x",
+      "merge_strategy": "ff",
+      "review_gate": "revise",
+      "review_gate_decider": "psa/review-lead",
+      "review_gate_head": "b5741f4",
+      "review_gate_reviews": "psa-eu5la.1,psa-eu5la.2,psa-eu5la.3",
+      "target": "main"
+    },
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 1
+  }
+]
