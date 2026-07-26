@@ -212,6 +212,16 @@ assert_text t7m "missing title screams" "title missing/empty/non-string"
 run_detector t7n 2 --input "$TMP/bad-row.json" --no-state
 assert_text t7n "non-object row screams" "not an object"
 
+# Duplicate ids are the substituted-row signature (R2 must-fix 1): a board that
+# lists one bead twice can be hiding the bead it dropped — never trustworthy,
+# on --input files too, where live corroboration cannot run.
+jq '. + [.[0]]' "$FIX/board-chatter-a.json" >"$TMP/dup-id.json"
+run_detector t7o 2 --input "$TMP/dup-id.json" --no-state
+assert_text t7o "duplicated row screams, never normalises" "duplicate id appears more than once: psa-z30dv"
+run_detector t7p 2 --input "$TMP/dup-id.json" --no-state --json
+assert_json t7p "duplicate id is machine-readable non-green" \
+    '.ok == false and (.error | test("duplicate id"))'
+
 # ---- T8: human-readable report content -----------------------------------------
 run_detector t8a 1 --input "$FIX/board-incident.json" --now 2026-07-25T20:56:00Z --no-state
 assert_text t8a "alarm block present" "ALARM psa-z30dv"
@@ -233,6 +243,8 @@ assert_text t8e "action line tells the responder what to verify" "verify whether
 assert_text t8e "no all-clear alongside UNKNOWN" "all clear" absent
 run_detector t8f 1 --input "$FIX/board-mispointed.json" --now 2026-07-26T03:00:00Z --no-state
 assert_text t8f "mispointed reason names the seam" "not a review of this target"
+run_detector t8g 1 --input "$FIX/board-bad-verdict.json" --now 2026-07-26T03:00:00Z --no-state
+assert_text t8g "marker-without-decision reason states the wanted form" "no recognised terminal decision"
 
 # ---- T9: argument validation ----------------------------------------------------
 run_detector t9a 2 --threshold-mins nope --input "$FIX/board-working.json" --no-state
@@ -289,6 +301,40 @@ assert_json t13 "mispointed invalid_inputs carry the pointed bead's title for th
 assert_json t13 "0pb9m: zero legs + mispointed pointer is UNKNOWN, not starved" \
     '.population[] | select(.id == "psa-0pb9m") | .verdict == "UNKNOWN" and .starved == false and .input_count == 0'
 
+# ---- T12b: a VERDICT marker without a real terminal decision is NOT evidence ----
+# (R2 must-fix 2, .3 repro: notes of exactly "VERDICT" read as evidenced.) The
+# recognised vocabulary is measured from the live board (APPROVE/REVISE/
+# PROCEED/PASS); bare "VERDICT", "VERDICT:", an unrecognised decision word, and
+# the live-observed "VERDICT INPUTS …" shape must all be invalid inputs.
+run_detector t12b 1 --input "$FIX/board-bad-verdict.json" --now 2026-07-26T03:00:00Z --no-state --json
+assert_json t12b "verdict UNKNOWN, never healthy" \
+    '.unknown == ["psa-badv"] and .alarms == [] and .watch == []'
+assert_json t12b "four marker-only legs invalid, one real decision evidenced" \
+    '.population[0] | .invalid_input_count == 4 and .inputs_evidenced == 1 and .valid_input_count == 1'
+assert_json t12b "all four bad shapes classify closed_bad_verdict" \
+    '[.population[0].inputs[] | select(.disposition == "closed_bad_verdict") | .id] | sort == ["psa-badv.1", "psa-badv.2", "psa-badv.3", "psa-badv.4"]'
+assert_json t12b "bad-verdict reason names the wanted decisions" \
+    '.population[0].invalid_inputs[0].reason | test("no recognised terminal decision")'
+assert_json t12b "coverage counts the valid leg only" \
+    '.population[0].covered_perspectives == ["ARCHITECTURE/CORRECTNESS"]'
+
+# ---- T13b: hierarchy alone must not override contradictory title evidence -------
+# (R2 must-fix 2, .3 repro: armed psa-gate pointed at child psa-gate.1 whose
+# title reviews a DIFFERENT target — the child id alone made it a satisfied
+# input.) A child-id leg titled as a review of another id-shaped target is not
+# a leg of this target: pointed → MISPOINTED → UNKNOWN; unpointed → feeds
+# nothing → the parent starves LOUDLY. A child leg with no ids in its title
+# (tgtc.1) still counts via hierarchy — the arm is tightened, not removed.
+run_detector t13b 1 --input "$FIX/board-child-wrong-target.json" --now 2026-07-26T03:00:00Z --no-state --json
+assert_json t13b "pointed wrong-target child is MISPOINTED → UNKNOWN (the exact repro)" \
+    '.unknown == ["psa-tgta"] and (.population[] | select(.id == "psa-tgta") | .input_count == 0 and .mispointed_pointers == ["psa-tgta.1"] and .invalid_input_count == 1)'
+assert_json t13b "wrong-target child never counts as evidence despite its VERDICT: APPROVE" \
+    '.population[] | select(.id == "psa-tgta") | .inputs_evidenced == 0 and .valid_input_count == 0'
+assert_json t13b "unpointed wrong-target child feeds nothing — parent starves and alarms" \
+    '.alarms == ["psa-tgtb"] and (.population[] | select(.id == "psa-tgtb") | .input_count == 0)'
+assert_json t13b "control: child leg with no ids in title still counts via hierarchy" \
+    '.population[] | select(.id == "psa-tgtc") | .verdict == "OK" and .inputs_working == 1'
+
 # ---- T14: state persistence is strict — corruption is exit 2, never a reset -----
 echo 'not json {' >"$TMP/state-corrupt.json"
 run_detector t14a 2 --input "$FIX/board-chatter-a.json" --now 2026-07-26T10:00:30Z --state-file "$TMP/state-corrupt.json"
@@ -331,24 +377,74 @@ else
     echo "SKIP [t14h/t14i] running as root — permission-based cases not meaningful"
 fi
 
+# Impossible states — entries the detector could never have persisted must be
+# rejected as corrupt, and the bad file must be LEFT INTACT as evidence
+# (R2 must-fix 3, .4 repro: {"alarmed_at": …} with no first_seen read as a
+# brand-new WATCH/exit 0 AND the persist then destroyed the alarm record).
+printf '%s' '{"psa-z30dv": {"alarmed_at": "2026-07-26T10:45:00Z"}}' >"$TMP/state-alarm-only.json"
+cp "$TMP/state-alarm-only.json" "$TMP/state-alarm-only.expected"
+run_detector t14j 2 --input "$FIX/board-chatter-b.json" --now 2026-07-26T10:50:30Z --state-file "$TMP/state-alarm-only.json" --json
+assert_json t14j "the exact repro: alarmed_at without first_seen is exit 2, never WATCH" \
+    '.ok == false and (.error | test("could never have persisted"))'
+if cmp -s "$TMP/state-alarm-only.json" "$TMP/state-alarm-only.expected"; then PASS=$((PASS+1)); else
+    FAIL=$((FAIL+1)); echo "FAIL [t14j] corrupt state was overwritten — the alarm evidence was destroyed"
+    cat "$TMP/state-alarm-only.json"; fi
+echo '{"psa-z30dv": {}}' >"$TMP/state-empty-entry.json"
+run_detector t14k 2 --input "$FIX/board-chatter-b.json" --now 2026-07-26T10:50:30Z --state-file "$TMP/state-empty-entry.json"
+assert_text t14k "an empty entry object is a detector error" "DETECTOR-ERROR.*state file"
+echo '{"psa-z30dv": {"first_seen": "2099-01-01T00:00:00Z", "alarmed_at": null}}' >"$TMP/state-future.json"
+run_detector t14l 2 --input "$FIX/board-chatter-b.json" --now 2026-07-26T10:50:30Z --state-file "$TMP/state-future.json"
+assert_text t14l "a future first_seen (indefinite alarm postponement) is a detector error" "DETECTOR-ERROR.*state file"
+echo '{"psa-z30dv": {"first_seen": null, "alarmed_at": "2026-07-26T10:45:00Z", "unknown_at": null}}' >"$TMP/state-alarm-null-seen.json"
+run_detector t14m 2 --input "$FIX/board-chatter-b.json" --now 2026-07-26T10:50:30Z --state-file "$TMP/state-alarm-null-seen.json"
+assert_text t14m "alarmed_at over an explicit null first_seen is a detector error" "DETECTOR-ERROR.*state file"
+echo '{"psa-z30dv": {"first_seen": "2026-07-26T10:45:00Z", "alarmed_at": "2026-07-26T10:00:00Z", "unknown_at": null}}' >"$TMP/state-alarm-before-seen.json"
+run_detector t14n 2 --input "$FIX/board-chatter-b.json" --now 2026-07-26T10:50:30Z --state-file "$TMP/state-alarm-before-seen.json"
+assert_text t14n "alarmed_at earlier than first_seen is a detector error" "DETECTOR-ERROR.*state file"
+echo '{"psa-z30dv": {"first_seen": "2026-07-26T10:00:00Z", "alarmed_at": null, "unknown_at": "2026-07-26T10:00:00Z"}}' >"$TMP/state-both-clocks.json"
+run_detector t14o 2 --input "$FIX/board-chatter-b.json" --now 2026-07-26T10:50:30Z --state-file "$TMP/state-both-clocks.json"
+assert_text t14o "both clocks set at once is a detector error" "DETECTOR-ERROR.*state file"
+
+# Symlink safety (R2 must-fix 5, .4 repro: a planted "<state>.tmp" symlink was
+# followed by the old redirection, clobbering an outside file and leaving the
+# state path AS the symlink). The temp file is now mktemp-random (the planted
+# name is never opened) and the state path itself refuses symlinks.
+echo 'DO NOT CLOBBER' >"$TMP/outside-victim.txt"
+ST3="$TMP/state-symlink-probe.json"
+ln -s "$TMP/outside-victim.txt" "$ST3.tmp"
+run_detector t14p 0 --input "$FIX/board-working.json" --now 2026-07-26T02:50:00Z --state-file "$ST3" --json
+if [ "$(cat "$TMP/outside-victim.txt")" = "DO NOT CLOBBER" ]; then PASS=$((PASS+1)); else
+    FAIL=$((FAIL+1)); echo "FAIL [t14p] planted <state>.tmp symlink was followed — outside file clobbered"; fi
+if [ -f "$ST3" ] && [ ! -L "$ST3" ] && jq -e '. == {}' "$ST3" >/dev/null 2>&1; then PASS=$((PASS+1)); else
+    FAIL=$((FAIL+1)); echo "FAIL [t14p] state file did not land as a regular file with valid content"; fi
+ln -sf "$TMP/outside-victim.txt" "$TMP/state-is-symlink.json"
+run_detector t14q 2 --input "$FIX/board-working.json" --now 2026-07-26T02:50:00Z --state-file "$TMP/state-is-symlink.json"
+assert_text t14q "a symlinked state path is refused outright" "DETECTOR-ERROR.*symlink"
+if [ "$(cat "$TMP/outside-victim.txt")" = "DO NOT CLOBBER" ]; then PASS=$((PASS+1)); else
+    FAIL=$((FAIL+1)); echo "FAIL [t14q] symlinked state path wrote through to its target"; fi
+ln -sf "$TMP/does-not-exist-target" "$TMP/state-dangling.json"
+run_detector t14r 2 --input "$FIX/board-working.json" --now 2026-07-26T02:50:00Z --state-file "$TMP/state-dangling.json"
+assert_text t14r "a dangling symlinked state path is refused, not silently created over" "DETECTOR-ERROR.*symlink"
+
 # ---- T15: live acquisition seam (fake gc on PATH) — completeness must be proven -
+# The SQL side serves ID-SET payloads (R2 must-fix 1: count equality is not a
+# completeness proof); sql-seq lists payload filenames, consumed head-first
+# with the last line repeating (mirrors the old counts sequencing).
 FAKE_GC_DIR="$TMP/fake-gc"
 mkdir -p "$FAKE_GC_DIR/bin"
 export FAKE_GC_DIR
 cat >"$FAKE_GC_DIR/bin/gc" <<'FAKE'
 #!/usr/bin/env bash
-# fake gc: serves a canned board + a scripted COUNT sequence for seam tests.
+# fake gc: serves a canned board + a scripted id-payload sequence for seam tests.
 case "$*" in
     *"sql --json"*)
         [ -e "$FAKE_GC_DIR/sql-fail" ] && exit 1
         [ -e "$FAKE_GC_DIR/sql-garbage" ] && { echo '{"oops": 1}'; exit 0; }
-        if [ "$(wc -l <"$FAKE_GC_DIR/counts")" -gt 1 ]; then
-            n="$(head -n1 "$FAKE_GC_DIR/counts")"
-            tail -n +2 "$FAKE_GC_DIR/counts" >"$FAKE_GC_DIR/counts.tmp" && mv "$FAKE_GC_DIR/counts.tmp" "$FAKE_GC_DIR/counts"
-        else
-            n="$(head -n1 "$FAKE_GC_DIR/counts")"
+        f="$(head -n1 "$FAKE_GC_DIR/sql-seq")"
+        if [ "$(wc -l <"$FAKE_GC_DIR/sql-seq")" -gt 1 ]; then
+            tail -n +2 "$FAKE_GC_DIR/sql-seq" >"$FAKE_GC_DIR/sql-seq.tmp" && mv "$FAKE_GC_DIR/sql-seq.tmp" "$FAKE_GC_DIR/sql-seq"
         fi
-        echo "[{\"n\": $n}]"
+        cat "$FAKE_GC_DIR/$f"
         ;;
     *"list --all"*)
         [ -e "$FAKE_GC_DIR/list-fail" ] && exit 1
@@ -379,49 +475,110 @@ run_fake_gc() { # <name> <expected_exit> [detector args...]
 
 cp "$FIX/board-working.json" "$FAKE_GC_DIR/board.json"
 N="$(jq 'length' "$FAKE_GC_DIR/board.json")"
+jq '[.[] | {id: .id}]' "$FAKE_GC_DIR/board.json" >"$FAKE_GC_DIR/ids-good.json"
+jq '. + [{id: "psa-phantom-row"}]' "$FAKE_GC_DIR/ids-good.json" >"$FAKE_GC_DIR/ids-moved.json"
 
-echo "$N" >"$FAKE_GC_DIR/counts"
+echo 'ids-good.json' >"$FAKE_GC_DIR/sql-seq"
 run_fake_gc t15a 0 --now 2026-07-26T02:50:00Z --no-state --json
-assert_json t15a "live path healthy when count == rows == count" \
+assert_json t15a "live path healthy when both id sets match the list" \
     ".ok == true and .board_beads == $N"
 
-printf '%s\n' "$((N + 5))" "$N" "$N" >"$FAKE_GC_DIR/counts"
+printf '%s\n' 'ids-moved.json' 'ids-good.json' >"$FAKE_GC_DIR/sql-seq"
 run_fake_gc t15b 0 --now 2026-07-26T02:50:00Z --no-state --json
-assert_json t15b "transient count race retries and recovers" '.ok == true'
+assert_json t15b "transient id-set race (board moved) retries and recovers" '.ok == true'
 assert_err t15b "the retry is visible on stderr" "completeness not yet proven"
 
-printf '%s\n' "$((N + 5))" >"$FAKE_GC_DIR/counts"
+echo 'ids-moved.json' >"$FAKE_GC_DIR/sql-seq"
 run_fake_gc t15c 2 --now 2026-07-26T02:50:00Z --no-state --json
-assert_json t15c "persistent count mismatch is machine-readable non-green" \
+assert_json t15c "persistent id-set mismatch is machine-readable non-green" \
     '.ok == false and (.error | test("completeness could not be proven"))'
+assert_json t15c "the divergence names the id the list never served" \
+    '.error | test("psa-phantom-row")'
 
 : >"$FAKE_GC_DIR/sql-fail"
 run_fake_gc t15d 2 --now 2026-07-26T02:50:00Z --no-state
-assert_text t15d "COUNT path failure is a detector error" "count corroboration failed"
+assert_text t15d "SQL id path failure is a detector error" "id corroboration failed"
 rm -f "$FAKE_GC_DIR/sql-fail"
 
 : >"$FAKE_GC_DIR/sql-garbage"
 run_fake_gc t15e 2 --now 2026-07-26T02:50:00Z --no-state
-assert_text t15e "unrecognisable COUNT payload is a detector error" "unrecognised payload"
+assert_text t15e "unrecognisable SQL id payload is a detector error" "unrecognised payload"
 rm -f "$FAKE_GC_DIR/sql-garbage"
 
 echo '[]' >"$FAKE_GC_DIR/board.json"
-echo '0' >"$FAKE_GC_DIR/counts"
+echo '[]' >"$FAKE_GC_DIR/ids-empty.json"
+echo 'ids-empty.json' >"$FAKE_GC_DIR/sql-seq"
 run_fake_gc t15f 2 --now 2026-07-26T02:50:00Z --no-state
 assert_text t15f "a corroborated EMPTY board is still the so-2ck1 signature, exit 2" "so-2ck1"
 
 cp "$FIX/board-working.json" "$FAKE_GC_DIR/board.json"
-echo "$N" >"$FAKE_GC_DIR/counts"
+echo 'ids-good.json' >"$FAKE_GC_DIR/sql-seq"
 : >"$FAKE_GC_DIR/list-fail"
 run_fake_gc t15g 2 --now 2026-07-26T02:50:00Z --no-state
 assert_text t15g "list path failure is a detector error" "board scan failed"
 rm -f "$FAKE_GC_DIR/list-fail"
 
+# The exact R2 repro (.3 finding 1): cardinality matches — SQL says two beads,
+# the list serves two rows — but the list duplicated a valid bystander and
+# OMITTED the gate-armed bead. The old COUNT bracket read this as complete and
+# printed a confident all-clear (exit 0, population 0). Id-set corroboration
+# must refuse it, and the error must name the omitted bead.
+jq -n '[
+  { id: "psa-bystd1",
+    title: "Bystander bead — fixture-genericized",
+    status: "closed",
+    assignee: "worker-session-x",
+    updated_at: "2026-07-26T02:00:00Z" }
+] | . + .' >"$FAKE_GC_DIR/board.json"
+jq -n '[{id: "psa-armed1"}, {id: "psa-bystd1"}]' >"$FAKE_GC_DIR/ids-true.json"
+echo 'ids-true.json' >"$FAKE_GC_DIR/sql-seq"
+run_fake_gc t15h 2 --now 2026-07-26T02:50:00Z --no-state --json
+assert_json t15h "duplicated-bystander board with matching cardinality is refused" \
+    '.ok == false and (.error | test("completeness could not be proven"))'
+assert_json t15h "the omitted gate-armed bead is named" '.error | test("psa-armed1")'
+assert_json t15h "the duplicated bystander is named" '.error | test("duplicated_in_list.*psa-bystd1")'
+
 # ---- T16: fixture minimization guard — the corpus stays projected + genericized -
-# (R1 must-fix 3: a later live capture must not silently reintroduce notes,
-# owners, paths, session ids, or any unconsumed board history.)
+# (R1 must-fix 3 + R2 must-fix 4: a later live capture must not silently
+# reintroduce notes, owners, paths, session ids, or any unconsumed board
+# history.) Notes are held to an EXACT LITERAL ALLOWLIST — every permitted
+# note value is enumerated below, so any real captured note fails no matter
+# how short or how free of blacklisted tokens it is (the R2 finding: a
+# realistic 98-char live-detail note sailed past the old length cap + token
+# blacklist). Adding a new synthetic note value is a conscious edit here.
 ROW_ALLOW='["id", "title", "status", "assignee", "updated_at", "notes", "metadata"]'
 META_ALLOW='["review_gate", "review_gate_head", "review_gate_reviews"]'
+NOTES_ALLOW='[
+  "   \n\t ",
+  "Fixture-genericized notes.",
+  "Fixture-genericized review body.\nVERDICT: APPROVE — genericized.",
+  "Fixture-genericized review body.\nVERDICT: PROCEED — genericized.",
+  "Fixture-genericized review body.\nVERDICT: REVISE — genericized.",
+  "Fixture-genericized review body.\nVERDICT: MAYBE — genericized.",
+  "Fixture-genericized review body.\nVERDICT INPUTS reviewed — genericized.",
+  "Fixture-genericized review body.\nVERDICT",
+  "Fixture-genericized review body.\nVERDICT:",
+  "Fixture-genericized synthesis body.\nGATE: PROCEED",
+  "Working notes without a terminal verdict marker — fixture-genericized."
+]'
+
+# fixture_guard <file> — the whole minimization contract for one fixture file.
+# Returns non-zero on ANY violation. Used positively on every committed fixture
+# AND negatively on a crafted dirty fixture (the guard-of-the-guard below).
+fixture_guard() {
+    jq -e --argjson row_allow "$ROW_ALLOW" --argjson meta_allow "$META_ALLOW" --argjson notes_allow "$NOTES_ALLOW" '
+        (type == "array") and
+        ([ .[] | select(type == "object") ] | all(
+            ((keys - $row_allow) == [])
+            and (if (has("metadata") and (.metadata | type) == "object")
+                 then ((.metadata | keys) - $meta_allow) == [] else true end)
+            and (if (has("notes") and (.notes | type) == "string")
+                 then (.notes as $n | ($notes_allow | index($n)) != null) else true end)
+        ))
+    ' "$1" >/dev/null 2>&1 || return 1
+    ! grep -qiE 'soundit|so-wisp|/home/|gus@|charlie|work_dir|session_name|close_reason|created_by|description"' "$1"
+}
+
 for f in "$FIX"/board-*.json; do
     base="$(basename "$f")"
     if ! jq -e . "$f" >/dev/null 2>&1; then
@@ -430,24 +587,29 @@ for f in "$FIX"/board-*.json; do
         fi
         continue
     fi
-    if jq -e --argjson row_allow "$ROW_ALLOW" --argjson meta_allow "$META_ALLOW" '
-            (type == "array") and
-            ([ .[] | select(type == "object") ] | all(
-                ((keys - $row_allow) == [])
-                and (if (has("metadata") and (.metadata | type) == "object")
-                     then ((.metadata | keys) - $meta_allow) == [] else true end)
-                and (if (has("notes") and (.notes | type) == "string")
-                     then (.notes | length) <= 120 else true end)
-            ))
-        ' "$f" >/dev/null 2>&1; then PASS=$((PASS+1)); else
-        FAIL=$((FAIL+1)); echo "FAIL [t16] $base violates the fixture allowlist (keys/metadata/notes-length)"
-    fi
-    if grep -qiE 'soundit|so-wisp|/home/|gus@|charlie|work_dir|session_name|close_reason|created_by|description"' "$f"; then
-        FAIL=$((FAIL+1)); echo "FAIL [t16] $base contains a forbidden internal pattern"
-    else
-        PASS=$((PASS+1))
+    if fixture_guard "$f"; then PASS=$((PASS+1)); else
+        FAIL=$((FAIL+1)); echo "FAIL [t16] $base violates the fixture minimization contract (row/metadata key allowlists, notes literal-allowlist, or forbidden patterns)"
     fi
 done
+
+# Guard-of-the-guard (R2 must-fix 4): the EXACT dirty note from the security
+# review — realistic short live detail, none of the blacklisted tokens, well
+# under any length cap — must be REJECTED, or the guard guards nothing. The
+# note text is the fabricated example of the reviewer, kept verbatim so the
+# regression pins the shape that actually escaped.
+printf '%s' '[{"id": "psa-dirty1", "title": "SECURITY/DATA-SAFETY review: psa-dirty1 — fixture", "status": "closed", "updated_at": "2026-07-26T00:00:00Z", "notes": "Customer outage traced to production firewall change; internal escalation pending.\nVERDICT: REVISE"}]' >"$TMP/dirty-note-fixture.json"
+if fixture_guard "$TMP/dirty-note-fixture.json"; then
+    FAIL=$((FAIL+1)); echo "FAIL [t16-selftest] guard ACCEPTED a realistic dirty live-detail note — it guards nothing"
+else
+    PASS=$((PASS+1))
+fi
+# And a non-note leak vector for completeness: an extra row key must also fail.
+printf '%s' '[{"id": "psa-dirty2", "title": "Bead — fixture", "status": "closed", "updated_at": "2026-07-26T00:00:00Z", "close_reason": "anything"}]' >"$TMP/dirty-key-fixture.json"
+if fixture_guard "$TMP/dirty-key-fixture.json"; then
+    FAIL=$((FAIL+1)); echo "FAIL [t16-selftest] guard ACCEPTED an unconsumed row key"
+else
+    PASS=$((PASS+1))
+fi
 
 echo
 echo "detect-starved-review-gate tests: $PASS passed, $FAIL failed"

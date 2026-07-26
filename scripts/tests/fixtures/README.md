@@ -43,9 +43,17 @@ a parser):
      genericized `<role>-session-x` forms.
 
 Test **T16** enforces this permanently: every `board-*.json` row must stay
-inside the allowlist, `metadata` inside the three gate keys, `notes` ≤ 120
-chars, and no internal pattern (paths, session ids, owner addresses) may
-appear — so a later live capture cannot silently reintroduce board history.
+inside the allowlist, `metadata` inside the three gate keys, and no internal
+pattern (paths, session ids, owner addresses) may appear. `notes` are held to
+an **exact literal allowlist** enumerated in the test (psa-qqaka R2 must-fix
+4): every permitted note value is a synthetic string listed there, so ANY real
+captured note fails the suite — no matter how short, and regardless of whether
+it contains a blacklisted token (the R2 security review demonstrated a
+realistic 98-char live-detail note sailing past the earlier length-cap +
+token-blacklist guard). Adding a new synthetic note value is a conscious edit
+to that list. T16 also self-tests the guard against a crafted dirty fixture
+carrying exactly that escaped note shape — a guard that cannot fail proves
+nothing.
 
 ## Producer-shape facts the projection preserves
 
@@ -68,8 +76,12 @@ here — including the facts a guessed fixture would have gotten wrong:
   codepoint-based, and mixing them corrupts boundary checks on exactly these
   titles;
 - real closed review legs end with a terminal `VERDICT: <DECISION>` line in
-  their notes (`APPROVE` / `REVISE — …` / `PROCEED` all observed); synthesis
-  beads use `GATE: <decision>` instead, which is NOT review-leg evidence.
+  their notes; the complete decision vocabulary measured from every VERDICT
+  line on the live board (2026-07-26) is `APPROVE` (101×), `REVISE` (136×),
+  `PROCEED` (40×), `PASS` (9×). Two non-decision shapes were ALSO observed
+  live — `VERDICTS …` and `VERDICT INPUTS …` — which is exactly why a bare
+  marker is not evidence (psa-qqaka R2 must-fix 2). Synthesis beads use
+  `GATE: <decision>` instead, which is NOT review-leg evidence.
 
 ## Per-fixture behavior (everything not listed is the projected capture)
 
@@ -145,6 +157,31 @@ not `updated_at`, must carry the alarm.
 a row missing `updated_at`. A nonempty malformed board must fail the row
 contract for the WHOLE read (exit 2) — never be normalized into an empty
 population and an all-clear.
+
+### `board-bad-verdict.json` — a VERDICT marker is not a decision (synthetic)
+Invented rows in the projected shape (psa-qqaka R2 must-fix 2, from the R2
+architecture review's controlled repro: notes of exactly `VERDICT` read as
+evidenced). Armed parent `psa-badv` with five closed legs whose titles all
+name it: `.1` bare `VERDICT`, `.2` `VERDICT:`, `.3` `VERDICT: MAYBE`
+(unrecognised decision word), `.4` `VERDICT INPUTS …` (a non-decision marker
+shape observed on the live board), `.5` a real `VERDICT: APPROVE` control.
+Expected: UNKNOWN with 4 `closed_bad_verdict` invalid inputs + 1 evidenced,
+exit 1 — never healthy.
+
+### `board-child-wrong-target.json` — hierarchy must not override title evidence (synthetic)
+Invented rows in the projected shape (psa-qqaka R2 must-fix 2, from the R2
+architecture review's controlled repro: an armed bead pointed at child
+`<id>.1` whose title reviewed a DIFFERENT target, and the child id alone made
+it a satisfied input). `psa-othr9` — the target the child titles actually
+name — deliberately does NOT exist on the board, exactly like the repro.
+- `psa-tgta` points at `psa-tgta.1`, titled `… review: psa-othr9` with a real
+  `VERDICT: APPROVE` → the child is NOT a leg of `psa-tgta`; the pointer is
+  MISPOINTED → UNKNOWN, exit 1.
+- `psa-tgtb` has only `psa-tgtb.1`, same wrong-target title, unpointed → feeds
+  nothing → the parent is starved and ALARMS.
+- `psa-tgtc` / `psa-tgtc.1` control: a child leg whose title names no
+  id-shaped target at all still counts via hierarchy (the arm is tightened,
+  not removed).
 
 ### `board-empty.json` / `board-invalid.json`
 `[]` and malformed JSON. A degraded read must exit 2 and SCREAM (this rig's

@@ -25,15 +25,29 @@
 #   perspective review of a population bead: contains the word "review" (not as
 #   part of "review-lead"), at least one perspective keyword (product / ux / a11y
 #   / arch / correctness / security / safety), and either the target id
-#   word-bounded in the title or a child id of the target (<target>.<n>).
-#   Input VALIDITY (review R1 rule — apparent inputs are not evidence):
+#   word-bounded in the title, or a child id of the target (<target>.<n>) whose
+#   title does NOT name a different target. Hierarchy alone must not override
+#   contradictory title evidence (review R2 rule): a child bead titled as a
+#   review of ANOTHER id-shaped target is not a leg of this target — if pointed
+#   at via review_gate_reviews it becomes MISPOINTED (invalid input → UNKNOWN),
+#   and unpointed it simply does not feed this gate. "Id-shaped" is measured
+#   from the board itself: a token whose <prefix>- matches a prefix observed in
+#   the board's own ids (so ordinary hyphenated words never trip it).
+#   Input VALIDITY (review R1 + R2 rules — apparent inputs are not evidence):
 #       * a leg that is open/in_progress (or blocked/deferred) is a reviewer
 #         WORKING — valid, suppresses starvation; the alarm is for ZERO inputs,
 #         not slow ones;
 #       * a CLOSED leg is valid ONLY as completed evidence: it must carry durable
-#         non-empty notes containing a terminal VERDICT line (a line starting
-#         "VERDICT…", the rig's review convention). A closed leg with no notes,
-#         whitespace notes, or notes without a VERDICT line is an INVALID input;
+#         non-empty notes containing a terminal VERDICT DECISION line — a line
+#         "VERDICT: <decision>" where <decision> is one of the rig's real
+#         terminal decisions APPROVE | REVISE | PROCEED | PASS (measured from
+#         every VERDICT line on the live board 2026-07-26: 136× REVISE,
+#         101× APPROVE, 40× PROCEED, 9× PASS; the observed non-decision shapes
+#         "VERDICTS…" and "VERDICT INPUTS…" are exactly what must NOT count).
+#         A closed leg with no notes, whitespace notes, notes without a VERDICT
+#         line, or a VERDICT marker without a recognised decision is an INVALID
+#         input. An unrecognised future decision word therefore reads UNKNOWN
+#         (loud, a human looks) — the safe failure direction for a watchdog;
 #       * a pointer in metadata.review_gate_reviews only counts if the named bead
 #         exists AND qualifies as an identified review leg of THIS target. A
 #         pointer at a bead that does not exist is DANGLING (reported, not an
@@ -62,21 +76,28 @@
 #   EMPTY board result is treated as a DETECTOR ERROR (exit 2), never as all-clear:
 #   this rig's board is never legitimately empty.
 #
-# COMPLETENESS PROOF (live path; review R1 rule — a partial read must never
-# become green). A truncated-but-well-formed board could omit every gate-armed
-# bead and read as all-clear, so board acquisition is corroborated over TWO
-# independent read paths (the rig's own so-2ck1 discipline):
-#       count-1:  gc bd --rig <rig> sql --json 'SELECT COUNT(*) AS n FROM issues'
-#       list:     the scan path above
-#       count-2:  the same COUNT again
-#   The read is accepted only when count-1 == |list| == count-2 (the SQL count
-#   path and the list serialisation path agree, and the board did not move during
-#   the read). A mismatch is retried up to 3 times (a live board legitimately
-#   moves); persistent mismatch, a failed/unrecognisable COUNT, or a zero count
-#   is a DETECTOR ERROR (exit 2) — completeness could not be proven. Both paths
-#   were verified to agree exactly (1936 == 1936) on the live rig 2026-07-26.
+# COMPLETENESS PROOF (live path; review R1 + R2 rules — a partial read must
+# never become green, and COUNT EQUALITY IS NOT A COMPLETENESS PROOF: a list
+# that duplicates one valid row while omitting the gate-armed row passes any
+# cardinality check). Board acquisition is therefore corroborated at the ID-SET
+# level over TWO independent read paths (the rig's own so-2ck1 discipline):
+#       ids-1:  gc bd --rig <rig> sql --json 'SELECT id FROM issues'
+#       list:   the scan path above
+#       ids-2:  the same SELECT again
+#   The read is accepted only when sorted(ids-1) == sorted(list ids) ==
+#   sorted(ids-2) — the SQL path and the list serialisation path agree on the
+#   full id MULTISET (membership, duplicates, and count all at once; id is the
+#   primary key, so the SQL side is duplicate-free by construction), and the
+#   board did not move during the read. A mismatch is retried up to 3 times (a
+#   live board legitimately moves); persistent mismatch, a failed/unrecognisable
+#   SELECT, or a zero-id set is a DETECTOR ERROR (exit 2) — completeness could
+#   not be proven, and the error names the duplicated / missing / unexpected
+#   ids so the responder does not re-derive them. Both paths were verified to
+#   agree exactly on the live rig (1936 == 1936 COUNT on 2026-07-26; id-set
+#   equality re-verified live the same day).
 #   --input files bypass corroboration (a static file cannot truncate in flight;
-#   it IS the board by definition) but get the full row contract below.
+#   it IS the board by definition) but get the full row contract below,
+#   INCLUDING duplicate-id rejection.
 #
 # ROW CONTRACT (validated BEFORE any filtering; review R1 rule — malformed rows
 # must scream, not be normalised into an empty population). Measured from the
@@ -91,7 +112,9 @@
 #       .metadata    absent, null, or object; the consumed keys review_gate /
 #                    review_gate_head / review_gate_reviews, when present, strings;
 #       .notes       absent, null, or string;
-#       .assignee    absent, null, or string.
+#       .assignee    absent, null, or string;
+#       .id          UNIQUE across the board (review R2 rule — a duplicated row
+#                    is the signature of a substituted/omitted row, never valid).
 #   Any violation fails the ENTIRE run (exit 2, naming the first bad row) —
 #   partial normalisation is unsafe for an absence detector.
 #
@@ -105,15 +128,32 @@
 #   outlived everything seen so far. Three samples from one night is not a tuning —
 #   re-derive from accumulated WATCH/ALARM reports and adjust --threshold-mins.
 #
-# STATE FILE (strict; review R1 rule — persistence corruption must be machine-
-# visible, never a silent clock reset). Unless --no-state, the script persists
+# STATE FILE (strict; review R1 + R2 rules — persistence corruption must be
+# machine-visible, never a silent clock reset, and a corrupt state must never
+# be overwritten as if healthy). Unless --no-state, the script persists
 # {<bead-id>: {first_seen, alarmed_at, unknown_at}} (ISO timestamps or null).
-# If state is ENABLED and the file exists but is unreadable, not a regular file,
-# not valid JSON, not shaped as above, or cannot be WRITTEN back, that is a
-# DETECTOR ERROR (exit 2) — the observed-starved clock and the alarm/unknown
-# dedup cannot be trusted, so no report is emitted. Recover by inspecting/
-# removing the state file, or run --no-state (the explicit stateless mode: no
-# read, no write, clocks degrade to updated_at only, by choice).
+# If state is ENABLED and the file exists but is unreadable, not a regular
+# file, a symlink, not valid JSON, not shaped as above, or cannot be WRITTEN
+# back, that is a DETECTOR ERROR (exit 2) — the observed-starved clock and the
+# alarm/unknown dedup cannot be trusted, so no report is emitted and the bad
+# state file is LEFT INTACT as evidence (validation happens before any write).
+# Shape alone is not enough (review R2): entries the detector could never have
+# persisted are rejected as corrupt —
+#       * key sets other than exactly {first_seen, alarmed_at} (v1) or
+#         {first_seen, alarmed_at, unknown_at} (v2) — so {} and
+#         {"alarmed_at": …} with no first_seen cannot masquerade as fresh;
+#       * alarmed_at set while first_seen is null (an alarm without the
+#         starved clock that produced it);
+#       * first_seen and unknown_at both set (the states are exclusive) or
+#         both null (nothing to persist means no entry at all);
+#       * any timestamp in the FUTURE of the current clock (a future
+#         first_seen postpones an alarm indefinitely);
+#       * alarmed_at earlier than first_seen.
+# Recover by inspecting/removing the state file, or run --no-state (the
+# explicit stateless mode: no read, no write, clocks degrade to updated_at
+# only, by choice). Writes go through mktemp (O_EXCL, random name) in the
+# state directory plus an atomic rename — rename(2) never follows a destination
+# symlink, and a planted predictable "<state>.tmp" symlink is never opened.
 #
 # WHAT IT DELIBERATELY DOES NOT DO (bead psa-qqaka, ask #5)
 #   No review generation, no re-routing, no gate writes, no merges, no bead writes
@@ -224,19 +264,22 @@ trap 'rm -rf "$WORK_DIR"' EXIT
 BOARD_FILE="$WORK_DIR/board.json"
 
 # ---- acquire the board -------------------------------------------------------
-# Second read path for completeness corroboration. Writes the count to $1 (a
-# file, not stdout — die() inside $(...) would be swallowed by the subshell).
-sql_count_into() {
+# Second read path for completeness corroboration: the full id set, not a count
+# (review R2 — count equality is defeated by a duplicated row substituting an
+# omitted one). Writes the SORTED id array (JSON) to $1 (a file, not stdout —
+# die() inside $(...) would be swallowed by the subshell). id is the primary
+# key, so this path is duplicate-free by construction.
+sql_ids_into() {
     local out_file="$1" payload
-    if ! payload="$(gc bd --rig "$RIG" sql --json 'SELECT COUNT(*) AS n FROM issues' 2>"$WORK_DIR/sql.err")"; then
+    if ! payload="$(gc bd --rig "$RIG" sql --json 'SELECT id FROM issues' 2>"$WORK_DIR/sql.err")"; then
         sed 's/^/  gc-sql: /' "$WORK_DIR/sql.err" >&2 || true
-        die "board count corroboration failed: gc bd --rig $RIG sql exited non-zero — completeness cannot be proven"
+        die "board id corroboration failed: gc bd --rig $RIG sql exited non-zero — completeness cannot be proven"
     fi
-    if ! jq -e '(type == "array") and (length == 1) and ((.[0].n | type) == "number") and (.[0].n >= 0) and ((.[0].n | floor) == .[0].n)' \
+    if ! jq -e '(type == "array") and all(.[]; (type == "object") and ((.id | type) == "string") and (.id != ""))' \
             >/dev/null 2>&1 <<<"$payload"; then
-        die "board count corroboration returned an unrecognised payload (want [{\"n\": <int>=0>}]) — completeness cannot be proven"
+        die "board id corroboration returned an unrecognised payload (want [{\"id\": <non-empty string>}, …]) — completeness cannot be proven"
     fi
-    jq -r '.[0].n' <<<"$payload" >"$out_file"
+    jq '[.[].id] | sort' <<<"$payload" >"$out_file"
 }
 
 if [ -n "$INPUT_FILE" ]; then
@@ -246,11 +289,11 @@ if [ -n "$INPUT_FILE" ]; then
         || die "board payload is not a JSON array — refusing to evaluate (never all-clear on a bad read)"
 else
     # THE RELIABLE SCAN PATH — verbatim; see header before changing anything here.
-    # Bracketed by two independent COUNT reads: accept only count == length == count.
+    # Bracketed by two independent id-set reads: accept only when the sorted id
+    # multiset of the list equals BOTH bracketing SQL id sets exactly.
     PROVEN=0
-    C1="" C2="" BOARD_LEN=""
     for ATTEMPT in 1 2 3; do
-        sql_count_into "$WORK_DIR/c1"; C1="$(cat "$WORK_DIR/c1")"
+        sql_ids_into "$WORK_DIR/ids-pre.json"
         if ! gc bd --rig "$RIG" list --all --include-gates --limit 0 --json \
                 >"$BOARD_FILE" 2>"$WORK_DIR/gc.err"; then
             sed 's/^/  gc: /' "$WORK_DIR/gc.err" >&2 || true
@@ -258,16 +301,30 @@ else
         fi
         jq -e 'type == "array"' "$BOARD_FILE" >/dev/null 2>&1 \
             || die "board payload is not a JSON array — refusing to evaluate (never all-clear on a bad read)"
-        BOARD_LEN="$(jq 'length' "$BOARD_FILE")"
-        sql_count_into "$WORK_DIR/c2"; C2="$(cat "$WORK_DIR/c2")"
-        if [ "$C1" = "$BOARD_LEN" ] && [ "$C2" = "$BOARD_LEN" ]; then
+        # Tolerant id extraction (rows are contract-validated after acquisition):
+        # a row with a missing/non-string id yields null here, which can never
+        # match a SQL id, so a malformed live read still fails corroboration.
+        jq '[.[] | (.id? // null)] | sort' "$BOARD_FILE" >"$WORK_DIR/ids-list.json"
+        sql_ids_into "$WORK_DIR/ids-post.json"
+        if jq -en --slurpfile pre "$WORK_DIR/ids-pre.json" --slurpfile lst "$WORK_DIR/ids-list.json" --slurpfile post "$WORK_DIR/ids-post.json" \
+                '($pre[0] == $lst[0]) and ($post[0] == $lst[0])' >/dev/null 2>&1; then
             PROVEN=1
             break
         fi
-        echo "WARN: board completeness not yet proven (count-pre=$C1 rows=$BOARD_LEN count-post=$C2), attempt $ATTEMPT/3" >&2
+        echo "WARN: board completeness not yet proven (sql-pre=$(jq 'length' "$WORK_DIR/ids-pre.json") list-rows=$(jq 'length' "$WORK_DIR/ids-list.json") sql-post=$(jq 'length' "$WORK_DIR/ids-post.json") — id sets differ), attempt $ATTEMPT/3" >&2
     done
-    [ "$PROVEN" -eq 1 ] \
-        || die "board completeness could not be proven after 3 attempts (last: count-pre=$C1 rows=$BOARD_LEN count-post=$C2) — a partial read must never become green"
+    if [ "$PROVEN" -ne 1 ]; then
+        # Name the divergence so the responder does not re-derive it.
+        ID_DIVERGENCE="$(jq -rn --slurpfile pre "$WORK_DIR/ids-pre.json" --slurpfile lst "$WORK_DIR/ids-list.json" '
+            ($pre[0]) as $S | ($lst[0]) as $L
+            | { sql_ids: ($S | length),
+                list_rows: ($L | length),
+                duplicated_in_list: ([$L | group_by(.) | .[] | select(length > 1) | .[0]] | .[0:5]),
+                missing_from_list: (($S - $L) | .[0:5]),
+                unexpected_in_list: ((($L | unique) - $S) | .[0:5]) }
+            | tojson' 2>/dev/null || echo '{}')"
+        die "board completeness could not be proven after 3 attempts — the list id set never matched the SQL id set: $ID_DIVERGENCE — a partial, duplicated, or substituted read must never become green"
+    fi
 fi
 
 jq -e 'length > 0' "$BOARD_FILE" >/dev/null 2>&1 \
@@ -303,29 +360,59 @@ ROW_VIOLATION="$(jq -r '
 [ -z "$ROW_VIOLATION" ] \
     || die "board row contract violated — $ROW_VIOLATION; a malformed board must scream, not normalise into an empty population"
 
+# Duplicate ids are the signature of a substituted/omitted row (review R2): a
+# board that lists one bead twice can be hiding the bead it dropped, so it is
+# never trustworthy — for --input files too, where corroboration cannot run.
+DUP_ID="$(jq -r '[.[].id] | group_by(.) | map(select(length > 1) | .[0]) | first // ""' "$BOARD_FILE")"
+[ -z "$DUP_ID" ] \
+    || die "board row contract violated — duplicate id appears more than once: $DUP_ID; a duplicated row can substitute for an omitted bead, so the board cannot be trusted"
+
 # ---- load detector state (first-seen / alarmed-at / unknown-at clocks) --------
 # Strict: enabled + present but untrustworthy state is a detector error, never a
 # silent clock reset (a reset can postpone an alarm indefinitely under chatter).
+# Validation happens BEFORE any evaluation or persist, so a corrupt state file
+# is always LEFT INTACT as evidence — never overwritten as if healthy (R2).
 STATE_JSON="{}"
-if [ "$NO_STATE" -eq 0 ] && [ -e "$STATE_FILE" ]; then
+if [ "$NO_STATE" -eq 0 ] && { [ -e "$STATE_FILE" ] || [ -L "$STATE_FILE" ]; }; then
+    [ ! -L "$STATE_FILE" ] \
+        || die "state path is a symlink: $STATE_FILE — refusing to read or write through it (point --state-file at a regular file, or run --no-state)"
     [ -f "$STATE_FILE" ] \
         || die "state path exists but is not a regular file: $STATE_FILE (inspect/remove it, or run --no-state)"
     [ -r "$STATE_FILE" ] \
         || die "state file exists but is not readable: $STATE_FILE (fix permissions, remove it, or run --no-state)"
-    if ! jq -e '
+    # Shape AND possibility: reject any entry this detector could never have
+    # persisted (see header). Missing keys must not evaluate as fresh nulls —
+    # the exact R2 repro was {"alarmed_at": …} with no first_seen reading as a
+    # brand-new WATCH and then overwriting the alarm evidence.
+    if ! jq -e --arg now_iso "$NOW_ISO" '
             def ok_ts:
                 (type == "string") and
                 ((sub("\\.[0-9]+Z$"; "Z")) as $c
                  | ((($c | fromdateiso8601)? // null) as $e
                     | ($e != null) and (($e | todate) == $c)));
-            (type == "object") and
-            ([ to_entries[].value ] | all(
+            def ep: if . == null then null else (sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) end;
+            ($now_iso | ep) as $now
+            | (type == "object")
+            and (keys | all(. != ""))
+            and ([ to_entries[].value ] | all(
                 (type == "object")
-                and ((keys - ["first_seen", "alarmed_at", "unknown_at"]) == [])
-                and ([.first_seen, .alarmed_at, .unknown_at] | all(. == null or ok_ts))
+                and (((keys | sort) == ["alarmed_at", "first_seen"])
+                     or ((keys | sort) == ["alarmed_at", "first_seen", "unknown_at"]))
+                and ([.first_seen, .alarmed_at, (.unknown_at // null)] | all(. == null or ok_ts))
+                # a persisted entry always carries exactly one clock:
+                and ((.first_seen != null) or ((.unknown_at // null) != null))
+                and ((.first_seen == null) or ((.unknown_at // null) == null))
+                # an alarm cannot exist without the starved clock that produced it:
+                and ((.alarmed_at == null) or (.first_seen != null))
+                # no clock may sit in the future (a future first_seen postpones
+                # an alarm indefinitely — the R2 minutes_observed:-38097430 repro):
+                and ([.first_seen, .alarmed_at, (.unknown_at // null)]
+                     | all(. == null or ((ep) <= $now)))
+                # and an alarm cannot predate its own first sighting:
+                and ((.alarmed_at == null) or ((.alarmed_at | ep) >= (.first_seen | ep)))
             ))
         ' "$STATE_FILE" >/dev/null 2>&1; then
-        die "state file is corrupt or not the expected shape ({<id>: {first_seen, alarmed_at, unknown_at}}): $STATE_FILE — the observed clocks cannot be trusted (inspect/remove it, or run --no-state)"
+        die "state file is corrupt, mis-shaped, or impossible (an entry this detector could never have persisted — missing/extra keys, missing clocks, both clocks, a future timestamp, or an alarm without/before its first sighting): $STATE_FILE — the observed clocks cannot be trusted; file left intact as evidence (inspect/remove it, or run --no-state)"
     fi
     STATE_JSON="$(cat "$STATE_FILE")"
 fi
@@ -362,12 +449,37 @@ def perspectives_of($title):
 def looks_like_review($title): ($title // "") | test("review(?!-lead)"; "i");
 
 # Completed-review evidence: durable non-empty notes carrying a terminal VERDICT
-# line — a line starting (after optional whitespace) with the word VERDICT, the
-# rig convention observed on every real closed review leg ("VERDICT: APPROVE",
-# "VERDICT: REVISE — …", "VERDICT: PROCEED"). jq/Oniguruma "^" anchors the whole
-# string, not lines, so the line start is spelled (^|\n) explicitly.
+# DECISION line. has_verdict_line detects the marker (a line starting, after
+# optional whitespace, with the word VERDICT); has_verdict_decision requires
+# the real terminal decision of this rig after it — VERDICT: APPROVE | REVISE |
+# PROCEED | PASS, the complete vocabulary measured from every VERDICT line on
+# the live board 2026-07-26 (136× REVISE, 101× APPROVE, 40× PROCEED, 9× PASS).
+# A marker without a recognised decision ("VERDICT", "VERDICT:", the observed
+# live shape "VERDICT INPUTS …") is NOT evidence (review R2) — and an
+# unrecognised future decision word reads UNKNOWN, the safe direction.
+# jq/Oniguruma "^" anchors the whole string, not lines, so the line start is
+# spelled (^|\n) explicitly.
 def has_verdict_line: (. // "") | test("(^|\\n)[ \\t]*VERDICT\\b");
+def has_verdict_decision:
+    (. // "") | test("(^|\\n)[ \\t]*VERDICT[ \\t]*:[ \\t]*(APPROVE|REVISE|PROCEED|PASS)\\b");
 def notes_text: (.notes // "");
+
+# Id-shaped tokens in a title, judged by the id grammar of the board itself: a
+# token <prefix>-<rest>[.n…] is id-shaped only when <prefix> matches a prefix
+# observed in the real board ids — so hyphenated prose ("re-review",
+# "data-safety", "starved-gate") never trips it, while a foreign "psa-xyz"
+# does even when that bead is absent from the board (the wrong-target title in
+# the R2 repro named a bead that did not exist on the two-row board).
+def idish_tokens($title):
+    [ ($title // "") | scan("[A-Za-z][A-Za-z0-9]*-[A-Za-z0-9]+(?:\\.[0-9]+)*") ] | unique;
+def foreign_target_ids($tid; $own_id; $title; $prefixes):
+    idish_tokens($title)
+    | map(select(
+          (split("-")[0] as $p | ($prefixes | index($p)) != null)
+          and (. != $tid)
+          and (. != $own_id)
+          and ((startswith($tid + ".")) | not)
+      ));
 
 def gate_unset: ((.metadata // {}).review_gate // "") == "";
 def head_of:    ((.metadata // {}).review_gate_head // "");
@@ -378,6 +490,7 @@ def pointers_of:
 ($now_iso | ts2e) as $now
 | $board_wrap[0] as $bd
 | ($bd | map(.id)) as $board_ids
+| ($board_ids | map(split("-")[0]) | unique) as $prefixes
 | ($bd | map(select(
       (.status == "open" or .status == "in_progress")
       and gate_unset
@@ -386,12 +499,18 @@ def pointers_of:
 | ($population | map(
       . as $t
       | $t.id as $tid
-      # Identified review legs of this target (title-shape; any status).
+      # Identified review legs of this target (title-shape; any status). The
+      # child-id arm holds ONLY while the title names no different id-shaped
+      # target — hierarchy alone must not override contradictory title
+      # evidence (review R2). A title that mentions the target explicitly
+      # always counts: positive title evidence beats an incidental foreign id.
       | ($bd | map(select(
             (.id != $tid)
             and looks_like_review(.title)
             and ((perspectives_of(.title) | length) > 0)
-            and ((.id | startswith($tid + ".")) or mentioned($tid; .title))
+            and (mentioned($tid; .title)
+                 or ((.id | startswith($tid + "."))
+                     and ((foreign_target_ids($tid; .id; .title; $prefixes) | length) == 0)))
         ))) as $legs
       | ($legs | map(.id)) as $leg_ids
       # Validity per leg: open-ish = reviewer working; closed needs evidence.
@@ -400,12 +519,13 @@ def pointers_of:
             | (if $l.status != "closed" then "working"
                elif (($l | notes_text) | gsub("\\s+"; "") | length) == 0 then "closed_no_notes"
                elif (($l | notes_text) | has_verdict_line | not) then "closed_no_verdict"
+               elif (($l | notes_text) | has_verdict_decision | not) then "closed_bad_verdict"
                else "evidenced" end) as $disp
             | {id: $l.id, status: $l.status, perspectives: perspectives_of($l.title), disposition: $disp}
         )) as $classified
       | ($classified | map(select(.disposition == "working"))) as $working
       | ($classified | map(select(.disposition == "evidenced"))) as $evidenced
-      | ($classified | map(select(.disposition == "closed_no_notes" or .disposition == "closed_no_verdict"))) as $closed_invalid
+      | ($classified | map(select(.disposition == "closed_no_notes" or .disposition == "closed_no_verdict" or .disposition == "closed_bad_verdict"))) as $closed_invalid
       # Pointer accounting: dangling (no such bead), validated (an identified
       # leg of this target), mispointed (exists, but not a review of this target).
       | ($t | pointers_of) as $ptrs
@@ -417,7 +537,9 @@ def pointers_of:
       | ((($closed_invalid | map({id, status, reason:
               (if .disposition == "closed_no_notes"
                then "closed with no durable notes — no completed-review evidence"
-               else "closed notes lack a terminal VERDICT line — no completed-review evidence" end)}))
+               elif .disposition == "closed_no_verdict"
+               then "closed notes lack a terminal VERDICT line — no completed-review evidence"
+               else "closed notes carry a VERDICT marker but no recognised terminal decision (want VERDICT: APPROVE/REVISE/PROCEED/PASS) — no completed-review evidence" end)}))
           + ($mispointed | map({id, status, title, reason}))) ) as $invalid_inputs
       | (($working | length) + ($evidenced | length)) as $valid_count
       | ($invalid_inputs | length) as $invalid_count
@@ -523,13 +645,22 @@ if ! jq -n \
 fi
 
 # ---- persist state (only after a successful evaluation; failure is LOUD) ------
+# Write path is symlink-safe (review R2): the temp file is created by mktemp
+# (O_EXCL, unpredictable name — a planted "<state>.tmp" symlink is never
+# opened), and the atomic rename never follows a symlink at the destination.
+# The state path itself was refused as a symlink at load time; re-check here so
+# a symlink planted mid-run is refused too, not renamed over silently.
 if [ "$NO_STATE" -eq 0 ]; then
+    [ ! -L "$STATE_FILE" ] \
+        || die "state path is a symlink: $STATE_FILE — refusing to write through or over it (point --state-file at a regular file, or run --no-state)"
+    STATE_TMP=""
     if mkdir -p "$(dirname "$STATE_FILE")" 2>/dev/null \
-            && jq '.new_state' "$REPORT_FILE" >"$STATE_FILE.tmp" 2>/dev/null \
-            && mv "$STATE_FILE.tmp" "$STATE_FILE" 2>/dev/null; then
+            && STATE_TMP="$(mktemp "$(dirname "$STATE_FILE")/.starved-review-gate.XXXXXXXX" 2>/dev/null)" \
+            && jq '.new_state' "$REPORT_FILE" >"$STATE_TMP" 2>/dev/null \
+            && mv -f "$STATE_TMP" "$STATE_FILE" 2>/dev/null; then
         :
     else
-        rm -f "$STATE_FILE.tmp" 2>/dev/null || true
+        [ -z "$STATE_TMP" ] || rm -f "$STATE_TMP" 2>/dev/null || true
         die "state file could not be written: $STATE_FILE — the observed-starved/unknown clocks would silently reset, postponing alarms (fix the path/permissions, or run --no-state)"
     fi
 fi
