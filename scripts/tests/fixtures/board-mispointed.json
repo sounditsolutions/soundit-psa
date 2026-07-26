@@ -1,0 +1,56 @@
+[
+  {
+    "id": "psa-z30dv",
+    "title": "Backup posture is unverifiable to the agent — no vendor read verbs (fixture-genericized)",
+    "status": "open",
+    "assignee": "psa/review-lead",
+    "updated_at": "2026-07-25T19:56:30Z",
+    "notes": "Fixture-genericized notes.",
+    "metadata": {
+      "review_gate": "",
+      "review_gate_head": "aaaa004",
+      "review_gate_reviews": "psa-enpew,psa-lps0u"
+    }
+  },
+  {
+    "id": "psa-0pb9m",
+    "title": "Endpoint monitoring gap on one platform — fixture-genericized work bead",
+    "status": "in_progress",
+    "assignee": "gastown__polecat-session-x",
+    "updated_at": "2026-07-25T20:08:30Z",
+    "notes": "Fixture-genericized notes.",
+    "metadata": {
+      "review_gate": "",
+      "review_gate_head": "eeee001",
+      "review_gate_reviews": "psa-enpew"
+    }
+  },
+  {
+    "id": "psa-enpew",
+    "title": "Vendor webhook/job status codes don't match the vendor SDK (fixture-genericized)",
+    "status": "open",
+    "assignee": "psa/review-lead",
+    "updated_at": "2026-07-26T02:43:11.666588428Z",
+    "notes": "Fixture-genericized notes.",
+    "metadata": {
+      "review_gate": "escalate",
+      "review_gate_head": "bbbb004",
+      "review_gate_reviews": "psa-enpew.13,psa-enpew.14,psa-enpew.15,psa-enpew.16"
+    }
+  },
+  {
+    "id": "psa-lps0u",
+    "title": "ARCHITECTURE/CORRECTNESS review: psa-717bn.6 @ dddd001",
+    "status": "closed",
+    "assignee": "architect-reviewer-session-x",
+    "updated_at": "2026-07-24T22:38:47.842315634Z",
+    "notes": "Fixture-genericized review body.\nVERDICT: APPROVE — genericized."
+  },
+  {
+    "id": "psa-z30dv.13",
+    "title": "ARCHITECTURE re-review R4: psa-z30dv @ aaaa004 — genericized tail",
+    "status": "in_progress",
+    "assignee": "architect-reviewer-session-x",
+    "updated_at": "2026-07-26T02:45:03.608368874Z"
+  }
+]

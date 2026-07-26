@@ -1,0 +1,46 @@
+[
+  {
+    "id": "psa-enpew",
+    "title": "Vendor webhook/job status codes don't match the vendor SDK (fixture-genericized)",
+    "status": "open",
+    "assignee": "psa/review-lead",
+    "updated_at": "2026-07-26T02:43:11.666588428Z",
+    "notes": "Fixture-genericized notes.",
+    "metadata": {
+      "review_gate": "",
+      "review_gate_head": "bbbb004",
+      "review_gate_reviews": "psa-enpew.13,psa-enpew.14,psa-enpew.15,psa-enpew.16"
+    }
+  },
+  {
+    "id": "psa-enpew.13",
+    "title": "UX/A11Y re-review R4 (PRIMARY LANE): psa-enpew @ bbbb004 — genericized",
+    "status": "closed",
+    "assignee": "ux-reviewer-session-x",
+    "updated_at": "2026-07-26T02:32:53.733930959Z",
+    "notes": "Working notes without a terminal verdict marker — fixture-genericized."
+  },
+  {
+    "id": "psa-enpew.14",
+    "title": "ARCHITECTURE re-review R4 (REGRESSION CHECK ONLY): psa-enpew @ bbbb004 — genericized",
+    "status": "closed",
+    "assignee": "architect-reviewer-session-x",
+    "updated_at": "2026-07-26T02:32:15.57472748Z",
+    "notes": "Fixture-genericized review body.\nVERDICT: PROCEED — genericized."
+  },
+  {
+    "id": "psa-enpew.15",
+    "title": "SECURITY re-review R4 (REGRESSION CHECK ONLY): psa-enpew @ bbbb004 — genericized",
+    "status": "closed",
+    "assignee": "security-reviewer-session-x",
+    "updated_at": "2026-07-26T02:31:09.340871632Z",
+    "notes": "   \n\t "
+  },
+  {
+    "id": "psa-enpew.16",
+    "title": "PRODUCT re-review R4 (REGRESSION CHECK ONLY): psa-enpew @ bbbb004 — genericized",
+    "status": "closed",
+    "assignee": "product-reviewer-session-x",
+    "updated_at": "2026-07-26T02:30:59.587408131Z"
+  }
+]

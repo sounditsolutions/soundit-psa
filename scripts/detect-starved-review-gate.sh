@@ -21,23 +21,37 @@
 #       status is open or in_progress
 #       AND review_gate is unset (metadata.review_gate absent or "")
 #       AND (assignee == <review-lead> OR metadata.review_gate_head is non-empty)
-#   Starved — a population bead for which ZERO review inputs exist, where an input is:
-#       * a bead named in metadata.review_gate_reviews that actually exists, OR
-#       * a bead in ANY status whose title looks like a perspective review of this
-#         bead: contains the word "review" (not as part of "review-lead"), at least
-#         one perspective keyword (product / ux / a11y / arch / correctness /
-#         security / safety), and either the target id word-bounded in the title or
-#         a child id of the target (<target>.<n>).
-#     Review beads that exist but are still open/in_progress are a reviewer WORKING,
-#     not a stall — they suppress the alarm. The alarm is for ZERO inputs, not slow
-#     ones. Pointers in review_gate_reviews that name beads which do NOT exist are
-#     dangling: they are reported, and they do not count as inputs.
-#   Alarm — a starved bead whose parked duration reaches the threshold. Parked
-#   duration is the MAX of two lower-bound clocks (both reported):
-#       * untouched-for:      now - updated_at   (survives detector restarts)
-#       * observed-starved:   now - first_seen   (from this script's state file;
-#                             survives bead chatter that keeps touching updated_at)
-#   Below threshold the bead is reported as WATCH (visible, exit 0).
+#   Identified review leg — a bead in ANY status whose title looks like a
+#   perspective review of a population bead: contains the word "review" (not as
+#   part of "review-lead"), at least one perspective keyword (product / ux / a11y
+#   / arch / correctness / security / safety), and either the target id
+#   word-bounded in the title or a child id of the target (<target>.<n>).
+#   Input VALIDITY (review R1 rule — apparent inputs are not evidence):
+#       * a leg that is open/in_progress (or blocked/deferred) is a reviewer
+#         WORKING — valid, suppresses starvation; the alarm is for ZERO inputs,
+#         not slow ones;
+#       * a CLOSED leg is valid ONLY as completed evidence: it must carry durable
+#         non-empty notes containing a terminal VERDICT line (a line starting
+#         "VERDICT…", the rig's review convention). A closed leg with no notes,
+#         whitespace notes, or notes without a VERDICT line is an INVALID input;
+#       * a pointer in metadata.review_gate_reviews only counts if the named bead
+#         exists AND qualifies as an identified review leg of THIS target. A
+#         pointer at a bead that does not exist is DANGLING (reported, not an
+#         input). A pointer at an existing bead that is NOT a review of this
+#         target is MISPOINTED — an INVALID input, never silent suppression.
+#   Verdicts per population bead:
+#       OK      — at least one valid input (working or evidenced), zero invalid.
+#       UNKNOWN — any INVALID input exists (closed-without-evidence or mispointed
+#                 pointer), regardless of valid ones. The gate's input record
+#                 cannot be trusted as either fed or starved — a human must look.
+#                 Reported immediately (no threshold wait), exit 1.
+#       WATCH / ALARM — zero inputs of any kind (starved; dangling pointers may
+#                 exist — they point at nothing). ALARM when parked duration
+#                 reaches the threshold; WATCH below it. Parked duration is the
+#                 MAX of two lower-bound clocks (both reported):
+#                     untouched-for:    now - updated_at  (survives detector restarts)
+#                     observed-starved: now - first_seen  (state file; survives
+#                                       bead chatter that keeps touching updated_at)
 #
 # THE SCAN PATH (do not "simplify" this)
 #   gc bd --rig <rig> list --all --include-gates --limit 0 --json
@@ -47,6 +61,39 @@
 #   report all-clear forever and be worse than nothing. For the same reason an
 #   EMPTY board result is treated as a DETECTOR ERROR (exit 2), never as all-clear:
 #   this rig's board is never legitimately empty.
+#
+# COMPLETENESS PROOF (live path; review R1 rule — a partial read must never
+# become green). A truncated-but-well-formed board could omit every gate-armed
+# bead and read as all-clear, so board acquisition is corroborated over TWO
+# independent read paths (the rig's own so-2ck1 discipline):
+#       count-1:  gc bd --rig <rig> sql --json 'SELECT COUNT(*) AS n FROM issues'
+#       list:     the scan path above
+#       count-2:  the same COUNT again
+#   The read is accepted only when count-1 == |list| == count-2 (the SQL count
+#   path and the list serialisation path agree, and the board did not move during
+#   the read). A mismatch is retried up to 3 times (a live board legitimately
+#   moves); persistent mismatch, a failed/unrecognisable COUNT, or a zero count
+#   is a DETECTOR ERROR (exit 2) — completeness could not be proven. Both paths
+#   were verified to agree exactly (1936 == 1936) on the live rig 2026-07-26.
+#   --input files bypass corroboration (a static file cannot truncate in flight;
+#   it IS the board by definition) but get the full row contract below.
+#
+# ROW CONTRACT (validated BEFORE any filtering; review R1 rule — malformed rows
+# must scream, not be normalised into an empty population). Measured from the
+# producer across all 1936 live rows on 2026-07-26, not guessed:
+#       every row is an object;
+#       .id      non-empty string;
+#       .title   non-empty string;
+#       .status  one of open|in_progress|blocked|deferred|closed (all five
+#                observed live) or escalated (reachable per the polecat
+#                escalation protocol, not observed);
+#       .updated_at  string, parseable ISO-8601 UTC (nanosecond precision ok);
+#       .metadata    absent, null, or object; the consumed keys review_gate /
+#                    review_gate_head / review_gate_reviews, when present, strings;
+#       .notes       absent, null, or string;
+#       .assignee    absent, null, or string.
+#   Any violation fails the ENTIRE run (exit 2, naming the first bad row) —
+#   partial normalisation is unsafe for an absence detector.
 #
 # THRESHOLD PROVENANCE (default 45 minutes — a grounded default, NOT a tuned constant)
 #   Real data, one incident night (2026-07-25), three points, all resolved by one
@@ -58,11 +105,21 @@
 #   outlived everything seen so far. Three samples from one night is not a tuning —
 #   re-derive from accumulated WATCH/ALARM reports and adjust --threshold-mins.
 #
+# STATE FILE (strict; review R1 rule — persistence corruption must be machine-
+# visible, never a silent clock reset). Unless --no-state, the script persists
+# {<bead-id>: {first_seen, alarmed_at, unknown_at}} (ISO timestamps or null).
+# If state is ENABLED and the file exists but is unreadable, not a regular file,
+# not valid JSON, not shaped as above, or cannot be WRITTEN back, that is a
+# DETECTOR ERROR (exit 2) — the observed-starved clock and the alarm/unknown
+# dedup cannot be trusted, so no report is emitted. Recover by inspecting/
+# removing the state file, or run --no-state (the explicit stateless mode: no
+# read, no write, clocks degrade to updated_at only, by choice).
+#
 # WHAT IT DELIBERATELY DOES NOT DO (bead psa-qqaka, ask #5)
 #   No review generation, no re-routing, no gate writes, no merges, no bead writes
 #   of any kind, no mail. Detect and report only. Generation is a judgement call
 #   that stays with the PR owner. The only thing this script writes is its own
-#   state file.
+#   state file. (The COUNT corroboration is a read-only SELECT.)
 #
 # USAGE
 #   scripts/detect-starved-review-gate.sh [options]         # run inside the town tree
@@ -70,7 +127,8 @@
 #     --review-lead <addr>    synthesiser address (default: <rig>/review-lead)
 #     --owner-hint <name>     who owes generation, for the report (default: <rig>-lead)
 #     --threshold-mins <n>    alarm threshold in minutes (default: 45)
-#     --input <file>          read the board from a JSON file instead of gc (tests)
+#     --input <file>          read the board from a JSON file instead of gc (tests;
+#                             skips live-path completeness corroboration only)
 #     --state-file <path>     persistence file (default:
 #                             ${XDG_STATE_HOME:-$HOME/.local/state}/gc-detectors/
 #                             starved-review-gate-<rig>.json)
@@ -80,19 +138,21 @@
 #     --verbose               also print healthy population beads (input accounting)
 #
 # EXIT CODES
-#   0  no alarm (population may include WATCH items — printed)
-#   1  ALARM: at least one starved bead at/over threshold
-#   2  detector error (scan failed, empty/invalid board, bad args) — NEVER all-clear
+#   0  healthy (population may include WATCH items — printed)
+#   1  ATTENTION: at least one ALARM (starved at/over threshold) and/or UNKNOWN
+#      (invalid gate inputs) bead — the report says which and why
+#   2  detector error (scan failed, completeness unproven, empty/invalid board,
+#      row contract violation, state corrupt/unwritable, bad args) — NEVER all-clear
 #
 # WIRING EXAMPLES (delivery is the operator's choice; the contract is exit codes +
-# report; .newly_alarmed in --json output makes an alarm bridge naturally deduped —
-# it lists only beads whose alarm began this run)
+# report; .newly_alarmed / .newly_unknown in --json output make an alarm bridge
+# naturally deduped — they list only beads whose ALARM/UNKNOWN began this run)
 #   cron, every 10 min, log-only:
 #     */10 * * * * cd /path/to/town && repo/scripts/detect-starved-review-gate.sh >> /var/log/starved-review-gate.log 2>&1
-#   witness patrol, mail only on NEW alarms:
+#   witness patrol, mail only on NEW attention states:
 #     R="$(repo/scripts/detect-starved-review-gate.sh --json)"; rc=$?
-#     [ "$rc" -eq 1 ] && [ "$(printf '%s' "$R" | jq '.newly_alarmed|length')" -gt 0 ] \
-#       && gc mail send psa/gastown.witness -s "ALARM: review gate starved [HIGH]" -m "$R"
+#     [ "$rc" -eq 1 ] && [ "$(printf '%s' "$R" | jq '(.newly_alarmed + .newly_unknown) | length')" -gt 0 ] \
+#       && gc mail send psa/gastown.witness -s "ALARM: review gate starved/unknown [HIGH]" -m "$R"
 #
 set -euo pipefail
 
@@ -149,7 +209,13 @@ case "$THRESHOLD_MINS" in
     ''|*[!0-9]*) die "--threshold-mins must be a non-negative integer, got: $THRESHOLD_MINS" ;;
 esac
 
-if ! jq -en --arg t "$NOW_ISO" '($t | (sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601)?) != null' >/dev/null 2>&1; then
+# Strict parse: fromdateiso8601 leniently rolls over out-of-range components
+# (month 13, minute 99), so require the epoch to round-trip back to the input.
+if ! jq -en --arg t "$NOW_ISO" '
+        ($t | sub("\\.[0-9]+Z$"; "Z")) as $c
+        | (($c | fromdateiso8601)? // null) as $e
+        | ($e != null) and (($e | todate) == $c)
+    ' >/dev/null 2>&1; then
     die "--now is not parseable ISO-8601 UTC (want YYYY-MM-DDTHH:MM:SSZ): $NOW_ISO"
 fi
 
@@ -158,31 +224,110 @@ trap 'rm -rf "$WORK_DIR"' EXIT
 BOARD_FILE="$WORK_DIR/board.json"
 
 # ---- acquire the board -------------------------------------------------------
+# Second read path for completeness corroboration. Writes the count to $1 (a
+# file, not stdout — die() inside $(...) would be swallowed by the subshell).
+sql_count_into() {
+    local out_file="$1" payload
+    if ! payload="$(gc bd --rig "$RIG" sql --json 'SELECT COUNT(*) AS n FROM issues' 2>"$WORK_DIR/sql.err")"; then
+        sed 's/^/  gc-sql: /' "$WORK_DIR/sql.err" >&2 || true
+        die "board count corroboration failed: gc bd --rig $RIG sql exited non-zero — completeness cannot be proven"
+    fi
+    if ! jq -e '(type == "array") and (length == 1) and ((.[0].n | type) == "number") and (.[0].n >= 0) and ((.[0].n | floor) == .[0].n)' \
+            >/dev/null 2>&1 <<<"$payload"; then
+        die "board count corroboration returned an unrecognised payload (want [{\"n\": <int>=0>}]) — completeness cannot be proven"
+    fi
+    jq -r '.[0].n' <<<"$payload" >"$out_file"
+}
+
 if [ -n "$INPUT_FILE" ]; then
     [ -r "$INPUT_FILE" ] || die "board input file not readable: $INPUT_FILE"
     cp -- "$INPUT_FILE" "$BOARD_FILE"
+    jq -e 'type == "array"' "$BOARD_FILE" >/dev/null 2>&1 \
+        || die "board payload is not a JSON array — refusing to evaluate (never all-clear on a bad read)"
 else
     # THE RELIABLE SCAN PATH — verbatim; see header before changing anything here.
-    if ! gc bd --rig "$RIG" list --all --include-gates --limit 0 --json \
-            >"$BOARD_FILE" 2>"$WORK_DIR/gc.err"; then
-        sed 's/^/  gc: /' "$WORK_DIR/gc.err" >&2 || true
-        die "board scan failed: gc bd --rig $RIG list --all --include-gates --limit 0 --json exited non-zero"
-    fi
+    # Bracketed by two independent COUNT reads: accept only count == length == count.
+    PROVEN=0
+    C1="" C2="" BOARD_LEN=""
+    for ATTEMPT in 1 2 3; do
+        sql_count_into "$WORK_DIR/c1"; C1="$(cat "$WORK_DIR/c1")"
+        if ! gc bd --rig "$RIG" list --all --include-gates --limit 0 --json \
+                >"$BOARD_FILE" 2>"$WORK_DIR/gc.err"; then
+            sed 's/^/  gc: /' "$WORK_DIR/gc.err" >&2 || true
+            die "board scan failed: gc bd --rig $RIG list --all --include-gates --limit 0 --json exited non-zero"
+        fi
+        jq -e 'type == "array"' "$BOARD_FILE" >/dev/null 2>&1 \
+            || die "board payload is not a JSON array — refusing to evaluate (never all-clear on a bad read)"
+        BOARD_LEN="$(jq 'length' "$BOARD_FILE")"
+        sql_count_into "$WORK_DIR/c2"; C2="$(cat "$WORK_DIR/c2")"
+        if [ "$C1" = "$BOARD_LEN" ] && [ "$C2" = "$BOARD_LEN" ]; then
+            PROVEN=1
+            break
+        fi
+        echo "WARN: board completeness not yet proven (count-pre=$C1 rows=$BOARD_LEN count-post=$C2), attempt $ATTEMPT/3" >&2
+    done
+    [ "$PROVEN" -eq 1 ] \
+        || die "board completeness could not be proven after 3 attempts (last: count-pre=$C1 rows=$BOARD_LEN count-post=$C2) — a partial read must never become green"
 fi
 
-jq -e 'type == "array"' "$BOARD_FILE" >/dev/null 2>&1 \
-    || die "board payload is not a JSON array — refusing to evaluate (never all-clear on a bad read)"
 jq -e 'length > 0' "$BOARD_FILE" >/dev/null 2>&1 \
     || die "board scan returned ZERO beads — impossible on a live rig; this is the silent-false-negative signature (so-2ck1), not an all-clear"
 
-# ---- load detector state (first-seen / alarmed-at clocks) ---------------------
+# ---- row contract (validated BEFORE filtering; see header for provenance) -----
+ROW_VIOLATION="$(jq -r '
+    def ok_ts:
+        (type == "string") and
+        ((sub("\\.[0-9]+Z$"; "Z")) as $c
+         | ((($c | fromdateiso8601)? // null) as $e
+            | ($e != null) and (($e | todate) == $c)));
+    def opt_string($v): ($v == null) or (($v | type) == "string");
+    [ to_entries[]
+      | .key as $i | .value as $r
+      | (if ($r | type) != "object" then "row \($i): not an object"
+         elif (($r.id? | type) != "string") or ($r.id == "") then "row \($i): id missing/empty/non-string"
+         elif (($r.title? | type) != "string") or ($r.title == "") then "row \($i) (\($r.id)): title missing/empty/non-string"
+         elif (["open","in_progress","blocked","deferred","closed","escalated"] | index($r.status?)) == null
+             then "row \($i) (\($r.id)): status not a recognised value: \($r.status? | tojson)"
+         elif ($r.updated_at? | ok_ts | not) then "row \($i) (\($r.id)): updated_at missing/unparseable: \($r.updated_at? | tojson)"
+         elif ($r | has("metadata")) and ($r.metadata != null) and (($r.metadata | type) != "object")
+             then "row \($i) (\($r.id)): metadata is neither object nor null"
+         elif ($r.metadata? != null) and ($r.metadata? | type == "object") and
+              ([($r.metadata.review_gate?), ($r.metadata.review_gate_head?), ($r.metadata.review_gate_reviews?)]
+               | map(select(. != null)) | map(type) | any(. != "string"))
+             then "row \($i) (\($r.id)): a consumed review_gate* metadata key is present but not a string"
+         elif ($r | has("notes")) and (opt_string($r.notes) | not) then "row \($i) (\($r.id)): notes is neither string nor null"
+         elif ($r | has("assignee")) and (opt_string($r.assignee) | not) then "row \($i) (\($r.id)): assignee is neither string nor null"
+         else empty end)
+    ] | first // ""
+' "$BOARD_FILE" 2>/dev/null || echo "row contract check itself failed")"
+[ -z "$ROW_VIOLATION" ] \
+    || die "board row contract violated — $ROW_VIOLATION; a malformed board must scream, not normalise into an empty population"
+
+# ---- load detector state (first-seen / alarmed-at / unknown-at clocks) --------
+# Strict: enabled + present but untrustworthy state is a detector error, never a
+# silent clock reset (a reset can postpone an alarm indefinitely under chatter).
 STATE_JSON="{}"
-if [ "$NO_STATE" -eq 0 ] && [ -f "$STATE_FILE" ]; then
-    if jq -e 'type == "object"' "$STATE_FILE" >/dev/null 2>&1; then
-        STATE_JSON="$(cat "$STATE_FILE")"
-    else
-        echo "WARN: state file corrupt, continuing with empty state: $STATE_FILE" >&2
+if [ "$NO_STATE" -eq 0 ] && [ -e "$STATE_FILE" ]; then
+    [ -f "$STATE_FILE" ] \
+        || die "state path exists but is not a regular file: $STATE_FILE (inspect/remove it, or run --no-state)"
+    [ -r "$STATE_FILE" ] \
+        || die "state file exists but is not readable: $STATE_FILE (fix permissions, remove it, or run --no-state)"
+    if ! jq -e '
+            def ok_ts:
+                (type == "string") and
+                ((sub("\\.[0-9]+Z$"; "Z")) as $c
+                 | ((($c | fromdateiso8601)? // null) as $e
+                    | ($e != null) and (($e | todate) == $c)));
+            (type == "object") and
+            ([ to_entries[].value ] | all(
+                (type == "object")
+                and ((keys - ["first_seen", "alarmed_at", "unknown_at"]) == [])
+                and ([.first_seen, .alarmed_at, .unknown_at] | all(. == null or ok_ts))
+            ))
+        ' "$STATE_FILE" >/dev/null 2>&1; then
+        die "state file is corrupt or not the expected shape ({<id>: {first_seen, alarmed_at, unknown_at}}): $STATE_FILE — the observed clocks cannot be trusted (inspect/remove it, or run --no-state)"
     fi
+    STATE_JSON="$(cat "$STATE_FILE")"
 fi
 
 # ---- decision core (pure jq: board + state + clock in, report out) ------------
@@ -216,6 +361,14 @@ def perspectives_of($title):
 # "route psa-x to review-lead" is not a review of psa-x).
 def looks_like_review($title): ($title // "") | test("review(?!-lead)"; "i");
 
+# Completed-review evidence: durable non-empty notes carrying a terminal VERDICT
+# line — a line starting (after optional whitespace) with the word VERDICT, the
+# rig convention observed on every real closed review leg ("VERDICT: APPROVE",
+# "VERDICT: REVISE — …", "VERDICT: PROCEED"). jq/Oniguruma "^" anchors the whole
+# string, not lines, so the line start is spelled (^|\n) explicitly.
+def has_verdict_line: (. // "") | test("(^|\\n)[ \\t]*VERDICT\\b");
+def notes_text: (.notes // "");
+
 def gate_unset: ((.metadata // {}).review_gate // "") == "";
 def head_of:    ((.metadata // {}).review_gate_head // "");
 def pointers_of:
@@ -224,6 +377,7 @@ def pointers_of:
 
 ($now_iso | ts2e) as $now
 | $board_wrap[0] as $bd
+| ($bd | map(.id)) as $board_ids
 | ($bd | map(select(
       (.status == "open" or .status == "in_progress")
       and gate_unset
@@ -232,27 +386,55 @@ def pointers_of:
 | ($population | map(
       . as $t
       | $t.id as $tid
-      | ($t | pointers_of) as $ptrs
-      | ($bd | map(select(.id as $bid | ($ptrs | index($bid)) != null))) as $ptr_hits
-      | ($ptrs - ($ptr_hits | map(.id))) as $dangling
+      # Identified review legs of this target (title-shape; any status).
       | ($bd | map(select(
             (.id != $tid)
             and looks_like_review(.title)
             and ((perspectives_of(.title) | length) > 0)
             and ((.id | startswith($tid + ".")) or mentioned($tid; .title))
-        ))) as $title_hits
-      | (($ptr_hits + $title_hits) | unique_by(.id)) as $inputs
-      | ($inputs | map(perspectives_of(.title)) | add // [] | unique) as $covered
+        ))) as $legs
+      | ($legs | map(.id)) as $leg_ids
+      # Validity per leg: open-ish = reviewer working; closed needs evidence.
+      | ($legs | map(
+            . as $l
+            | (if $l.status != "closed" then "working"
+               elif (($l | notes_text) | gsub("\\s+"; "") | length) == 0 then "closed_no_notes"
+               elif (($l | notes_text) | has_verdict_line | not) then "closed_no_verdict"
+               else "evidenced" end) as $disp
+            | {id: $l.id, status: $l.status, perspectives: perspectives_of($l.title), disposition: $disp}
+        )) as $classified
+      | ($classified | map(select(.disposition == "working"))) as $working
+      | ($classified | map(select(.disposition == "evidenced"))) as $evidenced
+      | ($classified | map(select(.disposition == "closed_no_notes" or .disposition == "closed_no_verdict"))) as $closed_invalid
+      # Pointer accounting: dangling (no such bead), validated (an identified
+      # leg of this target), mispointed (exists, but not a review of this target).
+      | ($t | pointers_of) as $ptrs
+      | ($ptrs | map(select(. as $p | ($board_ids | index($p)) == null))) as $dangling
+      | ($ptrs | map(select(. as $p | (($board_ids | index($p)) != null) and (($leg_ids | index($p)) == null)))) as $mispointed_ids
+      | ($bd | map(select(.id as $b | ($mispointed_ids | index($b)) != null))
+              | map({id, status, title, reason: "pointer in review_gate_reviews names an existing bead that is not a review of this target"})) as $mispointed
+      | ($ptrs | map(select(. as $p | ($leg_ids | index($p)) != null))) as $pointer_validated
+      | ((($closed_invalid | map({id, status, reason:
+              (if .disposition == "closed_no_notes"
+               then "closed with no durable notes — no completed-review evidence"
+               else "closed notes lack a terminal VERDICT line — no completed-review evidence" end)}))
+          + ($mispointed | map({id, status, title, reason}))) ) as $invalid_inputs
+      | (($working | length) + ($evidenced | length)) as $valid_count
+      | ($invalid_inputs | length) as $invalid_count
+      # Covered = perspectives with VALID inputs only; an invalid leg covers nothing.
+      | ((($working + $evidenced) | map(.perspectives) | add // []) | unique) as $covered
       | (($t.updated_at // null) | ts2e) as $upd
       | (if $upd != null then ((($now - $upd) / 60) | floor) else null end) as $mins_untouched
-      | (($inputs | length) == 0) as $starved
+      | ($valid_count == 0 and $invalid_count == 0) as $starved
       | ((($state[$tid] // {}).first_seen) // null) as $prior_seen
       | (if $starved then ($prior_seen // $now_iso) else null end) as $observed_since
       | (if $starved then ((($now - (($observed_since | ts2e) // $now)) / 60) | floor) else null end) as $mins_observed
       | (if $starved then ([($mins_untouched // 0), ($mins_observed // 0)] | max) else null end) as $parked_mins
-      | (if $starved and ($parked_mins >= $threshold) then "ALARM"
-         elif $starved then "WATCH"
-         else "OK" end) as $verdict
+      | (if $invalid_count > 0 then "UNKNOWN"
+         elif $valid_count > 0 then "OK"
+         elif ($parked_mins >= $threshold) then "ALARM"
+         else "WATCH" end) as $verdict
+      | (if $verdict == "UNKNOWN" then ((($state[$tid] // {}).unknown_at) // $now_iso) else null end) as $unknown_since
       | {
           id: $tid,
           title: $t.title,
@@ -264,12 +446,17 @@ def pointers_of:
                else "gate_head" end),
           review_gate_head: ($t | head_of),
           pointer_ids: $ptrs,
-          pointer_hits: ($ptr_hits | map(.id)),
+          pointer_hits: $pointer_validated,
           dangling_pointers: $dangling,
-          inputs: ($inputs | map({id, status, perspectives: perspectives_of(.title)})),
-          input_count: ($inputs | length),
-          inputs_open: ($inputs | map(select(.status == "open" or .status == "in_progress")) | length),
-          inputs_closed: ($inputs | map(select(.status == "closed")) | length),
+          mispointed_pointers: $mispointed_ids,
+          inputs: $classified,
+          input_count: ($legs | length),
+          inputs_working: ($working | length),
+          inputs_evidenced: ($evidenced | length),
+          inputs_closed: ($classified | map(select(.status == "closed")) | length),
+          valid_input_count: $valid_count,
+          invalid_inputs: $invalid_inputs,
+          invalid_input_count: $invalid_count,
           covered_perspectives: $covered,
           missing_perspectives: (canonical_perspectives - $covered),
           updated_at: ($t.updated_at // null),
@@ -281,7 +468,9 @@ def pointers_of:
           threshold_minutes: $threshold,
           starved: $starved,
           verdict: $verdict,
-          newly_alarmed: ($verdict == "ALARM" and ((($state[$tid] // {}).alarmed_at // null) == null))
+          unknown_since: $unknown_since,
+          newly_alarmed: ($verdict == "ALARM" and ((($state[$tid] // {}).alarmed_at // null) == null)),
+          newly_unknown: ($verdict == "UNKNOWN" and ((($state[$tid] // {}).unknown_at // null) == null))
         }
   )) as $records
 | {
@@ -296,18 +485,24 @@ def pointers_of:
     population_count: ($population | length),
     alarms: [ $records[] | select(.verdict == "ALARM") | .id ],
     watch: [ $records[] | select(.verdict == "WATCH") | .id ],
+    unknown: [ $records[] | select(.verdict == "UNKNOWN") | .id ],
     newly_alarmed: [ $records[] | select(.newly_alarmed) | .id ],
+    newly_unknown: [ $records[] | select(.newly_unknown) | .id ],
     population: $records,
     remedy: ("Perspective-review GENERATION is owed by the PR owner (" + $owner
-             + "); " + $lead + " only synthesises review beads that exist. This detector is"
-             + " read-only: it does not generate reviews, re-route, set gate fields, or merge."),
-    new_state: ($records | map(select(.starved)
+             + "); " + $lead + " only synthesises review beads that exist. UNKNOWN beads need a"
+             + " human to verify whether the reviews actually happened (re-record durable notes"
+             + " with a VERDICT line, or regenerate; fix review_gate_reviews if mispointed)."
+             + " This detector is read-only: it does not generate reviews, re-route, set gate"
+             + " fields, or merge."),
+    new_state: ($records | map(select(.starved or .verdict == "UNKNOWN")
         | { key: .id,
             value: {
                 first_seen: .observed_starved_since,
                 alarmed_at: (if .verdict == "ALARM"
                              then ((($state[.id] // {}).alarmed_at) // $now_iso)
-                             else null end)
+                             else null end),
+                unknown_at: .unknown_since
             } })
         | from_entries)
   }
@@ -327,19 +522,19 @@ if ! jq -n \
     die "decision core failed — refusing to report all-clear"
 fi
 
-# ---- persist state (only after a successful evaluation) -----------------------
+# ---- persist state (only after a successful evaluation; failure is LOUD) ------
 if [ "$NO_STATE" -eq 0 ]; then
     if mkdir -p "$(dirname "$STATE_FILE")" 2>/dev/null \
             && jq '.new_state' "$REPORT_FILE" >"$STATE_FILE.tmp" 2>/dev/null \
             && mv "$STATE_FILE.tmp" "$STATE_FILE" 2>/dev/null; then
         :
     else
-        echo "WARN: could not write state file (persistence clock degraded to updated_at only): $STATE_FILE" >&2
         rm -f "$STATE_FILE.tmp" 2>/dev/null || true
+        die "state file could not be written: $STATE_FILE — the observed-starved/unknown clocks would silently reset, postponing alarms (fix the path/permissions, or run --no-state)"
     fi
 fi
 
-ALARM_COUNT="$(jq -r '.alarms | length' "$REPORT_FILE")"
+ATTN_COUNT="$(jq -r '(.alarms | length) + (.unknown | length)' "$REPORT_FILE")"
 
 # ---- report --------------------------------------------------------------------
 if [ "$JSON_OUT" -eq 1 ]; then
@@ -347,23 +542,36 @@ if [ "$JSON_OUT" -eq 1 ]; then
 else
     jq -r --argjson verbose "$VERBOSE" '
         def mins: if . == null then "?" else "\(.)m" end;
+        def parked_line:
+            "    parked: assignee \(.assignee // "«none»"), status \(.status), via \(.population_reason), head \(.review_gate_head | if . == "" then "«none»" else . end)\n";
         def bead_block:
             "  \(.verdict) \(.id) — parked ~\(.parked_minutes // 0)m (threshold \(.threshold_minutes)m; untouched \(.minutes_untouched | mins), observed-starved \(.minutes_observed_starved | mins))\n"
             + "    title:  \(.title)\n"
-            + "    parked: assignee \(.assignee // "«none»"), status \(.status), via \(.population_reason), head \(.review_gate_head | if . == "" then "«none»" else . end)\n"
-            + "    inputs: ZERO perspective-review beads exist — missing: \(.missing_perspectives | join(", "))\n"
+            + parked_line
+            + "    inputs: ZERO valid perspective-review beads exist — missing: \(.missing_perspectives | join(", "))\n"
             + (if (.dangling_pointers | length) > 0
                then "    DANGLING: review_gate_reviews names \(.dangling_pointers | join(", ")) but no such bead(s) exist\n"
                else "" end)
             + (if .updated_at_unparseable then "    NOTE: updated_at unparseable (\(.updated_at // "null")) — using observed-starved clock only\n" else "" end);
+        def unknown_block:
+            "  UNKNOWN \(.id) — gate inputs exist but \(.invalid_input_count) cannot be trusted as evidence\n"
+            + "    title:  \(.title)\n"
+            + parked_line
+            + "    invalid: " + (.invalid_inputs | map("\(.id) — \(.reason)") | join("; ")) + "\n"
+            + "    valid:   \(.inputs_working) working, \(.inputs_evidenced) evidenced-closed; covered: \(.covered_perspectives | join(", ") | if . == "" then "«none»" else . end)\n";
         def ok_block:
-            "  OK \(.id) — \(.input_count) review input(s) exist (\(.inputs_open) open/in_progress = reviewer working, \(.inputs_closed) closed); covered: \(.covered_perspectives | join(", ") | if . == "" then "«none classified»" else . end)\n";
-        "[starved-review-gate] rig=\(.rig) now=\(.now) beads=\(.board_beads) population=\(.population_count) alarms=\(.alarms | length) watch=\(.watch | length)"
+            "  OK \(.id) — \(.valid_input_count) valid review input(s) (\(.inputs_working) working = reviewer active, \(.inputs_evidenced) evidenced-closed); covered: \(.covered_perspectives | join(", ") | if . == "" then "«none classified»" else . end)\n";
+        "[starved-review-gate] rig=\(.rig) now=\(.now) beads=\(.board_beads) population=\(.population_count) alarms=\(.alarms | length) unknown=\(.unknown | length) watch=\(.watch | length)"
         + (if (.alarms | length) > 0 then
               "\n\nALARM — review gate starved of its inputs (\(.alarms | length) bead(s)):\n"
               + ([.population[] | select(.verdict == "ALARM") | bead_block] | join(""))
               + "\n  owed: \(.remedy)\n"
               + "  responder: verify on the board, then have \(.owner_hint) generate the four perspective reviews. This detector will not do it."
+           else "" end)
+        + (if (.unknown | length) > 0 then
+              "\n\nUNKNOWN — invalid gate inputs, a human must look (\(.unknown | length) bead(s)):\n"
+              + ([.population[] | select(.verdict == "UNKNOWN") | unknown_block] | join(""))
+              + "\n  action: verify whether these reviews actually happened. Re-record durable notes with a terminal VERDICT line, or have \(.owner_hint) regenerate; fix review_gate_reviews if mispointed. Closed-without-evidence must never read as reviewed."
            else "" end)
         + (if (.watch | length) > 0 then
               "\n\nWATCH — starved but under threshold (\(.watch | length) bead(s)):\n"
@@ -371,14 +579,14 @@ else
            else "" end)
         + (if $verbose == 1 then
               (if ([.population[] | select(.verdict == "OK")] | length) > 0 then
-                  "\n\npopulation with inputs present (healthy):\n"
+                  "\n\npopulation with valid inputs present (healthy):\n"
                   + ([.population[] | select(.verdict == "OK") | ok_block] | join(""))
-               else "\n\npopulation with inputs present (healthy): none" end)
+               else "\n\npopulation with valid inputs present (healthy): none" end)
            else "" end)
-        + (if (.alarms | length) == 0 and (.watch | length) == 0 then
-              "\nall clear — every gate-armed bead has at least one review input (population \(.population_count))."
+        + (if (.alarms | length) == 0 and (.unknown | length) == 0 and (.watch | length) == 0 then
+              "\nall clear — every gate-armed bead has at least one valid review input (population \(.population_count))."
            else "" end)
     ' "$REPORT_FILE"
 fi
 
-[ "$ALARM_COUNT" -eq 0 ] && exit 0 || exit 1
+[ "$ATTN_COUNT" -eq 0 ] && exit 0 || exit 1

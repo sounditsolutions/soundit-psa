@@ -1,199 +1,56 @@
 [
   {
     "id": "psa-717bn",
-    "title": "Show ITIL taxonomy category on EVERY ticket-listing surface (Charlie: 'everywhere that lists a ticket')",
-    "description": "CHARLIE DIRECTIVE (authenticated Mattermost 2026-07-23 03:51Z via manager, mail so-wisp-8f431809e1): …[truncated for fixture]",
+    "title": "Show taxonomy category on every ticket-listing surface — fixture-genericized epic",
     "status": "open",
-    "priority": 1,
-    "issue_type": "epic",
-    "owner": "gus@soundit.local",
-    "created_at": "2026-07-23T03:56:45.767424965Z",
-    "created_by": "psa-lead-session-x",
+    "assignee": "psa/review-lead",
     "updated_at": "2026-07-26T09:00:00Z",
-    "dependency_count": 0,
-    "dependent_count": 0,
-    "comment_count": 5,
     "metadata": {
       "review_gate": "",
       "review_gate_head": "beefca7",
       "review_gate_reviews": ""
-    },
-    "assignee": "psa/review-lead"
+    }
   },
   {
     "id": "psa-717bn.6",
-    "title": "Ticket category in digests + reports (Briefing, weekly report legacy→taxonomy, situation context)",
-    "description": "psa-717bn slice. (a) BriefingAssembler:188 renderBody (daily technician digest) + :356 buildAiContex …[truncated for fixture]",
-    "notes": "REVIEW-LEAD SYNTHESIS psa-717bn.6 / PR #309 @ 41d35c2\n\nReviewer inputs:\n- PRODUCT: missing. No linked or searchable review bead found for psa-717bn.6 / PR #309.\n- UX/A11Y: missing. No linked or searchable review bead found for psa-717bn.6 / PR #309.\n- ARCHITECTURE/CORRECTNESS: missing. No linked or searchable review bead found for psa-717bn.6 / PR #309.\n- DATA-SAFETY/SECURITY: missing. No linked or searchable review bead found for psa-717bn.6 / PR #309.\n\nContext checked:\n- Assignment bead psa-717bn.6 is routed to psa/review-lead, but its dependency graph only links the parent epic psa-717bn; it has no review-bead blockers or children.\n- Targeted searches for PR #309, psa-717bn.6, and VERDICT notes updated/created after the 2026-07-24T13:37Z handoff found no perspective review beads.\n- GitHub PR #309 is open, mergeable/clean, and CI succeeded at 2026-07-24T13:35:57Z on head 41d35c2.\n\nDecision: REVISE as a process gate failure, not a code rejection. PROCEED requires completed perspective-review verdicts to synthesize; none are present.\n\nMust-fix before re-gate:\n1. Create and link the four required perspective review beads for PR #309 / psa-717bn.6 at head 41d35c2: product, UX/A11Y, architecture/correctness, and data-safety/security.\n2. Each review bead must include a durable VERDICT line and key findings; any REVISE must list blocking concerns specifically.\n3. Re-route to review-lead after all four review beads are closed at the same PR head, or explicitly document any intentional carry-forward/omission on the assignment bead.\n\nGATE: REVISE\nREVIEW-LEAD RECHECK 2026-07-24T14:22Z\n\nSearched all open/closed beads for PR #309, psa-717bn.6, head 41d35c2, and VERDICT lines after the original handoff. Still no product, UX/A11Y, architecture/correctness, or data-safety/security review beads are present. The only matching review beads are for sibling slices psa-717bn.1 and psa-717bn.2.\n\nDecision remains REVISE as a process gate failure. Must-fix list remains: create/link the four perspective review beads at the PR head, include durable VERDICT lines + key findings, then re-route to review-lead.\n\nGATE: REVISE\nREVIEW-LEAD ESCALATION 2026-07-24T15:01Z\n\nThird review-lead pass for psa-717bn.6 / PR #309 @ 41d35c2. I rechecked durable bead state for PR #309, psa-717bn.6, head 41d35c2, and VERDICT-bearing review beads. No product, UX/A11Y, architecture/correctness, or data-safety/security review beads are present.\n\nThe prior two gate notes already REVISEd for this exact missing-review condition (initial synthesis and 2026-07-24T14:22Z recheck). This is not converging because there are still no perspective-review inputs to synthesize.\n\nSticking points escalated to mayor:\n1. Product review bead missing for PR #309 / psa-717bn.6 / head 41d35c2.\n2. UX/A11Y review bead missing for PR #309 / psa-717bn.6 / head 41d35c2.\n3. Architecture/correctness review bead missing for PR #309 / psa-717bn.6 / head 41d35c2.\n4. Data-safety/security review bead missing for PR #309 / psa-717bn.6 / head 41d35c2.\n\nGATE: ESCALATE\nREVIEW-LEAD RE-SYNTHESIS 2026-07-24T22:41Z\npsa-717bn.6 / PR #309 @ 41d35c2\n\nReviewer inputs:\n- PRODUCT psa-wvmsf: VERDICT APPROVE. No blocking product issues; delivers the epic intent on technician digest rows, client weekly report, and triage situation context. Client-report legacy free-text -> taxonomy pathString switch is product-correct; no-category rows degrade to Uncategorized / em dash. Non-blocking watch item: long full paths may widen report/email tables.\n- UX/A11Y psa-sr134: VERDICT APPROVE. Category renders as plain inline context / existing Category field without new visual chrome. Empty categories remain readable as Uncategorized / em dash. Markdown table cells still pass through mdCell(); sanitized rendering avoids raw HTML, contrast, or focus concerns.\n- ARCHITECTURE/CORRECTNESS psa-lps0u: VERDICT APPROVE. Uses established categoryNode.parent.parent eager-load + pathString idiom across changed loops; category access is null-safe; weekly report legacy category reads were replaced; tests cover taxonomy-vs-legacy behavior and no-category branches. Verification: 64 passed / 217 assertions.\n- DATA-SAFETY/SECURITY psa-5c7pd: VERDICT APPROVE. No new routes, guards, credentials, webhook, SQL, SSRF, or command-execution surfaces. Weekly report rows remain scoped through Ticket::forClient($client->id); taxonomy pathString exposes only assigned global category names, not SOP text or editor/internal metadata. MarkdownRenderer/HTMLPurifier, mdCell(), safe()/scrub(), and PromptFence preserve output/AI-context boundaries. Verification: 64 passed / 217 assertions.\n\nDecision: all four required perspective reviews approve and no reviewer raised a blocking concern. Code-review gate may proceed.\n\nRouting/deploy constraint: PROCEED here does not authorize routing to psa/gastown.refinery or deploying. PR #309 is client-facing because the weekly client report switches legacy category text to the ITIL taxonomy path; per manager/PR-owner routing note, psa-lead routes psa-717bn.6 to the manager, who holds land/deploy behind Charlie's explicit deploy call.\n\nGATE: PROCEED\n2026-07-24T23:20Z review-lead synthesis for PR #309 / psa-717bn.6 @ 41d35c2.\n\nReview beads read:\n- PRODUCT psa-wvmsf: VERDICT APPROVE. Delivers the epic intent across technician digest rows, client weekly report, and triage situation context; legacy free-text -> taxonomy path switch is product-correct; no-category tickets degrade cleanly. Advisory only: long full paths may widen report tables.\n- ARCHITECTURE/CORRECTNESS psa-lps0u: VERDICT APPROVE. Eager-loads categoryNode.parent.parent on all changed loops, uses null-safe pathString/categorySegment access, fully replaces the weekly report legacy category read, and targeted tests cover taxonomy-vs-legacy plus no-category behavior.\n- UX/A11Y psa-sr134: VERDICT APPROVE. Category rendering stays plain/readable in digest and client report surfaces, empty states are text-visible, Markdown/table escaping remains intact, and no new styling/a11y concerns were introduced.\n- DATA-SAFETY/SECURITY psa-5c7pd: VERDICT APPROVE. No new auth/route/secret surface; weekly report tickets remain Ticket::forClient scoped; taxonomy path does not expose SOP/editor/source metadata; category text is sanitized/escaped and fenced in AI context.\n\nDecision: all four lanes APPROVE; no blocking concerns. Proceed to land/next pipeline step. Deployment remains governed by the existing eyes-on/Charlie-gated deploy posture for the parent epic as applicable.\n\nGATE: PROCEED\n\n=== WHY LANDING IS TERMINAL — gus answered the open question (manager, real UTC 2026-07-25T02:06Z) ===\nThe prior handoff left one question open: is the continuous-deploy pre-deploy review_gate check a\nREAL seatbelt? ANSWER: NO. gus diagnosed it read-only (so-jgyc, evidence bead so-kvdoh P1 — ID\nverified to exist by manager; gus first quoted a nonexistent so-9djf7 and self-corrected).\n\nTHREE INDEPENDENT REASONS THERE IS NO SEATBELT:\n (a) It is a POLICY gate, not a CAPABILITY gate. gus read the whole deploy.sh at origin/main:\n     ZERO review_gate logic in it. The only guards are ff-only and the pre-migration DB backup.\n     The sole thing enforcing the gate is a human checking by hand. (Same class as so-bcmqx.)\n (b) SCOPE: the check validates ONE bead's tip SHA, but the deploy ships that SHA plus EVERY\n     ANCESTOR. Demonstrated 07-24 16:24Z — psa-aji2o was properly gated and the check was correct,\n     and psa-717bn.4 (gate=escalate) rode into prod as a passenger anyway.\n (c) deploy.sh defaults REVIEWED_REF to origin/main, so a no-argument deploy has no bead to check.\n\nTHE SENTENCE THAT MATTERS: **PROD TRACKS MAIN.** Anything that reaches main reaches prod on the next\ndeploy, whatever that deploy is for. The review gate governs what LANDS ON MAIN; it does NOT protect\nprod independently. The only real prod hold is keeping code OFF MAIN.\n\n=> This does not weaken this bead's hold, it makes it LOAD-BEARING. Landing is not a reversible\nintermediate step that a later deploy gate would catch — there is no later gate. Merging to main IS\nshipping to prod on the next deploy by anyone, for any reason. Do not land this. Charlie's call.\n\nVERIFICATION PROVENANCE, labelled honestly: prod HEAD = 12193e5 == origin/main, and the prod reflog\ntimeline (14:08Z ->b46abe6, 16:24Z ->c073a00, 21:42Z ->12193e5) are VERIFIED BY GUS against prod\nitself — manager cannot independently confirm them, because no agent seat has the prod read gus used.\nWhat manager DID verify directly: origin/main == 12193e5, and this bead's head is NOT an ancestor of it.\nREVIEW-LEAD CONFIRMATION 2026-07-25T02:55Z\npsa-717bn.6 / PR #309 @ 41d35c2\n\nReview beads read:\n- PRODUCT psa-wvmsf: VERDICT APPROVE. Delivers category visibility across technician digest rows, client weekly report, and triage situation context; legacy free-text to taxonomy pathString is product-correct; uncategorized rows degrade cleanly. Long paths are advisory only.\n- UX/A11Y psa-sr134: VERDICT APPROVE. Category rendering stays plain, readable, and consistent in digest/report surfaces; empty state is text-visible; Markdown/table escaping and sanitization remain intact.\n- ARCHITECTURE/CORRECTNESS psa-lps0u: VERDICT APPROVE. Uses the established categoryNode.parent.parent eager-load plus pathString idiom, keeps category access null-safe, fully replaces the weekly report legacy category read, and targeted tests passed.\n- DATA-SAFETY/SECURITY psa-5c7pd: VERDICT APPROVE. No new route/auth/secret surface; weekly report rows remain client-scoped; taxonomy pathString does not expose SOP/editor metadata; report and AI-context output remain sanitized/fenced.\n\nDecision: all four required perspective reviews approve and no reviewer raised a blocking concern. Code-review gate may proceed. Existing manager/Charlie client-facing land/deploy hold remains outside this gate decision.\nGATE: PROCEED\nREVIEW-LEAD CONFIRMATION 2026-07-25T04:11Z\npsa-717bn.6 / PR #309 @ 41d35c2\n\nReview beads read:\n- PRODUCT psa-wvmsf: VERDICT APPROVE. Delivers category visibility across technician digest rows, client weekly report, and triage situation context; legacy free-text to taxonomy pathString is product-correct; uncategorized rows degrade cleanly. Long category paths are advisory only.\n- UX/A11Y psa-sr134: VERDICT APPROVE. Category rendering remains plain, readable, and consistent in digest/report surfaces; empty state is text-visible; Markdown/table escaping and sanitization remain intact.\n- ARCHITECTURE/CORRECTNESS psa-lps0u: VERDICT APPROVE. Uses categoryNode.parent.parent eager-load plus pathString idiom, keeps category access null-safe, fully replaces the weekly report legacy category read, and targeted tests passed.\n- DATA-SAFETY/SECURITY psa-5c7pd: VERDICT APPROVE. No new route/auth/secret surface; weekly report rows remain client-scoped; taxonomy pathString does not expose SOP/editor metadata; report and AI-context output remain sanitized/fenced.\n\nDecision: all four required perspective reviews approve and no reviewer raised a blocking concern. Code-review gate may proceed. Existing manager/Charlie client-facing land/deploy hold remains outside this gate decision.\nGATE: PROCEED\n\n=== MANAGER 2026-07-25T15:33Z: GATE HOLDS AT THE REBASED HEAD — REBASE CANNOT ALTER THE REVIEWED DIFF (verified) ===\nCorrecting my own 15:07Z call that .6 needed a fresh 4-lens re-gate after rebase. Evidence, not judgement:\n\n- merge-base = 2d2c71cbc2fd92de6b71b3bcc31893656331a4a0; branch head 41d35c2; origin/main = cecc295 (11 commits ahead).\n- Files changed by .6 (6): BriefingAssembler.php, ClientReportService.php,\n  ClientSituationContextBuilder.php + their 3 test files.\n- Files changed by main's 11 new commits (39): UniFi multi-site, tactical actions, cockpit,\n  controllers, INSTALL.md, etc.\n- INTERSECTION OF THOSE TWO SETS = EMPTY (comm -12, verified).\n- git merge-tree across the merge-base = 0 conflicts.\n\nBecause the two change-sets are file-disjoint, replaying .6 onto cecc295 reproduces a BYTE-IDENTICAL\npatch. The artifact the four perspectives ratified at 41d35c2 is therefore unchanged at the rebased\nhead — a re-gate would re-ratify the same diff. review_gate=proceed / review_gate_head=41d35c2 STANDS.\nThis does NOT widen the review gate: if the post-rebase diff differs from the reviewed diff for any\nreason, that is a re-gate trigger and the refinery should stop and say so.\n\nROUTING: landable shape set (status=open, assignee+routed_to=psa/gastown.refinery, branch, target=main).\nWorktree hazard cleared first — duplicate refinery session so-wisp-g39m6fk (suffixed alias, so-1ri5)\nreaped at 2026-07-25T15:33Z; canonical psa/gastown.refinery (so-wisp-viumxb5) now solely owns the worktree.\n\nCLIENT-FACING NOTE (raised alongside the landing, NOT as a gate, per Charlie 14:51Z): landing this\nchanges the CLIENT weekly report from the legacy free-text category to the ITIL taxonomy path.\nCharlie directed the parent epic (\"everywhere that lists a ticket\"); DATA-SAFETY lens APPROVED the\nclient boundary. Flagged to him in-channel at land time.\n\n=== MANAGER 2026-07-25T15:39Z: REBASE INVARIANCE PROVEN EMPIRICALLY — gate head advanced 41d35c2 -> 499fb33 ===\nMy earlier note PREDICTED the rebase could not alter the reviewed diff (disjoint file sets). The refinery\nhas now rebased, so I verified the prediction instead of trusting it:\n\n  reviewed diff  git diff 2d2c71c..41d35c2  -> sha256 bc147c77619eb608a88e4124dfaea40837ecf97acf96bc15b3b86eaa82ed1f61\n  rebased  diff  git diff cecc295..499fb33  -> sha256 bc147c77619eb608a88e4124dfaea40837ecf97acf96bc15b3b86eaa82ed1f61\n  IDENTICAL. And cecc295 IS an ancestor of 499fb33 (rebased onto current main tip).\n\nThe artifact ratified by all four perspectives at 41d35c2 is byte-for-byte the artifact that will land at\n499fb33. review_gate_head advanced to 499fb33 on THAT evidence — not on my authority and not by waiving\nanything. The four APPROVE verdicts (psa-wvmsf PRODUCT, psa-sr134 UX/A11Y, psa-lps0u ARCH, psa-5c7pd\nDATA-SAFETY) apply unchanged because the reviewed bytes are unchanged.\n\nThe stop condition I gave the refinery is hereby SATISFIED, not waived: I said land only if the post-rebase\ndiff is identical to the reviewed diff. It is, and the hash is recorded above so anyone can re-check it.\nREVIEW-LEAD RE-CONFIRMATION 2026-07-25T16:00Z\npsa-717bn.6 / PR #309 @ 499fb33 (rebased from reviewed head 41d35c2)\n\nReview beads read:\n- PRODUCT psa-wvmsf: VERDICT APPROVE. Delivers category visibility across technician digest rows, client weekly report, and triage situation context; legacy free-text -> taxonomy pathString is product-correct; no-category rows degrade cleanly. Long category paths are advisory only.\n- UX/A11Y psa-sr134: VERDICT APPROVE. Category renders as plain readable inline/report context, empty states are text-visible, and Markdown/table escaping plus sanitization remain intact.\n- ARCHITECTURE/CORRECTNESS psa-lps0u: VERDICT APPROVE. Uses categoryNode.parent.parent eager-loading and pathString/null-safe access across the changed loops; weekly report legacy category reads are replaced; targeted tests passed.\n- DATA-SAFETY/SECURITY psa-5c7pd: VERDICT APPROVE. No new route/auth/secret surface; weekly report rows remain Ticket::forClient scoped; taxonomy pathString does not expose SOP/editor metadata; report and AI-context output remain sanitized/fenced.\n\nRebase equivalence checked by review-lead:\n- git diff --binary 2d2c71c..41d35c2 sha256 = bc147c77619eb608a88e4124dfaea40837ecf97acf96bc15b3b86eaa82ed1f61\n- git diff --binary cecc295..499fb33 sha256 = bc147c77619eb608a88e4124dfaea40837ecf97acf96bc15b3b86eaa82ed1f61\n- stable patch-id for both diffs = 281012726f0c2626368e6438b09face618307d51\n- changed file lists are identical (BriefingAssembler, ClientReportService, ClientSituationContextBuilder, and their three targeted test files); cecc295 is an ancestor of 499fb33.\n\nDecision: the artifact at 499fb33 is byte-identical to the diff the four perspective reviewers approved at 41d35c2. I accept the byte-identity proof as sufficient re-confirmation for this mechanical rebase and see no blocking concern. This is a post-hoc gate-record confirmation because the bead has already landed/closed, not a waiver for non-identical rebases.\n\nGATE: PROCEED\nREVIEW-LEAD POST-DISCLOSURE CONFIRMATION 2026-07-25T16:38Z\n\nAuthenticated manager mail so-wisp-926c449046 disclosed that manager advanced review_gate_head 41d35c2 -> 499fb33 before review-lead re-confirmation, based on byte-identical rebase evidence. I re-read the assignment bead and the four linked review beads, then independently checked the diff identity locally.\n\nReviewer inputs:\n- PRODUCT psa-wvmsf: VERDICT APPROVE. Delivers category visibility in technician digest rows, client weekly report, and triage situation context; legacy free-text -> taxonomy pathString is product-correct; no-category rows degrade cleanly. Long paths are advisory only.\n- UX/A11Y psa-sr134: VERDICT APPROVE. Category rendering remains plain/readable, empty states are text-visible, Markdown/table escaping and sanitization remain intact, and no new visual/a11y concern was raised.\n- ARCHITECTURE/CORRECTNESS psa-lps0u: VERDICT APPROVE. Uses categoryNode.parent.parent eager-loading and pathString/null-safe access, replaces the weekly-report legacy category read, and targeted tests passed.\n- DATA-SAFETY/SECURITY psa-5c7pd: VERDICT APPROVE. No new route/auth/secret surface; weekly report rows remain Ticket::forClient scoped; taxonomy paths do not expose SOP/editor metadata; report and AI-context output remain sanitized/fenced.\n\nRebase equivalence checked:\n- git diff --binary 2d2c71c..41d35c2 sha256 = bc147c77619eb608a88e4124dfaea40837ecf97acf96bc15b3b86eaa82ed1f61\n- git diff --binary cecc295..499fb33 sha256 = bc147c77619eb608a88e4124dfaea40837ecf97acf96bc15b3b86eaa82ed1f61\n- stable patch-id for both diffs = 281012726f0c2626368e6438b09face618307d51\n\nDecision: I do not challenge the manager's gate-head advancement for this case. The artifact shipped at 499fb33 is byte-identical to the diff approved by all four reviewers at 41d35c2, so the four-lens gate still applies unchanged. This acceptance is limited to mechanical/byte-identical rebases; a non-identical post-rebase diff still requires review-lead re-synthesis before landing.\n\nGATE: PROCEED",
+    "title": "Ticket category in digests + reports — fixture-genericized slice",
     "status": "open",
-    "priority": 2,
-    "issue_type": "task",
     "assignee": "psa/review-lead",
-    "owner": "gus@soundit.local",
-    "created_at": "2026-07-23T04:05:25.015703739Z",
-    "created_by": "psa-lead-session-x",
     "updated_at": "2026-07-26T08:00:00Z",
-    "started_at": "2026-07-24T13:12:25.931491985Z",
-    "closed_at": "2026-07-25T15:49:09.843602804Z",
-    "close_reason": "Closed",
+    "notes": "Fixture-genericized synthesis body.\nGATE: PROCEED",
     "metadata": {
-      "branch": "psa-717bn.6-digests-reports",
-      "gc.routed_to": "psa/gastown.refinery",
-      "gc.session_name": "polecat-session-x",
-      "gc.work_commit": "499fb33",
-      "gc.work_dir": "/home/operator/town/worktrees/x",
-      "gc.work_outcome": "shipped",
-      "merged_commit": "499fb33",
       "review_gate": "",
-      "review_gate_head": "41d35c2",
-      "review_gate_hold": "",
-      "review_gate_hold_source": "psa-lead-2026-07-24T22:36Z",
-      "target": "main",
+      "review_gate_head": "dddd001",
       "review_gate_reviews": ""
-    },
-    "dependencies": [
-      {
-        "issue_id": "psa-717bn.6",
-        "depends_on_id": "psa-717bn",
-        "type": "parent-child",
-        "created_at": "2026-07-23T04:05:25Z",
-        "created_by": "psa-lead-so-wisp-bvex4qk",
-        "metadata": "{}"
-      },
-      {
-        "issue_id": "psa-717bn.6",
-        "depends_on_id": "psa-5c7pd",
-        "type": "blocks",
-        "created_at": "2026-07-24T22:34:41Z",
-        "created_by": "psa-lead-so-wisp-19q4isj",
-        "metadata": "{}"
-      },
-      {
-        "issue_id": "psa-717bn.6",
-        "depends_on_id": "psa-wvmsf",
-        "type": "blocks",
-        "created_at": "2026-07-24T22:34:36Z",
-        "created_by": "psa-lead-so-wisp-19q4isj",
-        "metadata": "{}"
-      },
-      {
-        "issue_id": "psa-717bn.6",
-        "depends_on_id": "psa-lps0u",
-        "type": "blocks",
-        "created_at": "2026-07-24T22:34:39Z",
-        "created_by": "psa-lead-so-wisp-19q4isj",
-        "metadata": "{}"
-      },
-      {
-        "issue_id": "psa-717bn.6",
-        "depends_on_id": "psa-sr134",
-        "type": "blocks",
-        "created_at": "2026-07-24T22:34:38Z",
-        "created_by": "psa-lead-so-wisp-19q4isj",
-        "metadata": "{}"
-      }
-    ],
-    "dependency_count": 4,
-    "dependent_count": 0,
-    "comment_count": 12,
-    "parent": "psa-717bn"
+    }
   },
   {
     "id": "psa-5c7pd",
-    "title": "DATA-SAFETY/SECURITY review: psa-717bn.6 @ 41d35c2",
-    "description": "REVIEW PR #309 (bead psa-717bn.6), branch psa-717bn.6-digests-reports @ 41d35c2, base origin/main. R …[truncated for fixture]",
+    "title": "DATA-SAFETY/SECURITY review: psa-717bn.6 @ dddd001",
     "status": "closed",
-    "priority": 1,
-    "issue_type": "task",
     "assignee": "security-reviewer-session-x",
-    "owner": "gus@soundit.local",
-    "created_at": "2026-07-24T22:34:20.380201632Z",
-    "created_by": "psa-lead-session-x",
-    "updated_at": "2026-07-24T22:40:33.994471716Z",
-    "started_at": "2026-07-24T22:37:05.96666591Z",
-    "closed_at": "2026-07-24T22:40:33.994471716Z",
-    "close_reason": "Security review complete: VERDICT APPROVE",
-    "metadata": {
-      "gc.routed_to": "psa/security-reviewer",
-      "gc.session_name": "polecat-session-x",
-      "gc.work_dir": "/home/operator/town/worktrees/x"
-    },
-    "dependency_count": 0,
-    "dependent_count": 1,
-    "comment_count": 1
+    "updated_at": "2026-07-24T22:40:33.994471716Z"
   },
   {
     "id": "psa-lps0u",
-    "title": "ARCHITECTURE/CORRECTNESS review: psa-717bn.6 @ 41d35c2",
-    "description": "REVIEW PR #309 (bead psa-717bn.6), branch psa-717bn.6-digests-reports @ 41d35c2, base origin/main. R …[truncated for fixture]",
-    "notes": "Architecture/correctness review of `git diff 2d2c71c..41d35c2` at HEAD `41d35c2`.\n\nFindings: none blocking.\n\nChecked against CLAUDE.md conventions:\n- Thin controllers / logic in services: change is contained to service classes (`BriefingAssembler`, `ClientReportService`, `ClientSituationContextBuilder`) plus tests; no controller or view logic moved into the wrong layer.\n- Standalone taxonomy idiom: uses the established `categoryNode.parent.parent` eager-load + `pathString()` pattern documented on `Ticket::categoryFields()` (`app/Models/Ticket.php:123-147`). This is applied before every changed ticket render loop: briefing open/SLA queries (`BriefingAssembler.php:49-52`, `:133-146`), client report closed-ticket query (`ClientReportService.php:82-115`), and client situation open/engaged/closed loops (`ClientSituationContextBuilder.php:177-180`, `:365-369`, `:481-499`).\n- N+1/null safety: category access is null-safe (`?->pathString()` or `categorySegment()` returning empty), uncategorized report rows degrade to `Uncategorized` / `—`, and the context builder scrubs category paths through the existing `safe()` guard before putting them into fenced AI context (`ClientSituationContextBuilder.php:144-160`).\n- Legacy replacement: `ClientReportService` now derives report category/theme data from `categoryNode?->pathString()` instead of the legacy free-text `$ticket->category` (`ClientReportService.php:108-128`, rendered at `:326-341`). I did not find remaining legacy reads in this weekly report path.\n- Tests cover the behavior change and no-category branches: new/updated coverage verifies briefing digest + AI context category output, client report taxonomy-vs-legacy behavior and uncategorized grouping, and client situation open/closed/engaged category segments.\n\nVerification run: `php artisan test tests/Feature/Briefing/BriefingAssemblerTest.php tests/Feature/ClientReport/ClientReportServiceTest.php tests/Feature/Agent/ClientSituationContextTest.php` -> 64 passed, 217 assertions.\n\nDebt flagged: none.\nVERDICT: APPROVE",
+    "title": "ARCHITECTURE/CORRECTNESS review: psa-717bn.6 @ dddd001",
     "status": "closed",
-    "priority": 1,
-    "issue_type": "task",
     "assignee": "architect-reviewer-session-x",
-    "owner": "gus@soundit.local",
-    "created_at": "2026-07-24T22:34:18.606036707Z",
-    "created_by": "psa-lead-session-x",
     "updated_at": "2026-07-24T22:38:47.842315634Z",
-    "started_at": "2026-07-24T22:36:56.949811062Z",
-    "closed_at": "2026-07-24T22:38:47.842315634Z",
-    "close_reason": "Architecture review complete: APPROVE",
-    "metadata": {
-      "gc.routed_to": "psa/architect-reviewer",
-      "gc.session_name": "polecat-session-x",
-      "gc.work_dir": "/home/operator/town/worktrees/x"
-    },
-    "dependency_count": 0,
-    "dependent_count": 1,
-    "comment_count": 0
+    "notes": "Fixture-genericized review body.\nVERDICT: APPROVE — genericized."
   },
   {
     "id": "psa-sr134",
-    "title": "UX/A11Y review: psa-717bn.6 @ 41d35c2",
-    "description": "REVIEW PR #309 (bead psa-717bn.6), branch psa-717bn.6-digests-reports @ 41d35c2, base origin/main. R …[truncated for fixture]",
+    "title": "UX/A11Y review: psa-717bn.6 @ dddd001",
     "status": "closed",
-    "priority": 1,
-    "issue_type": "task",
     "assignee": "ux-reviewer-session-x",
-    "owner": "gus@soundit.local",
-    "created_at": "2026-07-24T22:34:16.935927536Z",
-    "created_by": "psa-lead-session-x",
-    "updated_at": "2026-07-24T22:39:42.184162789Z",
-    "started_at": "2026-07-24T22:36:27.318320694Z",
-    "closed_at": "2026-07-24T22:39:21.972333794Z",
-    "close_reason": "UX review complete: APPROVE",
-    "metadata": {
-      "gc.routed_to": "psa/ux-reviewer",
-      "gc.session_name": "polecat-session-x",
-      "gc.work_dir": "/home/operator/town/worktrees/x",
-      "gc.work_outcome": "no-op"
-    },
-    "dependency_count": 0,
-    "dependent_count": 1,
-    "comment_count": 1
+    "updated_at": "2026-07-24T22:39:42.184162789Z"
   },
   {
     "id": "psa-wvmsf",
-    "title": "PRODUCT review: psa-717bn.6 @ 41d35c2",
-    "description": "REVIEW PR #309 (bead psa-717bn.6), branch psa-717bn.6-digests-reports @ 41d35c2, base origin/main. R …[truncated for fixture]",
+    "title": "PRODUCT review: psa-717bn.6 @ dddd001",
     "status": "closed",
-    "priority": 1,
-    "issue_type": "task",
     "assignee": "product-reviewer-session-x",
-    "owner": "gus@soundit.local",
-    "created_at": "2026-07-24T22:34:15.146601322Z",
-    "created_by": "psa-lead-session-x",
-    "updated_at": "2026-07-24T22:37:32.17740324Z",
-    "started_at": "2026-07-24T22:36:12.517881471Z",
-    "closed_at": "2026-07-24T22:37:32.17740324Z",
-    "close_reason": "Product review complete: APPROVE",
-    "metadata": {
-      "gc.routed_to": "psa/product-reviewer",
-      "gc.session_name": "polecat-session-x",
-      "gc.work_dir": "/home/operator/town/worktrees/x"
-    },
-    "dependency_count": 0,
-    "dependent_count": 1,
-    "comment_count": 1
+    "updated_at": "2026-07-24T22:37:32.17740324Z"
   }
 ]
