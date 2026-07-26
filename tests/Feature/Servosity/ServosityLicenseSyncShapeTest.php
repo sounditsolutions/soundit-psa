@@ -281,6 +281,60 @@ class ServosityLicenseSyncShapeTest extends TestCase
         $this->assertTrue($oldStamp->equalTo($license->synced_at));
     }
 
+    public function test_wire_an_unrelated_origin_next_aborts_before_the_walk_is_steered(): void
+    {
+        // R7 (psa-z30dv.22): a syntactically valid cursor on a FOREIGN origin
+        // passed the R6 proof, and getCompanies() adopted its query as the
+        // page cursor — the walk was steered by an unrelated URL. A crafted
+        // cursor (?page=999) could skip pages, complete "successfully", and
+        // zero every client on the skipped pages. The queued VALID page 2 is
+        // the discriminator: cursor-following code completes and WRITES
+        // (created=2); origin-bound code aborts at page 1 before anything
+        // lands.
+        $this->mappedClient('Acme', 42);
+        $beta = $this->mappedClient('Beta LLC', 77);
+        $oldStamp = now()->subDays(3)->startOfSecond();
+        $betaLicense = $this->servosityLicense($beta, 'pro', 9, $oldStamp);
+        $this->bindRealClientReplaying(
+            '{"count":2,"next":"https://unrelated.invalid/anything?page=2","previous":null,"results":['.self::WIRE_COMPANY_42.']}',
+            '{"count":2,"next":null,"previous":null,"results":[{"id":77,"name":"Company 77","account_counts":{"Pro":9},"issue_counts":{}}]}',
+        );
+
+        $result = $this->runSync();
+
+        $this->assertGreaterThan(0, $result->errors, 'a foreign-origin cursor is drift, not a page to walk');
+        $this->assertSame(0, $result->created + $result->updated, 'all-or-nothing: nothing from a foreign-steered walk may land');
+        $this->assertSame(0, $result->deactivated);
+        $betaLicense->refresh();
+        $this->assertSame(9, $betaLicense->quantity);
+        $this->assertTrue($oldStamp->equalTo($betaLicense->synced_at), 'no fresh stamp on a refused walk');
+    }
+
+    public function test_wire_a_same_origin_wrong_path_next_aborts_the_walk(): void
+    {
+        // The binding's second axis: right origin, wrong endpoint — a
+        // companies walk handed the dr-backups list URL is not continuing
+        // THIS list. Path binding is per-request, not "any known Servosity
+        // endpoint". Same discriminator shape: a queued valid page 2 that
+        // must never be fetched.
+        $client = $this->mappedClient('Acme', 42);
+        $oldStamp = now()->subDays(3)->startOfSecond();
+        $license = $this->servosityLicense($client, 'dr_server', 5, $oldStamp);
+        $this->bindRealClientReplaying(
+            '{"count":2,"next":"https://api.servosity.example/api/v1/dr-backups/?page=2","previous":null,"results":['.self::WIRE_COMPANY_42.']}',
+            '{"count":2,"next":null,"previous":null,"results":[{"id":77,"name":"Company 77","account_counts":{"Pro":9},"issue_counts":{}}]}',
+        );
+
+        $result = $this->runSync();
+
+        $this->assertGreaterThan(0, $result->errors, "another endpoint's cursor is drift, not a page to walk");
+        $this->assertSame(0, $result->created + $result->updated, 'all-or-nothing: even the valid page-1 row must not land');
+        $this->assertSame(0, $result->deactivated);
+        $license->refresh();
+        $this->assertSame(5, $license->quantity);
+        $this->assertTrue($oldStamp->equalTo($license->synced_at));
+    }
+
     public function test_wire_a_proven_multi_page_walk_syncs_every_page(): void
     {
         // The strict rewrite must not break the legitimate path: two proven

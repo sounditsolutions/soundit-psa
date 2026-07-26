@@ -99,6 +99,11 @@ class ServosityReadOnlyToolsetTest extends TestCase
     {
         $drResponse ??= $this->drfPage();
         $mock = $this->mock(ServosityClient::class);
+        // The pagination proof binds vendor cursors to the client's own
+        // resolved request URL (psa-z30dv R7) — mirror the wire-test origin so
+        // fixture cursors on api.servosity.example prove same-origin.
+        $mock->shouldReceive('resolvedRequestUrl')
+            ->andReturnUsing(fn (string $endpoint): string => 'https://api.servosity.example/api/v1/'.$endpoint);
         $mock->shouldReceive('getJson')->andReturnUsing(function (string $endpoint) use ($summaryResponse, $drResponse) {
             if (str_starts_with($endpoint, 'companies/summary-ng')) {
                 if ($summaryResponse instanceof \Throwable) {
@@ -517,6 +522,8 @@ class ServosityReadOnlyToolsetTest extends TestCase
         $this->assertNull($result['live'][$map], 'a drifted map is null, never an empty zero-shaped array');
         $this->assertStringContainsString('UNKNOWN, not zero', $result['live'][$map.'_note']);
         $this->assertStringContainsString($expectedWhy, $result['live'][$map.'_note'], 'the copy must tell missing from malformed');
+        $this->assertArrayNotHasKey('live_checked_at', $result['live'],
+            'ONE dialect rule (psa-z30dv R7): no schema_drift section carries a freshness stamp — map-level drift included');
     }
 
     public function test_empty_object_count_maps_are_the_documented_valid_empty_not_drift(): void
@@ -819,6 +826,10 @@ class ServosityReadOnlyToolsetTest extends TestCase
         $this->assertSame(1, $result['enabled_device_count']);
         $this->assertSame('unavailable', $result['live']['status']);
         $this->assertStringContainsString('UNAVAILABLE', $result['live']['note']);
+        // The deliberate dialect distinction (psa-z30dv R7): unavailable keeps
+        // its stamp — it records when the ATTEMPT failed and makes no claim
+        // about upstream state — while schema_drift publishes none.
+        $this->assertArrayHasKey('live_checked_at', $result['live']);
         $this->assertSame('unavailable', $result['live_dr_backups']['status']);
         $this->assertSame('unverified', collect($result['devices'])->firstWhere('hostname', 'DONE-HOST')['upstream_check'], 'no live list means no upstream claim');
         $this->assertSame('unverifiable', $result['job_run_history']['status'], 'job state is the constant honest unknown');
@@ -853,6 +864,8 @@ class ServosityReadOnlyToolsetTest extends TestCase
         $this->assertSame('schema_drift', $result['live']['status']);
         $this->assertStringContainsString('documented shape', $result['live']['note']);
         $this->assertStringContainsString('Do not read this as zero', $result['live']['note']);
+        $this->assertArrayNotHasKey('live_checked_at', $result['live'],
+            'an uninterpretable response is not an observation — no freshness stamp on drift (psa-z30dv R7)');
     }
 
     public function test_live_dr_backups_match_assets_fence_vendor_text_and_flag_agent_links(): void
@@ -939,6 +952,8 @@ class ServosityReadOnlyToolsetTest extends TestCase
         $this->assertSame('schema_drift', $result['live_dr_backups']['status']);
         $this->assertStringContainsString('Do not read this as zero', $result['live_dr_backups']['note']);
         $this->assertSame('unverified', collect($result['devices'])->firstWhere('hostname', 'DONE-HOST')['upstream_check']);
+        $this->assertArrayNotHasKey('live_checked_at', $result['live_dr_backups'],
+            'an uninterpretable response is not an observation — no freshness stamp on drift (psa-z30dv R7)');
     }
 
     public function test_a_well_formed_empty_dr_list_is_a_verified_zero(): void
@@ -964,6 +979,8 @@ class ServosityReadOnlyToolsetTest extends TestCase
         $this->configureServosity();
         $client = $this->mappedClient('Acme');
         $mock = $this->mock(ServosityClient::class);
+        $mock->shouldReceive('resolvedRequestUrl')
+            ->andReturnUsing(fn (string $endpoint): string => 'https://api.servosity.example/api/v1/'.$endpoint);
         $mock->shouldReceive('getJson')->twice()->andReturnUsing(fn (string $endpoint) => str_starts_with($endpoint, 'companies/summary-ng')
             ? self::wire($this->drfPage($this->companyRow(42)))
             : self::wire($this->drfPage()));
@@ -1122,19 +1139,25 @@ class ServosityReadOnlyToolsetTest extends TestCase
         $this->assertSame('unverifiable', $result['job_run_history']['status'], 'even a verified-zero DR list earns no job-state claim');
     }
 
-    // ── Pagination cursor: completeness is a truth claim (psa-z30dv R6) ───────
+    // ── Pagination cursor: completeness is a truth claim (psa-z30dv R6/R7) ────
 
     /**
-     * Undocumented `next` cursors as RAW wire fragments (psa-z30dv.17/.18):
-     * both documented list envelopes declare `next` as a URI string or null
-     * (format uri, x-nullable — official OpenAPI), and the live consumers
-     * read it as a COMPLETENESS claim ("was that the whole list?"). A falsey
-     * non-null value (false / 0 / "") used to pass the envelope proof and
-     * read as "no next page" — minting a verified zero, a company_not_found,
-     * or an upstream_missing from a response that violates the documented
-     * shape — while truthy junk read as mere truncation. Every variant is
-     * drift for the whole section, never a completeness answer in either
-     * direction.
+     * Undocumented `next` cursors as RAW wire fragments (psa-z30dv.17/.18,
+     * binding .22): both documented list envelopes declare `next` as a URI
+     * string or null (format uri, x-nullable — official OpenAPI), and the
+     * live consumers read it as a COMPLETENESS claim ("was that the whole
+     * list?"). A falsey non-null value (false / 0 / "") used to pass the
+     * envelope proof and read as "no next page" — minting a verified zero, a
+     * company_not_found, or an upstream_missing from a response that violates
+     * the documented shape — while truthy junk read as mere truncation. And a
+     * SYNTACTICALLY VALID absolute URI is still unproven unless it continues
+     * THIS request (the configured origin + this exact endpoint path): the R6
+     * real-client probe steered the summary walk with an unrelated.invalid
+     * cursor and minted company_not_found from the foreign-steered list
+     * (psa-z30dv.22). Every variant is drift for the whole section, never a
+     * completeness answer in either direction — and a drifted section
+     * publishes NO live_checked_at (an uninterpretable answer is not an
+     * observation).
      *
      * @return array<string, array{0: string}>
      */
@@ -1148,6 +1171,8 @@ class ServosityReadOnlyToolsetTest extends TestCase
             'next JSON object' => ['{}'],
             'next non-URI string' => ['"not-a-uri"'],
             'next non-http(s) URI' => ['"ftp://api.servosity.example/api/v1/dr-backups/?page=2"'],
+            'next on an unrelated origin' => ['"https://unrelated.invalid/anything?page=2"'],
+            'next on the wrong endpoint path' => ['"https://api.servosity.example/api/v1/agent-login/?page=2"'],
         ];
     }
 
@@ -1172,6 +1197,8 @@ class ServosityReadOnlyToolsetTest extends TestCase
         $this->assertSame('schema_drift', $result['live_dr_backups']['status'], 'an unproven pagination cursor must degrade the whole section');
         $this->assertStringContainsString('Do not read this as zero', $result['live_dr_backups']['note']);
         $this->assertArrayNotHasKey('count', $result['live_dr_backups'], 'no count claim may survive an unproven cursor');
+        $this->assertArrayNotHasKey('live_checked_at', $result['live_dr_backups'],
+            'no freshness stamp may accompany a drifted read — drift is not an observation (psa-z30dv R7)');
         $this->assertSame('unverified', collect($result['devices'])->firstWhere('hostname', 'DONE-HOST')['upstream_check'],
             'an unproven page must neither verify the local record nor contradict it (no upstream_missing)');
         $this->assertStringNotContainsString('verified zero', json_encode($result));
@@ -1196,7 +1223,102 @@ class ServosityReadOnlyToolsetTest extends TestCase
 
         $this->assertSame('schema_drift', $result['live']['status'], 'an unproven pagination cursor must not read as a complete company list');
         $this->assertStringContainsString('Do not read this as zero', $result['live']['note']);
+        $this->assertArrayNotHasKey('live_checked_at', $result['live'],
+            'no freshness stamp may accompany a drifted read — drift is not an observation (psa-z30dv R7)');
+        $this->assertArrayNotHasKey('account_counts', $result['live'], 'no count key may survive an unproven cursor');
         $this->assertSame('ok', $result['live_dr_backups']['status'], 'the DR seam answered well-formed and stays independent');
+    }
+
+    public function test_wire_a_cursor_for_the_other_documented_list_is_drift_at_the_dr_seam(): void
+    {
+        // R7 (psa-z30dv.22): a cursor can be a perfectly valid URI on OUR
+        // configured origin and still not continue THIS list — a dr-backups
+        // walk handed the summary list's URL is being steered somewhere else.
+        // Path binding is per-request, not "any known Servosity endpoint".
+        $this->configureServosity();
+        $client = $this->mappedClient('Acme');
+        $this->enabledAsset($client, ['hostname' => 'DONE-HOST', 'servosity_dr_backup_id' => 501]);
+        $this->bindRealClientReplaying(
+            self::WIRE_SUMMARY_OK,
+            '{"count":2,"next":"https://api.servosity.example/api/v1/companies/summary-ng/?page=2","previous":null,"results":['.self::WIRE_DR_ROW_OK.']}',
+        );
+
+        $result = $this->toolset()->execute('servosity_get_backup_posture', [], $client->id);
+
+        $this->assertSame('schema_drift', $result['live_dr_backups']['status'], "another endpoint's cursor must not read as this list's truncation");
+        $this->assertArrayNotHasKey('count', $result['live_dr_backups']);
+        $this->assertArrayNotHasKey('live_checked_at', $result['live_dr_backups']);
+        $this->assertSame('unverified', collect($result['devices'])->firstWhere('hostname', 'DONE-HOST')['upstream_check'],
+            'a foreign-steered page must not verify the local record');
+    }
+
+    public function test_wire_a_cursor_for_the_other_documented_list_is_drift_at_the_summary_seam(): void
+    {
+        // The mirror case: a companies walk handed the dr-backups list URL.
+        // Even with the requested company sitting on page 1, the walk's
+        // completeness now rests on a cursor that does not continue this
+        // list — the whole section is drift, never ok and never
+        // company_not_found.
+        $this->configureServosity();
+        $client = $this->mappedClient('Acme');
+        $this->bindRealClientReplaying(
+            '{"count":2,"next":"https://api.servosity.example/api/v1/dr-backups/?page=2","previous":null,"results":[{"id":42,"name":"Company 42","account_counts":{"DRS":2},"issue_counts":{"Backup":0}}]}',
+            '{"count":1,"next":null,"previous":null,"results":['.self::WIRE_DR_ROW_OK.']}',
+        );
+
+        $result = $this->toolset()->execute('servosity_get_backup_posture', [], $client->id);
+
+        $this->assertSame('schema_drift', $result['live']['status'], "another endpoint's cursor must not steer or complete this walk — even with the company on page 1");
+        $this->assertArrayNotHasKey('live_checked_at', $result['live']);
+        $this->assertSame('ok', $result['live_dr_backups']['status'], 'the DR seam answered well-formed and stays independent');
+    }
+
+    public function test_wire_an_absent_next_is_the_documented_end_of_list_not_drift(): void
+    {
+        // The positive counter-case the committed matrix lacked (psa-z30dv
+        // .22): `next` is x-nullable, and ABSENCE is the serializer's same
+        // "no value" as null — the documented end of the list at both seams:
+        // no drift, no truncation caveat, live reconciliation intact.
+        $this->configureServosity();
+        $client = $this->mappedClient('Acme');
+        $this->enabledAsset($client, ['hostname' => 'DONE-HOST', 'servosity_dr_backup_id' => 501]);
+        $this->bindRealClientReplaying(
+            '{"count":1,"previous":null,"results":[{"id":42,"name":"Company 42","account_counts":{"DRS":2},"issue_counts":{"Backup":0}}]}',
+            '{"count":1,"previous":null,"results":['.self::WIRE_DR_ROW_OK.']}',
+        );
+
+        $result = $this->toolset()->execute('servosity_get_backup_posture', [], $client->id);
+
+        $this->assertSame('ok', $result['live']['status'], 'an absent next is the documented end of the walk, not drift');
+        $this->assertSame(['DRS' => 2], $result['live']['account_counts']);
+        $this->assertSame('ok', $result['live_dr_backups']['status']);
+        $this->assertArrayNotHasKey('truncated', $result['live_dr_backups'], 'a complete single page earns no truncation caveat');
+        $this->assertSame('verified_live', collect($result['devices'])->firstWhere('hostname', 'DONE-HOST')['upstream_check']);
+    }
+
+    public function test_wire_a_proven_same_origin_next_at_the_dr_seam_is_truncation_not_drift(): void
+    {
+        // Binding must not break the legitimate case at the DR seam: a cursor
+        // on the configured origin continuing THIS list is the documented
+        // "more pages" answer — ok + truncated (first page only), with
+        // absence from the truncated list proving nothing (unverified, never
+        // upstream_missing).
+        $this->configureServosity();
+        $client = $this->mappedClient('Acme');
+        $this->enabledAsset($client, ['hostname' => 'DONE-HOST', 'servosity_dr_backup_id' => 501]);
+        $this->enabledAsset($client, ['hostname' => 'ELSEWHERE-HOST', 'servosity_dr_backup_id' => 999]);
+        $this->bindRealClientReplaying(
+            self::WIRE_SUMMARY_OK,
+            '{"count":25,"next":"https://api.servosity.example/api/v1/dr-backups/?page=2","previous":null,"results":['.self::WIRE_DR_ROW_OK.']}',
+        );
+
+        $result = $this->toolset()->execute('servosity_get_backup_posture', [], $client->id);
+
+        $this->assertSame('ok', $result['live_dr_backups']['status'], 'a proven same-origin cursor is a documented more-pages answer, not drift');
+        $this->assertTrue($result['live_dr_backups']['truncated']);
+        $byHost = collect($result['devices'])->keyBy('hostname');
+        $this->assertSame('verified_live', $byHost['DONE-HOST']['upstream_check']);
+        $this->assertSame('unverified', $byHost['ELSEWHERE-HOST']['upstream_check'], 'absence from a truncated page proves nothing');
     }
 
     public function test_wire_a_proven_uri_next_walks_the_summary_pages_to_the_company(): void

@@ -20,15 +20,19 @@ class ServosityClient
 
     private Client $http;
 
+    /** The Guzzle base_uri, kept for resolvedRequestUrl() — one source of truth. */
+    private readonly string $baseUri;
+
     private ?string $mfaToken = null;
 
     public function __construct(
         private readonly array $config,
     ) {
         $baseUrl = rtrim($this->config['base_url'] ?? 'https://api.servosity.com', '/');
+        $this->baseUri = $baseUrl.'/api/v1/';
 
         $options = [
-            'base_uri' => $baseUrl.'/api/v1/',
+            'base_uri' => $this->baseUri,
             'timeout' => 15,
             'headers' => [
                 'Authorization' => 'Token '.($this->config['api_token'] ?? ''),
@@ -64,6 +68,27 @@ class ServosityClient
     public function getJson(string $endpoint, array $params = []): mixed
     {
         return self::decodeJson($this->send('GET', $endpoint, ['query' => $params]), $endpoint);
+    }
+
+    /**
+     * The absolute URL this client will request for a relative endpoint —
+     * resolved against base_uri with the EXACT resolution Guzzle itself
+     * applies (GuzzleHttp\Client::buildUri():
+     * UriResolver::resolve(base_uri, uri) —
+     * vendor/guzzlehttp/guzzle/src/Client.php:212), so the pagination
+     * proof's origin/path binding (ServosityShapes::provenNextUrl(),
+     * psa-z30dv.22) compares vendor cursors against the URL genuinely
+     * requested, from one source of truth — never a second derivation that
+     * could drift from it. Query strings are deliberately excluded: the
+     * binding is origin + path; the query IS the cursor payload under
+     * proof.
+     */
+    public function resolvedRequestUrl(string $endpoint): string
+    {
+        return (string) \GuzzleHttp\Psr7\UriResolver::resolve(
+            \GuzzleHttp\Psr7\Utils::uriFor($this->baseUri),
+            \GuzzleHttp\Psr7\Utils::uriFor($endpoint),
+        );
     }
 
     /**
@@ -161,8 +186,9 @@ class ServosityClient
      * on it (psa-z30dv.15; seams 4–5 in ServosityShapes): identity-preserving
      * decode, DRF envelope, strict CompanySummaryNg rows, and the shared
      * pagination proof (ServosityShapes::provenNextUrl() — the documented
-     * URI string or null, URI format enforced; the same seam the live reads
-     * consume). Any violation THROWS (ServosityShapeDriftException) so the
+     * URI string or null, URI format enforced AND bound to this request's
+     * origin + path; the same seam the live reads consume). Any violation
+     * THROWS (ServosityShapeDriftException) so the
      * caller aborts — it never receives a collapsed or partial list it would
      * read as "these clients are gone". All-or-nothing: the throw happens
      * before this method returns, so a caller either gets the fully-proven
@@ -181,11 +207,12 @@ class ServosityClient
     {
         $allCompanies = [];
         $endpoint = 'companies/summary-ng/';
+        $requestUrl = $this->resolvedRequestUrl($endpoint);
         $params = [];
 
         for ($page = 1; $page <= self::MAX_COMPANY_PAGES; $page++) {
             $response = $this->getJson($endpoint, $params);
-            ServosityShapes::assertDrfEnvelope($response, $endpoint);
+            ServosityShapes::assertDrfEnvelope($response, $endpoint, $requestUrl);
             foreach ($response->results as $row) {
                 ServosityShapes::assertCompanySummaryRow($row);
                 // Proven — the identity-collapsing assoc view is now safe.
@@ -193,13 +220,17 @@ class ServosityClient
             }
 
             // Completeness is read ONLY through the shared pagination proof
-            // (an undocumented cursor — wrong type OR a non-URI string —
-            // already failed the envelope proof above, before any row could
-            // land): a proven null is the documented end of the walk, and a
-            // proven URI is the only cursor ever acted on. The old
-            // string-vs-null check here let a non-URI string reset the page
-            // cursor and silently re-walk from the top (psa-z30dv R6).
-            $nextUrl = ServosityShapes::provenNextUrl($response, $endpoint);
+            // (an undocumented cursor — wrong type, non-URI string, or a URI
+            // that does not continue this request — already failed the
+            // envelope proof above, before any row could land): a proven
+            // null is the documented end of the walk, and a proven URI is
+            // the only cursor ever acted on. The old string-vs-null check
+            // here let a non-URI string reset the page cursor and silently
+            // re-walk from the top (psa-z30dv R6); the origin/path binding
+            // (R7, psa-z30dv.22) means adopting the proven cursor's query
+            // below is equivalent to following the cursor itself — a
+            // foreign URL can no longer steer, skip, or complete the walk.
+            $nextUrl = ServosityShapes::provenNextUrl($response, $endpoint, $requestUrl);
             if ($nextUrl === null) {
                 return $allCompanies;
             }

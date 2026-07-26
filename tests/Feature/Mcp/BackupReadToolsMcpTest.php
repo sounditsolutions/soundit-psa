@@ -263,6 +263,10 @@ class BackupReadToolsMcpTest extends TestCase
         // container identity matches the wire.
         $wire = fn (array $fixture): mixed => ServosityClient::decodeJson(json_encode($fixture), 'fixture');
         $servosity = $this->mock(ServosityClient::class);
+        // The pagination proof binds cursors to the client's resolved request
+        // URL (psa-z30dv R7); mirror the fixture origin.
+        $servosity->shouldReceive('resolvedRequestUrl')
+            ->andReturnUsing(fn (string $endpoint): string => 'https://api.servosity.example/api/v1/'.$endpoint);
         $servosity->shouldReceive('getJson')
             ->andReturnUsing(fn (string $endpoint) => str_starts_with($endpoint, 'companies/summary-ng')
                 ? $wire(['count' => 1, 'next' => null, 'previous' => null, 'results' => [

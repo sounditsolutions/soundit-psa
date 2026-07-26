@@ -29,8 +29,10 @@ namespace App\Services\Servosity;
  *    degradation to null + a why note. Page-walk COMPLETENESS —
  *    company_not_found and the truncation caveat are complete-list claims —
  *    is decided ONLY by the shared pagination proof (provenNextUrl(),
- *    enforced per page inside assertDrfEnvelope()): an undocumented `next`
- *    is drift for the whole read, never "last page" and never "more pages".
+ *    enforced per page inside assertDrfEnvelope(), origin/path-bound to the
+ *    resolved request URL): an undocumented `next` — wrong type, non-URI,
+ *    or a URI that does not continue THIS request — is drift for the whole
+ *    read, never "last page" and never "more pages".
  *    Failure → status schema_drift / unavailable, maps null — never a zero.
  * 2. (a) ServosityReadOnlyToolset::liveDrBackups() — GET dr-backups/?company=N
  *    → MCP live_dr_backups rows, per-device upstream_check (verified_live /
@@ -41,7 +43,8 @@ namespace App\Services\Servosity;
  *    must be a well-formed URI resolving to the REQUESTED company. The
  *    truncation decision — feeding upstream_missing vs unverified and the
  *    "verified zero" copy, both complete-list claims — consumes the SAME
- *    pagination proof (provenNextUrl()) plus the proven integer count. Any
+ *    pagination proof (provenNextUrl(), origin/path-bound) plus the proven
+ *    integer count, decided at fetch time inside the cached closure. Any
  *    failure → the whole read is schema_drift, every device unverified, no
  *    row projected.
  * 3. (b) ServosityReadOnlyToolset::jobRunHistory() — GET
@@ -57,7 +60,9 @@ namespace App\Services\Servosity;
  *    Identity-preserving decode; per page assertDrfEnvelope() + strict
  *    assertCompanySummaryRow() (this class) + the SAME shared pagination
  *    proof as the live seams (provenNextUrl(): the documented URI string or
- *    null, URI format enforced — not a separate weaker check) and a bounded
+ *    null, URI format enforced AND origin/path-bound to the resolved
+ *    request URL, so a foreign cursor cannot steer the walk — not a
+ *    separate weaker check) and a bounded
  *    page walk that THROWS rather than truncating (a truncated list must
  *    never read as "client gone" and zero its licenses). Any violation
  *    aborts the sync before any write: no upsert, no deactivation, no
@@ -94,39 +99,60 @@ final class ServosityShapes
      * and `[]` are distinguishable here: a top-level JSON array, a `results`
      * that is a JSON object (even an empty `{}`), or a non-integer `count`
      * are each drift — never read as zero rows. The proof includes the
-     * pagination cursor (provenNextUrl() below): an envelope whose `next`
+     * pagination cursor (provenNextUrl() below), bound to $requestUrl — the
+     * absolute URL this envelope was fetched from: an envelope whose `next`
      * is unproven fails HERE, before any consumer can cache it as ok or
      * read a completeness claim from it.
      */
-    public static function assertDrfEnvelope(mixed $response, string $endpoint): void
+    public static function assertDrfEnvelope(mixed $response, string $endpoint, string $requestUrl): void
     {
         if (! $response instanceof \stdClass || ! is_int($response->count ?? null) || ! is_array($response->results ?? null)) {
             throw new ServosityShapeDriftException("Servosity {$endpoint} response did not match the documented envelope (a JSON object with integer count + array results required).");
         }
-        self::provenNextUrl($response, $endpoint);
+        self::provenNextUrl($response, $endpoint, $requestUrl);
     }
 
     /**
      * The documented DRF pagination cursor, proven before ANY completeness
-     * claim (psa-z30dv.17/.18): both documented list endpoints declare
-     * `next` as a string with format uri, x-nullable — so the only
-     * documented values are a URI string and null (absence is the same
-     * serializer "no value"). Consumers read `next` as a COMPLETENESS
-     * claim — "was that the whole list?" — which decides verified zeros,
-     * company_not_found, upstream_missing, truncation caveats and license
-     * deactivation, so an unproven cursor is drift for the whole read in
-     * BOTH directions: a falsey non-null value (false / 0 / "") must not
-     * end a walk as "complete", and truthy junk (array / object / non-URI
-     * string) must not read as "more pages" either. Returns the proven
-     * cursor: null = the documented end of the list, string = a well-formed
-     * absolute http(s) URL for the next page. assertDrfEnvelope() runs this
-     * proof on every envelope; consumers re-read the cursor ONLY through
-     * this method — never from the raw field. `previous` is declared the
-     * same way but consumed by NO seam, so it is deliberately not policed
-     * (the consumed-field rule; unconsumed optional fields are a projection
-     * ceiling, not a drift axis).
+     * claim (psa-z30dv.17/.18; origin/path binding .22): both documented
+     * list endpoints declare `next` as a string with format uri, x-nullable
+     * — so the only documented values are a URI string and null (absence is
+     * the same serializer "no value"). Consumers read `next` as a
+     * COMPLETENESS claim — "was that the whole list?" — and as the WALK
+     * CURSOR (its query becomes the next page request), which together
+     * decide verified zeros, company_not_found, upstream_missing,
+     * truncation caveats and license deactivation. So an unproven cursor is
+     * drift for the whole read in EVERY direction: a falsey non-null value
+     * (false / 0 / "") must not end a walk as "complete", truthy junk
+     * (array / object / non-URI string) must not read as "more pages", and
+     * a syntactically valid URI that does not CONTINUE THIS REQUEST must
+     * not steer the walk or complete it. The last is the R7 security
+     * finding (psa-z30dv.22): an unrelated-origin cursor passed the R6
+     * syntax-only proof, its query drove OUR page walk, and the requested
+     * company's absence from that foreign-steered list minted
+     * company_not_found — the exact false-clear class this surface exists
+     * to refuse. The OpenAPI declares only the SYNTAX (string, format uri);
+     * the binding is the semantic cursor-safety boundary on top of it,
+     * required because the cursor participates in truth claims.
+     *
+     * $requestUrl is the absolute URL of the request that produced this
+     * envelope (ServosityClient::resolvedRequestUrl() — derived via the
+     * same base_uri resolution Guzzle itself applies, so it cannot drift
+     * from the URL genuinely requested). The proven cursor must share its
+     * ORIGIN (scheme + host + effective port) and its EXACT PATH: DRF
+     * regenerates the request URL verbatim with an updated query, so any
+     * divergence is undocumented behaviour and therefore drift.
+     *
+     * Returns the proven cursor: null = the documented end of the list,
+     * string = a well-formed same-origin, same-path http(s) URL for the
+     * next page. assertDrfEnvelope() runs this proof on every envelope;
+     * consumers re-read the cursor ONLY through this method — never from
+     * the raw field. `previous` is declared the same way but consumed by NO
+     * seam, so it is deliberately not policed (the consumed-field rule;
+     * unconsumed optional fields are a projection ceiling, not a drift
+     * axis).
      */
-    public static function provenNextUrl(\stdClass $response, string $endpoint): ?string
+    public static function provenNextUrl(\stdClass $response, string $endpoint, string $requestUrl): ?string
     {
         $next = $response->next ?? null;
         if ($next === null) {
@@ -137,8 +163,49 @@ final class ServosityShapes
             || ! in_array(strtolower((string) parse_url($next, PHP_URL_SCHEME)), ['https', 'http'], true)) {
             throw new ServosityShapeDriftException("Servosity {$endpoint} response carried a next-page cursor that is neither the documented URI string nor null — list completeness cannot be read from an unproven cursor.");
         }
+        if (! self::cursorContinuesRequest($next, $requestUrl)) {
+            throw new ServosityShapeDriftException("Servosity {$endpoint} response carried a next-page cursor that does not continue this request (a different origin or endpoint path) — a foreign cursor must not steer the walk or decide list completeness.");
+        }
 
         return $next;
+    }
+
+    /**
+     * Does a syntactically valid cursor CONTINUE the request that produced
+     * it? Same origin — scheme and host compared case-insensitively (RFC
+     * 3986 §6.2.2.1), port compared as the EFFECTIVE port (explicit, else
+     * the scheme default) — and the exact request path, byte for byte: DRF
+     * emits the request URL back with only the query changed, so a
+     * trailing-slash, casing, or percent-encoding divergence is as
+     * undocumented as a foreign host. The query is deliberately NOT
+     * compared — it IS the cursor payload being proven safe to consume.
+     * Neither the cursor value nor $requestUrl may appear in the drift
+     * message above: the cursor is vendor bytes, and the request URL embeds
+     * the configured base host (psa-z30dv.6 — both stay out of logs).
+     */
+    private static function cursorContinuesRequest(string $next, string $requestUrl): bool
+    {
+        $cursor = parse_url($next);
+        $request = parse_url($requestUrl);
+        if (! is_array($cursor) || ! is_array($request)) {
+            return false;
+        }
+
+        $cursorScheme = strtolower($cursor['scheme'] ?? '');
+        if ($cursorScheme === '' || $cursorScheme !== strtolower($request['scheme'] ?? '')) {
+            return false;
+        }
+        $cursorHost = strtolower($cursor['host'] ?? '');
+        if ($cursorHost === '' || $cursorHost !== strtolower($request['host'] ?? '')) {
+            return false;
+        }
+        $defaultPort = $cursorScheme === 'https' ? 443 : 80;
+        if (($cursor['port'] ?? $defaultPort) !== ($request['port'] ?? $defaultPort)) {
+            return false;
+        }
+        $cursorPath = $cursor['path'] ?? '';
+
+        return $cursorPath !== '' && $cursorPath === ($request['path'] ?? '');
     }
 
     /**

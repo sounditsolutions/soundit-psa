@@ -76,14 +76,22 @@ use Illuminate\Support\Facades\Log;
  *    company_not_found, upstream_missing and truncation caveats), so the
  *    cursor is proven by ServosityShapes::provenNextUrl() (enforced inside
  *    every assertDrfEnvelope()) and consumed ONLY through it. An
- *    undocumented value is drift for the whole section in BOTH directions:
+ *    undocumented value is drift for the whole section in EVERY direction:
  *    false/0/"" must not read as "no next page" (psa-z30dv.18:
  *    {"count":0,"results":[],"next":0} minted a verified zero +
- *    upstream_missing) and array/object/non-URI junk must not read as mere
- *    truncation.
+ *    upstream_missing), array/object/non-URI junk must not read as mere
+ *    truncation, and a syntactically valid URI that does not continue THIS
+ *    request — the configured origin + this exact endpoint path, from
+ *    ServosityClient::resolvedRequestUrl() — must not steer or complete the
+ *    walk (psa-z30dv.22: an unrelated-origin cursor minted
+ *    company_not_found from a foreign-steered list).
  * A response missing a REQUIRED container, or carrying a wrong-typed required
  * field, is SCHEMA DRIFT and is reported as an explicit unknown/unavailable
- * state — never as a clean zero/empty.
+ * state — never as a clean zero/empty. A schema_drift section publishes NO
+ * live_checked_at (one dialect rule, psa-z30dv R7): an uninterpretable answer
+ * is not an observation, so no freshness stamp may accompany it — while
+ * unavailable keeps its attempt stamp, which claims nothing about upstream
+ * state.
  *
  * DATA BOUNDARY: scope resolves from clients.servosity_company_id on the PSA
  * client row, never from tool input. Live reads are filtered to that company
@@ -129,7 +137,7 @@ class ServosityReadOnlyToolset
      * the synced license plane. The per-device plane carries its own
      * (unverifiable) envelope — one plane's freshness must never bless another.
      */
-    private const SYNCED_FRESHNESS_NOTE = 'data_as_of/data_stale cover ONLY synced_account_counts (the daily Servosity license sync): data_as_of is the OLDEST known sync stamp, and any missing, malformed, or future-dated stamp forces data_stale=true. They do NOT vouch for the per-device rows — see provisioning_freshness and each device\'s upstream_check. Live sections carry their own live_checked_at.';
+    private const SYNCED_FRESHNESS_NOTE = 'data_as_of/data_stale cover ONLY synced_account_counts (the daily Servosity license sync): data_as_of is the OLDEST known sync stamp, and any missing, malformed, or future-dated stamp forces data_stale=true. They do NOT vouch for the per-device rows — see provisioning_freshness and each device\'s upstream_check. Live sections carry their own live_checked_at when their answer was interpretable; a schema_drift section publishes no timestamp.';
 
     public function __construct(
         private readonly ChetDataSurfaceTextSanitizer $textSanitizer,
@@ -147,7 +155,7 @@ class ServosityReadOnlyToolset
         return [
             [
                 'name' => 'servosity_get_backup_posture',
-                'description' => "Get a PSA client's Servosity backup posture: per-device enabled/provisioning state reconciled against a LIVE query of Servosity's DR backup accounts (each device's upstream_check: verified_live / upstream_missing / unverified / not_provisioned), synced backup account counts by product (with freshness), and live account + open-issue counts. IMPORTANT: job-run state (did the last backup run, did it succeed) CANNOT be answered by this tool — the vendor documents its job endpoint but NOT the response schema, so job_run_history is always status=unverifiable with no run count or outcome; verify run outcomes in the Servosity console. Never infer 'backups are healthy' from anything in this answer. Every section carries its own freshness (data_as_of/data_stale or live_checked_at); any status of unavailable/schema_drift/unverifiable/company_not_found means UNKNOWN — not zero, not passing.",
+                'description' => "Get a PSA client's Servosity backup posture: per-device enabled/provisioning state reconciled against a LIVE query of Servosity's DR backup accounts (each device's upstream_check: verified_live / upstream_missing / unverified / not_provisioned), synced backup account counts by product (with freshness), and live account + open-issue counts. IMPORTANT: job-run state (did the last backup run, did it succeed) CANNOT be answered by this tool — the vendor documents its job endpoint but NOT the response schema, so job_run_history is always status=unverifiable with no run count or outcome; verify run outcomes in the Servosity console. Never infer 'backups are healthy' from anything in this answer. Every section carries its own freshness (data_as_of/data_stale, or live_checked_at for live sections) EXCEPT schema_drift, which publishes NO timestamp — an uninterpretable answer is not an observation. Any status of unavailable/schema_drift/unverifiable/company_not_found means UNKNOWN — not zero, not passing.",
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -314,12 +322,20 @@ class ServosityReadOnlyToolset
 
         $accounts = $this->validatedIntMap($company->account_counts ?? null);
         $issues = $this->validatedIntMap($company->issue_counts ?? null);
+        // Both maps are REQUIRED in the documented shape — a drifted one
+        // downgrades the whole section, never silently reads as zero.
+        $mapsProven = $accounts['map'] !== null && $issues['map'] !== null;
 
-        return [
-            // Both maps are REQUIRED in the documented shape — a drifted one
-            // downgrades the whole section, never silently reads as zero.
-            'status' => ($accounts['map'] !== null && $issues['map'] !== null) ? 'ok' : 'schema_drift',
-            'live_checked_at' => $fetch['fetched_at'],
+        $section = ['status' => $mapsProven ? 'ok' : 'schema_drift'];
+        // ONE dialect rule (psa-z30dv R7, .22): a schema_drift section
+        // publishes NO live_checked_at — even here, where the envelope was
+        // proven and only a count map drifted. A freshness stamp on drift
+        // reads as a timestamped completed observation.
+        if ($mapsProven) {
+            $section['live_checked_at'] = $fetch['fetched_at'];
+        }
+
+        return $section + [
             'account_counts' => $accounts['map'],
             'account_counts_note' => $accounts['map'] !== null
                 ? 'Live backup account counts per product key (documented shape: an integer per product).'
@@ -344,12 +360,27 @@ class ServosityReadOnlyToolset
     private function liveDrBackups(Client $client, \Illuminate\Support\Collection $enabledDevices): array
     {
         $companyId = (int) $client->servosity_company_id;
-        $fetch = $this->cachedLiveFetch("servosity_reads:dr_backups:{$companyId}", function () use ($companyId): \stdClass {
-            $response = $this->client()->getJson('dr-backups/', ['company' => $companyId, 'page_size' => self::LIVE_PAGE_SIZE]);
-            ServosityShapes::assertDrfEnvelope($response, 'dr-backups/');
+        // Cache key versioned: the cached value's shape changed in R7 (the
+        // response now travels with its fetch-time completeness flag) and
+        // file-cache entries can survive a deploy by up to the TTL.
+        $fetch = $this->cachedLiveFetch("servosity_reads:dr_backups:v2:{$companyId}", function () use ($companyId): array {
+            $client = $this->client();
+            $requestUrl = $client->resolvedRequestUrl('dr-backups/');
+            $response = $client->getJson('dr-backups/', ['company' => $companyId, 'page_size' => self::LIVE_PAGE_SIZE]);
+            ServosityShapes::assertDrfEnvelope($response, 'dr-backups/', $requestUrl);
             $this->assertDrBackupRows($response->results, $companyId);
 
-            return $response;
+            // DRF pagination: completeness is a truth claim (it decides the
+            // "verified zero" copy and upstream_missing vs unverified), so
+            // it is decided HERE, at fetch time, from the just-proven cursor
+            // — origin/path-bound to the request that produced it (psa-z30dv
+            // R7) — plus the proven integer count. Consumers of the cached
+            // value read this flag; the raw `next` field is never re-read.
+            return [
+                'response' => $response,
+                'list_truncated' => ServosityShapes::provenNextUrl($response, 'dr-backups/', $requestUrl) !== null
+                    || $response->count > count($response->results),
+            ];
         });
 
         if ($fetch['status'] !== 'ok') {
@@ -360,23 +391,13 @@ class ServosityReadOnlyToolset
             ];
         }
 
-        $response = $fetch['value'];
+        ['response' => $response, 'list_truncated' => $listTruncated] = $fetch['value'];
         $validRows = $response->results;
 
         $ids = [];
         foreach ($validRows as $row) {
             $ids[$row->id] = true;
         }
-
-        // DRF pagination: completeness is a truth claim (it decides the
-        // "verified zero" copy and upstream_missing vs unverified), so the
-        // cursor is read ONLY through the shared proof path — an
-        // undocumented `next` already failed assertDrfEnvelope() inside the
-        // fetch closure and can never reach this line as an ok result. More
-        // accounts exist upstream when a proven next page exists or the
-        // proven total count exceeds this page.
-        $listTruncated = ServosityShapes::provenNextUrl($response, 'dr-backups/') !== null
-            || $response->count > count($validRows);
 
         $assetsByHostname = $enabledDevices->keyBy(
             fn (Asset $asset): string => mb_strtolower((string) $asset->hostname),
@@ -489,10 +510,12 @@ class ServosityReadOnlyToolset
      */
     private function fetchAllSummaryRows(): array
     {
+        $client = $this->client();
+        $requestUrl = $client->resolvedRequestUrl('companies/summary-ng/');
         $rows = [];
         for ($page = 1; $page <= self::MAX_SUMMARY_PAGES; $page++) {
-            $response = $this->client()->getJson('companies/summary-ng/', ['page' => $page, 'page_size' => self::LIVE_PAGE_SIZE]);
-            ServosityShapes::assertDrfEnvelope($response, 'companies/summary-ng/');
+            $response = $client->getJson('companies/summary-ng/', ['page' => $page, 'page_size' => self::LIVE_PAGE_SIZE]);
+            ServosityShapes::assertDrfEnvelope($response, 'companies/summary-ng/', $requestUrl);
 
             foreach ($response->results as $row) {
                 if (! $row instanceof \stdClass || ! is_int($row->id ?? null)) {
@@ -503,10 +526,11 @@ class ServosityReadOnlyToolset
             $rows = array_merge($rows, array_values($response->results));
 
             // Completeness is read ONLY through the shared pagination proof
-            // (an undocumented cursor threw at the envelope proof above): a
+            // (an undocumented cursor — wrong type or one that does not
+            // continue this request — threw at the envelope proof above): a
             // proven null is the documented end of the list, a proven URI
             // means another page exists.
-            if (ServosityShapes::provenNextUrl($response, 'companies/summary-ng/') === null) {
+            if (ServosityShapes::provenNextUrl($response, 'companies/summary-ng/', $requestUrl) === null) {
                 return ['rows' => $rows, 'list_truncated' => false];
             }
         }
@@ -659,10 +683,13 @@ class ServosityReadOnlyToolset
      * agent loop cannot fan out into unbounded Servosity request volume, and
      * failures are held even shorter (still loud, no re-hammering). fetched_at
      * is stamped at real fetch time, so a cache-served answer never claims to
-     * be fresher than it is. Logs are redacted: exception class + code only —
-     * vendor messages can embed the configured base URL or response text.
+     * be fresher than it is — and a schema_drift record carries NO fetched_at
+     * at all (psa-z30dv R7: drift is not an observation, so there is no
+     * freshness stamp to publish). Logs are redacted: exception class + code
+     * only — vendor messages can embed the configured base URL or response
+     * text.
      *
-     * @return array{status: 'ok'|'failed'|'schema_drift', value?: mixed, fetched_at: string}
+     * @return array{status: 'ok'|'failed'|'schema_drift', value?: mixed, fetched_at?: string}
      */
     private function cachedLiveFetch(string $key, \Closure $fetch): array
     {
@@ -677,7 +704,10 @@ class ServosityReadOnlyToolset
         } catch (ServosityShapeDriftException $e) {
             // Safe by construction: names the endpoint, never response content.
             Log::warning('[Servosity reads] response shape drift', ['detail' => $e->getMessage()]);
-            $result = ['status' => 'schema_drift', 'fetched_at' => now()->toIso8601ZuluString()];
+            // No fetched_at on a drift record (psa-z30dv R7, .22): drift
+            // publishes no freshness stamp, and the payload seam cannot leak
+            // what the cache entry does not hold.
+            $result = ['status' => 'schema_drift'];
             Cache::put($key, $result, self::LIVE_FAILURE_CACHE_SECONDS);
         } catch (\Throwable $e) {
             // Identifier minimization (psa-z30dv.10): the cache key embeds
@@ -695,7 +725,14 @@ class ServosityReadOnlyToolset
      * vendor error detail (URLs, response text) must not cross the agent
      * boundary — diagnostics live in the application log.
      *
-     * @param  array{status: string, fetched_at: string}  $fetch
+     * The two failure states carry deliberately different freshness
+     * (psa-z30dv R7, .22): schema_drift publishes NO live_checked_at — an
+     * uninterpretable response is not an observation, and a stamp here would
+     * let the drift block read as a timestamped completed check — while
+     * unavailable keeps its stamp, which records only when the ATTEMPT
+     * failed and strengthens no claim about upstream state.
+     *
+     * @param  array{status: string, fetched_at?: string}  $fetch
      * @return array<string, mixed>
      */
     private function liveFailurePayload(array $fetch, string $what, string $consequence): array
@@ -703,8 +740,7 @@ class ServosityReadOnlyToolset
         if ($fetch['status'] === 'schema_drift') {
             return [
                 'status' => 'schema_drift',
-                'live_checked_at' => $fetch['fetched_at'],
-                'note' => "Live {$what} are UNKNOWN — Servosity answered with a response that does not match its documented shape (possible API change; details in the application log). Do not read this as zero/none; {$consequence}. Verify in the Servosity console.",
+                'note' => "Live {$what} are UNKNOWN — Servosity answered with a response that does not match its documented shape (possible API change; details in the application log). No live_checked_at is published: an uninterpretable answer is not an observation. Do not read this as zero/none; {$consequence}. Verify in the Servosity console.",
             ];
         }
 
