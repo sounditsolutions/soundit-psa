@@ -241,6 +241,84 @@ class StripeSyncService
         $invoice->recordStatusPullResult($updates);
     }
 
+    /**
+     * Propagate a local void to Stripe (psa-bl36l). Mirrors
+     * QboSyncService::voidInvoiceInQbo(): the staff Void action must not leave
+     * the Stripe hosted payment page live and payable while Sound PSA shows the
+     * invoice as Void/$0.
+     *
+     * Voids an open Stripe invoice upstream and clears the stored payment-page
+     * URL (the show view renders "Payment Page" off it). An already
+     * void/uncollectible invoice is idempotently accepted. A PAID Stripe invoice
+     * cannot be voided — rather than fail closed into a silent all-clear (the
+     * false "reconciled" this bug is about), it records a durable sync error and
+     * throws so the operator is told to reconcile/refund manually. A
+     * vendor/network failure is likewise recorded and rethrown.
+     *
+     * Writes only provenance + the payment URL (never money/status), so it has
+     * none of the status-pull re-inflation TOCTOU (psa-qfhc5) and needs no
+     * locked guard.
+     */
+    public function voidInvoiceInStripe(Invoice $invoice): void
+    {
+        if (! $invoice->stripe_invoice_id) {
+            return;
+        }
+
+        try {
+            $stripeInvoice = $this->stripeClient->getInvoice($invoice->stripe_invoice_id);
+        } catch (StripeClientException $e) {
+            $invoice->update(['stripe_sync_error' => $e->getMessage()]);
+            throw $e;
+        }
+
+        $stripeStatus = $stripeInvoice['status'] ?? '';
+
+        // Already terminal upstream — record convergence, do not double-void.
+        if (in_array($stripeStatus, ['void', 'uncollectible'], true)) {
+            $invoice->update([
+                'stripe_synced_at' => now(),
+                'stripe_sync_error' => null,
+            ]);
+
+            return;
+        }
+
+        // A paid Stripe invoice cannot be voided. Do NOT return a clean success:
+        // a payment the MSP believes it voided is exactly the divergence this fix
+        // exists to prevent. Record it and scream so the operator reconciles.
+        if ($stripeStatus === 'paid') {
+            $message = 'Stripe invoice '.$invoice->stripe_invoice_id.' is already paid and cannot be voided upstream — reconcile or refund it manually in Stripe.';
+            Log::warning('[StripeSync] Refusing to void a paid Stripe invoice', [
+                'invoice_id' => $invoice->id,
+                'invoice_number' => $invoice->invoice_number,
+            ]);
+            $invoice->update(['stripe_sync_error' => $message]);
+
+            throw new StripeClientException($message);
+        }
+
+        try {
+            $this->stripeClient->voidInvoice($invoice->stripe_invoice_id);
+        } catch (StripeClientException $e) {
+            $invoice->update(['stripe_sync_error' => $e->getMessage()]);
+            throw $e;
+        }
+
+        Log::info('[StripeSync] Invoice voided in Stripe', [
+            'invoice_id' => $invoice->id,
+            'invoice_number' => $invoice->invoice_number,
+        ]);
+
+        // Kill the hosted payment page: clearing the URL removes the live pay
+        // link the show view renders for a voided invoice.
+        $invoice->update([
+            'stripe_invoice_url' => null,
+            'stripe_synced_at' => now(),
+            'stripe_sync_error' => null,
+        ]);
+    }
+
     public function syncAllUnpaidInvoices(): int
     {
         $invoices = Invoice::whereIn('status', [InvoiceStatus::Synced])

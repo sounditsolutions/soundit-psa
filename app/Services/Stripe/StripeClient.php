@@ -109,6 +109,11 @@ class StripeClient
         return $this->post("/v1/invoices/{$id}/finalize");
     }
 
+    public function voidInvoice(string $id): array
+    {
+        return $this->post("/v1/invoices/{$id}/void");
+    }
+
     public function getInvoice(string $id): array
     {
         return $this->get("/v1/invoices/{$id}");

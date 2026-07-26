@@ -27,6 +27,7 @@ use App\Services\Level\LevelClient;
 use App\Services\Mesh\MeshClient;
 use App\Services\Ninja\NinjaClient;
 use App\Services\Servosity\ServosityClient;
+use App\Services\Stripe\StripeClient;
 use App\Services\Tactical\TacticalClient;
 use App\Services\Unifi\UnifiClient;
 use App\Support\AppTimezone;
@@ -34,6 +35,7 @@ use App\Support\CippConfig;
 use App\Support\HuntressConfig;
 use App\Support\MeshConfig;
 use App\Support\ServosityConfig;
+use App\Support\StripeConfig;
 use Illuminate\Pagination\Paginator;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Auth;
@@ -66,6 +68,16 @@ class AppServiceProvider extends ServiceProvider
         // Bind ChimeInGate to a Haiku-configured instance for production (Teams E2b ambient).
         // Tests inject a mock AiClient directly (new ChimeInGate($mock)) or mock the gate.
         $this->app->bind(\App\Services\Teams\ChimeInGate::class, fn () => \App\Services\Teams\ChimeInGate::haiku());
+
+        // Stripe API client, built from the encrypted secret_key setting — mirrors
+        // the other vendor-client bindings (Ninja/Mesh/Cipp). StripeClient's ctor
+        // needs a config array, so without this it can't be autowired and
+        // StripeSyncService can't be resolved/injected (unlike QboClient, whose
+        // ctor is arg-less). Manual `new StripeClient([...])` sites are
+        // unaffected. Tests override with $this->mock(StripeClient::class).
+        $this->app->singleton(StripeClient::class, fn () => new StripeClient([
+            'secret_key' => StripeConfig::get('secret_key'),
+        ]));
 
         $this->app->singleton(NinjaClient::class, function ($app) {
             $config = config('services.ninja');

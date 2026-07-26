@@ -209,6 +209,14 @@ class InvoiceController extends Controller
 
     public function syncFromStripe(Invoice $invoice)
     {
+        // A locally-voided invoice short-circuits in the sync service ("PSA wins
+        // for void") — no vendor request is made — so don't claim it was
+        // refreshed from Stripe (psa-bl36l). Say what actually happened.
+        if ($invoice->status === InvoiceStatus::Void) {
+            return redirect()->route('invoices.show', $invoice)
+                ->with('info', 'This invoice is voided in Sound PSA; Stripe was not re-checked.');
+        }
+
         $client = new \App\Services\Stripe\StripeClient([
             'secret_key' => StripeConfig::get('secret_key'),
         ]);
@@ -335,6 +343,12 @@ class InvoiceController extends Controller
                         if ($invoice->qbo_invoice_id) {
                             $qboSyncService->voidInvoiceInQbo($invoice);
                         }
+                        // Propagate to Stripe too, so a bulk void doesn't leave a
+                        // live payment page behind (psa-bl36l). A throw here is
+                        // caught below and counted as failed, same as QBO.
+                        if ($invoice->stripe_invoice_id && $stripeSyncService) {
+                            $stripeSyncService->voidInvoiceInStripe($invoice);
+                        }
                         $succeeded++;
                         break;
 
@@ -381,7 +395,7 @@ class InvoiceController extends Controller
             ->with('success', 'Invoice marked as paid.');
     }
 
-    public function void(Invoice $invoice, QboSyncService $syncService, InvoiceVoidService $voidService)
+    public function void(Invoice $invoice, QboSyncService $syncService, InvoiceVoidService $voidService, StripeSyncService $stripeSyncService)
     {
         if ($invoice->status === InvoiceStatus::Void) {
             return redirect()->route('invoices.show', $invoice)
@@ -399,6 +413,18 @@ class InvoiceController extends Controller
 
                 return redirect()->route('invoices.show', $invoice)
                     ->with('warning', "Invoice voided in Sound PSA. QBO void failed — you may need to void invoice #{$docRef} manually in QuickBooks.");
+            }
+        }
+
+        // Push void to Stripe if this invoice was pushed there — otherwise the
+        // hosted payment page stays live and the client can still pay a voided
+        // invoice (psa-bl36l).
+        if ($invoice->stripe_invoice_id && StripeConfig::isConfigured()) {
+            try {
+                $stripeSyncService->voidInvoiceInStripe($invoice);
+            } catch (StripeClientException $e) {
+                return redirect()->route('invoices.show', $invoice)
+                    ->with('warning', "Invoice voided in Sound PSA. Stripe void failed — the client payment page may still be live; void invoice {$invoice->stripe_invoice_id} manually in Stripe.");
             }
         }
 
