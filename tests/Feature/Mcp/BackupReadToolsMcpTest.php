@@ -254,17 +254,20 @@ class BackupReadToolsMcpTest extends TestCase
         ]);
 
         // Envelopes per the official OpenAPI (count + results REQUIRED); the
-        // DR row carries the full documented DRBackup shape (company,
-        // agent_session, shadowprotect_keys, device_name, product_type,
-        // encryption_key are REQUIRED). Job-run records are an undocumented
-        // shape — the row keys here must never be projected.
+        // DR row carries the full documented DRBackup shape with DOCUMENTED
+        // TYPES (company as the scoped URI, agent_session/encryption_key as
+        // objects, shadowprotect_keys as an array). Job-run records are an
+        // undocumented shape — the row keys here must never be projected.
+        // Fixtures travel through the client's real identity-preserving
+        // decode so container identity matches the wire.
+        $wire = fn (array $fixture): mixed => ServosityClient::decodeJson(json_encode($fixture), 'fixture');
         $servosity = $this->mock(ServosityClient::class);
-        $servosity->shouldReceive('get')
+        $servosity->shouldReceive('getJson')
             ->andReturnUsing(fn (string $endpoint) => str_starts_with($endpoint, 'companies/summary-ng')
-                ? ['count' => 1, 'next' => null, 'previous' => null, 'results' => [
+                ? $wire(['count' => 1, 'next' => null, 'previous' => null, 'results' => [
                     ['id' => 42, 'name' => 'Company 42', 'account_counts' => ['DRS' => 1], 'issue_counts' => ['Backup' => 0]],
-                ]]
-                : ['count' => 1, 'next' => null, 'previous' => null, 'results' => [
+                ]])
+                : $wire(['count' => 1, 'next' => null, 'previous' => null, 'results' => [
                     [
                         'id' => 501,
                         'device_name' => 'ACME-SRV-01',
@@ -272,16 +275,16 @@ class BackupReadToolsMcpTest extends TestCase
                         'state' => 'ACTIVE',
                         'product_type' => 'DR_SERVER',
                         'company' => 'https://api.servosity.example/api/v1/companies/42/',
-                        'agent_session' => 'https://api.servosity.example/api/v1/agent-sessions/sess-1/',
-                        'shadowprotect_keys' => [],
-                        'encryption_key' => 'fake-fixture-encryption-key',
+                        'agent_session' => ['agent_session_id' => 'sess-1'],
+                        'shadowprotect_keys' => [['product_key' => 'SPX-FAKE-NEVERSEEN', 'product_type' => 'Server']],
+                        'encryption_key' => ['locked' => false],
                     ],
-                ]]);
+                ]]));
         $servosity->shouldReceive('getBackupJobs')->with(501)
-            ->andReturn(['count' => 2, 'next' => null, 'previous' => null, 'results' => [
+            ->andReturn($wire(['count' => 2, 'next' => null, 'previous' => null, 'results' => [
                 ['undocumented_key' => 'never-projected-1'],
                 ['undocumented_key' => 'never-projected-2'],
-            ]]);
+            ]]));
 
         $response = $this->callTool($this->token(['servosity_get_backup_posture']), 'servosity_get_backup_posture', [
             'client_id' => $client->id,
@@ -295,16 +298,19 @@ class BackupReadToolsMcpTest extends TestCase
         $this->assertSame('ok', $result['live']['status']);
         $this->assertSame(['DRS' => 1], $result['live']['account_counts']);
         $this->assertSame('verified_live', $result['devices'][0]['upstream_check'], 'the live reconciliation must survive the transport');
-        // The honesty contract delivered end-to-end: live job-run RECORD
-        // counts with outcomes still UNKNOWN (undocumented record shape),
-        // canonical freshness trio, and the unverifiable provisioning plane.
+        // The honesty contract delivered end-to-end: job-run record counts
+        // explicitly UNVERIFIED (undocumented response schema), outcomes
+        // UNKNOWN, canonical freshness trio, and the unverifiable
+        // provisioning plane.
         $this->assertSame('checked', $result['job_run_history']['status']);
         $this->assertSame('records_observed', $result['job_run_history']['accounts'][0]['status']);
-        $this->assertSame(2, $result['job_run_history']['accounts'][0]['runs_on_record']);
+        $this->assertSame(2, $result['job_run_history']['accounts'][0]['unverified_record_count']);
+        $this->assertFalse($result['job_run_history']['accounts'][0]['schema_documented']);
+        $this->assertStringContainsString('UNVERIFIED', $result['job_run_history']['note']);
         $this->assertStringContainsString('UNKNOWN', $result['job_run_history']['note']);
         $payload = json_encode($result);
         $this->assertStringNotContainsString('never-projected', $payload, 'undocumented record contents must not cross the MCP boundary');
-        $this->assertStringNotContainsString('fake-fixture-encryption-key', $payload, 'credential-shaped DR fields must not cross the MCP boundary');
+        $this->assertStringNotContainsString('SPX-FAKE-NEVERSEEN', $payload, 'credential-shaped DR fields must not cross the MCP boundary');
         $this->assertStringNotContainsString('dr_backup_id', $payload, 'vendor account ids are internal plumbing only');
         $this->assertArrayHasKey('data_as_of', $result);
         $this->assertArrayHasKey('data_stale', $result);

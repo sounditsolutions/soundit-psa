@@ -4,6 +4,7 @@ namespace Tests\Feature\Servosity;
 
 use App\Services\Servosity\ServosityClient;
 use App\Services\Servosity\ServosityClientException;
+use App\Services\Servosity\ServosityShapeDriftException;
 use Illuminate\Support\Facades\Log;
 use Tests\TestCase;
 
@@ -48,5 +49,23 @@ class ServosityClientSanitizationTest extends TestCase
                 return true;
             })
             ->atLeast()->once();
+    }
+
+    public function test_invalid_json_is_rejected_as_shape_drift_without_echoing_the_body(): void
+    {
+        // psa-z30dv.7/.11: the old `json_decode(...) ?? []` collapse turned an
+        // unparseable body into a clean empty list. It must throw instead —
+        // typed as shape drift (so the read surface reports schema_drift) but
+        // still a ServosityClientException subclass (so every legacy vendor-
+        // failure catch contains it) — and the message may name only OUR
+        // endpoint, never response content.
+        try {
+            ServosityClient::decodeJson('SECRET-RESPONSE-BODY{not-json', 'companies/summary-ng/');
+            $this->fail('expected ServosityShapeDriftException');
+        } catch (ServosityShapeDriftException $e) {
+            $this->assertInstanceOf(ServosityClientException::class, $e, 'legacy catches must still contain a not-JSON answer');
+            $this->assertStringContainsString('companies/summary-ng/', $e->getMessage());
+            $this->assertStringNotContainsString('SECRET-RESPONSE-BODY', $e->getMessage(), 'response bodies must never cross into exception messages or logs');
+        }
     }
 }

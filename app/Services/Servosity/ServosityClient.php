@@ -17,14 +17,22 @@ class ServosityClient
     ) {
         $baseUrl = rtrim($this->config['base_url'] ?? 'https://api.servosity.com', '/');
 
-        $this->http = new Client([
+        $options = [
             'base_uri' => $baseUrl.'/api/v1/',
             'timeout' => 15,
             'headers' => [
                 'Authorization' => 'Token '.($this->config['api_token'] ?? ''),
                 'Accept' => 'application/json',
             ],
-        ]);
+        ];
+
+        // Test seam only: lets a test drive the REAL decode path with raw JSON
+        // bodies (Guzzle MockHandler) instead of mocking this class away.
+        if (isset($this->config['handler'])) {
+            $options['handler'] = $this->config['handler'];
+        }
+
+        $this->http = new Client($options);
     }
 
     /**
@@ -33,6 +41,19 @@ class ServosityClient
     public function get(string $endpoint, array $params = []): array
     {
         return $this->request('GET', $endpoint, ['query' => $params]);
+    }
+
+    /**
+     * GET with JSON container identity preserved (psa-z30dv.7): JSON objects
+     * decode to stdClass and JSON arrays to PHP arrays, so `{}` and `[]` stay
+     * distinguishable. The assoc-array view (get()) collapses that identity —
+     * a documented object arriving as `[]`, or documented list `results`
+     * arriving as `{}`, would read as a clean empty and turn schema drift into
+     * a verified zero. Validating reads (the MCP read surface) MUST use this.
+     */
+    public function getJson(string $endpoint, array $params = []): mixed
+    {
+        return self::decodeJson($this->send('GET', $endpoint, ['query' => $params]), $endpoint);
     }
 
     /**
@@ -103,9 +124,7 @@ class ServosityClient
             $this->mfaToken = $signedToken;
         }
 
-        $body = (string) $response->getBody();
-
-        return json_decode($body, true) ?? [];
+        return $this->decodeAssoc((string) $response->getBody(), $endpoint);
     }
 
     /**
@@ -236,18 +255,33 @@ class ServosityClient
      * https://api.servosity.com/docs/?format=openapi): GET
      * /backup-jobs/{backup_id}/ (operationId api_v1_backup-jobs_list). Its 200
      * response declares NO schema, so callers must treat the shape as
-     * unproven: recognise the API's standard DRF list envelope at most, and
-     * never project fields out of the rows (psa-z30dv vendor-shape rule).
+     * unproven: recognise the API's standard DRF list envelope at most, treat
+     * anything read from it as an UNVERIFIED observation, and never project
+     * fields out of the rows (psa-z30dv vendor-shape rule). Returns the
+     * identity-preserving decode (see getJson()) so `{}`/`[]` drift is
+     * detectable.
      */
-    public function getBackupJobs(int $backupId): array
+    public function getBackupJobs(int $backupId): mixed
     {
-        return $this->get("backup-jobs/{$backupId}/");
+        return $this->getJson("backup-jobs/{$backupId}/");
     }
 
     /**
-     * Internal request method.
+     * Internal request method: the legacy assoc-array view. JSON objects and
+     * arrays both become PHP arrays here — fine for the write/sync callers
+     * that consume known-present keys, but validating reads must use
+     * getJson() (container identity) instead.
      */
     private function request(string $method, string $endpoint, array $options = []): array
+    {
+        return $this->decodeAssoc($this->send($method, $endpoint, $options), $endpoint);
+    }
+
+    /**
+     * Perform the HTTP exchange and return the raw body. The one sanitized
+     * seam for transport failures (see sanitizedFailure()).
+     */
+    private function send(string $method, string $endpoint, array $options = []): string
     {
         try {
             $response = $this->http->request($method, $endpoint, $options);
@@ -255,9 +289,60 @@ class ServosityClient
             throw $this->sanitizedFailure($method, $endpoint, $e);
         }
 
-        $body = (string) $response->getBody();
+        return (string) $response->getBody();
+    }
 
-        return json_decode($body, true) ?? [];
+    /**
+     * Decode a response body to the legacy assoc-array view. Invalid JSON is
+     * REJECTED (psa-z30dv.7) — the old `json_decode(...) ?? []` collapse
+     * turned an unparseable vendor answer into a clean empty list, which a
+     * sync or read then treated as "zero rows". A response that cannot be
+     * parsed is a failed read and must scream. An empty or JSON `null` body
+     * stays [] for the legacy callers' sake (write endpoints may 204).
+     */
+    private function decodeAssoc(string $body, string $endpoint): array
+    {
+        if (trim($body) === '') {
+            return [];
+        }
+
+        try {
+            $decoded = json_decode($body, true, 512, JSON_THROW_ON_ERROR);
+        } catch (\JsonException $e) {
+            throw self::invalidJson($endpoint, $e);
+        }
+
+        return is_array($decoded) ? $decoded : [];
+    }
+
+    /**
+     * Decode a response body preserving JSON container identity: objects →
+     * stdClass, arrays → PHP arrays. Public static so tests can build
+     * fixtures through the EXACT production decode instead of hand-authoring
+     * pre-decoded trees (the psa-7lgo fixture rule). Invalid JSON is rejected,
+     * never collapsed to an empty value.
+     */
+    public static function decodeJson(string $body, string $endpoint): mixed
+    {
+        try {
+            return json_decode($body, false, 512, JSON_THROW_ON_ERROR);
+        } catch (\JsonException $e) {
+            throw self::invalidJson($endpoint, $e);
+        }
+    }
+
+    /**
+     * Invalid JSON is schema drift, not a transport failure: the API answered,
+     * but with something no documented shape covers. Thrown as
+     * ServosityShapeDriftException so the read surface reports schema_drift,
+     * while legacy ServosityClientException catches still contain it (it is a
+     * subclass). Message carries our endpoint string only — never body text.
+     */
+    private static function invalidJson(string $endpoint, \JsonException $e): ServosityShapeDriftException
+    {
+        return new ServosityShapeDriftException(
+            "Servosity {$endpoint} response was not valid JSON.", 0, $e
+        );
     }
 
     /**
