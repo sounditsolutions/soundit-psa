@@ -269,16 +269,29 @@
                     <div class="alert alert-warning py-2 px-3 small mb-3">
                         <i class="bi bi-exclamation-triangle me-1"></i>
                         {{ session('error') }}
-                        {{-- Offer provision-anyway with confirm_new --}}
-                        <form method="POST" action="{{ route('prospects.store') }}" class="mt-2">
-                            @csrf
-                            <input type="hidden" name="phone_call_id" value="{{ $call->id }}">
-                            <input type="hidden" name="name" value="{{ old('name') }}">
-                            <input type="hidden" name="confirm_new" value="1">
-                            <button type="submit" class="btn btn-sm btn-outline-warning">
-                                Create new client anyway
-                            </button>
-                        </form>
+                        <div class="mt-2 d-flex flex-wrap gap-2">
+                            {{-- Primary remediation: one-click attach to the matched client (psa-wjlv) --}}
+                            @if(session('dedup_person_id'))
+                            <form method="POST" action="{{ route('calls.update-person', $call) }}">
+                                @csrf
+                                @method('PATCH')
+                                <input type="hidden" name="person_id" value="{{ session('dedup_person_id') }}">
+                                <button type="submit" class="btn btn-sm btn-success">
+                                    <i class="bi bi-person-check me-1"></i>Attach to {{ session('dedup_client_name') }}
+                                </button>
+                            </form>
+                            @endif
+                            {{-- Offer provision-anyway with confirm_new --}}
+                            <form method="POST" action="{{ route('prospects.store') }}">
+                                @csrf
+                                <input type="hidden" name="phone_call_id" value="{{ $call->id }}">
+                                <input type="hidden" name="name" value="{{ old('name') }}">
+                                <input type="hidden" name="confirm_new" value="1">
+                                <button type="submit" class="btn btn-sm btn-outline-warning">
+                                    Create new client anyway
+                                </button>
+                            </form>
+                        </div>
                     </div>
                     @endif
 

@@ -124,4 +124,78 @@ class ProspectCaptureTest extends TestCase
         // The flash session must surface the existing client name
         $response->assertSessionHas('dedup_client_name', 'Existing Corp');
     }
+
+    /**
+     * When confirm-dedup blocks creation, the controller must also flash the
+     * matched person's id (dedup_person_id) — the person who actually owns the
+     * caller number — so the call page can offer a one-click "Attach to
+     * [client]" action. Without it the warning poses a question it gives no
+     * way to answer affirmatively (psa-wjlv).
+     */
+    public function test_confirm_dedup_flashes_matched_person_id_for_one_click_attach(): void
+    {
+        $user = User::factory()->create();
+
+        $existing = Client::factory()->create(['name' => 'Existing Corp', 'stage' => ClientStage::Active->value]);
+        $person = Person::create([
+            'client_id' => $existing->id,
+            'person_type' => \App\Enums\PersonType::User,
+            'first_name' => 'Jane',
+            'last_name' => 'Smith',
+            'phone' => PhoneNumber::normalize('+15550102030'),
+            'is_active' => true,
+            'portal_enabled' => false,
+        ]);
+
+        $call = $this->makeCall(['client_id' => null, 'from_number' => '+15550102030']);
+
+        $response = $this->actingAs($user)->post(route('prospects.store'), [
+            'phone_call_id' => $call->id,
+            'name' => 'New Client Name',
+        ]);
+
+        $response->assertRedirect(route('calls.show', $call));
+        $response->assertSessionHas('dedup_client_id', $existing->id);
+        $response->assertSessionHas('dedup_person_id', $person->id);
+    }
+
+    /**
+     * The call page must render an actionable "Attach to [client]" control
+     * (posting to the existing, tested calls.update-person path with the
+     * flashed person_id) alongside "Create new client anyway", so the dedup
+     * prompt's suggested remediation is answerable in one click (psa-wjlv).
+     */
+    public function test_dedup_warning_offers_one_click_attach_to_existing_client(): void
+    {
+        $user = User::factory()->create();
+
+        $existing = Client::factory()->create(['name' => 'Existing Corp', 'stage' => ClientStage::Active->value]);
+        $person = Person::create([
+            'client_id' => $existing->id,
+            'person_type' => \App\Enums\PersonType::User,
+            'first_name' => 'Jane',
+            'last_name' => 'Smith',
+            'phone' => PhoneNumber::normalize('+15550102030'),
+            'is_active' => true,
+            'portal_enabled' => false,
+        ]);
+
+        $call = $this->makeCall(['client_id' => null, 'from_number' => '+15550102030']);
+
+        $response = $this->actingAs($user)
+            ->withSession([
+                'error' => 'This number is already on Existing Corp — attach to that client instead?',
+                'dedup_client_id' => $existing->id,
+                'dedup_client_name' => 'Existing Corp',
+                'dedup_person_id' => $person->id,
+            ])
+            ->get(route('calls.show', $call));
+
+        $response->assertOk();
+        // The affordance the prompt promises — a one-click attach control.
+        $response->assertSee('Attach to Existing Corp');
+        // It must carry the matched person's id so the click resolves the call
+        // to the right caller (the manual-caller form is not sufficient).
+        $response->assertSee('name="person_id" value="'.$person->id.'"', false);
+    }
 }
