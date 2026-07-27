@@ -150,6 +150,8 @@ php artisan key:generate
 
 Confirm `.env` is listed in `.gitignore` — **never commit your `.env` file**.
 
+> **Secret-leak guard (contributors).** A tracked secret-bearing file (`.env`, `.env.bak-*`, `*.bak`, `*.key`, `*.pem`, …) must never reach a push — this is a public repo. CI enforces it: `scripts/gc-verify.sh` runs `php artisan secret:scan` on every PR and fails the build if such a file is tracked (failing closed if it cannot enumerate the tree). Enforce the same check locally before each push with `git config core.hooksPath .githooks` (installs `.githooks/pre-push`). This closes the `.env.bak-*` gap that previously leaked to the public repo (so-ssoj).
+
 Edit `.env` and set the following:
 
 #### Core Laravel
