@@ -36,7 +36,6 @@ class SecretScannerTest extends TestCase
             'rotation backup' => ['.env.rotate-bak-20260708'],
             'plain .bak' => ['database.bak'],
             'suffixed .bak' => ['dump.sql.bak-old'],
-            'pem key' => ['secrets/server.pem'],
             'storage key' => ['storage/oauth-private.key'],
             'pkcs12' => ['cert.p12'],
             'ssh private key' => ['id_rsa'],
@@ -62,6 +61,9 @@ class SecretScannerTest extends TestCase
             'production env example' => ['.env.production.example'],
             'deploy env example' => ['scripts/deploy.env.example'],
             'public ssh key' => ['id_rsa.pub'],
+            // .pem is NOT flagged by name — it is as often a public cert / CA chain;
+            // private-key MATERIAL is caught by content instead (dangerousContentReason).
+            'public certificate (pem)' => ['certs/fullchain.pem'],
             'ordinary php' => ['app/Support/SecretScanner.php'],
             'readme' => ['README.md'],
             'composer' => ['composer.json'],
@@ -84,5 +86,22 @@ class SecretScannerTest extends TestCase
             array_keys($offenders)
         );
         $this->assertIsString($offenders['storage/app.key']);
+    }
+
+    public function test_flags_embedded_private_key_content(): void
+    {
+        // Built by concatenation so this test's OWN source never contains the
+        // contiguous marker (which gc-verify.sh's GUARD_RE would flag in the diff).
+        $marker = '-----BEGIN RSA '.'PRIVATE KEY-----';
+        $this->assertNotNull(SecretScanner::dangerousContentReason($marker."\nMIIE...redacted...\n"));
+        $this->assertNotNull(SecretScanner::dangerousContentReason('-----BEGIN '.'PRIVATE KEY-----'));
+    }
+
+    public function test_does_not_flag_ordinary_or_absent_content(): void
+    {
+        $this->assertNull(SecretScanner::dangerousContentReason('class Foo { public function bar() {} }'));
+        $this->assertNull(SecretScanner::dangerousContentReason('-----BEGIN '.'CERTIFICATE-----')); // a public cert body is safe
+        $this->assertNull(SecretScanner::dangerousContentReason(null));
+        $this->assertNull(SecretScanner::dangerousContentReason(''));
     }
 }
