@@ -216,6 +216,23 @@ class TechnicianConfig
     }
 
     /**
+     * True when a Technician notification path can fire but has nowhere to deliver
+     * (psa-tmdw). The worker-down alert rides emergencyBackstopEnabled() and the
+     * daily digest requires enabled() (which implies emergencyBackstopEnabled()),
+     * so that predicate is exactly "a notification could be sent"; if neither the
+     * Teams webhook nor the notify email is set, every such notification would be
+     * silently dropped. Drives the operator-facing warning on the settings panel.
+     */
+    public static function notificationsUndeliverable(): bool
+    {
+        if (! self::emergencyBackstopEnabled()) {
+            return false;
+        }
+
+        return self::teamsWebhookUrl() === null && self::notifyEmail() === null;
+    }
+
+    /**
      * Teams incoming-webhook URL for operator notifications (spec §1C).
      *
      * psa-uvuy: the webhook is now stored ENCRYPTED at rest. Read it back decrypted

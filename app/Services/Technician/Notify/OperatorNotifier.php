@@ -29,18 +29,35 @@ class OperatorNotifier
         private readonly OperatorDelivery $delivery,
     ) {}
 
-    public function notify(string $subject, string $body): void
+    /**
+     * @return bool whether the notification reached at least one channel. A false
+     *              return means it was delivered NOWHERE — the caller must not
+     *              record it as sent (psa-tmdw). notify() also logs a warning on a
+     *              no-op so the worker-down alert can never vanish silently.
+     */
+    public function notify(string $subject, string $body): bool
     {
-        $this->teams->post($subject, $body); // fail-soft internally
+        $delivered = $this->teams->post($subject, $body); // fail-soft internally; true iff posted
 
         $to = TechnicianConfig::notifyEmail();
         if ($to !== null) {
             try {
                 $this->email->sendNew($to, $subject, $body, null, null, null);
+                $delivered = true;
             } catch (\Throwable $e) {
                 Log::warning('[Technician] Operator notify email failed', ['error' => $e->getMessage()]);
             }
         }
+
+        if (! $delivered) {
+            Log::warning(
+                '[Technician] Operator notification not delivered — no delivery channel configured '
+                .'(Teams webhook and notify email both unset). Set one in Settings › AI Technician › Notify.',
+                ['subject' => $subject],
+            );
+        }
+
+        return $delivered;
     }
 
     /**
