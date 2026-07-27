@@ -377,6 +377,49 @@ class PsaInvoiceReadToolsTest extends TestCase
     }
 
     /**
+     * psa-oc5q2.1 (ARCHITECTURE REVISE) — the void trap has a SECOND door. The QBO
+     * line-item sync (syncLineItemsFromQbo) writes lines OUTSIDE the invoice-row void
+     * lock, so a void committing mid-round-trip can re-inflate a zeroed line's raw
+     * amount while the invoice header stays $0. reportable_amount read raw
+     * $line->amount, so a re-inflated line reported non-zero revenue alongside a
+     * reportable_total of $0 — violating this tool's own reportable_* contract and
+     * letting an agent misreport the line. The existing void test only covers the
+     * immediate post-void state (amount already 0); this covers post-void re-inflation.
+     */
+    public function test_a_reinflated_voided_line_still_reports_zero(): void
+    {
+        $client = Client::factory()->create();
+        $invoice = $this->invoice($client);
+        InvoiceLine::create([
+            'invoice_id' => $invoice->id,
+            'description' => 'Managed services',
+            'quantity' => 1, 'unit_price' => 1000.00, 'amount' => 1000.00,
+            'unit_cost' => 400.00, 'cost_amount' => 400.00,
+            'sort_order' => 1,
+        ]);
+
+        app(\App\Services\InvoiceVoidService::class)->void($invoice->fresh());
+
+        // Simulate the residual out-of-lock QBO line write re-inflating the zeroed line
+        // (header stays Void/$0; only the raw line money comes back).
+        \Illuminate\Support\Facades\DB::table('invoice_lines')
+            ->where('invoice_id', $invoice->id)
+            ->update(['amount' => 999.00, 'cost_amount' => 111.00]);
+
+        $token = $this->token(['get_invoice']);
+        $result = $this->decodedResult($this->callTool($token, 'get_invoice', ['invoice_id' => $invoice->id]));
+
+        $this->assertSame('void', $result['status']);
+        // Header reportable stays $0 (guarded). The line's reportable money must ALSO
+        // stay $0 despite the re-inflated raw amount — reportable_* = what counts.
+        $this->assertEquals(0.0, (float) $result['reportable_total']);
+        $this->assertEquals(0.0, (float) $result['lines'][0]['reportable_amount']);
+        $this->assertEquals(0.0, (float) $result['lines'][0]['reportable_cost_amount']);
+        // The original bill remains recoverable (immune to re-inflation via the snapshot).
+        $this->assertEquals(1000.00, (float) $result['lines'][0]['original_amount']);
+    }
+
+    /**
      * psa-ij59.2 + .4 (ARCHITECTURE + UX, both REVISE, found independently) — an
      * unrecognised status was silently DROPPED, widening a cross-client financial
      * read to every client's invoices while the caller believed it had filtered.

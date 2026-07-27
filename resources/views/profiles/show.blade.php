@@ -458,7 +458,8 @@
                                             <td>{{ $line->description }}</td>
                                             <td class="text-end">{{ rtrim(rtrim(number_format($line->quantity, 2), '0'), '.') }}</td>
                                             <td class="text-end">${{ number_format($line->unit_price, 2) }}</td>
-                                            <td class="text-end">${{ number_format($line->amount, 2) }}</td>
+                                            {{-- reportable_amount: $0 for a voided line (immune to out-of-lock re-inflation, psa-oc5q2), consistent with the zeroed Subtotal below. --}}
+                                            <td class="text-end">${{ number_format($line->reportable_amount, 2) }}</td>
                                             <td class="d-none d-md-table-cell small text-muted">{{ $line->quantity_source }}</td>
                                         </tr>
                                     @endforeach

@@ -71,4 +71,26 @@ class InvoiceLine extends Model
     {
         return $this->pre_void_amount !== null ? $this->pre_void_cost_amount : $this->cost_amount;
     }
+
+    /**
+     * Amount/cost that counts toward revenue reporting: zero for a voided
+     * invoice's lines, the live value otherwise — the line-level analogue of
+     * invoices.subtotal/total_cost being zeroed on void. Keys off
+     * pre_void_amount (written only when the parent invoice is voided, like
+     * display_amount) so it is void-correct WITHOUT loading the parent AND
+     * immune to an out-of-lock line re-inflation (psa-oc5q2): the QBO status
+     * pull can re-inflate a voided line's raw amount/cost_amount after the
+     * void, but never the pre_void snapshot, so a voided line reports 0
+     * regardless. Every reportable reader of raw line money must use these,
+     * not amount/cost_amount directly; display_* exposes the ORIGINAL bill.
+     */
+    public function getReportableAmountAttribute(): ?string
+    {
+        return $this->pre_void_amount !== null ? '0.00' : $this->amount;
+    }
+
+    public function getReportableCostAmountAttribute(): ?string
+    {
+        return $this->pre_void_amount !== null ? '0.00' : $this->cost_amount;
+    }
 }
