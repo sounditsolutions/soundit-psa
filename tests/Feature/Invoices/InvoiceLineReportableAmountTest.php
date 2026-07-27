@@ -27,7 +27,7 @@ class InvoiceLineReportableAmountTest extends TestCase
 {
     use RefreshDatabase;
 
-    private function lineOn(InvoiceStatus $status): InvoiceLine
+    private function lineOn(InvoiceStatus $status, string $amount = '1000.00', string $cost = '400.00'): InvoiceLine
     {
         $client = Client::factory()->create();
         $invoice = Invoice::create([
@@ -35,15 +35,15 @@ class InvoiceLineReportableAmountTest extends TestCase
             'invoice_number' => 'INV-'.rand(100000, 999999),
             'invoice_date' => '2026-03-15',
             'due_date' => '2026-04-15',
-            'subtotal' => '1000.00', 'tax' => '0.00', 'total' => '1000.00',
-            'total_cost' => '400.00', 'status' => $status,
+            'subtotal' => $amount, 'tax' => '0.00', 'total' => $amount,
+            'total_cost' => $cost, 'status' => $status,
         ]);
 
         return InvoiceLine::create([
             'invoice_id' => $invoice->id,
             'description' => 'Managed services',
-            'quantity' => 1, 'unit_price' => '1000.00', 'unit_cost' => '400.00',
-            'amount' => '1000.00', 'cost_amount' => '400.00', 'sort_order' => 0,
+            'quantity' => 1, 'unit_price' => $amount, 'unit_cost' => $cost,
+            'amount' => $amount, 'cost_amount' => $cost, 'sort_order' => 0,
         ]);
     }
 
@@ -83,5 +83,27 @@ class InvoiceLineReportableAmountTest extends TestCase
         $this->assertSame('0.00', $line->reportable_cost_amount);
         // Display shows the ORIGINAL, not the re-inflated value.
         $this->assertSame('1000.00', $line->display_amount);
+    }
+
+    /**
+     * The deepest door (psa-oc5q2.1, security + architecture REVISE): a line that
+     * is $0 AT VOID TIME. InvoiceVoidService used to skip such a line, leaving it
+     * with no pre_void snapshot — so the marker was incomplete, and a later
+     * out-of-lock QBO re-inflation of that $0 line would read as live money on a
+     * Void invoice. Voiding now snapshots EVERY line, so the marker is complete
+     * and a re-inflated zero-at-void line still reports $0.
+     */
+    public function test_a_zero_at_void_line_re_inflated_after_void_still_reports_zero(): void
+    {
+        $line = $this->lineOn(InvoiceStatus::Posted, '0.00', '0.00');
+        app(InvoiceVoidService::class)->void(Invoice::findOrFail($line->invoice_id));
+
+        // Out-of-lock QBO write re-inflates the (formerly $0) line after the void.
+        DB::table('invoice_lines')->where('id', $line->id)
+            ->update(['amount' => '250.00', 'cost_amount' => '90.00']);
+        $line->refresh();
+
+        $this->assertSame('0.00', $line->reportable_amount);
+        $this->assertSame('0.00', $line->reportable_cost_amount);
     }
 }

@@ -420,6 +420,40 @@ class PsaInvoiceReadToolsTest extends TestCase
     }
 
     /**
+     * psa-oc5q2.1 (SECURITY + ARCHITECTURE re-review) — the deepest door: a line
+     * that is $0 AT VOID TIME. InvoiceVoidService used to skip such a line, leaving
+     * pre_void_amount null, so a later out-of-lock QBO re-inflation would read as
+     * live money on a Void invoice via reportable_amount. Voiding now snapshots
+     * EVERY line, so get_invoice reports $0 even for a re-inflated zero-at-void line.
+     */
+    public function test_get_invoice_reports_zero_for_a_reinflated_zero_at_void_line(): void
+    {
+        $client = Client::factory()->create();
+        $invoice = $this->invoice($client);
+        InvoiceLine::create([
+            'invoice_id' => $invoice->id,
+            'description' => 'No-charge item',
+            'quantity' => 1, 'unit_price' => 0.00, 'amount' => 0.00,
+            'unit_cost' => 0.00, 'cost_amount' => 0.00,
+            'sort_order' => 1,
+        ]);
+
+        app(\App\Services\InvoiceVoidService::class)->void($invoice->fresh());
+
+        // Out-of-lock QBO write re-inflates the formerly-$0 line after the void.
+        \Illuminate\Support\Facades\DB::table('invoice_lines')
+            ->where('invoice_id', $invoice->id)
+            ->update(['amount' => 250.00, 'cost_amount' => 90.00]);
+
+        $token = $this->token(['get_invoice']);
+        $result = $this->decodedResult($this->callTool($token, 'get_invoice', ['invoice_id' => $invoice->id]));
+
+        $this->assertSame('void', $result['status']);
+        $this->assertEquals(0.0, (float) $result['lines'][0]['reportable_amount']);
+        $this->assertEquals(0.0, (float) $result['lines'][0]['reportable_cost_amount']);
+    }
+
+    /**
      * psa-ij59.2 + .4 (ARCHITECTURE + UX, both REVISE, found independently) — an
      * unrecognised status was silently DROPPED, widening a cross-client financial
      * read to every client's invoices while the caller believed it had filtered.

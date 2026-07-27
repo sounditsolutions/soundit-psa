@@ -118,7 +118,7 @@ class InvoiceVoidZeroingTest extends TestCase
         $this->assertZeroedWithSnapshot($second->fresh());
     }
 
-    public function test_voiding_zero_amount_invoice_records_no_snapshot(): void
+    public function test_voiding_a_zero_amount_invoice_records_no_invoice_snapshot_but_marks_its_lines(): void
     {
         $invoice = $this->makeInvoice(
             ['subtotal' => '0.00', 'tax' => '0.00', 'total' => '0.00', 'total_cost' => null, 'margin' => null],
@@ -129,9 +129,16 @@ class InvoiceVoidZeroingTest extends TestCase
 
         $invoice = $invoice->fresh();
         $this->assertSame(InvoiceStatus::Void, $invoice->status);
+        // No INVOICE-level snapshot: there was no billed money to preserve.
         $this->assertNull($invoice->pre_void_total);
         $this->assertFalse($invoice->isVoidWithSnapshot());
-        $this->assertNull($invoice->lines()->first()->pre_void_amount);
+        // But every LINE is now marked (pre_void_amount set, even at $0), so the
+        // pre_void marker is COMPLETE and reportable_amount stays $0 for this
+        // invoice's lines even if one is later re-inflated out-of-lock (psa-oc5q2.1).
+        $line = $invoice->lines()->first();
+        $this->assertSame('0.00', $line->pre_void_amount);
+        $this->assertNull($line->pre_void_cost_amount); // cost was null → nothing to snapshot
+        $this->assertSame('0.00', $line->reportable_amount);
     }
 
     public function test_void_service_is_idempotent(): void

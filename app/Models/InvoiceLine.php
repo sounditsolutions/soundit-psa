@@ -76,12 +76,14 @@ class InvoiceLine extends Model
      * Amount/cost that counts toward revenue reporting: zero for a voided
      * invoice's lines, the live value otherwise — the line-level analogue of
      * invoices.subtotal/total_cost being zeroed on void. Keys off
-     * pre_void_amount (written only when the parent invoice is voided, like
-     * display_amount) so it is void-correct WITHOUT loading the parent AND
-     * immune to an out-of-lock line re-inflation (psa-oc5q2): the QBO status
-     * pull can re-inflate a voided line's raw amount/cost_amount after the
-     * void, but never the pre_void snapshot, so a voided line reports 0
-     * regardless. Every reportable reader of raw line money must use these,
+     * pre_void_amount, which InvoiceVoidService writes on EVERY line of a void
+     * invoice (including $0 lines), so it is a COMPLETE line-local void marker:
+     * void-correct WITHOUT loading the parent, and unaffected by an out-of-lock
+     * line re-inflation (the QBO status pull can rewrite a voided line's raw
+     * amount/cost_amount after the void, but never the pre_void snapshot). That
+     * completeness is load-bearing — if InvoiceVoidService ever skipped a $0
+     * line again, a re-inflated zero-at-void line would read as live money here
+     * (psa-oc5q2.1). Every reportable reader of raw line money must use these,
      * not amount/cost_amount directly; display_* exposes the ORIGINAL bill.
      */
     public function getReportableAmountAttribute(): ?string
