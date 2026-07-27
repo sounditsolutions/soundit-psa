@@ -150,7 +150,10 @@ php artisan key:generate
 
 Confirm `.env` is listed in `.gitignore` — **never commit your `.env` file**.
 
-> **Secret-leak guard (contributors).** A tracked secret-bearing file (`.env`, `.env.bak-*`, `*.bak`, `*.key`, `*.pem`, …) must never reach a push — this is a public repo. CI enforces it: `scripts/gc-verify.sh` runs `php artisan secret:scan` on every PR and fails the build if such a file is tracked (failing closed if it cannot enumerate the tree). Enforce the same check locally before each push with `git config core.hooksPath .githooks` (installs `.githooks/pre-push`). This closes the `.env.bak-*` gap that previously leaked to the public repo (so-ssoj).
+> **Secret-leak guard (contributors).** A secret-bearing file (`.env`, `.env.bak-*`, `*.bak`, `*.key`, …) or embedded private key must never reach a push — this is a public repo.
+> - **Local (prevention):** `.githooks/pre-push` runs `php artisan secret:scan --range` over the commits you are actually pushing — it catches a secret even if a later commit deleted it before the tip. `composer install` auto-enables it (`core.hooksPath` → `.githooks`); enable by hand with `git config core.hooksPath .githooks`.
+> - **CI (detection backstop):** `scripts/gc-verify.sh` runs the same scan on every PR and fails closed on any enumeration error.
+> - **Limits (read these):** a local hook is bypassable with `git push --no-verify`, and CI runs *after* objects reach the remote. The only control that truly blocks a push to a public remote is **GitHub server-side push protection** — an admin setting, not something this repo can enforce. `.pem` is intentionally *not* flagged by filename (it is as often a public certificate); private-key **material** is caught by content instead. This closes the `.env.bak-*` gap that leaked to the public repo (so-ssoj).
 
 Edit `.env` and set the following:
 
