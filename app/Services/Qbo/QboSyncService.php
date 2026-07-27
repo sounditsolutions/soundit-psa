@@ -473,9 +473,11 @@ class QboSyncService
 
         // Line-item detail sync (description, quantity, unit_price, amount) —
         // skipped when the guarded write found the row Void, so a mid-round-trip
-        // void's zeroed line amounts are not re-inflated (ProfitabilityService
-        // sums invoice_lines.amount with no status filter, relying on that
-        // zeroing). The locked-read decides this: the bead contract is "drop
+        // void's zeroed line amounts are not re-inflated (the by-SKU contract-
+        // profitability breakdown reads these line amounts; psa-oc5q2 now also
+        // filters voided invoices out of that breakdown, but skipping the write
+        // keeps the stored row clean regardless). The locked-read decides this:
+        // the bead contract is "drop
         // line writes when the LOCKED row is Void". A void committing in the
         // sub-window after that read still reports live here — InvoiceVoidService
         // now takes the invoice-first row lock (psa-bl36l R5), but these line
