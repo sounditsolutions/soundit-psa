@@ -23,17 +23,26 @@ class ProspectIntakeService
      */
     public function matchByNumber(string $rawNumber): ?Client
     {
+        return $this->matchPersonByNumber($rawNumber)?->client;
+    }
+
+    /**
+     * Normalize the raw number and return the Person who owns it (by phone or
+     * mobile), or null if no match exists. The dedup flow resolves the call to
+     * this exact person — not merely their client — so a one-click "attach"
+     * lands the correct contact (psa-wjlv).
+     */
+    public function matchPersonByNumber(string $rawNumber): ?Person
+    {
         $normalized = PhoneNumber::normalize($rawNumber);
 
         if ($normalized === null) {
             return null;
         }
 
-        $person = Person::where('phone', $normalized)
+        return Person::where('phone', $normalized)
             ->orWhere('mobile', $normalized)
             ->first();
-
-        return $person?->client;
     }
 
     /**

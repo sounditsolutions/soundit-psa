@@ -141,9 +141,11 @@ class ProspectController extends Controller
     /**
      * Provision a new prospect client+person+ticket from a phone call.
      *
-     * Confirm-dedup flow: if `matchByNumber` finds an existing client and
-     * `confirm_new` is NOT set, redirect back with a warning surfacing the
-     * existing match rather than blindly creating a duplicate.
+     * Confirm-dedup flow: if `matchPersonByNumber` finds a person (and thus a
+     * client) already owning the caller number and `confirm_new` is NOT set,
+     * redirect back with a warning surfacing the existing match — flashing the
+     * matched person id so the call page can offer a one-click attach — rather
+     * than blindly creating a duplicate.
      */
     public function store(Request $request): RedirectResponse
     {
@@ -159,7 +161,8 @@ class ProspectController extends Controller
         // Confirm-dedup: if a client already owns this phone number, surface it
         // instead of creating a duplicate — unless staff explicitly confirmed.
         if (! ($validated['confirm_new'] ?? null)) {
-            $existing = $this->intake->matchByNumber((string) $call->from_number);
+            $matchedPerson = $this->intake->matchPersonByNumber((string) $call->from_number);
+            $existing = $matchedPerson?->client;
 
             if ($existing !== null) {
                 return redirect()
@@ -167,6 +170,7 @@ class ProspectController extends Controller
                     ->withInput()
                     ->with('dedup_client_id', $existing->id)
                     ->with('dedup_client_name', $existing->name)
+                    ->with('dedup_person_id', $matchedPerson->id)
                     ->with('error', "This number is already on {$existing->name} — attach to that client instead?");
             }
         }
