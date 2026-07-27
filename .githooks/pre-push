@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+#
+# so-ssoj / psa-6vfw1 (#5): block a push if a secret-bearing file (env, backup,
+# key) is tracked — catches the `.env.bak-*` leak class LOCALLY, before it ever
+# reaches the remote, not only in CI.
+#
+# Enable once per clone:
+#     git config core.hooksPath .githooks
+#
+# Mirrors the CI guard exactly (scripts/gc-verify.sh -> php artisan secret:scan),
+# so local and CI can never disagree. Requires a set-up app env (php + vendor/).
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+
+if ! php artisan secret:scan; then
+    echo >&2
+    echo "pre-push BLOCKED: a secret-bearing file is tracked (see above)." >&2
+    echo "This is a PUBLIC repo — never push real secrets. Fix and retry:" >&2
+    echo "  add the pattern to .gitignore, then: git rm --cached <file>" >&2
+    exit 1
+fi

@@ -15,7 +15,9 @@
 #                                  NEW/changed code to the standard, not the
 #                                  whole tree.
 #   3. real-data / secret guard  — fail if the diff reintroduces operator
-#                                  emails, private keys, or known token shapes
+#                                  emails, private keys, or known token shapes,
+#                                  OR if a secret-bearing FILE (env/backup/key) is
+#                                  tracked (php artisan secret:scan, so-ssoj).
 #                                  (this is a public OSS repo).
 #
 # Assumes a ready app environment (.env with APP_KEY, vendor/ installed).
@@ -60,5 +62,12 @@ if printf '%s' "$DIFF" | grep -nEi "$GUARD_RE" >/dev/null 2>&1; then
     printf '%s' "$DIFF" | grep -nEi "$GUARD_RE" >&2
     exit 1
 fi
+
+# Filename guard (so-ssoj / psa-6vfw1): the GUARD_RE above scans diff CONTENT for
+# token shapes, but the leak that started this was a tracked `.env.bak-*` FILE
+# whose secrets (APP_KEY / DB_PASSWORD / HALO / PLIVO) match none of those shapes.
+# secret:scan fails if any secret-bearing file (env, backup, key) is TRACKED, and
+# fails closed if it cannot enumerate the tree.
+php artisan secret:scan || exit 1
 
 echo "==> gc-verify: PASS"
