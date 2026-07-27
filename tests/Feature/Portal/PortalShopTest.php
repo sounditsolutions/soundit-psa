@@ -227,6 +227,36 @@ class PortalShopTest extends TestCase
             ->assertSee('Configured Laptop');
     }
 
+    public function test_confirmation_of_a_voided_order_does_not_show_a_reinflated_line_amount(): void
+    {
+        // psa-oc5q2.1 (ARCHITECTURE re-review) — the shop confirmation page stays
+        // reachable after a staff void. Its line amount reads reportable_amount, so
+        // an out-of-lock QBO re-inflation of a voided order's line must NOT surface a
+        // live dollar figure to the client beside the zeroed header.
+        Bus::fake();
+        $client = $this->client();
+        $person = $this->portalPerson($client);
+        $sku = $this->sku(['name' => 'Configured Laptop', 'unit_price' => 100.00]);
+
+        $this->actingAs($person, 'portal')->post(route('portal.shop.store'), [
+            'quantities' => [$sku->id => 2],
+            'expected_prices' => [$sku->id => '100.00'],
+        ]);
+        $invoice = Invoice::firstOrFail();
+
+        app(\App\Services\InvoiceVoidService::class)->void($invoice->fresh());
+        // Out-of-lock QBO write re-inflates the voided order's line after the void.
+        \Illuminate\Support\Facades\DB::table('invoice_lines')
+            ->where('invoice_id', $invoice->id)
+            ->update(['amount' => 777.77]);
+
+        $response = $this->actingAs($person, 'portal')
+            ->get(route('portal.shop.confirmation', $invoice));
+
+        $response->assertOk();               // still reachable after the void
+        $response->assertDontSee('777.77');  // the re-inflated raw amount must not surface
+    }
+
     public function test_confirmation_404_for_non_shop_invoice(): void
     {
         // An invoice that is not a portal product order must not render as one.
