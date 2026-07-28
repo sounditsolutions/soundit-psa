@@ -2,8 +2,14 @@
 
 namespace App\Services\Mcp;
 
+use App\Enums\NoteType;
+use App\Enums\WhoType;
+use App\Helpers\MarkdownRenderer;
+use App\Models\Ticket;
+use App\Models\TicketNote;
 use App\Services\Graph\GraphClient;
 use App\Support\CalendarConfig;
+use App\Support\TechnicianConfig;
 
 /**
  * Staff-MCP Calendar/scheduling READ executor (psa-abl0i, Slice A). Read-only calendar access
@@ -139,6 +145,10 @@ class StaffCalendarToolExecutor
             'calendar_list_events' => $this->listEvents($arguments),
             'calendar_get_event' => $this->getEvent($arguments),
             'calendar_get_schedule' => $this->getScheduleAvailability($arguments),
+            'calendar_create_event' => $this->handleCreateEvent($arguments),
+            'calendar_update_event' => $this->handleUpdateEvent($arguments),
+            'calendar_cancel_event' => $this->handleCancelEvent($arguments),
+            'calendar_respond_event' => $this->handleRespondEvent($arguments),
             default => ['error' => "Unknown calendar tool: {$name}"],
         };
     }
@@ -263,6 +273,335 @@ class StaffCalendarToolExecutor
             'interval_minutes' => $interval,
             'schedules' => array_map([$this, 'projectSchedule'], $information),
         ];
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Slice B (psa-lulgh) — WRITES. Every write is gated by the same guardOwnerUpn() security spine
+    // as the reads (the owner user_upn must be allowlisted), takes a REQUIRED ticket_id (Charlie
+    // 19:10Z: every event traces to a why) that must resolve to a real ticket, takes a REQUIRED
+    // reason (audit), and drops a PRIVATE back-link note on that ticket. The Graph body is built
+    // here from validated tool args to the shapes grounded in the MS Graph v1.0 producer — the
+    // executor never accepts a raw passthrough body (an agent must not be able to set owner /
+    // organizer / responseStatus or any field outside the scheduling surface). External client
+    // emails are legitimate ATTENDEES; they are NEVER the owner (the guard proves the owner).
+    // ---------------------------------------------------------------------------------------------
+
+    /**
+     * Create an event on the (allowlisted) owner's calendar.
+     *
+     * @param  array<string, mixed>  $arguments
+     * @return array<string, mixed>
+     */
+    private function handleCreateEvent(array $arguments): array
+    {
+        $upn = (string) $arguments['user_upn'];
+        $ctx = $this->requireTicketAndReason($arguments);
+        if (isset($ctx['error'])) {
+            return $ctx;
+        }
+        /** @var Ticket $ticket */
+        $ticket = $ctx['ticket'];
+
+        $subject = $this->requiredString($arguments, 'subject');
+        $start = $this->requiredString($arguments, 'start');
+        $end = $this->requiredString($arguments, 'end');
+        if ($subject === null || $start === null || $end === null) {
+            return ['error' => 'subject, start, and end (ISO-8601 timestamps) are required to create an event.'];
+        }
+
+        $attendees = $this->attendeesFrom($arguments['attendees'] ?? []);
+        if (isset($attendees['error'])) {
+            return $attendees;
+        }
+
+        $tz = $this->timeZoneFrom($arguments);
+        $body = [
+            'subject' => $subject,
+            'start' => ['dateTime' => $start, 'timeZone' => $tz],
+            'end' => ['dateTime' => $end, 'timeZone' => $tz],
+        ];
+        if ($attendees['attendees'] !== []) {
+            $body['attendees'] = $attendees['attendees'];
+        }
+        if (($location = $this->requiredString($arguments, 'location')) !== null) {
+            $body['location'] = ['displayName' => $location];
+        }
+        if (($eventBody = $this->requiredString($arguments, 'body')) !== null) {
+            // contentType Text: the agent supplies plain text; we do not accept HTML so a body can
+            // never smuggle markup into a client-facing invite.
+            $body['body'] = ['contentType' => 'Text', 'content' => $eventBody];
+        }
+        if (filter_var($arguments['teams_meeting'] ?? false, FILTER_VALIDATE_BOOLEAN)) {
+            $body['isOnlineMeeting'] = true;
+            $body['onlineMeetingProvider'] = 'teamsForBusiness';
+        }
+        // Deterministic transactionId — create is NON-IDEMPOTENT, so an accidental retry would
+        // double-book. Graph returns the FIRST event for a repeated transactionId, making the
+        // create idempotent-on-retry within Graph's dedup window (user-post-events producer).
+        $body['transactionId'] = hash('sha256', implode('|', [mb_strtolower($upn), $subject, $start, $end, (string) $ticket->id]));
+
+        $event = $this->graph->createEvent($upn, $body);
+
+        $this->backlinkNote($ticket, sprintf(
+            'AI technician created a calendar event in %s: "%s" (%s → %s, %s). Event id: %s. Reason: %s',
+            $upn, $subject, $start, $end, $tz, (string) ($event['id'] ?? '?'), $ctx['reason'],
+        ));
+
+        return [
+            'success' => true,
+            'action' => 'created',
+            'user_upn' => $upn,
+            'ticket_id' => $ticket->id,
+            'event' => $this->projectEvent($event),
+        ];
+    }
+
+    /**
+     * Update an existing event on the owner's calendar. Only the scheduling fields are patchable —
+     * a partial body is built from those supplied; at least one is required.
+     *
+     * @param  array<string, mixed>  $arguments
+     * @return array<string, mixed>
+     */
+    private function handleUpdateEvent(array $arguments): array
+    {
+        $upn = (string) $arguments['user_upn'];
+        $eventId = $this->requiredString($arguments, 'event_id');
+        if ($eventId === null) {
+            return ['error' => 'event_id is required.'];
+        }
+        $ctx = $this->requireTicketAndReason($arguments);
+        if (isset($ctx['error'])) {
+            return $ctx;
+        }
+        /** @var Ticket $ticket */
+        $ticket = $ctx['ticket'];
+
+        $tz = $this->timeZoneFrom($arguments);
+        $patch = [];
+        if (($subject = $this->requiredString($arguments, 'subject')) !== null) {
+            $patch['subject'] = $subject;
+        }
+        if (($start = $this->requiredString($arguments, 'start')) !== null) {
+            $patch['start'] = ['dateTime' => $start, 'timeZone' => $tz];
+        }
+        if (($end = $this->requiredString($arguments, 'end')) !== null) {
+            $patch['end'] = ['dateTime' => $end, 'timeZone' => $tz];
+        }
+        if (($location = $this->requiredString($arguments, 'location')) !== null) {
+            $patch['location'] = ['displayName' => $location];
+        }
+        if (($eventBody = $this->requiredString($arguments, 'body')) !== null) {
+            $patch['body'] = ['contentType' => 'Text', 'content' => $eventBody];
+        }
+        if (array_key_exists('attendees', $arguments)) {
+            $attendees = $this->attendeesFrom($arguments['attendees']);
+            if (isset($attendees['error'])) {
+                return $attendees;
+            }
+            $patch['attendees'] = $attendees['attendees'];
+        }
+
+        if ($patch === []) {
+            return ['error' => 'Provide at least one field to update (subject, start, end, location, body, or attendees).'];
+        }
+
+        $event = $this->graph->updateEvent($upn, $eventId, $patch);
+
+        $this->backlinkNote($ticket, sprintf(
+            'AI technician updated calendar event %s in %s (%s). Reason: %s',
+            $eventId, $upn, implode(', ', array_keys($patch)), $ctx['reason'],
+        ));
+
+        return [
+            'success' => true,
+            'action' => 'updated',
+            'user_upn' => $upn,
+            'ticket_id' => $ticket->id,
+            'event' => $this->projectEvent($event),
+        ];
+    }
+
+    /**
+     * Cancel a meeting the owner organizes (Graph cancel is organizer-only — an attendee gets a
+     * hard 400, never a silent success).
+     *
+     * @param  array<string, mixed>  $arguments
+     * @return array<string, mixed>
+     */
+    private function handleCancelEvent(array $arguments): array
+    {
+        $upn = (string) $arguments['user_upn'];
+        $eventId = $this->requiredString($arguments, 'event_id');
+        if ($eventId === null) {
+            return ['error' => 'event_id is required.'];
+        }
+        $ctx = $this->requireTicketAndReason($arguments);
+        if (isset($ctx['error'])) {
+            return $ctx;
+        }
+        /** @var Ticket $ticket */
+        $ticket = $ctx['ticket'];
+
+        $comment = $this->requiredString($arguments, 'comment'); // optional -> null
+
+        $this->graph->cancelEvent($upn, $eventId, $comment);
+
+        $this->backlinkNote($ticket, sprintf(
+            'AI technician cancelled calendar event %s in %s. Reason: %s',
+            $eventId, $upn, $ctx['reason'],
+        ));
+
+        return [
+            'success' => true,
+            'action' => 'cancelled',
+            'user_upn' => $upn,
+            'ticket_id' => $ticket->id,
+            'event_id' => $eventId,
+        ];
+    }
+
+    /**
+     * Respond (accept/decline/tentative) to an invite AS the owner mailbox.
+     *
+     * @param  array<string, mixed>  $arguments
+     * @return array<string, mixed>
+     */
+    private function handleRespondEvent(array $arguments): array
+    {
+        $upn = (string) $arguments['user_upn'];
+        $eventId = $this->requiredString($arguments, 'event_id');
+        if ($eventId === null) {
+            return ['error' => 'event_id is required.'];
+        }
+        $ctx = $this->requireTicketAndReason($arguments);
+        if (isset($ctx['error'])) {
+            return $ctx;
+        }
+        /** @var Ticket $ticket */
+        $ticket = $ctx['ticket'];
+
+        $response = $this->requiredString($arguments, 'response');
+        if ($response === null || ! in_array($response, ['accept', 'decline', 'tentative'], true)) {
+            return ['error' => 'response is required and must be one of: accept, decline, tentative.'];
+        }
+        $comment = $this->requiredString($arguments, 'comment'); // optional -> null
+        $sendResponse = filter_var($arguments['send_response'] ?? true, FILTER_VALIDATE_BOOLEAN);
+
+        $this->graph->respondEvent($upn, $eventId, $response, $comment, $sendResponse);
+
+        $this->backlinkNote($ticket, sprintf(
+            'AI technician responded "%s" to calendar event %s in %s. Reason: %s',
+            $response, $eventId, $upn, $ctx['reason'],
+        ));
+
+        return [
+            'success' => true,
+            'action' => 'responded',
+            'response' => $response,
+            'user_upn' => $upn,
+            'ticket_id' => $ticket->id,
+            'event_id' => $eventId,
+        ];
+    }
+
+    /**
+     * Resolve the REQUIRED ticket_id + reason shared by every write. ticket_id must resolve to a
+     * real ticket (the audit anchor); reason is the audit note. Returns ['ticket'=>Ticket,
+     * 'reason'=>string] or ['error'=>string].
+     *
+     * @param  array<string, mixed>  $arguments
+     * @return array<string, mixed>
+     */
+    private function requireTicketAndReason(array $arguments): array
+    {
+        $reason = $this->requiredString($arguments, 'reason');
+        if ($reason === null) {
+            return ['error' => 'reason is required (a short audit note for why this calendar action is being taken).'];
+        }
+
+        $raw = $arguments['ticket_id'] ?? null;
+        $ticketId = match (true) {
+            is_int($raw) && $raw > 0 => $raw,
+            is_string($raw) && ctype_digit($raw) && (int) $raw > 0 => (int) $raw,
+            default => null,
+        };
+        if ($ticketId === null) {
+            return ['error' => 'ticket_id is required (the ticket this calendar action traces to) and must be a positive integer.'];
+        }
+
+        $ticket = Ticket::find($ticketId);
+        if ($ticket === null) {
+            return ['error' => "ticket_id {$ticketId} does not resolve to an existing ticket."];
+        }
+
+        return ['ticket' => $ticket, 'reason' => $reason];
+    }
+
+    /**
+     * Build a Graph attendees[] collection from a list of email addresses. Attendees may be
+     * EXTERNAL (the manager's rule: externals are attendees, never the owner) — so they are NOT
+     * allowlist-checked here; they are only validated as syntactically real email addresses. One
+     * malformed entry refuses the whole call NAMING it, so the agent fixes it rather than silently
+     * inviting garbage. Shape: MS Graph attendee {emailAddress{address}, type}.
+     *
+     * @return array{attendees: array<int, array<string, mixed>>}|array{error: string}
+     */
+    private function attendeesFrom(mixed $raw): array
+    {
+        if (! is_array($raw)) {
+            return ['error' => 'attendees must be an array of email addresses.'];
+        }
+
+        $attendees = [];
+        foreach ($raw as $entry) {
+            $email = is_string($entry) ? trim($entry) : null;
+            if ($email === null || $email === '' || filter_var($email, FILTER_VALIDATE_EMAIL) === false) {
+                $shown = is_string($entry) ? $entry : gettype($entry);
+
+                return ['error' => "Attendee '{$shown}' is not a valid email address."];
+            }
+            $attendees[] = ['emailAddress' => ['address' => $email], 'type' => 'required'];
+        }
+
+        return ['attendees' => $attendees];
+    }
+
+    /**
+     * The event time zone. The repo works in UTC (DB stores UTC), so the tz arg defaults to UTC and
+     * the caller passes UTC ISO-8601 — mirroring getSchedule's timeZone=UTC convention.
+     *
+     * @param  array<string, mixed>  $arguments
+     */
+    private function timeZoneFrom(array $arguments): string
+    {
+        $tz = $arguments['tz'] ?? null;
+
+        return is_string($tz) && trim($tz) !== '' ? trim($tz) : 'UTC';
+    }
+
+    /**
+     * Drop the PRIVATE audit back-link note on the ticket the write traced to. Private + system
+     * note type (never client-visible), authored by the AI actor — the human-readable half of the
+     * audit (the redacted mcp_audit_logs row is the other). Mirrors StaffPsaActionToolExecutor's
+     * createAiNote author wiring, but private and NoteType::System.
+     */
+    private function backlinkNote(Ticket $ticket, string $body): void
+    {
+        TicketNote::create([
+            'ticket_id' => $ticket->id,
+            'author_id' => TechnicianConfig::requiredAiActorUserId(),
+            'author_name' => TechnicianConfig::aiActorName(),
+            'who_type' => WhoType::Agent,
+            'ai_authored' => true,
+            'body' => $body,
+            'body_html' => MarkdownRenderer::render($body),
+            'note_type' => NoteType::System,
+            'is_private' => true,
+            'noted_at' => now(),
+        ]);
+
+        $ticket->touch();
     }
 
     /**
