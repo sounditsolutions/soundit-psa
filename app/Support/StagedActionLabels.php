@@ -83,6 +83,12 @@ class StagedActionLabels
         'cipp_stage_create_user' => 'CIPP create user',
         'cipp_stage_edit_user' => 'CIPP edit user',
         'cipp_stage_set_group_membership' => 'CIPP group membership',
+
+        // Calendar & scheduling (psa-lulgh)
+        'calendar_stage_create_event' => 'Calendar event create',
+        'calendar_stage_update_event' => 'Calendar event update',
+        'calendar_stage_cancel_event' => 'Calendar event cancel',
+        'calendar_stage_respond_event' => 'Calendar event response',
     ];
 
     /** Operator-facing label for a staged/held action type. Never returns a raw slug. */

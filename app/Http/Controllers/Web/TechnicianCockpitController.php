@@ -113,6 +113,10 @@ class TechnicianCockpitController extends Controller
                 (int) auth()->id(),
                 $this->cippApprovalInputs($request, $run),
             ),
+            'calendar_stage_create_event',
+            'calendar_stage_update_event',
+            'calendar_stage_cancel_event',
+            'calendar_stage_respond_event' => $service->approveStagedCalendarAction($run, (int) auth()->id()),
             // Body is required only on the reply/resolution path, validated inside this arm.
             'send_reply', 'propose_resolution' => $service->approveAndSend(
                 $run,

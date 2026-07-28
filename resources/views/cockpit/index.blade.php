@@ -61,6 +61,10 @@
             'cipp_stage_create_user' => ['bg-danger text-white', 'CIPP create user', 'bi-person-plus'],
             'cipp_stage_edit_user' => ['bg-danger text-white', 'CIPP edit user', 'bi-person-gear'],
             'cipp_stage_set_group_membership' => ['bg-danger text-white', 'CIPP group membership', 'bi-people-fill'],
+            'calendar_stage_create_event' => ['bg-info-subtle text-info-emphasis border border-info-subtle', 'Calendar event create', 'bi-calendar-plus'],
+            'calendar_stage_update_event' => ['bg-info-subtle text-info-emphasis border border-info-subtle', 'Calendar event update', 'bi-calendar-event'],
+            'calendar_stage_cancel_event' => ['bg-warning-subtle text-warning-emphasis border border-warning-subtle', 'Calendar event cancel', 'bi-calendar-x'],
+            'calendar_stage_respond_event' => ['bg-info-subtle text-info-emphasis border border-info-subtle', 'Calendar event response', 'bi-calendar-check'],
             'direct_close' => ['bg-warning-subtle text-warning-emphasis border border-warning-subtle', 'Closed directly', 'bi-archive'],
             default => ['bg-primary-subtle text-primary-emphasis border border-primary-subtle', 'Reply', 'bi-send'],
         };

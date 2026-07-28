@@ -423,10 +423,10 @@ These commands execute automatically based on their schedule:
 
 **Application permissions** (for calendar / scheduling tools — optional):
 
-1. Add **Application** permission: `Calendars.Read` (covers the calendar read tools). Add `Calendars.ReadWrite` as well only if you intend to use the forthcoming, operator-approved calendar write tools.
+1. Add **Application** permission: `Calendars.Read` covers the calendar read tools; add `Calendars.ReadWrite` if you also intend the operator-approved calendar **write** tools (create/update/cancel/respond).
 2. Click **Grant admin consent for [Your Organization]**
 
-> This allows the staff MCP calendar/scheduling tools to read free/busy availability and calendar events on behalf of allowlisted mailboxes, using client credentials without a user session. It reuses the same Entra app registration and `MICROSOFT_*` credentials as email/SSO — no additional `.env` variables. The tools are **off by default** and only reach the mailboxes you explicitly allowlist (see Section 9). Skip this permission if you are not using the calendar tools.
+> This allows the staff MCP calendar/scheduling tools to read free/busy availability and calendar events — and, with `Calendars.ReadWrite`, to create/update/cancel events and respond to invites — on behalf of allowlisted mailboxes, using client credentials without a user session. It reuses the same Entra app registration and `MICROSOFT_*` credentials as email/SSO — no additional `.env` variables. The tools are **off by default** and only reach the mailboxes you explicitly allowlist (see Section 9). Skip this permission if you are not using the calendar tools.
 
 ### Rebuild config cache
 
@@ -770,13 +770,16 @@ Optionally set a key expiry and rotate periodically (no rotation runbook is auto
 
 ### Calendar / Scheduling (staff MCP tools)
 
-Calendar tools on the staff MCP surface — free/busy availability and calendar/event reads on behalf of a mailbox. (Creating/updating events is a separate, operator-approved capability added later.)
+Calendar tools on the staff MCP surface — free/busy availability and calendar/event **reads**, plus operator-approved calendar **writes** (create / update / cancel event, and accept/decline/tentative a meeting) on behalf of an allowlisted mailbox.
 
-1. Ensure your Entra app registration has the `Calendars.Read` **Application** permission (or `Calendars.ReadWrite` if you also intend the forthcoming write tools) with admin consent (see Section 7). The calendar tools reuse the same app registration and `MICROSOFT_*` credentials as email/SSO — **no additional `.env` variables are needed.**
+1. Ensure your Entra app registration has the required **Application** permission with admin consent (see Section 7): `Calendars.Read` covers the read tools; **`Calendars.ReadWrite` is required for the write tools** (create/update/cancel/respond). The calendar tools reuse the same app registration and `MICROSOFT_*` credentials as email/SSO — **no additional `.env` variables are needed.**
 2. Settings > Integrations > **Calendar / Scheduling** (AI tab)
 3. Tick **Enable calendar / scheduling tools** and add one **owner/organizer mailbox UPN per line** to the allowlist, then Save.
+4. Grant the tools per MCP token (Settings > MCP tokens). Reads and writes are **explicit-grant-only** — a legacy full-surface token never inherits them.
 
-> **Off by default, and fail-closed.** The toolset ships disabled (`calendar_enabled` defaults off). The `calendar_allowed_owner_upns` allowlist is the **sole** server-side control over which mailboxes the tenant-wide Graph token may act on as calendar owner/organizer — it replaced the Azure Application Access Policy. An **empty or unset allowlist allows no mailboxes** (nothing works until you add at least one), and only the UPNs you list are permitted. List only mailboxes you own and intend the AI to act as. External/client email addresses may be event **attendees** but must never be listed as an owner. A malformed entry is rejected on save — the list is never silently widened by dropping a bad line.
+> **Off by default, and fail-closed.** The toolset ships disabled (`calendar_enabled` defaults off). The `calendar_allowed_owner_upns` allowlist is the **sole** server-side control over which mailboxes the tenant-wide Graph token may **read or act on** as calendar owner/organizer/respond-as — it replaced the Azure Application Access Policy, and it is re-checked at the moment a staged write is approved (not only when it is proposed). An **empty or unset allowlist allows no mailboxes** (nothing works until you add at least one), and only the UPNs you list are permitted. List only mailboxes you own and intend the AI to act as. External/client email addresses may be event **attendees** but must never be listed as an owner. A malformed entry is rejected on save — the list is never silently widened by dropping a bad line.
+>
+> **Writes are staged by default (the operator's control).** A granted write is **held for cockpit approval** unless the token also carries the per-tool **immediate** mode (grant it as `calendar_create_event:immediate`, etc.); a bare grant or `:staged` holds every call for a human. Every write **requires** a `ticket_id` (the event is back-linked to that ticket with a private audit note) and a `reason`. Cancelling a meeting is organizer-only upstream. Because these are external, non-idempotent Microsoft Graph actions, a staged write stranded mid-approval is surfaced for manual review, never auto-retried.
 
 ### AI Provider
 

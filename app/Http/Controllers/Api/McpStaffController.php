@@ -958,12 +958,14 @@ class McpStaffController extends Controller
             } elseif ($this->isCalendarTool((string) $name)) {
                 // psa-abl0i: UPN-scoped, never client-scoped ($clientId stays null → 0,
                 // ignored by the executor). The executor's guardOwnerUpn() enforces the
-                // server-side owner allowlist BEFORE any Graph call.
+                // server-side owner allowlist BEFORE any Graph call. The tokenLabel is threaded
+                // (psa-lulgh) so a staged calendar write records its drafter for the approval card.
                 $result = app(StaffCalendarToolExecutor::class)->execute(
                     (string) $name,
                     $arguments,
                     (int) $clientId,
                     $this->actorLabel($request),
+                    $this->tokenLabel($request),
                 );
             } elseif ((string) $name === 'send_reply') {
                 $result = $this->sendReply($arguments, $request);
@@ -1465,10 +1467,28 @@ class McpStaffController extends Controller
 
         $safe = [];
 
-        foreach (['user_upn', 'event_id', 'start', 'end', 'interval'] as $key) {
+        // Structural/enum scalars are safe to keep verbatim (short, non-content): the mailbox, the
+        // event id, the window, the ticket the write traces to, the response verb, and the toggles.
+        foreach (['user_upn', 'event_id', 'start', 'end', 'interval', 'ticket_id', 'response', 'teams_meeting', 'send_response', 'tz'] as $key) {
             if (array_key_exists($key, $arguments) && is_scalar($arguments[$key])) {
                 $safe[$key] = is_string($arguments[$key]) ? mb_substr($arguments[$key], 0, $maxLen) : $arguments[$key];
             }
+        }
+
+        // Free-text write fields (Slice B) are reduced to LENGTH only — never the content. subject /
+        // body / comment / reason / location can carry client-identifying detail and must not land
+        // raw in the audit (the close_ticket / CIPP redaction idiom); the human-readable trace is
+        // the private ticket back-link note, not this transport log.
+        foreach (['subject', 'body', 'comment', 'reason', 'location'] as $key) {
+            if (isset($arguments[$key]) && is_string($arguments[$key])) {
+                $safe[$key.'_length'] = mb_strlen($arguments[$key]);
+            }
+        }
+
+        // attendees is a caller-controlled list of (possibly external) emails — record only the
+        // count, never the addresses.
+        if (isset($arguments['attendees']) && is_array($arguments['attendees'])) {
+            $safe['attendee_count'] = count($arguments['attendees']);
         }
 
         if (isset($arguments['schedules']) && is_array($arguments['schedules'])) {

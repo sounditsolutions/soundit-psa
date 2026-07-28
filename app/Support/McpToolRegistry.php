@@ -67,7 +67,14 @@ class McpToolRegistry
             $psaRead = self::shape(self::psaReadTools());
             $intakeManage = self::shape(self::intakeManageTools());
             $taxonomy = self::shape(self::taxonomyTools());
-            $calendar = self::shape(self::calendarTools());
+            // Split the calendar surface into reads + writes so the grant catalog shows a write as
+            // a WRITE, never under a "Reads" tier (psa-lulgh — a mislabelled tier is how an operator
+            // grants a tenant-wide calendar write believing it is a read). Writes are the canonical
+            // names behind the staged twins; everything else is a read.
+            $calendarAll = self::shape(self::calendarTools());
+            $calendarWriteNames = array_flip(array_values(StaffCalendarToolExecutor::stagedToDirectMap()));
+            $calendar = array_values(array_filter($calendarAll, fn (array $t): bool => ! isset($calendarWriteNames[$t['name']])));
+            $calendarWrite = array_values(array_filter($calendarAll, fn (array $t): bool => isset($calendarWriteNames[$t['name']])));
 
             return [
                 'general' => ['label' => 'General (no client context)', 'sensitive' => false, 'tools' => $general],
@@ -82,7 +89,8 @@ class McpToolRegistry
                 'psa_read' => ['label' => 'PSA reads (sensitive)', 'sensitive' => true, 'tools' => $psaRead],
                 'intake_manage' => ['label' => 'Intake email/call manage (sensitive)', 'sensitive' => true, 'tools' => $intakeManage],
                 'taxonomy' => ['label' => 'Ticket taxonomy & SOPs (sensitive)', 'sensitive' => true, 'tools' => $taxonomy],
-                'calendar' => ['label' => 'Calendar & scheduling (sensitive)', 'sensitive' => true, 'tools' => $calendar],
+                'calendar' => ['label' => 'Calendar & scheduling reads (sensitive)', 'sensitive' => true, 'tools' => $calendar],
+                'calendar_write' => ['label' => 'Calendar & scheduling writes (sensitive)', 'sensitive' => true, 'tools' => $calendarWrite],
                 'bridge' => ['label' => 'Operator bridge (sensitive)', 'sensitive' => true, 'tools' => $bridge],
             ];
         });
@@ -131,6 +139,7 @@ class McpToolRegistry
                 'intake_manage' => ['psa', 'write', 'Write & act', 2],
                 'taxonomy' => ['psa', 'taxonomy', 'Taxonomy & SOPs', 4],
                 'calendar' => ['calendar', 'read', 'Reads', 1],
+                'calendar_write' => ['calendar', 'write', 'Write & schedule', 2],
                 'cipp_write' => ['cipp', 'write', 'Write & remediate', 2],
                 'tactical_action' => ['tactical', 'actions', 'Endpoint actions', 2],
                 'tactical_admin' => ['tactical', 'admin', 'Admin & provisioning', 3],
