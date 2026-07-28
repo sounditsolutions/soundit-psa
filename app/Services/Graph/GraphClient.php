@@ -260,6 +260,101 @@ class GraphClient
     }
 
     /**
+     * Tool-level calendar response ('accept'|'decline'|'tentative') → the MS Graph event action
+     * segment. 'tentative' is the Graph `tentativelyAccept` action (a trap: the tool vocabulary and
+     * the Graph vocabulary differ). Source: MS Graph v1.0 —
+     * https://learn.microsoft.com/en-us/graph/api/event-accept (and event-decline / event-tentativelyaccept).
+     */
+    private const RESPOND_ACTIONS = [
+        'accept' => 'accept',
+        'decline' => 'decline',
+        'tentative' => 'tentativelyAccept',
+    ];
+
+    /**
+     * Create an event on an owner's calendar (POST /users/{upn}/events → 201 + event resource).
+     * $event is the Graph event-resource body (camelCase), built by the executor from validated
+     * tool args. Field shape: MS Graph v1.0 event resource —
+     * https://learn.microsoft.com/en-us/graph/api/user-post-events and .../resources/event.
+     *
+     * FAIL-LOUD (CLAUDE.md vendor rule): the created event is proven through CalendarGraphShapes —
+     * a 2xx carrying a bodyless/malformed event (no string id) throws GraphShapeDriftException. A
+     * write whose success we cannot confirm must SCREAM, never read as "done". $upn is percent-
+     * encoded at the transport seam (seg()) — defence in depth behind the executor allowlist.
+     *
+     * @param  array<string, mixed>  $event
+     * @return array<string, mixed>
+     */
+    public function createEvent(string $upn, array $event): array
+    {
+        return CalendarGraphShapes::assertEvent(
+            $this->requestJson('POST', 'users/'.self::seg($upn).'/events', ['json' => $event])
+        );
+    }
+
+    /**
+     * Update an event on an owner's calendar (PATCH /users/{upn}/events/{eventId} → 200 + event).
+     * $patch carries ONLY the fields to change (partial event resource). Returns the updated,
+     * shape-proven event. Field shape: https://learn.microsoft.com/en-us/graph/api/event-update.
+     * Both caller-controlled segments (upn, eventId) are seg()-encoded — the same traversal control
+     * proven for the reads (GraphClientPathSafetyTest).
+     *
+     * @param  array<string, mixed>  $patch
+     * @return array<string, mixed>
+     */
+    public function updateEvent(string $upn, string $eventId, array $patch): array
+    {
+        return CalendarGraphShapes::assertEvent(
+            $this->requestJson('PATCH', 'users/'.self::seg($upn).'/events/'.self::seg($eventId), ['json' => $patch])
+        );
+    }
+
+    /**
+     * Cancel a meeting the owner organizes (POST /users/{upn}/events/{eventId}/cancel → 202, no
+     * body). ORGANIZER-ONLY upstream: an attendee calling this gets HTTP 400 (which surfaces as a
+     * GraphClientException, not a silent success). Body param `comment` — the documented
+     * parameter-table name (the doc's HTTP example shows `Comment`, but Graph action params are
+     * case-insensitive and the table is normative). With no comment we post `{}` (an empty JSON
+     * object), never a stray key. https://learn.microsoft.com/en-us/graph/api/event-cancel
+     */
+    public function cancelEvent(string $upn, string $eventId, ?string $comment = null): void
+    {
+        $payload = [];
+        if ($comment !== null) {
+            $payload['comment'] = $comment;
+        }
+
+        $this->requestJson('POST', 'users/'.self::seg($upn).'/events/'.self::seg($eventId).'/cancel', [
+            'json' => (object) $payload,
+        ]);
+    }
+
+    /**
+     * Respond to a meeting invite as the owner mailbox (POST /users/{upn}/events/{eventId}/{action}
+     * → 202, no body), where {action} is accept / decline / tentativelyAccept. $response is the
+     * tool-level verb ('accept'|'decline'|'tentative'); an unknown value is refused before any call
+     * (defence in depth behind the executor enum). `sendResponse` (Graph default true) and the
+     * optional `comment` are the documented body params.
+     * https://learn.microsoft.com/en-us/graph/api/event-accept
+     */
+    public function respondEvent(string $upn, string $eventId, string $response, ?string $comment = null, bool $sendResponse = true): void
+    {
+        $action = self::RESPOND_ACTIONS[$response] ?? null;
+        if ($action === null) {
+            throw new \InvalidArgumentException("Unknown calendar response '{$response}'; expected accept, decline, or tentative.");
+        }
+
+        $payload = ['sendResponse' => $sendResponse];
+        if ($comment !== null) {
+            $payload['comment'] = $comment;
+        }
+
+        $this->requestJson('POST', 'users/'.self::seg($upn).'/events/'.self::seg($eventId).'/'.$action, [
+            'json' => $payload,
+        ]);
+    }
+
+    /**
      * Check if the Graph API is reachable and we can authenticate.
      */
     public function isHealthy(): bool
