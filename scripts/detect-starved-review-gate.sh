@@ -728,19 +728,43 @@ if ! jq -n \
 fi
 
 # ---- persist state (only after a successful evaluation; failure is LOUD) ------
-# Write path is symlink-safe (review R2): the temp file is created by mktemp
-# (O_EXCL, unpredictable name — a planted "<state>.tmp" symlink is never
-# opened), and the atomic rename never follows a symlink at the destination.
-# The state path itself was refused as a symlink at load time; re-check here so
-# a symlink planted mid-run is refused too, not renamed over silently.
+# Write path is symlink-safe across EVERY path component, not just the leaf
+# (psa-qqaka.8 R4 — arbitrary-file-write). The earlier guard only ran `test -L`
+# on the final component, but dirname/mktemp/the temp reopen/mv all re-resolve
+# the WHOLE path: a symlink at any ANCESTOR directory, or a leaf symlink planted
+# between the check and the rename, redirected the write outside the intended
+# tree (GNU `mv -f` treats a symlink-to-directory as a directory and moves the
+# temp INTO it). The fix PINS the write to the parent's canonical real path:
+#   - realpath -e (resolves symlinks) must equal realpath -s (does NOT) for the
+#     parent, so ANY symlink in the ancestor chain is refused, not followed;
+#   - all file ops happen inside that resolved real directory;
+#   - the rename uses --no-target-directory, so a leaf symlink planted mid-run is
+#     REPLACED via rename() (which never follows the final symlink) instead of
+#     descended into — verified, and the final result is checked to be a regular
+#     (non-symlink) file.
+# The temp is still mktemp-random (O_EXCL, unpredictable name — a planted
+# "<state>.tmp" symlink is never opened). The load-time check already refused a
+# pre-existing symlinked state path; this closes the write path completely.
 if [ "$NO_STATE" -eq 0 ]; then
-    [ ! -L "$STATE_FILE" ] \
+    state_dir="$(dirname "$STATE_FILE")"
+    state_base="$(basename "$STATE_FILE")"
+
+    mkdir -p "$state_dir" 2>/dev/null \
+        || die "state directory could not be created: $state_dir (fix the path/permissions, or run --no-state)"
+    real_dir="$(realpath -e "$state_dir" 2>/dev/null)" \
+        || die "state directory could not be resolved: $state_dir (fix the path, or run --no-state)"
+    [ "$real_dir" = "$(realpath -s "$state_dir" 2>/dev/null)" ] \
+        || die "state path traverses a symlinked directory: $state_dir -> $real_dir — refusing to write through it (point --state-file under a real directory, or run --no-state)"
+
+    dest="$real_dir/$state_base"
+    [ ! -L "$dest" ] \
         || die "state path is a symlink: $STATE_FILE — refusing to write through or over it (point --state-file at a regular file, or run --no-state)"
+
     STATE_TMP=""
-    if mkdir -p "$(dirname "$STATE_FILE")" 2>/dev/null \
-            && STATE_TMP="$(mktemp "$(dirname "$STATE_FILE")/.starved-review-gate.XXXXXXXX" 2>/dev/null)" \
+    if STATE_TMP="$(mktemp "$real_dir/.starved-review-gate.XXXXXXXX" 2>/dev/null)" \
             && jq '.new_state' "$REPORT_FILE" >"$STATE_TMP" 2>/dev/null \
-            && mv -f "$STATE_TMP" "$STATE_FILE" 2>/dev/null; then
+            && mv -f --no-target-directory "$STATE_TMP" "$dest" 2>/dev/null \
+            && [ -f "$dest" ] && [ ! -L "$dest" ]; then
         :
     else
         [ -z "$STATE_TMP" ] || rm -f "$STATE_TMP" 2>/dev/null || true

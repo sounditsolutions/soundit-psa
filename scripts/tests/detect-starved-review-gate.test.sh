@@ -444,6 +444,57 @@ ln -sf "$TMP/does-not-exist-target" "$TMP/state-dangling.json"
 run_detector t14r 2 --input "$FIX/board-working.json" --now 2026-07-26T02:50:00Z --state-file "$TMP/state-dangling.json"
 assert_text t14r "a dangling symlinked state path is refused, not silently created over" "DETECTOR-ERROR.*symlink"
 
+# ---- T14s/T14t: persist symlink safety across ANCESTOR components + the
+# between-check-and-rename race (psa-qqaka.8 R4 finding 1, arbitrary-file-write).
+# The prior guard (t14p–r) only vetted the FINAL path component with `test -L`.
+# But dirname/mktemp/the temp reopen/mv all re-resolve the WHOLE path, so a
+# symlink at any ANCESTOR directory, or a leaf symlink planted AFTER the check
+# but BEFORE the rename, redirects the write outside the intended tree.
+
+# T14s — an ancestor directory that is a symlink to an outside directory must be
+# REFUSED, not silently followed. Static repro from the security review.
+mkdir -p "$TMP/t14s-outside-target"
+ln -s "$TMP/t14s-outside-target" "$TMP/t14s-intended-dir"
+run_detector t14s 2 --input "$FIX/board-working.json" --now 2026-07-26T02:50:00Z \
+    --state-file "$TMP/t14s-intended-dir/state.json"
+assert_text t14s "an ancestor-symlinked state dir is refused" "DETECTOR-ERROR.*symlink"
+if [ ! -e "$TMP/t14s-outside-target/state.json" ]; then PASS=$((PASS+1)); else
+    FAIL=$((FAIL+1)); echo "FAIL [t14s] write escaped through an ancestor symlink to the outside directory"; fi
+
+# T14t — the between-check-and-rename race, made DETERMINISTIC with a jq shim.
+# The persist path calls `jq '.new_state' <report>` between the leaf -L check
+# and the rename; the shim keys EXACTLY on that program ($1 == ".new_state"),
+# plants a leaf symlink to an outside directory, then execs the real jq. A
+# symlink-unsafe rename (`mv -f`) would treat the planted symlink-to-directory
+# as a directory and move the temp INTO the outside dir, leaving the state path
+# as the symlink; the fixed rename replaces the symlink with a regular file and
+# never redirects. Real jq is captured by absolute path so the shim can shadow
+# `jq` on PATH without recursing into itself.
+REAL_JQ="$(command -v jq)"
+T14T_SHIM="$TMP/t14t-shim"
+mkdir -p "$T14T_SHIM"
+mkdir -p "$TMP/t14t-outside-target"
+T14T_LEAF="$TMP/t14t-dir/state.json"
+mkdir -p "$TMP/t14t-dir"
+cat >"$T14T_SHIM/jq" <<SHIM
+#!/usr/bin/env bash
+# Plant the leaf symlink ONLY on the persist program, then behave as real jq.
+if [ "\$1" = ".new_state" ]; then
+    ln -sfn "$TMP/t14t-outside-target" "$T14T_LEAF"
+fi
+exec "$REAL_JQ" "\$@"
+SHIM
+chmod +x "$T14T_SHIM/jq"
+PATH="$T14T_SHIM:$PATH" run_detector t14t 0 --input "$FIX/board-working.json" \
+    --now 2026-07-26T02:50:00Z --state-file "$T14T_LEAF"
+# The temp must NOT have been redirected into the outside directory…
+if [ -z "$(ls -A "$TMP/t14t-outside-target" 2>/dev/null)" ]; then PASS=$((PASS+1)); else
+    FAIL=$((FAIL+1)); echo "FAIL [t14t] a leaf symlink planted mid-run redirected the write into the outside directory"
+    ls -A "$TMP/t14t-outside-target" | sed 's/^/    leaked: /'; fi
+# …and the state path must land as a real regular file, not remain the symlink.
+if [ -f "$T14T_LEAF" ] && [ ! -L "$T14T_LEAF" ]; then PASS=$((PASS+1)); else
+    FAIL=$((FAIL+1)); echo "FAIL [t14t] state path did not land as a regular file (still a redirecting symlink?)"; fi
+
 # ---- T15: live acquisition seam (fake gc on PATH) — completeness must be proven -
 # The SQL side serves CONSUMED-ROW payloads (R2 must-fix 1: count equality is
 # not a completeness proof; R3 must-fix 1: id-set equality is not a semantic
@@ -643,13 +694,18 @@ NOTES_ALLOW='[
 fixture_guard() {
     jq -e --argjson row_allow "$ROW_ALLOW" --argjson meta_allow "$META_ALLOW" --argjson notes_allow "$NOTES_ALLOW" '
         (type == "array") and
-        ([ .[] | select(type == "object") ] | all(
-            ((keys - $row_allow) == [])
+        all(.[];
+            # EVERY member must be an object (psa-qqaka.8 R4 finding 2): the old
+            # `select(type == "object")` DROPPED non-object members before this
+            # check, so a bare private string in the array was vacuously accepted
+            # and only the grep blacklist stood between it and the public repo.
+            (type == "object")
+            and ((keys - $row_allow) == [])
             and (if (has("metadata") and (.metadata | type) == "object")
                  then ((.metadata | keys) - $meta_allow) == [] else true end)
             and (if (has("notes") and (.notes | type) == "string")
                  then (.notes as $n | ($notes_allow | index($n)) != null) else true end)
-        ))
+        )
     ' "$1" >/dev/null 2>&1 || return 1
     ! grep -qiE 'soundit|so-wisp|/home/|gus@|charlie|work_dir|session_name|close_reason|created_by|description"' "$1"
 }
@@ -682,6 +738,18 @@ fi
 printf '%s' '[{"id": "psa-dirty2", "title": "Bead — fixture", "status": "closed", "updated_at": "2026-07-26T00:00:00Z", "close_reason": "anything"}]' >"$TMP/dirty-key-fixture.json"
 if fixture_guard "$TMP/dirty-key-fixture.json"; then
     FAIL=$((FAIL+1)); echo "FAIL [t16-selftest] guard ACCEPTED an unconsumed row key"
+else
+    PASS=$((PASS+1))
+fi
+# Guard-of-the-guard (psa-qqaka.8 R4 finding 2): a NON-OBJECT array member must
+# fail. The old guard did `[ .[] | select(type == "object") ] | all(...)`, which
+# DISCARDED non-object members before validation, so a fixture whose array holds
+# only a private free-text string sailed past the row/note allowlists (the grep
+# blacklist was the sole remaining check, and this string dodges it). A private
+# narrative in a public repo must be REJECTED, not vacuously accepted.
+printf '%s' '["Customer outage traced to a private firewall change; escalation pending."]' >"$TMP/dirty-nonobject-fixture.json"
+if fixture_guard "$TMP/dirty-nonobject-fixture.json"; then
+    FAIL=$((FAIL+1)); echo "FAIL [t16-selftest] guard VACUOUSLY ACCEPTED a non-object array member (private string) — it guards nothing"
 else
     PASS=$((PASS+1))
 fi
