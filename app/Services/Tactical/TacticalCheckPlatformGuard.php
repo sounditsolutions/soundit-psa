@@ -11,8 +11,11 @@ use App\Models\TacticalScript;
  * manufactures broken coverage — the exact defect this bead removes — so the
  * invariant is enforced where every check creation converges: the
  * TacticalClient TRANSPORT itself (post() asserts this guard on every
- * request that resolves to checks/ — the psa-mocr choke-point rule;
- * createCheck() is the named front door that delegates there). R5 proved
+ * request that resolves to a check-CREATION route — the checks/ collection
+ * or either vendor alias publishing the same GetAddChecks view, enumerated
+ * from the pinned upstream source on TacticalClient::targetsCheckCreation();
+ * the psa-mocr choke-point rule; createCheck() is the named front door that
+ * delegates there). R5 proved
  * that enforcing only inside createCheck() left the generic public post()
  * as a second write seam a raw caller could drive with no evidence.
  * Per-surface pre-checks (StaffTacticalAdminToolExecutor,

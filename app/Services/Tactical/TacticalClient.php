@@ -178,7 +178,9 @@ class TacticalClient
      * POST a Tactical endpoint.
      *
      * THE MANDATORY CHECK-CREATION PLATFORM GUARD IS ENFORCED HERE (psa-0pb9m
-     * R5). Every POST whose endpoint resolves to the checks/ collection passes
+     * R5). Every POST whose endpoint resolves to a check-CREATION route —
+     * the checks/ collection or either vendor alias that publishes the same
+     * GetAddChecks view (see targetsCheckCreation) — passes
      * TacticalCheckPlatformGuard::assertSafe() before any HTTP is attempted —
      * whichever wrapper, subclass, or future caller composed the request. R5
      * proved that guarding only the named createCheck() wrapper left this
@@ -213,24 +215,45 @@ class TacticalClient
     }
 
     /**
-     * Whether $endpoint resolves to Tactical's check-creation collection
-     * endpoint (POST checks/), for the transport-seam platform guard above.
+     * Whether $endpoint resolves to a Tactical CHECK-CREATION endpoint, for
+     * the transport-seam platform guard above.
+     *
+     * THREE upstream URLs reach the check-creation view, and they are all the
+     * same view object — `checks.views.GetAddChecks`. Read from the vendor
+     * source at the commit this repo pins in
+     * tests/Fixtures/tactical/upstream_producers.json (amidaware/tacticalrmm
+     * 632a37a4, 2026-07-24) — cite, don't guess:
+     *   - `checks/`                              api/tacticalrmm/checks/urls.py:6
+     *   - `agents/{agent_id}/checks/`            api/tacticalrmm/agents/urls.py:21
+     *   - `automation/policies/{policy}/checks/` api/tacticalrmm/automation/urls.py:14
+     * The vendor comments both aliases as "alias for checks get view", but
+     * `as_view()` publishes the WHOLE class-based view — the comment states
+     * intent, not a constraint, and POST is dispatched there like any other
+     * verb. Today `GetAddChecks.post(self, request)` accepts no URL kwargs, so
+     * a POST to either alias raises TypeError upstream (500) rather than
+     * creating: the alias gap is LATENT, not live. It is matched anyway
+     * because this seam's whole claim is that no route reaches a check create
+     * without server-derived platform evidence, and that claim must not rest
+     * on an upstream handler signature. Both aliases are already in this
+     * client's vocabulary as reads (getAgentChecks / getPolicyChecks), so a
+     * future `post()` written by symmetry with them is exactly the mistake the
+     * seam exists to make impossible (psa-y9ae5).
      *
      * TWO match levels, either sufficient (psa-ou9pe fix-forward — the
      * psa-0pb9m R5 raw-path matcher alone was bypassable):
      *
-     *  1. SPELLING: the endpoint's own path normalizes to exactly `checks` —
-     *     query/fragment stripped, dot segments removed, percent-encoding
-     *     decoded, duplicate slashes collapsed, surrounding slashes trimmed —
-     *     so relative spellings ('checks', '/checks/', 'checks/?dry=1',
-     *     'foo/../checks/', '%63hecks/') cannot carry an unguarded creation
-     *     past the seam regardless of base_uri.
+     *  1. SPELLING: the endpoint's own path normalizes to one of the creation
+     *     shapes — query/fragment stripped, dot segments removed,
+     *     percent-encoding decoded, duplicate slashes collapsed, surrounding
+     *     slashes trimmed — so relative spellings ('checks', '/checks/',
+     *     'checks/?dry=1', 'foo/../checks/', '%63hecks/',
+     *     'agents/{id}/checks/') cannot carry an unguarded creation past the
+     *     seam regardless of base_uri.
      *  2. RESOLUTION: the endpoint resolved against the configured base_uri —
      *     the EXACT UriResolver::resolve() Guzzle's buildUri() applies when
-     *     it builds the request — lands on the same normalized path as the
-     *     resolved collection (base_uri + 'checks/'). This is what closes the
-     *     psa-ou9pe.1 STILL-PRESENT bypass: with base_uri
-     *     https://host/api/v3/, a fully-resolved
+     *     it builds the request — lands on a creation shape underneath the
+     *     API root. This is what closes the psa-ou9pe.1 STILL-PRESENT bypass:
+     *     with base_uri https://host/api/v3/, a fully-resolved
      *     https://host/api/v3/checks/ (or absolute-path /api/v3/checks/, or
      *     ../v3/checks/) has raw path api/v3/checks — no spelling match — yet
      *     Guzzle sends the POST to the checks collection.
@@ -241,22 +264,25 @@ class TacticalClient
      * server), and every miss there is an unguarded write. Matching the
      * resolved PATH alone over-guards a same-path request aimed at a foreign
      * origin — fail-closed the cheap way round: no legitimate caller posts a
-     * checks-collection path anywhere but the configured Tactical.
+     * check-creation path anywhere but the configured Tactical.
      *
      * The normalization (decode + slash-collapse) mirrors what the upstream
      * stack does before routing — WSGI PATH_INFO arrives percent-decoded and
      * fronting proxies merge duplicate slashes — so a spelling the SERVER
-     * would route to the collection cannot read as a different path here.
+     * would route to a creation view cannot read as a different path here.
+     * Casing is NOT folded: Django's `path()` routes are case-sensitive, so a
+     * cased spelling ('CHECKS/') reaches no view at all, while folding would
+     * refuse a legitimate POST to a same-named non-check path.
      *
      * Sub-paths (checks/{id}/…) are not creation and do not match. An
-     * endpoint neither parse_url nor PSR-7 can parse cannot resolve to
-     * checks/ at all — and no request is buildable from it either, so
+     * endpoint neither parse_url nor PSR-7 can parse cannot resolve to a
+     * creation route at all — and no request is buildable from it either, so
      * nothing unguarded can be sent.
      */
     private function targetsCheckCreation(string $endpoint): bool
     {
         $rawPath = parse_url($endpoint, PHP_URL_PATH);
-        if (is_string($rawPath) && $rawPath !== '' && self::normalizedRequestPath($rawPath) === 'checks') {
+        if (is_string($rawPath) && $rawPath !== '' && self::isCheckCreationShape(self::normalizedRequestPath($rawPath))) {
             return true;
         }
 
@@ -267,17 +293,28 @@ class TacticalClient
         }
 
         if ($this->baseUri !== null) {
-            $resolved = UriResolver::resolve($this->baseUri, $endpointUri);
-            $collection = UriResolver::resolve($this->baseUri, new Uri('checks/'));
+            $resolved = self::normalizedRequestPath(
+                UriResolver::resolve($this->baseUri, $endpointUri)->getPath()
+            );
+            // The API root exactly as Guzzle roots a RELATIVE endpoint against
+            // base_uri: './' reproduces the same merge (a base without a
+            // trailing slash roots relative references at its PARENT
+            // directory), so the root can never drift from the request that is
+            // actually built.
+            $root = self::normalizedRequestPath(
+                UriResolver::resolve($this->baseUri, new Uri('./'))->getPath()
+            );
 
-            return self::normalizedRequestPath($resolved->getPath())
-                === self::normalizedRequestPath($collection->getPath());
+            $relative = self::pathUnderRoot($resolved, $root);
+
+            return $relative !== null && self::isCheckCreationShape($relative);
         }
 
-        // No configured base: the collection's absolute location is
-        // unknowable, so an absolute endpoint whose path ENDS at the checks
-        // collection segment is guarded (fail closed — only injected
-        // clients can lack a base; the config path always sets one).
+        // No configured base: the API root is unknowable, so any absolute
+        // endpoint whose path ENDS at a checks segment is guarded — a
+        // deliberate over-approximation of the three creation shapes (fail
+        // closed; only injected clients can lack a base, the config path
+        // always sets one).
         if ($endpointUri->getHost() !== '') {
             $path = self::normalizedRequestPath($endpointUri->getPath());
 
@@ -285,6 +322,60 @@ class TacticalClient
         }
 
         return false;
+    }
+
+    /**
+     * $path expressed relative to the API root, or null when it does not live
+     * under that root at all — a same-origin path outside the configured API
+     * prefix is not a Tactical route, so it cannot be a creation route.
+     */
+    private static function pathUnderRoot(string $path, string $root): ?string
+    {
+        if ($root === '') {
+            return $path;
+        }
+
+        if ($path === $root) {
+            return '';
+        }
+
+        return str_starts_with($path, $root.'/') ? substr($path, strlen($root) + 1) : null;
+    }
+
+    /**
+     * Whether a normalized, API-root-relative path is one of the three
+     * upstream check-CREATION routes cited on targetsCheckCreation().
+     *
+     * The id segments match ANY non-empty segment rather than the vendor's
+     * converters (`<agent:agent_id>`, `<int:policy>`): a spelling the vendor
+     * would not route can only ever over-guard — a refusal, loud and
+     * recoverable — whereas a converter mismatch on our side would UNDER-guard
+     * and let a write through, which is the only outcome this seam may never
+     * produce.
+     */
+    private static function isCheckCreationShape(string $path): bool
+    {
+        if ($path === 'checks') {
+            return true;
+        }
+
+        $segments = explode('/', $path);
+        $last = count($segments) - 1;
+
+        if ($segments[$last] !== 'checks') {
+            return false;
+        }
+
+        // agents/{agent_id}/checks/
+        if ($last === 2 && $segments[0] === 'agents' && $segments[1] !== '') {
+            return true;
+        }
+
+        // automation/policies/{policy}/checks/
+        return $last === 3
+            && $segments[0] === 'automation'
+            && $segments[1] === 'policies'
+            && $segments[2] !== '';
     }
 
     /**
@@ -459,7 +550,8 @@ class TacticalClient
     /**
      * Create a Tactical check (POST checks/) — the named front door for the
      * MANDATORY platform guard (psa-0pb9m revise). Enforcement itself lives
-     * one seam below, in post(): every POST that resolves to checks/ passes
+     * one seam below, in post(): every POST that resolves to a check-creation
+     * route (the collection or either vendor alias of the same view) passes
      * TacticalCheckPlatformGuard::assertSafe() before any HTTP, so no route —
      * this wrapper, a future wrapper, or a raw post('checks/', …) — reaches
      * the upstream create without server-derived platform evidence (psa-0pb9m

@@ -1282,6 +1282,152 @@ class TacticalCheckPlatformGuardTest extends TestCase
         $this->assertSame('Script Check was added!', $result);
     }
 
+    // ── The vendor's ALIAS check-creation routes (psa-y9ae5) ─────────────────
+    // The seam claimed to cover "every POST that resolves to checks/", but the
+    // checks-collection PATH is not the only URL that reaches the creation
+    // view. Read from the pinned vendor source (amidaware/tacticalrmm
+    // 632a37a4, the commit tests/Fixtures/tactical/upstream_producers.json
+    // pins), THREE routes publish the same checks.views.GetAddChecks object:
+    //   checks/                               checks/urls.py:6
+    //   agents/{agent_id}/checks/             agents/urls.py:21
+    //   automation/policies/{policy}/checks/  automation/urls.py:14
+    // The vendor comments the last two as GET aliases, but as_view() publishes
+    // the whole class-based view — the comment is intent, not a constraint.
+    // Upstream's GetAddChecks.post(self, request) takes no URL kwargs, so an
+    // alias POST raises TypeError (500) today rather than creating: the gap
+    // was LATENT, not live. It is closed anyway, because the seam's claim is
+    // that no route reaches a check create without server-derived platform
+    // evidence, and that claim must not rest on an upstream handler signature
+    // — especially when both aliases are already in this client's vocabulary
+    // as reads (getAgentChecks / getPolicyChecks), so a future post() written
+    // by symmetry with them is precisely the mistake the seam exists to stop.
+
+    public function test_raw_transport_guard_covers_the_vendor_alias_creation_routes(): void
+    {
+        // Every spelling of both aliases — bare, absolute-path, query-carrying,
+        // percent-encoded, dot-segmented, slash-doubled — is matched before any
+        // HTTP. The dual-target payload refuses before any read, so each
+        // variant proves itself with an untouched one-response queue.
+        foreach ([
+            'agents/agent-mac/checks/',
+            'agents/agent-mac/checks',
+            '/agents/agent-mac/checks/',
+            'agents/agent-mac/foo/../checks/',
+            'automation/policies/7/checks/',
+            'automation/policies/7/checks/?dry_run=1',
+            'automation/policies/7/%63hecks/',
+            'automation/policies/7//checks/',
+        ] as $endpoint) {
+            [$client, $mock] = $this->realClientWithMock([
+                new \GuzzleHttp\Psr7\Response(200, [], json_encode('never sent')),
+            ]);
+
+            try {
+                $client->post($endpoint, [
+                    'agent' => 'agent-mac',
+                    'policy' => 7,
+                    'check_type' => 'script',
+                    'script' => 102,
+                    'name' => 'Alias route probe',
+                ]);
+                $this->fail("post('{$endpoint}', …) must be guarded — it reaches GetAddChecks upstream");
+            } catch (\App\Services\Tactical\TacticalClientException $e) {
+                $this->assertStringContainsString('BOTH an agent and a policy', $e->getMessage(), $endpoint);
+            }
+
+            $this->assertSame(1, $mock->count(), "no HTTP may be consumed for '{$endpoint}'");
+        }
+    }
+
+    public function test_raw_transport_guard_covers_the_vendor_alias_creation_routes_on_a_prefixed_base(): void
+    {
+        // Same aliases, resolved against a base_uri carrying the real /api/v3/
+        // prefix: the fully-resolved absolute URL, the absolute path, and a
+        // dot-segment climb all land on a creation route under the API root.
+        foreach ([
+            'https://tactical.example.test/api/v3/agents/agent-mac/checks/',
+            '/api/v3/automation/policies/7/checks/',
+            '../v3/agents/agent-mac/checks/',
+            'automation/policies/7/checks/',
+        ] as $endpoint) {
+            [$client, $mock] = $this->realPrefixedBaseClientWithMock([
+                new \GuzzleHttp\Psr7\Response(200, [], json_encode('never sent')),
+            ]);
+
+            try {
+                $client->post($endpoint, [
+                    'agent' => 'agent-mac',
+                    'policy' => 7,
+                    'check_type' => 'script',
+                    'script' => 102,
+                    'name' => 'Alias route probe',
+                ]);
+                $this->fail("post('{$endpoint}', …) must be guarded on a prefixed base_uri");
+            } catch (\App\Services\Tactical\TacticalClientException $e) {
+                $this->assertStringContainsString('BOTH an agent and a policy', $e->getMessage(), $endpoint);
+            }
+
+            $this->assertSame(1, $mock->count(), "no HTTP may be consumed for '{$endpoint}'");
+        }
+    }
+
+    public function test_raw_transport_guard_leaves_non_creation_lookalike_paths_unguarded(): void
+    {
+        // The matcher recognizes the three creation SHAPES, not "any path
+        // ending in checks" — so a path that merely ends that way is untouched.
+        // services/{agent}/checks/ is the one that matters: controlService()
+        // builds exactly that URL from a Windows SERVICE NAME, and a service
+        // named "checks" would otherwise be refused a restart by the
+        // check-creation guard. The others are real upstream routes that are
+        // not creation (policy check status, reset-all, per-target task lists).
+        foreach ([
+            'services/agent-mac/checks/',
+            'agents/agent-mac/tasks/',
+            'automation/policies/7/tasks/',
+            'automation/checks/7/status/',
+            'checks/agent-mac/resetall/',
+        ] as $endpoint) {
+            [$client, $mock] = $this->realClientWithMock([
+                new \GuzzleHttp\Psr7\Response(200, [], json_encode('ok')),
+            ]);
+
+            $this->assertSame('ok', $client->post($endpoint, ['anything' => true]), $endpoint);
+            $this->assertSame(0, $mock->count(), $endpoint);
+        }
+    }
+
+    public function test_the_alias_creation_routes_are_guarded_not_banned(): void
+    {
+        $this->macFixture(); // darwin agent in the synced snapshot
+        TacticalScript::create([
+            'tactical_script_id' => 555,
+            'name' => 'Mac health',
+            'shell' => 'shell',
+            'synced_at' => now(),
+        ]);
+
+        // Enforcement, not prohibition — identical semantics on all three
+        // creation routes, because they are one seam. Evidence proves the
+        // darwin agent compatible, so the guard passes and the request is
+        // issued. (Upstream's own GetAddChecks.post takes no URL kwargs and
+        // would 500 on this alias; what is asserted here is OUR seam's
+        // behaviour — the alias is GUARDED, not blanket-refused, so the guard
+        // can never be mistaken for an endpoint blocklist.)
+        [$client, $mock] = $this->realClientWithMock([
+            new \GuzzleHttp\Psr7\Response(200, [], json_encode('Script Check was added!')),
+        ]);
+
+        $result = $client->post('agents/agent-mac/checks/', [
+            'agent' => 'agent-mac',
+            'check_type' => 'script',
+            'script' => 555,
+            'name' => 'Alias create with full evidence',
+        ]);
+
+        $this->assertSame('Script Check was added!', $result);
+        $this->assertSame(0, $mock->count(), 'the guarded alias request must reach the transport');
+    }
+
     // ── Stale local evidence must not authorize a write (psa-ou9pe) ──────────
     // The psa-ou9pe.1 finding: the guard read TacticalAsset platform and
     // TacticalScript metadata from the local rows with NO freshness bound —
