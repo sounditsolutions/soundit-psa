@@ -1,0 +1,534 @@
+From a70a1923d2d957b1d81f28833845dbdda0530fb6 Mon Sep 17 00:00:00 2001
+From: "gastown.slit (polecat)" <polecat-gastown.slit@soundit.local>
+Date: Wed, 8 Jul 2026 23:14:49 +0000
+Subject: [PATCH] Add billing:backfill-prepaid-time command for historical
+ invoice lines
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Backfill prepaid_time_minutes on historical PSA-native invoice lines from
+linked SKU configuration, mirroring BillingService's generation-time formula
+(quantity × sku.prepaid_time_minutes). Only fills lines never set (null), so
+intentional values are never clobbered; scoped to PSA-native invoices by
+default (--include-halo to widen).
+
+Optional --deposit-paid reconciles already-paid invoices whose lines gained
+prepaid time (the InvoiceObserver only auto-deposits on the Paid transition,
+so historical paid invoices never deposited). Reuses the idempotent, guarded
+PrepayService::depositFromInvoice(), so re-runs never double-deposit. --dry-run
+previews both steps.
+
+Closes psa-hb9. GitHub #107.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ app/Console/Commands/BackfillPrepaidTime.php  | 202 ++++++++++++++
+ docs/INSTALL.md                               |  19 ++
+ .../Prepay/BackfillPrepaidTimeTest.php        | 255 ++++++++++++++++++
+ 3 files changed, 476 insertions(+)
+ create mode 100644 app/Console/Commands/BackfillPrepaidTime.php
+ create mode 100644 tests/Feature/Prepay/BackfillPrepaidTimeTest.php
+
+diff --git a/app/Console/Commands/BackfillPrepaidTime.php b/app/Console/Commands/BackfillPrepaidTime.php
+new file mode 100644
+index 0000000..aa30978
+--- /dev/null
++++ b/app/Console/Commands/BackfillPrepaidTime.php
+@@ -0,0 +1,202 @@
++<?php
++
++namespace App\Console\Commands;
++
++use App\Enums\InvoiceStatus;
++use App\Enums\PrepayTransactionSource;
++use App\Models\Invoice;
++use App\Models\InvoiceLine;
++use App\Models\PrepayTransaction;
++use App\Services\PrepayService;
++use Illuminate\Console\Command;
++
++class BackfillPrepaidTime extends Command
++{
++    protected $signature = 'billing:backfill-prepaid-time
++        {--dry-run : Show what would change without persisting}
++        {--include-halo : Also process Halo-imported invoices (default: PSA-native only)}
++        {--deposit-paid : Create prepay deposits for already-paid invoices that gain prepaid time}';
++
++    protected $description = 'Backfill prepaid_time_minutes on historical PSA invoice lines from linked SKU configuration';
++
++    public function handle(PrepayService $prepayService): int
++    {
++        $dryRun = (bool) $this->option('dry-run');
++        $includeHalo = (bool) $this->option('include-halo');
++        $depositPaid = (bool) $this->option('deposit-paid');
++
++        $scope = $includeHalo ? 'all invoices' : 'PSA-native invoices';
++        $this->info(($dryRun ? '[DRY RUN] ' : '')."Backfilling prepaid time from SKU config ({$scope})...");
++
++        // ── Step 1: Backfill invoice line prepaid_time_minutes from linked SKU config ──
++        // Mirrors BillingService::generateInvoice():
++        //   prepaid_time_minutes = (int) (quantity * sku.prepaid_time_minutes)
++        // The per-line profile override is not stored on invoice lines, so SKU config
++        // is the only recoverable source for historical lines. Only lines that were
++        // never set (null) are filled, so intentional values are never clobbered.
++        $query = InvoiceLine::query()
++            ->whereNull('prepaid_time_minutes')
++            ->whereNotNull('sku_id')
++            ->whereHas('sku', fn ($q) => $q->where('prepaid_time_minutes', '>', 0))
++            ->with('sku:id,prepaid_time_minutes');
++
++        if (! $includeHalo) {
++            $query->whereHas('invoice', fn ($q) => $q->whereNull('halo_id'));
++        }
++
++        $updatedLines = 0;
++        $addedMinutesByInvoice = [];
++
++        $query->chunkById(200, function ($lines) use (&$updatedLines, &$addedMinutesByInvoice, $dryRun) {
++            foreach ($lines as $line) {
++                $perUnit = (int) $line->sku->prepaid_time_minutes;
++                $minutes = (int) ((float) $line->quantity * $perUnit);
++
++                if (! $dryRun) {
++                    $line->update(['prepaid_time_minutes' => $minutes]);
++                }
++
++                $updatedLines++;
++                $addedMinutesByInvoice[$line->invoice_id] =
++                    ($addedMinutesByInvoice[$line->invoice_id] ?? 0) + $minutes;
++            }
++        });
++
++        $invoiceCount = count($addedMinutesByInvoice);
++        $verb = $dryRun ? 'Would backfill' : 'Backfilled';
++        $this->info("{$verb} {$updatedLines} invoice line(s) across {$invoiceCount} invoice(s).");
++
++        if ($invoiceCount === 0) {
++            $this->info('Nothing to backfill.');
++
++            return self::SUCCESS;
++        }
++
++        // ── Step 2: Already-paid invoices need an explicit prepay deposit ──
++        // InvoiceObserver only deposits on the Paid *transition*, so invoices that
++        // were already Paid before this backfill will not auto-deposit. Unpaid
++        // invoices deposit correctly when they are later marked Paid.
++        $this->reconcilePaidInvoices(
++            $prepayService,
++            array_keys($addedMinutesByInvoice),
++            $includeHalo,
++            $depositPaid,
++            $dryRun,
++        );
++
++        return self::SUCCESS;
++    }
++
++    /**
++     * Deposit (or report) prepaid time for invoices that were already Paid before
++     * the backfill ran and therefore never triggered the auto-deposit observer.
++     *
++     * @param  array<int>  $invoiceIds  Invoices whose lines gained prepaid minutes
++     */
++    private function reconcilePaidInvoices(
++        PrepayService $prepayService,
++        array $invoiceIds,
++        bool $includeHalo,
++        bool $depositPaid,
++        bool $dryRun,
++    ): void {
++        $query = Invoice::query()
++            ->whereIn('id', $invoiceIds)
++            ->where('status', InvoiceStatus::Paid)
++            ->whereNotNull('contract_id')
++            ->with(['lines.sku', 'contract']);
++
++        if (! $includeHalo) {
++            $query->whereNull('halo_id');
++        }
++
++        $paid = $query->get();
++
++        if ($paid->isEmpty()) {
++            return;
++        }
++
++        // One query for invoices that already carry a deposit (avoids N+1).
++        $alreadyDeposited = PrepayTransaction::whereIn('invoice_id', $paid->pluck('id'))
++            ->where('source', PrepayTransactionSource::InvoiceDeposit)
++            ->pluck('invoice_id')
++            ->flip();
++
++        $pending = $paid->filter(function (Invoice $invoice) use ($alreadyDeposited) {
++            if (! $invoice->contract) {
++                return false;
++            }
++            if ($alreadyDeposited->has($invoice->id)) {
++                return false;
++            }
++            // Mirror depositFromInvoice's dollar-based guard — those are skipped there.
++            if ($invoice->contract->has_prepay && $invoice->contract->prepay_as_amount) {
++                return false;
++            }
++
++            return $this->effectivePrepaidMinutes($invoice) > 0;
++        })->values();
++
++        if ($pending->isEmpty()) {
++            return;
++        }
++
++        $totalHours = round(
++            $pending->sum(fn (Invoice $invoice) => $this->effectivePrepaidMinutes($invoice)) / 60,
++            4,
++        );
++
++        if (! $depositPaid) {
++            $this->warn(
++                "{$pending->count()} already-paid invoice(s) gained prepaid time (~{$totalHours}h) "
++                .'but have no prepay deposit. Re-run with --deposit-paid to create them.'
++            );
++
++            return;
++        }
++
++        if ($dryRun) {
++            $this->info("[DRY RUN] Would create {$pending->count()} prepay deposit(s) totalling ~{$totalHours}h.");
++
++            return;
++        }
++
++        $created = 0;
++        $contracts = [];
++
++        foreach ($pending as $invoice) {
++            $txn = $prepayService->depositFromInvoice($invoice, $invoice->contract);
++            if ($txn) {
++                $created++;
++                $contracts[$invoice->contract_id] = $invoice->contract;
++            }
++        }
++
++        // Defensive: recompute denormalized balances from the ledger for touched contracts.
++        foreach ($contracts as $contract) {
++            $prepayService->recalculateBalance($contract);
++        }
++
++        $this->info("Created {$created} prepay deposit(s) across ".count($contracts).' contract(s).');
++    }
++
++    /**
++     * Effective prepaid minutes for an invoice after backfill — persisted line
++     * values plus any Step 1 would fill from SKU config. Computing both cases keeps
++     * the projection accurate under --dry-run (where lines are not yet persisted).
++     */
++    private function effectivePrepaidMinutes(Invoice $invoice): int
++    {
++        $total = 0;
++
++        foreach ($invoice->lines as $line) {
++            if ($line->prepaid_time_minutes !== null) {
++                $total += (int) $line->prepaid_time_minutes;
++            } elseif ($line->sku && (int) $line->sku->prepaid_time_minutes > 0) {
++                $total += (int) ((float) $line->quantity * (int) $line->sku->prepaid_time_minutes);
++            }
++        }
++
++        return $total;
++    }
++}
+diff --git a/docs/INSTALL.md b/docs/INSTALL.md
+index 35a90d5..dbb42d4 100644
+--- a/docs/INSTALL.md
++++ b/docs/INSTALL.md
+@@ -1162,6 +1162,25 @@ ### Prepay balances not appearing
+ 
+ Prepay balances are calculated from the transaction ledger. If balances look wrong, run `php artisan prepay:reconcile` (or `--contract=ID` for a specific contract) to recalculate from all transactions. Auto-deposits happen when invoices are generated from recurring profiles with SKUs that have `prepaid_time_minutes` set. Check the SKU and profile line configuration if deposits aren't appearing.
+ 
++**Historical invoices missing prepaid time:** Invoices generated before a SKU had `prepaid_time_minutes` configured carry no prepaid time on their lines, so no deposit is created when they are paid. Backfill them from the current SKU configuration:
++
++```bash
++# Preview: fill prepaid_time_minutes on PSA-native invoice lines from their linked SKU
++php artisan billing:backfill-prepaid-time --dry-run
++
++# Apply (only fills lines never set; never overwrites existing values)
++php artisan billing:backfill-prepaid-time
++
++# Also create the missing prepay deposits for invoices that were ALREADY paid
++# (unpaid invoices deposit automatically when they are later marked Paid)
++php artisan billing:backfill-prepaid-time --deposit-paid
++
++# Include Halo-imported invoices too (default: PSA-native only)
++php artisan billing:backfill-prepaid-time --include-halo
++```
++
++The command mirrors the generation-time formula (`quantity × sku.prepaid_time_minutes`). Deposit creation reuses the idempotent auto-deposit path, so re-running it never double-deposits.
++
+ ### 403 Forbidden when sending email (reply or compose)
+ 
+ The Entra app registration is missing the `Mail.Send` Application permission. Go to Azure Portal > App registrations > your app > API permissions, add `Mail.Send` under Microsoft Graph Application permissions, and grant admin consent. See Section 7.
+diff --git a/tests/Feature/Prepay/BackfillPrepaidTimeTest.php b/tests/Feature/Prepay/BackfillPrepaidTimeTest.php
+new file mode 100644
+index 0000000..4fe0700
+--- /dev/null
++++ b/tests/Feature/Prepay/BackfillPrepaidTimeTest.php
+@@ -0,0 +1,255 @@
++<?php
++
++namespace Tests\Feature\Prepay;
++
++use App\Enums\InvoiceStatus;
++use App\Enums\PrepayTransactionSource;
++use App\Models\Client;
++use App\Models\Contract;
++use App\Models\Invoice;
++use App\Models\InvoiceLine;
++use App\Models\PrepayTransaction;
++use App\Models\Sku;
++use Illuminate\Foundation\Testing\RefreshDatabase;
++use Tests\TestCase;
++
++class BackfillPrepaidTimeTest extends TestCase
++{
++    use RefreshDatabase;
++
++    private int $skuSeq = 0;
++
++    private int $invoiceSeq = 0;
++
++    // -------------------------------------------------------------------------
++    // Helpers
++    // -------------------------------------------------------------------------
++
++    private function sku(?int $prepaidMinutes): Sku
++    {
++        return Sku::create([
++            'name' => 'Managed Support '.++$this->skuSeq,
++            'sku_code' => 'MSP-'.$this->skuSeq,
++            'unit_price' => 100,
++            'prepaid_time_minutes' => $prepaidMinutes,
++        ]);
++    }
++
++    private function contract(array $attrs = []): Contract
++    {
++        $client = Client::create(['name' => 'Acme Corp']);
++
++        return Contract::create(array_merge([
++            'client_id' => $client->id,
++            'name' => 'Managed Services',
++            'type' => 'managed',
++            'status' => 'active',
++            'start_date' => '2026-01-01',
++            'prepay_as_amount' => false,
++            'prepay_total' => 0,
++            'prepay_used' => 0,
++            'prepay_balance' => 0,
++        ], $attrs));
++    }
++
++    private function invoice(Contract $contract, InvoiceStatus $status = InvoiceStatus::Posted, array $attrs = []): Invoice
++    {
++        return Invoice::create(array_merge([
++            'client_id' => $contract->client_id,
++            'contract_id' => $contract->id,
++            'invoice_number' => 'INV-'.++$this->invoiceSeq,
++            'invoice_date' => '2026-01-15',
++            'due_date' => '2026-02-15',
++            'status' => $status,
++        ], $attrs));
++    }
++
++    private function line(Invoice $invoice, ?Sku $sku, float $quantity = 3, ?int $prepaidMinutes = null): InvoiceLine
++    {
++        return InvoiceLine::create([
++            'invoice_id' => $invoice->id,
++            'sku_id' => $sku?->id,
++            'description' => 'Support line',
++            'quantity' => $quantity,
++            'unit_price' => 100,
++            'amount' => round($quantity * 100, 2),
++            'prepaid_time_minutes' => $prepaidMinutes,
++        ]);
++    }
++
++    private function depositCount(Invoice $invoice): int
++    {
++        return PrepayTransaction::where('invoice_id', $invoice->id)
++            ->where('source', PrepayTransactionSource::InvoiceDeposit)
++            ->count();
++    }
++
++    // -------------------------------------------------------------------------
++    // Step 1 — line backfill
++    // -------------------------------------------------------------------------
++
++    public function test_backfills_prepaid_minutes_from_sku(): void
++    {
++        $line = $this->line($this->invoice($this->contract()), $this->sku(60), quantity: 3);
++
++        $this->artisan('billing:backfill-prepaid-time')->assertSuccessful();
++
++        $this->assertSame(180, $line->fresh()->prepaid_time_minutes);
++    }
++
++    public function test_dry_run_makes_no_changes(): void
++    {
++        $line = $this->line($this->invoice($this->contract()), $this->sku(60), quantity: 3);
++
++        $this->artisan('billing:backfill-prepaid-time --dry-run')->assertSuccessful();
++
++        $this->assertNull($line->fresh()->prepaid_time_minutes);
++    }
++
++    public function test_does_not_clobber_existing_prepaid_minutes(): void
++    {
++        $line = $this->line($this->invoice($this->contract()), $this->sku(60), quantity: 3, prepaidMinutes: 5);
++
++        $this->artisan('billing:backfill-prepaid-time')->assertSuccessful();
++
++        $this->assertSame(5, $line->fresh()->prepaid_time_minutes);
++    }
++
++    public function test_skips_lines_without_sku(): void
++    {
++        $line = $this->line($this->invoice($this->contract()), null, quantity: 3);
++
++        $this->artisan('billing:backfill-prepaid-time')->assertSuccessful();
++
++        $this->assertNull($line->fresh()->prepaid_time_minutes);
++    }
++
++    public function test_skips_when_sku_has_no_prepaid_config(): void
++    {
++        $line = $this->line($this->invoice($this->contract()), $this->sku(null), quantity: 3);
++
++        $this->artisan('billing:backfill-prepaid-time')->assertSuccessful();
++
++        $this->assertNull($line->fresh()->prepaid_time_minutes);
++    }
++
++    public function test_truncates_fractional_minutes_like_generation(): void
++    {
++        // Mirrors BillingService: (int) (quantity * per-unit). 2.5 * 15 = 37.5 -> 37.
++        $line = $this->line($this->invoice($this->contract()), $this->sku(15), quantity: 2.5);
++
++        $this->artisan('billing:backfill-prepaid-time')->assertSuccessful();
++
++        $this->assertSame(37, $line->fresh()->prepaid_time_minutes);
++    }
++
++    // -------------------------------------------------------------------------
++    // Halo scoping
++    // -------------------------------------------------------------------------
++
++    public function test_skips_halo_invoices_by_default(): void
++    {
++        $invoice = $this->invoice($this->contract(), attrs: ['halo_id' => 4242]);
++        $line = $this->line($invoice, $this->sku(60), quantity: 3);
++
++        $this->artisan('billing:backfill-prepaid-time')->assertSuccessful();
++
++        $this->assertNull($line->fresh()->prepaid_time_minutes);
++    }
++
++    public function test_include_halo_flag_processes_halo_invoices(): void
++    {
++        $invoice = $this->invoice($this->contract(), attrs: ['halo_id' => 4242]);
++        $line = $this->line($invoice, $this->sku(60), quantity: 3);
++
++        $this->artisan('billing:backfill-prepaid-time --include-halo')->assertSuccessful();
++
++        $this->assertSame(180, $line->fresh()->prepaid_time_minutes);
++    }
++
++    // -------------------------------------------------------------------------
++    // Step 2 — deposit reconciliation
++    // -------------------------------------------------------------------------
++
++    public function test_default_run_does_not_create_deposits(): void
++    {
++        $invoice = $this->invoice($this->contract(), InvoiceStatus::Paid);
++        $line = $this->line($invoice, $this->sku(60), quantity: 3);
++
++        $this->artisan('billing:backfill-prepaid-time')->assertSuccessful();
++
++        $this->assertSame(180, $line->fresh()->prepaid_time_minutes);
++        $this->assertSame(0, $this->depositCount($invoice));
++    }
++
++    public function test_deposit_paid_creates_deposit_for_paid_invoice(): void
++    {
++        $contract = $this->contract();
++        $invoice = $this->invoice($contract, InvoiceStatus::Paid);
++        $this->line($invoice, $this->sku(60), quantity: 3);
++
++        $this->artisan('billing:backfill-prepaid-time --deposit-paid')->assertSuccessful();
++
++        $this->assertSame(1, $this->depositCount($invoice));
++
++        $deposit = PrepayTransaction::where('invoice_id', $invoice->id)
++            ->where('source', PrepayTransactionSource::InvoiceDeposit)
++            ->firstOrFail();
++        $this->assertEqualsWithDelta(3.0, (float) $deposit->hours, 0.0001);
++        $this->assertEqualsWithDelta(3.0, (float) $contract->fresh()->prepay_balance, 0.0001);
++    }
++
++    public function test_deposit_paid_dry_run_creates_no_deposit(): void
++    {
++        $invoice = $this->invoice($this->contract(), InvoiceStatus::Paid);
++        $line = $this->line($invoice, $this->sku(60), quantity: 3);
++
++        $this->artisan('billing:backfill-prepaid-time --deposit-paid --dry-run')->assertSuccessful();
++
++        $this->assertNull($line->fresh()->prepaid_time_minutes);
++        $this->assertSame(0, $this->depositCount($invoice));
++    }
++
++    public function test_deposit_paid_is_idempotent_when_deposit_exists(): void
++    {
++        $contract = $this->contract();
++        $invoice = $this->invoice($contract, InvoiceStatus::Paid);
++        $this->line($invoice, $this->sku(60), quantity: 3);
++
++        // A deposit already exists (e.g. created at payment time from a partial line).
++        PrepayTransaction::create([
++            'contract_id' => $contract->id,
++            'source' => PrepayTransactionSource::InvoiceDeposit,
++            'invoice_id' => $invoice->id,
++            'date' => '2026-01-15',
++            'hours' => 3.0,
++        ]);
++
++        $this->artisan('billing:backfill-prepaid-time --deposit-paid')->assertSuccessful();
++
++        $this->assertSame(1, $this->depositCount($invoice));
++    }
++
++    public function test_deposit_paid_skips_unpaid_invoice(): void
++    {
++        $invoice = $this->invoice($this->contract(), InvoiceStatus::Posted);
++        $line = $this->line($invoice, $this->sku(60), quantity: 3);
++
++        $this->artisan('billing:backfill-prepaid-time --deposit-paid')->assertSuccessful();
++
++        // Line is still backfilled, but no deposit — it will deposit when marked Paid.
++        $this->assertSame(180, $line->fresh()->prepaid_time_minutes);
++        $this->assertSame(0, $this->depositCount($invoice));
++    }
++
++    public function test_deposit_paid_skips_dollar_based_contract(): void
++    {
++        $contract = $this->contract(['prepay_as_amount' => true]);
++        $invoice = $this->invoice($contract, InvoiceStatus::Paid);
++        $this->line($invoice, $this->sku(60), quantity: 3);
++
++        $this->artisan('billing:backfill-prepaid-time --deposit-paid')->assertSuccessful();
++
++        $this->assertSame(0, $this->depositCount($invoice));
++    }
++}
+-- 
+2.43.0
+

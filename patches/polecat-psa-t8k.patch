@@ -1,0 +1,743 @@
+From edaaa6dbfc2d3c5375607a6765aeb1e5276ec114 Mon Sep 17 00:00:00 2001
+From: "gastown.slit (polecat)" <polecat-gastown.slit@soundit.local>
+Date: Wed, 8 Jul 2026 23:10:29 +0000
+Subject: [PATCH] feat: transfer prepaid time balance between contracts
+ (psa-t8k)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+All prepay operations were previously per-contract, so a client with
+leftover prepaid hours on one contract had no way to move them to another
+(e.g. consolidating onto a renewal). GitHub #111.
+
+Adds PrepayService::transfer(), which records a matched ledger pair — a
+TransferOut debit on the source contract and a TransferIn credit on the
+destination — atomically in one DB transaction, with a ContractActivity
+logged on each side. The pair deliberately mirrors the existing manual
+debit/credit mechanics so the denormalized balance columns stay consistent
+with recalculateBalanceLocked(): the transfer-out counts toward the
+source's prepay_used, the transfer-in toward the destination's
+prepay_total. A from-ledger recalculation reproduces the live state
+exactly (asserted in the flagship test), so a transfer can never drift the
+balance columns.
+
+Design decisions / constraints honoured:
+- Transfers are restricted to two active contracts of the SAME client with
+  the SAME tracking unit (hours vs dollars); the balance is conserved.
+- Insufficient-balance, same-contract, cross-client, unit-mismatch and
+  no-prepay-destination are all rejected (service throws; controller
+  surfaces friendly redirects and re-checks defensively).
+- The incoming credit inherits the DESTINATION contract's expiry policy via
+  expiryForCredit(); the outgoing debit carries no expiry.
+- New TransferIn/TransferOut sources are excluded from scopeConsumption so a
+  one-time balance movement does not distort the burn-rate / days-until-
+  depleted estimate. PrepayExpirationService is unaffected: it replays raw
+  signs (not that scope), so a transfer-out correctly draws down source
+  lots FIFO and a transfer-in becomes an expirable lot on the destination.
+
+UI: a "Transfer" action + modal on the contract Prepay Balance card, shown
+only when the client has another eligible contract. New route
+contracts.prepay-transfer.
+
+Validation: new tests/Feature/Prepay/PrepayTransferTest.php (12 cases:
+balance movement + ledger-recalc consistency, activity logging, expiry
+policy, burn-rate exclusion, every guard, and HTTP happy-path + rejections)
+— all green. Full suite 2580 passed / 0 failed on sqlite; Pint clean on all
+changed files.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ app/Enums/PrepayTransactionSource.php         |   9 +-
+ .../Controllers/Web/ContractController.php    |  59 ++++
+ app/Models/PrepayTransaction.php              |  13 +-
+ app/Services/PrepayService.php                | 127 ++++++++
+ resources/views/contracts/show.blade.php      |  63 +++-
+ routes/web.php                                |   1 +
+ tests/Feature/Prepay/PrepayTransferTest.php   | 297 ++++++++++++++++++
+ 7 files changed, 561 insertions(+), 8 deletions(-)
+ create mode 100644 tests/Feature/Prepay/PrepayTransferTest.php
+
+diff --git a/app/Enums/PrepayTransactionSource.php b/app/Enums/PrepayTransactionSource.php
+index fc43d08..0ef1997 100644
+--- a/app/Enums/PrepayTransactionSource.php
++++ b/app/Enums/PrepayTransactionSource.php
+@@ -12,6 +12,11 @@ enum PrepayTransactionSource: string
+     case TicketTime = 'ticket_time';
+     case PhoneCallTime = 'phone_call_time';
+     case Expiration = 'expiration';
++    // Balance moved between two contracts of the same client. TransferOut is the
++    // debit on the source contract; TransferIn is the matching credit on the
++    // destination. Always created as a pair by PrepayService::transfer().
++    case TransferOut = 'transfer_out';
++    case TransferIn = 'transfer_in';
+ 
+     public function label(): string
+     {
+@@ -24,11 +29,13 @@ public function label(): string
+             self::TicketTime => 'Ticket Time',
+             self::PhoneCallTime => 'Phone Call Time',
+             self::Expiration => 'Expiration',
++            self::TransferOut => 'Transfer Out',
++            self::TransferIn => 'Transfer In',
+         };
+     }
+ 
+     public function isCredit(): bool
+     {
+-        return in_array($this, [self::HaloSync, self::InvoiceDeposit, self::ManualCredit]);
++        return in_array($this, [self::HaloSync, self::InvoiceDeposit, self::ManualCredit, self::TransferIn]);
+     }
+ }
+diff --git a/app/Http/Controllers/Web/ContractController.php b/app/Http/Controllers/Web/ContractController.php
+index 68819a1..feadaea 100644
+--- a/app/Http/Controllers/Web/ContractController.php
++++ b/app/Http/Controllers/Web/ContractController.php
+@@ -248,6 +248,18 @@ public function show(Contract $contract)
+         // Unassigned licenses — scoped to ANY contract for the client (not just this one)
+         $unassignedLicenses = $assignmentService->getUnassignedLicenses($contract);
+ 
++        // Contracts eligible to receive a prepay transfer: same client, active,
++        // prepay enabled, and the same tracking unit (hours vs dollars).
++        $prepayTransferTargets = $contract->has_prepay
++            ? Contract::where('client_id', $contract->client_id)
++                ->where('id', '!=', $contract->id)
++                ->where('status', ContractStatus::Active)
++                ->whereNotNull('prepay_balance')
++                ->where('prepay_as_amount', $contract->prepay_as_amount)
++                ->orderBy('name')
++                ->get()
++            : collect();
++
+         \App\Support\RecentItems::track(auth()->id(), 'contract', $contract->id, \Illuminate\Support\Str::limit($contract->name, 30), route('contracts.show', $contract));
+ 
+         return view('contracts.show', [
+@@ -256,6 +268,7 @@ public function show(Contract $contract)
+             'unassignedAssets' => $unassignedAssets,
+             'unassignedPeople' => $unassignedPeople,
+             'unassignedLicenses' => $unassignedLicenses,
++            'prepayTransferTargets' => $prepayTransferTargets,
+             'ruleTypes' => \App\Enums\AssignmentRuleType::cases(),
+             'types' => ContractType::cases(),
+             'statuses' => ContractStatus::cases(),
+@@ -460,6 +473,52 @@ public function prepayAdjust(Request $request, Contract $contract)
+             ->with('success', "{$label} of {$validated['value']} {$unit} applied.");
+     }
+ 
++    public function prepayTransfer(Request $request, Contract $contract)
++    {
++        if (! $contract->has_prepay) {
++            return redirect()->route('contracts.show', $contract)
++                ->with('error', 'Prepay is not enabled on this contract.');
++        }
++
++        $validated = $request->validate([
++            'to_contract_id' => ['required', 'integer', 'exists:contracts,id'],
++            'value' => ['required', 'numeric', 'gt:0'],
++            'note' => ['required', 'string', 'max:500'],
++        ]);
++
++        $target = Contract::find($validated['to_contract_id']);
++
++        // Business rules — surfaced as friendly redirects. PrepayService::transfer()
++        // re-asserts each of these defensively (throws), so the guard is honoured
++        // even if a caller bypasses the form.
++        $error = match (true) {
++            $target === null => 'Destination contract not found.',
++            $target->id === $contract->id => 'Cannot transfer prepay to the same contract.',
++            $target->client_id !== $contract->client_id => 'Prepay can only be transferred between contracts of the same client.',
++            ! $target->has_prepay => 'The destination contract does not have prepay enabled.',
++            $target->prepay_as_amount !== $contract->prepay_as_amount => 'Prepay tracking units must match (hours vs dollars).',
++            round((float) $validated['value'], 4) > round((float) $contract->prepay_balance, 4) => 'Insufficient prepay balance to transfer.',
++            default => null,
++        };
++
++        if ($error !== null) {
++            return redirect()->route('contracts.show', $contract)->with('error', $error);
++        }
++
++        try {
++            $this->prepayService->transfer(
++                $contract, $target, (float) $validated['value'], $validated['note'], auth()->user(),
++            );
++        } catch (\InvalidArgumentException $e) {
++            return redirect()->route('contracts.show', $contract)->with('error', $e->getMessage());
++        }
++
++        $unit = $contract->prepay_as_amount ? 'dollars' : 'hours';
++
++        return redirect()->route('contracts.show', $contract)
++            ->with('success', "Transferred {$validated['value']} {$unit} to {$target->name}.");
++    }
++
+     public function updatePortalSku(Request $request, Contract $contract)
+     {
+         $skuId = $request->input('portal_prepay_sku_id');
+diff --git a/app/Models/PrepayTransaction.php b/app/Models/PrepayTransaction.php
+index b3c8c07..0b29b06 100644
+--- a/app/Models/PrepayTransaction.php
++++ b/app/Models/PrepayTransaction.php
+@@ -79,10 +79,13 @@ public function expiredTransaction(): BelongsTo
+     // ── Scopes ──
+ 
+     /**
+-     * Consumption transactions only — excludes deposits, credits, and
+-     * expirations. Used for burn rate calculation and usage reporting:
+-     * forfeited (expired) hours are not work consumed, so they must not
+-     * skew the burn rate or days-until-depleted estimate.
++     * Consumption transactions only — excludes deposits, credits, expirations,
++     * and inter-contract transfers. Used for burn rate calculation and usage
++     * reporting: forfeited (expired) hours are not work consumed, and a transfer
++     * is a one-time balance movement between contracts (not ongoing work), so
++     * neither must skew the burn rate or days-until-depleted estimate. Note this
++     * scope is distinct from the raw-sign replay in PrepayExpirationService,
++     * which intentionally treats a transfer-out as a lot-drawing debit.
+      */
+     public function scopeConsumption(Builder $query): Builder
+     {
+@@ -92,6 +95,8 @@ public function scopeConsumption(Builder $query): Builder
+                 PrepayTransactionSource::InvoiceReversal->value,
+                 PrepayTransactionSource::ManualCredit->value,
+                 PrepayTransactionSource::Expiration->value,
++                PrepayTransactionSource::TransferOut->value,
++                PrepayTransactionSource::TransferIn->value,
+             ])->orWhereNull('source');
+         });
+     }
+diff --git a/app/Services/PrepayService.php b/app/Services/PrepayService.php
+index 352b88f..11aa7f4 100644
+--- a/app/Services/PrepayService.php
++++ b/app/Services/PrepayService.php
+@@ -245,6 +245,133 @@ public function addManualDebit(
+         });
+     }
+ 
++    /**
++     * Transfer prepay balance from one contract to another. Creates a matched
++     * pair of ledger rows — a TransferOut debit on $from and a TransferIn credit
++     * on $to — atomically, and logs a ContractActivity on each side.
++     *
++     * The pair mirrors manual debit/credit mechanics so the denormalized balance
++     * columns stay consistent with recalculateBalanceLocked(): the transfer-out
++     * counts toward $from's prepay_used, the transfer-in toward $to's
++     * prepay_total. Transfers move balance between contracts of the SAME client
++     * with the SAME tracking unit; the destination applies its own expiry policy
++     * to the incoming credit.
++     *
++     * @return array{out: PrepayTransaction, in: PrepayTransaction}
++     *
++     * @throws \InvalidArgumentException when the transfer is not permitted
++     */
++    public function transfer(
++        Contract $from,
++        Contract $to,
++        float $value,
++        string $note,
++        ?User $user = null,
++    ): array {
++        if ($from->id === $to->id) {
++            throw new \InvalidArgumentException('Cannot transfer prepay to the same contract.');
++        }
++
++        if ($from->client_id !== $to->client_id) {
++            throw new \InvalidArgumentException('Prepay can only be transferred between contracts of the same client.');
++        }
++
++        if (! $from->has_prepay || ! $to->has_prepay) {
++            throw new \InvalidArgumentException('Both contracts must have prepay enabled to transfer.');
++        }
++
++        if ($from->prepay_as_amount !== $to->prepay_as_amount) {
++            throw new \InvalidArgumentException('Prepay tracking units must match (hours vs dollars) to transfer.');
++        }
++
++        if ($value <= 0) {
++            throw new \InvalidArgumentException('Transfer amount must be greater than zero.');
++        }
++
++        if (round($value, 4) > round((float) $from->prepay_balance, 4)) {
++            throw new \InvalidArgumentException('Insufficient prepay balance to transfer.');
++        }
++
++        $isAmount = $from->prepay_as_amount;
++        $userId = $user?->id ?? Auth::id();
++        $unit = $isAmount ? 'dollars' : 'hours';
++
++        return DB::transaction(function () use ($from, $to, $value, $note, $isAmount, $userId, $unit) {
++            $out = PrepayTransaction::create([
++                'contract_id' => $from->id,
++                'source' => PrepayTransactionSource::TransferOut,
++                'user_id' => $userId,
++                'date' => now(),
++                'hours' => $isAmount ? null : -abs($value),
++                'amount' => $isAmount ? -abs($value) : null,
++                'description' => "Transfer to {$to->name} (#{$to->id})",
++                'note' => $note,
++            ]);
++
++            // Transfer-out draws down the source like a debit: it reduces balance
++            // and (matching recalculateBalanceLocked, which lumps every
++            // non-expiration debit into "used") counts toward prepay_used.
++            $from->increment('prepay_used', abs($value));
++            $from->decrement('prepay_balance', abs($value));
++
++            $in = PrepayTransaction::create([
++                'contract_id' => $to->id,
++                'source' => PrepayTransactionSource::TransferIn,
++                'user_id' => $userId,
++                'date' => now(),
++                'hours' => $isAmount ? null : abs($value),
++                'amount' => $isAmount ? abs($value) : null,
++                'description' => "Transfer from {$from->name} (#{$from->id})",
++                'note' => $note,
++                // The destination applies its own forfeiture policy to the credit.
++                'expiry_date' => $this->expiryForCredit($to, now()),
++            ]);
++
++            $to->increment('prepay_total', abs($value));
++            $to->increment('prepay_balance', abs($value));
++
++            ContractActivity::create([
++                'contract_id' => $from->id,
++                'user_id' => $userId,
++                'action' => 'prepay_transfer_out',
++                'changes' => [
++                    'value' => $value,
++                    'unit' => $unit,
++                    'to_contract_id' => $to->id,
++                    'to_contract' => $to->name,
++                    'note' => $note,
++                    'new_balance' => (float) $from->fresh()->prepay_balance,
++                ],
++                'created_at' => now(),
++            ]);
++
++            ContractActivity::create([
++                'contract_id' => $to->id,
++                'user_id' => $userId,
++                'action' => 'prepay_transfer_in',
++                'changes' => [
++                    'value' => $value,
++                    'unit' => $unit,
++                    'from_contract_id' => $from->id,
++                    'from_contract' => $from->name,
++                    'note' => $note,
++                    'new_balance' => (float) $to->fresh()->prepay_balance,
++                ],
++                'created_at' => now(),
++            ]);
++
++            Log::info('[Prepay] Balance transferred between contracts', [
++                'from_contract_id' => $from->id,
++                'to_contract_id' => $to->id,
++                'value' => $value,
++                'unit' => $unit,
++                'user_id' => $userId,
++            ]);
++
++            return ['out' => $out, 'in' => $in];
++        });
++    }
++
+     /**
+      * Create or update a prepay debit from a ticket note's billable time.
+      */
+diff --git a/resources/views/contracts/show.blade.php b/resources/views/contracts/show.blade.php
+index abcff99..58181a3 100644
+--- a/resources/views/contracts/show.blade.php
++++ b/resources/views/contracts/show.blade.php
+@@ -593,9 +593,16 @@ class="me-1 {{ $txnIsPositive ? 'text-success' : 'text-danger' }}">
+             <div class="card shadow-sm mt-3">
+                 <div class="card-header d-flex justify-content-between align-items-center">
+                     <div><i class="bi bi-wallet2 me-2"></i>Prepay Balance</div>
+-                    <button type="button" class="btn btn-outline-primary btn-sm" data-bs-toggle="modal" data-bs-target="#prepayAdjustModal">
+-                        <i class="bi bi-plus-slash-minus me-1"></i>Adjust
+-                    </button>
++                    <div class="btn-group">
++                        @if($prepayTransferTargets->isNotEmpty())
++                            <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-toggle="modal" data-bs-target="#prepayTransferModal">
++                                <i class="bi bi-arrow-left-right me-1"></i>Transfer
++                            </button>
++                        @endif
++                        <button type="button" class="btn btn-outline-primary btn-sm" data-bs-toggle="modal" data-bs-target="#prepayAdjustModal">
++                            <i class="bi bi-plus-slash-minus me-1"></i>Adjust
++                        </button>
++                    </div>
+                 </div>
+                 <div class="card-body text-center">
+                     @php
+@@ -1030,6 +1037,56 @@ class="text-decoration-none text-truncate d-block" title="{{ $doc->original_file
+         </form>
+     </div>
+ </div>
++
++@if($prepayTransferTargets->isNotEmpty())
++<div class="modal fade" id="prepayTransferModal" tabindex="-1">
++    <div class="modal-dialog">
++        <form method="POST" action="{{ route('contracts.prepay-transfer', $contract) }}">
++            @csrf
++            <div class="modal-content">
++                <div class="modal-header">
++                    <h5 class="modal-title">Transfer Prepay Balance</h5>
++                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
++                </div>
++                <div class="modal-body">
++                    <p class="small text-muted">
++                        Move balance from this contract to another {{ $contract->prepay_as_amount ? 'dollar-based' : 'hours-based' }}
++                        prepay contract for {{ $contract->client->name }}. Available:
++                        <span class="fw-semibold">{{ $contract->prepay_balance_formatted }}</span>.
++                    </p>
++                    <div class="mb-3">
++                        <label for="transferTarget" class="form-label">Transfer to</label>
++                        <select class="form-select" id="transferTarget" name="to_contract_id" required>
++                            <option value="" disabled selected>Select a contract…</option>
++                            @foreach($prepayTransferTargets as $target)
++                                <option value="{{ $target->id }}">
++                                    {{ $target->name }} ({{ $target->prepay_balance_formatted }})
++                                </option>
++                            @endforeach
++                        </select>
++                    </div>
++                    <div class="mb-3">
++                        <label for="transferValue" class="form-label">
++                            {{ $contract->prepay_as_amount ? 'Amount ($)' : 'Hours' }}
++                        </label>
++                        <input type="number" class="form-control" id="transferValue" name="value"
++                               step="any" min="0" max="{{ (float) $contract->prepay_balance }}" required>
++                    </div>
++                    <div class="mb-3">
++                        <label for="transferNote" class="form-label">Note</label>
++                        <input type="text" class="form-control" id="transferNote" name="note"
++                               maxlength="500" required placeholder="Reason for transfer">
++                    </div>
++                </div>
++                <div class="modal-footer">
++                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
++                    <button type="submit" class="btn btn-primary">Transfer</button>
++                </div>
++            </div>
++        </form>
++    </div>
++</div>
++@endif
+ @endif
+ 
+ @endsection
+diff --git a/routes/web.php b/routes/web.php
+index 69e48fb..135e3bf 100644
+--- a/routes/web.php
++++ b/routes/web.php
+@@ -532,6 +532,7 @@
+     Route::get('/contracts/{contract}/invoices', [ContractController::class, 'invoices'])->name('contracts.invoices');
+     Route::patch('/contracts/{contract}', [ContractController::class, 'update'])->name('contracts.update');
+     Route::post('/contracts/{contract}/prepay/adjust', [ContractController::class, 'prepayAdjust'])->name('contracts.prepay-adjust');
++    Route::post('/contracts/{contract}/prepay/transfer', [ContractController::class, 'prepayTransfer'])->name('contracts.prepay-transfer');
+     Route::post('/contracts/{contract}/prepay/initialize', [ContractController::class, 'initializePrepay'])->name('contracts.initialize-prepay');
+     Route::put('/contracts/{contract}/portal-sku', [ContractController::class, 'updatePortalSku'])->name('contracts.update-portal-sku');
+     Route::put('/contracts/{contract}/alert-settings', [ContractController::class, 'updateAlertSettings'])->name('contracts.update-alert-settings');
+diff --git a/tests/Feature/Prepay/PrepayTransferTest.php b/tests/Feature/Prepay/PrepayTransferTest.php
+new file mode 100644
+index 0000000..c83fd7b
+--- /dev/null
++++ b/tests/Feature/Prepay/PrepayTransferTest.php
+@@ -0,0 +1,297 @@
++<?php
++
++namespace Tests\Feature\Prepay;
++
++use App\Enums\PrepayTransactionSource;
++use App\Models\Client;
++use App\Models\Contract;
++use App\Models\PrepayTransaction;
++use App\Models\User;
++use App\Services\PrepayService;
++use Illuminate\Foundation\Testing\RefreshDatabase;
++use Illuminate\Support\Carbon;
++use Tests\TestCase;
++
++/**
++ * Covers inter-contract prepay transfers (psa-t8k / GitHub #111). A transfer is
++ * a matched TransferOut/TransferIn ledger pair created atomically; the flagship
++ * assertion is that the live denormalized balances match a from-ledger
++ * recalculation, so the transfer can never drift the balance columns.
++ */
++class PrepayTransferTest extends TestCase
++{
++    use RefreshDatabase;
++
++    private function service(): PrepayService
++    {
++        return app(PrepayService::class);
++    }
++
++    private function contract(int $clientId, array $overrides = []): Contract
++    {
++        return Contract::create(array_merge([
++            'client_id' => $clientId,
++            'name' => 'Contract',
++            'type' => 'managed',
++            'status' => 'active',
++            'start_date' => '2026-01-01',
++            'prepay_as_amount' => false,
++            'prepay_total' => 0,
++            'prepay_used' => 0,
++            'prepay_balance' => 0,
++        ], $overrides));
++    }
++
++    /** A contract with no prepay tracking at all (balance column left null). */
++    private function bareContract(int $clientId, array $overrides = []): Contract
++    {
++        return Contract::create(array_merge([
++            'client_id' => $clientId,
++            'name' => 'No Prepay',
++            'type' => 'managed',
++            'status' => 'active',
++            'start_date' => '2026-01-01',
++        ], $overrides));
++    }
++
++    public function test_transfer_moves_balance_and_stays_ledger_consistent(): void
++    {
++        $client = Client::create(['name' => 'Acme Corp']);
++        $from = $this->contract($client->id, ['name' => 'Old MSA']);
++        $to = $this->contract($client->id, ['name' => 'New MSA']);
++        $this->service()->addManualCredit($from, 10, 'seed');
++
++        $result = $this->service()->transfer($from, $to, 4, 'Consolidating', null);
++
++        $from->refresh();
++        $to->refresh();
++
++        // Balance moved; total is conserved across the two contracts.
++        $this->assertEqualsWithDelta(6.0, (float) $from->prepay_balance, 1e-6);
++        $this->assertEqualsWithDelta(4.0, (float) $to->prepay_balance, 1e-6);
++        $this->assertEqualsWithDelta(
++            10.0,
++            (float) $from->prepay_balance + (float) $to->prepay_balance,
++            1e-6,
++        );
++
++        // Source: transfer-out is a debit counted as "used"; total unchanged.
++        $this->assertEqualsWithDelta(10.0, (float) $from->prepay_total, 1e-6);
++        $this->assertEqualsWithDelta(4.0, (float) $from->prepay_used, 1e-6);
++        // Destination: transfer-in is a fresh credit.
++        $this->assertEqualsWithDelta(4.0, (float) $to->prepay_total, 1e-6);
++        $this->assertEqualsWithDelta(0.0, (float) $to->prepay_used, 1e-6);
++
++        // Ledger rows carry the right source and sign.
++        $this->assertSame(PrepayTransactionSource::TransferOut, $result['out']->source);
++        $this->assertEqualsWithDelta(-4.0, (float) $result['out']->hours, 1e-6);
++        $this->assertSame(PrepayTransactionSource::TransferIn, $result['in']->source);
++        $this->assertEqualsWithDelta(4.0, (float) $result['in']->hours, 1e-6);
++
++        // Flagship: recomputing from the ledger reproduces the live state exactly.
++        $this->service()->recalculateBalance($from);
++        $this->service()->recalculateBalance($to);
++        $from->refresh();
++        $to->refresh();
++        $this->assertEqualsWithDelta(6.0, (float) $from->prepay_balance, 1e-6);
++        $this->assertEqualsWithDelta(4.0, (float) $from->prepay_used, 1e-6);
++        $this->assertEqualsWithDelta(10.0, (float) $from->prepay_total, 1e-6);
++        $this->assertEqualsWithDelta(4.0, (float) $to->prepay_balance, 1e-6);
++        $this->assertEqualsWithDelta(4.0, (float) $to->prepay_total, 1e-6);
++    }
++
++    public function test_transfer_logs_activity_on_both_contracts(): void
++    {
++        $client = Client::create(['name' => 'Acme Corp']);
++        $from = $this->contract($client->id, ['name' => 'Old MSA']);
++        $to = $this->contract($client->id, ['name' => 'New MSA']);
++        $this->service()->addManualCredit($from, 8, 'seed');
++
++        $this->service()->transfer($from, $to, 3, 'Moving hours', null);
++
++        $this->assertDatabaseHas('contract_activities', [
++            'contract_id' => $from->id,
++            'action' => 'prepay_transfer_out',
++        ]);
++        $this->assertDatabaseHas('contract_activities', [
++            'contract_id' => $to->id,
++            'action' => 'prepay_transfer_in',
++        ]);
++    }
++
++    public function test_transfer_in_applies_destination_expiry_policy(): void
++    {
++        Carbon::setTestNow('2026-06-01 12:00:00');
++        $client = Client::create(['name' => 'Acme Corp']);
++        $from = $this->contract($client->id);
++        $to = $this->contract($client->id, ['prepay_expiry_months' => 6]);
++        $this->service()->addManualCredit($from, 5, 'seed');
++
++        $result = $this->service()->transfer($from, $to, 2, 'move', null);
++
++        // The incoming credit expires per the destination's policy.
++        $this->assertNotNull($result['in']->expiry_date);
++        $this->assertEqualsWithDelta(
++            now()->addMonths(6)->timestamp,
++            $result['in']->expiry_date->timestamp,
++            5,
++        );
++        // The outgoing debit never carries an expiry.
++        $this->assertNull($result['out']->expiry_date);
++
++        Carbon::setTestNow();
++    }
++
++    public function test_transfer_is_excluded_from_burn_rate(): void
++    {
++        $client = Client::create(['name' => 'Acme Corp']);
++        $from = $this->contract($client->id);
++        $to = $this->contract($client->id, ['name' => 'Recipient']);
++        $this->service()->addManualCredit($from, 100, 'seed');
++
++        // A large, recent transfer-in must not read as consumption. Without the
++        // scopeConsumption exclusion this positive row would inflate burn rate.
++        $this->service()->transfer($from, $to, 100, 'move all', null);
++
++        $freshTo = Contract::find($to->id);
++        $this->assertEqualsWithDelta(0.0, (float) $freshTo->burn_rate, 1e-6);
++
++        $freshFrom = Contract::find($from->id);
++        $this->assertEqualsWithDelta(0.0, (float) $freshFrom->burn_rate, 1e-6);
++    }
++
++    public function test_transfer_rejects_insufficient_balance(): void
++    {
++        $client = Client::create(['name' => 'Acme Corp']);
++        $from = $this->contract($client->id);
++        $to = $this->contract($client->id, ['name' => 'New MSA']);
++        $this->service()->addManualCredit($from, 5, 'seed');
++
++        $threw = false;
++        try {
++            $this->service()->transfer($from, $to, 20, 'too much', null);
++        } catch (\InvalidArgumentException $e) {
++            $threw = true;
++        }
++
++        $this->assertTrue($threw, 'Expected an over-balance transfer to be rejected.');
++        $from->refresh();
++        $this->assertEqualsWithDelta(5.0, (float) $from->prepay_balance, 1e-6);
++        $this->assertSame(0, PrepayTransaction::where('source', PrepayTransactionSource::TransferOut)->count());
++        $this->assertSame(0, PrepayTransaction::where('source', PrepayTransactionSource::TransferIn)->count());
++    }
++
++    public function test_transfer_rejects_cross_client(): void
++    {
++        $clientA = Client::create(['name' => 'Client A']);
++        $clientB = Client::create(['name' => 'Client B']);
++        $from = $this->contract($clientA->id);
++        $to = $this->contract($clientB->id);
++        $this->service()->addManualCredit($from, 10, 'seed');
++
++        $this->expectException(\InvalidArgumentException::class);
++        $this->service()->transfer($from, $to, 2, 'cross client', null);
++    }
++
++    public function test_transfer_rejects_unit_mismatch(): void
++    {
++        $client = Client::create(['name' => 'Acme Corp']);
++        $from = $this->contract($client->id);
++        $to = $this->contract($client->id, ['prepay_as_amount' => true]);
++        $this->service()->addManualCredit($from, 10, 'seed');
++
++        $this->expectException(\InvalidArgumentException::class);
++        $this->service()->transfer($from, $to, 2, 'mismatch', null);
++    }
++
++    public function test_transfer_rejects_same_contract(): void
++    {
++        $client = Client::create(['name' => 'Acme Corp']);
++        $from = $this->contract($client->id);
++        $this->service()->addManualCredit($from, 10, 'seed');
++
++        $this->expectException(\InvalidArgumentException::class);
++        $this->service()->transfer($from, $from, 2, 'self', null);
++    }
++
++    public function test_transfer_rejects_destination_without_prepay(): void
++    {
++        $client = Client::create(['name' => 'Acme Corp']);
++        $from = $this->contract($client->id);
++        $to = $this->bareContract($client->id);
++        $this->service()->addManualCredit($from, 10, 'seed');
++
++        $this->assertFalse($to->has_prepay);
++        $this->expectException(\InvalidArgumentException::class);
++        $this->service()->transfer($from, $to, 2, 'no prepay', null);
++    }
++
++    public function test_staff_can_transfer_via_http(): void
++    {
++        $user = User::factory()->create();
++        $client = Client::create(['name' => 'Acme Corp']);
++        $from = $this->contract($client->id, ['name' => 'Old MSA']);
++        $to = $this->contract($client->id, ['name' => 'New MSA']);
++        $this->service()->addManualCredit($from, 10, 'seed');
++
++        $response = $this->actingAs($user)->post(route('contracts.prepay-transfer', $from), [
++            'to_contract_id' => $to->id,
++            'value' => 3,
++            'note' => 'Consolidating balances',
++        ]);
++
++        $response->assertRedirect(route('contracts.show', $from));
++        $response->assertSessionHas('success');
++
++        $from->refresh();
++        $to->refresh();
++        $this->assertEqualsWithDelta(7.0, (float) $from->prepay_balance, 1e-6);
++        $this->assertEqualsWithDelta(3.0, (float) $to->prepay_balance, 1e-6);
++    }
++
++    public function test_http_transfer_rejects_cross_client_target(): void
++    {
++        $user = User::factory()->create();
++        $clientA = Client::create(['name' => 'Client A']);
++        $clientB = Client::create(['name' => 'Client B']);
++        $from = $this->contract($clientA->id);
++        $other = $this->contract($clientB->id);
++        $this->service()->addManualCredit($from, 10, 'seed');
++
++        $response = $this->actingAs($user)->post(route('contracts.prepay-transfer', $from), [
++            'to_contract_id' => $other->id,
++            'value' => 3,
++            'note' => 'wrong client',
++        ]);
++
++        $response->assertRedirect(route('contracts.show', $from));
++        $response->assertSessionHas('error');
++
++        $from->refresh();
++        $this->assertEqualsWithDelta(10.0, (float) $from->prepay_balance, 1e-6);
++        $this->assertSame(0, PrepayTransaction::where('source', PrepayTransactionSource::TransferOut)->count());
++    }
++
++    public function test_http_transfer_rejects_insufficient_balance(): void
++    {
++        $user = User::factory()->create();
++        $client = Client::create(['name' => 'Acme Corp']);
++        $from = $this->contract($client->id);
++        $to = $this->contract($client->id, ['name' => 'New MSA']);
++        $this->service()->addManualCredit($from, 2, 'seed');
++
++        $response = $this->actingAs($user)->post(route('contracts.prepay-transfer', $from), [
++            'to_contract_id' => $to->id,
++            'value' => 5,
++            'note' => 'too much',
++        ]);
++
++        $response->assertRedirect(route('contracts.show', $from));
++        $response->assertSessionHas('error');
++
++        $from->refresh();
++        $to->refresh();
++        $this->assertEqualsWithDelta(2.0, (float) $from->prepay_balance, 1e-6);
++        $this->assertEqualsWithDelta(0.0, (float) $to->prepay_balance, 1e-6);
++    }
++}
+-- 
+2.43.0
+

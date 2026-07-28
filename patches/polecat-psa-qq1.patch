@@ -1,0 +1,1588 @@
+From c034b975eb3c0fd52dd918ac109b6db968151892 Mon Sep 17 00:00:00 2001
+From: "gastown.slit (polecat)" <polecat-gastown.slit@soundit.local>
+Date: Wed, 8 Jul 2026 23:45:47 +0000
+Subject: [PATCH 1/2] feat: client portal product shop (catalog + orders)
+ (psa-qq1)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Adds a self-service product catalog ("Shop") to the client portal so contacts
+can order hardware/services beyond prepaid time (GitHub #156). Generalizes the
+existing portal prepaid-purchase flow to an arbitrary multi-item order.
+
+What it does:
+- SKUs gain a `portal_orderable` flag (+ optional client-friendly
+  `portal_description`); staff publish products to the catalog from the SKU
+  form. `Sku::scopePortalOrderable()` = active AND orderable.
+- New opt-in `portal_shop_enabled` setting (PortalConfig::shopEnabled(),
+  default off), toggled in Settings > Integrations > Client Portal. A "Shop"
+  nav item appears in the portal only when enabled.
+- PortalOrderController: catalog (grouped by category, JS live total) →
+  multi-item store (per-line TOCTOU price guard, live-catalog resolution,
+  duplicate-order guard) → confirmation with billing-backend payment link
+  + polling.
+- PortalOrderService::createOrderInvoice() materializes the order as a single
+  Posted invoice (one line per product, contract_id null — a catalog purchase
+  is not contract-scoped). subtotal == total locally; tax is calculated by the
+  billing backend (Stripe/QBO) on push, mirroring the prepay flow. Push runs
+  via app()->terminating(); staff are notified via a new
+  NotificationEventType::PortalProductOrder event.
+
+Design notes:
+- The invoice IS the order record (no separate Order model), matching the
+  established prepaid-purchase pattern; contract_id null follows the existing
+  imported-invoice precedent.
+- The "configurator" is delivered as a quantity-configurable multi-item order
+  form; a richer component-level configurator can be a follow-up.
+
+Tests: tests/Feature/Portal/PortalShopTest.php (gating, catalog visibility,
+order→invoice totals/margin, TOCTOU + validation guards, duplicate guard,
+staff notification, confirmation authz) and tests/Feature/Sku/
+SkuPortalFieldsTest.php (staff form persistence). Full gc-verify green
+(2583 passed, Pint, secret guard). Docs: INSTALL.md + CLAUDE.md updated.
+---
+ CLAUDE.md                                     |   1 +
+ app/Enums/NotificationEventType.php           |   4 +
+ .../Portal/PortalOrderController.php          | 187 +++++++++++++
+ .../Web/IntegrationsController.php            |   2 +
+ app/Http/Controllers/Web/SkuController.php    |   6 +
+ app/Jobs/SendTicketNotification.php           |  25 ++
+ app/Models/Sku.php                            |  12 +
+ app/Services/NotificationService.php          |  29 ++
+ app/Services/PortalOrderService.php           | 153 +++++++++++
+ app/Support/PortalConfig.php                  |  10 +
+ ...08_000001_add_portal_orderable_to_skus.php |  34 +++
+ docs/INSTALL.md                               |  12 +
+ resources/views/portal/layouts/app.blade.php  |   7 +
+ .../views/portal/shop/confirmation.blade.php  | 153 +++++++++++
+ resources/views/portal/shop/index.blade.php   | 151 +++++++++++
+ .../views/settings/integrations.blade.php     |   8 +
+ resources/views/skus/_form.blade.php          |  23 ++
+ routes/portal.php                             |   7 +
+ tests/Feature/Portal/PortalShopTest.php       | 250 ++++++++++++++++++
+ tests/Feature/Sku/SkuPortalFieldsTest.php     |  82 ++++++
+ 20 files changed, 1156 insertions(+)
+ create mode 100644 app/Http/Controllers/Portal/PortalOrderController.php
+ create mode 100644 app/Services/PortalOrderService.php
+ create mode 100644 database/migrations/2026_07_08_000001_add_portal_orderable_to_skus.php
+ create mode 100644 resources/views/portal/shop/confirmation.blade.php
+ create mode 100644 resources/views/portal/shop/index.blade.php
+ create mode 100644 tests/Feature/Portal/PortalShopTest.php
+ create mode 100644 tests/Feature/Sku/SkuPortalFieldsTest.php
+
+diff --git a/CLAUDE.md b/CLAUDE.md
+index 980c16b..0d05188 100644
+--- a/CLAUDE.md
++++ b/CLAUDE.md
+@@ -221,6 +221,7 @@ ## Client Portal
+ - **Triage integration**: `JunkDetector` skips `TicketSource::Portal` (authenticated submissions aren't junk). `ConversationReviewer` treats `who_type = EndUser` as human touch.
+ - **Client-friendly labels**: "Devices" (not Assets), "Service Agreements" (not Contracts). Priority: P1→Critical, P2→High, P3→Normal, P4→Low.
+ - **External billing links**: `portal_billing_url` (Billing Portal nav link), `portal_order_url` (Purchase Prepaid Time with `{client_id}` placeholder). Optional — Stripe users get inline "Pay Online" buttons instead.
++- **Product shop (catalog orders)** — `PortalOrderService` (`app/Services/PortalOrderService.php`) handles self-service product orders beyond prepaid time. Opt-in via `portal_shop_enabled` setting (`PortalConfig::shopEnabled()`, default off) + per-SKU `portal_orderable` flag (`Sku::scopePortalOrderable()` = active + orderable); optional `portal_description` blurb. `PortalOrderController` flow: catalog (`/portal/shop`, SKUs grouped by category, JS live total) → multi-item `store` (validates quantities + `expected_prices` TOCTOU guard, resolves against live orderable catalog, duplicate-order guard) → confirmation. Creates one `Posted` invoice with `contract_id = null` (catalog purchase, not contract-scoped) and one `InvoiceLine` per product; `subtotal == total` (tax added by billing backend on push). Billing push (Stripe/QBO) via `app()->terminating()`; staff notified via `NotificationEventType::PortalProductOrder`. Mirrors the prepaid-purchase flow but generalized to N items with no contract requirement.
+ 
+ ## Graph API gotchas
+ - **Two Guzzle clients**: GraphClient uses separate clients for `graph.microsoft.com` (API) and `login.microsoftonline.com` (token). Token endpoint is `/{tenant}/oauth2/v2.0/token` with `grant_type=client_credentials` and `scope=https://graph.microsoft.com/.default`.
+diff --git a/app/Enums/NotificationEventType.php b/app/Enums/NotificationEventType.php
+index 3ef2f75..bd887b9 100644
+--- a/app/Enums/NotificationEventType.php
++++ b/app/Enums/NotificationEventType.php
+@@ -14,6 +14,7 @@ enum NotificationEventType: string
+     case TicketStatusChanged = 'ticket_status_changed';
+     case TicketPortalReply = 'ticket_portal_reply';
+     case PortalPrepayPurchase = 'portal_prepay_purchase';
++    case PortalProductOrder = 'portal_product_order';
+     case NewVoicemail = 'new_voicemail';
+     case PrepayLowBalance = 'prepay_low_balance';
+     case PrepayAutoTopUp = 'prepay_auto_topup';
+@@ -33,6 +34,7 @@ public function label(): string
+             self::TicketStatusChanged => 'Status changes',
+             self::TicketPortalReply => 'Client portal replies',
+             self::PortalPrepayPurchase => 'Portal prepaid purchases',
++            self::PortalProductOrder => 'Portal product orders',
+             self::NewVoicemail => 'New voicemails',
+             self::PrepayLowBalance => 'Low prepay balance alerts',
+             self::PrepayAutoTopUp => 'Prepay auto top-up invoices',
+@@ -54,6 +56,7 @@ public function description(): string
+             self::TicketStatusChanged => 'When the status changes on your ticket',
+             self::TicketPortalReply => 'When a client replies via the portal on your ticket',
+             self::PortalPrepayPurchase => 'When a client purchases prepaid time via the portal',
++            self::PortalProductOrder => 'When a client places a product order via the portal shop',
+             self::NewVoicemail => 'When a voicemail is left on an unanswered call',
+             self::PrepayLowBalance => 'When a client\'s prepay balance drops below their alert threshold',
+             self::PrepayAutoTopUp => 'When an auto top-up invoice is generated for a client',
+@@ -75,6 +78,7 @@ public function icon(): string
+             self::TicketStatusChanged => 'bi-arrow-left-right',
+             self::TicketPortalReply => 'bi-person-lines-fill',
+             self::PortalPrepayPurchase => 'bi-cart-check',
++            self::PortalProductOrder => 'bi-bag-check',
+             self::NewVoicemail => 'bi-voicemail',
+             self::PrepayLowBalance => 'bi-exclamation-diamond',
+             self::PrepayAutoTopUp => 'bi-arrow-repeat',
+diff --git a/app/Http/Controllers/Portal/PortalOrderController.php b/app/Http/Controllers/Portal/PortalOrderController.php
+new file mode 100644
+index 0000000..a822b1e
+--- /dev/null
++++ b/app/Http/Controllers/Portal/PortalOrderController.php
+@@ -0,0 +1,187 @@
++<?php
++
++namespace App\Http\Controllers\Portal;
++
++use App\Http\Controllers\Controller;
++use App\Models\Client;
++use App\Models\Invoice;
++use App\Models\Sku;
++use App\Services\NotificationService;
++use App\Services\PortalOrderService;
++use App\Support\PortalConfig;
++use Illuminate\Http\JsonResponse;
++use Illuminate\Http\RedirectResponse;
++use Illuminate\Http\Request;
++use Illuminate\View\View;
++
++/**
++ * Client-portal self-service product catalog ("Shop").
++ *
++ * Lets portal contacts browse operator-published SKUs and place a multi-item
++ * order. Submitting materializes the order as a single Posted invoice and
++ * hands off to the billing backend, mirroring {@see PortalPrepayController}
++ * but generalized to arbitrary catalog products with no contract requirement.
++ */
++class PortalOrderController extends Controller
++{
++    public function __construct(
++        private readonly PortalOrderService $orderService,
++        private readonly NotificationService $notificationService,
++    ) {}
++
++    public function index(Request $request): View
++    {
++        abort_unless(PortalConfig::shopEnabled(), 404);
++
++        $skus = Sku::portalOrderable()
++            ->orderBy('category')
++            ->orderBy('name')
++            ->get();
++
++        return view('portal.shop.index', [
++            'groupedSkus' => $skus->groupBy(fn (Sku $sku) => $sku->category ?: 'Other'),
++            'hasProducts' => $skus->isNotEmpty(),
++        ]);
++    }
++
++    public function store(Request $request): RedirectResponse
++    {
++        abort_unless(PortalConfig::shopEnabled(), 404);
++
++        $clientId = $request->attributes->get('portal_client_id');
++        $person = $request->attributes->get('portal_person');
++
++        $validated = $request->validate([
++            'quantities' => ['required', 'array'],
++            'quantities.*' => ['nullable', 'integer', 'min:0', 'max:999'],
++            'expected_prices' => ['array'],
++            'expected_prices.*' => ['numeric'],
++        ]);
++
++        // Only active, published SKUs are orderable — resolve against the live catalog.
++        $orderable = Sku::portalOrderable()->get()->keyBy('id');
++
++        $items = [];
++        foreach ($validated['quantities'] as $skuId => $qty) {
++            $qty = (int) $qty;
++            if ($qty < 1) {
++                continue;
++            }
++
++            $sku = $orderable->get((int) $skuId);
++            if (! $sku) {
++                // A submitted SKU is no longer orderable — reject the whole order.
++                return redirect()->route('portal.shop.index')
++                    ->with('error', 'One or more selected products are no longer available. Please review the catalog and try again.');
++            }
++
++            // TOCTOU price guard — the catalog may have changed since the page loaded.
++            $expected = $validated['expected_prices'][$skuId] ?? null;
++            if ($expected !== null && (float) $expected !== (float) $sku->unit_price) {
++                return redirect()->route('portal.shop.index')
++                    ->with('error', 'Some prices have changed — please review the updated catalog and try again.');
++            }
++
++            $items[] = ['sku' => $sku, 'quantity' => $qty];
++        }
++
++        if ($items === []) {
++            return redirect()->route('portal.shop.index')
++                ->with('error', 'Please select at least one product to order.');
++        }
++
++        // Duplicate-order guard: same person, same client, within a 2-minute window.
++        $recentDuplicate = Invoice::where('client_id', $clientId)
++            ->whereNull('profile_id')
++            ->where('notes', 'like', "Product order via client portal by {$person->full_name}")
++            ->where('created_at', '>=', now()->subMinutes(2))
++            ->first();
++
++        if ($recentDuplicate) {
++            return redirect()->route('portal.shop.confirmation', $recentDuplicate);
++        }
++
++        $client = Client::findOrFail($clientId);
++
++        $invoice = $this->orderService->createOrderInvoice($client, $items, $person);
++
++        // Push to billing backend after the response is sent.
++        app()->terminating(function () use ($invoice) {
++            $this->orderService->pushToBillingBackend($invoice->fresh());
++        });
++
++        // Notify staff.
++        $this->notificationService->notifyProductOrder($client, $invoice, $person, count($items));
++
++        return redirect()->route('portal.shop.confirmation', $invoice);
++    }
++
++    public function confirmation(Request $request, Invoice $invoice): View
++    {
++        abort_unless(PortalConfig::shopEnabled(), 404);
++
++        $clientId = $request->attributes->get('portal_client_id');
++
++        if ($invoice->client_id !== $clientId) {
++            abort(403);
++        }
++
++        // Guard: only show the confirmation for portal product-order invoices.
++        if (! str_starts_with((string) $invoice->notes, 'Product order via client portal')) {
++            abort(404);
++        }
++
++        $invoice->load('lines', 'client');
++
++        // Determine payment link state (mirrors the prepay confirmation).
++        $client = $invoice->client;
++        $paymentUrl = null;
++        $awaitingSync = false;
++
++        if ($invoice->stripe_invoice_url) {
++            $paymentUrl = $invoice->stripe_invoice_url;
++        } elseif ($invoice->qbo_invoice_id && PortalConfig::billingUrl()) {
++            $paymentUrl = PortalConfig::billingUrl().'/portal/pay/?invoiceNumber='
++                .urlencode($invoice->invoice_number)
++                .'&transactionAmount='.number_format($invoice->total, 2, '.', '');
++        } elseif ($client?->stripe_customer_id || $client?->qbo_customer_id) {
++            $awaitingSync = true;
++        }
++
++        return view('portal.shop.confirmation', [
++            'invoice' => $invoice,
++            'paymentUrl' => $paymentUrl,
++            'awaitingSync' => $awaitingSync,
++        ]);
++    }
++
++    /**
++     * Poll endpoint: returns the payment URL once the billing backend sync completes.
++     */
++    public function paymentStatus(Request $request, Invoice $invoice): JsonResponse
++    {
++        $clientId = $request->attributes->get('portal_client_id');
++
++        if ($invoice->client_id !== $clientId) {
++            abort(403);
++        }
++
++        $invoice = $invoice->fresh();
++        $paymentUrl = null;
++
++        if ($invoice->stripe_invoice_url) {
++            $paymentUrl = $invoice->stripe_invoice_url;
++        } elseif ($invoice->qbo_invoice_id && PortalConfig::billingUrl()) {
++            $paymentUrl = PortalConfig::billingUrl().'/portal/pay/?invoiceNumber='
++                .urlencode($invoice->invoice_number)
++                .'&transactionAmount='.number_format($invoice->total, 2, '.', '');
++        }
++
++        return response()->json([
++            'payment_url' => $paymentUrl,
++            'subtotal' => (float) $invoice->subtotal,
++            'tax' => (float) ($invoice->tax ?? 0),
++            'total' => (float) $invoice->total,
++        ]);
++    }
++}
+diff --git a/app/Http/Controllers/Web/IntegrationsController.php b/app/Http/Controllers/Web/IntegrationsController.php
+index 3a8b985..d20ca84 100644
+--- a/app/Http/Controllers/Web/IntegrationsController.php
++++ b/app/Http/Controllers/Web/IntegrationsController.php
+@@ -2292,6 +2292,7 @@ public function updatePortal(Request $request)
+     {
+         $validated = $request->validate([
+             'portal_enabled' => 'nullable|in:0,1',
++            'portal_shop_enabled' => 'nullable|in:0,1',
+             'portal_company_name' => 'nullable|string|max:100',
+             'portal_logo_url' => 'nullable|url|max:500',
+             'portal_billing_url' => 'nullable|url|max:500',
+@@ -2300,6 +2301,7 @@ public function updatePortal(Request $request)
+         ]);
+ 
+         Setting::setValue('portal_enabled', $validated['portal_enabled'] ?? '0');
++        Setting::setValue('portal_shop_enabled', $validated['portal_shop_enabled'] ?? '0');
+         Setting::setValue('portal_company_name', $validated['portal_company_name'] ?? '');
+         Setting::setValue('portal_logo_url', $validated['portal_logo_url'] ?? '');
+         Setting::setValue('portal_billing_url', $validated['portal_billing_url'] ?? '');
+diff --git a/app/Http/Controllers/Web/SkuController.php b/app/Http/Controllers/Web/SkuController.php
+index c3b89de..83a8037 100644
+--- a/app/Http/Controllers/Web/SkuController.php
++++ b/app/Http/Controllers/Web/SkuController.php
+@@ -139,6 +139,7 @@ public function store(Request $request)
+         $validated = $request->validate([
+             'name' => ['required', 'string', 'max:255'],
+             'description' => ['nullable', 'string'],
++            'portal_description' => ['nullable', 'string', 'max:500'],
+             'sku_code' => ['required', 'string', 'max:50', 'unique:skus,sku_code'],
+             'category' => ['nullable', 'string', 'max:50'],
+             'unit_price' => ['required', 'numeric', 'min:0'],
+@@ -149,10 +150,12 @@ public function store(Request $request)
+             'default_license_type_id' => ['nullable', 'integer', 'exists:license_types,id'],
+             'is_taxable' => ['boolean'],
+             'is_active' => ['boolean'],
++            'portal_orderable' => ['boolean'],
+         ]);
+ 
+         $validated['is_taxable'] = $request->boolean('is_taxable');
+         $validated['is_active'] = $request->boolean('is_active', true);
++        $validated['portal_orderable'] = $request->boolean('portal_orderable');
+ 
+         $sku = $this->skuService->createSku($validated);
+ 
+@@ -199,6 +202,7 @@ public function update(Request $request, Sku $sku)
+         $validated = $request->validate([
+             'name' => ['required', 'string', 'max:255'],
+             'description' => ['nullable', 'string'],
++            'portal_description' => ['nullable', 'string', 'max:500'],
+             'sku_code' => ['required', 'string', 'max:50', "unique:skus,sku_code,{$sku->id}"],
+             'category' => ['nullable', 'string', 'max:50'],
+             'unit_price' => ['required', 'numeric', 'min:0'],
+@@ -209,12 +213,14 @@ public function update(Request $request, Sku $sku)
+             'default_license_type_id' => ['nullable', 'integer', 'exists:license_types,id'],
+             'is_taxable' => ['boolean'],
+             'is_active' => ['boolean'],
++            'portal_orderable' => ['boolean'],
+             'qbo_income_account_id' => ['nullable', 'string', 'max:50'],
+             'qbo_expense_account_id' => ['nullable', 'string', 'max:50'],
+         ]);
+ 
+         $validated['is_taxable'] = $request->boolean('is_taxable');
+         $validated['is_active'] = $request->boolean('is_active');
++        $validated['portal_orderable'] = $request->boolean('portal_orderable');
+         $validated['qbo_income_account_id'] = $request->input('qbo_income_account_id') ?: null;
+         $validated['qbo_expense_account_id'] = $request->input('qbo_expense_account_id') ?: null;
+ 
+diff --git a/app/Jobs/SendTicketNotification.php b/app/Jobs/SendTicketNotification.php
+index c2a3cec..c31c209 100644
+--- a/app/Jobs/SendTicketNotification.php
++++ b/app/Jobs/SendTicketNotification.php
+@@ -98,6 +98,14 @@ private function buildSubject(NotificationEventType $event, ?Ticket $ticket): st
+             return "Portal purchase: {$hours}h prepaid time — Invoice #{$invoiceNumber}";
+         }
+ 
++        if ($event === NotificationEventType::PortalProductOrder) {
++            $ctx = json_decode($this->extraContext ?? '{}', true);
++            $client = $ctx['client'] ?? 'A client';
++            $invoiceNumber = $ctx['invoice_number'] ?? '?';
++
++            return "Portal order: {$client} — Invoice #{$invoiceNumber}";
++        }
++
+         if ($event === NotificationEventType::NewVoicemail) {
+             $ctx = json_decode($this->extraContext ?? '{}', true);
+             $caller = $ctx['caller'] ?? 'Unknown';
+@@ -171,6 +179,23 @@ private function buildBody(NotificationEventType $event, ?Ticket $ticket, ?User
+             return implode("\n", $lines);
+         }
+ 
++        if ($event === NotificationEventType::PortalProductOrder) {
++            $ctx = json_decode($this->extraContext ?? '{}', true);
++            $lines[] = ($ctx['person'] ?? 'A client').' placed a product order via the portal shop.';
++            $lines[] = '';
++            $lines[] = 'Client: '.($ctx['client'] ?? 'Unknown');
++            $lines[] = 'Items: '.($ctx['item_count'] ?? '?');
++            $lines[] = 'Amount: $'.number_format($ctx['amount'] ?? 0, 2);
++            $lines[] = 'Invoice: #'.($ctx['invoice_number'] ?? '?');
++            $lines[] = '';
++            if ($invoiceId = $ctx['invoice_id'] ?? null) {
++                $lines[] = 'View invoice:';
++                $lines[] = route('invoices.show', $invoiceId);
++            }
++
++            return implode("\n", $lines);
++        }
++
+         if ($event === NotificationEventType::NewVoicemail) {
+             $ctx = json_decode($this->extraContext ?? '{}', true);
+             $lines[] = 'A voicemail was left by '.($ctx['caller'] ?? 'an unknown caller').'.';
+diff --git a/app/Models/Sku.php b/app/Models/Sku.php
+index 38be7c7..8909255 100644
+--- a/app/Models/Sku.php
++++ b/app/Models/Sku.php
+@@ -16,6 +16,7 @@ class Sku extends Model
+     protected $fillable = [
+         'name',
+         'description',
++        'portal_description',
+         'sku_code',
+         'category',
+         'unit_price',
+@@ -26,6 +27,7 @@ class Sku extends Model
+         'default_license_type_id',
+         'is_taxable',
+         'is_active',
++        'portal_orderable',
+         'qbo_item_id',
+         'qbo_income_account_id',
+         'qbo_expense_account_id',
+@@ -47,6 +49,7 @@ protected function casts(): array
+             'default_quantity_type' => QuantityType::class,
+             'is_taxable' => 'boolean',
+             'is_active' => 'boolean',
++            'portal_orderable' => 'boolean',
+             'qbo_synced_at' => 'datetime',
+             'stripe_synced_at' => 'datetime',
+         ];
+@@ -76,6 +79,15 @@ public function scopeActive(Builder $query): Builder
+         return $query->where('is_active', true);
+     }
+ 
++    /**
++     * Active SKUs the operator has published to the client portal shop.
++     */
++    public function scopePortalOrderable(Builder $query): Builder
++    {
++        return $query->where('is_active', true)
++            ->where('portal_orderable', true);
++    }
++
+     public function scopeSearch(Builder $query, ?string $term): Builder
+     {
+         if (! $term) {
+diff --git a/app/Services/NotificationService.php b/app/Services/NotificationService.php
+index e7bffbf..ce74f49 100644
+--- a/app/Services/NotificationService.php
++++ b/app/Services/NotificationService.php
+@@ -237,6 +237,35 @@ public function notifyPrepayPurchase(\App\Models\Contract $contract, \App\Models
+         }
+     }
+ 
++    /**
++     * Notify opted-in staff about a self-service product order placed via the portal shop.
++     */
++    public function notifyProductOrder(\App\Models\Client $client, \App\Models\Invoice $invoice, \App\Models\Person $person, int $itemCount): void
++    {
++        $context = json_encode([
++            'person' => $person->full_name,
++            'client' => $client->name,
++            'item_count' => $itemCount,
++            'invoice_number' => $invoice->invoice_number,
++            'amount' => (float) $invoice->total,
++            'invoice_id' => $invoice->id,
++        ]);
++
++        $users = User::where('is_active', true)->whereNotNull('email')->get();
++
++        foreach ($users as $user) {
++            if ($user->wantsNotification(NotificationEventType::PortalProductOrder)) {
++                SendTicketNotification::dispatch(
++                    $user->id,
++                    NotificationEventType::PortalProductOrder->value,
++                    null,
++                    null,
++                    $context,
++                );
++            }
++        }
++    }
++
+     /**
+      * Notify company-wide portal users and opted-in staff about low prepay balance.
+      */
+diff --git a/app/Services/PortalOrderService.php b/app/Services/PortalOrderService.php
+new file mode 100644
+index 0000000..67331b8
+--- /dev/null
++++ b/app/Services/PortalOrderService.php
+@@ -0,0 +1,153 @@
++<?php
++
++namespace App\Services;
++
++use App\Enums\InvoiceStatus;
++use App\Models\Client;
++use App\Models\Invoice;
++use App\Models\InvoiceLine;
++use App\Models\Person;
++use App\Models\Sku;
++use App\Services\Qbo\QboSyncService;
++use App\Services\Stripe\StripeSyncService;
++use Illuminate\Database\QueryException;
++use Illuminate\Support\Facades\DB;
++use Illuminate\Support\Facades\Log;
++
++/**
++ * Handles client-portal self-service product orders (the "Shop").
++ *
++ * Mirrors {@see PrepayOrderService} but generalizes to a multi-line order of
++ * arbitrary catalog SKUs, not tied to a specific contract. The order is
++ * materialized directly as a Posted invoice (one line per ordered SKU) — the
++ * invoice IS the order record, matching the established prepay pattern. Tax is
++ * calculated by the billing backend (Stripe/QBO) on push and synced back, so
++ * the locally-created invoice carries subtotal == total.
++ */
++class PortalOrderService
++{
++    public function __construct(
++        private readonly BillingService $billingService,
++    ) {}
++
++    /**
++     * Create a Posted invoice for a portal product order.
++     *
++     * @param  array<int, array{sku: Sku, quantity: int}>  $items  Resolved, validated line items.
++     */
++    public function createOrderInvoice(Client $client, array $items, Person $person): Invoice
++    {
++        if ($items === []) {
++            throw new \InvalidArgumentException('A portal order requires at least one line item.');
++        }
++
++        return DB::transaction(function () use ($client, $items, $person) {
++            $invoiceNumber = $this->billingService->nextInvoiceNumber();
++
++            // Retry once on duplicate invoice number (race condition).
++            for ($attempt = 0; ; $attempt++) {
++                try {
++                    $invoice = Invoice::create([
++                        'client_id' => $client->id,
++                        'contract_id' => null,
++                        'invoice_number' => $invoiceNumber,
++                        'invoice_date' => now()->toDateString(),
++                        'due_date' => now()->toDateString(),
++                        'status' => InvoiceStatus::Posted,
++                        'notes' => "Product order via client portal by {$person->full_name}",
++                    ]);
++                    break;
++                } catch (QueryException $e) {
++                    if ($attempt < 1 && $e->errorInfo[1] == 1062) {
++                        Log::warning("[PortalOrder] Invoice number {$invoiceNumber} collision, retrying");
++                        $invoiceNumber = $this->billingService->nextInvoiceNumber();
++
++                        continue;
++                    }
++                    throw $e;
++                }
++            }
++
++            $subtotal = 0.0;
++            $totalCost = 0.0;
++            $sortOrder = 1;
++
++            foreach ($items as $item) {
++                /** @var Sku $sku */
++                $sku = $item['sku'];
++                $quantity = (int) $item['quantity'];
++
++                $unitPrice = (float) $sku->unit_price;
++                $unitCost = (float) ($sku->unit_cost ?? 0);
++                $amount = round($quantity * $unitPrice, 2);
++                $costAmount = round($quantity * $unitCost, 2);
++
++                InvoiceLine::create([
++                    'invoice_id' => $invoice->id,
++                    'sku_id' => $sku->id,
++                    'description' => $sku->name,
++                    'quantity' => $quantity,
++                    'unit_price' => $unitPrice,
++                    'unit_cost' => $unitCost,
++                    'amount' => $amount,
++                    'cost_amount' => $costAmount,
++                    'is_taxable' => $sku->is_taxable,
++                    'qbo_item_ref' => $sku->qbo_item_id,
++                    'sort_order' => $sortOrder++,
++                ]);
++
++                $subtotal += $amount;
++                $totalCost += $costAmount;
++            }
++
++            $subtotal = round($subtotal, 2);
++            $totalCost = round($totalCost, 2);
++
++            $invoice->update([
++                'subtotal' => $subtotal,
++                'total' => $subtotal,
++                'total_cost' => $totalCost,
++                'margin' => round($subtotal - $totalCost, 2),
++            ]);
++
++            Log::info('[PortalOrder] Portal product order invoice created', [
++                'invoice_id' => $invoice->id,
++                'invoice_number' => $invoice->invoice_number,
++                'client_id' => $client->id,
++                'person_id' => $person->id,
++                'line_count' => count($items),
++                'subtotal' => $subtotal,
++            ]);
++
++            return $invoice;
++        });
++    }
++
++    /**
++     * Push the invoice to the client's billing backend (Stripe or QBO).
++     * Called via terminating()/afterResponse() — not inline during the request.
++     */
++    public function pushToBillingBackend(Invoice $invoice): void
++    {
++        $client = $invoice->client;
++
++        try {
++            if ($client->stripe_customer_id) {
++                app(StripeSyncService::class)->pushInvoiceToStripe($invoice);
++                Log::info('[PortalOrder] Invoice pushed to Stripe', [
++                    'invoice_id' => $invoice->id,
++                ]);
++            } elseif ($client->qbo_customer_id) {
++                app(QboSyncService::class)->pushInvoiceToQbo($invoice);
++                Log::info('[PortalOrder] Invoice pushed to QBO', [
++                    'invoice_id' => $invoice->id,
++                ]);
++            }
++        } catch (\Throwable $e) {
++            Log::warning('[PortalOrder] Billing backend push failed — staff can push manually', [
++                'invoice_id' => $invoice->id,
++                'error' => $e->getMessage(),
++            ]);
++        }
++    }
++}
+diff --git a/app/Support/PortalConfig.php b/app/Support/PortalConfig.php
+index 8d18e2e..05fdb5b 100644
+--- a/app/Support/PortalConfig.php
++++ b/app/Support/PortalConfig.php
+@@ -11,6 +11,16 @@ public static function isEnabled(): bool
+         return Setting::getValue('portal_enabled', '0') === '1';
+     }
+ 
++    /**
++     * Whether the self-service product catalog ("Shop") is enabled in the
++     * portal. Opt-in per deployment; defaults off. Even when enabled, the
++     * shop only appears if the operator has published orderable SKUs.
++     */
++    public static function shopEnabled(): bool
++    {
++        return Setting::getValue('portal_shop_enabled', '0') === '1';
++    }
++
+     public static function companyName(): string
+     {
+         return Setting::getValue('portal_company_name', config('app.name', 'Sound PSA'));
+diff --git a/database/migrations/2026_07_08_000001_add_portal_orderable_to_skus.php b/database/migrations/2026_07_08_000001_add_portal_orderable_to_skus.php
+new file mode 100644
+index 0000000..d43f4b4
+--- /dev/null
++++ b/database/migrations/2026_07_08_000001_add_portal_orderable_to_skus.php
+@@ -0,0 +1,34 @@
++<?php
++
++use Illuminate\Database\Migrations\Migration;
++use Illuminate\Database\Schema\Blueprint;
++use Illuminate\Support\Facades\Schema;
++
++return new class extends Migration
++{
++    /**
++     * Run the migrations.
++     *
++     * Adds catalog fields so a SKU can be exposed in the client portal shop
++     * (product catalog + configurator). `portal_orderable` gates whether the
++     * SKU appears to portal users; `portal_description` is an optional
++     * client-friendly blurb shown in the catalog (distinct from the internal
++     * `description`).
++     */
++    public function up(): void
++    {
++        Schema::table('skus', function (Blueprint $table) {
++            $table->boolean('portal_orderable')->default(false)->after('is_active');
++            $table->text('portal_description')->nullable()->after('description');
++            $table->index('portal_orderable');
++        });
++    }
++
++    public function down(): void
++    {
++        Schema::table('skus', function (Blueprint $table) {
++            $table->dropIndex(['portal_orderable']);
++            $table->dropColumn(['portal_orderable', 'portal_description']);
++        });
++    }
++};
+diff --git a/docs/INSTALL.md b/docs/INSTALL.md
+index 35a90d5..5f95132 100644
+--- a/docs/INSTALL.md
++++ b/docs/INSTALL.md
+@@ -1007,6 +1007,7 @@ ### Client Portal
+ 4. Optionally set a **Logo URL** for portal branding
+ 5. Optionally set **Billing Portal URL** and **Label** (for MSPs using external billing like BenjiPays)
+ 6. Optionally set **Prepaid Order URL** (supports `{client_id}` placeholder, shown as "Purchase Prepaid Time" link)
++7. Optionally enable **Product Shop** to let clients order hardware/services from a catalog (see below)
+ 
+ **Creating portal users:**
+ 
+@@ -1026,8 +1027,19 @@ ### Client Portal
+ - **Invoices**: View posted/paid invoices with line items (no cost data). "Pay Online" button for Stripe invoices
+ - **Devices**: View active devices (hostname, type, OS, online/offline status)
+ - **Service Agreements**: View active contracts with prepaid balance and assigned devices/people
++- **Shop** (optional): Browse a product catalog and place an order for one or more items. Placing an order creates a Posted invoice and (if a billing backend is mapped) a payment link. See below
+ - **Account**: Update name and phone. Change password
+ 
++**Product Shop (optional):**
++
++Lets portal contacts self-order hardware/services from a catalog of SKUs, beyond prepaid time.
++
++1. Settings > Integrations > Client Portal > enable **Product Shop**
++2. For each product you want to expose, open the SKU (Products/SKUs) and tick **Orderable in client portal shop**. Optionally add a client-friendly **Portal Description**
++3. Portal users see a **Shop** nav item, choose quantities, and place an order
++4. The order becomes a single Posted invoice (one line per product, `contract_id` null). If the client is mapped to Stripe or QBO, the invoice is pushed and a payment link is shown; staff are notified via the **Portal product orders** notification event
++5. Taxes are calculated by the billing backend on push (the local invoice carries subtotal == total until synced)
++
+ **Portal notifications:**
+ When enabled, portal-enabled contacts automatically receive email notifications when:
+ - A technician posts a public reply on their ticket
+diff --git a/resources/views/portal/layouts/app.blade.php b/resources/views/portal/layouts/app.blade.php
+index 03b9094..3729b53 100644
+--- a/resources/views/portal/layouts/app.blade.php
++++ b/resources/views/portal/layouts/app.blade.php
+@@ -58,6 +58,13 @@
+                             <i class="bi bi-file-earmark-text me-1"></i>Service Agreements
+                         </a>
+                     </li>
++                    @if(App\Support\PortalConfig::shopEnabled())
++                        <li class="nav-item">
++                            <a class="nav-link {{ request()->routeIs('portal.shop.*') ? 'active' : '' }}" href="{{ route('portal.shop.index') }}">
++                                <i class="bi bi-bag me-1"></i>Shop
++                            </a>
++                        </li>
++                    @endif
+                     @if(App\Support\PortalConfig::billingUrl())
+                         <li class="nav-item">
+                             <a class="nav-link" href="{{ App\Support\PortalConfig::billingUrl() }}" target="_blank">
+diff --git a/resources/views/portal/shop/confirmation.blade.php b/resources/views/portal/shop/confirmation.blade.php
+new file mode 100644
+index 0000000..586edf6
+--- /dev/null
++++ b/resources/views/portal/shop/confirmation.blade.php
+@@ -0,0 +1,153 @@
++@extends('portal.layouts.app')
++
++@section('title', 'Order Confirmed - ' . App\Support\PortalConfig::companyName() . ' Portal')
++
++@section('content')
++<div class="text-center mb-4">
++    <i class="bi bi-check-circle text-success" style="font-size: 3rem;"></i>
++    <h4 class="mt-2">Order Confirmed</h4>
++    <p class="text-muted">Your order has been submitted.</p>
++</div>
++
++<div class="row justify-content-center">
++    <div class="col-lg-7">
++        <div class="card mb-4">
++            <div class="card-header d-flex justify-content-between align-items-center">
++                <h6 class="mb-0">Order Details</h6>
++                <span class="text-muted small">Invoice {{ $invoice->invoice_number }}</span>
++            </div>
++            <div class="card-body">
++                <div class="table-responsive">
++                    <table class="table table-sm align-middle mb-3">
++                        <thead class="table-light">
++                            <tr>
++                                <th>Product</th>
++                                <th class="text-center" style="width: 70px;">Qty</th>
++                                <th class="text-end" style="width: 110px;">Unit</th>
++                                <th class="text-end" style="width: 120px;">Amount</th>
++                            </tr>
++                        </thead>
++                        <tbody>
++                            @foreach($invoice->lines as $line)
++                                <tr>
++                                    <td>{{ $line->description }}</td>
++                                    <td class="text-center">{{ (int) $line->quantity }}</td>
++                                    <td class="text-end">${{ number_format($line->unit_price, 2) }}</td>
++                                    <td class="text-end">${{ number_format($line->amount, 2) }}</td>
++                                </tr>
++                            @endforeach
++                        </tbody>
++                    </table>
++                </div>
++
++                <table class="table table-sm table-borderless mb-0">
++                    <tr>
++                        <td class="text-muted" style="width: 140px;">Subtotal</td>
++                        <td class="text-end" id="orderSubtotal">${{ number_format($invoice->subtotal, 2) }}</td>
++                    </tr>
++                    <tr id="taxRow" @if(!$invoice->tax) style="display: none" @endif>
++                        <td class="text-muted">Tax</td>
++                        <td class="text-end" id="orderTax">${{ number_format($invoice->tax ?? 0, 2) }}</td>
++                    </tr>
++                    <tr class="border-top">
++                        <td><strong>Total</strong></td>
++                        <td class="text-end"><strong id="orderTotal">${{ number_format($invoice->total, 2) }}</strong></td>
++                    </tr>
++                    <tr>
++                        <td class="text-muted">Status</td>
++                        <td class="text-end"><span class="badge {{ $invoice->status->portalBadgeClass() }}">{{ $invoice->status->portalLabel() }}</span></td>
++                    </tr>
++                </table>
++            </div>
++        </div>
++
++        {{-- Payment --}}
++        <div id="paymentSection">
++            @if($paymentUrl)
++                <div class="card mb-4">
++                    <div class="card-body text-center">
++                        <p class="mb-2">Ready to pay?</p>
++                        <a href="{{ $paymentUrl }}" target="_blank" class="btn btn-accent btn-lg">
++                            <i class="bi bi-credit-card me-1"></i>Pay Now — ${{ number_format($invoice->total, 2) }}
++                        </a>
++                    </div>
++                </div>
++            @elseif($awaitingSync)
++                <div class="card mb-4" id="paymentLoading">
++                    <div class="card-body text-center py-3">
++                        <div class="spinner-border spinner-border-sm text-primary me-2" role="status"></div>
++                        <span class="text-muted">Preparing payment link...</span>
++                    </div>
++                </div>
++            @else
++                <div class="alert alert-info">
++                    <i class="bi bi-info-circle me-1"></i>
++                    Your order has been received. You'll receive a payment link shortly.
++                </div>
++            @endif
++        </div>
++
++        <div class="d-flex justify-content-between">
++            <a href="{{ route('portal.invoices.show', $invoice) }}" class="btn btn-outline-primary btn-sm">
++                <i class="bi bi-receipt me-1"></i>View Invoice
++            </a>
++            <a href="{{ route('portal.dashboard') }}" class="btn btn-outline-secondary btn-sm">
++                <i class="bi bi-house me-1"></i>Back to Dashboard
++            </a>
++        </div>
++    </div>
++</div>
++
++@if($awaitingSync)
++<script>
++document.addEventListener('DOMContentLoaded', function() {
++    const pollUrl = @json(route('portal.shop.payment-status', $invoice));
++    const section = document.getElementById('paymentSection');
++    let attempts = 0;
++    const maxAttempts = 10;
++
++    function fmt(n) { return '$' + n.toFixed(2); }
++
++    function checkSync() {
++        fetch(pollUrl, { headers: { 'Accept': 'application/json' } })
++            .then(r => r.json())
++            .then(data => {
++                // Update amounts with billing-backend values (includes tax)
++                if (data.total) {
++                    document.getElementById('orderSubtotal').textContent = fmt(data.subtotal);
++                    document.getElementById('orderTotal').textContent = fmt(data.total);
++                    if (data.tax > 0) {
++                        document.getElementById('orderTax').textContent = fmt(data.tax);
++                        document.getElementById('taxRow').style.display = '';
++                    }
++                }
++
++                if (data.payment_url) {
++                    section.innerHTML = '<div class="card mb-4"><div class="card-body text-center">' +
++                        '<p class="mb-2">Ready to pay?</p>' +
++                        '<a href="' + data.payment_url + '" target="_blank" class="btn btn-accent btn-lg">' +
++                        '<i class="bi bi-credit-card me-1"></i>Pay Now — ' + fmt(data.total) + '</a></div></div>';
++                } else {
++                    attempts++;
++                    if (attempts >= maxAttempts) {
++                        section.innerHTML = '<div class="alert alert-info">' +
++                            '<i class="bi bi-info-circle me-1"></i>' +
++                            'Your order has been received. You\'ll receive a payment link shortly.</div>';
++                    } else {
++                        setTimeout(checkSync, 3000);
++                    }
++                }
++            })
++            .catch(() => {
++                attempts++;
++                if (attempts < maxAttempts) {
++                    setTimeout(checkSync, 3000);
++                }
++            });
++    }
++
++    setTimeout(checkSync, 3000);
++});
++</script>
++@endif
++@endsection
+diff --git a/resources/views/portal/shop/index.blade.php b/resources/views/portal/shop/index.blade.php
+new file mode 100644
+index 0000000..4e1fa5d
+--- /dev/null
++++ b/resources/views/portal/shop/index.blade.php
+@@ -0,0 +1,151 @@
++@extends('portal.layouts.app')
++
++@section('title', 'Shop - ' . App\Support\PortalConfig::companyName() . ' Portal')
++
++@section('content')
++<div class="mb-3">
++    <a href="{{ route('portal.dashboard') }}" class="text-muted small"><i class="bi bi-arrow-left me-1"></i>Back to Dashboard</a>
++</div>
++
++<h4 class="mb-1">Shop</h4>
++<p class="text-muted">Browse products and services and place an order. We'll follow up to confirm the details.</p>
++
++@if(session('error'))
++    <div class="alert alert-warning">
++        <i class="bi bi-exclamation-triangle me-1"></i>{{ session('error') }}
++    </div>
++@endif
++
++@if(! $hasProducts)
++    <div class="card">
++        <div class="card-body text-center text-muted py-5">
++            <i class="bi bi-bag" style="font-size: 2.5rem;"></i>
++            <p class="mt-3 mb-0">There are no products available to order right now.</p>
++            <p class="mb-0">Please contact us if you'd like to place an order.</p>
++        </div>
++    </div>
++@else
++<form method="POST" action="{{ route('portal.shop.store') }}" id="shopForm">
++    @csrf
++    <div class="row g-4">
++        <div class="col-lg-8">
++            @foreach($groupedSkus as $category => $skus)
++                <div class="card mb-3">
++                    <div class="card-header">
++                        <h6 class="mb-0">{{ $category }}</h6>
++                    </div>
++                    <div class="card-body p-0">
++                        <div class="table-responsive">
++                            <table class="table table-sm align-middle mb-0">
++                                <thead class="table-light">
++                                    <tr>
++                                        <th>Product</th>
++                                        <th class="text-end" style="width: 120px;">Price</th>
++                                        <th class="text-center" style="width: 110px;">Qty</th>
++                                        <th class="text-end" style="width: 120px;">Subtotal</th>
++                                    </tr>
++                                </thead>
++                                <tbody>
++                                    @foreach($skus as $sku)
++                                        <tr>
++                                            <td>
++                                                <div class="fw-semibold">{{ $sku->name }}</div>
++                                                @if($sku->portal_description)
++                                                    <div class="text-muted small">{{ $sku->portal_description }}</div>
++                                                @endif
++                                            </td>
++                                            <td class="text-end">${{ number_format($sku->unit_price, 2) }}</td>
++                                            <td class="text-center">
++                                                <input type="hidden" name="expected_prices[{{ $sku->id }}]" value="{{ $sku->unit_price }}">
++                                                <input type="number"
++                                                       class="form-control form-control-sm qty-input text-center mx-auto"
++                                                       name="quantities[{{ $sku->id }}]"
++                                                       value="{{ old('quantities.'.$sku->id, 0) }}"
++                                                       min="0" max="999" step="1"
++                                                       data-price="{{ (float) $sku->unit_price }}"
++                                                       style="max-width: 90px;">
++                                            </td>
++                                            <td class="text-end line-subtotal" data-price="{{ (float) $sku->unit_price }}">$0.00</td>
++                                        </tr>
++                                    @endforeach
++                                </tbody>
++                            </table>
++                        </div>
++                    </div>
++                </div>
++            @endforeach
++        </div>
++
++        <div class="col-lg-4">
++            <div class="card" style="position: sticky; top: 1rem;">
++                <div class="card-header">
++                    <h6 class="mb-0">Order Summary</h6>
++                </div>
++                <div class="card-body">
++                    <table class="table table-sm table-borderless mb-3">
++                        <tr>
++                            <td class="text-muted">Items</td>
++                            <td class="text-end" id="summaryItems">0</td>
++                        </tr>
++                        <tr class="border-top">
++                            <td><strong>Total</strong></td>
++                            <td class="text-end"><strong id="summaryTotal">$0.00</strong></td>
++                        </tr>
++                    </table>
++                    <p class="text-muted small">Taxes are calculated at checkout. You'll receive an invoice and payment link.</p>
++                    <button type="submit" class="btn btn-accent w-100" id="submitBtn" disabled>
++                        <i class="bi bi-bag-check me-1"></i>Place Order
++                    </button>
++                </div>
++            </div>
++        </div>
++    </div>
++</form>
++
++<script>
++document.addEventListener('DOMContentLoaded', function() {
++    const form = document.getElementById('shopForm');
++    const qtyInputs = Array.from(document.querySelectorAll('.qty-input'));
++    const summaryItems = document.getElementById('summaryItems');
++    const summaryTotal = document.getElementById('summaryTotal');
++    const submitBtn = document.getElementById('submitBtn');
++
++    function money(n) { return '$' + n.toFixed(2); }
++
++    function recalc() {
++        let totalItems = 0;
++        let total = 0;
++
++        qtyInputs.forEach(function(input) {
++            let qty = parseInt(input.value) || 0;
++            if (qty < 0) { qty = 0; input.value = 0; }
++            const price = parseFloat(input.dataset.price) || 0;
++            const lineTotal = qty * price;
++
++            const row = input.closest('tr');
++            const sub = row.querySelector('.line-subtotal');
++            if (sub) { sub.textContent = money(lineTotal); }
++
++            totalItems += qty;
++            total += lineTotal;
++        });
++
++        summaryItems.textContent = totalItems;
++        summaryTotal.textContent = money(total);
++        submitBtn.disabled = totalItems < 1;
++    }
++
++    qtyInputs.forEach(function(input) {
++        input.addEventListener('input', recalc);
++    });
++    recalc();
++
++    // Prevent double-submit
++    form.addEventListener('submit', function() {
++        submitBtn.disabled = true;
++        submitBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Processing...';
++    });
++});
++</script>
++@endif
++@endsection
+diff --git a/resources/views/settings/integrations.blade.php b/resources/views/settings/integrations.blade.php
+index f503f06..33f084f 100644
+--- a/resources/views/settings/integrations.blade.php
++++ b/resources/views/settings/integrations.blade.php
+@@ -3585,6 +3585,14 @@ class="form-control form-control-sm"
+                         <label class="form-check-label" for="portal_enabled"><strong>Enable Client Portal</strong></label>
+                     </div>
+ 
++                    <div class="mb-3 form-check form-switch">
++                        <input type="hidden" name="portal_shop_enabled" value="0">
++                        <input type="checkbox" class="form-check-input" name="portal_shop_enabled" id="portal_shop_enabled" value="1"
++                               {{ App\Models\Setting::getValue('portal_shop_enabled', '0') === '1' ? 'checked' : '' }}>
++                        <label class="form-check-label" for="portal_shop_enabled"><strong>Enable Product Shop</strong></label>
++                        <div class="form-text">Lets portal contacts browse orderable SKUs and place product orders. Mark individual SKUs as "Orderable in client portal shop" on each product.</div>
++                    </div>
++
+                     <div class="mb-3">
+                         <label class="form-label">Company Name</label>
+                         <input type="text" name="portal_company_name" class="form-control" placeholder="Your Company"
+diff --git a/resources/views/skus/_form.blade.php b/resources/views/skus/_form.blade.php
+index c35a8c8..9a970c7 100644
+--- a/resources/views/skus/_form.blade.php
++++ b/resources/views/skus/_form.blade.php
+@@ -71,6 +71,29 @@
+     </div>
+ </div>
+ 
++<div class="card bg-light border-0 mb-3">
++    <div class="card-body py-3">
++        <div class="form-check mb-2">
++            <input type="hidden" name="portal_orderable" value="0">
++            <input type="checkbox" class="form-check-input" id="portal_orderable" name="portal_orderable" value="1"
++                   {{ old('portal_orderable', $sku?->portal_orderable ?? false) ? 'checked' : '' }}>
++            <label class="form-check-label" for="portal_orderable">
++                <strong>Orderable in client portal shop</strong>
++            </label>
++            <div class="form-text">Publishes this SKU to the client portal product catalog. The shop must also be enabled in Settings &rarr; Integrations &rarr; Client Portal.</div>
++        </div>
++        <div>
++            <label for="portal_description" class="form-label">Portal Description</label>
++            <textarea class="form-control @error('portal_description') is-invalid @enderror"
++                      id="portal_description" name="portal_description" rows="2" maxlength="500"
++                      placeholder="Client-friendly blurb shown in the portal shop (optional)">{{ old('portal_description', $sku?->portal_description) }}</textarea>
++            @error('portal_description')
++                <div class="invalid-feedback">{{ $message }}</div>
++            @enderror
++        </div>
++    </div>
++</div>
++
+ <div class="row g-3 mb-3">
+     <div class="col-md-3">
+         <label for="prepaid_time_minutes" class="form-label">
+diff --git a/routes/portal.php b/routes/portal.php
+index 7957975..d41173f 100644
+--- a/routes/portal.php
++++ b/routes/portal.php
+@@ -6,6 +6,7 @@
+ use App\Http\Controllers\Portal\PortalContractController;
+ use App\Http\Controllers\Portal\PortalDashboardController;
+ use App\Http\Controllers\Portal\PortalInvoiceController;
++use App\Http\Controllers\Portal\PortalOrderController;
+ use App\Http\Controllers\Portal\PortalPrepayController;
+ use App\Http\Controllers\Portal\PortalTicketController;
+ use Illuminate\Support\Facades\Route;
+@@ -121,6 +122,12 @@
+     Route::get('/prepaid/payment-status/{invoice}', [PortalPrepayController::class, 'paymentStatus'])->name('portal.prepaid.payment-status');
+     Route::put('/prepaid/{contract}/alert-settings', [PortalPrepayController::class, 'updateAlertSettings'])->name('portal.prepaid.update-alert-settings');
+ 
++    // Product catalog / shop
++    Route::get('/shop', [PortalOrderController::class, 'index'])->name('portal.shop.index');
++    Route::post('/shop', [PortalOrderController::class, 'store'])->name('portal.shop.store')->middleware('throttle:3,5');
++    Route::get('/shop/confirmation/{invoice}', [PortalOrderController::class, 'confirmation'])->name('portal.shop.confirmation');
++    Route::get('/shop/payment-status/{invoice}', [PortalOrderController::class, 'paymentStatus'])->name('portal.shop.payment-status');
++
+     // Impersonation
+     Route::post('/stop-impersonating', [PortalAuthController::class, 'stopImpersonating'])->name('portal.stop-impersonating');
+ 
+diff --git a/tests/Feature/Portal/PortalShopTest.php b/tests/Feature/Portal/PortalShopTest.php
+new file mode 100644
+index 0000000..a5ac353
+--- /dev/null
++++ b/tests/Feature/Portal/PortalShopTest.php
+@@ -0,0 +1,250 @@
++<?php
++
++namespace Tests\Feature\Portal;
++
++use App\Enums\InvoiceStatus;
++use App\Enums\PersonType;
++use App\Jobs\SendTicketNotification;
++use App\Models\Client;
++use App\Models\Invoice;
++use App\Models\Person;
++use App\Models\Setting;
++use App\Models\Sku;
++use App\Models\User;
++use Illuminate\Foundation\Testing\RefreshDatabase;
++use Illuminate\Support\Facades\Bus;
++use Tests\TestCase;
++
++/**
++ * Covers the client-portal product catalog ("Shop"): catalog visibility,
++ * gating, order → invoice creation, TOCTOU/validation guards, staff
++ * notification, and cross-client confirmation authorization.
++ */
++class PortalShopTest extends TestCase
++{
++    use RefreshDatabase;
++
++    private int $skuSeq = 0;
++
++    protected function setUp(): void
++    {
++        parent::setUp();
++        // Portal routes are gated by PortalEnabled (404 when off); the shop has
++        // its own opt-in gate on top.
++        Setting::setValue('portal_enabled', '1');
++        Setting::setValue('portal_shop_enabled', '1');
++    }
++
++    private function client(string $name = 'Acme Corp'): Client
++    {
++        return Client::create(['name' => $name]);
++    }
++
++    private function portalPerson(Client $client, array $overrides = []): Person
++    {
++        return Person::create(array_merge([
++            'client_id' => $client->id,
++            'person_type' => PersonType::User,
++            'first_name' => 'Portal',
++            'last_name' => 'User',
++            'email' => 'portal-user-'.uniqid().'@example.test',
++            'is_active' => true,
++            'portal_enabled' => true,
++            'company_wide_access' => false,
++        ], $overrides));
++    }
++
++    private function sku(array $overrides = []): Sku
++    {
++        $this->skuSeq++;
++
++        return Sku::create(array_merge([
++            'name' => 'Widget '.$this->skuSeq,
++            'sku_code' => 'WIDGET-'.$this->skuSeq,
++            'category' => 'Hardware',
++            'unit_price' => 100.00,
++            'unit_cost' => 60.00,
++            'is_taxable' => true,
++            'is_active' => true,
++            'portal_orderable' => true,
++        ], $overrides));
++    }
++
++    public function test_shop_requires_authentication(): void
++    {
++        // Unauthenticated access must not reach the catalog.
++        $this->get(route('portal.shop.index'))->assertRedirect();
++    }
++
++    public function test_shop_disabled_returns_404(): void
++    {
++        Setting::setValue('portal_shop_enabled', '0');
++        $person = $this->portalPerson($this->client());
++
++        $this->actingAs($person, 'portal')
++            ->get(route('portal.shop.index'))
++            ->assertNotFound();
++    }
++
++    public function test_catalog_shows_only_orderable_active_skus(): void
++    {
++        $person = $this->portalPerson($this->client());
++
++        $this->sku(['name' => 'Orderable Laptop']);
++        $this->sku(['name' => 'Internal Only', 'portal_orderable' => false]);
++        $this->sku(['name' => 'Retired Item', 'is_active' => false]);
++
++        $this->actingAs($person, 'portal')
++            ->get(route('portal.shop.index'))
++            ->assertOk()
++            ->assertSee('Orderable Laptop')
++            ->assertDontSee('Internal Only')
++            ->assertDontSee('Retired Item');
++    }
++
++    public function test_placing_an_order_creates_a_posted_invoice_with_lines(): void
++    {
++        Bus::fake();
++        $client = $this->client();
++        $person = $this->portalPerson($client);
++        $skuA = $this->sku(['unit_price' => 100.00, 'unit_cost' => 60.00]);
++        $skuB = $this->sku(['unit_price' => 25.50, 'unit_cost' => 10.00]);
++
++        $response = $this->actingAs($person, 'portal')->post(route('portal.shop.store'), [
++            'quantities' => [$skuA->id => 2, $skuB->id => 3],
++            'expected_prices' => [$skuA->id => '100.00', $skuB->id => '25.50'],
++        ]);
++
++        $invoice = Invoice::first();
++        $this->assertNotNull($invoice);
++        $response->assertRedirect(route('portal.shop.confirmation', $invoice));
++
++        $this->assertSame($client->id, $invoice->client_id);
++        $this->assertNull($invoice->contract_id);
++        $this->assertSame(InvoiceStatus::Posted, $invoice->status);
++
++        // 2 × 100 + 3 × 25.50 = 276.50 ; cost 2 × 60 + 3 × 10 = 150 ; margin 126.50
++        $this->assertEqualsWithDelta(276.50, (float) $invoice->subtotal, 0.001);
++        $this->assertEqualsWithDelta(276.50, (float) $invoice->total, 0.001);
++        $this->assertEqualsWithDelta(150.00, (float) $invoice->total_cost, 0.001);
++        $this->assertEqualsWithDelta(126.50, (float) $invoice->margin, 0.001);
++        $this->assertCount(2, $invoice->lines);
++        $this->assertStringContainsString('Product order via client portal', (string) $invoice->notes);
++    }
++
++    public function test_order_notifies_staff(): void
++    {
++        Bus::fake();
++        User::factory()->create(['is_active' => true]);
++        $person = $this->portalPerson($this->client());
++        $sku = $this->sku();
++
++        $this->actingAs($person, 'portal')->post(route('portal.shop.store'), [
++            'quantities' => [$sku->id => 1],
++            'expected_prices' => [$sku->id => (string) $sku->unit_price],
++        ]);
++
++        Bus::assertDispatched(SendTicketNotification::class);
++    }
++
++    public function test_order_rejects_non_orderable_sku(): void
++    {
++        $person = $this->portalPerson($this->client());
++        $internal = $this->sku(['portal_orderable' => false]);
++
++        $this->actingAs($person, 'portal')->post(route('portal.shop.store'), [
++            'quantities' => [$internal->id => 1],
++            'expected_prices' => [$internal->id => (string) $internal->unit_price],
++        ])->assertRedirect(route('portal.shop.index'));
++
++        $this->assertSame(0, Invoice::count());
++    }
++
++    public function test_order_rejects_stale_price(): void
++    {
++        $person = $this->portalPerson($this->client());
++        $sku = $this->sku(['unit_price' => 100.00]);
++
++        $this->actingAs($person, 'portal')->post(route('portal.shop.store'), [
++            'quantities' => [$sku->id => 1],
++            'expected_prices' => [$sku->id => '80.00'], // stale price
++        ])->assertRedirect(route('portal.shop.index'));
++
++        $this->assertSame(0, Invoice::count());
++    }
++
++    public function test_empty_order_rejected(): void
++    {
++        $person = $this->portalPerson($this->client());
++        $sku = $this->sku();
++
++        $this->actingAs($person, 'portal')->post(route('portal.shop.store'), [
++            'quantities' => [$sku->id => 0],
++            'expected_prices' => [$sku->id => (string) $sku->unit_price],
++        ])->assertRedirect(route('portal.shop.index'));
++
++        $this->assertSame(0, Invoice::count());
++    }
++
++    public function test_owner_can_view_order_confirmation(): void
++    {
++        Bus::fake();
++        $client = $this->client();
++        $person = $this->portalPerson($client);
++        $sku = $this->sku(['name' => 'Configured Laptop', 'unit_price' => 100.00]);
++
++        $this->actingAs($person, 'portal')->post(route('portal.shop.store'), [
++            'quantities' => [$sku->id => 2],
++            'expected_prices' => [$sku->id => '100.00'],
++        ]);
++        $invoice = Invoice::firstOrFail();
++
++        $this->actingAs($person, 'portal')
++            ->get(route('portal.shop.confirmation', $invoice))
++            ->assertOk()
++            ->assertSee('Order Confirmed')
++            ->assertSee($invoice->invoice_number)
++            ->assertSee('Configured Laptop');
++    }
++
++    public function test_confirmation_404_for_non_shop_invoice(): void
++    {
++        // An invoice that is not a portal product order must not render as one.
++        $client = $this->client();
++        $person = $this->portalPerson($client);
++        $invoice = Invoice::create([
++            'client_id' => $client->id,
++            'invoice_number' => 'INV-09999',
++            'invoice_date' => now()->toDateString(),
++            'due_date' => now()->toDateString(),
++            'status' => InvoiceStatus::Posted,
++            'notes' => 'Manually created by staff',
++        ]);
++
++        $this->actingAs($person, 'portal')
++            ->get(route('portal.shop.confirmation', $invoice))
++            ->assertNotFound();
++    }
++
++    public function test_confirmation_blocks_cross_client_access(): void
++    {
++        Bus::fake();
++        $clientA = $this->client('Client A');
++        $personA = $this->portalPerson($clientA);
++        $sku = $this->sku();
++
++        $this->actingAs($personA, 'portal')->post(route('portal.shop.store'), [
++            'quantities' => [$sku->id => 1],
++            'expected_prices' => [$sku->id => (string) $sku->unit_price],
++        ]);
++        $invoice = Invoice::firstOrFail();
++
++        // A different client's portal user must not view the order.
++        $clientB = $this->client('Client B');
++        $personB = $this->portalPerson($clientB, ['email' => 'other-'.uniqid().'@example.test']);
++
++        $this->actingAs($personB, 'portal')
++            ->get(route('portal.shop.confirmation', $invoice))
++            ->assertForbidden();
++    }
++}
+diff --git a/tests/Feature/Sku/SkuPortalFieldsTest.php b/tests/Feature/Sku/SkuPortalFieldsTest.php
+new file mode 100644
+index 0000000..16351a6
+--- /dev/null
++++ b/tests/Feature/Sku/SkuPortalFieldsTest.php
+@@ -0,0 +1,82 @@
++<?php
++
++namespace Tests\Feature\Sku;
++
++use App\Models\Sku;
++use App\Models\User;
++use Illuminate\Foundation\Testing\RefreshDatabase;
++use Tests\TestCase;
++
++/**
++ * The staff SKU form gained portal-catalog fields (portal_orderable +
++ * portal_description) so operators can publish products to the client portal
++ * shop. Locks in that they validate, coerce, and persist through create/update.
++ */
++class SkuPortalFieldsTest extends TestCase
++{
++    use RefreshDatabase;
++
++    private function payload(array $overrides = []): array
++    {
++        return array_merge([
++            'name' => 'Portal Laptop',
++            'sku_code' => 'PL-1',
++            'unit_price' => '999.00',
++            'unit_cost' => '750.00',
++            'is_taxable' => '1',
++            'is_active' => '1',
++        ], $overrides);
++    }
++
++    public function test_store_persists_portal_catalog_fields(): void
++    {
++        $staff = User::factory()->create();
++
++        $this->actingAs($staff)->post(route('skus.store'), $this->payload([
++            'portal_orderable' => '1',
++            'portal_description' => 'A fast laptop for your team.',
++        ]))->assertRedirect();
++
++        $sku = Sku::where('sku_code', 'PL-1')->firstOrFail();
++        $this->assertTrue($sku->portal_orderable);
++        $this->assertSame('A fast laptop for your team.', $sku->portal_description);
++    }
++
++    public function test_store_defaults_portal_orderable_off(): void
++    {
++        $staff = User::factory()->create();
++
++        // No portal_orderable field submitted → coerces to false.
++        $this->actingAs($staff)->post(route('skus.store'), $this->payload([
++            'sku_code' => 'PL-2',
++        ]))->assertRedirect();
++
++        $sku = Sku::where('sku_code', 'PL-2')->firstOrFail();
++        $this->assertFalse($sku->portal_orderable);
++    }
++
++    public function test_update_toggles_portal_orderable(): void
++    {
++        $staff = User::factory()->create();
++        $sku = Sku::create([
++            'name' => 'Widget',
++            'sku_code' => 'W-1',
++            'unit_price' => 10,
++            'unit_cost' => 5,
++            'is_taxable' => true,
++            'is_active' => true,
++            'portal_orderable' => true,
++        ]);
++
++        // Update without portal_orderable → hidden input posts 0 → turns off.
++        $this->actingAs($staff)->patch(route('skus.update', $sku), $this->payload([
++            'name' => 'Widget',
++            'sku_code' => 'W-1',
++            'unit_price' => '10.00',
++            'unit_cost' => '5.00',
++            'portal_orderable' => '0',
++        ]))->assertRedirect();
++
++        $this->assertFalse($sku->fresh()->portal_orderable);
++    }
++}
+-- 
+2.43.0
+
+
+From 714d684946313f033b84a3e068db62b50c7d78ae Mon Sep 17 00:00:00 2001
+From: "gastown.slit (polecat)" <polecat-gastown.slit@soundit.local>
+Date: Wed, 8 Jul 2026 23:46:41 +0000
+Subject: [PATCH 2/2] refactor: exact-match duplicate-order guard + test
+ (psa-qq1)
+
+Self-review touch-ups that landed after the initial commit's staging:
+- PortalOrderController duplicate-order guard now matches the order note by
+  exact equality instead of a LIKE without wildcards, so a contact name
+  containing SQL wildcard characters can't perturb the dedup lookup.
+- Adds test_duplicate_order_within_window_reuses_invoice covering that guard
+  (second identical submit routes to the existing order, no second invoice).
+
+Both were exercised by the green gc-verify run (working-tree state); this
+commit captures them so the branch tip matches what was verified.
+---
+ .../Portal/PortalOrderController.php          |  2 +-
+ tests/Feature/Portal/PortalShopTest.php       | 20 +++++++++++++++++++
+ 2 files changed, 21 insertions(+), 1 deletion(-)
+
+diff --git a/app/Http/Controllers/Portal/PortalOrderController.php b/app/Http/Controllers/Portal/PortalOrderController.php
+index a822b1e..d9b5d48 100644
+--- a/app/Http/Controllers/Portal/PortalOrderController.php
++++ b/app/Http/Controllers/Portal/PortalOrderController.php
+@@ -93,7 +93,7 @@ public function store(Request $request): RedirectResponse
+         // Duplicate-order guard: same person, same client, within a 2-minute window.
+         $recentDuplicate = Invoice::where('client_id', $clientId)
+             ->whereNull('profile_id')
+-            ->where('notes', 'like', "Product order via client portal by {$person->full_name}")
++            ->where('notes', "Product order via client portal by {$person->full_name}")
+             ->where('created_at', '>=', now()->subMinutes(2))
+             ->first();
+ 
+diff --git a/tests/Feature/Portal/PortalShopTest.php b/tests/Feature/Portal/PortalShopTest.php
+index a5ac353..d7a3557 100644
+--- a/tests/Feature/Portal/PortalShopTest.php
++++ b/tests/Feature/Portal/PortalShopTest.php
+@@ -147,6 +147,26 @@ public function test_order_notifies_staff(): void
+         Bus::assertDispatched(SendTicketNotification::class);
+     }
+ 
++    public function test_duplicate_order_within_window_reuses_invoice(): void
++    {
++        Bus::fake();
++        $person = $this->portalPerson($this->client());
++        $sku = $this->sku();
++        $payload = [
++            'quantities' => [$sku->id => 1],
++            'expected_prices' => [$sku->id => (string) $sku->unit_price],
++        ];
++
++        $this->actingAs($person, 'portal')->post(route('portal.shop.store'), $payload);
++        $first = Invoice::firstOrFail();
++
++        // Immediate re-submit should route to the existing order, not create a second.
++        $this->actingAs($person, 'portal')->post(route('portal.shop.store'), $payload)
++            ->assertRedirect(route('portal.shop.confirmation', $first));
++
++        $this->assertSame(1, Invoice::count());
++    }
++
+     public function test_order_rejects_non_orderable_sku(): void
+     {
+         $person = $this->portalPerson($this->client());
+-- 
+2.43.0
+

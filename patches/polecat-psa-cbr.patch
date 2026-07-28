@@ -1,0 +1,842 @@
+From be25e56e411bbbed487b422b51d4db20aef83db6 Mon Sep 17 00:00:00 2001
+From: "gastown.slit (polecat)" <polecat-gastown.slit@soundit.local>
+Date: Wed, 8 Jul 2026 23:13:36 +0000
+Subject: [PATCH] feat: merge two clients into one (psa-cbr)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Adds staff-facing "merge duplicate client" for GitHub #171. On a client
+detail page, staff pick another client to fold INTO the one they're viewing;
+that client survives and the duplicate is soft-deleted.
+
+ClientService::mergeClients() is the business logic, mirroring the existing
+PersonService::mergePeople() pattern: one DB transaction, pessimistic lock on
+both client rows, query-builder repoints (no model observers fire), and a raw
+DB::table update so soft-deleted rows move too — nothing is left pointing at
+the tombstoned client. It repoints every client-owned domain record (tickets,
+assets, people, phone calls, emails, contracts, invoices, licenses),
+re-parents the duplicate's reseller children, fills only the survivor's BLANK
+profile fields from the duplicate (never overwrites), and writes an audit note
+on both records.
+
+Two non-obvious edges are handled explicitly:
+- licenses carry a UNIQUE(license_type_id, client_id, vendor_ref) index, so a
+  duplicate license that would collide with a survivor license on the same
+  type + non-null vendor_ref is dropped as redundant rather than repointed
+  (a NULL vendor_ref never collides and always moves).
+- if the survivor was itself resold BY the duplicate, that reseller link is
+  nulled so the survivor can't become its own reseller.
+
+Scope boundary: auxiliary tables that merely reference a client (alerts,
+ninja_alerts, the wiki knowledge base, technician/tooling-gap AI logs) are
+intentionally NOT repointed — they are nullable monitoring/AI-log rows that
+don't define client identity. Integration mapping IDs (Stripe/QBO/RMM/…) are
+not carried over either; they retire with the duplicate and can be re-mapped.
+Unlike deleteClient(), merge does not block on open tickets / active contracts
+/ unpaid invoices — consolidating those is the whole point.
+
+UI mirrors the person-merge modal: a guarded Merge button + confirm modal with
+a candidate <select> on clients/show. Route: POST /clients/{client}/merge.
+
+Validation: 15 new tests (ClientMergeServiceTest + ClientMergeTest) covering
+core repoints, license collision/NULL handling, reseller re-parenting and the
+self-reseller edge, blank-field fill, audit notes, the no-orphans invariant,
+the self-merge guard, and the HTTP flow incl. the show-page modal render.
+---
+ app/Http/Controllers/Web/ClientController.php |  59 ++++
+ app/Services/ClientService.php                | 138 ++++++++
+ resources/views/clients/show.blade.php        |  86 +++++
+ routes/web.php                                |   1 +
+ tests/Feature/ClientMergeServiceTest.php      | 308 ++++++++++++++++++
+ tests/Feature/ClientMergeTest.php             | 103 ++++++
+ 6 files changed, 695 insertions(+)
+ create mode 100644 tests/Feature/ClientMergeServiceTest.php
+ create mode 100644 tests/Feature/ClientMergeTest.php
+
+diff --git a/app/Http/Controllers/Web/ClientController.php b/app/Http/Controllers/Web/ClientController.php
+index ae88910..348a5c3 100644
+--- a/app/Http/Controllers/Web/ClientController.php
++++ b/app/Http/Controllers/Web/ClientController.php
+@@ -32,6 +32,7 @@
+ use Illuminate\Http\RedirectResponse;
+ use Illuminate\Http\Request;
+ use Illuminate\Support\Str;
++use Illuminate\Validation\Rule;
+ 
+ class ClientController extends Controller
+ {
+@@ -117,9 +118,22 @@ public function show(Client $client)
+             'client' => $client,
+             'assets' => $assets,
+             'integrations' => $integrations,
++            'mergeCandidates' => $this->mergeCandidatesFor($client),
+         ]);
+     }
+ 
++    /**
++     * Other clients that could be merged INTO this one (this client survives).
++     * Includes inactive clients — a deactivated duplicate is a prime merge target.
++     */
++    private function mergeCandidatesFor(Client $client)
++    {
++        return Client::query()
++            ->where('id', '!=', $client->id)
++            ->orderBy('name')
++            ->get(['id', 'name', 'is_active', 'stage']);
++    }
++
+     public function tickets(Request $request, Client $client)
+     {
+         $filters = [
+@@ -439,6 +453,51 @@ public function destroy(Client $client)
+             ->with('success', 'Client deleted successfully.');
+     }
+ 
++    public function merge(Request $request, Client $client)
++    {
++        // Laravel's bare `exists` rule ignores the SoftDeletes scope, so scope the
++        // candidate to non-deleted rows. The service enforces the self-merge guard
++        // as the inner layer (defense in depth).
++        $validated = $request->validate([
++            'duplicate_id' => [
++                'required',
++                'integer',
++                Rule::exists('clients', 'id')->where(fn ($q) => $q->whereNull('deleted_at')),
++            ],
++        ]);
++
++        // findOrFail re-applies the SoftDeletes scope → clean 404 on a tampered id
++        $duplicate = Client::findOrFail($validated['duplicate_id']);
++        $duplicateName = $duplicate->name;
++
++        try {
++            $summary = $this->clientService->mergeClients($client, $duplicate, auth()->id());
++        } catch (\InvalidArgumentException|\RuntimeException $e) {
++            return redirect()->route('clients.show', $client)->with('error', $e->getMessage());
++        }
++
++        $parts = [];
++        foreach ([
++            ['tickets', 'ticket', 'tickets'],
++            ['assets', 'device', 'devices'],
++            ['people', 'contact', 'contacts'],
++            ['calls', 'call', 'calls'],
++            ['emails', 'email', 'emails'],
++            ['contracts', 'contract', 'contracts'],
++            ['invoices', 'invoice', 'invoices'],
++            ['licenses', 'license', 'licenses'],
++            ['reseller_children', 'reseller child', 'reseller children'],
++        ] as [$key, $one, $many]) {
++            if (! empty($summary[$key])) {
++                $parts[] = $summary[$key].' '.($summary[$key] === 1 ? $one : $many);
++            }
++        }
++        $movedText = $parts ? ' Moved '.implode(', ', $parts).'.' : '';
++
++        return redirect()->route('clients.show', $client)
++            ->with('success', "Merged {$duplicateName} into {$client->name}.{$movedText}");
++    }
++
+     public function updateSiteNotes(ClientSiteNotesUpdateRequest $request, Client $client)
+     {
+         try {
+diff --git a/app/Services/ClientService.php b/app/Services/ClientService.php
+index 3e568a5..862a401 100644
+--- a/app/Services/ClientService.php
++++ b/app/Services/ClientService.php
+@@ -4,7 +4,9 @@
+ 
+ use App\Helpers\MarkdownRenderer;
+ use App\Models\Client;
++use App\Models\User;
+ use App\Support\PhoneNumber;
++use Illuminate\Support\Facades\DB;
+ 
+ class ClientService
+ {
+@@ -119,6 +121,142 @@ public function deleteClient(Client $client): void
+         $client->delete();
+     }
+ 
++    /**
++     * Merge a duplicate client into a surviving client.
++     *
++     * Repoints every client-owned domain record — tickets, assets, people,
++     * phone calls, emails, contracts, invoices, licenses — onto the survivor,
++     * re-parents the duplicate's reseller children, fills only the survivor's
++     * BLANK profile fields from the duplicate, writes an audit note on both,
++     * then soft-deletes the duplicate. Mirrors PersonService::mergePeople():
++     * query-builder repoints (no model events), pessimistic locking, all inside
++     * one transaction. Raw `DB::table` updates deliberately move soft-deleted
++     * rows too, so nothing is left pointing at the tombstoned client.
++     *
++     * Scope boundary: auxiliary tables that merely reference a client — alerts,
++     * ninja_alerts, the wiki knowledge base, and the technician/tooling-gap
++     * AI logs — are intentionally NOT repointed. They are nullable
++     * monitoring/AI-log rows (nullOnDelete/cascade) that don't define client
++     * identity; leaving them on the soft-deleted duplicate keeps them harmlessly
++     * out of the survivor's operational views.
++     *
++     * Unlike deleteClient(), merge does NOT block on open tickets / active
++     * contracts / unpaid invoices — consolidating those is the whole point.
++     *
++     * @return array{tickets:int,assets:int,people:int,calls:int,emails:int,contracts:int,invoices:int,licenses:int,reseller_children:int}
++     */
++    public function mergeClients(Client $survivor, Client $duplicate, int $mergedByUserId): array
++    {
++        if ($survivor->id === $duplicate->id) {
++            throw new \InvalidArgumentException('Cannot merge a client into itself.');
++        }
++
++        return DB::transaction(function () use ($survivor, $duplicate, $mergedByUserId) {
++            // Pessimistic lock both rows for the duration of the merge
++            $survivor = Client::lockForUpdate()->findOrFail($survivor->id);
++            $duplicate = Client::lockForUpdate()->findOrFail($duplicate->id);
++
++            // Repoint the client-owned FKs via the query builder: no observers
++            // fire and soft-deleted rows move too (people/contracts/invoices use
++            // SoftDeletes), so no reference is orphaned on the tombstoned client.
++            $counts = [];
++            foreach ([
++                'tickets' => 'tickets',
++                'assets' => 'assets',
++                'people' => 'people',
++                'calls' => 'phone_calls',
++                'emails' => 'emails',
++                'contracts' => 'contracts',
++                'invoices' => 'invoices',
++            ] as $key => $table) {
++                $counts[$key] = DB::table($table)
++                    ->where('client_id', $duplicate->id)
++                    ->update(['client_id' => $survivor->id]);
++            }
++
++            // Licenses carry a unique index on (license_type_id, client_id,
++            // vendor_ref). Move the ones that won't collide; a duplicate row that
++            // would collide (same type + same NON-NULL vendor_ref) is redundant
++            // with the survivor's and is dropped. A NULL vendor_ref never
++            // collides (NULLs are distinct in a unique index), so it always moves.
++            $movedLicenses = 0;
++            foreach (DB::table('licenses')->where('client_id', $duplicate->id)->get() as $license) {
++                $collides = $license->vendor_ref !== null
++                    && DB::table('licenses')
++                        ->where('client_id', $survivor->id)
++                        ->where('license_type_id', $license->license_type_id)
++                        ->where('vendor_ref', $license->vendor_ref)
++                        ->exists();
++                if ($collides) {
++                    DB::table('licenses')->where('id', $license->id)->delete();
++                } else {
++                    DB::table('licenses')->where('id', $license->id)->update(['client_id' => $survivor->id]);
++                    $movedLicenses++;
++                }
++            }
++            $counts['licenses'] = $movedLicenses;
++
++            // Re-parent the duplicate's reseller children onto the survivor.
++            // Exclude the survivor itself so a "survivor resold BY the duplicate"
++            // link can't become a self-reseller — that dangling link is nulled
++            // below instead.
++            $counts['reseller_children'] = DB::table('clients')
++                ->where('reseller_id', $duplicate->id)
++                ->where('id', '!=', $survivor->id)
++                ->update(['reseller_id' => $survivor->id]);
++            if ((int) $survivor->reseller_id === $duplicate->id) {
++                $survivor->reseller_id = null; // a client cannot be its own reseller
++            }
++
++            // Fill only BLANK profile fields on the survivor — never overwrite.
++            // None of these columns are unique, so copying can't collide.
++            // Integration mapping IDs (stripe/qbo/ninja/…) are intentionally NOT
++            // carried: they are 1:1 external links that retire with the duplicate
++            // and can be re-mapped in Settings.
++            foreach ([
++                'phone', 'phone_display', 'email', 'website',
++                'address_line1', 'address_line2', 'city', 'state', 'postcode',
++                'primary_tech_id',
++            ] as $field) {
++                if (blank($survivor->{$field}) && filled($duplicate->{$field})) {
++                    $survivor->{$field} = $duplicate->{$field};
++                }
++            }
++
++            // Audit: a record line on the survivor and a tombstone on the duplicate
++            $merger = User::find($mergedByUserId)?->name ?? 'Unknown';
++            $when = now()->toDateString();
++            $moved = [];
++            foreach ([
++                [$counts['tickets'], 'ticket', 'tickets'],
++                [$counts['assets'], 'device', 'devices'],
++                [$counts['people'], 'contact', 'contacts'],
++                [$counts['calls'], 'call', 'calls'],
++                [$counts['emails'], 'email', 'emails'],
++                [$counts['contracts'], 'contract', 'contracts'],
++                [$counts['invoices'], 'invoice', 'invoices'],
++                [$counts['licenses'], 'license', 'licenses'],
++            ] as [$n, $one, $many]) {
++                if ($n) {
++                    $moved[] = "{$n} ".($n === 1 ? $one : $many);
++                }
++            }
++            $movedSummary = $moved ? ' Moved: '.implode(', ', $moved).'.' : '';
++
++            $survivor->notes = trim(($survivor->notes ? $survivor->notes."\n\n" : '')
++                ."Merged client '{$duplicate->name}' (#{$duplicate->id}) on {$when} by {$merger}.{$movedSummary}");
++            $duplicate->notes = trim(($duplicate->notes ? $duplicate->notes."\n\n" : '')
++                ."Merged into '{$survivor->name}' (#{$survivor->id}) on {$when} by {$merger}.");
++
++            $duplicate->save();
++            $survivor->save();
++
++            $duplicate->delete();
++
++            return $counts;
++        });
++    }
++
+     private function normalizePhone(array &$data): void
+     {
+         if (! empty($data['phone'])) {
+diff --git a/resources/views/clients/show.blade.php b/resources/views/clients/show.blade.php
+index 049fb7e..dbdee3e 100644
+--- a/resources/views/clients/show.blade.php
++++ b/resources/views/clients/show.blade.php
+@@ -45,6 +45,12 @@
+             <a href="{{ route('clients.edit', $client) }}" class="btn btn-outline-primary btn-sm">
+                 <i class="bi bi-pencil me-1"></i>Edit
+             </a>
++            @if(($mergeCandidates ?? collect())->isNotEmpty())
++            <button type="button" class="btn btn-outline-secondary btn-sm" title="Merge a duplicate client into this one"
++                    data-bs-toggle="modal" data-bs-target="#mergeClientModal">
++                <i class="bi bi-box-arrow-in-down-left me-1"></i>Merge
++            </button>
++            @endif
+             <button type="button" class="btn btn-outline-danger btn-sm" title="Delete client"
+                     data-bs-toggle="modal" data-bs-target="#deleteClientModal">
+                 <i class="bi bi-trash"></i>
+@@ -1281,6 +1287,86 @@ class="btn btn-outline-primary btn-sm">View all tickets</a>
+     </div>{{-- /col-md-4 --}}
+ </div>{{-- /row --}}
+ 
++{{-- Merge Modal --}}
++@if(($mergeCandidates ?? collect())->isNotEmpty())
++<div class="modal fade" id="mergeClientModal" tabindex="-1" aria-labelledby="mergeClientModalLabel" aria-hidden="true">
++    <div class="modal-dialog">
++        <div class="modal-content">
++            <form method="POST" action="{{ route('clients.merge', $client) }}">
++                @csrf
++                <div class="modal-header">
++                    <h5 class="modal-title" id="mergeClientModalLabel"><i class="bi bi-box-arrow-in-down-left me-2"></i>Merge Duplicate Client</h5>
++                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
++                </div>
++                <div class="modal-body">
++                    <div class="mb-3">
++                        <label for="mergeDuplicateSelect" class="form-label">Client to merge into this one</label>
++                        <select class="form-select" id="mergeDuplicateSelect" name="duplicate_id" required>
++                            <option value="" selected disabled>Choose a client…</option>
++                            @foreach($mergeCandidates as $candidate)
++                                @php
++                                    $candidateLabel = $candidate->name;
++                                    if (! $candidate->is_active) {
++                                        $candidateLabel .= ' (inactive)';
++                                    }
++                                    if ($candidate->stage === \App\Enums\ClientStage::Prospect) {
++                                        $candidateLabel .= ' (prospect)';
++                                    }
++                                @endphp
++                                <option value="{{ $candidate->id }}" data-name="{{ $candidate->name }}">{{ $candidateLabel }}</option>
++                            @endforeach
++                        </select>
++                    </div>
++                    <div class="alert alert-warning small py-2 mb-2">
++                        <i class="bi bi-exclamation-triangle me-1"></i><strong>This cannot be undone.</strong>
++                        All tickets, devices, contacts, calls, emails, contracts, invoices and licenses from the
++                        selected client move to <strong>{{ $client->name }}</strong>, and any clients it resells
++                        transfer here too. The selected client is then removed (soft-deleted). Integration mappings
++                        (Stripe, QBO, RMM, …) are not carried over — re-map them in Settings if needed.
++                    </div>
++                    <p class="mb-0" id="mergeDirection" style="display: none;">
++                        Merge <strong id="mergeDuplicateName"></strong> into
++                        <strong>{{ $client->name }}</strong> <span class="text-muted">(kept)</span>.
++                    </p>
++                </div>
++                <div class="modal-footer">
++                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
++                    <button type="submit" class="btn btn-danger" id="mergeClientBtn" disabled>
++                        <i class="bi bi-box-arrow-in-down-left me-1"></i>Merge clients
++                    </button>
++                </div>
++            </form>
++        </div>
++    </div>
++</div>
++<script>
++(function() {
++    var select = document.getElementById('mergeDuplicateSelect');
++    var btn = document.getElementById('mergeClientBtn');
++    var direction = document.getElementById('mergeDirection');
++    var nameEl = document.getElementById('mergeDuplicateName');
++    var modal = document.getElementById('mergeClientModal');
++    if (!select || !btn) return;
++    select.addEventListener('change', function() {
++        var opt = select.options[select.selectedIndex];
++        if (select.value) {
++            btn.disabled = false;
++            if (nameEl) nameEl.textContent = (opt && opt.getAttribute('data-name')) || 'this client';
++            if (direction) direction.style.display = '';
++        } else {
++            btn.disabled = true;
++            if (direction) direction.style.display = 'none';
++        }
++    });
++    modal?.addEventListener('hidden.bs.modal', function() {
++        select.value = '';
++        btn.disabled = true;
++        if (direction) direction.style.display = 'none';
++    });
++})();
++</script>
++@endif
++
+ {{-- Delete Modal --}}
+ <div class="modal fade" id="deleteClientModal" tabindex="-1">
+     <div class="modal-dialog">
+diff --git a/routes/web.php b/routes/web.php
+index 69e48fb..8a9a00b 100644
+--- a/routes/web.php
++++ b/routes/web.php
+@@ -130,6 +130,7 @@
+     Route::get('/clients/{client}/edit', [ClientController::class, 'edit'])->name('clients.edit');
+     Route::patch('/clients/{client}', [ClientController::class, 'update'])->name('clients.update');
+     Route::delete('/clients/{client}', [ClientController::class, 'destroy'])->name('clients.destroy');
++    Route::post('/clients/{client}/merge', [ClientController::class, 'merge'])->name('clients.merge');
+     Route::patch('/clients/{client}/site-notes', [ClientController::class, 'updateSiteNotes'])->name('clients.site-notes.update');
+     Route::patch('/clients/{client}/credentials', [ClientController::class, 'updateCredentials'])->name('clients.credentials.update');
+     Route::post('/clients/{client}/install-link/generate', [ClientController::class, 'generateInstallLink'])->name('clients.install-link.generate');
+diff --git a/tests/Feature/ClientMergeServiceTest.php b/tests/Feature/ClientMergeServiceTest.php
+new file mode 100644
+index 0000000..5491aec
+--- /dev/null
++++ b/tests/Feature/ClientMergeServiceTest.php
+@@ -0,0 +1,308 @@
++<?php
++
++namespace Tests\Feature;
++
++use App\Enums\PersonType;
++use App\Enums\TicketPriority;
++use App\Enums\TicketStatus;
++use App\Enums\TicketType;
++use App\Models\Asset;
++use App\Models\Client;
++use App\Models\Contract;
++use App\Models\Email;
++use App\Models\Invoice;
++use App\Models\License;
++use App\Models\LicenseType;
++use App\Models\Person;
++use App\Models\PhoneCall;
++use App\Models\Ticket;
++use App\Models\User;
++use App\Services\ClientService;
++use Illuminate\Foundation\Testing\RefreshDatabase;
++use Illuminate\Support\Facades\Bus;
++use Illuminate\Support\Facades\DB;
++use Tests\TestCase;
++
++class ClientMergeServiceTest extends TestCase
++{
++    use RefreshDatabase;
++
++    protected function setUp(): void
++    {
++        parent::setUp();
++        // Ticket/Person creation fires observers that dispatch queued work — contain it.
++        Bus::fake();
++    }
++
++    private function service(): ClientService
++    {
++        return app(ClientService::class);
++    }
++
++    private function client(string $name = 'Acme', array $overrides = []): Client
++    {
++        return Client::create(array_merge(['name' => $name], $overrides));
++    }
++
++    private function person(Client $c, array $overrides = []): Person
++    {
++        return Person::create(array_merge([
++            'client_id' => $c->id,
++            'person_type' => PersonType::User,
++            'first_name' => 'Test',
++            'last_name' => 'Person',
++            'is_active' => true,
++        ], $overrides));
++    }
++
++    private function ticket(Client $c, array $overrides = []): Ticket
++    {
++        return Ticket::create(array_merge([
++            'client_id' => $c->id,
++            'subject' => 'Help',
++            'type' => TicketType::ServiceRequest,
++            'status' => TicketStatus::New,
++            'priority' => TicketPriority::P3,
++            'opened_at' => now(),
++        ], $overrides));
++    }
++
++    private function asset(Client $c, string $name = 'PC'): Asset
++    {
++        return Asset::create(['client_id' => $c->id, 'name' => $name]);
++    }
++
++    private function phoneCall(Client $c, string $uuid): PhoneCall
++    {
++        // client_id is safest set directly (mirrors PhoneCall handling elsewhere).
++        $call = new PhoneCall(['call_uuid' => $uuid, 'from_number' => '+15555550100']);
++        $call->client_id = $c->id;
++        $call->save();
++
++        return $call;
++    }
++
++    private function email(Client $c, string $graphId): Email
++    {
++        return Email::create([
++            'graph_id' => $graphId,
++            'from_address' => 'sender@ext.test',
++            'subject' => 'Hi',
++            'received_at' => now(),
++            'client_id' => $c->id,
++        ]);
++    }
++
++    private function contract(Client $c, string $name = 'MSA'): Contract
++    {
++        return Contract::create(['client_id' => $c->id, 'name' => $name, 'type' => 'managed', 'start_date' => '2026-01-01']);
++    }
++
++    private function invoice(Client $c, string $number): Invoice
++    {
++        return Invoice::create([
++            'client_id' => $c->id,
++            'invoice_number' => $number,
++            'invoice_date' => '2026-01-01',
++            'due_date' => '2026-01-31',
++            'status' => 'posted',
++        ]);
++    }
++
++    private function licenseType(string $vendor = 'cipp_m365', string $name = 'M365 E3'): LicenseType
++    {
++        return LicenseType::create(['name' => $name, 'vendor' => $vendor]);
++    }
++
++    private function license(Client $c, LicenseType $lt, ?string $vendorRef, int $qty = 5): License
++    {
++        return License::create([
++            'license_type_id' => $lt->id,
++            'client_id' => $c->id,
++            'quantity' => $qty,
++            'vendor_ref' => $vendorRef,
++            'status' => 'active',
++        ]);
++    }
++
++    private function staffUser(): User
++    {
++        return User::factory()->create();
++    }
++
++    public function test_repoints_core_entities_to_survivor(): void
++    {
++        $survivor = $this->client('Keep Co');
++        $dup = $this->client('Dupe Co');
++
++        $ticket = $this->ticket($dup);
++        $asset = $this->asset($dup);
++        $person = $this->person($dup);
++        $call = $this->phoneCall($dup, 'uuid-1');
++        $email = $this->email($dup, 'g-1');
++        $contract = $this->contract($dup);
++        $invoice = $this->invoice($dup, 'INV-1');
++
++        $summary = $this->service()->mergeClients($survivor, $dup, $this->staffUser()->id);
++
++        $this->assertSame($survivor->id, $ticket->fresh()->client_id);
++        $this->assertSame($survivor->id, $asset->fresh()->client_id);
++        $this->assertSame($survivor->id, $person->fresh()->client_id);
++        $this->assertSame($survivor->id, $call->fresh()->client_id);
++        $this->assertSame($survivor->id, $email->fresh()->client_id);
++        $this->assertSame($survivor->id, $contract->fresh()->client_id);
++        $this->assertSame($survivor->id, $invoice->fresh()->client_id);
++
++        $this->assertSame(1, $summary['tickets']);
++        $this->assertSame(1, $summary['assets']);
++        $this->assertSame(1, $summary['people']);
++        $this->assertSame(1, $summary['calls']);
++        $this->assertSame(1, $summary['emails']);
++        $this->assertSame(1, $summary['contracts']);
++        $this->assertSame(1, $summary['invoices']);
++
++        $this->assertSoftDeleted('clients', ['id' => $dup->id]);
++        $this->assertNotNull(Client::find($survivor->id));
++    }
++
++    public function test_moves_licenses_and_drops_colliding_duplicates(): void
++    {
++        $survivor = $this->client('Keep Co');
++        $dup = $this->client('Dupe Co');
++        $lt = $this->licenseType();
++
++        // Survivor already holds this exact vendor record; the duplicate's copy is redundant.
++        $this->license($survivor, $lt, 'vendor-ref-A', 3);
++        $collidingDup = $this->license($dup, $lt, 'vendor-ref-A', 7);
++        // Distinct vendor_ref → moves cleanly.
++        $movableDup = $this->license($dup, $lt, 'vendor-ref-B', 2);
++
++        $summary = $this->service()->mergeClients($survivor, $dup, $this->staffUser()->id);
++
++        // Colliding row dropped, distinct row moved.
++        $this->assertNull(License::find($collidingDup->id));
++        $this->assertSame($survivor->id, $movableDup->fresh()->client_id);
++        $this->assertSame(1, $summary['licenses']);
++        // Survivor still has exactly one row for the colliding ref (not duplicated).
++        $this->assertSame(1, License::where('client_id', $survivor->id)->where('vendor_ref', 'vendor-ref-A')->count());
++        $this->assertSame(0, License::where('client_id', $dup->id)->count());
++    }
++
++    public function test_moves_null_vendor_ref_license_even_with_matching_type(): void
++    {
++        // NULLs are distinct in the (type, client, vendor_ref) unique index, so a
++        // NULL-vendor_ref license never collides and always moves.
++        $survivor = $this->client('Keep Co');
++        $dup = $this->client('Dupe Co');
++        $lt = $this->licenseType();
++        $this->license($survivor, $lt, null, 4);
++        $dupLicense = $this->license($dup, $lt, null, 9);
++
++        $summary = $this->service()->mergeClients($survivor, $dup, $this->staffUser()->id);
++
++        $this->assertSame($survivor->id, $dupLicense->fresh()->client_id);
++        $this->assertSame(1, $summary['licenses']);
++        $this->assertSame(2, License::where('client_id', $survivor->id)->count());
++    }
++
++    public function test_reparents_reseller_children_to_survivor(): void
++    {
++        $survivor = $this->client('Reseller Keep');
++        $dup = $this->client('Reseller Dupe');
++        $childA = $this->client('Child A', ['reseller_id' => $dup->id]);
++        $childB = $this->client('Child B', ['reseller_id' => $dup->id]);
++
++        $summary = $this->service()->mergeClients($survivor, $dup, $this->staffUser()->id);
++
++        $this->assertSame($survivor->id, $childA->fresh()->reseller_id);
++        $this->assertSame($survivor->id, $childB->fresh()->reseller_id);
++        $this->assertSame(2, $summary['reseller_children']);
++    }
++
++    public function test_nulls_reseller_id_when_survivor_was_resold_by_duplicate(): void
++    {
++        // The duplicate is the survivor's reseller. After the merge the survivor
++        // must not end up as its own reseller.
++        $dup = $this->client('Reseller Dupe');
++        $survivor = $this->client('Kept Child', ['reseller_id' => $dup->id]);
++
++        $this->service()->mergeClients($survivor, $dup, $this->staffUser()->id);
++
++        $this->assertNull($survivor->fresh()->reseller_id);
++    }
++
++    public function test_fills_only_blank_profile_fields(): void
++    {
++        $survivor = $this->client('Keep Co', ['website' => 'keep.example', 'city' => null]);
++        $dup = $this->client('Dupe Co', ['website' => 'dupe.example', 'city' => 'Portland']);
++
++        $this->service()->mergeClients($survivor, $dup, $this->staffUser()->id);
++
++        $survivor->refresh();
++        $this->assertSame('keep.example', $survivor->website); // existing value not overwritten
++        $this->assertSame('Portland', $survivor->city);        // blank field filled from duplicate
++    }
++
++    public function test_writes_audit_notes_on_both_and_soft_deletes_duplicate(): void
++    {
++        $survivor = $this->client('Keep Co');
++        $dup = $this->client('Dupe Co');
++        $this->ticket($dup);
++        $user = User::factory()->create(['name' => 'Casey Tech']);
++
++        $this->service()->mergeClients($survivor, $dup, $user->id);
++
++        $this->assertStringContainsString("Merged client 'Dupe Co'", (string) $survivor->fresh()->notes);
++        $this->assertStringContainsString('Casey Tech', (string) $survivor->fresh()->notes);
++        $this->assertStringContainsString('1 ticket', (string) $survivor->fresh()->notes);
++
++        $dupRow = Client::withTrashed()->find($dup->id);
++        $this->assertStringContainsString("Merged into 'Keep Co'", (string) $dupRow->notes);
++        $this->assertNotNull($dupRow->deleted_at);
++    }
++
++    public function test_duplicate_has_no_remaining_client_references(): void
++    {
++        $survivor = $this->client('Keep Co');
++        $dup = $this->client('Dupe Co');
++        $this->ticket($dup);
++        $this->asset($dup);
++        $this->person($dup);
++        $this->phoneCall($dup, 'uuid-x');
++        $this->email($dup, 'g-x');
++        $this->contract($dup);
++        $this->invoice($dup, 'INV-X');
++        $this->license($dup, $this->licenseType(), 'ref-x');
++
++        $this->service()->mergeClients($survivor, $dup, $this->staffUser()->id);
++
++        foreach (['tickets', 'assets', 'people', 'phone_calls', 'emails', 'contracts', 'invoices', 'licenses'] as $table) {
++            $this->assertSame(0, DB::table($table)->where('client_id', $dup->id)->count(), "{$table} still references the duplicate");
++        }
++    }
++
++    public function test_merge_does_not_block_on_open_tickets_active_contracts_or_unpaid_invoices(): void
++    {
++        // Unlike deleteClient(), merge consolidates active data rather than refusing it.
++        $survivor = $this->client('Keep Co');
++        $dup = $this->client('Dupe Co');
++        $this->ticket($dup, ['status' => TicketStatus::InProgress]);
++        $this->contract($dup)->update(['status' => 'active']);
++        $this->invoice($dup, 'INV-OPEN'); // status 'posted' (issued, unpaid)
++
++        $summary = $this->service()->mergeClients($survivor, $dup, $this->staffUser()->id);
++
++        $this->assertSame(1, $summary['tickets']);
++        $this->assertSame(1, $summary['contracts']);
++        $this->assertSame(1, $summary['invoices']);
++        $this->assertSoftDeleted('clients', ['id' => $dup->id]);
++    }
++
++    public function test_rejects_self_merge(): void
++    {
++        $c = $this->client('Acme');
++
++        $this->expectException(\InvalidArgumentException::class);
++        $this->service()->mergeClients($c, $c, $this->staffUser()->id);
++    }
++}
+diff --git a/tests/Feature/ClientMergeTest.php b/tests/Feature/ClientMergeTest.php
+new file mode 100644
+index 0000000..7cfb358
+--- /dev/null
++++ b/tests/Feature/ClientMergeTest.php
+@@ -0,0 +1,103 @@
++<?php
++
++namespace Tests\Feature;
++
++use App\Enums\TicketPriority;
++use App\Enums\TicketStatus;
++use App\Enums\TicketType;
++use App\Models\Client;
++use App\Models\Ticket;
++use App\Models\User;
++use Illuminate\Foundation\Testing\RefreshDatabase;
++use Illuminate\Support\Facades\Bus;
++use Tests\TestCase;
++
++class ClientMergeTest extends TestCase
++{
++    use RefreshDatabase;
++
++    protected function setUp(): void
++    {
++        parent::setUp();
++        Bus::fake();
++    }
++
++    private function ticket(Client $c): Ticket
++    {
++        return Ticket::create([
++            'client_id' => $c->id,
++            'subject' => 'Help',
++            'type' => TicketType::ServiceRequest,
++            'status' => TicketStatus::New,
++            'priority' => TicketPriority::P3,
++            'opened_at' => now(),
++        ]);
++    }
++
++    public function test_staff_can_merge_a_duplicate_via_http(): void
++    {
++        $user = User::factory()->create();
++        $survivor = Client::create(['name' => 'Keep Co']);
++        $dup = Client::create(['name' => 'Dupe Co']);
++        $ticket = $this->ticket($dup);
++
++        $response = $this->actingAs($user)
++            ->post(route('clients.merge', $survivor), ['duplicate_id' => $dup->id]);
++
++        $response->assertRedirect(route('clients.show', $survivor));
++        $response->assertSessionHas('success', fn ($msg) => str_contains($msg, 'Merged Dupe Co into Keep Co')
++            && str_contains($msg, '1 ticket'));
++        $this->assertSame($survivor->id, $ticket->fresh()->client_id);
++        $this->assertSoftDeleted('clients', ['id' => $dup->id]);
++    }
++
++    public function test_merge_requires_a_duplicate_id(): void
++    {
++        $user = User::factory()->create();
++        $survivor = Client::create(['name' => 'Keep Co']);
++
++        $this->actingAs($user)
++            ->post(route('clients.merge', $survivor), [])
++            ->assertSessionHasErrors('duplicate_id');
++    }
++
++    public function test_self_merge_is_rejected_with_an_error_flash(): void
++    {
++        $user = User::factory()->create();
++        $survivor = Client::create(['name' => 'Keep Co']);
++
++        $this->actingAs($user)
++            ->post(route('clients.merge', $survivor), ['duplicate_id' => $survivor->id])
++            ->assertRedirect(route('clients.show', $survivor))
++            ->assertSessionHas('error');
++
++        $this->assertNotSoftDeleted('clients', ['id' => $survivor->id]);
++    }
++
++    public function test_merge_rejects_a_soft_deleted_duplicate(): void
++    {
++        $user = User::factory()->create();
++        $survivor = Client::create(['name' => 'Keep Co']);
++        $dup = Client::create(['name' => 'Dupe Co']);
++        $dup->delete(); // soft-deleted → not a valid candidate
++
++        $this->actingAs($user)
++            ->post(route('clients.merge', $survivor), ['duplicate_id' => $dup->id])
++            ->assertSessionHasErrors('duplicate_id');
++    }
++
++    public function test_client_show_page_renders_with_merge_modal(): void
++    {
++        // Renders clients.show so a Blade compile/parse error in the merge modal
++        // would surface here (the redirect-based tests never render the page).
++        $user = User::factory()->create();
++        $survivor = Client::create(['name' => 'Keep Co']);
++        Client::create(['name' => 'Dupe Co']); // a candidate so the modal renders
++
++        $this->actingAs($user)->get(route('clients.show', $survivor))
++            ->assertOk()
++            ->assertSee('Merge Duplicate Client')
++            ->assertSee('This cannot be undone.')
++            ->assertSee('aria-labelledby="mergeClientModalLabel"', false);
++    }
++}
+-- 
+2.43.0
+

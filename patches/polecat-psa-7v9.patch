@@ -1,0 +1,1067 @@
+From c03d44ce16e6330534ef9aee3873443717159611 Mon Sep 17 00:00:00 2001
+From: "gastown.slit (polecat)" <polecat-gastown.slit@soundit.local>
+Date: Wed, 8 Jul 2026 23:13:55 +0000
+Subject: [PATCH] feat: add QBO expense and bank balance sync (psa-7v9)
+
+QboSyncService previously synced only invoices. Add two pull-syncs from
+QuickBooks Online, keeping the existing service/command/schedule patterns:
+
+- syncBankBalances(): upserts Bank-type accounts (CurrentBalance snapshot)
+  into qbo_bank_accounts, keyed by QBO account id.
+- syncExpenses(?since): pages Purchase transactions into qbo_expenses,
+  keyed by QBO purchase id. Optional Y-m-d lower bound (strictly parsed
+  so it can't break out of the quoted QBO query clause).
+
+Wiring:
+- Models QboBankAccount / QboExpense + migrations for the two tables.
+- Command `qbo:sync-financials` (--balances/--expenses/--since), mirroring
+  qbo:sync-invoices; scheduled daily 05:40, gated on QBO being connected.
+- Read-only "Bank & Expenses" page (controller + view + sidebar link) with
+  an on-demand "Sync now" action.
+- INSTALL.md scheduled-command entry.
+
+Tests: bank-balance sync, expense sync (null-safe fields, idempotent upsert,
+since sanitization), and the page/sync-action controller flow. 12 tests /
+40 assertions, Pint clean.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ app/Console/Commands/SyncQboFinancials.php    |  68 +++++++++
+ .../Web/QboFinancialsController.php           |  59 ++++++++
+ app/Models/QboBankAccount.php                 |  28 ++++
+ app/Models/QboExpense.php                     |  30 ++++
+ app/Services/Qbo/QboSyncService.php           | 108 ++++++++++++++
+ ..._000001_create_qbo_bank_accounts_table.php |  29 ++++
+ ...07_08_000002_create_qbo_expenses_table.php |  33 +++++
+ docs/INSTALL.md                               |   1 +
+ resources/views/components/sidebar.blade.php  |   7 +
+ resources/views/qbo/financials.blade.php      | 121 ++++++++++++++++
+ routes/console.php                            |   7 +
+ routes/web.php                                |   5 +
+ tests/Feature/Qbo/QboBankBalanceSyncTest.php  | 125 +++++++++++++++++
+ tests/Feature/Qbo/QboExpenseSyncTest.php      | 132 ++++++++++++++++++
+ tests/Feature/Qbo/QboFinancialsPageTest.php   | 127 +++++++++++++++++
+ 15 files changed, 880 insertions(+)
+ create mode 100644 app/Console/Commands/SyncQboFinancials.php
+ create mode 100644 app/Http/Controllers/Web/QboFinancialsController.php
+ create mode 100644 app/Models/QboBankAccount.php
+ create mode 100644 app/Models/QboExpense.php
+ create mode 100644 database/migrations/2026_07_08_000001_create_qbo_bank_accounts_table.php
+ create mode 100644 database/migrations/2026_07_08_000002_create_qbo_expenses_table.php
+ create mode 100644 resources/views/qbo/financials.blade.php
+ create mode 100644 tests/Feature/Qbo/QboBankBalanceSyncTest.php
+ create mode 100644 tests/Feature/Qbo/QboExpenseSyncTest.php
+ create mode 100644 tests/Feature/Qbo/QboFinancialsPageTest.php
+
+diff --git a/app/Console/Commands/SyncQboFinancials.php b/app/Console/Commands/SyncQboFinancials.php
+new file mode 100644
+index 0000000..e45cb8f
+--- /dev/null
++++ b/app/Console/Commands/SyncQboFinancials.php
+@@ -0,0 +1,68 @@
++<?php
++
++namespace App\Console\Commands;
++
++use App\Services\Qbo\QboClient;
++use App\Services\Qbo\QboClientException;
++use App\Services\Qbo\QboSyncService;
++use Illuminate\Console\Command;
++
++class SyncQboFinancials extends Command
++{
++    protected $signature = 'qbo:sync-financials
++        {--balances : Sync bank account balances from QBO}
++        {--expenses : Sync expense (Purchase) transactions from QBO}
++        {--since= : Only sync expenses on or after this date (Y-m-d). Defaults to the last 90 days.}';
++
++    protected $description = 'Sync bank account balances and expenses from QuickBooks Online';
++
++    public function handle(QboClient $qboClient, QboSyncService $syncService): int
++    {
++        if (! $qboClient->isConnected()) {
++            $this->error('Not connected to QuickBooks Online. Go to Settings → Integrations to connect.');
++
++            return self::FAILURE;
++        }
++
++        $balances = $this->option('balances');
++        $expenses = $this->option('expenses');
++
++        // Default: do both
++        if (! $balances && ! $expenses) {
++            $balances = true;
++            $expenses = true;
++        }
++
++        $hasErrors = false;
++
++        if ($balances) {
++            $this->info('Syncing bank account balances from QBO...');
++
++            try {
++                $result = $syncService->syncBankBalances();
++                $this->info("  Synced {$result['synced']} bank account(s).");
++            } catch (QboClientException $e) {
++                $this->error('  Bank balance sync failed: '.$e->getMessage());
++                $hasErrors = true;
++            }
++        }
++
++        if ($expenses) {
++            $since = $this->option('since') ?: now()->subDays(90)->format('Y-m-d');
++            $this->info("Syncing expenses from QBO (since {$since})...");
++
++            try {
++                $result = $syncService->syncExpenses($since);
++                $this->info("  Synced {$result['synced']} expense(s) across {$result['pages']} page(s).");
++            } catch (QboClientException $e) {
++                $this->error('  Expense sync failed: '.$e->getMessage());
++                $hasErrors = true;
++            }
++        }
++
++        $this->newLine();
++        $this->info('QBO financials sync complete.');
++
++        return $hasErrors ? self::FAILURE : self::SUCCESS;
++    }
++}
+diff --git a/app/Http/Controllers/Web/QboFinancialsController.php b/app/Http/Controllers/Web/QboFinancialsController.php
+new file mode 100644
+index 0000000..b370cd0
+--- /dev/null
++++ b/app/Http/Controllers/Web/QboFinancialsController.php
+@@ -0,0 +1,59 @@
++<?php
++
++namespace App\Http\Controllers\Web;
++
++use App\Http\Controllers\Controller;
++use App\Models\QboBankAccount;
++use App\Models\QboExpense;
++use App\Services\Qbo\QboClient;
++use App\Services\Qbo\QboClientException;
++use App\Services\Qbo\QboSyncService;
++
++class QboFinancialsController extends Controller
++{
++    /**
++     * Read-only view of the bank balances and expenses synced from QBO.
++     */
++    public function index(QboClient $qboClient)
++    {
++        $connected = $qboClient->isConnected();
++
++        $bankAccounts = QboBankAccount::orderBy('name')->get();
++        $expenses = QboExpense::orderByDesc('txn_date')->orderByDesc('id')->limit(100)->get();
++
++        $totalCash = (float) $bankAccounts->where('active', true)->sum('current_balance');
++
++        $lastSyncedAt = $bankAccounts->max('qbo_synced_at')
++            ?? $expenses->max('qbo_synced_at');
++
++        return view('qbo.financials', compact(
++            'connected',
++            'bankAccounts',
++            'expenses',
++            'totalCash',
++            'lastSyncedAt',
++        ));
++    }
++
++    /**
++     * Trigger an on-demand sync of bank balances and recent expenses.
++     */
++    public function sync(QboClient $qboClient, QboSyncService $syncService)
++    {
++        if (! $qboClient->isConnected()) {
++            return redirect()->route('qbo.financials.index')
++                ->with('error', 'Not connected to QuickBooks Online. Connect in Settings → Integrations.');
++        }
++
++        try {
++            $balances = $syncService->syncBankBalances();
++            $expenses = $syncService->syncExpenses(now()->subDays(90)->format('Y-m-d'));
++        } catch (QboClientException $e) {
++            return redirect()->route('qbo.financials.index')
++                ->with('error', 'QBO sync failed: '.$e->getMessage());
++        }
++
++        return redirect()->route('qbo.financials.index')
++            ->with('success', "Synced {$balances['synced']} bank account(s) and {$expenses['synced']} expense(s) from QuickBooks.");
++    }
++}
+diff --git a/app/Models/QboBankAccount.php b/app/Models/QboBankAccount.php
+new file mode 100644
+index 0000000..eeb7a02
+--- /dev/null
++++ b/app/Models/QboBankAccount.php
+@@ -0,0 +1,28 @@
++<?php
++
++namespace App\Models;
++
++use Illuminate\Database\Eloquent\Model;
++
++class QboBankAccount extends Model
++{
++    protected $fillable = [
++        'qbo_account_id',
++        'name',
++        'account_sub_type',
++        'classification',
++        'current_balance',
++        'currency',
++        'active',
++        'qbo_synced_at',
++    ];
++
++    protected function casts(): array
++    {
++        return [
++            'current_balance' => 'decimal:2',
++            'active' => 'boolean',
++            'qbo_synced_at' => 'datetime',
++        ];
++    }
++}
+diff --git a/app/Models/QboExpense.php b/app/Models/QboExpense.php
+new file mode 100644
+index 0000000..3a4cbc3
+--- /dev/null
++++ b/app/Models/QboExpense.php
+@@ -0,0 +1,30 @@
++<?php
++
++namespace App\Models;
++
++use Illuminate\Database\Eloquent\Model;
++
++class QboExpense extends Model
++{
++    protected $fillable = [
++        'qbo_purchase_id',
++        'txn_date',
++        'payment_type',
++        'account_name',
++        'payee_name',
++        'total_amount',
++        'currency',
++        'doc_number',
++        'memo',
++        'qbo_synced_at',
++    ];
++
++    protected function casts(): array
++    {
++        return [
++            'txn_date' => 'date',
++            'total_amount' => 'decimal:2',
++            'qbo_synced_at' => 'datetime',
++        ];
++    }
++}
+diff --git a/app/Services/Qbo/QboSyncService.php b/app/Services/Qbo/QboSyncService.php
+index 55f4066..4d4b133 100644
+--- a/app/Services/Qbo/QboSyncService.php
++++ b/app/Services/Qbo/QboSyncService.php
+@@ -5,6 +5,8 @@
+ use App\Enums\InvoiceStatus;
+ use App\Models\Client;
+ use App\Models\Invoice;
++use App\Models\QboBankAccount;
++use App\Models\QboExpense;
+ use App\Models\Setting;
+ use App\Models\Sku;
+ use Illuminate\Support\Facades\Cache;
+@@ -606,6 +608,112 @@ public function pushAllDraftInvoices(): array
+         return $results;
+     }
+ 
++    // ── Bank Balance Sync ──
++
++    /**
++     * Pull current balances for every Bank-type QBO account and upsert them
++     * into `qbo_bank_accounts`, keyed by the QBO account id. Bank accounts
++     * are few, so a single query page covers them. Each run overwrites the
++     * stored balance with QBO's latest — this is a current-snapshot sync,
++     * not a historical ledger.
++     *
++     * @return array{synced: int}
++     */
++    public function syncBankBalances(): array
++    {
++        $result = $this->qboClient->query(
++            "SELECT * FROM Account WHERE AccountType = 'Bank' ORDERBY Name MAXRESULTS 1000"
++        );
++        $accounts = $result['QueryResponse']['Account'] ?? [];
++
++        $synced = 0;
++
++        foreach ($accounts as $account) {
++            if (empty($account['Id'])) {
++                continue;
++            }
++
++            QboBankAccount::updateOrCreate(
++                ['qbo_account_id' => (string) $account['Id']],
++                [
++                    'name' => $account['Name'] ?? 'Unnamed Account',
++                    'account_sub_type' => $account['AccountSubType'] ?? null,
++                    'classification' => $account['Classification'] ?? null,
++                    'current_balance' => (float) ($account['CurrentBalance'] ?? 0),
++                    'currency' => $account['CurrencyRef']['value'] ?? null,
++                    'active' => (bool) ($account['Active'] ?? true),
++                    'qbo_synced_at' => now(),
++                ],
++            );
++            $synced++;
++        }
++
++        return compact('synced');
++    }
++
++    // ── Expense Sync ──
++
++    /**
++     * Pull expense (Purchase) transactions from QBO and upsert them into
++     * `qbo_expenses`, keyed by the QBO purchase id. Optionally bound to
++     * transactions on or after $since (a `Y-m-d` date). Paginated with
++     * STARTPOSITION so large expense volumes don't overflow a single
++     * request. Upsert-by-id means re-running over an overlapping window is
++     * idempotent.
++     *
++     * @return array{synced: int, pages: int}
++     */
++    public function syncExpenses(?string $since = null): array
++    {
++        $pageSize = 1000;
++        $startPosition = 1;
++        $pages = 0;
++        $synced = 0;
++
++        $where = '';
++        if ($since !== null && $since !== '') {
++            // TxnDate is a QBO date literal. Accept only a leading Y-m-d date
++            // and drop everything else, so the value can't break out of the
++            // quoted clause. Unparseable input simply omits the filter.
++            if (preg_match('/^\d{4}-\d{2}-\d{2}/', $since, $matches)) {
++                $where = " WHERE TxnDate >= '{$matches[0]}'";
++            }
++        }
++
++        do {
++            $sql = "SELECT * FROM Purchase{$where} ORDERBY TxnDate DESC STARTPOSITION {$startPosition} MAXRESULTS {$pageSize}";
++            $result = $this->qboClient->query($sql);
++            $purchases = $result['QueryResponse']['Purchase'] ?? [];
++            $pages++;
++
++            foreach ($purchases as $purchase) {
++                if (empty($purchase['Id'])) {
++                    continue;
++                }
++
++                QboExpense::updateOrCreate(
++                    ['qbo_purchase_id' => (string) $purchase['Id']],
++                    [
++                        'txn_date' => $purchase['TxnDate'] ?? null,
++                        'payment_type' => $purchase['PaymentType'] ?? null,
++                        'account_name' => $purchase['AccountRef']['name'] ?? null,
++                        'payee_name' => $purchase['EntityRef']['name'] ?? null,
++                        'total_amount' => (float) ($purchase['TotalAmt'] ?? 0),
++                        'currency' => $purchase['CurrencyRef']['value'] ?? null,
++                        'doc_number' => $purchase['DocNumber'] ?? null,
++                        'memo' => $purchase['PrivateNote'] ?? null,
++                        'qbo_synced_at' => now(),
++                    ],
++                );
++                $synced++;
++            }
++
++            $startPosition += $pageSize;
++        } while (count($purchases) === $pageSize);
++
++        return compact('synced', 'pages');
++    }
++
+     // ── Helpers ──
+ 
+     private function buildQboInvoice(Invoice $invoice): array
+diff --git a/database/migrations/2026_07_08_000001_create_qbo_bank_accounts_table.php b/database/migrations/2026_07_08_000001_create_qbo_bank_accounts_table.php
+new file mode 100644
+index 0000000..1b9f45e
+--- /dev/null
++++ b/database/migrations/2026_07_08_000001_create_qbo_bank_accounts_table.php
+@@ -0,0 +1,29 @@
++<?php
++
++use Illuminate\Database\Migrations\Migration;
++use Illuminate\Database\Schema\Blueprint;
++use Illuminate\Support\Facades\Schema;
++
++return new class extends Migration
++{
++    public function up(): void
++    {
++        Schema::create('qbo_bank_accounts', function (Blueprint $table) {
++            $table->id();
++            $table->string('qbo_account_id', 50)->unique();
++            $table->string('name');
++            $table->string('account_sub_type', 100)->nullable();
++            $table->string('classification', 50)->nullable();
++            $table->decimal('current_balance', 15, 2)->default(0);
++            $table->string('currency', 10)->nullable();
++            $table->boolean('active')->default(true);
++            $table->timestamp('qbo_synced_at')->nullable();
++            $table->timestamps();
++        });
++    }
++
++    public function down(): void
++    {
++        Schema::dropIfExists('qbo_bank_accounts');
++    }
++};
+diff --git a/database/migrations/2026_07_08_000002_create_qbo_expenses_table.php b/database/migrations/2026_07_08_000002_create_qbo_expenses_table.php
+new file mode 100644
+index 0000000..08e5606
+--- /dev/null
++++ b/database/migrations/2026_07_08_000002_create_qbo_expenses_table.php
+@@ -0,0 +1,33 @@
++<?php
++
++use Illuminate\Database\Migrations\Migration;
++use Illuminate\Database\Schema\Blueprint;
++use Illuminate\Support\Facades\Schema;
++
++return new class extends Migration
++{
++    public function up(): void
++    {
++        Schema::create('qbo_expenses', function (Blueprint $table) {
++            $table->id();
++            $table->string('qbo_purchase_id', 50)->unique();
++            $table->date('txn_date')->nullable();
++            $table->string('payment_type', 50)->nullable();
++            $table->string('account_name')->nullable();
++            $table->string('payee_name')->nullable();
++            $table->decimal('total_amount', 15, 2)->default(0);
++            $table->string('currency', 10)->nullable();
++            $table->string('doc_number', 100)->nullable();
++            $table->text('memo')->nullable();
++            $table->timestamp('qbo_synced_at')->nullable();
++            $table->timestamps();
++
++            $table->index('txn_date');
++        });
++    }
++
++    public function down(): void
++    {
++        Schema::dropIfExists('qbo_expenses');
++    }
++};
+diff --git a/docs/INSTALL.md b/docs/INSTALL.md
+index 35a90d5..5d6aff0 100644
+--- a/docs/INSTALL.md
++++ b/docs/INSTALL.md
+@@ -353,6 +353,7 @@ ### What the scheduler runs
+ | `tickets:close-resolved` | Daily at 06:00 | Auto-close resolved tickets after configured number of days |
+ | `qbo:sync-invoices --pull-status` | Every 4 hours | Pull payment status from QuickBooks |
+ | `qbo:sync-invoices --push-drafts` | Every 4 hours | Auto-push draft invoices to QuickBooks (only if enabled in Settings) |
++| `qbo:sync-financials` | Daily at 05:40 | Pull bank account balances and recent expenses from QuickBooks (only if connected). Flags: `--balances`, `--expenses`, `--since=YYYY-MM-DD` |
+ | `stripe:sync-invoices` | Every 4 hours | Push/pull invoices to/from Stripe (if configured). Add `--import` for one-time historical import. `--full` resets incremental marker. `--since=YYYY-MM-DD` overrides start date. |
+ | `email:subscription-renew` | Every 2 hours | Renew Microsoft Graph webhook subscription |
+ | `email:poll` | Hourly | Fallback email poll (catches anything webhooks missed) |
+diff --git a/resources/views/components/sidebar.blade.php b/resources/views/components/sidebar.blade.php
+index f375a1e..25badc7 100644
+--- a/resources/views/components/sidebar.blade.php
++++ b/resources/views/components/sidebar.blade.php
+@@ -196,6 +196,13 @@ class="sidebar-link {{ request()->routeIs('reports.time') ? 'active' : '' }}"
+                     <i class="bi bi-clock-history sidebar-icon"></i>
+                     <span class="sidebar-label">Time Report</span>
+                 </a>
++                <a href="{{ route('qbo.financials.index') }}"
++                   class="sidebar-link {{ request()->routeIs('qbo.financials.*') ? 'active' : '' }}"
++                   @if(request()->routeIs('qbo.financials.*')) aria-current="page" @endif
++                   data-bs-toggle="tooltip" data-bs-placement="right" data-bs-title="Bank &amp; Expenses">
++                    <i class="bi bi-bank sidebar-icon"></i>
++                    <span class="sidebar-label">Bank &amp; Expenses</span>
++                </a>
+             </div>
+         </div>
+ 
+diff --git a/resources/views/qbo/financials.blade.php b/resources/views/qbo/financials.blade.php
+new file mode 100644
+index 0000000..203ad5c
+--- /dev/null
++++ b/resources/views/qbo/financials.blade.php
+@@ -0,0 +1,121 @@
++@extends('layouts.app')
++
++@section('title', 'Bank & Expenses')
++
++@section('content')
++<div class="row mb-3 align-items-center">
++    <div class="col">
++        <h4 class="section-title mb-0">Bank &amp; Expenses</h4>
++        <div class="text-muted small">
++            Balances and expenses synced from QuickBooks Online
++            @if($lastSyncedAt)
++                &middot; last synced {{ $lastSyncedAt->toAppTz()->format('M j, Y g:i A') }}
++            @endif
++        </div>
++    </div>
++    <div class="col-auto">
++        <form method="POST" action="{{ route('qbo.financials.sync') }}" class="d-inline">
++            @csrf
++            <button type="submit" class="btn btn-primary btn-sm" @unless($connected) disabled @endunless>
++                <i class="bi bi-arrow-repeat me-1"></i>Sync now
++            </button>
++        </form>
++    </div>
++</div>
++
++@unless($connected)
++    <div class="alert alert-warning" role="alert">
++        Not connected to QuickBooks Online. Connect in
++        <a href="{{ route('settings.integrations') }}">Settings &rarr; Integrations</a> to sync bank balances and expenses.
++    </div>
++@endunless
++
++{{-- Bank balances --}}
++<div class="row g-3 mb-2">
++    <div class="col-md-3">
++        <div class="card shadow-sm text-center h-100">
++            <div class="card-body">
++                <div class="text-muted small">Total Cash</div>
++                <div class="fs-4 fw-bold">${{ number_format($totalCash, 2) }}</div>
++                <div class="text-muted small">{{ $bankAccounts->where('active', true)->count() }} active account(s)</div>
++            </div>
++        </div>
++    </div>
++</div>
++
++<div class="card shadow-sm mb-4">
++    <div class="card-header bg-white fw-semibold">Bank Accounts</div>
++    <div class="table-responsive">
++        <table class="table table-sm mb-0 align-middle">
++            <thead>
++                <tr>
++                    <th>Account</th>
++                    <th>Type</th>
++                    <th class="text-end">Current Balance</th>
++                    <th></th>
++                </tr>
++            </thead>
++            <tbody>
++                @forelse($bankAccounts as $account)
++                    <tr class="{{ $account->active ? '' : 'text-muted' }}">
++                        <td>{{ $account->name }}</td>
++                        <td>{{ $account->account_sub_type ?? '—' }}</td>
++                        <td class="text-end">
++                            {{ $account->currency && $account->currency !== 'USD' ? $account->currency.' ' : '$' }}{{ number_format((float) $account->current_balance, 2) }}
++                        </td>
++                        <td class="text-end">
++                            @unless($account->active)
++                                <span class="badge bg-secondary">Inactive</span>
++                            @endunless
++                        </td>
++                    </tr>
++                @empty
++                    <tr>
++                        <td colspan="4" class="text-center text-muted py-3">No bank accounts synced yet.</td>
++                    </tr>
++                @endforelse
++            </tbody>
++        </table>
++    </div>
++</div>
++
++{{-- Recent expenses --}}
++<div class="card shadow-sm mb-4">
++    <div class="card-header bg-white fw-semibold">
++        Recent Expenses
++        <span class="text-muted small fw-normal">(latest {{ $expenses->count() }})</span>
++    </div>
++    <div class="table-responsive">
++        <table class="table table-sm mb-0 align-middle">
++            <thead>
++                <tr>
++                    <th>Date</th>
++                    <th>Payee</th>
++                    <th>Paid From</th>
++                    <th>Method</th>
++                    <th>Memo</th>
++                    <th class="text-end">Amount</th>
++                </tr>
++            </thead>
++            <tbody>
++                @forelse($expenses as $expense)
++                    <tr>
++                        <td class="text-nowrap">{{ $expense->txn_date?->format('M j, Y') ?? '—' }}</td>
++                        <td>{{ $expense->payee_name ?? '—' }}</td>
++                        <td>{{ $expense->account_name ?? '—' }}</td>
++                        <td>{{ $expense->payment_type ?? '—' }}</td>
++                        <td class="text-truncate" style="max-width: 20rem;">{{ $expense->memo }}</td>
++                        <td class="text-end text-nowrap">
++                            {{ $expense->currency && $expense->currency !== 'USD' ? $expense->currency.' ' : '$' }}{{ number_format((float) $expense->total_amount, 2) }}
++                        </td>
++                    </tr>
++                @empty
++                    <tr>
++                        <td colspan="6" class="text-center text-muted py-3">No expenses synced yet.</td>
++                    </tr>
++                @endforelse
++            </tbody>
++        </table>
++    </div>
++</div>
++@endsection
+diff --git a/routes/console.php b/routes/console.php
+index b4adb62..25825b8 100644
+--- a/routes/console.php
++++ b/routes/console.php
+@@ -237,6 +237,13 @@
+     ->runInBackground()
+     ->when(fn () => \App\Models\Setting::getValue('qbo_auto_push_invoices') === '1');
+ 
++// QBO — pull bank balances and recent expenses daily (only if connected)
++Schedule::command('qbo:sync-financials')
++    ->dailyAt('05:40')
++    ->withoutOverlapping(10)
++    ->runInBackground()
++    ->when(fn () => (bool) \App\Models\Setting::getValue('qbo_realm_id') && (bool) \App\Models\Setting::getValue('qbo_access_token'));
++
+ // Stripe — pull payment status every 4 hours (always runs if configured)
+ Schedule::command('stripe:sync-invoices --pull-status')
+     ->everyFourHours()
+diff --git a/routes/web.php b/routes/web.php
+index 69e48fb..c79a532 100644
+--- a/routes/web.php
++++ b/routes/web.php
+@@ -33,6 +33,7 @@
+ use App\Http\Controllers\Web\ProfitabilityController;
+ use App\Http\Controllers\Web\QboClientMatchController;
+ use App\Http\Controllers\Web\QboController;
++use App\Http\Controllers\Web\QboFinancialsController;
+ use App\Http\Controllers\Web\QuickSearchController;
+ use App\Http\Controllers\Web\RecurringProfileController;
+ use App\Http\Controllers\Web\ResellerReportController;
+@@ -587,6 +588,10 @@
+     Route::get('/profitability/clients/{client}', [ProfitabilityController::class, 'client'])->name('profitability.client');
+     Route::get('/profitability/contracts/{contract}', [ProfitabilityController::class, 'contract'])->name('profitability.contract');
+ 
++    // QBO Financials (bank balances + expenses)
++    Route::get('/qbo/financials', [QboFinancialsController::class, 'index'])->name('qbo.financials.index');
++    Route::post('/qbo/financials/sync', [QboFinancialsController::class, 'sync'])->name('qbo.financials.sync');
++
+     // Reports
+     Route::get('/reseller-report', [ResellerReportController::class, 'index'])->name('reseller-report.index');
+     Route::get('/reports/time', [TimeReportController::class, 'index'])->name('reports.time');
+diff --git a/tests/Feature/Qbo/QboBankBalanceSyncTest.php b/tests/Feature/Qbo/QboBankBalanceSyncTest.php
+new file mode 100644
+index 0000000..b657fc6
+--- /dev/null
++++ b/tests/Feature/Qbo/QboBankBalanceSyncTest.php
+@@ -0,0 +1,125 @@
++<?php
++
++namespace Tests\Feature\Qbo;
++
++use App\Models\QboBankAccount;
++use App\Services\Qbo\QboClient;
++use App\Services\Qbo\QboSyncService;
++use Illuminate\Foundation\Testing\RefreshDatabase;
++use Mockery\MockInterface;
++use Tests\TestCase;
++
++/**
++ * psa-7v9: bank account balance sync from QuickBooks Online.
++ */
++class QboBankBalanceSyncTest extends TestCase
++{
++    use RefreshDatabase;
++
++    private function bankAccountResponse(float $checking = 5000.75, float $savings = 12000.00): array
++    {
++        return [
++            'QueryResponse' => [
++                'Account' => [
++                    [
++                        'Id' => '35',
++                        'Name' => 'Business Checking',
++                        'AccountType' => 'Bank',
++                        'AccountSubType' => 'Checking',
++                        'Classification' => 'Asset',
++                        'CurrentBalance' => $checking,
++                        'CurrencyRef' => ['value' => 'USD', 'name' => 'United States Dollar'],
++                        'Active' => true,
++                    ],
++                    [
++                        'Id' => '36',
++                        'Name' => 'Business Savings',
++                        'AccountType' => 'Bank',
++                        'AccountSubType' => 'Savings',
++                        'Classification' => 'Asset',
++                        'CurrentBalance' => $savings,
++                        'CurrencyRef' => ['value' => 'USD'],
++                        'Active' => true,
++                    ],
++                ],
++            ],
++        ];
++    }
++
++    public function test_sync_bank_balances_upserts_accounts(): void
++    {
++        $this->mock(QboClient::class, function (MockInterface $m): void {
++            $m->shouldReceive('query')
++                ->once()
++                ->with(\Mockery::on(fn ($sql) => str_contains($sql, "FROM Account WHERE AccountType = 'Bank'")))
++                ->andReturn($this->bankAccountResponse());
++        });
++
++        $result = app(QboSyncService::class)->syncBankBalances();
++
++        $this->assertSame(2, $result['synced']);
++        $this->assertDatabaseCount('qbo_bank_accounts', 2);
++        $this->assertDatabaseHas('qbo_bank_accounts', [
++            'qbo_account_id' => '35',
++            'name' => 'Business Checking',
++            'account_sub_type' => 'Checking',
++            'classification' => 'Asset',
++            'current_balance' => 5000.75,
++            'currency' => 'USD',
++            'active' => true,
++        ]);
++    }
++
++    public function test_sync_bank_balances_is_idempotent_and_refreshes_balance(): void
++    {
++        $this->mock(QboClient::class, function (MockInterface $m): void {
++            $m->shouldReceive('query')
++                ->andReturn(
++                    $this->bankAccountResponse(5000.75, 12000.00),
++                    $this->bankAccountResponse(9999.99, 12000.00),
++                );
++        });
++
++        // Resolve the service AFTER mocking so it receives the mocked client.
++        $service = app(QboSyncService::class);
++
++        $service->syncBankBalances();
++        $service->syncBankBalances();
++
++        // Same accounts — no duplicate rows, balance overwritten with latest.
++        $this->assertDatabaseCount('qbo_bank_accounts', 2);
++        $this->assertSame('9999.99', QboBankAccount::where('qbo_account_id', '35')->value('current_balance'));
++    }
++
++    public function test_command_syncs_balances_only_with_flag(): void
++    {
++        $this->mock(QboClient::class, function (MockInterface $m): void {
++            $m->shouldReceive('isConnected')->andReturnTrue();
++            // Only the Account query may run; a Purchase query would be a bug.
++            $m->shouldReceive('query')
++                ->with(\Mockery::on(fn ($sql) => str_contains($sql, 'FROM Account')))
++                ->andReturn($this->bankAccountResponse());
++            $m->shouldReceive('query')
++                ->with(\Mockery::on(fn ($sql) => str_contains($sql, 'FROM Purchase')))
++                ->never();
++        });
++
++        $this->artisan('qbo:sync-financials --balances')
++            ->assertExitCode(0);
++
++        $this->assertDatabaseCount('qbo_bank_accounts', 2);
++    }
++
++    public function test_command_fails_when_not_connected(): void
++    {
++        $this->mock(QboClient::class, function (MockInterface $m): void {
++            $m->shouldReceive('isConnected')->andReturnFalse();
++            $m->shouldReceive('query')->never();
++        });
++
++        $this->artisan('qbo:sync-financials')
++            ->assertExitCode(1);
++
++        $this->assertDatabaseCount('qbo_bank_accounts', 0);
++    }
++}
+diff --git a/tests/Feature/Qbo/QboExpenseSyncTest.php b/tests/Feature/Qbo/QboExpenseSyncTest.php
+new file mode 100644
+index 0000000..727d1cf
+--- /dev/null
++++ b/tests/Feature/Qbo/QboExpenseSyncTest.php
+@@ -0,0 +1,132 @@
++<?php
++
++namespace Tests\Feature\Qbo;
++
++use App\Services\Qbo\QboClient;
++use App\Services\Qbo\QboSyncService;
++use Illuminate\Foundation\Testing\RefreshDatabase;
++use Mockery\MockInterface;
++use Tests\TestCase;
++
++/**
++ * psa-7v9: expense (Purchase) sync from QuickBooks Online.
++ */
++class QboExpenseSyncTest extends TestCase
++{
++    use RefreshDatabase;
++
++    private function purchaseResponse(): array
++    {
++        return [
++            'QueryResponse' => [
++                'Purchase' => [
++                    [
++                        'Id' => '101',
++                        'TxnDate' => '2026-06-15',
++                        'PaymentType' => 'CreditCard',
++                        'AccountRef' => ['value' => '42', 'name' => 'Visa Card'],
++                        'EntityRef' => ['value' => '7', 'name' => 'Acme Supplies', 'type' => 'Vendor'],
++                        'TotalAmt' => 149.99,
++                        'CurrencyRef' => ['value' => 'USD'],
++                        'DocNumber' => 'PO-1',
++                        'PrivateNote' => 'Office supplies',
++                    ],
++                    [
++                        // Minimal purchase — no EntityRef, DocNumber, or memo.
++                        'Id' => '102',
++                        'TxnDate' => '2026-06-10',
++                        'PaymentType' => 'Cash',
++                        'AccountRef' => ['value' => '35', 'name' => 'Business Checking'],
++                        'TotalAmt' => 25.00,
++                    ],
++                ],
++            ],
++        ];
++    }
++
++    public function test_sync_expenses_upserts_purchases_with_null_safe_fields(): void
++    {
++        $this->mock(QboClient::class, function (MockInterface $m): void {
++            $m->shouldReceive('query')
++                ->once()
++                ->andReturn($this->purchaseResponse());
++        });
++
++        $result = app(QboSyncService::class)->syncExpenses();
++
++        $this->assertSame(2, $result['synced']);
++        $this->assertDatabaseCount('qbo_expenses', 2);
++        $this->assertDatabaseHas('qbo_expenses', [
++            'qbo_purchase_id' => '101',
++            'payment_type' => 'CreditCard',
++            'account_name' => 'Visa Card',
++            'payee_name' => 'Acme Supplies',
++            'total_amount' => 149.99,
++            'doc_number' => 'PO-1',
++            'memo' => 'Office supplies',
++        ]);
++        // Missing optional fields must land as null, not crash.
++        $this->assertDatabaseHas('qbo_expenses', [
++            'qbo_purchase_id' => '102',
++            'payee_name' => null,
++            'doc_number' => null,
++            'memo' => null,
++            'total_amount' => 25.00,
++        ]);
++    }
++
++    public function test_sync_expenses_is_idempotent(): void
++    {
++        $this->mock(QboClient::class, function (MockInterface $m): void {
++            $m->shouldReceive('query')->andReturn($this->purchaseResponse());
++        });
++
++        $service = app(QboSyncService::class);
++        $service->syncExpenses();
++        $service->syncExpenses();
++
++        // Upsert by qbo_purchase_id — re-running must not duplicate rows.
++        $this->assertDatabaseCount('qbo_expenses', 2);
++    }
++
++    public function test_since_filter_is_applied_and_sanitized(): void
++    {
++        $capturedSql = null;
++
++        $this->mock(QboClient::class, function (MockInterface $m) use (&$capturedSql): void {
++            $m->shouldReceive('query')
++                ->once()
++                ->andReturnUsing(function ($sql) use (&$capturedSql) {
++                    $capturedSql = $sql;
++
++                    return ['QueryResponse' => ['Purchase' => []]];
++                });
++        });
++
++        // Malicious input must be reduced to the leading Y-m-d date.
++        app(QboSyncService::class)->syncExpenses("2026-01-01'; DROP TABLE qbo_expenses; --");
++
++        $this->assertStringContainsString("WHERE TxnDate >= '2026-01-01'", $capturedSql);
++        $this->assertStringNotContainsString('DROP', $capturedSql);
++    }
++
++    public function test_no_since_filter_omits_where_clause(): void
++    {
++        $capturedSql = null;
++
++        $this->mock(QboClient::class, function (MockInterface $m) use (&$capturedSql): void {
++            $m->shouldReceive('query')
++                ->once()
++                ->andReturnUsing(function ($sql) use (&$capturedSql) {
++                    $capturedSql = $sql;
++
++                    return ['QueryResponse' => ['Purchase' => []]];
++                });
++        });
++
++        app(QboSyncService::class)->syncExpenses();
++
++        $this->assertStringNotContainsString('WHERE', $capturedSql);
++        $this->assertStringContainsString('FROM Purchase', $capturedSql);
++    }
++}
+diff --git a/tests/Feature/Qbo/QboFinancialsPageTest.php b/tests/Feature/Qbo/QboFinancialsPageTest.php
+new file mode 100644
+index 0000000..5d09059
+--- /dev/null
++++ b/tests/Feature/Qbo/QboFinancialsPageTest.php
+@@ -0,0 +1,127 @@
++<?php
++
++namespace Tests\Feature\Qbo;
++
++use App\Models\QboBankAccount;
++use App\Models\QboExpense;
++use App\Models\User;
++use App\Services\Qbo\QboClient;
++use Illuminate\Foundation\Testing\RefreshDatabase;
++use Mockery\MockInterface;
++use Tests\TestCase;
++
++/**
++ * psa-7v9: read-only Bank & Expenses page and its on-demand sync action.
++ */
++class QboFinancialsPageTest extends TestCase
++{
++    use RefreshDatabase;
++
++    private function seedFinancials(): void
++    {
++        QboBankAccount::create([
++            'qbo_account_id' => '35',
++            'name' => 'Business Checking',
++            'account_sub_type' => 'Checking',
++            'classification' => 'Asset',
++            'current_balance' => 5000.75,
++            'currency' => 'USD',
++            'active' => true,
++            'qbo_synced_at' => now(),
++        ]);
++        QboBankAccount::create([
++            'qbo_account_id' => '36',
++            'name' => 'Business Savings',
++            'account_sub_type' => 'Savings',
++            'classification' => 'Asset',
++            'current_balance' => 12000.00,
++            'currency' => 'USD',
++            'active' => true,
++            'qbo_synced_at' => now(),
++        ]);
++        QboExpense::create([
++            'qbo_purchase_id' => '101',
++            'txn_date' => '2026-06-15',
++            'payment_type' => 'CreditCard',
++            'account_name' => 'Visa Card',
++            'payee_name' => 'Acme Supplies',
++            'total_amount' => 149.99,
++            'currency' => 'USD',
++            'doc_number' => 'PO-1',
++            'memo' => 'Office supplies',
++            'qbo_synced_at' => now(),
++        ]);
++    }
++
++    public function test_index_renders_with_synced_data(): void
++    {
++        $this->mock(QboClient::class, function (MockInterface $m): void {
++            $m->shouldReceive('isConnected')->andReturnTrue();
++        });
++
++        $this->seedFinancials();
++
++        $this->actingAs(User::factory()->create())
++            ->get(route('qbo.financials.index'))
++            ->assertOk()
++            ->assertSee('Business Checking')
++            ->assertSee('Acme Supplies')
++            ->assertSee('17,000.75'); // total cash across active accounts
++    }
++
++    public function test_index_shows_warning_when_not_connected(): void
++    {
++        $this->mock(QboClient::class, function (MockInterface $m): void {
++            $m->shouldReceive('isConnected')->andReturnFalse();
++        });
++
++        $this->actingAs(User::factory()->create())
++            ->get(route('qbo.financials.index'))
++            ->assertOk()
++            ->assertSee('Not connected to QuickBooks Online');
++    }
++
++    public function test_sync_action_pulls_data_and_redirects_with_success(): void
++    {
++        $this->mock(QboClient::class, function (MockInterface $m): void {
++            $m->shouldReceive('isConnected')->andReturnTrue();
++            $m->shouldReceive('query')->andReturnUsing(function ($sql) {
++                if (str_contains($sql, 'FROM Account')) {
++                    return ['QueryResponse' => ['Account' => [[
++                        'Id' => '35', 'Name' => 'Business Checking', 'AccountType' => 'Bank',
++                        'AccountSubType' => 'Checking', 'CurrentBalance' => 5000.75,
++                        'CurrencyRef' => ['value' => 'USD'], 'Active' => true,
++                    ]]]];
++                }
++
++                return ['QueryResponse' => ['Purchase' => [[
++                    'Id' => '101', 'TxnDate' => '2026-06-15', 'PaymentType' => 'Cash',
++                    'AccountRef' => ['name' => 'Business Checking'], 'TotalAmt' => 25.00,
++                ]]]];
++            });
++        });
++
++        $this->actingAs(User::factory()->create())
++            ->post(route('qbo.financials.sync'))
++            ->assertRedirect(route('qbo.financials.index'))
++            ->assertSessionHas('success');
++
++        $this->assertDatabaseCount('qbo_bank_accounts', 1);
++        $this->assertDatabaseCount('qbo_expenses', 1);
++    }
++
++    public function test_sync_action_errors_when_not_connected(): void
++    {
++        $this->mock(QboClient::class, function (MockInterface $m): void {
++            $m->shouldReceive('isConnected')->andReturnFalse();
++            $m->shouldReceive('query')->never();
++        });
++
++        $this->actingAs(User::factory()->create())
++            ->post(route('qbo.financials.sync'))
++            ->assertRedirect(route('qbo.financials.index'))
++            ->assertSessionHas('error');
++
++        $this->assertDatabaseCount('qbo_bank_accounts', 0);
++    }
++}
+-- 
+2.43.0
+

@@ -1,0 +1,679 @@
+From a91ca7b19c2b7eeb1746846d4a9c768e7ea27188 Mon Sep 17 00:00:00 2001
+From: "gastown.slit (polecat)" <polecat-gastown.slit@soundit.local>
+Date: Wed, 8 Jul 2026 23:45:20 +0000
+Subject: [PATCH] feat: add billing calendar for upcoming invoice dates
+ (psa-g9l)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Adds a Billing Calendar page (GitHub #102) that forecasts when recurring
+invoices are due to be generated. There was previously no calendar or
+upcoming-invoices view — next_run_date was only visible per-profile on the
+recurring profiles list.
+
+What it does:
+- New /billing/calendar page (billing.calendar) with a sidebar link under
+  Billing, and a 3/6/12/24-month horizon selector.
+- Projects each active profile's next_run_date forward by its billing period
+  (mirroring BillingService::advanceNextRunDate) to build a real multi-month
+  schedule, grouped by calendar month with per-month counts and estimated
+  totals, plus summary tiles.
+- Surfaces an "Overdue" bucket for profiles whose next_run_date is already
+  past and awaiting generation (exactly one pending row per profile).
+- Estimated amounts reuse BillingService::previewInvoice (computed once per
+  profile — the subtotal is date-independent) and are clearly labelled as
+  estimates based on current quantities.
+
+Design notes:
+- Only active profiles on active, PSA-billed contracts are included, reusing
+  Contract::active()/psaManaged() scopes (mirrors RecurringInvoiceProfile
+  scopeDue minus the due-date filter).
+- Logic lives in a dedicated BillingCalendarService (thin controller per house
+  style); the projection loop is bounded to guard against runaway iteration on
+  badly-overdue monthly profiles.
+- next_run_date is a date-only field, so no timezone conversion is applied
+  (consistent with the recurring profiles list).
+
+Validation: 11 new feature/service tests (empty/future/overdue rendering,
+active-only + PSA-only filtering, auth, monthly/quarterly projection counts,
+horizon scaling, estimate totals). Full suite green (2579 passed), Pint clean
+on changed files.
+---
+ .../Web/BillingCalendarController.php         |  27 +++
+ app/Services/BillingCalendarService.php       | 142 ++++++++++++
+ .../views/billing/_calendar_row.blade.php     |  25 +++
+ resources/views/billing/calendar.blade.php    | 141 ++++++++++++
+ resources/views/components/sidebar.blade.php  |   9 +-
+ routes/web.php                                |   4 +
+ tests/Feature/Billing/BillingCalendarTest.php | 206 ++++++++++++++++++
+ 7 files changed, 553 insertions(+), 1 deletion(-)
+ create mode 100644 app/Http/Controllers/Web/BillingCalendarController.php
+ create mode 100644 app/Services/BillingCalendarService.php
+ create mode 100644 resources/views/billing/_calendar_row.blade.php
+ create mode 100644 resources/views/billing/calendar.blade.php
+ create mode 100644 tests/Feature/Billing/BillingCalendarTest.php
+
+diff --git a/app/Http/Controllers/Web/BillingCalendarController.php b/app/Http/Controllers/Web/BillingCalendarController.php
+new file mode 100644
+index 0000000..05421d8
+--- /dev/null
++++ b/app/Http/Controllers/Web/BillingCalendarController.php
+@@ -0,0 +1,27 @@
++<?php
++
++namespace App\Http\Controllers\Web;
++
++use App\Http\Controllers\Controller;
++use App\Services\BillingCalendarService;
++use Illuminate\Http\Request;
++
++class BillingCalendarController extends Controller
++{
++    /** Selectable forecast horizons, in months. */
++    private const MONTH_OPTIONS = [3, 6, 12, 24];
++
++    public function index(Request $request, BillingCalendarService $calendar)
++    {
++        $months = (int) $request->query('months', 12);
++        if (! in_array($months, self::MONTH_OPTIONS, true)) {
++            $months = 12;
++        }
++
++        $schedule = $calendar->upcomingSchedule($months);
++
++        return view('billing.calendar', array_merge($schedule, [
++            'monthOptions' => self::MONTH_OPTIONS,
++        ]));
++    }
++}
+diff --git a/app/Services/BillingCalendarService.php b/app/Services/BillingCalendarService.php
+new file mode 100644
+index 0000000..cbbabbd
+--- /dev/null
++++ b/app/Services/BillingCalendarService.php
+@@ -0,0 +1,142 @@
++<?php
++
++namespace App\Services;
++
++use App\Models\RecurringInvoiceProfile;
++use Illuminate\Support\Carbon;
++
++/**
++ * Projects the upcoming recurring-invoice generation schedule from the
++ * `next_run_date` on each active recurring profile, stepping forward by the
++ * profile's billing period the same way BillingService::advanceNextRunDate()
++ * does after a real generation.
++ *
++ * Powers the billing calendar page — a cashflow-forecasting view of when the
++ * next invoices are due to be cut and roughly how much they will be for.
++ */
++class BillingCalendarService
++{
++    /**
++     * Hard cap on projected occurrences per profile. Guards against a runaway
++     * loop if a badly-overdue monthly profile has to be stepped forward many
++     * times to reach the horizon. 600 monthly steps = 50 years — far beyond
++     * any real horizon, so it never truncates legitimate output.
++     */
++    private const MAX_OCCURRENCES_PER_PROFILE = 600;
++
++    public function __construct(
++        private readonly BillingService $billingService,
++    ) {}
++
++    /**
++     * Build the projected schedule over the next $months months.
++     *
++     * Returns an overdue bucket (profiles whose next_run_date is already in the
++     * past and awaiting generation) plus the future occurrences grouped by
++     * calendar month, with an estimated amount per occurrence.
++     */
++    public function upcomingSchedule(int $months = 12): array
++    {
++        $today = today();
++        $horizonEnd = $today->copy()->addMonths($months);
++
++        $profiles = RecurringInvoiceProfile::query()
++            ->where('is_active', true)
++            ->whereHas('contract', fn ($q) => $q->active()->psaManaged())
++            ->with(['contract.client', 'lines.sku'])
++            ->get();
++
++        $overdue = [];
++        $upcoming = [];
++
++        foreach ($profiles as $profile) {
++            // No date, or the first run is beyond the horizon → nothing to show.
++            if (! $profile->next_run_date || $profile->next_run_date->gt($horizonEnd)) {
++                continue;
++            }
++
++            // One preview per profile — the subtotal is quantity × price and does
++            // not depend on the invoice date, so it is a stable estimate for every
++            // occurrence of this profile within the horizon.
++            $preview = $this->billingService->previewInvoice($profile);
++            $estimate = (float) ($preview['subtotal'] ?? 0);
++            $wouldSkip = (bool) ($preview['would_skip'] ?? false);
++
++            $intervalMonths = max(1, $profile->billing_period->months());
++            $date = $profile->next_run_date->copy();
++
++            for ($step = 0; $step < self::MAX_OCCURRENCES_PER_PROFILE && $date->lte($horizonEnd); $step++) {
++                $isOverdue = $date->lt($today);
++
++                $occurrence = [
++                    'date' => $date->copy(),
++                    'is_overdue' => $isOverdue,
++                    'estimate' => $estimate,
++                    'would_skip' => $wouldSkip,
++                    'profile' => $profile,
++                ];
++
++                if (! $isOverdue) {
++                    $upcoming[] = $occurrence;
++                } elseif ($step === 0) {
++                    // Only the current (first) scheduled date is surfaced as overdue.
++                    // Any earlier missed cycles are represented by this single pending
++                    // row rather than a pile of past dates.
++                    $overdue[] = $occurrence;
++                }
++
++                $date = $date->copy()->addMonths($intervalMonths);
++            }
++        }
++
++        $chronological = fn (array $a, array $b) => $a['date']->getTimestamp() <=> $b['date']->getTimestamp();
++        usort($overdue, $chronological);
++        usort($upcoming, $chronological);
++
++        return [
++            'months' => $months,
++            'today' => $today,
++            'horizon_end' => $horizonEnd,
++            'overdue' => $overdue,
++            'by_month' => $this->groupByMonth($upcoming),
++            'overdue_count' => count($overdue),
++            'overdue_total' => array_sum(array_column($overdue, 'estimate')),
++            'upcoming_count' => count($upcoming),
++            'upcoming_total' => array_sum(array_column($upcoming, 'estimate')),
++        ];
++    }
++
++    /**
++     * Group already-chronological occurrences into calendar months, preserving
++     * order and carrying a per-month count and estimated total.
++     *
++     * @param  array<int, array<string, mixed>>  $occurrences
++     * @return array<int, array<string, mixed>>
++     */
++    private function groupByMonth(array $occurrences): array
++    {
++        $months = [];
++
++        foreach ($occurrences as $occurrence) {
++            /** @var Carbon $date */
++            $date = $occurrence['date'];
++            $key = $date->format('Y-m');
++
++            if (! isset($months[$key])) {
++                $months[$key] = [
++                    'key' => $key,
++                    'label' => $date->format('F Y'),
++                    'count' => 0,
++                    'total' => 0.0,
++                    'occurrences' => [],
++                ];
++            }
++
++            $months[$key]['count']++;
++            $months[$key]['total'] += $occurrence['estimate'];
++            $months[$key]['occurrences'][] = $occurrence;
++        }
++
++        return array_values($months);
++    }
++}
+diff --git a/resources/views/billing/_calendar_row.blade.php b/resources/views/billing/_calendar_row.blade.php
+new file mode 100644
+index 0000000..30b86fc
+--- /dev/null
++++ b/resources/views/billing/_calendar_row.blade.php
+@@ -0,0 +1,25 @@
++@php($profile = $occ['profile'])
++<tr class="cursor-pointer" onclick="window.location='{{ route('profiles.show', $profile) }}'">
++    <td class="small text-nowrap">
++        {{ $occ['date']->format('D, M j, Y') }}
++        @if($occ['is_overdue'])
++            <span class="badge bg-danger ms-1">Overdue</span>
++        @endif
++        @if($occ['would_skip'])
++            <span class="badge bg-secondary ms-1" title="This profile skips empty invoices; it may not generate if all quantities resolve to zero.">May skip</span>
++        @endif
++    </td>
++    <td class="small">
++        <span onclick="event.stopPropagation()"><x-client-badge :client="$profile->contract->client" /></span>
++    </td>
++    <td class="small">
++        <span onclick="event.stopPropagation()"><x-contract-badge :contract="$profile->contract" /></span>
++    </td>
++    <td class="small">
++        <a href="{{ route('profiles.show', $profile) }}" class="text-decoration-none fw-semibold" onclick="event.stopPropagation()">
++            {{ $profile->name }}
++        </a>
++    </td>
++    <td class="small">{{ $profile->billing_period->label() }}</td>
++    <td class="small text-end">${{ number_format($occ['estimate'], 2) }}</td>
++</tr>
+diff --git a/resources/views/billing/calendar.blade.php b/resources/views/billing/calendar.blade.php
+new file mode 100644
+index 0000000..f7383d4
+--- /dev/null
++++ b/resources/views/billing/calendar.blade.php
+@@ -0,0 +1,141 @@
++@extends('layouts.app')
++
++@section('title', 'Billing Calendar')
++
++@section('content')
++<div class="row mb-3">
++    <div class="col d-flex align-items-center justify-content-between flex-wrap gap-2">
++        <h4 class="section-title mb-0">Billing Calendar</h4>
++        <form method="GET" action="{{ route('billing.calendar') }}" class="d-flex align-items-center gap-2">
++            <label for="months" class="small text-muted mb-0">Horizon</label>
++            <select name="months" id="months" class="form-select form-select-sm" style="width: auto;" onchange="this.form.submit()">
++                @foreach($monthOptions as $opt)
++                    <option value="{{ $opt }}" {{ $months === $opt ? 'selected' : '' }}>Next {{ $opt }} months</option>
++                @endforeach
++            </select>
++            <noscript><button type="submit" class="btn btn-primary btn-sm">Go</button></noscript>
++        </form>
++    </div>
++</div>
++
++<p class="text-muted small mb-3">
++    Projected invoice generation dates from active recurring profiles on PSA-billed contracts,
++    through {{ $horizon_end->format('M j, Y') }}. Amounts are estimates based on current
++    quantities and may change when the invoice is actually generated.
++</p>
++
++{{-- Summary tiles --}}
++<div class="row g-3 mb-4">
++    <div class="col-sm-6 col-lg-3">
++        <div class="card shadow-sm card-static h-100">
++            <div class="card-body">
++                <div class="text-muted small text-uppercase">Overdue</div>
++                <div class="h4 mb-0 {{ $overdue_count > 0 ? 'text-danger' : '' }}">{{ $overdue_count }}</div>
++                <div class="small text-muted">${{ number_format($overdue_total, 2) }} awaiting generation</div>
++            </div>
++        </div>
++    </div>
++    <div class="col-sm-6 col-lg-3">
++        <div class="card shadow-sm card-static h-100">
++            <div class="card-body">
++                <div class="text-muted small text-uppercase">Upcoming Invoices</div>
++                <div class="h4 mb-0">{{ $upcoming_count }}</div>
++                <div class="small text-muted">next {{ $months }} months</div>
++            </div>
++        </div>
++    </div>
++    <div class="col-sm-6 col-lg-3">
++        <div class="card shadow-sm card-static h-100">
++            <div class="card-body">
++                <div class="text-muted small text-uppercase">Est. Upcoming Total</div>
++                <div class="h4 mb-0">${{ number_format($upcoming_total, 2) }}</div>
++                <div class="small text-muted">subtotal, excl. tax</div>
++            </div>
++        </div>
++    </div>
++    <div class="col-sm-6 col-lg-3">
++        <div class="card shadow-sm card-static h-100">
++            <div class="card-body">
++                <div class="text-muted small text-uppercase">Months Scheduled</div>
++                <div class="h4 mb-0">{{ count($by_month) }}</div>
++                <div class="small text-muted">with billing activity</div>
++            </div>
++        </div>
++    </div>
++</div>
++
++{{-- Overdue bucket --}}
++@if($overdue_count > 0)
++    <div class="card shadow-sm card-static mb-4 border-danger">
++        <div class="card-header d-flex align-items-center bg-danger-subtle">
++            <i class="bi bi-exclamation-triangle-fill text-danger me-2"></i>
++            <span class="fw-semibold">Overdue — past next run date, awaiting generation</span>
++            <span class="badge bg-danger ms-2">{{ $overdue_count }}</span>
++        </div>
++        <div class="table-responsive">
++            <table class="table table-hover mb-0">
++                <thead class="thead-brand">
++                    <tr>
++                        <th>Scheduled</th>
++                        <th>Client</th>
++                        <th>Contract</th>
++                        <th>Profile</th>
++                        <th>Billing</th>
++                        <th class="text-end">Est. Amount</th>
++                    </tr>
++                </thead>
++                <tbody>
++                    @foreach($overdue as $occ)
++                        @include('billing._calendar_row', ['occ' => $occ])
++                    @endforeach
++                </tbody>
++            </table>
++        </div>
++    </div>
++@endif
++
++{{-- Upcoming, grouped by month --}}
++@if(empty($by_month) && $overdue_count === 0)
++    <div class="text-center py-5 text-muted">
++        <i class="bi bi-calendar3" style="font-size: 3rem;"></i>
++        <p class="mt-3">No upcoming invoices in the next {{ $months }} months.</p>
++    </div>
++@else
++    @foreach($by_month as $month)
++        <div class="card shadow-sm card-static mb-3">
++            <div class="card-header d-flex align-items-center justify-content-between">
++                <span class="fw-semibold"><i class="bi bi-calendar-event me-2"></i>{{ $month['label'] }}</span>
++                <span class="small text-muted">
++                    {{ $month['count'] }} {{ Str::plural('invoice', $month['count']) }}
++                    &middot; <strong>${{ number_format($month['total'], 2) }}</strong>
++                </span>
++            </div>
++            <div class="table-responsive">
++                <table class="table table-hover mb-0">
++                    <thead class="thead-brand">
++                        <tr>
++                            <th>Date</th>
++                            <th>Client</th>
++                            <th>Contract</th>
++                            <th>Profile</th>
++                            <th>Billing</th>
++                            <th class="text-end">Est. Amount</th>
++                        </tr>
++                    </thead>
++                    <tbody>
++                        @foreach($month['occurrences'] as $occ)
++                            @include('billing._calendar_row', ['occ' => $occ])
++                        @endforeach
++                    </tbody>
++                </table>
++            </div>
++        </div>
++    @endforeach
++@endif
++@endsection
++
++@push('styles')
++<style>
++.cursor-pointer { cursor: pointer; }
++</style>
++@endpush
+diff --git a/resources/views/components/sidebar.blade.php b/resources/views/components/sidebar.blade.php
+index f375a1e..f969f99 100644
+--- a/resources/views/components/sidebar.blade.php
++++ b/resources/views/components/sidebar.blade.php
+@@ -112,7 +112,7 @@ class="sidebar-link {{ request()->routeIs('alerts.*') ? 'active' : '' }}"
+         </div>
+ 
+         {{-- Billing (collapsible) --}}
+-        @php $billingActive = request()->routeIs('invoices.*', 'contracts.*', 'profiles.*', 'prepay.*', 'skus.*', 'profitability.*', 'licenses.*', 'license-types.*', 'reseller-report.*', 'reports.*'); @endphp
++        @php $billingActive = request()->routeIs('invoices.*', 'contracts.*', 'profiles.*', 'billing.*', 'prepay.*', 'skus.*', 'profitability.*', 'licenses.*', 'license-types.*', 'reseller-report.*', 'reports.*'); @endphp
+         <div class="sidebar-group">
+             <div class="sidebar-group-label">Billing</div>
+             <a href="#sidebarBilling"
+@@ -147,6 +147,13 @@ class="sidebar-link {{ request()->routeIs('profiles.index') ? 'active' : '' }}"
+                     <i class="bi bi-arrow-repeat sidebar-icon"></i>
+                     <span class="sidebar-label">Recurring Profiles</span>
+                 </a>
++                <a href="{{ route('billing.calendar') }}"
++                   class="sidebar-link {{ request()->routeIs('billing.calendar') ? 'active' : '' }}"
++                   @if(request()->routeIs('billing.calendar')) aria-current="page" @endif
++                   data-bs-toggle="tooltip" data-bs-placement="right" data-bs-title="Billing Calendar">
++                    <i class="bi bi-calendar3 sidebar-icon"></i>
++                    <span class="sidebar-label">Billing Calendar</span>
++                </a>
+                 <a href="{{ route('prepay.index') }}"
+                    class="sidebar-link {{ request()->routeIs('prepay.*') ? 'active' : '' }}"
+                    @if(request()->routeIs('prepay.*')) aria-current="page" @endif
+diff --git a/routes/web.php b/routes/web.php
+index 69e48fb..6e0c5c7 100644
+--- a/routes/web.php
++++ b/routes/web.php
+@@ -7,6 +7,7 @@
+ use App\Http\Controllers\Web\AssistantController;
+ use App\Http\Controllers\Web\AttachmentController;
+ use App\Http\Controllers\Web\AuthController;
++use App\Http\Controllers\Web\BillingCalendarController;
+ use App\Http\Controllers\Web\CallController;
+ use App\Http\Controllers\Web\CippTenantController;
+ use App\Http\Controllers\Web\ClientController;
+@@ -563,6 +564,9 @@
+     Route::get('/profiles/{profile}/preview', [RecurringProfileController::class, 'preview'])->name('profiles.preview');
+     Route::post('/profiles/{profile}/generate', [RecurringProfileController::class, 'generate'])->name('profiles.generate');
+ 
++    // Billing Calendar — projected invoice generation dates from recurring profiles
++    Route::get('/billing/calendar', [BillingCalendarController::class, 'index'])->name('billing.calendar');
++
+     // Prepay Dashboard
+     Route::get('/prepay', [PrepayController::class, 'index'])->name('prepay.index');
+ 
+diff --git a/tests/Feature/Billing/BillingCalendarTest.php b/tests/Feature/Billing/BillingCalendarTest.php
+new file mode 100644
+index 0000000..469cade
+--- /dev/null
++++ b/tests/Feature/Billing/BillingCalendarTest.php
+@@ -0,0 +1,206 @@
++<?php
++
++namespace Tests\Feature\Billing;
++
++use App\Enums\BillingPeriod;
++use App\Enums\BillingSource;
++use App\Enums\ContractStatus;
++use App\Enums\ContractType;
++use App\Enums\QuantityType;
++use App\Models\Client;
++use App\Models\Contract;
++use App\Models\RecurringInvoiceProfile;
++use App\Models\RecurringInvoiceProfileLine;
++use App\Models\User;
++use App\Services\BillingCalendarService;
++use Illuminate\Foundation\Testing\RefreshDatabase;
++use Tests\TestCase;
++
++class BillingCalendarTest extends TestCase
++{
++    use RefreshDatabase;
++
++    /**
++     * Build a Client → Contract → RecurringInvoiceProfile with a single fixed-quantity
++     * line so the estimated amount is deterministic (qty × unit_price).
++     */
++    private function makeProfile(
++        array $profileAttrs = [],
++        array $contractAttrs = [],
++        float $unitPrice = 100,
++        float $qty = 2,
++    ): RecurringInvoiceProfile {
++        $client = Client::factory()->create();
++
++        $contract = Contract::create(array_merge([
++            'client_id' => $client->id,
++            'name' => 'Managed Services',
++            'type' => ContractType::Managed,
++            'status' => ContractStatus::Active,
++            'billing_source' => BillingSource::Psa,
++            'billing_period' => BillingPeriod::Monthly,
++            'billing_day' => 1,
++            'payment_terms_days' => 30,
++            'start_date' => now()->subYear(),
++        ], $contractAttrs));
++
++        $profile = RecurringInvoiceProfile::create(array_merge([
++            'contract_id' => $contract->id,
++            'name' => 'Monthly MSP',
++            'is_active' => true,
++            'billing_period' => BillingPeriod::Monthly,
++            'billing_day' => 1,
++            'payment_terms_days' => 30,
++            'next_run_date' => today()->addDays(10),
++        ], $profileAttrs));
++
++        RecurringInvoiceProfileLine::create([
++            'profile_id' => $profile->id,
++            'description' => 'Managed workstation',
++            'unit_price' => $unitPrice,
++            'quantity_type' => QuantityType::Fixed,
++            'fixed_quantity' => $qty,
++            'is_taxable' => true,
++            'sort_order' => 0,
++        ]);
++
++        return $profile->fresh();
++    }
++
++    // ── Page rendering ──
++
++    public function test_calendar_page_loads_when_empty(): void
++    {
++        $user = User::factory()->create();
++
++        $resp = $this->actingAs($user)->get(route('billing.calendar'));
++
++        $resp->assertOk();
++        $resp->assertSee('Billing Calendar');
++        $resp->assertSee('No upcoming invoices');
++    }
++
++    public function test_future_profile_appears_with_estimated_amount(): void
++    {
++        $user = User::factory()->create();
++        $this->makeProfile(['name' => 'Acme Monthly', 'next_run_date' => today()->addDays(10)]);
++
++        $resp = $this->actingAs($user)->get(route('billing.calendar'));
++
++        $resp->assertOk();
++        $resp->assertSee('Acme Monthly');
++        $resp->assertSee('200.00'); // 2 × $100
++        $resp->assertDontSee('past next run date'); // no overdue section header
++    }
++
++    public function test_overdue_profile_is_shown_in_overdue_section(): void
++    {
++        $user = User::factory()->create();
++        $this->makeProfile(['name' => 'Late Co Retainer', 'next_run_date' => today()->subDays(5)]);
++
++        $resp = $this->actingAs($user)->get(route('billing.calendar'));
++
++        $resp->assertOk();
++        $resp->assertSee('past next run date'); // overdue section header
++        $resp->assertSee('Late Co Retainer');
++    }
++
++    // ── Filtering ──
++
++    public function test_inactive_profile_is_excluded(): void
++    {
++        $user = User::factory()->create();
++        $this->makeProfile(['name' => 'Dormant Profile', 'is_active' => false, 'next_run_date' => today()->addDays(5)]);
++
++        $resp = $this->actingAs($user)->get(route('billing.calendar'));
++
++        $resp->assertOk();
++        $resp->assertDontSee('Dormant Profile');
++    }
++
++    public function test_non_active_contract_is_excluded(): void
++    {
++        $user = User::factory()->create();
++        $this->makeProfile(
++            ['name' => 'Expired Contract Profile', 'next_run_date' => today()->addDays(5)],
++            ['status' => ContractStatus::Expired],
++        );
++
++        $resp = $this->actingAs($user)->get(route('billing.calendar'));
++
++        $resp->assertOk();
++        $resp->assertDontSee('Expired Contract Profile');
++    }
++
++    public function test_requires_authentication(): void
++    {
++        $this->get(route('billing.calendar'))->assertRedirect(route('login'));
++    }
++
++    // ── Projection logic (service) ──
++
++    public function test_monthly_profile_projects_roughly_one_per_month(): void
++    {
++        $this->makeProfile(['next_run_date' => today()->addDays(5)]);
++
++        $schedule = app(BillingCalendarService::class)->upcomingSchedule(12);
++
++        // Monthly over ~12 months → 12 (± day-of-month alignment) upcoming occurrences.
++        $this->assertGreaterThanOrEqual(11, $schedule['upcoming_count']);
++        $this->assertLessThanOrEqual(13, $schedule['upcoming_count']);
++        $this->assertSame(0, $schedule['overdue_count']);
++    }
++
++    public function test_quarterly_profile_projects_fewer_occurrences_than_monthly(): void
++    {
++        $this->makeProfile(
++            ['next_run_date' => today()->addDays(5), 'billing_period' => BillingPeriod::Quarterly],
++            ['billing_period' => BillingPeriod::Quarterly],
++        );
++
++        $schedule = app(BillingCalendarService::class)->upcomingSchedule(12);
++
++        // Quarterly over 12 months → ~4 occurrences.
++        $this->assertGreaterThanOrEqual(3, $schedule['upcoming_count']);
++        $this->assertLessThanOrEqual(5, $schedule['upcoming_count']);
++    }
++
++    public function test_shorter_horizon_yields_fewer_occurrences(): void
++    {
++        $this->makeProfile(['next_run_date' => today()->addDays(5)]);
++
++        $service = app(BillingCalendarService::class);
++        $short = $service->upcomingSchedule(3);
++        $long = $service->upcomingSchedule(12);
++
++        $this->assertLessThan($long['upcoming_count'], $short['upcoming_count']);
++    }
++
++    public function test_overdue_profile_reports_single_overdue_and_projects_future(): void
++    {
++        // A monthly profile whose next run was a month ago: exactly one overdue row,
++        // and future occurrences still projected forward within the horizon.
++        $this->makeProfile(['next_run_date' => today()->subMonth()->subDays(2)]);
++
++        $schedule = app(BillingCalendarService::class)->upcomingSchedule(12);
++
++        $this->assertSame(1, $schedule['overdue_count']);
++        $this->assertGreaterThanOrEqual(11, $schedule['upcoming_count']);
++    }
++
++    public function test_estimate_totals_reflect_line_amounts(): void
++    {
++        // 3 workstations at $50 → $150 estimate per occurrence.
++        $this->makeProfile(['next_run_date' => today()->addDays(5)], [], unitPrice: 50, qty: 3);
++
++        $schedule = app(BillingCalendarService::class)->upcomingSchedule(12);
++
++        $this->assertGreaterThan(0, $schedule['upcoming_count']);
++        // Every upcoming occurrence carries the same $150 estimate.
++        $this->assertEqualsWithDelta(
++            150.0 * $schedule['upcoming_count'],
++            $schedule['upcoming_total'],
++            0.01,
++        );
++    }
++}
+-- 
+2.43.0
+

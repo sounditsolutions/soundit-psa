@@ -1,0 +1,1030 @@
+From 40a6c00ba85d7ae2005fbf61ae2127a97bcdb1a7 Mon Sep 17 00:00:00 2001
+From: "gastown.slit (polecat)" <polecat-gastown.slit@soundit.local>
+Date: Wed, 8 Jul 2026 23:10:43 +0000
+Subject: [PATCH 1/2] feat(billing): bill backup storage by volume-priced tiers
+ (psa-cvh)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Backup cloud usage is already synced onto assets (backup_cloud_bytes) by
+the NinjaOne/Comet/Servosity backup syncs, but there was no way to turn
+that usage into a billable line — GitHub #125.
+
+This adds a tiered-pricing path through the existing recurring-billing
+engine:
+
+- New QuantityType::PerBackupStorageGb. BillingService sums
+  backup_cloud_bytes across the contract's assigned assets
+  (contract-scoped) or client-wide, then converts bytes -> whole GB with
+  the same binary rounding (round(bytes / 1024^3)) the vendor sync uses
+  for the cloud_usage_gb license type, so the two measures agree.
+- backup_storage_tiers table + BackupStorageTier model: a per-SKU volume
+  rate card (up_to_gb inclusive upper bound, null = unbounded catch-all;
+  unit_price per GB). Sku::priceForStorageGb() selects the first tier
+  that covers the measured GB and bills the whole quantity at that rate.
+  Returns null with no tiers so the caller falls back to the flat line
+  price; usage above all bounded tiers with no catch-all bills the top
+  bounded rate (never an unpriced fallback once tiers exist).
+- BillingService::resolveUnitPrice() applies the tier rate in
+  generateInvoice() and previewInvoice(), stores it as the invoice line
+  unit_price, and annotates quantity_source with the applied rate.
+- SKU editor gains a tier rate-card editor (shown when the SKU default
+  quantity type is "Backup Storage (GB)"); the profile-line quantity-type
+  dropdown picks up the new type automatically. SkuController
+  create/update persist tiers transactionally (replace-all, empty rows
+  skipped, blank upper bound = unbounded).
+
+No proration and no invoice schema change — the resolved per-GB rate is
+stored as the line unit_price, consistent with every other quantity type.
+
+Validation: full suite green (2583 passed); Pint clean on changed files.
+---
+ CLAUDE.md                                     |  1 +
+ app/Enums/QuantityType.php                    |  2 +
+ app/Http/Controllers/Web/SkuController.php    | 51 +++++++++++++-
+ app/Models/BackupStorageTier.php              | 32 +++++++++
+ app/Models/Sku.php                            | 56 +++++++++++++++
+ app/Services/BillingService.php               | 70 +++++++++++++++++--
+ ...0001_create_backup_storage_tiers_table.php | 32 +++++++++
+ resources/views/skus/_form.blade.php          | 70 +++++++++++++++++++
+ 8 files changed, 306 insertions(+), 8 deletions(-)
+ create mode 100644 app/Models/BackupStorageTier.php
+ create mode 100644 database/migrations/2026_07_08_000001_create_backup_storage_tiers_table.php
+
+diff --git a/CLAUDE.md b/CLAUDE.md
+index 980c16b..88bbcc0 100644
+--- a/CLAUDE.md
++++ b/CLAUDE.md
+@@ -62,6 +62,7 @@ ## Contracts & Billing architecture
+ - **Billing cadence on profiles** — `billing_period`, `billing_day`, and `payment_terms_days` live on the recurring invoice profile, not the contract. Contracts retain these fields as defaults for new profiles. `BillingService::generateInvoice()` reads billing period and payment terms from the profile. This allows different profiles under one contract to have different billing frequencies (e.g., monthly managed services + quarterly license true-ups).
+ - **Contract-scoped billing** — `BillingService::resolveQuantity()` counts from contract pivots when assignments exist, falls back to client-wide. `QuantityType` enum: Fixed, PerWorkstation, PerServer, PerUser, PerLicense, PerLicenseType, Overage.
+ - **Overage quantity type** — Parameterized usage-based billing: `max(0, ceil((usage - base × included_per_base_unit) / overage_divisor))`. Profile line fields: `usage_license_type_id` (what to measure), `base_license_type_id` (what provides included count, optional — defaults to 1), `included_per_base_unit`, `overage_divisor`. Reuses `countLicensesByType()` for both usage and base lookups. SKU `included_per_unit` auto-fills the "Included per Base" field in the UI. Works for any usage-based billing pattern: backup overage, email security seats, EDR agent overage, etc.
++- **Backup storage tier billing** — `QuantityType::PerBackupStorageGb` bills for cloud backup usage read from `assets.backup_cloud_bytes` (populated by NinjaOne/Comet/Servosity backup syncs). `BillingService::countBackupStorageGb()` sums `backup_cloud_bytes` across the contract's assigned assets (contract-scoped) or client-wide, then converts bytes → whole GB with the same binary rounding (`round(bytes / 1024³)`) the vendor sync uses for the `cloud_usage_gb` license type. **Volume-based tier pricing** via `backup_storage_tiers` (per-SKU rate card: `up_to_gb` inclusive upper bound, `null` = unbounded catch-all; `unit_price` per GB). `Sku::priceForStorageGb(int $gb)` selects the first tier whose bound covers the measured GB and bills the whole quantity at that tier's rate (returns `null` when no tiers → caller falls back to the flat line `unit_price`; usage above all bounded tiers with no catch-all bills the top bounded rate). `BillingService::resolveUnitPrice()` applies this in `generateInvoice()`/`previewInvoice()` and records the tier rate in the invoice line `quantity_source`. Tiers are managed on the SKU edit form (shown when the SKU's default quantity type is "Backup Storage (GB)").
+ - **Software licenses** — `LicenseType` (vendor, vendor_sku_id, linked SKU for cost) + `License` (per client, quantity, status). Synced from Mesh (API-key auth) and CIPP/M365 (OAuth2 client credentials). Manual entry also supported.
+ - **Profitability tracking** — `unit_cost`/`cost_amount` on invoice lines, `total_cost`/`margin` on invoices. Cost resolved from profile line `unit_cost_override` → SKU `unit_cost` → 0. `ProfitabilityService` aggregates by contract, client, and business-wide.
+ - **Prepay balance management** — `PrepayService` (`app/Services/PrepayService.php`) handles prepay deposits, manual credits/debits, and balance reconciliation. `PrepayTransactionSource` enum: `HaloSync`, `InvoiceDeposit`, `ManualCredit`, `ManualDebit`. SKUs can carry `prepaid_time_minutes` (per-unit); profile lines can override via `prepaid_time_override`. `BillingService::generateInvoice()` computes total prepaid minutes per invoice line (qty × minutes). `InvoiceObserver` triggers `PrepayService::depositFromInvoice()` when invoice status transitions to Paid — prepaid time is only available after the invoice is paid, not at generation. Guards: deposits only on PSA-managed contracts, skips dollar-based prepay, idempotent via invoice_id+source. Manual credit/debit via contract detail UI with activity logging. `prepay:reconcile` command recalculates balances from the transaction ledger. Prepay source of truth follows `billing_source`: Halo-managed → Halo sync, PSA-managed → transaction ledger. Halo sync orphan deletion guarded with `whereNotNull('halo_id')` to protect PSA-native transactions.
+diff --git a/app/Enums/QuantityType.php b/app/Enums/QuantityType.php
+index dd7df3c..3a112bb 100644
+--- a/app/Enums/QuantityType.php
++++ b/app/Enums/QuantityType.php
+@@ -13,6 +13,7 @@ enum QuantityType: string
+     case PerLicenseType = 'per_license_type';
+     case PerResellerLicenseType = 'per_reseller_license_type';
+     case Overage = 'overage';
++    case PerBackupStorageGb = 'per_backup_storage_gb';
+ 
+     public function label(): string
+     {
+@@ -26,6 +27,7 @@ public function label(): string
+             self::PerLicenseType => 'Per License Type',
+             self::PerResellerLicenseType => 'Per Reseller License Type',
+             self::Overage => 'Overage',
++            self::PerBackupStorageGb => 'Backup Storage (GB)',
+         };
+     }
+ 
+diff --git a/app/Http/Controllers/Web/SkuController.php b/app/Http/Controllers/Web/SkuController.php
+index c3b89de..566784f 100644
+--- a/app/Http/Controllers/Web/SkuController.php
++++ b/app/Http/Controllers/Web/SkuController.php
+@@ -15,6 +15,7 @@
+ use App\Support\StripeConfig;
+ use Illuminate\Http\RedirectResponse;
+ use Illuminate\Http\Request;
++use Illuminate\Support\Facades\DB;
+ use Illuminate\Support\Facades\Log;
+ use Illuminate\Validation\Rules\Enum;
+ 
+@@ -149,12 +150,21 @@ public function store(Request $request)
+             'default_license_type_id' => ['nullable', 'integer', 'exists:license_types,id'],
+             'is_taxable' => ['boolean'],
+             'is_active' => ['boolean'],
++            'tiers' => ['nullable', 'array'],
++            'tiers.*.up_to_gb' => ['nullable', 'integer', 'min:1'],
++            'tiers.*.unit_price' => ['nullable', 'numeric', 'min:0'],
+         ]);
+ 
+         $validated['is_taxable'] = $request->boolean('is_taxable');
+         $validated['is_active'] = $request->boolean('is_active', true);
++        unset($validated['tiers']);
+ 
+-        $sku = $this->skuService->createSku($validated);
++        $sku = DB::transaction(function () use ($validated, $request) {
++            $sku = $this->skuService->createSku($validated);
++            $this->syncBackupStorageTiers($sku, $request->input('tiers', []));
++
++            return $sku;
++        });
+ 
+         return redirect()->route('skus.edit', $sku)
+             ->with('success', "SKU \"{$sku->name}\" created.");
+@@ -211,19 +221,56 @@ public function update(Request $request, Sku $sku)
+             'is_active' => ['boolean'],
+             'qbo_income_account_id' => ['nullable', 'string', 'max:50'],
+             'qbo_expense_account_id' => ['nullable', 'string', 'max:50'],
++            'tiers' => ['nullable', 'array'],
++            'tiers.*.up_to_gb' => ['nullable', 'integer', 'min:1'],
++            'tiers.*.unit_price' => ['nullable', 'numeric', 'min:0'],
+         ]);
+ 
+         $validated['is_taxable'] = $request->boolean('is_taxable');
+         $validated['is_active'] = $request->boolean('is_active');
+         $validated['qbo_income_account_id'] = $request->input('qbo_income_account_id') ?: null;
+         $validated['qbo_expense_account_id'] = $request->input('qbo_expense_account_id') ?: null;
++        unset($validated['tiers']);
+ 
+-        $this->skuService->updateSku($sku, $validated);
++        DB::transaction(function () use ($sku, $validated, $request) {
++            $this->skuService->updateSku($sku, $validated);
++            $this->syncBackupStorageTiers($sku, $request->input('tiers', []));
++        });
+ 
+         return redirect()->route('skus.edit', $sku)
+             ->with('success', 'SKU updated.');
+     }
+ 
++    /**
++     * Replace a SKU's backup-storage tier rate card from submitted rows.
++     * Fully-empty template rows are ignored; a blank `up_to_gb` marks the
++     * unbounded catch-all tier.
++     */
++    private function syncBackupStorageTiers(Sku $sku, array $tiers): void
++    {
++        $sku->backupStorageTiers()->delete();
++
++        $order = 0;
++        foreach ($tiers as $tier) {
++            $upTo = $tier['up_to_gb'] ?? null;
++            $price = $tier['unit_price'] ?? null;
++
++            $upTo = ($upTo === '' || $upTo === null) ? null : (int) $upTo;
++            $priceBlank = ($price === '' || $price === null);
++
++            // Skip rows with no data at all (leftover add-row templates).
++            if ($upTo === null && $priceBlank) {
++                continue;
++            }
++
++            $sku->backupStorageTiers()->create([
++                'up_to_gb' => $upTo,
++                'unit_price' => $priceBlank ? 0 : $price,
++                'sort_order' => $order++,
++            ]);
++        }
++    }
++
+     public function destroy(Sku $sku)
+     {
+         $sku->delete();
+diff --git a/app/Models/BackupStorageTier.php b/app/Models/BackupStorageTier.php
+new file mode 100644
+index 0000000..1c7172f
+--- /dev/null
++++ b/app/Models/BackupStorageTier.php
+@@ -0,0 +1,32 @@
++<?php
++
++namespace App\Models;
++
++use Illuminate\Database\Eloquent\Model;
++use Illuminate\Database\Eloquent\Relations\BelongsTo;
++
++class BackupStorageTier extends Model
++{
++    protected $fillable = [
++        'sku_id',
++        'up_to_gb',
++        'unit_price',
++        'sort_order',
++    ];
++
++    protected function casts(): array
++    {
++        return [
++            'up_to_gb' => 'integer',
++            'unit_price' => 'decimal:2',
++            'sort_order' => 'integer',
++        ];
++    }
++
++    // ── Relations ──
++
++    public function sku(): BelongsTo
++    {
++        return $this->belongsTo(Sku::class);
++    }
++}
+diff --git a/app/Models/Sku.php b/app/Models/Sku.php
+index 38be7c7..82d0b9a 100644
+--- a/app/Models/Sku.php
++++ b/app/Models/Sku.php
+@@ -64,6 +64,16 @@ public function profileLines(): HasMany
+         return $this->hasMany(RecurringInvoiceProfileLine::class);
+     }
+ 
++    /**
++     * Backup-storage volume-pricing tiers. Ordered as a rate card:
++     * bounded tiers ascending by GB, the unbounded (null) tier last.
++     */
++    public function backupStorageTiers(): HasMany
++    {
++        return $this->hasMany(BackupStorageTier::class)
++            ->orderByRaw('up_to_gb IS NULL, up_to_gb ASC');
++    }
++
+     public function invoiceLines(): HasMany
+     {
+         return $this->hasMany(InvoiceLine::class);
+@@ -99,4 +109,50 @@ public function getMarginAttribute(): ?float
+ 
+         return round(((float) $this->unit_price - (float) $this->unit_cost) / (float) $this->unit_price * 100, 1);
+     }
++
++    /**
++     * Resolve the volume-pricing rate (price per GB) for a measured backup
++     * storage total, using this SKU's tier rate card.
++     *
++     * Volume pricing: the whole quantity is billed at the rate of the first
++     * tier whose upper bound covers it. A tier with a null `up_to_gb` is the
++     * unbounded catch-all. If usage exceeds every bounded tier and no
++     * unbounded tier exists, the highest bounded tier's rate applies (we
++     * never silently drop to an unpriced fallback once tiers are defined).
++     *
++     * Returns null when the SKU has no tiers configured, so callers can fall
++     * back to the flat line/SKU unit price.
++     */
++    public function priceForStorageGb(int $gb): ?float
++    {
++        $tiers = $this->relationLoaded('backupStorageTiers')
++            ? $this->backupStorageTiers
++            : $this->backupStorageTiers()->get();
++
++        if ($tiers->isEmpty()) {
++            return null;
++        }
++
++        // Defensive re-sort in case the collection arrived unordered (e.g.
++        // hydrated without the relation's orderBy): bounded ascending, the
++        // unbounded tier last.
++        $sorted = $tiers->sort(function (BackupStorageTier $a, BackupStorageTier $b) {
++            if ($a->up_to_gb === null) {
++                return 1;
++            }
++            if ($b->up_to_gb === null) {
++                return -1;
++            }
++
++            return $a->up_to_gb <=> $b->up_to_gb;
++        })->values();
++
++        foreach ($sorted as $tier) {
++            if ($tier->up_to_gb === null || $gb <= $tier->up_to_gb) {
++                return (float) $tier->unit_price;
++            }
++        }
++
++        return (float) $sorted->last()->unit_price;
++    }
+ }
+diff --git a/app/Services/BillingService.php b/app/Services/BillingService.php
+index 16d095e..2d41ee7 100644
+--- a/app/Services/BillingService.php
++++ b/app/Services/BillingService.php
+@@ -68,6 +68,8 @@ public function resolveQuantity(
+                 $includedPerBaseUnit, $overageDivisor,
+             ),
+ 
++            QuantityType::PerBackupStorageGb => $this->countBackupStorageGb($client, $contract),
++
+             default => 1,
+         };
+     }
+@@ -203,6 +205,48 @@ private function countOverage(
+         return (int) ceil($overageRaw / $divisor);
+     }
+ 
++    /**
++     * Total backup cloud storage in whole GB — contract-scoped if the contract
++     * has asset assignments, client-wide otherwise. Summed from the
++     * `backup_cloud_bytes` populated on assets by backup vendor syncs, then
++     * converted bytes → GB with the same binary rounding the vendor sync uses
++     * for the `cloud_usage_gb` license type, so the two stay consistent.
++     */
++    private function countBackupStorageGb(Client $client, ?Contract $contract): int
++    {
++        $bytes = ($contract && $contract->assets()->exists())
++            ? (int) $contract->assets()
++                ->whereNull('assets.deleted_at')
++                ->where('assets.is_active', true)
++                ->sum('assets.backup_cloud_bytes')
++            : (int) $client->assets()
++                ->whereNull('deleted_at')
++                ->where('is_active', true)
++                ->sum('backup_cloud_bytes');
++
++        return (int) round($bytes / (1024 ** 3));
++    }
++
++    /**
++     * Resolve the unit price to bill for a line at the resolved quantity.
++     *
++     * Backup-storage lines whose SKU carries a tier rate card use volume
++     * pricing — the whole quantity is billed at the tier rate that covers the
++     * measured GB. Everything else (and backup lines without tiers) bills at
++     * the flat line unit price.
++     */
++    private function resolveUnitPrice(RecurringInvoiceProfileLine $line, int $quantity): float
++    {
++        if ($line->quantity_type === QuantityType::PerBackupStorageGb && $line->sku) {
++            $tierPrice = $line->sku->priceForStorageGb($quantity);
++            if ($tierPrice !== null) {
++                return $tierPrice;
++            }
++        }
++
++        return (float) $line->unit_price;
++    }
++
+     public function generateInvoicesForDueProfiles(): array
+     {
+         $profiles = RecurringInvoiceProfile::due()->with(['contract.client', 'lines'])->get();
+@@ -245,7 +289,7 @@ public function generateInvoicesForDueProfiles(): array
+      */
+     public function generateInvoice(RecurringInvoiceProfile $profile): array
+     {
+-        $profile->loadMissing(['contract.client', 'lines.sku']);
++        $profile->loadMissing(['contract.client', 'lines.sku.backupStorageTiers']);
+         $contract = $profile->contract;
+         $client = $contract->client;
+         $invoiceDate = $profile->next_run_date;
+@@ -279,7 +323,8 @@ public function generateInvoice(RecurringInvoiceProfile $profile): array
+                     $hasNonZeroQty = true;
+                 }
+ 
+-                $amount = round($quantity * (float) $line->unit_price, 2);
++                $unitPrice = $this->resolveUnitPrice($line, $quantity);
++                $amount = round($quantity * $unitPrice, 2);
+                 $subtotal += $amount;
+ 
+                 $unitCost = (float) ($line->unit_cost_override ?? $line->sku?->unit_cost ?? 0);
+@@ -298,7 +343,7 @@ public function generateInvoice(RecurringInvoiceProfile $profile): array
+                     'sku_id' => $line->sku_id,
+                     'description' => $line->description,
+                     'quantity' => $quantity,
+-                    'unit_price' => $line->unit_price,
++                    'unit_price' => $unitPrice,
+                     'unit_cost' => $unitCost,
+                     'amount' => $amount,
+                     'cost_amount' => $costAmount,
+@@ -383,7 +428,7 @@ private function advanceNextRunDate(RecurringInvoiceProfile $profile, $invoiceDa
+ 
+     public function previewInvoice(RecurringInvoiceProfile $profile): array
+     {
+-        $profile->loadMissing(['contract.client', 'lines.sku']);
++        $profile->loadMissing(['contract.client', 'lines.sku.backupStorageTiers']);
+         $contract = $profile->contract;
+         $client = $contract->client;
+         $invoiceDate = $profile->next_run_date ?? today();
+@@ -405,7 +450,8 @@ public function previewInvoice(RecurringInvoiceProfile $profile): array
+                 $hasNonZeroQty = true;
+             }
+ 
+-            $amount = round($quantity * (float) $line->unit_price, 2);
++            $unitPrice = $this->resolveUnitPrice($line, $quantity);
++            $amount = round($quantity * $unitPrice, 2);
+             $subtotal += $amount;
+ 
+             $prepaidMinutesPerUnit = $line->prepaid_time_override ?? $line->sku?->prepaid_time_minutes;
+@@ -417,7 +463,7 @@ public function previewInvoice(RecurringInvoiceProfile $profile): array
+             $lines[] = [
+                 'description' => $line->description,
+                 'quantity' => $quantity,
+-                'unit_price' => (float) $line->unit_price,
++                'unit_price' => $unitPrice,
+                 'amount' => $amount,
+                 'prepaid_time_minutes' => $prepaidTimeMinutes,
+                 'quantity_type' => $line->quantity_type->label(),
+@@ -530,6 +576,18 @@ private function buildQuantitySource(
+             return $source;
+         }
+ 
++        // Backup storage records the measured GB plus the tier rate applied.
++        if ($type === QuantityType::PerBackupStorageGb) {
++            $source = "{$quantity} GB backup storage ({$scope}-scoped) as of {$dateStr}";
++
++            $tierPrice = $line?->sku?->priceForStorageGb($quantity);
++            if ($tierPrice !== null) {
++                $source .= sprintf(' [tier rate $%.2f/GB]', $tierPrice);
++            }
++
++            return $source;
++        }
++
+         $label = strtolower($type->label());
+         $source = "{$quantity} {$label} ({$scope}-scoped) as of {$dateStr}";
+ 
+diff --git a/database/migrations/2026_07_08_000001_create_backup_storage_tiers_table.php b/database/migrations/2026_07_08_000001_create_backup_storage_tiers_table.php
+new file mode 100644
+index 0000000..f355c56
+--- /dev/null
++++ b/database/migrations/2026_07_08_000001_create_backup_storage_tiers_table.php
+@@ -0,0 +1,32 @@
++<?php
++
++use Illuminate\Database\Migrations\Migration;
++use Illuminate\Database\Schema\Blueprint;
++use Illuminate\Support\Facades\Schema;
++
++return new class extends Migration
++{
++    public function up(): void
++    {
++        // Volume-pricing rate card for backup-storage SKUs. Each row is one
++        // tier: the measured storage (GB) selects the first tier whose
++        // `up_to_gb` covers it, and the whole quantity is billed at that
++        // tier's `unit_price` per GB. A row with a null `up_to_gb` is the
++        // unbounded catch-all (top) tier.
++        Schema::create('backup_storage_tiers', function (Blueprint $table) {
++            $table->id();
++            $table->foreignId('sku_id')->constrained()->cascadeOnDelete();
++            $table->unsignedBigInteger('up_to_gb')->nullable(); // inclusive upper bound; null = unbounded
++            $table->decimal('unit_price', 10, 2)->default(0);   // price per GB when total falls in this tier
++            $table->unsignedInteger('sort_order')->default(0);
++            $table->timestamps();
++
++            $table->index(['sku_id', 'sort_order']);
++        });
++    }
++
++    public function down(): void
++    {
++        Schema::dropIfExists('backup_storage_tiers');
++    }
++};
+diff --git a/resources/views/skus/_form.blade.php b/resources/views/skus/_form.blade.php
+index c35a8c8..363e142 100644
+--- a/resources/views/skus/_form.blade.php
++++ b/resources/views/skus/_form.blade.php
+@@ -145,6 +145,57 @@
+     </div>
+ </div>
+ 
++@php
++    $storageTiers = old('tiers');
++    if ($storageTiers === null) {
++        $storageTiers = ($sku?->backupStorageTiers ?? collect())
++            ->map(fn ($t) => ['up_to_gb' => $t->up_to_gb, 'unit_price' => $t->unit_price])
++            ->values()
++            ->all();
++    }
++@endphp
++<div class="mb-3" id="skuStorageTiersSection"
++     style="{{ old('default_quantity_type', $sku?->default_quantity_type?->value) === 'per_backup_storage_gb' ? '' : 'display:none' }}">
++    <label class="form-label mb-1">
++        Backup Storage Pricing Tiers
++        <i class="bi bi-question-circle text-muted ms-1" data-bs-toggle="tooltip" data-bs-placement="top"
++           title="Volume pricing for backup storage. When a recurring profile line for this SKU uses quantity type &quot;Backup Storage (GB)&quot;, the measured storage selects the first tier whose upper bound covers it, and the whole amount is billed at that tier's per-GB rate. Leave &quot;Up to (GB)&quot; blank on the last tier for an unbounded catch-all. With no tiers, the flat Unit Price applies per GB."></i>
++    </label>
++    <table class="table table-sm align-middle mb-2" style="max-width: 520px;">
++        <thead>
++            <tr>
++                <th style="width:45%">Up to (GB)</th>
++                <th style="width:45%">Price / GB ($)</th>
++                <th style="width:10%"></th>
++            </tr>
++        </thead>
++        <tbody id="storageTiersBody">
++            @foreach($storageTiers as $tier)
++                <tr>
++                    <td>
++                        <input type="number" class="form-control form-control-sm"
++                               name="tiers[{{ $loop->index }}][up_to_gb]"
++                               value="{{ $tier['up_to_gb'] ?? '' }}" min="1" step="1" placeholder="∞ (unbounded)">
++                    </td>
++                    <td>
++                        <input type="number" class="form-control form-control-sm"
++                               name="tiers[{{ $loop->index }}][unit_price]"
++                               value="{{ $tier['unit_price'] ?? '' }}" min="0" step="0.01" placeholder="0.00">
++                    </td>
++                    <td>
++                        <button type="button" class="btn btn-sm btn-outline-danger" onclick="removeStorageTier(this)">
++                            <i class="bi bi-x-lg"></i>
++                        </button>
++                    </td>
++                </tr>
++            @endforeach
++        </tbody>
++    </table>
++    <button type="button" class="btn btn-sm btn-outline-secondary" onclick="addStorageTier()">
++        <i class="bi bi-plus-lg"></i> Add tier
++    </button>
++</div>
++
+ @if(!empty($qboIncomeAccounts ?? []) || !empty($qboExpenseAccounts ?? []))
+ <div class="row g-3 mb-3">
+     <div class="col-12">
+@@ -185,6 +236,7 @@ function toggleSkuQtyTypeFields() {
+     var val = sel.value;
+     var licenseCol = document.getElementById('skuLicenseTypeCol');
+     var includedCol = document.getElementById('skuIncludedPerUnitCol');
++    var tiersSection = document.getElementById('skuStorageTiersSection');
+     var tooltipIcon = document.getElementById('licenseTypeTooltip');
+ 
+     // License type: show for per_license_type, per_reseller_license_type, and overage
+@@ -193,6 +245,9 @@ function toggleSkuQtyTypeFields() {
+     // Included per unit: only for overage
+     includedCol.style.display = val === 'overage' ? '' : 'none';
+ 
++    // Backup storage pricing tiers: only for per_backup_storage_gb
++    if (tiersSection) tiersSection.style.display = val === 'per_backup_storage_gb' ? '' : 'none';
++
+     // Update tooltip text based on context
+     if (tooltipIcon) {
+         var existing = bootstrap.Tooltip.getInstance(tooltipIcon);
+@@ -204,6 +259,21 @@ function toggleSkuQtyTypeFields() {
+     }
+ }
+ 
++let storageTierIndex = {{ count($storageTiers) }};
++function addStorageTier() {
++    var body = document.getElementById('storageTiersBody');
++    var tr = document.createElement('tr');
++    tr.innerHTML =
++        '<td><input type="number" class="form-control form-control-sm" name="tiers[' + storageTierIndex + '][up_to_gb]" min="1" step="1" placeholder="∞ (unbounded)"></td>' +
++        '<td><input type="number" class="form-control form-control-sm" name="tiers[' + storageTierIndex + '][unit_price]" min="0" step="0.01" placeholder="0.00"></td>' +
++        '<td><button type="button" class="btn btn-sm btn-outline-danger" onclick="removeStorageTier(this)"><i class="bi bi-x-lg"></i></button></td>';
++    body.appendChild(tr);
++    storageTierIndex++;
++}
++function removeStorageTier(btn) {
++    btn.closest('tr').remove();
++}
++
+ document.addEventListener('DOMContentLoaded', function() {
+     document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(function(el) {
+         new bootstrap.Tooltip(el);
+-- 
+2.43.0
+
+
+From 26f3b9db5196e69b17e82e0c65809ddf408c8af5 Mon Sep 17 00:00:00 2001
+From: "gastown.slit (polecat)" <polecat-gastown.slit@soundit.local>
+Date: Wed, 8 Jul 2026 23:10:43 +0000
+Subject: [PATCH 2/2] test(billing): cover backup storage tier billing
+ (psa-cvh)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- Unit (no DB): Sku::priceForStorageGb() tier selection — inclusive
+  boundaries, unbounded catch-all, exceed-all-with-no-catch-all -> top
+  rate, no-tiers -> null, order-independent.
+- Feature: resolveQuantity(PerBackupStorageGb) client-wide and
+  contract-scoped; excludes inactive/soft-deleted assets and null usage.
+- Feature: previewInvoice prices a backup line at the matching tier and
+  falls back to the flat price when the SKU has no tiers. previewInvoice
+  (not generateInvoice) is used deliberately: it exercises the same
+  quantity/price/quantity_source path without the invoice-number query,
+  whose MySQL-only SUBSTRING is unrunnable on the sqlite test DB
+  (tracked separately for end-to-end generateInvoice coverage).
+- Feature: SKU editor renders the tier editor + prefilled rows and
+  persists/replaces/clears tiers.
+---
+ .../Billing/BackupStorageBillingTest.php      | 182 ++++++++++++++++++
+ tests/Feature/Skus/SkuStorageTierTest.php     | 140 ++++++++++++++
+ tests/Unit/BackupStorageTierPricingTest.php   |  86 +++++++++
+ 3 files changed, 408 insertions(+)
+ create mode 100644 tests/Feature/Billing/BackupStorageBillingTest.php
+ create mode 100644 tests/Feature/Skus/SkuStorageTierTest.php
+ create mode 100644 tests/Unit/BackupStorageTierPricingTest.php
+
+diff --git a/tests/Feature/Billing/BackupStorageBillingTest.php b/tests/Feature/Billing/BackupStorageBillingTest.php
+new file mode 100644
+index 0000000..2d60fbd
+--- /dev/null
++++ b/tests/Feature/Billing/BackupStorageBillingTest.php
+@@ -0,0 +1,182 @@
++<?php
++
++namespace Tests\Feature\Billing;
++
++use App\Enums\BillingPeriod;
++use App\Enums\BillingSource;
++use App\Enums\ContractStatus;
++use App\Enums\ContractType;
++use App\Enums\QuantityType;
++use App\Models\Asset;
++use App\Models\BackupStorageTier;
++use App\Models\Client;
++use App\Models\Contract;
++use App\Models\RecurringInvoiceProfile;
++use App\Models\RecurringInvoiceProfileLine;
++use App\Models\Sku;
++use App\Services\BillingService;
++use Illuminate\Foundation\Testing\RefreshDatabase;
++use Tests\TestCase;
++
++class BackupStorageBillingTest extends TestCase
++{
++    use RefreshDatabase;
++
++    private const GB = 1073741824; // 1024^3 bytes
++
++    private function billing(): BillingService
++    {
++        return app(BillingService::class);
++    }
++
++    private function contractFor(Client $client): Contract
++    {
++        return Contract::create([
++            'client_id' => $client->id,
++            'name' => 'Managed Services',
++            'type' => ContractType::Managed,
++            'status' => ContractStatus::Active,
++            'billing_source' => BillingSource::Psa,
++            'billing_period' => BillingPeriod::Monthly,
++            'billing_day' => 1,
++            'payment_terms_days' => 30,
++            'start_date' => now()->subMonth(),
++        ]);
++    }
++
++    // ── Quantity resolution (bytes → GB) ──
++
++    public function test_resolves_client_wide_backup_storage_in_gb(): void
++    {
++        $client = Client::factory()->create();
++        Asset::factory()->create(['client_id' => $client->id, 'backup_cloud_bytes' => 200 * self::GB]);
++        Asset::factory()->create(['client_id' => $client->id, 'backup_cloud_bytes' => 100 * self::GB]);
++        // An asset with no backup usage must not affect the total.
++        Asset::factory()->create(['client_id' => $client->id, 'backup_cloud_bytes' => null]);
++
++        $qty = $this->billing()->resolveQuantity(QuantityType::PerBackupStorageGb, $client);
++
++        $this->assertSame(300, $qty);
++    }
++
++    public function test_inactive_and_soft_deleted_assets_are_excluded(): void
++    {
++        $client = Client::factory()->create();
++        Asset::factory()->create(['client_id' => $client->id, 'backup_cloud_bytes' => 50 * self::GB]);
++        Asset::factory()->create(['client_id' => $client->id, 'backup_cloud_bytes' => 999 * self::GB, 'is_active' => false]);
++        $deleted = Asset::factory()->create(['client_id' => $client->id, 'backup_cloud_bytes' => 999 * self::GB]);
++        $deleted->delete();
++
++        $qty = $this->billing()->resolveQuantity(QuantityType::PerBackupStorageGb, $client);
++
++        $this->assertSame(50, $qty);
++    }
++
++    public function test_resolves_contract_scoped_backup_storage_when_assets_assigned(): void
++    {
++        $client = Client::factory()->create();
++        $contract = $this->contractFor($client);
++
++        $assigned = Asset::factory()->create(['client_id' => $client->id, 'backup_cloud_bytes' => 200 * self::GB]);
++        // Unassigned client asset — excluded once the contract has assignments.
++        Asset::factory()->create(['client_id' => $client->id, 'backup_cloud_bytes' => 100 * self::GB]);
++
++        $contract->assets()->attach($assigned->id);
++
++        $qty = $this->billing()->resolveQuantity(
++            QuantityType::PerBackupStorageGb, $client, null, $contract,
++        );
++
++        $this->assertSame(200, $qty);
++    }
++
++    // ── Tiered pricing through previewInvoice ──
++
++    private function tieredProfile(Client $client, Sku $sku, string $fallbackPrice = '9.99'): RecurringInvoiceProfile
++    {
++        $contract = $this->contractFor($client);
++
++        $profile = RecurringInvoiceProfile::create([
++            'contract_id' => $contract->id,
++            'name' => 'Backup billing',
++            'is_active' => true,
++            'billing_period' => BillingPeriod::Monthly,
++            'billing_day' => 1,
++            'payment_terms_days' => 30,
++            'next_run_date' => today(),
++        ]);
++
++        RecurringInvoiceProfileLine::create([
++            'profile_id' => $profile->id,
++            'sku_id' => $sku->id,
++            'description' => 'Cloud backup storage',
++            'unit_price' => $fallbackPrice,
++            'quantity_type' => QuantityType::PerBackupStorageGb,
++            'is_taxable' => true,
++            'sort_order' => 0,
++        ]);
++
++        return $profile;
++    }
++
++    private function backupSku(array $tiers = []): Sku
++    {
++        $sku = Sku::create([
++            'name' => 'Cloud Backup Storage',
++            'sku_code' => 'BKP-GB-'.fake()->unique()->numerify('###'),
++            'unit_price' => '0.00',
++            'unit_cost' => '0.00',
++            'default_quantity_type' => QuantityType::PerBackupStorageGb,
++            'is_taxable' => true,
++            'is_active' => true,
++        ]);
++
++        foreach ($tiers as $i => $tier) {
++            BackupStorageTier::create([
++                'sku_id' => $sku->id,
++                'up_to_gb' => $tier['up_to_gb'],
++                'unit_price' => $tier['unit_price'],
++                'sort_order' => $i,
++            ]);
++        }
++
++        return $sku;
++    }
++
++    public function test_preview_prices_backup_line_at_the_matching_tier_rate(): void
++    {
++        $client = Client::factory()->create();
++        Asset::factory()->create(['client_id' => $client->id, 'backup_cloud_bytes' => 200 * self::GB]);
++        Asset::factory()->create(['client_id' => $client->id, 'backup_cloud_bytes' => 100 * self::GB]);
++
++        $sku = $this->backupSku([
++            ['up_to_gb' => 100, 'unit_price' => '1.00'],
++            ['up_to_gb' => 500, 'unit_price' => '0.80'],
++            ['up_to_gb' => null, 'unit_price' => '0.60'],
++        ]);
++
++        $preview = $this->billing()->previewInvoice($this->tieredProfile($client, $sku));
++
++        $line = $preview['lines'][0];
++        $this->assertSame(300, $line['quantity']);           // 300 GB total
++        $this->assertSame(0.80, (float) $line['unit_price']); // middle tier rate
++        $this->assertSame(240.00, (float) $line['amount']);   // 300 × 0.80
++        $this->assertStringContainsString('300 GB backup storage', $line['quantity_source']);
++        $this->assertStringContainsString('tier rate $0.80/GB', $line['quantity_source']);
++    }
++
++    public function test_preview_falls_back_to_flat_price_when_sku_has_no_tiers(): void
++    {
++        $client = Client::factory()->create();
++        Asset::factory()->create(['client_id' => $client->id, 'backup_cloud_bytes' => 300 * self::GB]);
++
++        $sku = $this->backupSku(); // no tiers
++
++        $preview = $this->billing()->previewInvoice($this->tieredProfile($client, $sku, '2.50'));
++
++        $line = $preview['lines'][0];
++        $this->assertSame(300, $line['quantity']);
++        $this->assertSame(2.50, (float) $line['unit_price']); // flat line price
++        $this->assertSame(750.00, (float) $line['amount']);   // 300 × 2.50
++    }
++}
+diff --git a/tests/Feature/Skus/SkuStorageTierTest.php b/tests/Feature/Skus/SkuStorageTierTest.php
+new file mode 100644
+index 0000000..037a3ef
+--- /dev/null
++++ b/tests/Feature/Skus/SkuStorageTierTest.php
+@@ -0,0 +1,140 @@
++<?php
++
++namespace Tests\Feature\Skus;
++
++use App\Enums\QuantityType;
++use App\Models\BackupStorageTier;
++use App\Models\Sku;
++use App\Models\User;
++use Illuminate\Foundation\Testing\RefreshDatabase;
++use Tests\TestCase;
++
++class SkuStorageTierTest extends TestCase
++{
++    use RefreshDatabase;
++
++    public function test_create_page_renders_storage_tier_editor(): void
++    {
++        $user = User::factory()->create();
++
++        $this->actingAs($user)->get(route('skus.create'))
++            ->assertOk()
++            ->assertSee('Backup Storage Pricing Tiers')
++            ->assertSee('Backup Storage (GB)'); // new quantity-type option
++    }
++
++    public function test_edit_page_prefills_existing_tiers(): void
++    {
++        $user = User::factory()->create();
++
++        $sku = Sku::create([
++            'name' => 'Cloud Backup Storage',
++            'sku_code' => 'BKP-GB',
++            'unit_price' => '0',
++            'unit_cost' => '0',
++            'default_quantity_type' => QuantityType::PerBackupStorageGb,
++            'is_taxable' => true,
++            'is_active' => true,
++        ]);
++        BackupStorageTier::create(['sku_id' => $sku->id, 'up_to_gb' => 100, 'unit_price' => '1.00', 'sort_order' => 0]);
++
++        $this->actingAs($user)->get(route('skus.edit', $sku))
++            ->assertOk()
++            ->assertSee('Backup Storage Pricing Tiers')
++            ->assertSee('name="tiers[0][up_to_gb]"', false)
++            ->assertSee('value="100"', false); // prefilled from the stored tier
++    }
++
++    public function test_store_persists_backup_storage_tiers_and_skips_empty_rows(): void
++    {
++        $user = User::factory()->create();
++
++        $resp = $this->actingAs($user)->post(route('skus.store'), [
++            'name' => 'Cloud Backup Storage',
++            'sku_code' => 'BKP-GB',
++            'unit_price' => '0',
++            'unit_cost' => '0',
++            'default_quantity_type' => QuantityType::PerBackupStorageGb->value,
++            'is_taxable' => '1',
++            'is_active' => '1',
++            'tiers' => [
++                ['up_to_gb' => '100', 'unit_price' => '1.00'],
++                ['up_to_gb' => '500', 'unit_price' => '0.80'],
++                ['up_to_gb' => '', 'unit_price' => '0.60'], // unbounded catch-all
++                ['up_to_gb' => '', 'unit_price' => ''],     // empty template row — ignored
++            ],
++        ]);
++
++        $sku = Sku::where('sku_code', 'BKP-GB')->firstOrFail();
++        $resp->assertRedirect(route('skus.edit', $sku));
++
++        $tiers = $sku->backupStorageTiers()->get();
++        $this->assertCount(3, $tiers);
++        // Rate card order: bounded ascending, unbounded last.
++        $this->assertSame(100, $tiers[0]->up_to_gb);
++        $this->assertSame(500, $tiers[1]->up_to_gb);
++        $this->assertNull($tiers[2]->up_to_gb);
++        $this->assertSame('0.60', (string) $tiers[2]->unit_price);
++    }
++
++    public function test_update_replaces_existing_tiers(): void
++    {
++        $user = User::factory()->create();
++
++        $sku = Sku::create([
++            'name' => 'Cloud Backup Storage',
++            'sku_code' => 'BKP-GB',
++            'unit_price' => '0',
++            'unit_cost' => '0',
++            'default_quantity_type' => QuantityType::PerBackupStorageGb,
++            'is_taxable' => true,
++            'is_active' => true,
++        ]);
++        BackupStorageTier::create(['sku_id' => $sku->id, 'up_to_gb' => 100, 'unit_price' => '1.00', 'sort_order' => 0]);
++        BackupStorageTier::create(['sku_id' => $sku->id, 'up_to_gb' => null, 'unit_price' => '0.60', 'sort_order' => 1]);
++
++        $this->actingAs($user)->patch(route('skus.update', $sku), [
++            'name' => 'Cloud Backup Storage',
++            'sku_code' => 'BKP-GB',
++            'unit_price' => '0',
++            'unit_cost' => '0',
++            'default_quantity_type' => QuantityType::PerBackupStorageGb->value,
++            'is_taxable' => '1',
++            'is_active' => '1',
++            'tiers' => [
++                ['up_to_gb' => '250', 'unit_price' => '0.90'],
++            ],
++        ])->assertRedirect();
++
++        $tiers = $sku->fresh()->backupStorageTiers()->get();
++        $this->assertCount(1, $tiers);
++        $this->assertSame(250, $tiers[0]->up_to_gb);
++        $this->assertSame('0.90', (string) $tiers[0]->unit_price);
++    }
++
++    public function test_update_with_no_tiers_clears_them(): void
++    {
++        $user = User::factory()->create();
++
++        $sku = Sku::create([
++            'name' => 'Cloud Backup Storage',
++            'sku_code' => 'BKP-GB',
++            'unit_price' => '0',
++            'unit_cost' => '0',
++            'is_taxable' => true,
++            'is_active' => true,
++        ]);
++        BackupStorageTier::create(['sku_id' => $sku->id, 'up_to_gb' => 100, 'unit_price' => '1.00', 'sort_order' => 0]);
++
++        $this->actingAs($user)->patch(route('skus.update', $sku), [
++            'name' => 'Cloud Backup Storage',
++            'sku_code' => 'BKP-GB',
++            'unit_price' => '0',
++            'unit_cost' => '0',
++            'is_taxable' => '1',
++            'is_active' => '1',
++        ])->assertRedirect();
++
++        $this->assertSame(0, $sku->fresh()->backupStorageTiers()->count());
++    }
++}
+diff --git a/tests/Unit/BackupStorageTierPricingTest.php b/tests/Unit/BackupStorageTierPricingTest.php
+new file mode 100644
+index 0000000..69aeca4
+--- /dev/null
++++ b/tests/Unit/BackupStorageTierPricingTest.php
+@@ -0,0 +1,86 @@
++<?php
++
++namespace Tests\Unit;
++
++use App\Models\BackupStorageTier;
++use App\Models\Sku;
++use Illuminate\Support\Collection;
++use PHPUnit\Framework\TestCase;
++
++/**
++ * Volume-pricing tier selection on Sku::priceForStorageGb(). Pure unit test:
++ * the tier collection is hydrated in-memory (setRelation) so no database is
++ * touched.
++ */
++class BackupStorageTierPricingTest extends TestCase
++{
++    /** @param array<int,array{up_to_gb:?int,unit_price:float|string}> $tiers */
++    private function skuWithTiers(array $tiers): Sku
++    {
++        $sku = new Sku;
++        $sku->setRelation('backupStorageTiers', new Collection(array_map(
++            fn (array $t) => new BackupStorageTier($t),
++            $tiers,
++        )));
++
++        return $sku;
++    }
++
++    public function test_no_tiers_returns_null_so_caller_falls_back_to_flat_price(): void
++    {
++        $sku = $this->skuWithTiers([]);
++
++        $this->assertNull($sku->priceForStorageGb(500));
++    }
++
++    public function test_single_unbounded_tier_prices_any_quantity(): void
++    {
++        $sku = $this->skuWithTiers([
++            ['up_to_gb' => null, 'unit_price' => '0.40'],
++        ]);
++
++        $this->assertSame(0.40, $sku->priceForStorageGb(1));
++        $this->assertSame(0.40, $sku->priceForStorageGb(100_000));
++    }
++
++    public function test_selects_first_tier_whose_bound_covers_the_quantity(): void
++    {
++        $sku = $this->skuWithTiers([
++            ['up_to_gb' => 100, 'unit_price' => '1.00'],
++            ['up_to_gb' => 500, 'unit_price' => '0.80'],
++            ['up_to_gb' => null, 'unit_price' => '0.60'],
++        ]);
++
++        $this->assertSame(1.00, $sku->priceForStorageGb(50));    // in first tier
++        $this->assertSame(1.00, $sku->priceForStorageGb(100));   // boundary is inclusive
++        $this->assertSame(0.80, $sku->priceForStorageGb(101));   // spills into second
++        $this->assertSame(0.80, $sku->priceForStorageGb(500));   // boundary is inclusive
++        $this->assertSame(0.60, $sku->priceForStorageGb(501));   // unbounded catch-all
++        $this->assertSame(0.60, $sku->priceForStorageGb(9_999));
++    }
++
++    public function test_exceeding_all_bounded_tiers_without_catch_all_uses_top_rate(): void
++    {
++        $sku = $this->skuWithTiers([
++            ['up_to_gb' => 100, 'unit_price' => '1.00'],
++            ['up_to_gb' => 500, 'unit_price' => '0.80'],
++        ]);
++
++        // No unbounded tier: never drop back to an unpriced fallback once
++        // tiers exist — bill the highest bounded rate.
++        $this->assertSame(0.80, $sku->priceForStorageGb(10_000));
++    }
++
++    public function test_tier_order_does_not_matter(): void
++    {
++        $sku = $this->skuWithTiers([
++            ['up_to_gb' => null, 'unit_price' => '0.60'],
++            ['up_to_gb' => 500, 'unit_price' => '0.80'],
++            ['up_to_gb' => 100, 'unit_price' => '1.00'],
++        ]);
++
++        $this->assertSame(1.00, $sku->priceForStorageGb(50));
++        $this->assertSame(0.80, $sku->priceForStorageGb(300));
++        $this->assertSame(0.60, $sku->priceForStorageGb(600));
++    }
++}
+-- 
+2.43.0
+

@@ -1,0 +1,305 @@
+From 03e98541855b7bd71e3df3e0043e5ffa83b79dac Mon Sep 17 00:00:00 2001
+From: "gastown.slit (polecat)" <polecat-gastown.slit@soundit.local>
+Date: Wed, 8 Jul 2026 23:32:13 +0000
+Subject: [PATCH] feat(billing): add weekly, bimonthly, semiannual billing
+ frequencies (psa-aci)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+GitHub #103. BillingPeriod only offered Monthly/Quarterly/Annually; MSPs
+need weekly, every-two-months, and twice-a-year cadences too.
+
+Adds three enum cases (Weekly, Bimonthly, Semiannual) in ascending-cadence
+order so the billing-period dropdowns read shortest-to-longest. Because the
+profile/contract forms already iterate BillingPeriod::cases() and validation
+already uses `new Enum(BillingPeriod::class)`, the new options and their
+acceptance flow through automatically. The billing_period column is a
+string(20), so no migration is needed.
+
+Weekly is the wrinkle: it is not a whole number of months, so the old
+`months(): int` helper could not represent it, and a 0 there would
+divide-by-zero the dashboard MRR rollup and loop forever in the profile
+"cycles behind" catch-up math. Replaced `months()` with two intent-revealing
+methods and routed all three call sites through them:
+  - advance(CarbonInterface): CarbonInterface — one billing cycle forward.
+    Weekly is a 7-day step; the month-based cadences keep the prior
+    addMonths() overflow semantics. Used by BillingService::advanceNextRunDate
+    and the profiles/show "cycles behind" loop.
+  - monthsPerCycle(): float — months spanned by a cycle, for MRR
+    normalisation (Weekly = 12/52 ≈ 0.23, never 0). Used by DashboardController.
+
+Validation: tests/Unit/Enums/BillingPeriodTest (18 cases / 372 assertions)
+covers labels, per-cadence advance dates, input non-mutation, monthsPerCycle
+values, the positive-divisor guard, weekly MRR ($10/wk => $43.33/mo), and an
+end-to-end catch-up loop that proves weekly advance terminates. Pint clean on
+changed files. Full generateInvoice() E2E is not exercised — nextInvoiceNumber()
+is MySQL-only on the sqlite test DB (pre-existing psa-sxhu) — but advance() is
+a pure one-liner delegate, fully covered by the enum unit test.
+---
+ app/Enums/BillingPeriod.php                   |  47 ++++++-
+ .../Controllers/Web/DashboardController.php   |   2 +-
+ app/Services/BillingService.php               |   5 +-
+ resources/views/profiles/show.blade.php       |   3 +-
+ tests/Unit/Enums/BillingPeriodTest.php        | 128 ++++++++++++++++++
+ 5 files changed, 174 insertions(+), 11 deletions(-)
+ create mode 100644 tests/Unit/Enums/BillingPeriodTest.php
+
+diff --git a/app/Enums/BillingPeriod.php b/app/Enums/BillingPeriod.php
+index 293e9c4..8f8ae01 100644
+--- a/app/Enums/BillingPeriod.php
++++ b/app/Enums/BillingPeriod.php
+@@ -2,27 +2,66 @@
+ 
+ namespace App\Enums;
+ 
++use Carbon\CarbonInterface;
++
+ enum BillingPeriod: string
+ {
++    case Weekly = 'weekly';
+     case Monthly = 'monthly';
++    case Bimonthly = 'bimonthly';
+     case Quarterly = 'quarterly';
++    case Semiannual = 'semiannual';
+     case Annually = 'annually';
+ 
+     public function label(): string
+     {
+         return match ($this) {
++            self::Weekly => 'Weekly',
+             self::Monthly => 'Monthly',
++            self::Bimonthly => 'Bimonthly',
+             self::Quarterly => 'Quarterly',
++            self::Semiannual => 'Semi-Annually',
+             self::Annually => 'Annually',
+         };
+     }
+ 
+-    public function months(): int
++    /**
++     * Advance a date by one billing cycle.
++     *
++     * Weekly is a fixed 7-day step; every other cadence is a whole number of
++     * calendar months and keeps the existing addMonths() overflow behaviour
++     * (e.g. Jan 31 + 1 month = Mar 3) that Monthly/Quarterly/Annually relied on.
++     * The input is not mutated — a copy is advanced and returned.
++     */
++    public function advance(CarbonInterface $date): CarbonInterface
++    {
++        return match ($this) {
++            self::Weekly => $date->copy()->addWeek(),
++            self::Monthly => $date->copy()->addMonths(1),
++            self::Bimonthly => $date->copy()->addMonths(2),
++            self::Quarterly => $date->copy()->addMonths(3),
++            self::Semiannual => $date->copy()->addMonths(6),
++            self::Annually => $date->copy()->addMonths(12),
++        };
++    }
++
++    /**
++     * Months spanned by one billing cycle, used to normalise a profile's
++     * per-cycle amount to a monthly figure (MRR).
++     *
++     * Weekly spans ~0.23 of a month (52 weeks annualised across 12 months), so
++     * this is a float and is never 0 — a 0 here would divide-by-zero the MRR
++     * rollup and loop forever in the "cycles behind" catch-up math.
++     */
++    public function monthsPerCycle(): float
+     {
+         return match ($this) {
+-            self::Monthly => 1,
+-            self::Quarterly => 3,
+-            self::Annually => 12,
++            self::Weekly => 12 / 52,
++            self::Monthly => 1.0,
++            self::Bimonthly => 2.0,
++            self::Quarterly => 3.0,
++            self::Semiannual => 6.0,
++            self::Annually => 12.0,
+         };
+     }
+ }
+diff --git a/app/Http/Controllers/Web/DashboardController.php b/app/Http/Controllers/Web/DashboardController.php
+index b85c6af..1132c8f 100644
+--- a/app/Http/Controllers/Web/DashboardController.php
++++ b/app/Http/Controllers/Web/DashboardController.php
+@@ -76,7 +76,7 @@ private function getManagedServicesProfitability(): array
+             foreach ($profiles as $profile) {
+                 try {
+                     $preview = $billingService->previewInvoice($profile);
+-                    $periodMonths = $profile->billing_period->months();
++                    $periodMonths = $profile->billing_period->monthsPerCycle();
+                     $mrr += $preview['subtotal'] / $periodMonths;
+                 } catch (\Throwable $e) {
+                     // Skip profiles that fail to preview
+diff --git a/app/Services/BillingService.php b/app/Services/BillingService.php
+index 16d095e..05ff9e8 100644
+--- a/app/Services/BillingService.php
++++ b/app/Services/BillingService.php
+@@ -372,11 +372,8 @@ public function generateInvoice(RecurringInvoiceProfile $profile): array
+ 
+     private function advanceNextRunDate(RecurringInvoiceProfile $profile, $invoiceDate): void
+     {
+-        $months = $profile->billing_period->months();
+-        $nextDate = $invoiceDate->copy()->addMonths($months);
+-
+         $profile->update([
+-            'next_run_date' => $nextDate,
++            'next_run_date' => $profile->billing_period->advance($invoiceDate),
+             'last_run_date' => today(),
+         ]);
+     }
+diff --git a/resources/views/profiles/show.blade.php b/resources/views/profiles/show.blade.php
+index 0a5caca..ac2bf08 100644
+--- a/resources/views/profiles/show.blade.php
++++ b/resources/views/profiles/show.blade.php
+@@ -98,10 +98,9 @@
+                                value="{{ old('next_run_date', $profile->next_run_date->format('Y-m-d')) }}" required>
+                         @if($profile->next_run_date->isPast())
+                             @php
+-                                $months = $profile->billing_period->months();
+                                 $cyclesBehind = 0;
+                                 $d = $profile->next_run_date->copy();
+-                                while ($d->isPast()) { $d->addMonths($months); $cyclesBehind++; }
++                                while ($d->isPast()) { $d = $profile->billing_period->advance($d); $cyclesBehind++; }
+                             @endphp
+                             <div class="form-text text-danger">
+                                 <i class="bi bi-exclamation-triangle me-1"></i>{{ $cyclesBehind }} billing cycle{{ $cyclesBehind > 1 ? 's' : '' }} behind
+diff --git a/tests/Unit/Enums/BillingPeriodTest.php b/tests/Unit/Enums/BillingPeriodTest.php
+new file mode 100644
+index 0000000..51c257a
+--- /dev/null
++++ b/tests/Unit/Enums/BillingPeriodTest.php
+@@ -0,0 +1,128 @@
++<?php
++
++namespace Tests\Unit\Enums;
++
++use App\Enums\BillingPeriod;
++use Illuminate\Support\Carbon;
++use PHPUnit\Framework\Attributes\DataProvider;
++use PHPUnit\Framework\TestCase;
++
++class BillingPeriodTest extends TestCase
++{
++    protected function tearDown(): void
++    {
++        Carbon::setTestNow();
++        parent::tearDown();
++    }
++
++    public function test_cases_are_ordered_by_ascending_cadence(): void
++    {
++        $values = array_map(fn (BillingPeriod $p) => $p->value, BillingPeriod::cases());
++
++        // Order matters: BillingPeriod::cases() drives the billing-period
++        // dropdowns, so weekly -> annually reads shortest to longest.
++        $this->assertSame(
++            ['weekly', 'monthly', 'bimonthly', 'quarterly', 'semiannual', 'annually'],
++            $values,
++        );
++    }
++
++    public function test_every_case_has_a_human_label(): void
++    {
++        foreach (BillingPeriod::cases() as $period) {
++            $this->assertNotSame('', $period->label());
++        }
++
++        $this->assertSame('Weekly', BillingPeriod::Weekly->label());
++        $this->assertSame('Bimonthly', BillingPeriod::Bimonthly->label());
++        $this->assertSame('Semi-Annually', BillingPeriod::Semiannual->label());
++    }
++
++    #[DataProvider('advanceCases')]
++    public function test_advance_moves_the_date_by_one_cycle(BillingPeriod $period, string $expected): void
++    {
++        $start = Carbon::parse('2026-01-15');
++
++        $this->assertSame($expected, $period->advance($start)->toDateString());
++    }
++
++    public static function advanceCases(): array
++    {
++        return [
++            'weekly is a 7-day step' => [BillingPeriod::Weekly, '2026-01-22'],
++            'monthly' => [BillingPeriod::Monthly, '2026-02-15'],
++            'bimonthly is two months' => [BillingPeriod::Bimonthly, '2026-03-15'],
++            'quarterly' => [BillingPeriod::Quarterly, '2026-04-15'],
++            'semiannual is six months' => [BillingPeriod::Semiannual, '2026-07-15'],
++            'annually' => [BillingPeriod::Annually, '2027-01-15'],
++        ];
++    }
++
++    public function test_advance_does_not_mutate_the_input_date(): void
++    {
++        $start = Carbon::parse('2026-01-15');
++
++        BillingPeriod::Weekly->advance($start);
++        BillingPeriod::Annually->advance($start);
++
++        $this->assertSame('2026-01-15', $start->toDateString());
++    }
++
++    #[DataProvider('monthsPerCycleCases')]
++    public function test_months_per_cycle_normalises_a_cycle_to_months(BillingPeriod $period, float $expected): void
++    {
++        $this->assertEqualsWithDelta($expected, $period->monthsPerCycle(), 0.0001);
++    }
++
++    public static function monthsPerCycleCases(): array
++    {
++        return [
++            'weekly is ~0.23 of a month' => [BillingPeriod::Weekly, 12 / 52],
++            'monthly' => [BillingPeriod::Monthly, 1.0],
++            'bimonthly' => [BillingPeriod::Bimonthly, 2.0],
++            'quarterly' => [BillingPeriod::Quarterly, 3.0],
++            'semiannual' => [BillingPeriod::Semiannual, 6.0],
++            'annually' => [BillingPeriod::Annually, 12.0],
++        ];
++    }
++
++    public function test_months_per_cycle_is_always_positive(): void
++    {
++        // Guards the MRR rollup (subtotal / monthsPerCycle) and the profile
++        // "cycles behind" catch-up loop against a zero divisor for sub-monthly
++        // cadences such as Weekly.
++        foreach (BillingPeriod::cases() as $period) {
++            $this->assertGreaterThan(0, $period->monthsPerCycle(), "{$period->value} must span > 0 months");
++        }
++    }
++
++    public function test_weekly_mrr_matches_the_weekly_amount_annualised(): void
++    {
++        // A $10/week profile bills ~52 times a year => ~$43.33/month MRR.
++        $mrr = 10 / BillingPeriod::Weekly->monthsPerCycle();
++
++        $this->assertEqualsWithDelta(43.33, $mrr, 0.01);
++    }
++
++    public function test_repeated_advance_makes_forward_progress_and_terminates(): void
++    {
++        // Regression guard for the profile "cycles behind" math, which runs
++        // `while ($d->isPast()) { $d = $period->advance($d); }`. A cadence that
++        // failed to move the date forward would loop forever; weekly is the
++        // tightest step, so exercise it end to end.
++        Carbon::setTestNow(Carbon::parse('2026-07-08'));
++        $date = Carbon::parse('2020-01-01');
++
++        $cycles = 0;
++        while ($date->isPast() && $cycles < 100_000) {
++            $next = BillingPeriod::Weekly->advance($date);
++            $this->assertTrue($next->greaterThan($date), 'weekly advance must strictly move the date forward');
++            $date = $next;
++            $cycles++;
++        }
++
++        $this->assertFalse($date->isPast(), 'catch-up loop must terminate');
++        // 2020-01-01 -> first non-past week is 340 weekly steps ahead of the pinned "now".
++        $this->assertSame(340, $cycles);
++    }
++}
+-- 
+2.43.0
+
