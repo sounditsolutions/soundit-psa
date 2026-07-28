@@ -136,6 +136,31 @@ class GraphClient
     }
 
     /**
+     * Calendar events in a time window (GET /users/{upn}/calendarView). Returns the flat list of
+     * event resources; @odata.nextLink pagination is handled internally. Times come back in UTC
+     * unless a `Prefer: outlook.timezone` header is sent — we send none (the repo stores + renders
+     * UTC via toAppTz()). Field shape: the MS Graph v1.0 event resource (camelCase) —
+     * https://learn.microsoft.com/en-us/graph/api/user-list-calendarview and
+     * https://learn.microsoft.com/en-us/graph/api/resources/event
+     */
+    public function calendarView(string $upn, string $start, string $end, int $maxPages = 50): array
+    {
+        return $this->getAllPages("users/{$upn}/calendarView", [
+            'startDateTime' => $start,
+            'endDateTime' => $end,
+        ], $maxPages);
+    }
+
+    /**
+     * A single calendar event (GET /users/{upn}/events/{eventId}) — same event-resource shape as
+     * calendarView. https://learn.microsoft.com/en-us/graph/api/event-get
+     */
+    public function getEvent(string $upn, string $eventId): array
+    {
+        return $this->get("users/{$upn}/events/{$eventId}");
+    }
+
+    /**
      * Check if the Graph API is reachable and we can authenticate.
      */
     public function isHealthy(): bool
