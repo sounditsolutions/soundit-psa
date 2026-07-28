@@ -367,9 +367,17 @@
             html += '<ul class="sp-ticket-list">';
             for (var i = 0; i < call.recent_tickets.length; i++) {
                 var t = call.recent_tickets[i];
+                // ITIL taxonomy chip (psa-717bn): leaf in the row, full path on
+                // hover. esc() leaves double quotes alone, so encode them for
+                // the title="" attribute.
+                var catChip = t.category_path
+                    ? '<span class="sp-ticket-cat" title="' + esc(t.category_path).replace(/"/g, '&quot;') + '">' +
+                        esc(String(t.category_path).split(' / ').pop()) + '</span>'
+                    : '';
                 html += '<a href="' + esc(t.url) + '" target="_blank" class="sp-ticket-item">' +
                     '<span class="sp-ticket-id">' + esc(t.display_id) + '</span>' +
                     '<span class="sp-ticket-subject">' + esc(t.subject) + '</span>' +
+                    catChip +
                     '<span class="sp-ticket-badge ' + esc(t.status_badge) + '">' + esc(t.status) + '</span>' +
                     '</a>';
             }

@@ -380,6 +380,7 @@
                                 <div>
                                     <strong>{{ $ticket->display_id }}</strong>
                                     <span class="ms-1">{{ Str::limit($ticket->subject, 55) }}</span>
+                                    <div class="mt-1"><x-ticket-category-badge :node="$ticket->categoryNode" /></div>
                                 </div>
                                 <button type="submit" class="btn btn-sm btn-outline-primary ms-2 flex-shrink-0">Link</button>
                             </form>

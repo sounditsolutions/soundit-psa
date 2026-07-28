@@ -355,6 +355,19 @@ body {
     white-space: nowrap;
 }
 
+/* ITIL taxonomy chip on ticket rows (psa-717bn): leaf name, full path in title. */
+.sp-ticket-cat {
+    font-size: 0.6rem;
+    padding: 1px 5px;
+    border-radius: 4px;
+    border: 1px solid var(--sp-gray-light);
+    color: var(--sp-gray);
+    white-space: nowrap;
+    max-width: 110px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
 .sp-no-tickets {
     font-size: 0.72rem;
     color: var(--sp-gray);

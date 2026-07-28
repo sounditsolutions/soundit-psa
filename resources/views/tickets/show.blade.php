@@ -1517,6 +1517,13 @@ document.addEventListener('DOMContentLoaded', function() {
         return str.length > len ? str.substring(0, len) + '...' : str;
     }
 
+    // HTML/attribute-safe escape for values interpolated into innerHTML strings.
+    function escHtml(str) {
+        return String(str == null ? '' : str).replace(/[&<>"']/g, function (c) {
+            return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c];
+        });
+    }
+
     function resetMergePanel() {
         if (mergeSearch) mergeSearch.value = '';
         if (mergeResults) mergeResults.innerHTML = '';
@@ -1576,8 +1583,13 @@ document.addEventListener('DOMContentLoaded', function() {
                             const a = document.createElement('a');
                             a.href = '#';
                             a.className = 'list-group-item list-group-item-action small py-1 d-flex justify-content-between align-items-center';
+                            // ITIL taxonomy chip (psa-717bn): leaf in the row, full path on hover.
+                            const catChip = t.category_path
+                                ? ' <span class="badge bg-light text-dark border fw-normal" title="' + escHtml(t.category_path) + '">' +
+                                    escHtml(String(t.category_path).split(' / ').pop()) + '</span>'
+                                : '';
                             a.innerHTML = '<span><strong>' + t.display_id + '</strong> ' +
-                                truncateStr(t.subject, 35) + '</span>' +
+                                truncateStr(t.subject, 35) + catChip + '</span>' +
                                 '<span class="badge ' + t.priority_class + '" style="font-size: 0.65rem;">' + t.priority + '</span>';
                             a.addEventListener('click', function(e) {
                                 e.preventDefault();

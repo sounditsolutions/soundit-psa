@@ -115,8 +115,11 @@ class EmailController extends Controller
             $openTickets = Ticket::where('client_id', $email->client_id)
                 ->open()
                 ->orderByDesc('updated_at')
+                ->with('categoryNode.parent.parent')
                 ->limit(10)
-                ->get(['id', 'subject', 'status', 'priority']);
+                // category_id MUST be selected or the categoryNode belongsTo eager-load
+                // silently no-matches (the FK is the join key). psa-717bn.9.
+                ->get(['id', 'subject', 'status', 'priority', 'category_id']);
         }
 
         // Client list + domain-based suggestion for unresolved senders

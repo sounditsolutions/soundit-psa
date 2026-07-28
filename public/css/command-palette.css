@@ -122,6 +122,21 @@
     text-transform: capitalize;
 }
 
+/* ITIL taxonomy chip on ticket rows (psa-717bn): leaf name, full path in title. */
+.cmd-palette-item-category {
+    font-size: 0.7rem;
+    color: var(--text-muted, #6b7280);
+    margin-left: 8px;
+    flex-shrink: 0;
+    border: 1px solid #e5e7eb;
+    border-radius: 4px;
+    padding: 0 6px;
+    white-space: nowrap;
+    max-width: 140px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
 /* ── Empty state ── */
 .cmd-palette-empty {
     padding: 24px 16px;

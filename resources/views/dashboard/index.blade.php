@@ -145,7 +145,7 @@
             'unassignedCount' => $unassignedCount,
             'showFilters' => false,
             'showBulkActions' => false,
-            'columns' => ['id', 'subject', 'client', 'priority', 'status', 'assignee', 'updated_at'],
+            'columns' => ['id', 'subject', 'client', 'priority', 'status', 'category', 'assignee', 'updated_at'],
         ])
     </div>
 

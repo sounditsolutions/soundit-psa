@@ -456,6 +456,22 @@ window.dismissEmail = function(emailId) {
     });
 };
 
+// HTML/attribute-safe escape for values interpolated into innerHTML strings.
+function escapeHtml(str) {
+    return String(str == null ? '' : str).replace(/[&<>"']/g, function (c) {
+        return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c];
+    });
+}
+
+// ITIL taxonomy chip for ticket typeahead rows (psa-717bn): leaf in the row,
+// full path on hover; empty string when the ticket has no category.
+function ticketCategoryChip(t) {
+    return t.category_path
+        ? '<span class="badge bg-light text-dark border fw-normal me-1" title="' + escapeHtml(t.category_path) + '">'
+            + escapeHtml(String(t.category_path).split(' / ').pop()) + '</span>'
+        : '';
+}
+
 // Link to Ticket modal (single email)
 var linkEmailId = null;
 window.openLinkModal = function(emailId) {
@@ -486,6 +502,7 @@ window.openLinkModal = function(emailId) {
                         return '<button type="button" class="list-group-item list-group-item-action small py-1" onclick="selectLinkTicket(' + t.id + ')">'
                             + '<strong>' + t.display_id + '</strong> '
                             + '<span class="badge ' + t.priority_class + ' me-1">' + t.priority + '</span>'
+                            + ticketCategoryChip(t)
                             + t.subject
                             + '</button>';
                     }).join('') || '<div class="text-muted small p-2">No tickets found</div>';
@@ -622,6 +639,7 @@ window.selectLinkTicket = function(ticketId) {
                                     return '<button type="button" class="list-group-item list-group-item-action small py-1" onclick="selectLinkTicket(' + t.id + ')">'
                                         + '<strong>' + t.display_id + '</strong> '
                                         + '<span class="badge ' + t.priority_class + ' me-1">' + t.priority + '</span>'
+                                        + ticketCategoryChip(t)
                                         + t.subject
                                         + '</button>';
                                 }).join('') || '<div class="text-muted small p-2">No tickets found</div>';

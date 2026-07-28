@@ -135,6 +135,12 @@
 
     function renderItem(item, idx) {
         var typeLabel = item.type ? '<span class="cmd-palette-item-type">' + escapeHtml(item.type) + '</span>' : '';
+        // Ticket rows carry the ITIL taxonomy path (psa-717bn): leaf in the
+        // row, full path on hover.
+        var categoryChip = item.category_path
+            ? '<span class="cmd-palette-item-category" title="' + escapeAttr(item.category_path) + '">' +
+                escapeHtml(String(item.category_path).split(' / ').pop()) + '</span>'
+            : '';
         return '<a href="' + escapeHtml(item.url) + '" ' +
             'class="cmd-palette-item" ' +
             'role="option" ' +
@@ -142,6 +148,7 @@
             'data-index="' + idx + '">' +
             '<i class="bi ' + escapeHtml(item.icon || 'bi-link-45deg') + '"></i>' +
             '<span class="cmd-palette-item-label">' + escapeHtml(item.label) + '</span>' +
+            categoryChip +
             typeLabel +
             '</a>';
     }
@@ -175,6 +182,12 @@
         var div = document.createElement('div');
         div.textContent = str;
         return div.innerHTML;
+    }
+
+    // escapeHtml leaves double quotes alone (textContent/innerHTML round-trip);
+    // values landing inside a ="" attribute need them encoded too.
+    function escapeAttr(str) {
+        return escapeHtml(str).replace(/"/g, '&quot;');
     }
 
     // ── Input handling ──
