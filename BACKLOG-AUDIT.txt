@@ -1,0 +1,48 @@
+PSA BACKLOG AUDIT — CONSOLIDATED KEEP LIST. All 256 open non-machinery beads read individually
+(description + comments) by six parallel readers, 2026-07-28. Verdicts cross-checked against
+origin/main @ dfdfb9e rather than taken from bead text; that overturned verdicts in every batch.
+
+RESULT: 256 read | 117 KEEP | 139 DROP
+*** I PREDICTED "well short of 100" BEFORE THE READ. IT CAME IN AT 117. My prediction was wrong and
+the backlog is more real than I forecast — batch 3 alone kept 29 of 43 because it is dominated by
+prod-verified defects with file:line evidence, not brainstorm. ***
+
+BUT THE PRIORITY SHAPE IS WHAT MATTERS FOR MIGRATION — only ~6 of the 117 are P0/P1:
+  P0  psa-nmnu5   Stripe void/billing-integrity code on main, all review lanes REVISE
+  P1  psa-6vfw1   secret-scan guard still has proven bypasses (see so-ssoj, LIVE exposure)
+  P1  psa-717bn   Charlie directive: ITIL category everywhere a ticket lists
+  P1  psa-h1eaz   MCP mutating-vs-read classification + fail-closed grant defaults
+  P1  psa-lulgh   the 4 calendar writes — Charlie-authorized, IN PROGRESS now
+  P1  psa-y4ft    close_ticket confidence param + server-side bands (his own re-scope)
+Remainder: ~55 P2, ~35 P3, ~11 P4. Real work, none of it urgent.
+
+WHERE THE KEEPS CLUSTER — billing/money correctness and client-facing send paths:
+  MONEY: psa-iccxs (Stripe import erases void error), psa-34e99 (void invoices re-inflate
+    cost/margin), psa-9igt (sub-cent rates round up = 100% overcharge), psa-zkl6u (QBO
+    duplicate-invoice race), psa-oc5q2 (voided-line re-inflation), psa-nmq5 (malformed client_id
+    returns EVERY client's invoices), psa-dnbcn (refused pull reports success), psa-fbyq
+    (contract page hides overdue billing runs), psa-i5ovh (prod invoice descriptions corrupted,
+    repair script ready and Charlie-gated), psa-sxhu (invoice generation has zero E2E cover)
+  SECURITY: psa-ed1an (staff DOM-XSS, fix built+gated+unmerged), psa-zg6m (DOM-XSS in preview),
+    psa-cbse (unpinned download SSRF), psa-86w9w (ScreenConnect attaches on spoofable field),
+    psa-qbr6 (NO admin gate on settings — any tech rotates MCP tokens), psa-904k (forwarded-email
+    author gate missing), psa-a5tb (MFA false-clean), psa-28hr (~20 Blade json sites drop escaping)
+  CLIENT-FACING TRUTH: psa-e2r4 ("Email sent" reported when send FAILED), psa-pxxp (portal ticket
+    view TypeErrors), psa-su3y (empty setting auto-closes tickets at ANY confidence), psa-s72e
+    (turning AI OFF makes auto-close LESS safe), psa-xl33f (404 returns false, tickets stuck),
+    psa-us4is (health score reads Online on frozen RMM data), psa-vxi70 (Charlie-reported live misdial)
+
+DUPLICATE PAIRS FOUND — migrate one of each, do not carry both:
+  psa-qddf == psa-puj4  (keep qddf; puj4 uniquely contains a SEPARATE real bug: destination
+                         builders hardcode secret=>null, so any save WIPES a pre-existing secret)
+  psa-ja8t == psa-byfom (keep byfom, fuller writeup)
+  psa-h57f == psa-o5uh  (both dropped)
+
+WHY THE 139 DROPS DROPPED, consistent across all six readers:
+  ~1/3  AGENT-CITY MACHINERY filed into the PSA product tracker — wisps, patrol formulas, polecat
+        pools, worktrees, bd/beads CLI, review-gate plumbing, mayor mail. Dies with the city.
+  ~1/3  REVIEW-SPAWNED MINORS the reviewing agent ITSELF argued were not worth doing.
+  ~1/3  ENUMERATION BURSTS — "we could also X, Y, Z" filed in batches, never touched.
+  Plus a hard core of ALREADY-SHIPPED work still reading open: psa-98dq, psa-9pqny, psa-e2no,
+  psa-guo9, psa-abtn, psa-ru1c, psa-1eo4, psa-6h5r, psa-5ngn, psa-jepx, psa-fnnc, psa-y4p, psa-tzlv.
+  Their TITLES all read as live work. Only reading main settled them.
