@@ -21,10 +21,16 @@ use App\Models\Setting;
  */
 class CalendarConfig
 {
-    /** Master switch — OFF=OFF. Unset or "0" ⇒ the toolset is not live and must not be published. */
+    /**
+     * Master switch — OFF=OFF, default off. STRICT and fail-closed (=== '1'), matching
+     * NinjaConfig/ZorusConfig: only the exact string "1" enables the toolset. A (bool) cast
+     * would treat a stray/legacy value such as the string "false" as TRUE — the opposite of
+     * fail-closed for a toolset that rides a tenant-wide Graph token (psa-abl0i.2 architecture
+     * review). Unset defaults to "0", so a deployment that never opts in stays dark.
+     */
     public static function isEnabled(): bool
     {
-        return (bool) Setting::getValue('calendar_enabled');
+        return Setting::getValue('calendar_enabled', '0') === '1';
     }
 
     /**

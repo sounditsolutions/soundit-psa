@@ -33,6 +33,20 @@ class CalendarConfigTest extends TestCase
         $this->assertFalse(CalendarConfig::isEnabled());
     }
 
+    public function test_enabled_is_strict_fail_closed_only_exact_1_enables(): void
+    {
+        // Fail-closed like NinjaConfig/ZorusConfig (=== '1'). A stray or legacy value must NEVER
+        // enable a toolset that rides a tenant-wide Graph token: a (bool) cast treats the string
+        // "false" (and "true", "2", …) as TRUE, which is the opposite of fail-closed (psa-abl0i.2).
+        foreach (['false', 'true', '0', 'no', 'off', '2', ' 1', ''] as $value) {
+            Setting::setValue('calendar_enabled', $value);
+            $this->assertFalse(CalendarConfig::isEnabled(), "calendar_enabled='{$value}' must not enable the toolset");
+        }
+
+        Setting::setValue('calendar_enabled', '1');
+        $this->assertTrue(CalendarConfig::isEnabled());
+    }
+
     public function test_allowed_owner_upns_is_empty_when_unset(): void
     {
         $this->assertSame([], CalendarConfig::allowedOwnerUpns());
