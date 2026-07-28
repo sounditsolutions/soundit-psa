@@ -27,10 +27,20 @@ class GraphClient
         private readonly array $config,
         private readonly CacheInterface $cache,
     ) {
-        $this->http = new Client([
+        $httpOptions = [
             'base_uri' => 'https://graph.microsoft.com/v1.0/',
             'timeout' => $this->config['request_timeout'],
-        ]);
+        ];
+
+        // Optional Guzzle handler injection for wire-level tests (mirrors ServosityClient's
+        // config `handler` seam). Production config never sets it; a test injects a MockHandler
+        // + history stack to capture the OUTGOING request URI and prove a caller-controlled path
+        // segment cannot escape the allowlisted mailbox path (psa-abl0i.1 security spine).
+        if (isset($this->config['handler'])) {
+            $httpOptions['handler'] = $this->config['handler'];
+        }
+
+        $this->http = new Client($httpOptions);
 
         $this->authHttp = new Client([
             'base_uri' => 'https://login.microsoftonline.com/',
@@ -145,10 +155,28 @@ class GraphClient
      */
     public function calendarView(string $upn, string $start, string $end, int $maxPages = 50): array
     {
-        return $this->getAllPages("users/{$upn}/calendarView", [
+        return $this->getAllPages('users/'.self::seg($upn).'/calendarView', [
             'startDateTime' => $start,
             'endDateTime' => $end,
         ], $maxPages);
+    }
+
+    /**
+     * Percent-encode a single caller-controlled path segment before it is interpolated into a
+     * Graph URL. THE SECURITY SPINE at the transport seam (psa-abl0i.1 security review): a raw
+     * segment such as event_id = "../../../users/other@x/events/ID" would otherwise let Guzzle's
+     * RFC 3986 dot-segment resolution walk OUT of the allowlisted mailbox path and re-target a
+     * different (non-allowlisted) mailbox — bypassing the sole control, now that the Azure
+     * Application Access Policy is dropped. rawurlencode turns every "/" into "%2F" and leaves no
+     * bare "." segment delimited by real separators, so the value can only ever occupy its own
+     * segment. Applied to EVERY caller-controlled segment (the owner UPN and any id): the
+     * allowlist gate proves WHICH UPN is permitted; this proves the wire target IS that UPN and
+     * nothing else. (It also correctly encodes legitimate opaque Graph event ids, which may
+     * contain "/", "+" or "=".)
+     */
+    private static function seg(string $value): string
+    {
+        return rawurlencode($value);
     }
 
     /**
@@ -157,7 +185,7 @@ class GraphClient
      */
     public function getEvent(string $upn, string $eventId): array
     {
-        return $this->get("users/{$upn}/events/{$eventId}");
+        return $this->get('users/'.self::seg($upn).'/events/'.self::seg($eventId));
     }
 
     /**
@@ -177,7 +205,7 @@ class GraphClient
      */
     public function getSchedule(string $upn, array $schedules, string $start, string $end, int $interval = 30): array
     {
-        $response = $this->post("users/{$upn}/calendar/getSchedule", [
+        $response = $this->post('users/'.self::seg($upn).'/calendar/getSchedule', [
             'schedules' => array_values($schedules),
             'startTime' => ['dateTime' => $start, 'timeZone' => 'UTC'],
             'endTime' => ['dateTime' => $end, 'timeZone' => 'UTC'],
