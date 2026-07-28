@@ -26,7 +26,7 @@ class StaffCalendarToolWiringTest extends TestCase
 {
     use RefreshDatabase;
 
-    private const READ_TOOLS = ['calendar_list_events', 'calendar_get_event'];
+    private const READ_TOOLS = ['calendar_list_events', 'calendar_get_event', 'calendar_get_schedule'];
 
     private function token(array $tools, string $label = 'chet'): string
     {
@@ -310,5 +310,71 @@ class StaffCalendarToolWiringTest extends TestCase
         $response->assertOk();
         $this->assertTrue((bool) $response->json('result.isError'));
         $this->assertStringContainsString('not allowed for this token', (string) $response->json('result.content.0.text'));
+    }
+
+    public function test_granted_call_get_schedule_projects_availability_through_the_endpoint(): void
+    {
+        $this->enableCalendarLive(['charlie@soundit.co', 'justin@soundit.co']);
+        $this->mock(GraphClient::class, function ($m) {
+            $m->shouldReceive('getSchedule')
+                ->once()
+                ->with('charlie@soundit.co', ['charlie@soundit.co', 'justin@soundit.co'], '2026-07-28T00:00:00Z', '2026-07-28T23:59:00Z', 30)
+                ->andReturn([[
+                    'scheduleId' => 'charlie@soundit.co',
+                    'availabilityView' => '000022220000',
+                    'scheduleItems' => [[
+                        'status' => 'busy',
+                        'subject' => 'PRIVATE SUBJECT',
+                        'location' => 'PRIVATE LOCATION',
+                        'start' => ['dateTime' => '2026-07-28T14:00:00.0000000', 'timeZone' => 'UTC'],
+                        'end' => ['dateTime' => '2026-07-28T15:00:00.0000000', 'timeZone' => 'UTC'],
+                    ]],
+                    'workingHours' => [
+                        'daysOfWeek' => ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'],
+                        'startTime' => '08:00:00.0000000',
+                        'endTime' => '17:00:00.0000000',
+                        'timeZone' => ['name' => 'Pacific Standard Time'],
+                    ],
+                ]]);
+        });
+
+        $response = $this->callTool($this->token(['calendar_get_schedule']), 'calendar_get_schedule', [
+            'user_upn' => 'charlie@soundit.co',
+            'schedules' => ['charlie@soundit.co', 'justin@soundit.co'],
+            'start' => '2026-07-28T00:00:00Z',
+            'end' => '2026-07-28T23:59:00Z',
+        ]);
+        $response->assertOk();
+        $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
+
+        $result = $this->decodedResult($response);
+        $this->assertSame('000022220000', $result['schedules'][0]['availability_view']);
+        $this->assertSame('busy', $result['schedules'][0]['busy_blocks'][0]['status']);
+        // Private meeting content must never cross the wire on an availability read.
+        $this->assertStringNotContainsString('PRIVATE SUBJECT', (string) $response->json('result.content.0.text'));
+        $this->assertStringNotContainsString('PRIVATE LOCATION', (string) $response->json('result.content.0.text'));
+    }
+
+    public function test_get_schedule_rejects_a_mixed_allowlist_request_through_the_endpoint(): void
+    {
+        // The manager-mandated direct test (fork 3): a mix of allowlisted + non-allowlisted
+        // targets ERRORS and returns NO grid — a partial free/busy grid must never be
+        // indistinguishable from a complete one.
+        $this->enableCalendarLive(['charlie@soundit.co']);
+        $this->mock(GraphClient::class, function ($m) {
+            $m->shouldReceive('getSchedule')->never();
+        });
+
+        $response = $this->callTool($this->token(['calendar_get_schedule']), 'calendar_get_schedule', [
+            'user_upn' => 'charlie@soundit.co',
+            'schedules' => ['charlie@soundit.co', 'ceo@clientco.example'],
+            'start' => '2026-07-28T00:00:00Z',
+            'end' => '2026-07-28T23:59:00Z',
+        ]);
+        $response->assertOk();
+        $this->assertTrue((bool) $response->json('result.isError'));
+        $text = (string) $response->json('result.content.0.text');
+        $this->assertStringContainsString('ceo@clientco.example', $text, 'the offending UPN is named');
+        $this->assertStringNotContainsString('availability_view', $text, 'no partial grid is returned');
     }
 }

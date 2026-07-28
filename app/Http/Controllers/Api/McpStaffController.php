@@ -1460,7 +1460,9 @@ class McpStaffController extends Controller
         foreach ($arguments as $key => $value) {
             $normalized = mb_strtolower((string) $key);
 
-            if (in_array($normalized, ['user_upn', 'event_id', 'start', 'end'], true)) {
+            // All allowlisted UPNs / window / interval — safe to record. schedules is a list of
+            // allowlisted mailbox UPNs (the guard rejected the call if any were not).
+            if (in_array($normalized, ['user_upn', 'event_id', 'start', 'end', 'schedules', 'interval'], true)) {
                 $safe[$normalized] = $value;
             }
         }

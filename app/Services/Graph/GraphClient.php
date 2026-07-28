@@ -161,6 +161,33 @@ class GraphClient
     }
 
     /**
+     * Free/busy availability for a set of mailboxes over a window
+     * (POST /users/{upn}/calendar/getSchedule). {upn} is the calendar the getSchedule action is
+     * invoked THROUGH; $schedules are the mailbox UPNs whose free/busy to return. Returns the flat
+     * scheduleInformation list (the OData `value` envelope is unwrapped). startTime/endTime are
+     * Graph dateTimeTimeZone objects — the repo works in UTC, so we send timeZone=UTC and the
+     * caller passes UTC ISO-8601 datetimes.
+     *
+     * Field shape verified against a captured LIVE app-token payload (scheduleInformation:
+     * scheduleId, availabilityView, scheduleItems[], workingHours) — MS Graph v1.0:
+     * https://learn.microsoft.com/en-us/graph/api/calendar-getschedule
+     *
+     * @param  list<string>  $schedules
+     * @return array<int, array<string, mixed>>
+     */
+    public function getSchedule(string $upn, array $schedules, string $start, string $end, int $interval = 30): array
+    {
+        $response = $this->post("users/{$upn}/calendar/getSchedule", [
+            'schedules' => array_values($schedules),
+            'startTime' => ['dateTime' => $start, 'timeZone' => 'UTC'],
+            'endTime' => ['dateTime' => $end, 'timeZone' => 'UTC'],
+            'availabilityViewInterval' => $interval,
+        ]);
+
+        return is_array($response['value'] ?? null) ? $response['value'] : [];
+    }
+
+    /**
      * Check if the Graph API is reachable and we can authenticate.
      */
     public function isHealthy(): bool

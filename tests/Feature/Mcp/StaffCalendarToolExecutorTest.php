@@ -26,7 +26,11 @@ class StaffCalendarToolExecutorTest extends TestCase
         Setting::setValue('calendar_allowed_owner_upns', json_encode($allowed));
     }
 
-    /** A documented-shape MS Graph calendarView event (camelCase, per the event resource). */
+    /**
+     * An MS Graph calendarView event (camelCase). Shape verified field-by-field against the
+     * captured LIVE payload (.gc/graph-payload-samples.json, psa-abl0i) and sanitised — real
+     * values replaced, real structure preserved.
+     */
     private function graphEvent(): array
     {
         return [
@@ -156,5 +160,135 @@ class StaffCalendarToolExecutorTest extends TestCase
 
         $this->assertArrayNotHasKey('error', $result);
         $this->assertSame([], $result['events']);
+    }
+
+    /**
+     * A sanitised copy of the REAL Graph getSchedule scheduleInformation shape (values replaced,
+     * shape preserved — captured live payload at .gc/graph-payload-samples.json). scheduleItems
+     * carry a subject + location on the real wire; the projection MUST NOT surface them.
+     */
+    private function graphSchedule(string $scheduleId = 'charlie@soundit.co'): array
+    {
+        return [
+            'scheduleId' => $scheduleId,
+            'availabilityView' => '000022220000',
+            'scheduleItems' => [[
+                'isPrivate' => false,
+                'status' => 'busy',
+                'subject' => 'PRIVATE MEETING SUBJECT',   // must NOT appear in the projection
+                'location' => 'PRIVATE LOCATION',          // must NOT appear in the projection
+                'isMeeting' => true,
+                'isRecurring' => false,
+                'isException' => false,
+                'isReminderSet' => true,
+                'start' => ['dateTime' => '2026-07-28T14:00:00.0000000', 'timeZone' => 'UTC'],
+                'end' => ['dateTime' => '2026-07-28T15:00:00.0000000', 'timeZone' => 'UTC'],
+            ]],
+            'workingHours' => [
+                'daysOfWeek' => ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'],
+                'startTime' => '08:00:00.0000000',
+                'endTime' => '17:00:00.0000000',
+                'timeZone' => ['name' => 'Pacific Standard Time'],
+            ],
+        ];
+    }
+
+    public function test_get_schedule_projects_the_free_busy_grid_and_omits_meeting_content(): void
+    {
+        $this->enableCalendar(['charlie@soundit.co', 'justin@soundit.co']);
+        $this->mock(GraphClient::class, function ($m) {
+            $m->shouldReceive('getSchedule')
+                ->once()
+                ->with('charlie@soundit.co', ['charlie@soundit.co', 'justin@soundit.co'], '2026-07-28T00:00:00Z', '2026-07-28T23:59:00Z', 30)
+                ->andReturn([$this->graphSchedule('charlie@soundit.co'), $this->graphSchedule('justin@soundit.co')]);
+        });
+
+        $result = app(StaffCalendarToolExecutor::class)->execute('calendar_get_schedule', [
+            'user_upn' => 'charlie@soundit.co',
+            'schedules' => ['charlie@soundit.co', 'justin@soundit.co'],
+            'start' => '2026-07-28T00:00:00Z',
+            'end' => '2026-07-28T23:59:00Z',
+        ], 1, 'mcp-staff:chet');
+
+        $this->assertArrayNotHasKey('error', $result);
+        $this->assertCount(2, $result['schedules']);
+
+        $sched = $result['schedules'][0];
+        $this->assertSame('charlie@soundit.co', $sched['schedule_id']);
+        $this->assertSame('000022220000', $sched['availability_view']);
+        $this->assertSame('08:00:00.0000000', $sched['working_hours']['start_time']);
+        $this->assertSame('17:00:00.0000000', $sched['working_hours']['end_time']);
+        $this->assertSame(['monday', 'tuesday', 'wednesday', 'thursday', 'friday'], $sched['working_hours']['days_of_week']);
+        $this->assertSame('Pacific Standard Time', $sched['working_hours']['time_zone']);
+
+        // Availability only: status + window, never the private subject/location of the meeting.
+        $block = $sched['busy_blocks'][0];
+        $this->assertSame('busy', $block['status']);
+        $this->assertSame('2026-07-28T14:00:00.0000000', $block['start']['date_time']);
+        $this->assertArrayNotHasKey('subject', $block);
+        $this->assertArrayNotHasKey('location', $block);
+
+        // The private meeting content must never reach the tool payload at all.
+        $json = json_encode($result);
+        $this->assertStringNotContainsString('PRIVATE MEETING SUBJECT', $json);
+        $this->assertStringNotContainsString('PRIVATE LOCATION', $json);
+    }
+
+    public function test_get_schedule_rejects_the_whole_call_when_any_schedule_is_non_allowlisted(): void
+    {
+        // FORK 3 (manager ruling): every schedules[] entry is a READ SUBJECT (free/busy is
+        // information disclosure) and must be allowlisted. A single non-allowlisted entry
+        // REJECTS THE WHOLE CALL — no partial grid — and NAMES the offender. getSchedule is
+        // never reached.
+        $this->enableCalendar(['charlie@soundit.co']);
+        $this->mock(GraphClient::class, function ($m) {
+            $m->shouldReceive('getSchedule')->never();
+        });
+
+        $result = app(StaffCalendarToolExecutor::class)->execute('calendar_get_schedule', [
+            'user_upn' => 'charlie@soundit.co',
+            'schedules' => ['charlie@soundit.co', 'ceo@clientco.example'], // second is not allowlisted
+            'start' => '2026-07-28T00:00:00Z',
+            'end' => '2026-07-28T23:59:00Z',
+        ], 1, 'mcp-staff:chet');
+
+        $this->assertArrayHasKey('error', $result);
+        $this->assertArrayNotHasKey('schedules', $result, 'no partial grid may be returned');
+        $this->assertStringContainsString('ceo@clientco.example', $result['error'], 'the offending UPN must be named');
+    }
+
+    public function test_get_schedule_rejects_a_non_allowlisted_path_owner(): void
+    {
+        $this->enableCalendar(['charlie@soundit.co']);
+        $this->mock(GraphClient::class, function ($m) {
+            $m->shouldReceive('getSchedule')->never();
+        });
+
+        $result = app(StaffCalendarToolExecutor::class)->execute('calendar_get_schedule', [
+            'user_upn' => 'billing@soundit.co', // internal, but not allowlisted
+            'schedules' => ['charlie@soundit.co'],
+            'start' => '2026-07-28T00:00:00Z',
+            'end' => '2026-07-28T23:59:00Z',
+        ], 1, 'mcp-staff:chet');
+
+        $this->assertArrayHasKey('error', $result);
+        $this->assertArrayNotHasKey('schedules', $result);
+    }
+
+    public function test_get_schedule_requires_a_non_empty_schedules_array(): void
+    {
+        $this->enableCalendar(['charlie@soundit.co']);
+        $this->mock(GraphClient::class, function ($m) {
+            $m->shouldReceive('getSchedule')->never();
+        });
+
+        $result = app(StaffCalendarToolExecutor::class)->execute('calendar_get_schedule', [
+            'user_upn' => 'charlie@soundit.co',
+            'schedules' => [],
+            'start' => '2026-07-28T00:00:00Z',
+            'end' => '2026-07-28T23:59:00Z',
+        ], 1, 'mcp-staff:chet');
+
+        $this->assertArrayHasKey('error', $result);
     }
 }
