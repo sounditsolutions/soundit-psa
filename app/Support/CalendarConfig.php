@@ -65,8 +65,19 @@ class CalendarConfig
     }
 
     /**
-     * The configured owner/organizer allowlist. A missing or malformed (non-array / bad JSON)
-     * setting yields [] — which, through ownerUpnAllowed(), denies everyone. Never throws.
+     * The configured owner/organizer allowlist — the read side of the SOLE mailbox boundary, so it
+     * fails CLOSED on ANY malformed storage (psa-abl0i.5 spine re-review). It requires a genuine
+     * JSON LIST of non-empty strings and denies the WHOLE value if the shape is wrong or any member
+     * is malformed:
+     *  - a JSON OBJECT ({"k":"v"}) decodes to an associative array whose array_values() would
+     *    silently admit its values as if they were a list — a non-list shape must never widen the
+     *    boundary, so it yields [];
+     *  - a non-string / blank / nested member denies the entire list — a partial list recovered from
+     *    corrupt/legacy/hand-edited storage is not a trustworthy allowlist and must not admit its
+     *    well-formed siblings.
+     * The security invariant lives HERE (the read-side choke point), not only at the Settings write
+     * door — a single writer cannot be the only proof. A missing/blank/bad-JSON setting yields [],
+     * which through ownerUpnAllowed() denies everyone. Never throws.
      *
      * @return list<string>
      */
@@ -78,8 +89,19 @@ class CalendarConfig
         }
 
         $decoded = json_decode($raw, true);
+        if (! is_array($decoded) || ! array_is_list($decoded)) {
+            return [];
+        }
 
-        return is_array($decoded) ? array_values($decoded) : [];
+        $upns = [];
+        foreach ($decoded as $entry) {
+            if (! is_string($entry) || trim($entry) === '') {
+                return []; // one malformed member denies the whole allowlist (fail-closed)
+            }
+            $upns[] = $entry;
+        }
+
+        return $upns;
     }
 
     /**

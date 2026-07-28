@@ -2559,9 +2559,12 @@ class IntegrationsController extends Controller
             'calendar_owner_upns.*.email' => 'Each allowed calendar owner must be a valid email / UPN address. Fix or remove any invalid entry — nothing was saved.',
         ]);
 
-        // Fail-closed master switch: an unchecked box is absent from the POST, so persist an
-        // explicit '0' rather than leaving the key unset (CalendarConfig requires the exact "1").
-        Setting::setValue('calendar_enabled', $request->has('calendar_enabled') ? '1' : '0');
+        // Fail-closed master switch. Use boolean() (filter_var semantics), NOT has(): has() is true
+        // for a SUBMITTED value of "0"/"false", so a client/automation/hidden-field posting
+        // calendar_enabled=0 would otherwise ENABLE the tenant-wide surface (psa-abl0i.4 spine
+        // re-review). Persist '1' ONLY for a genuinely truthy value; everything else (false value,
+        // or the browser-omitted unchecked box) persists an explicit '0'.
+        Setting::setValue('calendar_enabled', $request->boolean('calendar_enabled') ? '1' : '0');
 
         // Store the normalized allowlist as a JSON array. An empty textarea stores [] — which,
         // through CalendarConfig::ownerUpnAllowed(), denies every mailbox: the fail-closed spine.

@@ -113,6 +113,45 @@ class CalendarConfigTest extends TestCase
         $this->assertFalse(CalendarConfig::ownerUpnAllowed('charlie@soundit.co'));
     }
 
+    public function test_a_json_object_allowlist_is_rejected_fail_closed(): void
+    {
+        // psa-abl0i.5 SPINE re-review: a stored JSON OBJECT decodes to an associative PHP array;
+        // array_values() would silently admit its VALUES as if they were a list. The sole mailbox
+        // boundary must not be widened by a non-list shape — an object denies everyone.
+        Setting::setValue('calendar_allowed_owner_upns', json_encode(['mailbox' => 'billing@soundit.co']));
+
+        $this->assertSame([], CalendarConfig::allowedOwnerUpns());
+        $this->assertFalse(CalendarConfig::ownerUpnAllowed('billing@soundit.co'));
+    }
+
+    public function test_a_non_string_member_denies_the_whole_allowlist(): void
+    {
+        // One malformed member denies the WHOLE value — a partial list from corrupt/legacy storage
+        // is not a trustworthy allowlist, and must never admit its well-formed siblings.
+        Setting::setValue('calendar_allowed_owner_upns', json_encode(['charlie@soundit.co', 123]));
+
+        $this->assertSame([], CalendarConfig::allowedOwnerUpns());
+        $this->assertFalse(CalendarConfig::ownerUpnAllowed('charlie@soundit.co'));
+    }
+
+    public function test_a_nested_or_blank_member_denies_the_whole_allowlist(): void
+    {
+        Setting::setValue('calendar_allowed_owner_upns', json_encode(['charlie@soundit.co', ['nested@soundit.co']]));
+        $this->assertSame([], CalendarConfig::allowedOwnerUpns());
+
+        Setting::setValue('calendar_allowed_owner_upns', json_encode(['charlie@soundit.co', '   ']));
+        $this->assertSame([], CalendarConfig::allowedOwnerUpns());
+        $this->assertFalse(CalendarConfig::ownerUpnAllowed('charlie@soundit.co'));
+    }
+
+    public function test_a_well_formed_json_list_is_still_accepted(): void
+    {
+        Setting::setValue('calendar_allowed_owner_upns', json_encode(['charlie@soundit.co', 'justin@soundit.co']));
+
+        $this->assertSame(['charlie@soundit.co', 'justin@soundit.co'], CalendarConfig::allowedOwnerUpns());
+        $this->assertTrue(CalendarConfig::ownerUpnAllowed('justin@soundit.co'));
+    }
+
     /**
      * isAvailable() is the OFF=OFF publication predicate the MCP tool surface gates on:
      * the toolset is live ONLY when it is both switched on AND the underlying Microsoft

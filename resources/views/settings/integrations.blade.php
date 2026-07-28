@@ -4088,7 +4088,7 @@
                         The calendar tools ride the same Entra app registration as email/SSO
                         (<code>MICROSOFT_TENANT_ID</code> / <code>MICROSOFT_CLIENT_ID</code> /
                         <code>MICROSOFT_CLIENT_SECRET</code> in <code>.env</code>). Set those and grant the
-                        <strong>Calendars.ReadWrite</strong> Application permission before the tools can run.
+                        <strong>Calendars.Read</strong> Application permission before the tools can run.
                         The switch below records your choice; it takes effect once Graph is configured.
                     </div>
                 @endunless

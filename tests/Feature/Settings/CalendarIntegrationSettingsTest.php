@@ -112,4 +112,30 @@ class CalendarIntegrationSettingsTest extends TestCase
         $this->assertSame('0', Setting::getValue('calendar_enabled'));
         $this->assertFalse(CalendarConfig::isEnabled());
     }
+
+    public function test_a_submitted_false_toggle_value_does_not_enable(): void
+    {
+        // psa-abl0i.4 SPINE re-review: has('calendar_enabled') is TRUE for a submitted '0', so a
+        // client/automation/hidden-field posting calendar_enabled=0 (with a non-empty allowlist)
+        // must NOT silently enable the tenant-wide surface. boolean() reads '0' as false.
+        Setting::setValue('calendar_enabled', '1');
+
+        $this->actingAs($this->user)
+            ->post(route('settings.integrations.calendar.update'), [
+                'calendar_enabled' => '0',
+                'calendar_allowed_owner_upns' => 'scheduler@yourmsp.com',
+            ])
+            ->assertRedirect(route('settings.integrations'));
+
+        $this->assertSame('0', Setting::getValue('calendar_enabled'));
+        $this->assertFalse(CalendarConfig::isEnabled());
+
+        // And an explicitly truthy value still enables (the toggle isn't broken the other way).
+        $this->actingAs($this->user)
+            ->post(route('settings.integrations.calendar.update'), [
+                'calendar_enabled' => '1',
+                'calendar_allowed_owner_upns' => 'scheduler@yourmsp.com',
+            ]);
+        $this->assertSame('1', Setting::getValue('calendar_enabled'));
+    }
 }
