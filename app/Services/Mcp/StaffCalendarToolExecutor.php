@@ -25,6 +25,73 @@ class StaffCalendarToolExecutor
 {
     public function __construct(private readonly GraphClient $graph) {}
 
+    /**
+     * The published READ-tool schemas (Slice A). This executor is the single source of both
+     * the advertised schema and dispatch — McpToolRegistry::calendarTools() delegates here, so
+     * the grant catalog, tools/list, and the match() in execute() cannot drift apart (the
+     * StaffPsaTaxonomyToolExecutor / tactical-executor pattern). Slice B appends the staged
+     * write twins.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public static function definitions(): array
+    {
+        return [
+            [
+                'name' => 'calendar_list_events',
+                'description' => 'List calendar events in a time window for one mailbox (Microsoft Graph calendarView). user_upn is the mailbox whose calendar to read and MUST be on the server-side calendar owner allowlist — a non-allowlisted mailbox is refused before any Graph call. Returns each event\'s subject, start/end, location, organizer, attendees, and Teams join URL. Read-only. Requires an explicit token grant.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'user_upn' => [
+                            'type' => 'string',
+                            'description' => 'The mailbox (UPN) whose calendar to read. Must be an allowlisted calendar owner; external/client mailboxes are never valid here.',
+                        ],
+                        'start' => [
+                            'type' => 'string',
+                            'description' => 'Window start, ISO-8601 (UTC). Events overlapping the window are returned.',
+                        ],
+                        'end' => [
+                            'type' => 'string',
+                            'description' => 'Window end, ISO-8601 (UTC).',
+                        ],
+                    ],
+                    'required' => ['user_upn', 'start', 'end'],
+                ],
+            ],
+            [
+                'name' => 'calendar_get_event',
+                'description' => 'Get one calendar event\'s full detail (Microsoft Graph event resource) from a mailbox. user_upn is the mailbox that owns the event and MUST be on the server-side calendar owner allowlist — a non-allowlisted mailbox is refused before any Graph call. Read-only. Requires an explicit token grant.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'user_upn' => [
+                            'type' => 'string',
+                            'description' => 'The mailbox (UPN) that owns the event. Must be an allowlisted calendar owner.',
+                        ],
+                        'event_id' => [
+                            'type' => 'string',
+                            'description' => 'The Graph event id to read.',
+                        ],
+                    ],
+                    'required' => ['user_upn', 'event_id'],
+                ],
+            ],
+        ];
+    }
+
+    /** @return array<int, string> */
+    public static function toolNames(): array
+    {
+        return array_column(self::definitions(), 'name');
+    }
+
+    /** Whether this executor owns the named tool (the controller's dispatch/grant gate). */
+    public static function handles(string $name): bool
+    {
+        return in_array($name, self::toolNames(), true);
+    }
+
     /** @return array<string, mixed> */
     public function execute(string $name, array $arguments, int $clientId, string $actorLabel): array
     {

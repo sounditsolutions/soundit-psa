@@ -16,7 +16,7 @@ class McpToolRegistryTest extends TestCase
     {
         $groups = McpToolRegistry::groups();
 
-        $this->assertSame(['general', 'client', 'integration', 'cipp_write', 'tactical_action', 'tactical_admin', 'wiki_write', 'psa_action', 'psa_records', 'psa_read', 'intake_manage', 'taxonomy', 'bridge'], array_keys($groups));
+        $this->assertSame(['general', 'client', 'integration', 'cipp_write', 'tactical_action', 'tactical_admin', 'wiki_write', 'psa_action', 'psa_records', 'psa_read', 'intake_manage', 'taxonomy', 'calendar', 'bridge'], array_keys($groups));
 
         $names = fn (string $group): array => array_column($groups[$group]['tools'], 'name');
 
@@ -68,6 +68,7 @@ class McpToolRegistryTest extends TestCase
         $this->assertTrue($groups['psa_read']['sensitive']);
         $this->assertTrue($groups['intake_manage']['sensitive']);
         $this->assertTrue($groups['taxonomy']['sensitive']);
+        $this->assertTrue($groups['calendar']['sensitive']);
         $this->assertTrue($groups['bridge']['sensitive']);
         $this->assertTrue($groups['cipp_write']['sensitive']);
         $this->assertFalse($groups['general']['sensitive']);

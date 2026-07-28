@@ -19,6 +19,7 @@ use App\Services\Chet\OperatorBridgeTextSanitizer;
 use App\Services\Chet\OperatorBridgeToolExecutor;
 use App\Services\Chet\OperatorBridgeTools;
 use App\Services\Cipp\CippMcpDynamicToolExecutor;
+use App\Services\Mcp\StaffCalendarToolExecutor;
 use App\Services\Mcp\StaffCippWriteToolExecutor;
 use App\Services\Mcp\StaffPsaActionToolExecutor;
 use App\Services\Mcp\StaffPsaTaxonomyToolExecutor;
@@ -954,6 +955,16 @@ class McpStaffController extends Controller
                     $arguments,
                     $this->actorLabel($request),
                 );
+            } elseif ($this->isCalendarTool((string) $name)) {
+                // psa-abl0i: UPN-scoped, never client-scoped ($clientId stays null → 0,
+                // ignored by the executor). The executor's guardOwnerUpn() enforces the
+                // server-side owner allowlist BEFORE any Graph call.
+                $result = app(StaffCalendarToolExecutor::class)->execute(
+                    (string) $name,
+                    $arguments,
+                    (int) $clientId,
+                    $this->actorLabel($request),
+                );
             } elseif ((string) $name === 'send_reply') {
                 $result = $this->sendReply($arguments, $request);
             } elseif ((string) $name === 'request_tool') {
@@ -1222,6 +1233,10 @@ class McpStaffController extends Controller
             return $this->auditTaxonomyArguments($args);
         }
 
+        if ($this->isCalendarTool((string) $tool)) {
+            return $this->auditCalendarArguments($args);
+        }
+
         $redacted = app(ActionRedactor::class)->redactParams($args);
 
         if ($tool === 'post_to_operator' && isset($redacted['message']) && is_string($redacted['message'])) {
@@ -1424,6 +1439,29 @@ class McpStaffController extends Controller
 
             if (in_array($normalized, ['resolution_summary', 'reason'], true)) {
                 $safe[$normalized.'_length'] = is_string($value) ? mb_strlen($value) : 0;
+            }
+        }
+
+        return $safe;
+    }
+
+    /**
+     * Calendar read audit shape (psa-abl0i, Slice A): safelist the scalar decision fields —
+     * user_upn (the allowlisted owner mailbox), event_id, and the start/end window. A safelist
+     * (not a passthrough) so a field added by a later slice never lands in the audit body
+     * unreviewed.
+     *
+     * @return array<string, mixed>
+     */
+    private function auditCalendarArguments(array $arguments): array
+    {
+        $safe = [];
+
+        foreach ($arguments as $key => $value) {
+            $normalized = mb_strtolower((string) $key);
+
+            if (in_array($normalized, ['user_upn', 'event_id', 'start', 'end'], true)) {
+                $safe[$normalized] = $value;
             }
         }
 
@@ -2099,6 +2137,15 @@ class McpStaffController extends Controller
             return $token->allowedTools !== null && $token->allows($toolName);
         }
 
+        // Calendar/scheduling (psa-abl0i): EXPLICIT-GRANT-ONLY. The legacy full-surface token
+        // must never inherit tenant-wide staff-mailbox reads — the server-side UPN allowlist is
+        // the only remaining constraint on which mailboxes the tenant-wide Graph token touches,
+        // and a token that grants everything by construction would bypass the operator's
+        // per-tool decision. Mirrors the Chet data-surface and psa_read gates.
+        if ($this->isCalendarTool($toolName)) {
+            return $token->allowedTools !== null && $token->allows($toolName);
+        }
+
         if ($this->isCippWriteTool($toolName)) {
             return $token->allowedTools !== null && $token->allows($toolName);
         }
@@ -2238,6 +2285,12 @@ class McpStaffController extends Controller
     private function isTaxonomyTool(string $toolName): bool
     {
         return StaffPsaTaxonomyToolExecutor::handles($toolName);
+    }
+
+    /** psa-abl0i calendar/scheduling reads (Slice A). UPN-scoped — never client/ticket-scoped. */
+    private function isCalendarTool(string $toolName): bool
+    {
+        return StaffCalendarToolExecutor::handles($toolName);
     }
 
     /** psa_records tools that carry an explicit client_id argument: client-entity targets + the create_contact / create_asset parent scope. */

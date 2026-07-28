@@ -89,6 +89,10 @@ class McpToolSurface
             // on, so publication is unconditional and the executor's only refusal
             // (the kill switch, writes only) is runtime state, not liveness.
             McpToolRegistry::taxonomyTools(),
+            // Calendar/scheduling (psa-abl0i) — UPN-scoped, so it lives on the general
+            // (no-client) surface. OFF=OFF: gated on CalendarConfig::isAvailable() (switched
+            // on AND Graph configured), the same predicate list_tool_surface classifies against.
+            CalendarConfig::isAvailable() ? McpToolRegistry::calendarTools() : [],
             TacticalConfig::isConfigured() ? McpToolRegistry::tacticalAdminTools() : [],
             ChetDataSurfaceTools::generalTools(),
             OperatorBridgeTools::definitions(),

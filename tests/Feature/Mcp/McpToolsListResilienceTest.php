@@ -78,7 +78,14 @@ class McpToolsListResilienceTest extends TestCase
         // Comet costs +4 more, still flat), and ServosityConfig::isAvailable() always
         // pays the switch read plus the encrypted-token read because servosity_enabled
         // defaults ON (+4). 78 + 2 (Comet) + 4 (Servosity) = 84, catalog-size-independent.
-        $this->assertLessThanOrEqual(84, count($queries), $sql);
+        //
+        // Raised 84 -> 86 for the calendar read surface (psa-abl0i):
+        // CalendarConfig::isAvailable() is consulted in liveGeneralToolDefinitions(),
+        // which tools/list assembles twice (the published list + the liveness lookup).
+        // calendar_enabled defaults OFF, so isAvailable() short-circuits after the single
+        // switch read (the Graph-configured conjunct is a config read, no query) — +1 x 2
+        // assemblies = +2 flat, independent of catalog size.
+        $this->assertLessThanOrEqual(86, count($queries), $sql);
     }
 
     public function test_tools_list_repairs_dynamic_cipp_schema_before_publishing(): void

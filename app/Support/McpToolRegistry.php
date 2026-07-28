@@ -7,6 +7,7 @@ use App\Services\Agent\RequestToolTool;
 use App\Services\Assistant\AssistantToolDefinitions;
 use App\Services\Chet\ChetDataSurfaceTools;
 use App\Services\Chet\OperatorBridgeTools;
+use App\Services\Mcp\StaffCalendarToolExecutor;
 use App\Services\Mcp\StaffCippWriteToolExecutor;
 use App\Services\Mcp\StaffPsaTaxonomyToolExecutor;
 use App\Services\Mcp\StaffTacticalActionToolExecutor;
@@ -66,6 +67,7 @@ class McpToolRegistry
             $psaRead = self::shape(self::psaReadTools());
             $intakeManage = self::shape(self::intakeManageTools());
             $taxonomy = self::shape(self::taxonomyTools());
+            $calendar = self::shape(self::calendarTools());
 
             return [
                 'general' => ['label' => 'General (no client context)', 'sensitive' => false, 'tools' => $general],
@@ -80,6 +82,7 @@ class McpToolRegistry
                 'psa_read' => ['label' => 'PSA reads (sensitive)', 'sensitive' => true, 'tools' => $psaRead],
                 'intake_manage' => ['label' => 'Intake email/call manage (sensitive)', 'sensitive' => true, 'tools' => $intakeManage],
                 'taxonomy' => ['label' => 'Ticket taxonomy & SOPs (sensitive)', 'sensitive' => true, 'tools' => $taxonomy],
+                'calendar' => ['label' => 'Calendar & scheduling (sensitive)', 'sensitive' => true, 'tools' => $calendar],
                 'bridge' => ['label' => 'Operator bridge (sensitive)', 'sensitive' => true, 'tools' => $bridge],
             ];
         });
@@ -127,6 +130,7 @@ class McpToolRegistry
                 'psa_read' => ['psa', 'read', 'Reads', 3],
                 'intake_manage' => ['psa', 'write', 'Write & act', 2],
                 'taxonomy' => ['psa', 'taxonomy', 'Taxonomy & SOPs', 4],
+                'calendar' => ['calendar', 'read', 'Reads', 1],
                 'cipp_write' => ['cipp', 'write', 'Write & remediate', 2],
                 'tactical_action' => ['tactical', 'actions', 'Endpoint actions', 2],
                 'tactical_admin' => ['tactical', 'admin', 'Admin & provisioning', 3],
@@ -222,6 +226,7 @@ class McpToolRegistry
             'unifi' => ['label' => 'UniFi', 'blurb' => 'Network, WAN/ISP & device telemetry (read-only)', 'icon' => 'bi-router', 'accent' => '#0559c9'],
             'screenconnect' => ['label' => 'ScreenConnect', 'blurb' => 'Remote-access session & online state (read-only)', 'icon' => 'bi-display', 'accent' => '#ea580c'],
             'teams' => ['label' => 'Teams & Operator', 'blurb' => 'Teams chat reads & the operator bridge', 'icon' => 'bi-chat-dots', 'accent' => '#4b53bc'],
+            'calendar' => ['label' => 'Calendar & Scheduling', 'blurb' => 'Staff calendar reads & scheduling (Microsoft Graph)', 'icon' => 'bi-calendar-event', 'accent' => '#6d28d9'],
             'other' => ['label' => 'Other integrations', 'blurb' => 'Level · Mailprotector · Comet · Servosity · Control D · Zorus · DNS', 'icon' => 'bi-plugin', 'accent' => '#7c3aed'],
             'wiki' => ['label' => 'Wiki & runbooks', 'blurb' => 'Client wiki & internal SOP / runbook store', 'icon' => 'bi-journal-text', 'accent' => '#b45309'],
         ];
@@ -242,6 +247,7 @@ class McpToolRegistry
             str_starts_with($name, 'unifi_') => 'unifi',
             str_starts_with($name, 'screenconnect_') => 'screenconnect',
             str_starts_with($name, 'wiki_') => 'wiki',
+            str_starts_with($name, 'calendar_') => 'calendar',
             str_starts_with($name, 'mesh_'),
             str_starts_with($name, 'comet_'),
             str_starts_with($name, 'servosity_'),
@@ -347,6 +353,20 @@ class McpToolRegistry
     public static function taxonomyTools(): array
     {
         return StaffPsaTaxonomyToolExecutor::definitions();
+    }
+
+    /**
+     * psa-abl0i calendar/scheduling surface (staff). Definitions live on the executor so the
+     * published list, the grant catalog, and dispatch all derive from one source. Slice A ships
+     * the READ tools; the grant catalog is UNGATED here (a tool may be pre-granted before the
+     * integration is switched on) — the OFF=OFF live gate is CalendarConfig::isAvailable(),
+     * applied at the McpToolSurface publication site, not in this catalog helper.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public static function calendarTools(): array
+    {
+        return StaffCalendarToolExecutor::definitions();
     }
 
     public static function flushMemoized(): void

@@ -28,6 +28,35 @@ class CalendarConfig
     }
 
     /**
+     * The OFF=OFF publication predicate the MCP tool surface gates on: the toolset is live
+     * ONLY when switched on AND the underlying Microsoft Graph transport is configured. A
+     * withdrawn switch OR missing Graph app credentials both mean the tools must not publish
+     * (they classify as unavailable_config, never granted) — mirrors every other vendor's
+     * isAvailable(). The grant CATALOG stays ungated (a tool may be pre-granted before the
+     * integration is switched on); only the LIVE surface consults this.
+     */
+    public static function isAvailable(): bool
+    {
+        return self::isEnabled() && self::graphConfigured();
+    }
+
+    /**
+     * Whether the shared Microsoft Graph client has the app credentials it needs to reach a
+     * calendar at all. Reads the same config GraphClient is constructed from
+     * (config('services.graph')) — there is no calendar-specific credential; calendar reads
+     * ride the existing tenant-wide Application-permission token.
+     */
+    private static function graphConfigured(): bool
+    {
+        $graph = config('services.graph');
+
+        return is_array($graph)
+            && ! empty($graph['tenant_id'])
+            && ! empty($graph['client_id'])
+            && ! empty($graph['client_secret']);
+    }
+
+    /**
      * The configured owner/organizer allowlist. A missing or malformed (non-array / bad JSON)
      * setting yields [] — which, through ownerUpnAllowed(), denies everyone. Never throws.
      *

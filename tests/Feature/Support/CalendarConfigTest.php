@@ -98,4 +98,51 @@ class CalendarConfigTest extends TestCase
         $this->assertSame([], CalendarConfig::allowedOwnerUpns());
         $this->assertFalse(CalendarConfig::ownerUpnAllowed('charlie@soundit.co'));
     }
+
+    /**
+     * isAvailable() is the OFF=OFF publication predicate the MCP tool surface gates on:
+     * the toolset is live ONLY when it is both switched on AND the underlying Microsoft
+     * Graph transport is configured. A missing Graph app credential means the executor
+     * could never actually reach a calendar, so the tools must not publish (mirrors every
+     * other vendor's isAvailable()).
+     */
+    private function configureGraph(bool $configured = true): void
+    {
+        config(['services.graph' => $configured ? [
+            'tenant_id' => 'tenant-uuid',
+            'client_id' => 'client-uuid',
+            'client_secret' => 'shhh',
+        ] : [
+            'tenant_id' => null,
+            'client_id' => null,
+            'client_secret' => null,
+        ]]);
+    }
+
+    public function test_is_available_requires_enabled_and_graph_configured(): void
+    {
+        Setting::setValue('calendar_enabled', '1');
+        $this->configureGraph(true);
+
+        $this->assertTrue(CalendarConfig::isAvailable());
+    }
+
+    public function test_is_available_is_false_when_graph_is_not_configured(): void
+    {
+        Setting::setValue('calendar_enabled', '1');
+        $this->configureGraph(false);
+
+        // Switched on but no Graph credentials — the executor could never reach Graph,
+        // so the toolset is NOT live (unavailable_config, not granted).
+        $this->assertFalse(CalendarConfig::isAvailable());
+    }
+
+    public function test_is_available_is_false_when_disabled_even_with_graph_configured(): void
+    {
+        Setting::setValue('calendar_enabled', '0');
+        $this->configureGraph(true);
+
+        // The master switch wins: OFF means the tools do not publish regardless of config.
+        $this->assertFalse(CalendarConfig::isAvailable());
+    }
 }
