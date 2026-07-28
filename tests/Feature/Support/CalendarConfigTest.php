@@ -144,6 +144,54 @@ class CalendarConfigTest extends TestCase
         $this->assertFalse(CalendarConfig::ownerUpnAllowed('charlie@soundit.co'));
     }
 
+    public function test_a_numeric_key_json_object_is_rejected_fail_closed(): void
+    {
+        // psa-abl0i.7 SPINE re-review: the assoc-mode decode + array_is_list() check STILL admits a
+        // numeric-key JSON OBJECT. json_decode('{"0":"billing@.."}', true) => [0 => "billing@.."],
+        // which array_is_list() calls a list — so the SOLE mailbox boundary was silently widened by a
+        // shape that is not a JSON array at all. Identity-preserving object-mode decode keeps a JSON
+        // object a stdClass (is_array() === false), so it is denied. Stored as a literal to be
+        // unambiguous: a numeric string key on a PHP array would be re-cast to int and json_encode to
+        // an array, hiding the very case under test.
+        Setting::setValue('calendar_allowed_owner_upns', '{"0":"billing@soundit.co"}');
+
+        $this->assertSame([], CalendarConfig::allowedOwnerUpns());
+        $this->assertFalse(CalendarConfig::ownerUpnAllowed('billing@soundit.co'));
+    }
+
+    public function test_an_empty_json_object_is_denied_as_a_non_list(): void
+    {
+        // {} is not an empty allowlist — it is a non-list shape and must be denied as such, distinct
+        // from a genuine empty JSON list [] (a legitimate, fail-closed empty allowlist). Both yield []
+        // by outcome, but only the object path is a *rejection*; this pins the distinction.
+        Setting::setValue('calendar_allowed_owner_upns', '{}');
+        $this->assertSame([], CalendarConfig::allowedOwnerUpns());
+
+        Setting::setValue('calendar_allowed_owner_upns', '[]');
+        $this->assertSame([], CalendarConfig::allowedOwnerUpns());
+    }
+
+    public function test_an_invalid_upn_member_denies_the_whole_allowlist(): void
+    {
+        // psa-abl0i.7 SPINE re-review: the read seam accepted EVERY non-blank string, including a
+        // non-UPN like "not-a-valid-upn". R1 required valid/normalized UPN members — the Settings
+        // email rule cannot be the only proof (corrupt/legacy/hand-edited storage bypasses the writer).
+        // One invalid member denies the WHOLE stored value.
+        Setting::setValue('calendar_allowed_owner_upns', json_encode(['charlie@soundit.co', 'not-a-valid-upn']));
+
+        $this->assertSame([], CalendarConfig::allowedOwnerUpns());
+        $this->assertFalse(CalendarConfig::ownerUpnAllowed('charlie@soundit.co'));
+    }
+
+    public function test_a_padded_valid_member_is_normalized_on_return(): void
+    {
+        // A valid UPN with surrounding whitespace is normalized (trimmed) on the way out, so the
+        // returned list is the clean, canonical allowlist R1 asked for.
+        Setting::setValue('calendar_allowed_owner_upns', json_encode(['  charlie@soundit.co  ']));
+
+        $this->assertSame(['charlie@soundit.co'], CalendarConfig::allowedOwnerUpns());
+    }
+
     public function test_a_well_formed_json_list_is_still_accepted(): void
     {
         Setting::setValue('calendar_allowed_owner_upns', json_encode(['charlie@soundit.co', 'justin@soundit.co']));

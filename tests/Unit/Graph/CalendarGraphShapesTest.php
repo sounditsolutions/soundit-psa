@@ -313,6 +313,23 @@ class CalendarGraphShapesTest extends TestCase
         }
     }
 
+    public function test_a_present_null_next_link_screams_not_end_of_list(): void
+    {
+        // psa-abl0i.7 re-review: `$page->{'@odata.nextLink'} ?? null` conflated an ABSENT property
+        // (the documented end of the list) with a PRESENT "@odata.nextLink": null (drift). Both
+        // collapsed to null and silently ended pagination — so a truncated calendar could read as
+        // complete. property_exists() distinguishes absence from a present-null, and a present-null
+        // must SCREAM (CLAUDE.md "a degraded read must SCREAM"). A present-null survives the wire()
+        // json round-trip as a property that exists but is null.
+        $page = $this->wire((object) ['value' => [], '@odata.nextLink' => null]);
+        try {
+            CalendarGraphShapes::provenNextLink($page);
+            $this->fail('Expected drift for a present-null @odata.nextLink');
+        } catch (GraphShapeDriftException) {
+            $this->addToAssertionCount(1);
+        }
+    }
+
     public function test_malformed_or_foreign_next_link_screams(): void
     {
         $bad = [

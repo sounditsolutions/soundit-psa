@@ -206,11 +206,16 @@ final class CalendarGraphShapes
 
     /**
      * Prove a present @odata.nextLink on a (validated) calendarView page before it can decide list
-     * completeness or steer a request. Returns null when absent (the documented end of the list),
-     * the URL when it is a well-formed HTTPS graph.microsoft.com calendarView continuation, and
-     * THROWS otherwise — an empty string / false / 0 / non-string cursor must not read as "end of
-     * list", and a cursor must not be followed with the tenant app bearer token unless it both
-     * targets Graph over HTTPS AND continues THIS collection.
+     * completeness or steer a request. Returns null ONLY when the property is ABSENT (the documented
+     * end of the list), the URL when it is a well-formed HTTPS graph.microsoft.com calendarView
+     * continuation, and THROWS otherwise — a PRESENT "@odata.nextLink": null / empty string / false /
+     * 0 / non-string cursor must not read as "end of list", and a cursor must not be followed with the
+     * tenant app bearer token unless it both targets Graph over HTTPS AND continues THIS collection.
+     *
+     * ABSENT vs PRESENT-NULL (must-fix psa-abl0i.7 #2): `?? null` / isset() conflate an absent property
+     * (real end) with a present JSON null (drift), so a drifted present-null could silently end
+     * pagination on a truncated calendar. property_exists() distinguishes them: absence ends the list,
+     * a present value must prove out or SCREAM (CLAUDE.md "a degraded read must SCREAM").
      *
      * CONTINUATION-PATH BOUND (must-fix psa-abl0i.4 #4): the path must end in /calendarView. Graph's
      * OData paging keeps the resource path stable and carries the cursor in the query ($skip/
@@ -225,12 +230,13 @@ final class CalendarGraphShapes
      */
     public static function provenNextLink(mixed $page): ?string
     {
-        $next = $page instanceof stdClass ? ($page->{'@odata.nextLink'} ?? null) : null;
-        if ($next === null) {
-            return null;
+        if (! $page instanceof stdClass || ! property_exists($page, '@odata.nextLink')) {
+            return null; // absent property = the documented end of the list
         }
+
+        $next = $page->{'@odata.nextLink'};
         if (! is_string($next) || $next === '') {
-            throw new GraphShapeDriftException('Microsoft Graph calendarView returned a non-string / empty @odata.nextLink — a malformed cursor must not be treated as the end of the list.');
+            throw new GraphShapeDriftException('Microsoft Graph calendarView returned a present @odata.nextLink that is null / non-string / empty — a malformed cursor must not be treated as the end of the list.');
         }
 
         $parts = parse_url($next);

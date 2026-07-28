@@ -66,18 +66,23 @@ class CalendarConfig
 
     /**
      * The configured owner/organizer allowlist — the read side of the SOLE mailbox boundary, so it
-     * fails CLOSED on ANY malformed storage (psa-abl0i.5 spine re-review). It requires a genuine
-     * JSON LIST of non-empty strings and denies the WHOLE value if the shape is wrong or any member
-     * is malformed:
-     *  - a JSON OBJECT ({"k":"v"}) decodes to an associative array whose array_values() would
-     *    silently admit its values as if they were a list — a non-list shape must never widen the
-     *    boundary, so it yields [];
-     *  - a non-string / blank / nested member denies the entire list — a partial list recovered from
-     *    corrupt/legacy/hand-edited storage is not a trustworthy allowlist and must not admit its
-     *    well-formed siblings.
-     * The security invariant lives HERE (the read-side choke point), not only at the Settings write
-     * door — a single writer cannot be the only proof. A missing/blank/bad-JSON setting yields [],
-     * which through ownerUpnAllowed() denies everyone. Never throws.
+     * fails CLOSED on ANY malformed storage (psa-abl0i.5/.7 spine re-review). It requires a genuine
+     * JSON LIST of VALID UPN/email strings and denies the WHOLE value if the shape is wrong or any
+     * member is malformed:
+     *  - IDENTITY-PRESERVING OBJECT-MODE decode (json_decode without assoc), matching CalendarGraphShapes:
+     *    a JSON list stays a PHP array, a JSON OBJECT stays a stdClass. Assoc-mode decode collapses
+     *    object-vs-list, so a numeric-key object such as {"0":"billing@x"} decodes to [0=>"billing@x"]
+     *    — which array_is_list() wrongly calls a list, silently widening the boundary. Object mode
+     *    keeps it a stdClass, which is_array() rejects. An empty object {} is likewise denied as a
+     *    non-list (distinct from a genuine empty list []).
+     *  - every member must be a VALID UPN/email, not merely non-blank: the read seam is the invariant,
+     *    so a non-UPN string admitted from corrupt/legacy/hand-edited storage (bypassing the Settings
+     *    email rule) must be refused. One invalid/non-string/blank member denies the entire list — a
+     *    partial list is not a trustworthy allowlist and must not admit its well-formed siblings.
+     * Members are normalized (trimmed) on return. The security invariant lives HERE (the read-side
+     * choke point), not only at the Settings write door — a single writer cannot be the only proof. A
+     * missing/blank/bad-JSON setting yields [], which through ownerUpnAllowed() denies everyone. Never
+     * throws.
      *
      * @return list<string>
      */
@@ -88,17 +93,21 @@ class CalendarConfig
             return [];
         }
 
-        $decoded = json_decode($raw, true);
+        $decoded = json_decode($raw);
         if (! is_array($decoded) || ! array_is_list($decoded)) {
             return [];
         }
 
         $upns = [];
         foreach ($decoded as $entry) {
-            if (! is_string($entry) || trim($entry) === '') {
+            if (! is_string($entry)) {
                 return []; // one malformed member denies the whole allowlist (fail-closed)
             }
-            $upns[] = $entry;
+            $normalized = trim($entry);
+            if ($normalized === '' || filter_var($normalized, FILTER_VALIDATE_EMAIL) === false) {
+                return []; // a blank or non-UPN member denies the whole allowlist (fail-closed)
+            }
+            $upns[] = $normalized;
         }
 
         return $upns;
