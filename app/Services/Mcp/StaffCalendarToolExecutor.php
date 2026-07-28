@@ -17,11 +17,13 @@ use App\Support\CalendarConfig;
  * allowlist gates the OWNER mailbox (user_upn) only — event attendees may be external and are
  * never checked here.
  *
- * NOTE (fixtures): the projection field names were verified field-by-field against a CAPTURED
- * live Graph payload (calendarView / event / getSchedule / mailboxSettings on the real app token,
- * psa-abl0i) — not merely the documented shape. The one field not present in the sample is
- * onlineMeeting.joinUrl (no sampled event was a Teams meeting); it stays the documented,
- * null-safe shape. Test fixtures are sanitised copies of that real shape (values replaced).
+ * NOTE (field-shape provenance): the projection field names are taken from the documented MS
+ * Graph v1.0 producer — event resource (/graph/api/resources/event), calendarView, getSchedule
+ * (/graph/api/calendar-getschedule) — cited again at each project* method. During development the
+ * names were also confirmed against a live app-token capture, but that capture is developer-local
+ * (.gc is gitignored) and is NOT committed, so the test fixtures are contract-derived doubles built
+ * to the documented shape, not the captured payload itself. onlineMeeting.joinUrl follows the
+ * documented event resource (null-safe when the event is not a Teams meeting).
  */
 class StaffCalendarToolExecutor
 {
@@ -81,7 +83,7 @@ class StaffCalendarToolExecutor
             ],
             [
                 'name' => 'calendar_get_schedule',
-                'description' => 'Get the free/busy availability grid for one or more mailboxes over a window (Microsoft Graph getSchedule) — use this to find open meeting slots. EVERY mailbox involved MUST be on the server-side calendar owner allowlist: user_upn (the calendar queried through) AND every entry in schedules. A schedules entry is a mailbox whose availability you READ, so a non-allowlisted entry REJECTS THE WHOLE CALL (no partial grid is returned) — request only allowlisted mailboxes. Returns each mailbox\'s availability_view (per-interval free/busy codes), busy_blocks (start/end/status only — never meeting subjects or locations), and working_hours. Read-only. Requires an explicit token grant.',
+                'description' => 'Get the free/busy availability grid for one or more mailboxes over a window (Microsoft Graph getSchedule) — use this to find open meeting slots. EVERY mailbox involved MUST be on the server-side calendar owner allowlist: user_upn (the calendar queried through) AND every entry in schedules. A schedules entry is a mailbox whose availability you READ, so a non-allowlisted entry REJECTS THE WHOLE CALL (no partial grid is returned) — request only allowlisted mailboxes. Returns each mailbox\'s availability_view (a per-interval code string where each digit is 0=free or working-elsewhere, 1=tentative, 2=busy, 3=out-of-office), busy_blocks (start/end/status only — never meeting subjects or locations), and working_hours. Read-only. Requires an explicit token grant.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -275,7 +277,9 @@ class StaffCalendarToolExecutor
     {
         return [
             'schedule_id' => $s['scheduleId'] ?? null,
-            // Per-interval free/busy code string (0=free,1=tentative,2=busy,3=oof,4=workingElsewhere).
+            // Per-interval code string. Per MS Graph v1.0 (calendar-getschedule), each digit is:
+            // 0 = free (AND workingElsewhere — represented as 0 for backward compatibility),
+            // 1 = tentative, 2 = busy, 3 = out of office. There is NO digit 4 in availabilityView.
             'availability_view' => $s['availabilityView'] ?? null,
             'working_hours' => $this->projectWorkingHours($s['workingHours'] ?? null),
             'busy_blocks' => array_map([$this, 'projectBusyBlock'], $s['scheduleItems'] ?? []),

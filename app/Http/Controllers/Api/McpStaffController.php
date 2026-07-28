@@ -1446,25 +1446,43 @@ class McpStaffController extends Controller
     }
 
     /**
-     * Calendar read audit shape (psa-abl0i, Slice A): safelist the scalar decision fields —
-     * user_upn (the allowlisted owner mailbox), event_id, and the start/end window. A safelist
-     * (not a passthrough) so a field added by a later slice never lands in the audit body
-     * unreviewed.
+     * Calendar read audit shape (psa-abl0i): safelist the scalar decision fields — user_upn (the
+     * allowlisted owner mailbox), event_id, the start/end window, interval — and the schedules
+     * list. A safelist (not a passthrough) so a field added by a later slice never lands in the
+     * audit body unreviewed.
+     *
+     * The audit records REJECTED calls too, so the values here are UNTRUSTED — the guard may not
+     * have proven them (psa-abl0i.2 audit-debt). Shape-bound before persistence: scalars are
+     * length-capped, and schedules keeps only string entries with a bounded count + length, so a
+     * hostile/oversized argument on a refused call cannot bloat or poison the audit log.
      *
      * @return array<string, mixed>
      */
     private function auditCalendarArguments(array $arguments): array
     {
+        $maxLen = 320;       // a UPN / event id / ISO timestamp is short; cap defensively
+        $maxSchedules = 50;  // bound an untrusted (possibly rejected-call) list
+
         $safe = [];
 
-        foreach ($arguments as $key => $value) {
-            $normalized = mb_strtolower((string) $key);
-
-            // All allowlisted UPNs / window / interval — safe to record. schedules is a list of
-            // allowlisted mailbox UPNs (the guard rejected the call if any were not).
-            if (in_array($normalized, ['user_upn', 'event_id', 'start', 'end', 'schedules', 'interval'], true)) {
-                $safe[$normalized] = $value;
+        foreach (['user_upn', 'event_id', 'start', 'end', 'interval'] as $key) {
+            if (array_key_exists($key, $arguments) && is_scalar($arguments[$key])) {
+                $safe[$key] = is_string($arguments[$key]) ? mb_substr($arguments[$key], 0, $maxLen) : $arguments[$key];
             }
+        }
+
+        if (isset($arguments['schedules']) && is_array($arguments['schedules'])) {
+            $schedules = [];
+            foreach ($arguments['schedules'] as $entry) {
+                if (count($schedules) >= $maxSchedules) {
+                    $schedules[] = '…(truncated)';
+                    break;
+                }
+                if (is_string($entry)) {
+                    $schedules[] = mb_substr($entry, 0, $maxLen);
+                }
+            }
+            $safe['schedules'] = $schedules;
         }
 
         return $safe;

@@ -27,9 +27,13 @@ class StaffCalendarToolExecutorTest extends TestCase
     }
 
     /**
-     * An MS Graph calendarView event (camelCase). Shape verified field-by-field against the
-     * captured LIVE payload (.gc/graph-payload-samples.json, psa-abl0i) and sanitised — real
-     * values replaced, real structure preserved.
+     * A test double of an MS Graph calendarView event (camelCase), CONSTRUCTED from the documented
+     * MS Graph v1.0 event resource — https://learn.microsoft.com/en-us/graph/api/resources/event
+     * (field names + nesting verified there). During development the projection was also checked
+     * against a live app-token capture, but that capture is developer-local (.gc is gitignored) and
+     * NOT committed, so this fixture is contract-derived, not the captured payload itself.
+     * onlineMeeting.joinUrl is included per the documented event resource (a Teams meeting) even
+     * though no sampled dev event happened to be one.
      */
     private function graphEvent(): array
     {
@@ -163,9 +167,10 @@ class StaffCalendarToolExecutorTest extends TestCase
     }
 
     /**
-     * A sanitised copy of the REAL Graph getSchedule scheduleInformation shape (values replaced,
-     * shape preserved — captured live payload at .gc/graph-payload-samples.json). scheduleItems
-     * carry a subject + location on the real wire; the projection MUST NOT surface them.
+     * A test double of a Graph getSchedule scheduleInformation row, CONSTRUCTED from the documented
+     * MS Graph v1.0 shape — https://learn.microsoft.com/en-us/graph/api/calendar-getschedule (not
+     * a committed live capture; see graphEvent()). scheduleItems carry a subject + location on the
+     * real wire; the projection MUST NOT surface them — that privacy boundary is what this exercises.
      */
     private function graphSchedule(string $scheduleId = 'charlie@soundit.co'): array
     {
