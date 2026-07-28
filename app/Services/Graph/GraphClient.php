@@ -155,42 +155,46 @@ class GraphClient
      */
     public function calendarView(string $upn, string $start, string $end, int $maxPages = 50): array
     {
-        return $this->fetchAllPagesStrict('users/'.self::seg($upn).'/calendarView', [
+        return $this->fetchCalendarPages('users/'.self::seg($upn).'/calendarView', [
             'startDateTime' => $start,
             'endDateTime' => $end,
-        ], $maxPages, 'calendarView');
+        ], $maxPages);
     }
 
     /**
-     * Strict paginated GET for calendar collections. Unlike the shared getAllPages(), this NEVER
-     * returns a silently-truncated or malformed-page result (psa-abl0i.2 architecture review, the
-     * CLAUDE.md "degraded read must SCREAM" rule): every page must carry the OData `value` array
-     * (else drift), and if the page cap is reached while @odata.nextLink is still present the
-     * window is TRUNCATED — we throw rather than present a partial window as complete. Kept
-     * separate from getAllPages() so other (lenient) consumers are unchanged.
+     * Strict, identity-preserving paginated GET for calendar collections. Unlike the shared
+     * getAllPages(), this NEVER returns a silently-truncated, malformed, or object-collapsed result
+     * (psa-abl0i.2/.5, the CLAUDE.md "degraded read must SCREAM" rule): each page is OBJECT-mode
+     * decoded and proven (value must be a genuine JSON list — a "{}" object is drift, not an empty
+     * calendar — and every event is proven), the @odata.nextLink is proven a non-empty https
+     * graph.microsoft.com URL before it is followed with the app bearer or read as the end of the
+     * list, and a page-cap hit with a cursor still pending is TRUNCATION (throws). Kept separate
+     * from getAllPages() so other (lenient) consumers are unchanged.
      *
-     * @return array<int, mixed>
+     * @return list<array<string, mixed>>
      */
-    private function fetchAllPagesStrict(string $endpoint, array $params, int $maxPages, string $label): array
+    private function fetchCalendarPages(string $endpoint, array $params, int $maxPages): array
     {
         $results = [];
         $url = null;
 
         for ($page = 0; $page < $maxPages; $page++) {
-            $data = $url !== null ? $this->requestAbsolute('GET', $url) : $this->get($endpoint, $params);
+            $data = $url !== null
+                ? $this->requestJsonAbsolute($url)
+                : $this->requestJson('GET', $endpoint, ['query' => $params]);
 
-            foreach (CalendarGraphShapes::assertPageValue($data, $label) as $item) {
-                $results[] = $item;
+            foreach (CalendarGraphShapes::assertCalendarPage($data) as $event) {
+                $results[] = $event;
             }
 
-            $next = $data['@odata.nextLink'] ?? null;
-            if (empty($next)) {
+            $next = CalendarGraphShapes::provenNextLink($data);
+            if ($next === null) {
                 return $results;
             }
             $url = $next;
         }
 
-        throw new GraphShapeDriftException("Microsoft Graph {$label} exceeded the {$maxPages}-page cap while more results remained — refusing to present a truncated calendar window as complete.");
+        throw new GraphShapeDriftException("Microsoft Graph calendarView exceeded the {$maxPages}-page cap while more results remained — refusing to present a truncated calendar window as complete.");
     }
 
     /**
@@ -218,7 +222,7 @@ class GraphClient
     public function getEvent(string $upn, string $eventId): array
     {
         return CalendarGraphShapes::assertEvent(
-            $this->get('users/'.self::seg($upn).'/events/'.self::seg($eventId))
+            $this->requestJson('GET', 'users/'.self::seg($upn).'/events/'.self::seg($eventId))
         );
     }
 
@@ -239,15 +243,19 @@ class GraphClient
      */
     public function getSchedule(string $upn, array $schedules, string $start, string $end, int $interval = 30): array
     {
-        $response = $this->post('users/'.self::seg($upn).'/calendar/getSchedule', [
-            'schedules' => array_values($schedules),
-            'startTime' => ['dateTime' => $start, 'timeZone' => 'UTC'],
-            'endTime' => ['dateTime' => $end, 'timeZone' => 'UTC'],
-            'availabilityViewInterval' => $interval,
+        // Object-mode decode (requestJson) so a malformed "value": {} cannot collapse to [] and read
+        // as an empty/all-free grid. Fail loud on drift: a swallowed error, a dropped mailbox, or a
+        // row with no availability data reads as "that person is FREE" — prove the envelope, the
+        // availability-bearing fields, and every REQUESTED mailbox 1:1 before returning.
+        $response = $this->requestJson('POST', 'users/'.self::seg($upn).'/calendar/getSchedule', [
+            'json' => [
+                'schedules' => array_values($schedules),
+                'startTime' => ['dateTime' => $start, 'timeZone' => 'UTC'],
+                'endTime' => ['dateTime' => $end, 'timeZone' => 'UTC'],
+                'availabilityViewInterval' => $interval,
+            ],
         ]);
 
-        // Fail loud on drift: a swallowed error or a dropped mailbox in a free/busy grid reads as
-        // "that person is FREE". Prove the envelope + every REQUESTED mailbox 1:1 before returning.
         return CalendarGraphShapes::assertScheduleCollection($response, array_values($schedules));
     }
 
@@ -302,6 +310,71 @@ class GraphClient
         if (json_last_error() !== JSON_ERROR_NONE) {
             throw new GraphClientException(
                 "Invalid JSON response from Graph API: {$method} {$endpoint}",
+                $response->getStatusCode(),
+            );
+        }
+
+        return $decoded;
+    }
+
+    /**
+     * Identity-preserving variant of request() for CALENDAR reads: decodes with json_decode() in
+     * OBJECT mode (a JSON object → stdClass, a JSON list → array), so a `{}` and a `[]` stay
+     * distinguishable and a malformed object envelope cannot collapse to an empty result
+     * (psa-abl0i.5). CalendarGraphShapes proves the returned shape. Only calendar reads use this;
+     * every other consumer keeps request()'s assoc decode unchanged.
+     */
+    private function requestJson(string $method, string $endpoint, array $options = []): mixed
+    {
+        $response = $this->authenticatedRequest($method, $endpoint, $options);
+
+        $body = (string) $response->getBody();
+        if ($body === '') {
+            return null;
+        }
+
+        $decoded = json_decode($body);
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            throw new GraphClientException(
+                "Invalid JSON response from Graph API: {$method} {$endpoint}",
+                $response->getStatusCode(),
+            );
+        }
+
+        return $decoded;
+    }
+
+    /**
+     * Object-mode fetch of an absolute @odata.nextLink URL for the strict calendar paginator. The
+     * caller (CalendarGraphShapes::provenNextLink) has already proven the URL is a non-empty https
+     * graph.microsoft.com URL before this attaches the tenant app bearer to it.
+     */
+    private function requestJsonAbsolute(string $url): mixed
+    {
+        $token = $this->getToken();
+
+        $clientOptions = ['timeout' => $this->config['request_timeout']];
+        if (isset($this->config['handler'])) {
+            $clientOptions['handler'] = $this->config['handler'];
+        }
+
+        try {
+            $response = (new Client($clientOptions))->request('GET', $url, [
+                'headers' => ['Authorization' => 'Bearer '.$token],
+            ]);
+        } catch (GuzzleException $e) {
+            $this->throwFromGuzzle($e, 'GET', $url);
+        }
+
+        $body = (string) $response->getBody();
+        if ($body === '') {
+            return null;
+        }
+
+        $decoded = json_decode($body);
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            throw new GraphClientException(
+                "Invalid JSON response from Graph API: GET {$url}",
                 $response->getStatusCode(),
             );
         }
