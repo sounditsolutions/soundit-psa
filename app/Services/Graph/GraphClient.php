@@ -155,10 +155,42 @@ class GraphClient
      */
     public function calendarView(string $upn, string $start, string $end, int $maxPages = 50): array
     {
-        return $this->getAllPages('users/'.self::seg($upn).'/calendarView', [
+        return $this->fetchAllPagesStrict('users/'.self::seg($upn).'/calendarView', [
             'startDateTime' => $start,
             'endDateTime' => $end,
-        ], $maxPages);
+        ], $maxPages, 'calendarView');
+    }
+
+    /**
+     * Strict paginated GET for calendar collections. Unlike the shared getAllPages(), this NEVER
+     * returns a silently-truncated or malformed-page result (psa-abl0i.2 architecture review, the
+     * CLAUDE.md "degraded read must SCREAM" rule): every page must carry the OData `value` array
+     * (else drift), and if the page cap is reached while @odata.nextLink is still present the
+     * window is TRUNCATED — we throw rather than present a partial window as complete. Kept
+     * separate from getAllPages() so other (lenient) consumers are unchanged.
+     *
+     * @return array<int, mixed>
+     */
+    private function fetchAllPagesStrict(string $endpoint, array $params, int $maxPages, string $label): array
+    {
+        $results = [];
+        $url = null;
+
+        for ($page = 0; $page < $maxPages; $page++) {
+            $data = $url !== null ? $this->requestAbsolute('GET', $url) : $this->get($endpoint, $params);
+
+            foreach (CalendarGraphShapes::assertPageValue($data, $label) as $item) {
+                $results[] = $item;
+            }
+
+            $next = $data['@odata.nextLink'] ?? null;
+            if (empty($next)) {
+                return $results;
+            }
+            $url = $next;
+        }
+
+        throw new GraphShapeDriftException("Microsoft Graph {$label} exceeded the {$maxPages}-page cap while more results remained — refusing to present a truncated calendar window as complete.");
     }
 
     /**
@@ -185,7 +217,9 @@ class GraphClient
      */
     public function getEvent(string $upn, string $eventId): array
     {
-        return $this->get('users/'.self::seg($upn).'/events/'.self::seg($eventId));
+        return CalendarGraphShapes::assertEvent(
+            $this->get('users/'.self::seg($upn).'/events/'.self::seg($eventId))
+        );
     }
 
     /**
@@ -212,7 +246,9 @@ class GraphClient
             'availabilityViewInterval' => $interval,
         ]);
 
-        return is_array($response['value'] ?? null) ? $response['value'] : [];
+        // Fail loud on drift: a swallowed error or a dropped mailbox in a free/busy grid reads as
+        // "that person is FREE". Prove the envelope + every REQUESTED mailbox 1:1 before returning.
+        return CalendarGraphShapes::assertScheduleCollection($response, array_values($schedules));
     }
 
     /**
@@ -337,8 +373,13 @@ class GraphClient
     {
         $token = $this->getToken();
 
+        $clientOptions = ['timeout' => $this->config['request_timeout']];
+        if (isset($this->config['handler'])) {
+            $clientOptions['handler'] = $this->config['handler'];
+        }
+
         try {
-            $response = (new Client(['timeout' => $this->config['request_timeout']]))->request($method, $url, [
+            $response = (new Client($clientOptions))->request($method, $url, [
                 'headers' => ['Authorization' => 'Bearer '.$token],
             ]);
         } catch (GuzzleException $e) {

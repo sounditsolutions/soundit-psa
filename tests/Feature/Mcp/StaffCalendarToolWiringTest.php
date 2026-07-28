@@ -4,6 +4,7 @@ namespace Tests\Feature\Mcp;
 
 use App\Models\Setting;
 use App\Services\Graph\GraphClient;
+use App\Services\Graph\GraphShapeDriftException;
 use App\Support\McpConfig;
 use App\Support\McpToolRegistry;
 use App\Support\McpToolSurface;
@@ -353,6 +354,34 @@ class StaffCalendarToolWiringTest extends TestCase
         // Private meeting content must never cross the wire on an availability read.
         $this->assertStringNotContainsString('PRIVATE SUBJECT', (string) $response->json('result.content.0.text'));
         $this->assertStringNotContainsString('PRIVATE LOCATION', (string) $response->json('result.content.0.text'));
+    }
+
+    public function test_get_schedule_drift_screams_through_the_endpoint_never_a_clean_grid(): void
+    {
+        // A degraded free/busy read (per-mailbox error, dropped/duplicate mailbox, malformed
+        // envelope) must SCREAM end-to-end, never return a clean grid that reads as "everyone is
+        // free" (CLAUDE.md hard rule; psa-abl0i.2). GraphClient throws GraphShapeDriftException on
+        // drift; the endpoint must surface it as isError, not as availability data.
+        $this->enableCalendarLive(['charlie@soundit.co', 'justin@soundit.co']);
+        $this->mock(GraphClient::class, function ($m) {
+            $m->shouldReceive('getSchedule')
+                ->once()
+                ->andThrow(new GraphShapeDriftException('Microsoft Graph getSchedule returned an error for mailbox justin@soundit.co; its availability is unknown, so the whole free/busy read is refused rather than shown as free.'));
+        });
+
+        $response = $this->callTool($this->token(['calendar_get_schedule']), 'calendar_get_schedule', [
+            'user_upn' => 'charlie@soundit.co',
+            'schedules' => ['charlie@soundit.co', 'justin@soundit.co'],
+            'start' => '2026-07-28T00:00:00Z',
+            'end' => '2026-07-28T23:59:00Z',
+        ]);
+
+        $response->assertOk();
+        $this->assertTrue((bool) $response->json('result.isError'));
+        $text = (string) $response->json('result.content.0.text');
+        $this->assertStringContainsString('justin@soundit.co', $text);
+        // The failure must NOT masquerade as availability data.
+        $this->assertStringNotContainsString('availability_view', $text);
     }
 
     public function test_get_schedule_rejects_a_mixed_allowlist_request_through_the_endpoint(): void
