@@ -421,6 +421,13 @@ These commands execute automatically based on their schedule:
 
 > This allows the PSA to fetch profile photos from Entra ID for user avatars. This is the least-privileged permission that covers photos (basic profile properties only). Without it, users can still upload their own photos manually.
 
+**Application permissions** (for calendar / scheduling tools — optional):
+
+1. Add **Application** permission: `Calendars.Read` (covers the calendar read tools). Add `Calendars.ReadWrite` as well only if you intend to use the forthcoming, operator-approved calendar write tools.
+2. Click **Grant admin consent for [Your Organization]**
+
+> This allows the staff MCP calendar/scheduling tools to read free/busy availability and calendar events on behalf of allowlisted mailboxes, using client credentials without a user session. It reuses the same Entra app registration and `MICROSOFT_*` credentials as email/SSO — no additional `.env` variables. The tools are **off by default** and only reach the mailboxes you explicitly allowlist (see Section 9). Skip this permission if you are not using the calendar tools.
+
 ### Rebuild config cache
 
 After updating `.env`:
@@ -760,6 +767,16 @@ Optionally set a key expiry and rotate periodically (no rotation runbook is auto
 6. **(Optional)** Enable **Auto-create tickets from inbound emails** in the signature form to automatically generate tickets from known client emails that don't match an existing conversation thread. Disabled by default; auto-created tickets are P3/Incident with no assignee.
 
 > **Note:** The Graph integration reuses the same Entra app registration and `MICROSOFT_*` credentials as SSO. No additional `.env` variables are needed.
+
+### Calendar / Scheduling (staff MCP tools)
+
+Calendar tools on the staff MCP surface — free/busy availability and calendar/event reads on behalf of a mailbox. (Creating/updating events is a separate, operator-approved capability added later.)
+
+1. Ensure your Entra app registration has the `Calendars.Read` **Application** permission (or `Calendars.ReadWrite` if you also intend the forthcoming write tools) with admin consent (see Section 7). The calendar tools reuse the same app registration and `MICROSOFT_*` credentials as email/SSO — **no additional `.env` variables are needed.**
+2. Settings > Integrations > **Calendar / Scheduling** (AI tab)
+3. Tick **Enable calendar / scheduling tools** and add one **owner/organizer mailbox UPN per line** to the allowlist, then Save.
+
+> **Off by default, and fail-closed.** The toolset ships disabled (`calendar_enabled` defaults off). The `calendar_allowed_owner_upns` allowlist is the **sole** server-side control over which mailboxes the tenant-wide Graph token may act on as calendar owner/organizer — it replaced the Azure Application Access Policy. An **empty or unset allowlist allows no mailboxes** (nothing works until you add at least one), and only the UPNs you list are permitted. List only mailboxes you own and intend the AI to act as. External/client email addresses may be event **attendees** but must never be listed as an owner. A malformed entry is rejected on save — the list is never silently widened by dropping a bad line.
 
 ### AI Provider
 

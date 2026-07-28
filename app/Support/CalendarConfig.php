@@ -43,16 +43,18 @@ class CalendarConfig
      */
     public static function isAvailable(): bool
     {
-        return self::isEnabled() && self::graphConfigured();
+        return self::isEnabled() && self::isGraphConfigured();
     }
 
     /**
      * Whether the shared Microsoft Graph client has the app credentials it needs to reach a
      * calendar at all. Reads the same config GraphClient is constructed from
      * (config('services.graph')) — there is no calendar-specific credential; calendar reads
-     * ride the existing tenant-wide Application-permission token.
+     * ride the existing tenant-wide Application-permission token. Public so the Settings door can
+     * show a "Graph not configured" warning from the SAME predicate isAvailable() uses (single
+     * source — the door must not re-implement this check and drift from the reader).
      */
-    private static function graphConfigured(): bool
+    public static function isGraphConfigured(): bool
     {
         $graph = config('services.graph');
 

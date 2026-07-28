@@ -196,6 +196,16 @@ class IntegrationsController extends Controller
         // warning buried in laravel.log is invisible to the person actually making the choice.
         $emailTriageUnwatched = app(EmailTriageWatch::class)->isPileUpRisk();
 
+        // Calendar / scheduling (staff MCP toolset — psa-abl0i). Rides the existing Graph app
+        // registration (no calendar-specific credential); the UPN allowlist is the SOLE
+        // server-side control over which mailboxes the tools may act on, and it fails closed.
+        // Read through CalendarConfig so the prefill matches the reader's own decoding exactly.
+        $calendarEnabled = \App\Support\CalendarConfig::isEnabled();
+        $calendarAvailable = \App\Support\CalendarConfig::isAvailable();
+        // Single source: the door reads the SAME predicate isAvailable() uses, never a re-implementation.
+        $calendarGraphConfigured = \App\Support\CalendarConfig::isGraphConfigured();
+        $calendarAllowedOwnerUpns = implode("\n", \App\Support\CalendarConfig::allowedOwnerUpns());
+
         // Ticket automation
         $autoCloseResolvedDays = (int) Setting::getValue('auto_close_resolved_days', 0);
 
@@ -443,6 +453,7 @@ class IntegrationsController extends Controller
             'cippConfigured', 'cippApiUrl', 'cippTenantId', 'cippClientId', 'cippApplicationId', 'cippHasSecret', 'cippMcpClientId', 'cippMcpHasSecret', 'cippMcpConfigured', 'cippConnected', 'cippEnabled', 'cippMcpEnabled', 'cippContactSyncEnabled', 'cippDeviceSyncEnabled', 'cippMcpCatalogSyncEnabled',
             'plivoAuthId', 'plivoDidNumber', 'plivoAppId', 'plivoHasToken', 'plivoHasWebhookSecret', 'plivoConnectedAt', 'plivoEnabled',
             'graphMailbox', 'graphConnectedAt', 'graphEmailSignature', 'emailAutoTicket', 'emailTriageUnwatched', 'graphEnabled', 'autoCloseResolvedDays', 'gravatarDefault',
+            'calendarEnabled', 'calendarAvailable', 'calendarGraphConfigured', 'calendarAllowedOwnerUpns',
             'aiProvider', 'aiHasKey', 'aiModel', 'aiConnectedAt', 'aiEnabled', 'aiReplyGuidelines',
             'transcriptionConfigured', 'transcriptionHasKey', 'transcriptionAutoEnabled', 'transcriptionMinSeconds',
             'huntressCwConfigured', 'huntressCwHost', 'huntressCwCompanyId', 'huntressCwPublicKey', 'huntressCwSystemUserId', 'huntressCwUsers',
@@ -2517,5 +2528,46 @@ class IntegrationsController extends Controller
 
         return redirect()->route('settings.integrations')
             ->with('success', 'Client portal settings saved.');
+    }
+
+    // --- Calendar / Scheduling (staff MCP toolset, psa-abl0i) ---
+
+    /**
+     * Persist the calendar toolset's master switch and its owner/organizer UPN allowlist.
+     *
+     * THE SECURITY SPINE (see CalendarConfig): the allowlist is the ONLY server-side control
+     * over which mailboxes the tenant-wide Graph token may act on as calendar owner — the Azure
+     * Application Access Policy was dropped. It FAILS CLOSED: an empty list denies every mailbox.
+     * So the save must never silently widen access — a malformed entry REJECTS the whole save
+     * rather than being dropped, because a silently-dropped owner is a fail-open surprise.
+     */
+    public function updateCalendar(Request $request)
+    {
+        // The allowlist arrives as a textarea (one UPN per line; commas tolerated). Parse it
+        // into a clean list BEFORE validation so each entry is validated individually and any
+        // malformed entry rejects the whole save. Validate under a SYNTHETIC key so the raw
+        // textarea string survives as old input on a redirect-back (never flash an array into
+        // the textarea, and never lose the operator's edit).
+        $raw = (string) $request->input('calendar_allowed_owner_upns', '');
+        $upns = array_values(array_filter(array_map('trim', preg_split('/[\r\n,]+/', $raw) ?: [])));
+
+        $request->merge(['calendar_owner_upns' => $upns]);
+        $request->validate([
+            'calendar_owner_upns' => ['array'],
+            'calendar_owner_upns.*' => ['email'],
+        ], [
+            'calendar_owner_upns.*.email' => 'Each allowed calendar owner must be a valid email / UPN address. Fix or remove any invalid entry — nothing was saved.',
+        ]);
+
+        // Fail-closed master switch: an unchecked box is absent from the POST, so persist an
+        // explicit '0' rather than leaving the key unset (CalendarConfig requires the exact "1").
+        Setting::setValue('calendar_enabled', $request->has('calendar_enabled') ? '1' : '0');
+
+        // Store the normalized allowlist as a JSON array. An empty textarea stores [] — which,
+        // through CalendarConfig::ownerUpnAllowed(), denies every mailbox: the fail-closed spine.
+        Setting::setValue('calendar_allowed_owner_upns', json_encode($upns));
+
+        return redirect()->route('settings.integrations')
+            ->with('success', 'Calendar / scheduling settings saved.');
     }
 }

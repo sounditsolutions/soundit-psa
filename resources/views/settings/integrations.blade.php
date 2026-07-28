@@ -4044,6 +4044,88 @@
             </div>
         </div>
 
+        {{-- Calendar / Scheduling Card (staff MCP toolset — psa-abl0i) --}}
+        <div class="card shadow-sm mb-4">
+            <div class="card-header d-flex align-items-center">
+                <span>
+                    <i class="bi bi-calendar-event me-2"></i>Calendar / Scheduling (staff MCP)
+                    @if($calendarAvailable ?? false)
+                        <span class="badge bg-success ms-2">Enabled</span>
+                    @elseif($calendarEnabled ?? false)
+                        <span class="badge bg-warning text-dark ms-2">Graph not configured</span>
+                    @else
+                        <span class="badge bg-secondary ms-2">Off</span>
+                    @endif
+                </span>
+            </div>
+            <div class="card-body">
+                <p class="text-muted small">
+                    Calendar tools for the staff MCP surface — free/busy availability and calendar/event
+                    reads for a mailbox. (Creating and updating events is a separate, operator-approved
+                    capability added later.) Reuses the existing Microsoft Graph app registration (the same
+                    Entra credentials as email/SSO — no separate secret), with the Graph
+                    <strong>Calendars.Read</strong> (Application) permission and admin consent (the event-write
+                    capability will additionally need <strong>Calendars.ReadWrite</strong>).
+                    <strong>Off by default.</strong>
+                </p>
+
+                {{-- THE SECURITY SPINE, stated where the operator actually makes the decision. This
+                     allowlist replaced the Azure Application Access Policy — it is the only thing
+                     standing between the tenant-wide Graph token and every mailbox in the tenant. --}}
+                <div class="alert alert-warning small py-2">
+                    <i class="bi bi-shield-lock me-1"></i>
+                    <strong>The allowlist below is the sole server-side control over which mailboxes these
+                    tools may read or act on.</strong> It fails closed: an empty list allows <em>no</em>
+                    mailboxes, so the tools do nothing until you add at least one owner UPN. List only
+                    mailboxes you own and intend the AI to act as. External or client email addresses may
+                    appear as event <em>attendees</em>, but must never be listed here as an owner.
+                </div>
+
+                @unless($calendarGraphConfigured ?? false)
+                    <div class="alert alert-danger small py-2">
+                        <i class="bi bi-exclamation-triangle me-1"></i>
+                        <strong>Microsoft Graph app credentials are not configured.</strong>
+                        The calendar tools ride the same Entra app registration as email/SSO
+                        (<code>MICROSOFT_TENANT_ID</code> / <code>MICROSOFT_CLIENT_ID</code> /
+                        <code>MICROSOFT_CLIENT_SECRET</code> in <code>.env</code>). Set those and grant the
+                        <strong>Calendars.ReadWrite</strong> Application permission before the tools can run.
+                        The switch below records your choice; it takes effect once Graph is configured.
+                    </div>
+                @endunless
+
+                <form method="POST" action="{{ route('settings.integrations.calendar.update') }}">
+                    @csrf
+                    <div class="form-check form-switch mb-3">
+                        <input class="form-check-input" type="checkbox" id="calendar_enabled" name="calendar_enabled" {{ ($calendarEnabled ?? false) ? 'checked' : '' }}>
+                        <label class="form-check-label" for="calendar_enabled"><strong>Enable calendar / scheduling tools</strong></label>
+                        <div class="form-text">
+                            While off, the calendar tools are not published to the staff MCP surface at all.
+                            This is the master switch; when on, the allowlist still governs which mailboxes are reachable.
+                        </div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label" for="calendar_allowed_owner_upns">Allowed owner / organizer mailboxes (one UPN per line)</label>
+                        <textarea class="form-control font-monospace {{ $errors->has('calendar_owner_upns.*') ? 'is-invalid' : '' }}"
+                                  id="calendar_allowed_owner_upns" name="calendar_allowed_owner_upns" rows="4"
+                                  placeholder="scheduler@yourmsp.com&#10;dispatch@yourmsp.com">{{ old('calendar_allowed_owner_upns', $calendarAllowedOwnerUpns ?? '') }}</textarea>
+                        @if($errors->has('calendar_owner_upns.*'))
+                            <div class="invalid-feedback d-block">{{ $errors->first('calendar_owner_upns.*') }}</div>
+                        @endif
+                        <div class="form-text">
+                            One mailbox UPN (email) per line — commas are also accepted. Leave empty to allow
+                            <strong>no</strong> mailboxes (fail-closed). Matching is case-insensitive. A malformed
+                            entry rejects the whole save — nothing is stored — rather than being silently dropped.
+                        </div>
+                    </div>
+
+                    <button type="submit" class="btn btn-primary">
+                        <i class="bi bi-check-lg me-1"></i>Save Calendar Settings
+                    </button>
+                </form>
+            </div>
+        </div>
+
         </div>{{-- /ai tab --}}
 
         {{-- Client Portal tab --}}

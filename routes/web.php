@@ -364,6 +364,7 @@ Route::middleware('auth')->group(function () {
     Route::post('/settings/integrations/graph', [IntegrationsController::class, 'updateGraph'])->name('settings.integrations.graph.update');
     Route::post('/settings/integrations/graph/signature', [IntegrationsController::class, 'updateGraphSignature'])->name('settings.integrations.graph.update-signature');
     Route::post('/settings/integrations/graph/test', [IntegrationsController::class, 'testGraph'])->name('settings.integrations.graph.test');
+    Route::post('/settings/integrations/calendar', [IntegrationsController::class, 'updateCalendar'])->name('settings.integrations.calendar.update');
     Route::post('/settings/integrations/ai', [IntegrationsController::class, 'updateAi'])->name('settings.integrations.ai.update');
     Route::post('/settings/integrations/ai/test', [IntegrationsController::class, 'testAi'])->name('settings.integrations.ai.test');
     Route::post('/settings/integrations/transcription', [IntegrationsController::class, 'updateTranscription'])->name('settings.integrations.transcription.update');
