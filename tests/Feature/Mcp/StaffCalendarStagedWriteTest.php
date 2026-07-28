@@ -204,6 +204,31 @@ class StaffCalendarStagedWriteTest extends TestCase
         $this->assertSame('already_handled', $second->status);
     }
 
+    public function test_approval_declines_gracefully_on_a_tampered_payload(): void
+    {
+        // Review #4: a corrupted encrypted_payload makes Crypt::decryptString throw DecryptException.
+        // That must reach the graceful deny-and-re-stage path (gate_declined + claim released),
+        // NOT rethrow into a cockpit 500. The Graph write must never fire.
+        $this->enableCalendar(['charlie@soundit.co']);
+        $ticket = Ticket::factory()->create();
+        $this->mock(GraphClient::class, fn ($m) => $m->shouldReceive('createEvent')->never());
+
+        $staged = app(StaffCalendarToolExecutor::class)->execute(
+            'calendar_stage_create_event', $this->createArgs($ticket), 0, 'mcp-staff:chet', 'chet'
+        );
+        $run = TechnicianRun::find($staged['run_id']);
+
+        // Tamper the ciphertext (bad MAC).
+        $meta = $run->proposed_meta;
+        $meta['encrypted_payload'] = 'not-a-valid-laravel-ciphertext';
+        $run->update(['proposed_meta' => $meta]);
+
+        $result = app(StaffCalendarToolExecutor::class)->approveStagedRun($run->fresh(), $this->approver->id);
+
+        $this->assertSame('gate_declined', $result->status);
+        $this->assertSame(TechnicianRunState::AwaitingApproval, $run->fresh()->state);
+    }
+
     public function test_staging_a_cancel_and_approving_it_calls_graph_cancel(): void
     {
         $this->enableCalendar(['charlie@soundit.co']);

@@ -17,6 +17,7 @@ use App\Services\Graph\GraphClientException;
 use App\Services\Technician\TechnicianApprovalResult;
 use App\Support\CalendarConfig;
 use App\Support\TechnicianConfig;
+use Illuminate\Contracts\Encryption\DecryptException;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Str;
 
@@ -432,7 +433,7 @@ class StaffCalendarToolExecutor
         }
 
         $contentHash = $this->contentHash($directTool, $upn, $prep['plan'], $ticket->id);
-        $exec = $this->executeCalendarWrite($directTool, $upn, $prep['plan'], $ticket);
+        $exec = $this->executeCalendarWrite($directTool, $upn, $prep['plan'], $ticket, $contentHash);
         $eventId = (string) ($exec['event']['id'] ?? $exec['event_id'] ?? '?');
 
         $this->backlinkNote($ticket, $this->writeBacklinkBody($directTool, $upn, $eventId, (string) $ctx['reason'], approved: false));
@@ -586,19 +587,21 @@ class StaffCalendarToolExecutor
      * would. create/update return the projected event; cancel/respond return the event_id.
      *
      * @param  array<string, mixed>  $plan
+     * @param  string  $contentHash  the WHOLE-plan hash (owner+plan+ticket) — reused as create's transactionId
      * @return array<string, mixed>
      */
-    private function executeCalendarWrite(string $directTool, string $upn, array $plan, Ticket $ticket): array
+    private function executeCalendarWrite(string $directTool, string $upn, array $plan, Ticket $ticket, string $contentHash): array
     {
         if ($directTool === 'calendar_create_event') {
             $body = $plan['body'];
             // Deterministic transactionId — create is NON-IDEMPOTENT, so an accidental retry (or a
             // re-approval) must not double-book: Graph returns the FIRST event for a repeated
-            // transactionId (idempotent-on-retry, user-post-events producer).
-            $body['transactionId'] = hash('sha256', implode('|', [
-                mb_strtolower($upn), (string) ($body['subject'] ?? ''),
-                (string) ($body['start']['dateTime'] ?? ''), (string) ($body['end']['dateTime'] ?? ''), (string) $ticket->id,
-            ]));
+            // transactionId (idempotent-on-retry, user-post-events producer). It MUST derive from
+            // the whole-plan contentHash, not just subject+window (review #3): two genuinely
+            // distinct creates on one ticket sharing subject+window but differing in
+            // body/attendees/location would otherwise collide, Graph would dedupe to the FIRST
+            // event, and the back-link note would record a create that never happened.
+            $body['transactionId'] = $contentHash;
 
             return ['event' => $this->projectEvent($this->graph->createEvent($upn, $body))];
         }
@@ -759,7 +762,7 @@ class StaffCalendarToolExecutor
             }
 
             try {
-                $exec = $this->executeCalendarWrite($directTool, $upn, $plan, $ticket);
+                $exec = $this->executeCalendarWrite($directTool, $upn, $plan, $ticket, $run->content_hash);
             } catch (GraphClientException $e) {
                 $this->auditWrite($run->action_type, 'error', $ticket, $run->content_hash, 'Upstream Microsoft Graph calendar write failed at approval.', $this->approverLabel($approverId), $run->id, $approverId);
                 $run->releaseClaim();
@@ -788,7 +791,14 @@ class StaffCalendarToolExecutor
             return null;
         }
 
-        $payload = json_decode(Crypt::decryptString($ciphertext), true);
+        // Crypt::decryptString THROWS DecryptException on a bad MAC / tampered ciphertext — it does
+        // not return null (review #4). Catch it so tamper reaches the graceful deny-and-re-stage
+        // path (approveStagedRun -> declined), never a rethrown cockpit 500.
+        try {
+            $payload = json_decode(Crypt::decryptString($ciphertext), true);
+        } catch (DecryptException) {
+            return null;
+        }
 
         return is_array($payload) ? $payload : null;
     }

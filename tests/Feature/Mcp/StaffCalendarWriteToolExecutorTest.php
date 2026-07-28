@@ -106,6 +106,35 @@ class StaffCalendarWriteToolExecutorTest extends TestCase
         $this->assertStringContainsString('charlie@soundit.co', $note->body);
     }
 
+    public function test_create_transaction_id_covers_the_whole_plan_not_just_subject_and_window(): void
+    {
+        // Review #3: two creates on ONE ticket with identical subject+window but DIFFERENT attendees
+        // must NOT share a transactionId — else Graph dedupes and silently returns the first event,
+        // and the back-link note records a create that never happened (lies to the technician).
+        $this->enableCalendar(['charlie@soundit.co']);
+        $ticket = $this->ticket();
+        $txns = [];
+        $this->mock(GraphClient::class, function ($m) use (&$txns) {
+            $m->shouldReceive('createEvent')->twice()->andReturnUsing(function (string $upn, array $body) use (&$txns) {
+                $txns[] = $body['transactionId'] ?? null;
+
+                return ['id' => 'evt-'.count($txns), 'subject' => $body['subject'], 'webLink' => 'https://x'];
+            });
+        });
+
+        $base = [
+            'user_upn' => 'charlie@soundit.co', 'subject' => 'Onsite',
+            'start' => '2026-07-29T15:00:00', 'end' => '2026-07-29T16:00:00',
+            'ticket_id' => $ticket->id, 'reason' => 'r',
+        ];
+        app(StaffCalendarToolExecutor::class)->execute('calendar_create_event', array_merge($base, ['attendees' => ['a@x.example']]), 0, 'mcp-staff:chet');
+        app(StaffCalendarToolExecutor::class)->execute('calendar_create_event', array_merge($base, ['attendees' => ['b@y.example']]), 0, 'mcp-staff:chet');
+
+        $this->assertCount(2, $txns);
+        $this->assertNotNull($txns[0]);
+        $this->assertNotSame($txns[0], $txns[1], 'distinct attendee sets must yield distinct transactionIds');
+    }
+
     public function test_create_with_teams_meeting_sets_the_online_meeting_fields(): void
     {
         $this->enableCalendar(['charlie@soundit.co']);
