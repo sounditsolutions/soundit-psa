@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Mcp;
 
+use App\Enums\EmailDirection;
 use App\Enums\PersonType;
 use App\Enums\TechnicianRunState;
 use App\Enums\TicketStatus;
@@ -13,6 +14,7 @@ use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Models\TicketNote;
 use App\Models\User;
+use App\Services\Email\EmailSendOutcome;
 use App\Services\EmailService;
 use App\Support\McpConfig;
 use App\Support\McpToolModes;
@@ -183,8 +185,28 @@ class McpStagedModeUnificationTest extends TestCase
         $token = $this->token(['send_email:immediate']);
         $ticket = $this->ticketWithContact();
 
+        // Immediate grant sends directly, so the send must genuinely succeed (Sent outcome)
+        // for the receipt to persist. Pre-psa-330 this mocked a NULL return yet asserted
+        // success + a note — the false-receipt bug. It now returns a real Sent outcome.
         $this->mock(EmailService::class, function (MockInterface $mock): void {
-            $mock->shouldReceive('sendTicketReplyNote')->once()->andReturnNull();
+            $mock->shouldReceive('sendTicketReplyNoteChecked')->once()
+                ->andReturnUsing(fn (Ticket $ticket, TicketNote $note) => EmailSendOutcome::sent(Email::create([
+                    'graph_id' => null,
+                    'direction' => EmailDirection::Outbound,
+                    'from_address' => 'support@example.test',
+                    'to_recipients' => [['address' => $ticket->contact->email, 'name' => null]],
+                    'subject' => '['.$ticket->display_id.'] '.$ticket->subject,
+                    'body_preview' => mb_substr($note->body, 0, 500),
+                    'body_text' => $note->body,
+                    'body_html' => '<p>'.e($note->body).'</p>',
+                    'has_attachments' => false,
+                    'importance' => 'normal',
+                    'received_at' => now(),
+                    'is_read' => true,
+                    'client_id' => $ticket->client_id,
+                    'person_id' => $ticket->contact_id,
+                    'ticket_id' => $ticket->id,
+                ])));
         });
 
         $direct = $this->callTool($token, 'send_email', [

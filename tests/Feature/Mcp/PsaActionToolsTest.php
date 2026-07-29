@@ -22,7 +22,9 @@ use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Models\TicketNote;
 use App\Models\User;
+use App\Services\Email\EmailSendOutcome;
 use App\Services\EmailService;
+use App\Services\Graph\GraphClientException;
 use App\Services\Technician\TechnicianDisclosure;
 use App\Support\McpConfig;
 use App\Support\McpToolModes;
@@ -368,7 +370,7 @@ class PsaActionToolsTest extends TestCase
     {
         $token = $this->token(['send_email']);
         $ticket = $this->ticketWithContact(); // contact = client@example.test
-        $this->mock(EmailService::class, fn (MockInterface $mock) => $mock->shouldReceive('sendTicketReplyNote')->never());
+        $this->mock(EmailService::class, fn (MockInterface $mock) => $mock->shouldReceive('sendTicketReplyNoteChecked')->never());
 
         $response = $this->callTool($token, 'send_email', [
             'client_id' => $ticket->client_id,
@@ -401,13 +403,13 @@ class PsaActionToolsTest extends TestCase
         $body = 'The printer is back online.';
 
         $this->mock(EmailService::class, function (MockInterface $mock): void {
-            $mock->shouldReceive('sendTicketReplyNote')->once()
+            $mock->shouldReceive('sendTicketReplyNoteChecked')->once()
                 ->andReturnUsing(function (Ticket $ticket, TicketNote $note, ?string $toEmail, array $ccEmails) {
                     $this->assertSame('client@example.test', $toEmail);
                     $this->assertSame(['vendor@thread.test'], $ccEmails);
                     $this->assertStringContainsString(TechnicianDisclosure::DISCLOSURE_SENTINEL, $note->body);
 
-                    return $this->outboundEmail($ticket, $note);
+                    return EmailSendOutcome::sent($this->outboundEmail($ticket, $note));
                 });
         });
 
@@ -442,12 +444,12 @@ class PsaActionToolsTest extends TestCase
         $ticket = $this->ticketWithContact();
         $body = 'Just the contact, no CC.';
         $this->mock(EmailService::class, function (MockInterface $mock): void {
-            $mock->shouldReceive('sendTicketReplyNote')->once()
+            $mock->shouldReceive('sendTicketReplyNoteChecked')->once()
                 ->andReturnUsing(function (Ticket $ticket, TicketNote $note, ?string $toEmail, array $ccEmails) {
                     $this->assertSame('client@example.test', $toEmail);
                     $this->assertSame([], $ccEmails);
 
-                    return $this->outboundEmail($ticket, $note);
+                    return EmailSendOutcome::sent($this->outboundEmail($ticket, $note));
                 });
         });
 
@@ -469,9 +471,9 @@ class PsaActionToolsTest extends TestCase
         // matching the redaction already applied to the action-log summary.
         $token = $this->token(['send_email']);
         $ticket = $this->ticketWithContact();
-        $this->mock(EmailService::class, fn (MockInterface $mock) => $mock->shouldReceive('sendTicketReplyNote')
+        $this->mock(EmailService::class, fn (MockInterface $mock) => $mock->shouldReceive('sendTicketReplyNoteChecked')
             ->once()
-            ->andReturnUsing(fn (Ticket $ticket, TicketNote $note) => $this->outboundEmail($ticket, $note)));
+            ->andReturnUsing(fn (Ticket $ticket, TicketNote $note) => EmailSendOutcome::sent($this->outboundEmail($ticket, $note))));
 
         $this->callTool($token, 'send_email', [
             'client_id' => $ticket->client_id,
@@ -500,9 +502,9 @@ class PsaActionToolsTest extends TestCase
             'has_attachments' => false, 'importance' => 'normal', 'received_at' => now()->subMinute(),
             'is_read' => true, 'client_id' => $ticket->client_id, 'person_id' => $ticket->contact_id, 'ticket_id' => $ticket->id,
         ]);
-        $this->mock(EmailService::class, fn (MockInterface $mock) => $mock->shouldReceive('sendTicketReplyNote')
+        $this->mock(EmailService::class, fn (MockInterface $mock) => $mock->shouldReceive('sendTicketReplyNoteChecked')
             ->once()
-            ->andReturnUsing(fn (Ticket $ticket, TicketNote $note) => $this->outboundEmail($ticket, $note)));
+            ->andReturnUsing(fn (Ticket $ticket, TicketNote $note) => EmailSendOutcome::sent($this->outboundEmail($ticket, $note))));
 
         $first = $this->callTool($token, 'send_email', [
             'client_id' => $ticket->client_id, 'ticket_id' => $ticket->id,
@@ -525,7 +527,13 @@ class PsaActionToolsTest extends TestCase
     {
         $token = $this->token(['send_email']);
         $ticket = $this->ticketWithContact();
-        $this->mock(EmailService::class, fn (MockInterface $mock) => $mock->shouldReceive('sendTicketReplyNote')->once()->andReturnNull());
+        // psa-330: this test exercises the kill-switch + flood-guard, so the one send that
+        // gets through must actually succeed. Pre-psa-330 it mocked a NULL (nothing-sent)
+        // return yet asserted success + a persisted receipt — that was the false-receipt bug
+        // itself. It now mocks a genuine successful send (Sent outcome).
+        $this->mock(EmailService::class, fn (MockInterface $mock) => $mock->shouldReceive('sendTicketReplyNoteChecked')
+            ->once()
+            ->andReturnUsing(fn (Ticket $ticket, TicketNote $note) => EmailSendOutcome::sent($this->outboundEmail($ticket, $note))));
 
         Setting::setValue('technician_kill_switch', '1');
         $blocked = $this->callTool($token, 'send_email', [
@@ -572,6 +580,112 @@ class PsaActionToolsTest extends TestCase
         $this->assertSame(1, TicketNote::where('ticket_id', $ticket->id)->count());
         $this->assertSame(1, TechnicianActionLog::where('ticket_id', $ticket->id)->where('action_type', 'send_email')->where('result_status', 'executed')->count());
         $this->assertSame('error', McpAuditLog::where('tool_name', 'send_email')->where('error_message', 'like', '%kill-switch%')->firstOrFail()->status);
+    }
+
+    /**
+     * psa-330 guard 1 — a failed send (here: NOT_SENT, no graph_mailbox configured) leaves
+     * NO artifact that reads as delivered: not in the return, not as a ticket note, and no
+     * 'executed' audit row that would idempotency-block the legitimate retry.
+     * Real path (unmocked EmailService) so it red-checks against the pre-fix executor, which
+     * returned success:true / "Email sent." and persisted a Reply note + executed row here.
+     */
+    public function test_psa330_not_sent_leaves_no_receipt_and_keeps_retry_open(): void
+    {
+        $token = $this->token(['send_email']);
+        $ticket = $this->ticketWithContact(); // valid contact; recipient resolution succeeds
+        Setting::setValue('graph_mailbox', ''); // no mailbox → real send skips, nothing transmitted
+        $before = $ticket->responded_at;
+
+        $response = $this->callTool($token, 'send_email', [
+            'client_id' => $ticket->client_id,
+            'ticket_id' => $ticket->id,
+            'reason' => 'Client asked for an update.',
+            'body' => 'Here is your update.',
+        ]);
+
+        $response->assertOk();
+        // 1) the return does not read as a delivered send
+        $this->assertTrue((bool) $response->json('result.isError'));
+        $this->assertStringContainsString('NOT sent', (string) $response->json('result.content.0.text'));
+        // 2) no ticket note that reads as a delivered reply
+        $this->assertSame(0, TicketNote::where('ticket_id', $ticket->id)->count());
+        // 3) responded_at untouched
+        $this->assertEquals($before, $ticket->fresh()->responded_at);
+        // 4) NO 'executed' audit row — the legitimate retry is not idempotency-blocked
+        $this->assertSame(0, TechnicianActionLog::where('ticket_id', $ticket->id)
+            ->where('action_type', 'send_email')->where('result_status', 'executed')->count());
+    }
+
+    /**
+     * psa-330 guard 2 — a maybe-sent outcome (the Graph sendMail call itself fails, so delivery
+     * cannot be disproven) must NOT report clean success, must NOT write a Reply note that reads
+     * as delivered, and MUST write an 'executed' audit row so a duplicate send is blocked (never
+     * auto-retry a maybe-sent write — the #329 lesson). Real path: mock GraphClient->post to throw.
+     */
+    public function test_psa330_indeterminate_delivery_flags_manual_review_and_blocks_resend(): void
+    {
+        $token = $this->token(['send_email']);
+        $ticket = $this->ticketWithContact();
+        Setting::setValue('graph_mailbox', 'support@example.test'); // proceed to the Graph call
+        $this->mock(GraphClient::class, fn (MockInterface $mock) => $mock->shouldReceive('post')
+            ->andThrow(new GraphClientException('Gateway timeout', 504)));
+
+        $response = $this->callTool($token, 'send_email', [
+            'client_id' => $ticket->client_id,
+            'ticket_id' => $ticket->id,
+            'reason' => 'Client asked for an update.',
+            'body' => 'Here is your update.',
+        ]);
+
+        $response->assertOk();
+        // not a clean "Email sent." — flagged for manual verification, no retry invited
+        $this->assertFalse((bool) $response->json('result.isError'));
+        $text = (string) $response->json('result.content.0.text');
+        $this->assertStringContainsString('UNCONFIRMED', $text);
+        // no note that reads as a delivered reply
+        $this->assertSame(0, TicketNote::where('ticket_id', $ticket->id)->where('note_type', NoteType::Reply)->count());
+        // exactly one internal (non-Reply) note flagging the gap
+        $this->assertSame(1, TicketNote::where('ticket_id', $ticket->id)->where('note_type', NoteType::Note)->count());
+        // executed audit row exists → a duplicate send is idempotency-blocked
+        $this->assertSame(1, TechnicianActionLog::where('ticket_id', $ticket->id)
+            ->where('action_type', 'send_email')->where('result_status', 'executed')->count());
+    }
+
+    /**
+     * psa-330 guard 3 — the sent-but-unrecorded branch (Graph accepted the send, local record
+     * write failed): the email DID reach the client, so the executor must flag manual verification
+     * and REFUSE an auto-retry, and a second identical call must be idempotency-blocked rather than
+     * re-sending. Drives the outcome contract directly.
+     */
+    public function test_psa330_sent_but_unrecorded_refuses_auto_retry(): void
+    {
+        $token = $this->token(['send_email']);
+        $ticket = $this->ticketWithContact();
+        $this->mock(EmailService::class, fn (MockInterface $mock) => $mock->shouldReceive('sendTicketReplyNoteChecked')
+            ->once() // must be called exactly once across BOTH calls — the second is idempotency-blocked before send
+            ->andReturn(EmailSendOutcome::sentUnrecorded('outbound record write failed: db down')));
+
+        $args = [
+            'client_id' => $ticket->client_id,
+            'ticket_id' => $ticket->id,
+            'reason' => 'Client asked for an update.',
+            'body' => 'Here is your update.',
+        ];
+
+        $first = $this->callTool($token, 'send_email', $args);
+        $first->assertOk();
+        // not a clean failure (no 'retryable' invitation), flagged for manual verification
+        $this->assertFalse((bool) $first->json('result.isError'));
+        $this->assertStringContainsString('do NOT resend', (string) $first->json('result.content.0.text'));
+        // no Reply note that reads as delivered
+        $this->assertSame(0, TicketNote::where('ticket_id', $ticket->id)->where('note_type', NoteType::Reply)->count());
+
+        // a second identical send is idempotency-blocked (executed audit row from the first),
+        // so sendTicketReplyNoteChecked is NOT called again → no double-send
+        $second = $this->callTool($token, 'send_email', $args);
+        $second->assertOk();
+        $this->assertFalse((bool) $second->json('result.isError'));
+        $this->assertStringContainsString('already', mb_strtolower((string) $second->json('result.content.0.text')));
     }
 
     public function test_write_public_note_directly_publishes_with_required_reason_and_rate_guard(): void

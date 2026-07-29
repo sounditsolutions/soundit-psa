@@ -25,8 +25,11 @@ use App\Services\AssetService;
 use App\Services\Assistant\AssistantTicketCreator;
 use App\Services\ClientService;
 use App\Services\Email\EmailRecipientResolver;
+use App\Services\Email\EmailSendOutcome;
+use App\Services\Email\EmailSendStatus;
 use App\Services\Email\RecipientContext;
 use App\Services\Email\RecipientValidationException;
+use App\Services\Email\ResolvedRecipients;
 use App\Services\EmailService;
 use App\Services\PersonService;
 use App\Services\PhoneCallService;
@@ -36,7 +39,6 @@ use App\Services\TicketService;
 use App\Support\EmailRedactor;
 use App\Support\TechnicianConfig;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
@@ -2375,8 +2377,54 @@ class StaffPsaActionToolExecutor
             return ['error' => 'send_email rate limit: direct email already sent for this ticket recently'];
         }
 
-        $note = DB::transaction(function () use ($ticket, $body, $actorLabel, $tokenLabel, $contentHash, $reason, $resolved): TicketNote {
-            $note = $this->createAiNote($ticket, $this->disclosedBody($body, $tokenLabel), NoteType::Reply, $tokenLabel);
+        // psa-330: attempt delivery BEFORE persisting any receipt. The reply note,
+        // responded_at, and the 'executed' audit row are written only for an outcome
+        // that actually reached the client. A failed send therefore leaves no artifact
+        // that reads as delivered — not in the return, not as a ticket note, and no
+        // executed audit row to idempotency-block the legitimate retry. A maybe-sent
+        // outcome (indeterminate delivery or sent-but-unrecorded) never reports clean
+        // success and is flagged for manual verification rather than inviting a resend.
+        $disclosedBody = $this->disclosedBody($body, $tokenLabel);
+        $outgoing = new TicketNote([
+            'ticket_id' => $ticket->id,
+            'author_id' => TechnicianConfig::requiredAiActorUserId(),
+            'body' => $disclosedBody,
+        ]);
+
+        $outcome = $this->email->sendTicketReplyNoteChecked($ticket, $outgoing, $resolved->to, $resolved->cc);
+
+        return match ($outcome->status) {
+            EmailSendStatus::Sent => $this->recordSentEmail(
+                $ticket, $disclosedBody, $tokenLabel, $actorLabel, $contentHash, $reason, $resolved, $outcome->email
+            ),
+            EmailSendStatus::NotSent => [
+                'success' => false,
+                'sent' => false,
+                'retryable' => $outcome->retryable,
+                'ticket_id' => $ticket->id,
+                'ticket_display_id' => $ticket->display_id,
+                'error' => 'Email was NOT sent: '.$outcome->reason
+                    .($outcome->retryable ? ' (transient — retry is safe).' : ' (fix the cause before retrying — no message was transmitted).'),
+            ],
+            EmailSendStatus::Indeterminate,
+            EmailSendStatus::SentUnrecorded => $this->recordUnconfirmedEmail(
+                $ticket, $disclosedBody, $tokenLabel, $actorLabel, $contentHash, $reason, $resolved, $outcome
+            ),
+        };
+    }
+
+    /**
+     * Persist the receipt for a confirmed send: the Reply note (with its email_id),
+     * responded_at, and the 'executed' audit row — exactly the pre-psa-330 artifacts,
+     * now gated on delivery actually happening.
+     *
+     * @return array<string, mixed>
+     */
+    private function recordSentEmail(Ticket $ticket, string $disclosedBody, ?string $tokenLabel, string $actorLabel, string $contentHash, string $reason, ResolvedRecipients $resolved, Email $email): array
+    {
+        $note = DB::transaction(function () use ($ticket, $disclosedBody, $actorLabel, $tokenLabel, $contentHash, $reason, $resolved, $email): TicketNote {
+            $note = $this->createAiNote($ticket, $disclosedBody, NoteType::Reply, $tokenLabel);
+            $note->update(['email_id' => $email->id]);
             $ticket->forceFill(['responded_at' => $ticket->responded_at ?? now()])->save();
             $summary = 'Direct MCP email sent: '.EmailRedactor::redact($reason).' ['.$resolved->auditDescriptor().']';
             $this->auditDirectExecution('send_email', $ticket, $actorLabel, $contentHash, $summary);
@@ -2384,26 +2432,58 @@ class StaffPsaActionToolExecutor
             return $note;
         });
 
-        try {
-            $email = $this->email->sendTicketReplyNote($ticket, $note, $resolved->to, $resolved->cc);
-            if ($email !== null) {
-                $note->update(['email_id' => $email->id]);
-            }
-        } catch (\Throwable $e) {
-            Log::warning('[MCP] Direct send_email email delivery failed after audited note write', [
-                'ticket_id' => $ticket->id,
-                'error' => $e->getMessage(),
-            ]);
-            $email = null;
-        }
-
         return [
             'success' => true,
+            'sent' => true,
             'ticket_id' => $ticket->id,
             'ticket_display_id' => $ticket->display_id,
             'note_id' => $note->id,
-            'email_id' => $email?->id,
+            'email_id' => $email->id,
             'message' => 'Email sent.',
+        ];
+    }
+
+    /**
+     * Persist the record for a maybe-sent outcome (indeterminate delivery or
+     * sent-but-unrecorded): the client was, or may have been, emailed. We write an
+     * 'executed' audit row so a duplicate send is idempotency-blocked, plus an
+     * internal Note (NOT a Reply that would read as a delivered message) flagging it
+     * for manual verification. The return never claims clean success and never invites
+     * an auto-retry — that would be the double-send (psa-330 / the #329 lesson).
+     *
+     * @return array<string, mixed>
+     */
+    private function recordUnconfirmedEmail(Ticket $ticket, string $disclosedBody, ?string $tokenLabel, string $actorLabel, string $contentHash, string $reason, ResolvedRecipients $resolved, EmailSendOutcome $outcome): array
+    {
+        $sentSurely = $outcome->status === EmailSendStatus::SentUnrecorded;
+        $flag = $sentSurely
+            ? 'DELIVERED BUT NOT RECORDED — verify the outbound email exists; do NOT resend.'
+            : 'DELIVERY UNCONFIRMED — the send may or may not have reached the client; verify out-of-band before any resend.';
+        $statusValue = $outcome->status->value;
+
+        $note = DB::transaction(function () use ($ticket, $disclosedBody, $actorLabel, $tokenLabel, $contentHash, $reason, $resolved, $flag, $statusValue): TicketNote {
+            $note = $this->createAiNote(
+                $ticket,
+                '[send_email — MANUAL VERIFICATION NEEDED] '.$flag."\n\nIntended reply body:\n".$disclosedBody,
+                NoteType::Note,
+                $tokenLabel
+            );
+            $summary = 'Direct MCP email UNCONFIRMED ('.$statusValue.'): '.EmailRedactor::redact($reason).' ['.$resolved->auditDescriptor().']';
+            $this->auditDirectExecution('send_email', $ticket, $actorLabel, $contentHash, $summary);
+
+            return $note;
+        });
+
+        return [
+            'success' => true,
+            'sent' => $sentSurely ? true : 'unknown',
+            'recorded' => false,
+            'retryable' => false,
+            'requires_manual_verification' => true,
+            'ticket_id' => $ticket->id,
+            'ticket_display_id' => $ticket->display_id,
+            'note_id' => $note->id,
+            'message' => $flag.' Reason: '.$outcome->reason,
         ];
     }
 

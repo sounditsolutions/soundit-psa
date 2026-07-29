@@ -23,6 +23,9 @@ use App\Models\User;
 use App\Services\Agent\Intake\EmailTriageWatch;
 use App\Services\Agent\Intake\IntakeDecision;
 use App\Services\Agent\Intake\IntakeRouter;
+use App\Services\Email\EmailSendException;
+use App\Services\Email\EmailSendOutcome;
+use App\Services\Email\EmailSendStatus;
 use App\Services\Email\ForwardedEmailParser;
 use App\Services\Graph\GraphClient;
 use App\Services\Graph\GraphClientException;
@@ -1473,60 +1476,110 @@ PROMPT;
      * Returns the Email record if sent, null if silently skipped (no mailbox configured
      * or no contact email). Caller is responsible for showing appropriate flash messages.
      */
+    /**
+     * Legacy contract shim (?Email). Preserved verbatim for the four callers that
+     * catch \Throwable and read only getMessage(): TicketNoteController, AutoAcknowledge,
+     * MaxHoldSender, TechnicianApprovalService. Skip → null; a maybe-sent failure →
+     * throw. New callers that must tell the outcomes apart use sendTicketReplyNoteChecked().
+     */
     public function sendTicketReplyNote(Ticket $ticket, TicketNote $note, ?string $toEmail = null, array $ccEmails = []): ?Email
+    {
+        $outcome = $this->sendTicketReplyNoteChecked($ticket, $note, $toEmail, $ccEmails);
+
+        return match ($outcome->status) {
+            EmailSendStatus::Sent => $outcome->email,
+            EmailSendStatus::NotSent => null,
+            // Indeterminate + SentUnrecorded surfaced as a throwable before psa-330; keep it that way.
+            EmailSendStatus::Indeterminate,
+            EmailSendStatus::SentUnrecorded => throw ($outcome->cause ?? new EmailSendException($outcome->reason ?? 'email send failed')),
+        };
+    }
+
+    /**
+     * Send a ticket reply and report which of the four distinguishable outcomes occurred,
+     * so the caller can pick its next legal move honestly (psa-330). No side effects on the
+     * ticket/note — persistence of any "sent" receipt is the caller's job, gated on the outcome.
+     */
+    public function sendTicketReplyNoteChecked(Ticket $ticket, TicketNote $note, ?string $toEmail = null, array $ccEmails = []): EmailSendOutcome
     {
         $mailbox = Setting::getValue('graph_mailbox');
         $toEmail = $toEmail ?: $ticket->contact?->email;
 
         if (! $mailbox || ! $toEmail) {
+            $reason = ! $mailbox ? 'no graph_mailbox configured' : 'no contact email on ticket';
             Log::info('[EmailService] Skipping ticket reply email', [
                 'ticket_id' => $ticket->id,
-                'reason' => ! $mailbox ? 'no graph_mailbox configured' : 'no contact email',
+                'reason' => $reason,
             ]);
 
-            return null;
+            return EmailSendOutcome::notSent($reason);
         }
 
-        // Use "Re:" only for email-sourced tickets — other sources are first contact
-        $prefix = $ticket->source === TicketSource::Email ? 'Re: ' : '';
-        $subject = $prefix.'['.$ticket->display_id.'] '.$ticket->subject;
-        $bodyHtml = $this->buildHtmlBody($note->body, $note->author_id);
+        // Build the payload. Anything that throws here is PRE-DISPATCH — the Graph call
+        // has not happened, so nothing was transmitted and a retry is safe.
+        try {
+            // Use "Re:" only for email-sourced tickets — other sources are first contact
+            $prefix = $ticket->source === TicketSource::Email ? 'Re: ' : '';
+            $subject = $prefix.'['.$ticket->display_id.'] '.$ticket->subject;
+            $bodyHtml = $this->buildHtmlBody($note->body, $note->author_id);
 
-        // Resolve TO recipient name from contacts if possible
-        $toName = '';
-        if (strtolower(trim($toEmail)) === strtolower($ticket->contact?->email ?? '')) {
-            $toName = $ticket->contact->fullName ?? '';
+            // Resolve TO recipient name from contacts if possible
+            $toName = '';
+            if (strtolower(trim($toEmail)) === strtolower($ticket->contact?->email ?? '')) {
+                $toName = $ticket->contact->fullName ?? '';
+            }
+
+            $payload = [
+                'message' => [
+                    'subject' => $subject,
+                    'body' => ['contentType' => 'HTML', 'content' => $bodyHtml],
+                    'toRecipients' => [[
+                        'emailAddress' => [
+                            'address' => strtolower(trim($toEmail)),
+                            'name' => $toName,
+                        ],
+                    ]],
+                ],
+            ];
+
+            if ($ccEmails) {
+                $payload['message']['ccRecipients'] = array_map(fn (string $addr) => [
+                    'emailAddress' => ['address' => strtolower(trim($addr))],
+                ], $ccEmails);
+            }
+        } catch (\Throwable $e) {
+            Log::warning('[EmailService] Ticket reply email not attempted (pre-dispatch failure)', [
+                'ticket_id' => $ticket->id,
+                'error' => $e->getMessage(),
+            ]);
+
+            return EmailSendOutcome::notSent('preparing the message failed before sending: '.$e->getMessage(), retryable: true, cause: $e);
         }
 
-        $payload = [
-            'message' => [
-                'subject' => $subject,
-                'body' => ['contentType' => 'HTML', 'content' => $bodyHtml],
-                'toRecipients' => [[
-                    'emailAddress' => [
-                        'address' => strtolower(trim($toEmail)),
-                        'name' => $toName,
-                    ],
-                ]],
-            ],
-        ];
+        // The send itself. sendMail returns 202 with no body, so a failure of THIS call
+        // (timeout / 5xx) cannot prove non-delivery — treat it as maybe-sent and never
+        // signal a retryable failure, which would risk a duplicate client email.
+        try {
+            $this->graphClient->post("users/{$mailbox}/sendMail", $payload);
+        } catch (\Throwable $e) {
+            Log::error('[EmailService] Ticket reply email delivery could not be confirmed', [
+                'ticket_id' => $ticket->id,
+                'http_status' => $e instanceof GraphClientException ? $e->getHttpStatus() : null,
+                'error' => $e->getMessage(),
+            ]);
 
-        if ($ccEmails) {
-            $payload['message']['ccRecipients'] = array_map(fn (string $addr) => [
-                'emailAddress' => ['address' => strtolower(trim($addr))],
-            ], $ccEmails);
+            return EmailSendOutcome::indeterminate('Graph did not confirm delivery: '.$e->getMessage(), $e);
         }
 
-        $this->graphClient->post("users/{$mailbox}/sendMail", $payload);
-
-        // Build CC recipients array for Email record
+        // Graph accepted the send — the client WAS emailed. A failure recording it locally
+        // is a record gap only, never grounds to resend.
         $ccRecipientsData = $ccEmails
             ? array_map(fn ($addr) => ['address' => strtolower(trim($addr)), 'name' => null], $ccEmails)
             : null;
 
         // Record outbound email — graph_id is NULL (Graph returns 202 with no body)
         try {
-            return Email::create([
+            $email = Email::create([
                 'graph_id' => null,
                 'direction' => 'outbound',
                 'from_address' => strtolower($mailbox),
@@ -1555,8 +1608,11 @@ PROMPT;
                 'subject' => $subject,
                 'error' => $e->getMessage(),
             ]);
-            throw $e;
+
+            return EmailSendOutcome::sentUnrecorded('the email was sent but recording it locally failed: '.$e->getMessage(), $e);
         }
+
+        return EmailSendOutcome::sent($email);
     }
 
     /**

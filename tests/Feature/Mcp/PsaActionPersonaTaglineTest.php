@@ -14,6 +14,7 @@ use App\Models\TeamsPersona;
 use App\Models\Ticket;
 use App\Models\TicketNote;
 use App\Models\User;
+use App\Services\Email\EmailSendOutcome;
 use App\Services\EmailService;
 use App\Support\McpConfig;
 use App\Support\TeamsPersonaConfig;
@@ -88,8 +89,8 @@ class PsaActionPersonaTaglineTest extends TestCase
     private function expectSendCapturingNote(): void
     {
         $this->mock(EmailService::class, function (MockInterface $mock): void {
-            $mock->shouldReceive('sendTicketReplyNote')->once()
-                ->andReturnUsing(fn (Ticket $ticket, TicketNote $note) => Email::create([
+            $mock->shouldReceive('sendTicketReplyNoteChecked')->once()
+                ->andReturnUsing(fn (Ticket $ticket, TicketNote $note) => EmailSendOutcome::sent(Email::create([
                     'graph_id' => null,
                     'direction' => EmailDirection::Outbound,
                     'from_address' => 'support@example.test',
@@ -105,7 +106,7 @@ class PsaActionPersonaTaglineTest extends TestCase
                     'client_id' => $ticket->client_id,
                     'person_id' => $ticket->contact_id,
                     'ticket_id' => $ticket->id,
-                ]));
+                ])));
         });
     }
 
