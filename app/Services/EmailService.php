@@ -1479,8 +1479,25 @@ PROMPT;
     /**
      * Legacy contract shim (?Email). Preserved verbatim for the four callers that
      * catch \Throwable and read only getMessage(): TicketNoteController, AutoAcknowledge,
-     * MaxHoldSender, TechnicianApprovalService. Skip → null; a maybe-sent failure →
-     * throw. New callers that must tell the outcomes apart use sendTicketReplyNoteChecked().
+     * MaxHoldSender, TechnicianApprovalService.
+     *
+     * The pre-psa-330 contract these callers rely on has exactly two shapes, and BOTH
+     * are reproduced here:
+     *   null      → the send was SKIPPED for a known, benign reason (no graph_mailbox
+     *               configured, or no contact email on the ticket). Callers report this
+     *               as "email skipped", with no alarm.
+     *   throwable → anything else. Before psa-330, a failure while BUILDING the payload
+     *               (buildHtmlBody, display_id/subject assembly, contact resolution)
+     *               propagated out of this method; TicketNoteController turned it into
+     *               "delivery failed, send manually" and the three background callers
+     *               logged it from their catch blocks.
+     *
+     * So a NotSent outcome is mapped by CAUSE, not by status: a pre-dispatch throwable is
+     * re-thrown, and only a genuine skip (no cause) becomes null. Collapsing both onto null
+     * would silently turn a hard, permanent send failure into a benign "skipped" — the
+     * caller would report a no-op and nobody would ever learn the client was not written to.
+     *
+     * New callers that must tell the outcomes apart use sendTicketReplyNoteChecked().
      */
     public function sendTicketReplyNote(Ticket $ticket, TicketNote $note, ?string $toEmail = null, array $ccEmails = []): ?Email
     {
@@ -1488,7 +1505,11 @@ PROMPT;
 
         return match ($outcome->status) {
             EmailSendStatus::Sent => $outcome->email,
-            EmailSendStatus::NotSent => null,
+            // Skip (no cause) → the documented null. A pre-dispatch FAILURE carries the
+            // original throwable and must keep propagating, exactly as it did pre-psa-330.
+            EmailSendStatus::NotSent => $outcome->cause !== null
+                ? throw $outcome->cause
+                : null,
             // Indeterminate + SentUnrecorded surfaced as a throwable before psa-330; keep it that way.
             EmailSendStatus::Indeterminate,
             EmailSendStatus::SentUnrecorded => throw ($outcome->cause ?? new EmailSendException($outcome->reason ?? 'email send failed')),
