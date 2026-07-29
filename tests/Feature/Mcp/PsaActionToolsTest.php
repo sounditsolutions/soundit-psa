@@ -24,6 +24,7 @@ use App\Models\TicketNote;
 use App\Models\User;
 use App\Services\Email\EmailSendOutcome;
 use App\Services\EmailService;
+use App\Services\Graph\GraphClient;
 use App\Services\Graph\GraphClientException;
 use App\Services\Technician\TechnicianDisclosure;
 use App\Support\McpConfig;
@@ -617,17 +618,26 @@ class PsaActionToolsTest extends TestCase
     }
 
     /**
-     * psa-330 guard 2 — a maybe-sent outcome (the Graph sendMail call itself fails, so delivery
-     * cannot be disproven) must NOT report clean success, must NOT write a Reply note that reads
-     * as delivered, and MUST write an 'executed' audit row so a duplicate send is blocked (never
-     * auto-retry a maybe-sent write — the #329 lesson). Real path: mock GraphClient->post to throw.
+     * psa-330 guard 2 — a maybe-sent outcome (the Graph sendMail call fails with a 5xx, so
+     * delivery cannot be disproven) must NOT read as success or as delivered, must NOT write a
+     * Reply note, must keep its internal flag PRIVATE (doubt language plus a possibly
+     * undelivered reply body must never reach the client portal), must NOT claim a response on
+     * the ticket, and MUST leave the 'executed' row so a duplicate send is blocked (never
+     * auto-retry a maybe-sent write — the #329 lesson).
+     *
+     * Real path: the container-bound App\Services\Graph\GraphClient (imported — an unqualified
+     * GraphClient::class would resolve to Tests\Feature\Mcp\GraphClient and mock nothing) is
+     * replaced and its post() is expected exactly ONCE, so this fails rather than passes
+     * vacuously if the mock is not the client EmailService actually calls.
      */
     public function test_psa330_indeterminate_delivery_flags_manual_review_and_blocks_resend(): void
     {
         $token = $this->token(['send_email']);
         $ticket = $this->ticketWithContact();
+        $before = $ticket->responded_at;
         Setting::setValue('graph_mailbox', 'support@example.test'); // proceed to the Graph call
         $this->mock(GraphClient::class, fn (MockInterface $mock) => $mock->shouldReceive('post')
+            ->once()
             ->andThrow(new GraphClientException('Gateway timeout', 504)));
 
         $response = $this->callTool($token, 'send_email', [
@@ -638,16 +648,56 @@ class PsaActionToolsTest extends TestCase
         ]);
 
         $response->assertOk();
-        // not a clean "Email sent." — flagged for manual verification, no retry invited
-        $this->assertFalse((bool) $response->json('result.isError'));
+        // a maybe-undelivered email must not read as a successful send to any consumer
+        $this->assertTrue((bool) $response->json('result.isError'));
         $text = (string) $response->json('result.content.0.text');
         $this->assertStringContainsString('UNCONFIRMED', $text);
+        $this->assertStringContainsString('do NOT auto-retry', $text);
         // no note that reads as a delivered reply
         $this->assertSame(0, TicketNote::where('ticket_id', $ticket->id)->where('note_type', NoteType::Reply)->count());
-        // exactly one internal (non-Reply) note flagging the gap
-        $this->assertSame(1, TicketNote::where('ticket_id', $ticket->id)->where('note_type', NoteType::Note)->count());
+        // exactly one internal (non-Reply) note flagging the gap — and it is PRIVATE
+        $note = TicketNote::where('ticket_id', $ticket->id)->where('note_type', NoteType::Note)->sole();
+        $this->assertTrue((bool) $note->is_private, 'the manual-verification note must never be client-visible');
+        $this->assertSame(0, TicketNote::where('ticket_id', $ticket->id)->where('is_private', false)->count());
+        // delivery is unproven, so the ticket must not claim it answered the client
+        $this->assertEquals($before, $ticket->fresh()->responded_at);
         // executed audit row exists → a duplicate send is idempotency-blocked
         $this->assertSame(1, TechnicianActionLog::where('ticket_id', $ticket->id)
+            ->where('action_type', 'send_email')->where('result_status', 'executed')->count());
+    }
+
+    /**
+     * psa-330 guard 2b — a Graph REJECTION (4xx: expired secret, mailbox gone, malformed
+     * payload) proves nothing was queued, so it must classify as NOT SENT, not maybe-sent:
+     * no note, no responded_at, and NO surviving 'executed' row, so the legitimate retry
+     * stays open once the cause is fixed. Filing it as maybe-sent would silently swallow
+     * every identical client reply for the whole 24h dedup window.
+     */
+    public function test_psa330_graph_rejection_is_not_sent_and_keeps_the_retry_open(): void
+    {
+        $token = $this->token(['send_email']);
+        $ticket = $this->ticketWithContact();
+        $before = $ticket->responded_at;
+        Setting::setValue('graph_mailbox', 'gone@example.test');
+        $this->mock(GraphClient::class, fn (MockInterface $mock) => $mock->shouldReceive('post')
+            ->once()
+            ->andThrow(new GraphClientException('Resource not found', 404)));
+
+        $response = $this->callTool($token, 'send_email', [
+            'client_id' => $ticket->client_id,
+            'ticket_id' => $ticket->id,
+            'reason' => 'Client asked for an update.',
+            'body' => 'Here is your update.',
+        ]);
+
+        $response->assertOk();
+        $this->assertTrue((bool) $response->json('result.isError'));
+        $text = (string) $response->json('result.content.0.text');
+        $this->assertStringContainsString('NOT sent', $text);
+        $this->assertStringNotContainsString('UNCONFIRMED', $text);
+        $this->assertSame(0, TicketNote::where('ticket_id', $ticket->id)->count());
+        $this->assertEquals($before, $ticket->fresh()->responded_at);
+        $this->assertSame(0, TechnicianActionLog::where('ticket_id', $ticket->id)
             ->where('action_type', 'send_email')->where('result_status', 'executed')->count());
     }
 
@@ -674,11 +724,15 @@ class PsaActionToolsTest extends TestCase
 
         $first = $this->callTool($token, 'send_email', $args);
         $first->assertOk();
-        // not a clean failure (no 'retryable' invitation), flagged for manual verification
-        $this->assertFalse((bool) $first->json('result.isError'));
+        // never a clean success (and no 'retryable' invitation) — flagged for manual verification
+        $this->assertTrue((bool) $first->json('result.isError'));
         $this->assertStringContainsString('do NOT resend', (string) $first->json('result.content.0.text'));
-        // no Reply note that reads as delivered
+        // no Reply note that reads as delivered; the internal flag note is PRIVATE
         $this->assertSame(0, TicketNote::where('ticket_id', $ticket->id)->where('note_type', NoteType::Reply)->count());
+        $flagNote = TicketNote::where('ticket_id', $ticket->id)->where('note_type', NoteType::Note)->sole();
+        $this->assertTrue((bool) $flagNote->is_private, 'the manual-verification note must never be client-visible');
+        // Graph accepted the send, so the client WAS emailed: the ticket must read as responded
+        $this->assertNotNull($ticket->fresh()->responded_at);
 
         // a second identical send is idempotency-blocked (executed audit row from the first),
         // so sendTicketReplyNoteChecked is NOT called again → no double-send

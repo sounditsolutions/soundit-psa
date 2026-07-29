@@ -16,14 +16,19 @@ enum EmailSendStatus: string
     case Sent = 'sent';
 
     /**
-     * Nothing was transmitted — either skipped (no mailbox / no contact email)
-     * or a failure before the Graph call. Safe to act on / retry.
+     * Nothing was transmitted, and that is PROVEN: a skip (no mailbox / no contact
+     * email), a failure before the Graph call, or a Graph REJECTION (a 4xx answer —
+     * bad credentials, mailbox not found, malformed payload, throttled). sendMail
+     * queues nothing on a rejection, so no client email exists: safe to act on, and
+     * safe to retry once the named cause is fixed. Must never be filed as maybe-sent —
+     * that would write an idempotency row and block the legitimate retry.
      */
     case NotSent = 'not_sent';
 
     /**
-     * The Graph sendMail call itself failed (timeout / 5xx). sendMail returns 202
-     * with no body, so non-delivery cannot be proven — treat as maybe-sent.
+     * The Graph sendMail call failed in a way that does NOT prove non-delivery — a 5xx,
+     * a 408, or a transport failure indistinguishable from a read timeout. sendMail
+     * returns 202 with no body, so treat as maybe-sent.
      * Never auto-retry (would risk a duplicate client email); verify out-of-band.
      */
     case Indeterminate = 'indeterminate';

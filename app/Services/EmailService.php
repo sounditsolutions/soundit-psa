@@ -1577,15 +1577,44 @@ PROMPT;
             return EmailSendOutcome::notSent('preparing the message failed before sending: '.$e->getMessage(), retryable: true, cause: $e);
         }
 
-        // The send itself. sendMail returns 202 with no body, so a failure of THIS call
-        // (timeout / 5xx) cannot prove non-delivery — treat it as maybe-sent and never
-        // signal a retryable failure, which would risk a duplicate client email.
+        // The send itself. The failure of THIS call splits in two, and the split matters:
+        // a maybe-sent outcome makes the caller write an idempotency record and block the
+        // retry, so advertising a provably-undelivered failure as maybe-sent silently loses
+        // the client's reply for the whole dedup window.
         try {
             $this->graphClient->post("users/{$mailbox}/sendMail", $payload);
         } catch (\Throwable $e) {
+            $status = $e instanceof GraphClientException ? $e->getHttpStatus() : null;
+
+            // A 4xx means Graph ANSWERED and refused the request: sendMail queues nothing on a
+            // rejection (expired/invalid credentials, mailbox not found, malformed payload,
+            // throttling), so nothing was transmitted and a retry after fixing the named cause
+            // is safe. 408 is excluded — a request timeout may have been partially processed,
+            // so it stays maybe-sent. The cause is always carried, so the legacy shim keeps
+            // RETHROWING this to its four callers exactly as it did pre-psa-330 (never a
+            // silent null "skip").
+            if ($status !== null && $status >= 400 && $status < 500 && $status !== 408) {
+                Log::error('[EmailService] Ticket reply email rejected by Graph — nothing was transmitted', [
+                    'ticket_id' => $ticket->id,
+                    'http_status' => $status,
+                    'error' => $e->getMessage(),
+                ]);
+
+                // 429 is the one rejection that is transient in itself: the identical call may
+                // succeed once the throttle window passes. Every other 4xx needs a fix first.
+                return EmailSendOutcome::notSent(
+                    'Graph rejected the send (HTTP '.$status.') and transmitted nothing: '.$e->getMessage(),
+                    retryable: $status === 429,
+                    cause: $e,
+                );
+            }
+
+            // A 5xx / 408 / no-status transport failure cannot disprove delivery (sendMail
+            // returns 202 with no body) — maybe-sent, and never a retryable failure, which
+            // would risk a duplicate client email.
             Log::error('[EmailService] Ticket reply email delivery could not be confirmed', [
                 'ticket_id' => $ticket->id,
-                'http_status' => $e instanceof GraphClientException ? $e->getHttpStatus() : null,
+                'http_status' => $status,
                 'error' => $e->getMessage(),
             ]);
 

@@ -2369,21 +2369,13 @@ class StaffPsaActionToolExecutor
         // psa-kt82: recipients are now variable, so the idempotency key includes the
         // resolved To/CC set — the same body to a different audience is a new send.
         $contentHash = $this->contentHash('send_email', $ticket->id, $resolved->hashPayload($body));
-        if ($this->alreadyExecuted('send_email', $ticket->id, $contentHash)) {
-            return $this->idempotentResult('send_email', $ticket);
-        }
 
-        if ($this->rateLimited('send_email', $ticket->id, $this->cooldownSeconds('mcp_direct_send_email_cooldown_seconds', 300))) {
-            return ['error' => 'send_email rate limit: direct email already sent for this ticket recently'];
-        }
-
-        // psa-330: attempt delivery BEFORE persisting any receipt. The reply note,
-        // responded_at, and the 'executed' audit row are written only for an outcome
-        // that actually reached the client. A failed send therefore leaves no artifact
-        // that reads as delivered — not in the return, not as a ticket note, and no
-        // executed audit row to idempotency-block the legitimate retry. A maybe-sent
-        // outcome (indeterminate delivery or sent-but-unrecorded) never reports clean
-        // success and is flagged for manual verification rather than inviting a resend.
+        // psa-330: attempt delivery BEFORE persisting any client-facing receipt. The reply
+        // note and responded_at are written only for an outcome that actually reached the
+        // client, so a failed send leaves no artifact that reads as delivered — not in the
+        // return, not as a ticket note. A maybe-sent outcome (indeterminate delivery or
+        // sent-but-unrecorded) never reports success and never invites a resend.
+        // Built here so a disclosure/build failure fails before anything is claimed below.
         $disclosedBody = $this->disclosedBody($body, $tokenLabel);
         $outgoing = new TicketNote([
             'ticket_id' => $ticket->id,
@@ -2391,43 +2383,80 @@ class StaffPsaActionToolExecutor
             'body' => $disclosedBody,
         ]);
 
+        // Check AND claim atomically, BEFORE the network call. The claim is the durable
+        // 'executed' idempotency row, and pre-claiming it is what makes the no-double-send
+        // invariant hold:
+        //  - it survives a failure of the post-send receipt write (that write is a separate
+        //    transaction), so a delivered email can never end up with no dedup record;
+        //  - it closes the concurrent-duplicate window, which would otherwise span the whole
+        //    Graph round trip (including GraphClient's 429 back-off sleeps) instead of a
+        //    single DB transaction. lockForUpdate on the ticket row serializes check-to-claim
+        //    per ticket, so a second identical call sees the claim rather than passing the
+        //    same check and sending again.
+        // A claim is voided ONLY by an outcome that PROVES nothing was transmitted (NotSent).
+        // A throwable escaping the send is not such a proof, so the claim then stands and the
+        // send must be verified out-of-band rather than silently repeated.
+        $claim = DB::transaction(function () use ($ticket, $actorLabel, $contentHash): TechnicianActionLog|string {
+            Ticket::whereKey($ticket->id)->lockForUpdate()->first();
+
+            if ($this->alreadyExecuted('send_email', $ticket->id, $contentHash)) {
+                return 'idempotent';
+            }
+
+            if ($this->rateLimited('send_email', $ticket->id, $this->cooldownSeconds('mcp_direct_send_email_cooldown_seconds', 300))) {
+                return 'rate_limited';
+            }
+
+            return $this->auditDirectExecution(
+                'send_email',
+                $ticket,
+                $actorLabel,
+                $contentHash,
+                'Direct MCP email send claimed (pre-send idempotency claim; delivery outcome pending)',
+            );
+        });
+
+        if ($claim === 'idempotent') {
+            return $this->idempotentResult('send_email', $ticket);
+        }
+
+        if ($claim === 'rate_limited') {
+            return ['error' => 'send_email rate limit: direct email already sent for this ticket recently'];
+        }
+
         $outcome = $this->email->sendTicketReplyNoteChecked($ticket, $outgoing, $resolved->to, $resolved->cc);
 
         return match ($outcome->status) {
             EmailSendStatus::Sent => $this->recordSentEmail(
-                $ticket, $disclosedBody, $tokenLabel, $actorLabel, $contentHash, $reason, $resolved, $outcome->email
+                $ticket, $disclosedBody, $tokenLabel, $claim, $reason, $resolved, $outcome->email
             ),
-            EmailSendStatus::NotSent => [
-                'success' => false,
-                'sent' => false,
-                'retryable' => $outcome->retryable,
-                'ticket_id' => $ticket->id,
-                'ticket_display_id' => $ticket->display_id,
-                'error' => 'Email was NOT sent: '.$outcome->reason
-                    .($outcome->retryable ? ' (transient — retry is safe).' : ' (fix the cause before retrying — no message was transmitted).'),
-            ],
+            EmailSendStatus::NotSent => $this->reportNotSentEmail($ticket, $claim, $outcome),
             EmailSendStatus::Indeterminate,
             EmailSendStatus::SentUnrecorded => $this->recordUnconfirmedEmail(
-                $ticket, $disclosedBody, $tokenLabel, $actorLabel, $contentHash, $reason, $resolved, $outcome
+                $ticket, $disclosedBody, $tokenLabel, $claim, $reason, $resolved, $outcome
             ),
         };
     }
 
     /**
-     * Persist the receipt for a confirmed send: the Reply note (with its email_id),
-     * responded_at, and the 'executed' audit row — exactly the pre-psa-330 artifacts,
-     * now gated on delivery actually happening.
+     * Persist the receipt for a confirmed send: the Reply note (with its email_id) and
+     * responded_at — exactly the pre-psa-330 artifacts, now gated on delivery actually
+     * happening. The 'executed' idempotency row was already committed as the pre-send
+     * claim, in its OWN transaction: if this receipt transaction fails, the claim stands,
+     * so a delivered email can never be left with no dedup record for a retry to
+     * double-send against.
      *
      * @return array<string, mixed>
      */
-    private function recordSentEmail(Ticket $ticket, string $disclosedBody, ?string $tokenLabel, string $actorLabel, string $contentHash, string $reason, ResolvedRecipients $resolved, Email $email): array
+    private function recordSentEmail(Ticket $ticket, string $disclosedBody, ?string $tokenLabel, TechnicianActionLog $claim, string $reason, ResolvedRecipients $resolved, Email $email): array
     {
-        $note = DB::transaction(function () use ($ticket, $disclosedBody, $actorLabel, $tokenLabel, $contentHash, $reason, $resolved, $email): TicketNote {
+        $summary = 'Direct MCP email sent: '.EmailRedactor::redact($reason).' ['.$resolved->auditDescriptor().']';
+
+        $note = DB::transaction(function () use ($ticket, $disclosedBody, $tokenLabel, $claim, $summary, $email): TicketNote {
             $note = $this->createAiNote($ticket, $disclosedBody, NoteType::Reply, $tokenLabel);
             $note->update(['email_id' => $email->id]);
             $ticket->forceFill(['responded_at' => $ticket->responded_at ?? now()])->save();
-            $summary = 'Direct MCP email sent: '.EmailRedactor::redact($reason).' ['.$resolved->auditDescriptor().']';
-            $this->auditDirectExecution('send_email', $ticket, $actorLabel, $contentHash, $summary);
+            $claim->update(['summary' => mb_substr($summary, 0, 1000)]);
 
             return $note;
         });
@@ -2444,46 +2473,91 @@ class StaffPsaActionToolExecutor
     }
 
     /**
-     * Persist the record for a maybe-sent outcome (indeterminate delivery or
-     * sent-but-unrecorded): the client was, or may have been, emailed. We write an
-     * 'executed' audit row so a duplicate send is idempotency-blocked, plus an
-     * internal Note (NOT a Reply that would read as a delivered message) flagging it
-     * for manual verification. The return never claims clean success and never invites
-     * an auto-retry — that would be the double-send (psa-330 / the #329 lesson).
+     * A NotSent outcome PROVES nothing was transmitted (a skip, a pre-dispatch failure, or
+     * a Graph rejection that queued nothing), so the pre-send claim is voided: it is a
+     * reservation, not the audit of a client-facing action, and leaving it behind would
+     * idempotency-block the legitimate retry for a send that never happened. The failure
+     * itself is already logged by EmailService, and no ticket artifact is written.
      *
      * @return array<string, mixed>
      */
-    private function recordUnconfirmedEmail(Ticket $ticket, string $disclosedBody, ?string $tokenLabel, string $actorLabel, string $contentHash, string $reason, ResolvedRecipients $resolved, EmailSendOutcome $outcome): array
+    private function reportNotSentEmail(Ticket $ticket, TechnicianActionLog $claim, EmailSendOutcome $outcome): array
+    {
+        $claim->delete();
+
+        return [
+            'success' => false,
+            'sent' => false,
+            'retryable' => $outcome->retryable,
+            'ticket_id' => $ticket->id,
+            'ticket_display_id' => $ticket->display_id,
+            'error' => 'Email was NOT sent: '.$outcome->reason
+                .($outcome->retryable ? ' (transient — retry is safe).' : ' (fix the cause before retrying — no message was transmitted).'),
+        ];
+    }
+
+    /**
+     * Record a maybe-sent outcome (indeterminate delivery or sent-but-unrecorded): the
+     * client was, or may have been, emailed. The pre-send 'executed' claim is kept (and
+     * finalized) so a duplicate send stays idempotency-blocked, and a PRIVATE internal Note
+     * (never a Reply, never portal-visible) flags it for manual verification. On
+     * sent-but-unrecorded Graph accepted the send, so responded_at is stamped — the client
+     * demonstrably was answered. The return never reads as success or as a delivered email
+     * and never invites an auto-retry — that would be the double-send (psa-330 / #329).
+     *
+     * @return array<string, mixed>
+     */
+    private function recordUnconfirmedEmail(Ticket $ticket, string $disclosedBody, ?string $tokenLabel, TechnicianActionLog $claim, string $reason, ResolvedRecipients $resolved, EmailSendOutcome $outcome): array
     {
         $sentSurely = $outcome->status === EmailSendStatus::SentUnrecorded;
         $flag = $sentSurely
             ? 'DELIVERED BUT NOT RECORDED — verify the outbound email exists; do NOT resend.'
             : 'DELIVERY UNCONFIRMED — the send may or may not have reached the client; verify out-of-band before any resend.';
-        $statusValue = $outcome->status->value;
+        $summary = 'Direct MCP email UNCONFIRMED ('.$outcome->status->value.'): '.EmailRedactor::redact($reason).' ['.$resolved->auditDescriptor().']';
 
-        $note = DB::transaction(function () use ($ticket, $disclosedBody, $actorLabel, $tokenLabel, $contentHash, $reason, $resolved, $flag, $statusValue): TicketNote {
+        $note = DB::transaction(function () use ($ticket, $disclosedBody, $tokenLabel, $claim, $flag, $summary, $sentSurely): TicketNote {
+            // PRIVATE (must-fix 1): this note carries internal doubt language AND a reply
+            // body that may never have been delivered. createAiNote's default is_private=false
+            // plus a non-system NoteType would make scopePortalVisible() serve both to the
+            // client in the portal.
             $note = $this->createAiNote(
                 $ticket,
                 '[send_email — MANUAL VERIFICATION NEEDED] '.$flag."\n\nIntended reply body:\n".$disclosedBody,
                 NoteType::Note,
-                $tokenLabel
+                $tokenLabel,
+                private: true,
             );
-            $summary = 'Direct MCP email UNCONFIRMED ('.$statusValue.'): '.EmailRedactor::redact($reason).' ['.$resolved->auditDescriptor().']';
-            $this->auditDirectExecution('send_email', $ticket, $actorLabel, $contentHash, $summary);
+
+            // Sent-but-unrecorded: Graph accepted the send, so the client WAS emailed and the
+            // ticket must read as responded to — otherwise first-response SLA reporting and the
+            // responded_at-keyed senders (AutoAcknowledge / MaxHoldSender) treat an answered
+            // client as never contacted and can fire a second, redundant outreach. An
+            // indeterminate outcome proves nothing, so it claims no response.
+            if ($sentSurely) {
+                $ticket->forceFill(['responded_at' => $ticket->responded_at ?? now()])->save();
+            }
+
+            $claim->update(['summary' => mb_substr($summary, 0, 1000)]);
 
             return $note;
         });
 
+        // Must never read as success or as a delivered email to any consumer: success is
+        // false, 'sent' is falsy unless Graph actually accepted the send, and the 'error' key
+        // stops the MCP layer auditing this as a clean send. retryable stays false — a resend
+        // may duplicate a message the client already has.
         return [
-            'success' => true,
-            'sent' => $sentSurely ? true : 'unknown',
+            'success' => false,
+            'sent' => $sentSurely ? true : null,
+            'delivery' => $sentSurely ? 'sent_not_recorded' : 'unknown',
             'recorded' => false,
             'retryable' => false,
             'requires_manual_verification' => true,
             'ticket_id' => $ticket->id,
             'ticket_display_id' => $ticket->display_id,
             'note_id' => $note->id,
-            'message' => $flag.' Reason: '.$outcome->reason,
+            'error' => $flag.' Reason: '.$outcome->reason
+                .' This send is idempotency-blocked; do NOT auto-retry — verify out-of-band first.',
         ];
     }
 
@@ -2995,7 +3069,13 @@ class StaffPsaActionToolExecutor
         return $disclosed;
     }
 
-    private function createAiNote(Ticket $ticket, string $body, NoteType $type, ?string $tokenLabel = null): TicketNote
+    /**
+     * $private defaults to false (client-visible), the shape every pre-psa-330 caller
+     * relies on. It must be passed true for any note carrying internal-only content:
+     * a non-private note of a non-systemGenerated() type is served to the client by
+     * TicketNote::scopePortalVisible().
+     */
+    private function createAiNote(Ticket $ticket, string $body, NoteType $type, ?string $tokenLabel = null, bool $private = false): TicketNote
     {
         $note = TicketNote::create([
             'ticket_id' => $ticket->id,
@@ -3006,7 +3086,7 @@ class StaffPsaActionToolExecutor
             'body' => $body,
             'body_html' => MarkdownRenderer::render($body),
             'note_type' => $type,
-            'is_private' => false,
+            'is_private' => $private,
             'noted_at' => now(),
         ]);
 
@@ -3108,9 +3188,10 @@ class StaffPsaActionToolExecutor
         ];
     }
 
-    private function auditDirectExecution(string $actionType, Ticket $ticket, string $actorLabel, string $contentHash, string $summary, ?int $actorId = null): void
+    /** Returns the written log row so a pre-send claim can be finalized or voided (psa-330). */
+    private function auditDirectExecution(string $actionType, Ticket $ticket, string $actorLabel, string $contentHash, string $summary, ?int $actorId = null): TechnicianActionLog
     {
-        $this->recordActionLog($actionType, $ticket->id, (int) $ticket->client_id, $actorLabel, $contentHash, $summary, $actorId);
+        return $this->recordActionLog($actionType, $ticket->id, (int) $ticket->client_id, $actorLabel, $contentHash, $summary, $actorId);
     }
 
     /**
@@ -3125,9 +3206,9 @@ class StaffPsaActionToolExecutor
         $this->recordActionLog($actionType, null, $clientId, $actorLabel, $contentHash, $tag.$summary, $actorId);
     }
 
-    private function recordActionLog(string $actionType, ?int $ticketId, ?int $clientId, string $actorLabel, string $contentHash, string $summary, ?int $actorId): void
+    private function recordActionLog(string $actionType, ?int $ticketId, ?int $clientId, string $actorLabel, string $contentHash, string $summary, ?int $actorId): TechnicianActionLog
     {
-        TechnicianActionLog::create([
+        return TechnicianActionLog::create([
             'actor_id' => $actorId ?? TechnicianConfig::requiredAiActorUserId(),
             'approver_user_id' => null,
             'actor_label' => $actorLabel,
