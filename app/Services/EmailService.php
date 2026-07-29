@@ -29,6 +29,7 @@ use App\Services\Email\EmailSendStatus;
 use App\Services\Email\ForwardedEmailParser;
 use App\Services\Graph\GraphClient;
 use App\Services\Graph\GraphClientException;
+use App\Services\Graph\GraphNotTransmittedException;
 use App\Services\Mesh\MeshEmailParser;
 use App\Services\Triage\AssetMatcher;
 use App\Services\Zorus\ZorusEmailParser;
@@ -1585,6 +1586,28 @@ PROMPT;
             $this->graphClient->post("users/{$mailbox}/sendMail", $payload);
         } catch (\Throwable $e) {
             $status = $e instanceof GraphClientException ? $e->getHttpStatus() : null;
+
+            // A failure that provably happened BEFORE any sendMail bytes left this process —
+            // token acquisition (GraphClient::authenticatedRequest calls getToken() before it
+            // issues the request) or a connection that was never established (DNS/TCP/TLS) —
+            // transmitted nothing, exactly like a 4xx rejection. Those carry HTTP status 0, so
+            // without this arm they fall through to maybe-sent, which writes an idempotency
+            // record, raises false manual-verification work, and silently swallows every
+            // queued client reply for the whole dedup window — precisely what NotSent's
+            // contract forbids. A failure AFTER the bytes went out (a read timeout, a 5xx) is
+            // NOT this exception and stays maybe-sent.
+            if ($e instanceof GraphNotTransmittedException) {
+                Log::error('[EmailService] Ticket reply email never reached Graph — nothing was transmitted', [
+                    'ticket_id' => $ticket->id,
+                    'error' => $e->getMessage(),
+                ]);
+
+                return EmailSendOutcome::notSent(
+                    'the send never reached Graph, so nothing was transmitted: '.$e->getMessage(),
+                    retryable: true,
+                    cause: $e,
+                );
+            }
 
             // A 4xx means Graph ANSWERED and refused the request: sendMail queues nothing on a
             // rejection (expired/invalid credentials, mailbox not found, malformed payload,

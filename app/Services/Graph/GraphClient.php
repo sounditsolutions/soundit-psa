@@ -3,6 +3,7 @@
 namespace App\Services\Graph;
 
 use GuzzleHttp\Client;
+use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Exception\GuzzleException;
 use Illuminate\Contracts\Cache\Repository as CacheInterface;
 use Illuminate\Support\Facades\Log;
@@ -597,7 +598,9 @@ class GraphClient
             Log::error('Graph API token request failed', [
                 'error' => $e->getMessage(),
             ]);
-            throw new GraphClientException(
+            // Token acquisition precedes every authenticated request, so this PROVES the
+            // request never left this process (psa-330: sendMail must not file it maybe-sent).
+            throw new GraphNotTransmittedException(
                 'Failed to obtain Graph API token: '.$e->getMessage(),
             );
         }
@@ -606,7 +609,7 @@ class GraphClient
         $token = $data['access_token'] ?? null;
 
         if (! $token) {
-            throw new GraphClientException(
+            throw new GraphNotTransmittedException(
                 'Graph API token response did not contain access_token',
             );
         }
@@ -638,6 +641,18 @@ class GraphClient
             'status' => $statusCode,
             'error' => $e->getMessage(),
         ]);
+
+        // A ConnectException means the connection was never established (DNS, TCP, TLS), so
+        // the request PROVABLY never left this process and a caller can act on non-delivery.
+        // Any other response-less failure — notably a read timeout — may already have been
+        // received and processed upstream, so it stays an ordinary GraphClientException.
+        if ($e instanceof ConnectException) {
+            throw new GraphNotTransmittedException(
+                "Graph API error: {$method} {$endpoint} returned {$statusCode}",
+                $statusCode,
+                $responseBody,
+            );
+        }
 
         throw new GraphClientException(
             "Graph API error: {$method} {$endpoint} returned {$statusCode}",

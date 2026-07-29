@@ -428,7 +428,15 @@ class PsaActionToolsTest extends TestCase
         $note = TicketNote::where('ticket_id', $ticket->id)->firstOrFail();
         $this->assertNotNull($note->email_id);
 
-        $log = TechnicianActionLog::where('ticket_id', $ticket->id)->where('action_type', 'send_email')->firstOrFail();
+        // The append-only trail is reserved → executed: the pre-send claim is a RESERVATION
+        // and the delivered receipt is its terminal 'executed' row (never an in-place update).
+        $this->assertSame(
+            ['reserved', 'executed'],
+            TechnicianActionLog::where('ticket_id', $ticket->id)->where('action_type', 'send_email')
+                ->orderBy('id')->pluck('result_status')->all(),
+        );
+        $log = TechnicianActionLog::where('ticket_id', $ticket->id)->where('action_type', 'send_email')
+            ->where('result_status', 'executed')->sole();
         $this->assertStringContainsString('CC 1', (string) $log->summary);      // recipient descriptor recorded
         $this->assertStringNotContainsString('vendor@thread.test', (string) $log->summary); // addresses redacted
 
@@ -615,6 +623,13 @@ class PsaActionToolsTest extends TestCase
         // 4) NO 'executed' audit row — the legitimate retry is not idempotency-blocked
         $this->assertSame(0, TechnicianActionLog::where('ticket_id', $ticket->id)
             ->where('action_type', 'send_email')->where('result_status', 'executed')->count());
+        // 5) the attempt SURVIVES in the append-only trail as reserved → voided (never
+        //    hard-deleted), and a voided reservation is what leaves the retry open.
+        $this->assertSame(
+            ['reserved', 'voided'],
+            TechnicianActionLog::where('ticket_id', $ticket->id)->where('action_type', 'send_email')
+                ->orderBy('id')->pluck('result_status')->all(),
+        );
     }
 
     /**
@@ -661,9 +676,31 @@ class PsaActionToolsTest extends TestCase
         $this->assertSame(0, TicketNote::where('ticket_id', $ticket->id)->where('is_private', false)->count());
         // delivery is unproven, so the ticket must not claim it answered the client
         $this->assertEquals($before, $ticket->fresh()->responded_at);
-        // executed audit row exists → a duplicate send is idempotency-blocked
-        $this->assertSame(1, TechnicianActionLog::where('ticket_id', $ticket->id)
-            ->where('action_type', 'send_email')->where('result_status', 'executed')->count());
+        // the claim is finalized 'unconfirmed', NEVER 'executed' — nothing was confirmed
+        // delivered, so no consumer of the audit trail may read this as a completed send —
+        // and it survives (not deleted), so a duplicate send stays idempotency-blocked.
+        $this->assertSame(
+            ['reserved', 'unconfirmed'],
+            TechnicianActionLog::where('ticket_id', $ticket->id)->where('action_type', 'send_email')
+                ->orderBy('id')->pluck('result_status')->all(),
+        );
+
+        // must-fix 1: the blocked duplicate must NOT be handed a success / "already executed"
+        // receipt for a delivery that was never confirmed. post() is expected exactly ONCE, so
+        // a second Graph call would also fail this test.
+        $duplicate = $this->callTool($token, 'send_email', [
+            'client_id' => $ticket->client_id,
+            'ticket_id' => $ticket->id,
+            'reason' => 'Client asked for an update.',
+            'body' => 'Here is your update.',
+        ]);
+        $duplicate->assertOk();
+        $this->assertTrue((bool) $duplicate->json('result.isError'), 'a duplicate of an UNCONFIRMED send must never read as success');
+        $duplicateText = (string) $duplicate->json('result.content.0.text');
+        $this->assertStringContainsString('UNCONFIRMED', $duplicateText);
+        $this->assertStringContainsString('do NOT resend', $duplicateText);
+        $this->assertStringNotContainsString('Already executed', $duplicateText);
+        $this->assertSame(0, TicketNote::where('ticket_id', $ticket->id)->where('note_type', NoteType::Reply)->count());
     }
 
     /**
@@ -699,6 +736,12 @@ class PsaActionToolsTest extends TestCase
         $this->assertEquals($before, $ticket->fresh()->responded_at);
         $this->assertSame(0, TechnicianActionLog::where('ticket_id', $ticket->id)
             ->where('action_type', 'send_email')->where('result_status', 'executed')->count());
+        // the attempt is voided, not erased — the retry is open and the audit trail keeps it
+        $this->assertSame(
+            ['reserved', 'voided'],
+            TechnicianActionLog::where('ticket_id', $ticket->id)->where('action_type', 'send_email')
+                ->orderBy('id')->pluck('result_status')->all(),
+        );
     }
 
     /**
@@ -734,12 +777,111 @@ class PsaActionToolsTest extends TestCase
         // Graph accepted the send, so the client WAS emailed: the ticket must read as responded
         $this->assertNotNull($ticket->fresh()->responded_at);
 
-        // a second identical send is idempotency-blocked (executed audit row from the first),
-        // so sendTicketReplyNoteChecked is NOT called again → no double-send
+        // a second identical send is idempotency-blocked (the first left an 'unconfirmed'
+        // claim), so sendTicketReplyNoteChecked is NOT called again → no double-send. And
+        // must-fix 1: that blocked duplicate must NOT be answered with a success receipt for a
+        // send whose local record is missing — it repeats the do-not-resend instruction.
         $second = $this->callTool($token, 'send_email', $args);
         $second->assertOk();
-        $this->assertFalse((bool) $second->json('result.isError'));
-        $this->assertStringContainsString('already', mb_strtolower((string) $second->json('result.content.0.text')));
+        $this->assertTrue((bool) $second->json('result.isError'), 'a duplicate of an unrecorded send must never read as success');
+        $secondText = (string) $second->json('result.content.0.text');
+        $this->assertStringContainsString('UNCONFIRMED', $secondText);
+        $this->assertStringContainsString('do NOT resend', $secondText);
+        $this->assertStringNotContainsString('Already executed', $secondText);
+        $this->assertSame(0, TechnicianActionLog::where('ticket_id', $ticket->id)
+            ->where('action_type', 'send_email')->where('result_status', 'executed')->count());
+    }
+
+    /**
+     * psa-330 must-fix 1, the concurrent/in-flight duplicate. Caller A's pre-send claim is a
+     * RESERVATION, so an identical call arriving while A's Graph round trip is still
+     * outstanding (the MCP-timeout retry) must never be told "Already executed identical
+     * send_email" with success:true — nothing has been delivered yet and A's send may still
+     * fail. That is the false receipt this change exists to eliminate, on the second caller.
+     */
+    public function test_psa330_duplicate_while_a_send_is_in_flight_is_never_reported_as_sent(): void
+    {
+        $token = $this->token(['send_email']);
+        $ticket = $this->ticketWithContact();
+        $body = 'Here is your update.';
+
+        // Caller A: reservation committed, delivery outcome not yet known. Built through the
+        // real resolver so the idempotency key is the one the executor computes.
+        $resolved = app(\App\Services\Email\EmailRecipientResolver::class)->resolve(
+            $ticket, [], [], \App\Services\Email\RecipientContext::Direct, false, false,
+        );
+        TechnicianActionLog::create([
+            'actor_id' => User::first()->id,
+            'actor_label' => 'mcp-staff:opsbot',
+            'action_type' => 'send_email',
+            'tier' => 'approve',
+            'result_status' => 'reserved',
+            'ticket_id' => $ticket->id,
+            'client_id' => $ticket->client_id,
+            'content_hash' => hash('sha256', 'send_email:'.$ticket->id.':'.$resolved->hashPayload($body)),
+            'summary' => 'Direct MCP email send RESERVED (pre-send claim; delivery outcome pending)',
+            'correlation_id' => (string) \Illuminate\Support\Str::uuid(),
+        ]);
+
+        // Caller B must transmit nothing at all.
+        $this->mock(EmailService::class, fn (MockInterface $mock) => $mock->shouldReceive('sendTicketReplyNoteChecked')->never());
+
+        $response = $this->callTool($token, 'send_email', [
+            'client_id' => $ticket->client_id,
+            'ticket_id' => $ticket->id,
+            'reason' => 'The MCP client timed out; retrying the identical send.',
+            'body' => $body,
+        ]);
+
+        $response->assertOk();
+        $this->assertTrue((bool) $response->json('result.isError'), 'a duplicate of an in-flight send must never read as success');
+        $text = (string) $response->json('result.content.0.text');
+        $this->assertStringContainsString('IN FLIGHT', $text);
+        $this->assertStringContainsString('do NOT report the email as sent', $text);
+        $this->assertStringNotContainsString('Already executed', $text);
+        $this->assertSame(0, TicketNote::where('ticket_id', $ticket->id)->count());
+        $this->assertSame(0, TechnicianActionLog::where('ticket_id', $ticket->id)
+            ->where('action_type', 'send_email')->where('result_status', 'executed')->count());
+    }
+
+    /**
+     * psa-330 must-fix 2 — a throw between the committed reservation and the outcome (a
+     * pre-send DB failure, a receipt-write failure). The reservation must not be stranded: it
+     * is finalized UNCONFIRMED (never 'executed'), the ticket gets a PRIVATE
+     * manual-verification note, and the caller is told plainly that nothing is confirmed.
+     * Without the compensating finalization the send was silently blocked for the whole dedup
+     * window with no artifact on the ticket at all.
+     */
+    public function test_psa330_a_throw_after_the_claim_is_finalized_unconfirmed_with_a_private_note(): void
+    {
+        $token = $this->token(['send_email']);
+        $ticket = $this->ticketWithContact();
+        $this->mock(EmailService::class, fn (MockInterface $mock) => $mock->shouldReceive('sendTicketReplyNoteChecked')
+            ->once()
+            ->andThrow(new \RuntimeException('SQLSTATE[HY000]: general error: database is locked')));
+
+        $response = $this->callTool($token, 'send_email', [
+            'client_id' => $ticket->client_id,
+            'ticket_id' => $ticket->id,
+            'reason' => 'Client asked for an update.',
+            'body' => 'Here is your update.',
+        ]);
+
+        $response->assertOk();
+        $this->assertTrue((bool) $response->json('result.isError'));
+        $text = (string) $response->json('result.content.0.text');
+        $this->assertStringContainsString('UNCONFIRMED', $text);
+        $this->assertStringContainsString('do NOT auto-retry', $text);
+        // no note that reads as a delivered reply; exactly one internal note, and it is PRIVATE
+        $this->assertSame(0, TicketNote::where('ticket_id', $ticket->id)->where('note_type', NoteType::Reply)->count());
+        $note = TicketNote::where('ticket_id', $ticket->id)->where('note_type', NoteType::Note)->sole();
+        $this->assertTrue((bool) $note->is_private, 'the manual-verification note must never be client-visible');
+        // the reservation is finalized unconfirmed — never 'executed', never left orphaned
+        $this->assertSame(
+            ['reserved', 'unconfirmed'],
+            TechnicianActionLog::where('ticket_id', $ticket->id)->where('action_type', 'send_email')
+                ->orderBy('id')->pluck('result_status')->all(),
+        );
     }
 
     public function test_write_public_note_directly_publishes_with_required_reason_and_rate_guard(): void
