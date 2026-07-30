@@ -845,6 +845,82 @@ class PsaActionToolsTest extends TestCase
     }
 
     /**
+     * The 300s send_email flood guard must SEE an in-flight send. The reservation is committed
+     * before the Graph round trip (request timeout plus 429 back-off), so excluding it leaves
+     * that whole window uncovered and a second, DIFFERENT-body send — not an idempotent replay,
+     * so only the cooldown can stop it — transmits, giving the client two agent emails inside
+     * the window the guard exists to protect.
+     *
+     * Its mirror image is load-bearing too: a VOIDED reservation transmitted nothing, so it must
+     * NOT keep blocking the retry it just reopened — even though the append-only log still
+     * carries the original 'reserved' row.
+     */
+    public function test_send_email_flood_guard_counts_an_in_flight_reservation_but_not_a_voided_one(): void
+    {
+        $token = $this->token(['send_email']);
+        $ticket = $this->ticketWithContact();
+
+        // Caller A: reservation committed, delivery outcome not yet known.
+        $reservation = TechnicianActionLog::create([
+            'actor_id' => User::first()->id,
+            'actor_label' => 'mcp-staff:opsbot',
+            'action_type' => 'send_email',
+            'tier' => 'approve',
+            'result_status' => 'reserved',
+            'ticket_id' => $ticket->id,
+            'client_id' => $ticket->client_id,
+            'content_hash' => hash('sha256', 'send_email:'.$ticket->id.':in-flight'),
+            'summary' => 'Direct MCP email send RESERVED (pre-send claim; delivery outcome pending)',
+            'correlation_id' => (string) \Illuminate\Support\Str::uuid(),
+        ]);
+
+        $this->mock(EmailService::class, fn (MockInterface $mock) => $mock->shouldReceive('sendTicketReplyNoteChecked')->never());
+
+        $blocked = $this->callTool($token, 'send_email', [
+            'client_id' => $ticket->client_id,
+            'ticket_id' => $ticket->id,
+            'reason' => 'A second, different update while the first is still in flight.',
+            'body' => 'A different body entirely.',
+        ]);
+
+        $blocked->assertOk();
+        $this->assertTrue((bool) $blocked->json('result.isError'), 'a send inside the cooldown of an IN-FLIGHT reservation must be refused');
+        $this->assertStringContainsString('rate', (string) $blocked->json('result.content.0.text'));
+        $this->assertSame(0, TicketNote::where('ticket_id', $ticket->id)->count());
+
+        // Void the reservation: it provably transmitted nothing, so the guard must reopen even
+        // though the 'reserved' row itself survives (the log is append-only).
+        TechnicianActionLog::create([
+            'actor_id' => $reservation->actor_id,
+            'actor_label' => (string) $reservation->actor_label,
+            'action_type' => 'send_email',
+            'tier' => 'approve',
+            'result_status' => 'voided',
+            'ticket_id' => $ticket->id,
+            'client_id' => $ticket->client_id,
+            'content_hash' => (string) $reservation->content_hash,
+            'summary' => 'Direct MCP email NOT sent — reservation voided, retry open',
+            'correlation_id' => (string) \Illuminate\Support\Str::uuid(),
+        ]);
+
+        $this->mock(EmailService::class, fn (MockInterface $mock) => $mock->shouldReceive('sendTicketReplyNoteChecked')
+            ->once()
+            ->andReturnUsing(fn (Ticket $ticket, TicketNote $note) => EmailSendOutcome::sent($this->outboundEmail($ticket, $note))));
+
+        $allowed = $this->callTool($token, 'send_email', [
+            'client_id' => $ticket->client_id,
+            'ticket_id' => $ticket->id,
+            'reason' => 'The earlier attempt transmitted nothing; sending now.',
+            'body' => 'A different body entirely.',
+        ]);
+
+        $allowed->assertOk();
+        $this->assertFalse((bool) $allowed->json('result.isError'), (string) $allowed->json('result.content.0.text'));
+        $this->assertSame(1, TechnicianActionLog::where('ticket_id', $ticket->id)
+            ->where('action_type', 'send_email')->where('result_status', 'executed')->count());
+    }
+
+    /**
      * psa-330 must-fix 2 — a throw between the committed reservation and the outcome (a
      * pre-send DB failure, a receipt-write failure). The reservation must not be stranded: it
      * is finalized UNCONFIRMED (never 'executed'), the ticket gets a PRIVATE

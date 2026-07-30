@@ -35,6 +35,7 @@ use App\Services\Triage\AssetMatcher;
 use App\Services\Zorus\ZorusEmailParser;
 use App\Support\AgentConfig;
 use App\Support\AiConfig;
+use GuzzleHttp\Exception\ConnectException;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -1594,9 +1595,15 @@ PROMPT;
             // without this arm they fall through to maybe-sent, which writes an idempotency
             // record, raises false manual-verification work, and silently swallows every
             // queued client reply for the whole dedup window — precisely what NotSent's
-            // contract forbids. A failure AFTER the bytes went out (a read timeout, a 5xx) is
-            // NOT this exception and stays maybe-sent.
-            if ($e instanceof GraphNotTransmittedException) {
+            // contract forbids.
+            //
+            // But the exception TYPE alone is not that proof: Guzzle files two POST-transmission
+            // curl failures as ConnectException as well, and a sendMail that was fully
+            // transmitted must never be filed NotSent(retryable) — that voids the idempotency
+            // claim and invites the auto-retry that double-sends the client. Only a failure
+            // provesNothingWasTransmitted() can vouch for takes this arm; everything else falls
+            // through to maybe-sent below.
+            if ($e instanceof GraphNotTransmittedException && $this->provesNothingWasTransmitted($e)) {
                 Log::error('[EmailService] Ticket reply email never reached Graph — nothing was transmitted', [
                     'ticket_id' => $ticket->id,
                     'error' => $e->getMessage(),
@@ -1686,6 +1693,55 @@ PROMPT;
         }
 
         return EmailSendOutcome::sent($email);
+    }
+
+    /**
+     * Does a "never transmitted" failure actually PROVE that no sendMail bytes left this
+     * process? Only then may it be filed NotSent(retryable): that outcome voids the send's
+     * idempotency claim and invites an immediate auto-retry, so a wrong "yes" double-sends the
+     * client — the exact thing EmailSendStatus::Indeterminate exists to forbid.
+     *
+     * GraphClient raises GraphNotTransmittedException for two situations and only one of them
+     * is proof. Token acquisition happens before the request is issued, so nothing went out. A
+     * Guzzle ConnectException does NOT mean the same thing: the curl handler files FIVE errnos
+     * as ConnectException (vendor/guzzlehttp/guzzle/src/Handler/CurlFactory.php,
+     * $connectionErrors) and two of those are POST-transmission —
+     *   28 CURLE_OPERATION_TIMEOUTED — the Graph client configures only a total 'timeout' and
+     *      no connect_timeout, so this fires while WAITING FOR THE RESPONSE to a sendMail whose
+     *      bytes are already on the wire (Graph may have queued the mail and merely answered
+     *      its 202 too slowly), and
+     *   52 CURLE_GOT_NOTHING — the server closed the connection after receiving the request.
+     * Neither disproves delivery, so both stay maybe-sent.
+     *
+     * Only 6 (DNS), 7 (TCP) and 35 (TLS) prove the connection was never established. Anything
+     * we cannot read an errno from is treated as UNPROVEN: a blocked retry that raises
+     * manual-verification work is recoverable, a duplicated client email is not.
+     */
+    private function provesNothingWasTransmitted(\Throwable $e): bool
+    {
+        // Literal errnos rather than the CURLE_* constants: classifying a failure must not
+        // require ext-curl to be loaded. 6 CURLE_COULDNT_RESOLVE_HOST, 7 CURLE_COULDNT_CONNECT,
+        // 35 CURLE_SSL_CONNECT_ERROR.
+        $neverConnected = [6, 7, 35];
+
+        for ($cause = $e; $cause !== null; $cause = $cause->getPrevious()) {
+            if ($cause instanceof ConnectException) {
+                $errno = $cause->getHandlerContext()['errno'] ?? null;
+                if ($errno !== null) {
+                    return in_array((int) $errno, $neverConnected, true);
+                }
+            }
+
+            // The handler context does not always survive a re-wrap, so fall back to the errno
+            // Guzzle prints into the message itself ("cURL error 28: ...").
+            if (preg_match('/cURL error (\d+)/i', $cause->getMessage(), $m) === 1) {
+                return in_array((int) $m[1], $neverConnected, true);
+            }
+        }
+
+        // No transport-level failure anywhere in the chain: the send never got as far as
+        // issuing the request (token acquisition), so nothing was transmitted.
+        return true;
     }
 
     /**

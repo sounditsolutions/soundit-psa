@@ -2434,14 +2434,16 @@ class StaffPsaActionToolExecutor
                 return (string) $live->result_status;
             }
 
-            // A maybe-sent attempt counts against the flood guard exactly as a delivered one
-            // does — it may already have reached the client. A voided reservation does not:
-            // that would re-block the very retry the void just reopened.
-            if ($this->rateLimited(
-                'send_email',
+            // An IN-FLIGHT reservation counts against the flood guard exactly as a delivered or
+            // maybe-sent attempt does — it may already have reached the client, and the Graph
+            // round trip it is blocked on (the request timeout plus GraphClient's 429 back-off
+            // sleeps) is precisely the window a second, different-body send would otherwise
+            // slip through. A VOIDED reservation does not count: that would re-block the very
+            // retry the void just reopened. Since the log is append-only and the reservation
+            // row survives its own void, the guard folds each claim to its LATEST status.
+            if ($this->liveSendAttemptWithin(
                 $ticket->id,
                 $this->cooldownSeconds('mcp_direct_send_email_cooldown_seconds', 300),
-                [self::RESULT_EXECUTED, self::RESULT_UNCONFIRMED],
             )) {
                 return 'rate_limited';
             }
@@ -3192,12 +3194,7 @@ class StaffPsaActionToolExecutor
             ->exists();
     }
 
-    /**
-     * @param  array<int, string>  $resultStatuses  Which recorded outcomes count as an attempt
-     *                                              that already reached (or may have reached)
-     *                                              the client. A voided reservation never does.
-     */
-    private function rateLimited(string $actionType, int $ticketId, int $cooldownSeconds, array $resultStatuses = [self::RESULT_EXECUTED]): bool
+    private function rateLimited(string $actionType, int $ticketId, int $cooldownSeconds): bool
     {
         if ($cooldownSeconds <= 0) {
             return false;
@@ -3206,9 +3203,52 @@ class StaffPsaActionToolExecutor
         return TechnicianActionLog::query()
             ->where('action_type', $actionType)
             ->where('ticket_id', $ticketId)
-            ->whereIn('result_status', $resultStatuses)
+            ->where('result_status', self::RESULT_EXECUTED)
             ->where('created_at', '>=', now()->subSeconds($cooldownSeconds))
             ->exists();
+    }
+
+    /**
+     * The send_email flood guard: is there an attempt on this ticket, inside the cooldown,
+     * that reached — or may still reach — the client?
+
+     * The log is append-only, so a claim's state is the LATEST row for its content_hash, and a
+     * plain whereIn over the raw rows cannot express "reserved and not yet voided": the
+     * reservation row outlives its own void. So fold every recent send_email row on this ticket
+     * to the latest status of its key and count the claim unless that status is 'voided'.
+     *
+     * 'reserved' MUST count — the reservation is committed before the Graph round trip, so
+     * excluding it leaves that entire window (request timeout plus 429 back-off) uncovered and
+     * a second, different-body send transmits inside the 300s the cooldown exists to protect.
+     * 'voided' must NOT count — that claim provably transmitted nothing, and counting it would
+     * re-block the legitimate retry the void just reopened.
+     */
+    private function liveSendAttemptWithin(int $ticketId, int $cooldownSeconds): bool
+    {
+        if ($cooldownSeconds <= 0) {
+            return false;
+        }
+
+        $rows = TechnicianActionLog::query()
+            ->where('action_type', 'send_email')
+            ->where('ticket_id', $ticketId)
+            ->whereIn('result_status', [self::RESULT_EXECUTED, self::RESULT_RESERVED, self::RESULT_UNCONFIRMED, self::RESULT_VOIDED])
+            ->where('created_at', '>=', now()->subSeconds($cooldownSeconds))
+            ->orderBy('id')
+            ->get(['content_hash', 'result_status']);
+
+        $latestByClaim = [];
+        foreach ($rows as $row) {
+            $latestByClaim[(string) $row->content_hash] = (string) $row->result_status;
+        }
+
+        foreach ($latestByClaim as $status) {
+            if ($status !== self::RESULT_VOIDED) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function cooldownSeconds(string $settingKey, int $default): int
