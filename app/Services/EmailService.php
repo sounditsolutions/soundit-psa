@@ -1713,35 +1713,71 @@ PROMPT;
      *   52 CURLE_GOT_NOTHING — the server closed the connection after receiving the request.
      * Neither disproves delivery, so both stay maybe-sent.
      *
-     * Only 6 (DNS), 7 (TCP) and 35 (TLS) prove the connection was never established. Anything
-     * we cannot read an errno from is treated as UNPROVEN: a blocked retry that raises
-     * manual-verification work is recoverable, a duplicated client email is not.
+     * Only 6 (DNS), 7 (TCP) and 35 (TLS) prove the connection was never established — and an
+     * errno cannot say WHICH request produced it, so it is never read as proof about a request
+     * we have not identified. This predicate therefore answers yes on exactly two POSITIVE
+     * proofs and no on everything else:
+     *   1. the failure is a TOKEN acquisition failure (GraphClient names the token in its own
+     *      message), which precedes the sendMail request, so nothing went out whatever errno the
+     *      token request failed with — curl 28/52 there is proof, not doubt;
+     *   2. one of errnos 6/7/35 is readable off the chain.
+     * Everything else is UNPROVEN, INCLUDING a failure whose errno cannot be read at all:
+     * GraphClientException has no $previous slot to chain a ConnectException through and
+     * throwFromGuzzle() omits the Guzzle text, so a sendMail whose bytes are already on the wire
+     * can arrive here with nothing to read. Absence of evidence is not proof of non-transmission:
+     * a blocked retry that raises manual-verification work is recoverable, a duplicated client
+     * email is not.
      */
     private function provesNothingWasTransmitted(\Throwable $e): bool
     {
-        // Literal errnos rather than the CURLE_* constants: classifying a failure must not
-        // require ext-curl to be loaded. 6 CURLE_COULDNT_RESOLVE_HOST, 7 CURLE_COULDNT_CONNECT,
-        // 35 CURLE_SSL_CONNECT_ERROR.
+        // Proof 1 — TOKEN ACQUISITION. getToken() runs before authenticatedRequest() attaches the
+        // bearer and issues the request, so a failure it reports means no sendMail bytes exist,
+        // whatever the underlying transport errno was. That has to be recognised by SOURCE, not
+        // by errno: a stalled token endpoint yields curl 28 (or 52) exactly as a slow sendMail
+        // response does, and the errno cannot say which of the two requests failed — so keying on
+        // it alone would file a reply that provably never left this process as maybe-sent, writing
+        // an idempotency record that swallows the reply for the whole dedup window and sending a
+        // human to verify an email that was never transmitted. GraphClient names the token in its
+        // own message ('Failed to obtain Graph API token: ...'), which is the only signal
+        // available here, so it is matched FIRST and wins over any errno further down the chain.
+        $tokenFailureMarker = 'Graph API token';
+
+        for ($cause = $e; $cause !== null; $cause = $cause->getPrevious()) {
+            if (stripos($cause->getMessage(), $tokenFailureMarker) !== false) {
+                return true;
+            }
+        }
+
+        // Proof 2 — a connection that was never ESTABLISHED, so nothing reached the wire. Literal
+        // errnos rather than the CURLE_* constants: classifying a failure must not require
+        // ext-curl to be loaded. 6 CURLE_COULDNT_RESOLVE_HOST, 7 CURLE_COULDNT_CONNECT,
+        // 35 CURLE_SSL_CONNECT_ERROR. Only a POSITIVE match proves anything here — 28 and 52 are
+        // post-transmission (see the docblock) and must fall through to maybe-sent.
         $neverConnected = [6, 7, 35];
 
         for ($cause = $e; $cause !== null; $cause = $cause->getPrevious()) {
             if ($cause instanceof ConnectException) {
                 $errno = $cause->getHandlerContext()['errno'] ?? null;
-                if ($errno !== null) {
-                    return in_array((int) $errno, $neverConnected, true);
+                if ($errno !== null && in_array((int) $errno, $neverConnected, true)) {
+                    return true;
                 }
             }
 
-            // The handler context does not always survive a re-wrap, so fall back to the errno
-            // Guzzle prints into the message itself ("cURL error 28: ...").
-            if (preg_match('/cURL error (\d+)/i', $cause->getMessage(), $m) === 1) {
-                return in_array((int) $m[1], $neverConnected, true);
+            // The handler context does not always survive a re-wrap, so also read the errno
+            // Guzzle prints into the message itself ("cURL error 6: ...").
+            if (preg_match('/cURL error (\d+)/i', $cause->getMessage(), $m) === 1
+                && in_array((int) $m[1], $neverConnected, true)) {
+                return true;
             }
         }
 
-        // No transport-level failure anywhere in the chain: the send never got as far as
-        // issuing the request (token acquisition), so nothing was transmitted.
-        return true;
+        // NEITHER proof, so the send is UNPROVEN and stays maybe-sent. This is deliberately the
+        // default: a GraphNotTransmittedException we cannot read an errno from may well be a
+        // fully transmitted sendMail (no $previous slot to chain the ConnectException through, and
+        // throwFromGuzzle() drops the Guzzle text), and answering "proven" would void the
+        // idempotency claim and invite the auto-retry that double-sends the client — the one
+        // outcome EmailSendStatus::Indeterminate exists to forbid.
+        return false;
     }
 
     /**
