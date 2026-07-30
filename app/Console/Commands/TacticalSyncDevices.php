@@ -51,6 +51,18 @@ class TacticalSyncDevices extends Command
             $this->info("Assets created: {$result->details['assets_created']}");
         }
 
+        // A skipped device is invisible in the Assets list for exactly the same
+        // reason the NULL-asset_id rows were: no Asset, no UI. Warn rather than
+        // info, and name the reasons, so "0 created" cannot read as "nothing to
+        // do here".
+        if (! empty($result->details['assets_skipped'])) {
+            $this->warn("Assets skipped: {$result->details['assets_skipped']}");
+
+            foreach ($result->details['assets_skipped_reasons'] ?? [] as $reason => $count) {
+                $this->warn("  - {$reason}: {$count}");
+            }
+        }
+
         return $result->errors > 0 ? self::FAILURE : self::SUCCESS;
     }
 }

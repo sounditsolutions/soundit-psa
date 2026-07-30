@@ -320,21 +320,33 @@ class TacticalDeviceSyncService
         $hostname = $agent['hostname'] ?? null;
 
         if (! $hostname) {
+            $this->countSkippedAsset($result, 'no_hostname');
+
+            Log::info('[TacticalSync] Skipped asset link — agent reports no hostname', [
+                'agent_id' => $tacticalAsset->agent_id,
+            ]);
+
             return;
         }
 
         $lowerHostname = strtolower($hostname);
 
+        // Deterministic pick: an exact hostname match outranks a name-only match,
+        // and ties break on id. The OR below can match several live unlinked
+        // assets for one client, and a bare ->first() let the winner vary between
+        // runs — so which asset a device adopted was luck, not a rule.
         $asset = Asset::where('client_id', $psaClientId)
             ->whereNull('tactical_asset_id')
             ->where(function ($q) use ($lowerHostname) {
                 $q->whereRaw('LOWER(hostname) = ?', [$lowerHostname])
                     ->orWhereRaw('LOWER(name) = ?', [$lowerHostname]);
             })
+            ->orderByRaw('CASE WHEN LOWER(hostname) = ? THEN 0 ELSE 1 END', [$lowerHostname])
+            ->orderBy('id')
             ->first();
 
         if (! $asset) {
-            $asset = $this->createAssetFromAgent($psaClientId, $agent);
+            $asset = $this->createAssetFromAgent($psaClientId, $agent, $result);
 
             if (! $asset) {
                 return;
@@ -373,9 +385,14 @@ class TacticalDeviceSyncService
      *    record deliberately. Resurrecting it (or shipping a second copy) is a
      *    decision for a human, not for a read-driven sync.
      *
+     * Every early return here counts into details['assets_skipped'] and is
+     * reported to the operator. A device the sync deliberately refuses to create
+     * is still a device the operator cannot see, and silence about it recreates
+     * the original complaint one layer up.
+     *
      * @param  array<string, mixed>  $agent
      */
-    private function createAssetFromAgent(int $psaClientId, array $agent): ?Asset
+    private function createAssetFromAgent(int $psaClientId, array $agent, SyncResult $result): ?Asset
     {
         $hostname = (string) $agent['hostname'];
         $lowerHostname = strtolower($hostname);
@@ -389,6 +406,8 @@ class TacticalDeviceSyncService
             ->first();
 
         if ($conflict) {
+            $this->countSkippedAsset($result, $conflict->trashed() ? 'soft_deleted_conflict' : 'hostname_conflict');
+
             Log::info('[TacticalSync] Skipped asset creation — hostname already exists for this client', [
                 'agent' => $hostname,
                 'asset_id' => $conflict->id,
@@ -412,7 +431,7 @@ class TacticalDeviceSyncService
             'hostname' => $hostname,
             'asset_type' => $this->mapAssetType($mapped['plat'] ?? null, $agent['monitoring_type'] ?? null),
             'os' => $mapped['os'] ?? null,
-            'serial_number' => $mapped['serial_number'] ?? null,
+            'serial_number' => $this->sanitizeSerialNumber($mapped['serial_number'] ?? null),
             'cpu' => $mapped['cpu'] ?? null,
             'disk_summary' => $mapped['disk_summary'] ?? null,
             'ip_address' => is_array($localIps) ? ($localIps[0] ?? null) : $localIps,
@@ -430,6 +449,72 @@ class TacticalDeviceSyncService
         ]);
 
         return $asset;
+    }
+
+    /**
+     * Count a device the sync chose not to create an asset for, by reason.
+     *
+     * details['assets_skipped'] is the total; details['assets_skipped_reasons']
+     * breaks it down so the log line and the operator-facing count can never
+     * disagree about why.
+     */
+    private function countSkippedAsset(SyncResult $result, string $reason): void
+    {
+        $result->details['assets_skipped'] = ($result->details['assets_skipped'] ?? 0) + 1;
+
+        $reasons = $result->details['assets_skipped_reasons'] ?? [];
+        $reasons[$reason] = ($reasons[$reason] ?? 0) + 1;
+        $result->details['assets_skipped_reasons'] = $reasons;
+    }
+
+    /**
+     * Drop OEM placeholder serials to NULL before they reach an Asset record.
+     *
+     * Tactical reports "To be filled by O.E.M.", "Default string", "System Serial
+     * Number" and friends verbatim for whole fleets of machines. Nothing matches
+     * on serial today — #333 deliberately kept matching on hostname for exactly
+     * this reason — but the create path was writing these strings onto real Asset
+     * records, so the first person to add serial matching would inherit a column
+     * where hundreds of unrelated devices share a value. NULL is the honest
+     * representation of "the hardware did not report a serial".
+     *
+     * Matching is case- and space-insensitive because the same placeholder
+     * arrives punctuated differently across vendors ("O.E.M." vs "OEM").
+     */
+    private function sanitizeSerialNumber(?string $serial): ?string
+    {
+        if ($serial === null) {
+            return null;
+        }
+
+        $trimmed = trim($serial);
+
+        if ($trimmed === '') {
+            return null;
+        }
+
+        $normalized = preg_replace('/[^a-z0-9]/', '', strtolower($trimmed));
+
+        $placeholders = [
+            'tobefilledbyoem',
+            'defaultstring',
+            'systemserialnumber',
+            'chassisserialnumber',
+            'baseboardserialnumber',
+            'serialnumber',
+            'notspecified',
+            'notapplicable',
+            'na',
+            'none',
+            'null',
+            'unknown',
+            'invalid',
+            'default',
+            '0',
+            '00000000',
+        ];
+
+        return in_array($normalized, $placeholders, true) ? null : $trimmed;
     }
 
     /**
