@@ -2295,16 +2295,19 @@ class IntegrationsController extends Controller
                 ? ' ('.$assetsCreated.' new asset'.($assetsCreated === 1 ? '' : 's').' created).'
                 : '.';
 
-            // Skipped devices have no Asset and therefore no UI anywhere — the
-            // same invisibility this sync was fixed to end. Say so on the same
-            // surface that reports the successes, and downgrade the flash to a
-            // warning so it does not read as an unqualified success.
+            // A skipped device carries no asset link, so its Tactical data
+            // surfaces nowhere — but do NOT tell the operator the machine is
+            // missing from the Assets list: on the dominant reason
+            // (hostname_conflict, the agent-reinstall case) a matching asset is
+            // sitting right there, held by a stale agent row. Name the missing
+            // LINK, and point at the log, which names the reason per device.
+            // Warning, not success.
             $assetsSkipped = $result->details['assets_skipped'] ?? 0;
 
             if ($assetsSkipped > 0) {
                 $message .= ' '.$assetsSkipped.' device'.($assetsSkipped === 1 ? '' : 's')
-                    .' could not be given an asset and '.($assetsSkipped === 1 ? 'is' : 'are')
-                    .' not visible in the Assets list — see the sync log for the reason on each.';
+                    .' could not be linked to an asset, so '.($assetsSkipped === 1 ? 'its' : 'their')
+                    .' Tactical data is not shown anywhere — see the sync log for the reason on each.';
 
                 return back()->with('warning', $message);
             }

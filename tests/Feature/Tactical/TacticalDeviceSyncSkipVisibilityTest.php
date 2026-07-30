@@ -107,6 +107,33 @@ class TacticalDeviceSyncSkipVisibilityTest extends TestCase
         $this->assertSame(1, $result->details['assets_skipped_reasons']['soft_deleted_conflict'] ?? 0);
     }
 
+    /**
+     * Both rows match the conflict lookup's OR, and which one is reported picks
+     * the human remedy ('another agent owns this name' vs 'someone deleted this
+     * deliberately'). It must not depend on storage order: the live, blocking
+     * record wins. The trashed asset is created first here, so an id-only tie
+     * break would report the wrong reason.
+     */
+    public function test_a_live_conflict_outranks_a_soft_deleted_one(): void
+    {
+        $client = $this->mappedClient();
+
+        $trashed = Asset::factory()->create(['client_id' => $client->id, 'hostname' => 'NEWBOX']);
+        $trashed->delete();
+
+        $live = Asset::factory()->create(['client_id' => $client->id, 'hostname' => 'NEWBOX']);
+        $old = TacticalAsset::create([
+            'agent_id' => 'AGENT-OLD', 'hostname' => 'NEWBOX', 'asset_id' => $live->id,
+            'status' => 'offline', 'synced_at' => now()->subDay(),
+        ]);
+        $live->update(['tactical_asset_id' => $old->id]);
+
+        $result = $this->syncService([$this->agent()])->syncDevices();
+
+        $this->assertSame(1, $result->details['assets_skipped_reasons']['hostname_conflict'] ?? 0);
+        $this->assertArrayNotHasKey('soft_deleted_conflict', $result->details['assets_skipped_reasons'] ?? []);
+    }
+
     public function test_agent_without_a_hostname_is_counted_and_named(): void
     {
         $this->mappedClient();
@@ -215,10 +242,10 @@ class TacticalDeviceSyncSkipVisibilityTest extends TestCase
      */
     public function test_the_integrations_page_renders_a_flashed_warning_exactly_once(): void
     {
-        $needle = 'not visible in the Assets list';
+        $needle = 'could not be linked to an asset';
 
         $html = $this->actingAs(User::factory()->create())
-            ->withSession(['warning' => "1 device could not be given an asset and is {$needle} — see the sync log."])
+            ->withSession(['warning' => "1 device {$needle}, so its Tactical data is not shown anywhere — see the sync log."])
             ->get(route('settings.integrations'))
             ->assertOk()
             ->getContent();

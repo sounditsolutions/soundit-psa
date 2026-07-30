@@ -397,12 +397,21 @@ class TacticalDeviceSyncService
         $hostname = (string) $agent['hostname'];
         $lowerHostname = strtolower($hostname);
 
+        // Deterministic pick, for the same reason the link query above orders:
+        // one client can hold both a live and a soft-deleted match, and a bare
+        // ->first() let the reported reason — and so the remedy the operator is
+        // sent to — flip between runs on unchanged data. A LIVE conflict outranks
+        // a trashed one (it is the record actually blocking the link), then an
+        // exact hostname match outranks a name-only one, then id breaks ties.
         $conflict = Asset::withTrashed()
             ->where('client_id', $psaClientId)
             ->where(function ($q) use ($lowerHostname) {
                 $q->whereRaw('LOWER(hostname) = ?', [$lowerHostname])
                     ->orWhereRaw('LOWER(name) = ?', [$lowerHostname]);
             })
+            ->orderByRaw('CASE WHEN deleted_at IS NULL THEN 0 ELSE 1 END')
+            ->orderByRaw('CASE WHEN LOWER(hostname) = ? THEN 0 ELSE 1 END', [$lowerHostname])
+            ->orderBy('id')
             ->first();
 
         if ($conflict) {
