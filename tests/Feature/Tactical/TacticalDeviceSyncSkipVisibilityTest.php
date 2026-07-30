@@ -245,7 +245,7 @@ class TacticalDeviceSyncSkipVisibilityTest extends TestCase
         $needle = 'could not be linked to an asset';
 
         $html = $this->actingAs(User::factory()->create())
-            ->withSession(['warning' => "1 device {$needle}, so its Tactical data is not shown anywhere — see the sync log."])
+            ->withSession(['warning' => "1 device {$needle}, so its Tactical data is not reaching any asset — see the sync log."])
             ->get(route('settings.integrations'))
             ->assertOk()
             ->getContent();
