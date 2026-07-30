@@ -35,6 +35,13 @@ class Email extends Model
         'person_id',
         'user_id',
         'ticket_id',
+        // psa-330 redesign: explicit outbound send lifecycle.
+        'send_status',
+        'idempotency_key',
+        'send_attempted_at',
+        'send_accepted_at',
+        'send_failed_at',
+        'send_error',
     ];
 
     protected $hidden = ['body_html'];
@@ -49,6 +56,9 @@ class Email extends Model
             'is_read' => 'boolean',
             'received_at' => 'datetime',
             'dismissed_at' => 'datetime',
+            'send_attempted_at' => 'datetime',
+            'send_accepted_at' => 'datetime',
+            'send_failed_at' => 'datetime',
         ];
     }
 

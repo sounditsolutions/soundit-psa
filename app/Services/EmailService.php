@@ -1439,16 +1439,31 @@ PROMPT;
             ], $cc);
         }
 
-        $this->graphClient->post("users/{$mailbox}/sendMail", $payload);
+        $to = strtolower(trim($to));
+        $resolved = $this->resolveRecipient($to);
 
-        $resolved = $this->resolveRecipient(strtolower(trim($to)));
+        // Idempotency: identical sends map to one row. A retry of an already-accepted send
+        // returns that row and does NOT re-post — the duplicate "success" the bug produced.
+        $idempotencyKey = 'send:'.hash('sha256', implode('|', [
+            strtolower($mailbox), $to, $subject, $bodyText, $cc ? implode(',', array_map('strtolower', $cc)) : '',
+        ]));
+        $existing = Email::where('idempotency_key', $idempotencyKey)->first();
+        if ($existing && $existing->send_status === 'accepted') {
+            return $existing;
+        }
 
-        return Email::create([
+        // Write the outbound row PENDING before the Graph call, so a crash between the send and
+        // the record cannot erase the attempt (the false-receipt bug). graph_id stays null:
+        // Graph sendMail returns 202 with no id, so it is never the send signal.
+        $email = $existing ?: Email::create([
             'graph_id' => null,
             'direction' => 'outbound',
+            'send_status' => 'pending',
+            'idempotency_key' => $idempotencyKey,
+            'send_attempted_at' => now(),
             'from_address' => strtolower($mailbox),
             'from_name' => null,
-            'to_recipients' => [['name' => $toName, 'address' => strtolower(trim($to))]],
+            'to_recipients' => [['name' => $toName, 'address' => $to]],
             'cc_recipients' => $cc ? array_map(fn ($a) => ['address' => strtolower(trim($a))], $cc) : null,
             'subject' => $subject,
             'body_preview' => mb_substr($bodyText, 0, 500),
@@ -1465,6 +1480,28 @@ PROMPT;
             'person_id' => $resolved['person_id'],
             'user_id' => $resolved['user_id'],
         ]);
+        if ($existing) {
+            $email->update(['send_status' => 'pending', 'send_attempted_at' => now(), 'send_error' => null]);
+        }
+
+        try {
+            $this->graphClient->post("users/{$mailbox}/sendMail", $payload);
+        } catch (\Throwable $e) {
+            // Pre-dispatch or transport failure: the send did NOT leave. Record it honestly and
+            // rethrow — callers must not read this as success.
+            $email->update([
+                'send_status' => 'failed',
+                'send_failed_at' => now(),
+                'send_error' => mb_substr($e->getMessage(), 0, 1000),
+            ]);
+            throw $e;
+        }
+
+        // 202 Accepted — Graph took custody of the message. This is "accepted", never "delivered":
+        // the send API returns no delivery receipt, so no design can truthfully claim more.
+        $email->update(['send_status' => 'accepted', 'send_accepted_at' => now(), 'send_error' => null]);
+
+        return $email;
     }
 
     /**
