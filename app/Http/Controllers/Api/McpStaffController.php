@@ -249,6 +249,10 @@ class McpStaffController extends Controller
         // above, client_id an optional filter. Metadata only — never the drafted
         // body, which stays in the cockpit approval UI.
         'get_staged_action_status',
+        // READ-ONLY cross-client mislink sweep (Chet archaeology relief). Cross-client
+        // like the pairs above, client_id an optional filter; explicit-grant only so
+        // the legacy full-surface token never inherits a fleet-wide cross-client read.
+        'list_mislinked_assets',
     ];
 
     /**
