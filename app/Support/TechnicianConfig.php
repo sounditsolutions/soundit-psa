@@ -263,8 +263,15 @@ class TechnicianConfig
      * Staging is deliberately NOT gated on the Technician toggles. Chet stages over
      * staff MCP under a token grant plus the kill switch alone (no Staff*ToolExecutor
      * consults enabled()/emergencyBackstopEnabled()), the staff Assistant stages held
-     * actions under assistant_enabled, and the agent/triage writers (SendReplyTool,
-     * ProposeCloseTool, DraftPipeline, IntakeRecorder) stage under their own switches.
+     * actions under assistant_enabled, the agent/triage writers (SendReplyTool,
+     * ProposeCloseTool, DraftPipeline) stage under agent_enabled/triage_enabled, and
+     * PSA-native intake stages held suggestions under its OWN per-channel gates:
+     * EmailService::recordIntakeRoute() writes an AwaitingApproval run under
+     * AgentConfig::intakeEmailEnabled() and IntakeRecorder::record() under
+     * AgentConfig::intakeCallEnabled() (each inheriting the legacy intake_enabled only
+     * when its per-channel key is ABSENT). Neither is agent_enabled or triage_enabled,
+     * so both must be read here — an intake-only deployment with every other AI toggle
+     * off is a valid configuration, and omitting these gates gave it the false all-clear.
      * Any of those live means notify() can fire, so any of them with no channel
      * configured is a silent drop the panel must warn about.
      *
@@ -279,6 +286,8 @@ class TechnicianConfig
             return McpConfig::isStaffEnabled()
                 || AssistantConfig::operatorIntent()
                 || AgentConfig::enabled()
+                || AgentConfig::intakeEmailEnabled()
+                || AgentConfig::intakeCallEnabled()
                 || TriageConfig::isEnabled();
         } catch (\Throwable) {
             return true;

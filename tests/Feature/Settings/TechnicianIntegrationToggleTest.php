@@ -461,4 +461,69 @@ class TechnicianIntegrationToggleTest extends TestCase
             ->assertOk()
             ->assertDontSee('no delivery channel');
     }
+
+    /**
+     * psa-tmdw: the per-channel INTAKE gates are part of plane 3. PSA-native intake
+     * stages its own AwaitingApproval run — EmailService::recordIntakeRoute() on the
+     * held-suggestion branch (gated on intake_email_enabled) and IntakeRecorder::record()
+     * on the call leg (gated on intake_call_enabled) — and TechnicianRunObserver notifies
+     * on every creation in AwaitingApproval. Neither gate is agent_enabled or
+     * triage_enabled, so an intake-only deployment with every other AI toggle off still
+     * fires notify() into nothing: the panel must warn, not give a false all-clear.
+     *
+     * Each arm pins the DISTINCTION, not merely "a warning appeared": with the two intake
+     * disjuncts removed from stagedApprovalNotificationsPossible() both arms fail at their
+     * assertTrue (and at assertSee), because nothing else in this state is on.
+     */
+    public function test_notify_panel_warns_when_only_the_intake_plane_is_live(): void
+    {
+        // Every other plane explicitly OFF — no default is left to carry this test.
+        Setting::setValue('technician_enabled', '0');
+        Setting::setValue('technician_emergency_enabled', '0');
+        Setting::setValue('triage_enabled', '0');
+        Setting::setValue('triage_auto_review', '0');
+        Setting::setValue('agent_enabled', '0');
+        Setting::setValue('assistant_enabled', '0');
+        // Both channel keys PRESENT and '0': channelIntakeEnabled() falls back to the
+        // legacy master only when the key is absent/blank, so this is a real OFF.
+        Setting::setValue('intake_enabled', '0');
+        Setting::setValue('intake_email_enabled', '0');
+        Setting::setValue('intake_call_enabled', '0');
+
+        // Baseline: nothing can stage, so no warning (the predicate is not constant true).
+        $this->assertFalse(TechnicianConfig::notificationsUndeliverable());
+
+        // Arm 1 — email intake stages a held attach suggestion for approval.
+        Setting::setValue('intake_email_enabled', '1');
+
+        $this->assertTrue(TechnicianConfig::notificationsUndeliverable());
+
+        $this->actingAs($this->user)
+            ->get(route('settings.integrations'))
+            ->assertOk()
+            ->assertSee('no delivery channel');
+
+        // Arm 2 — email channel off again, call intake on: IntakeRecorder stages the same way.
+        Setting::setValue('intake_email_enabled', '0');
+        $this->assertFalse(TechnicianConfig::notificationsUndeliverable());
+
+        Setting::setValue('intake_call_enabled', '1');
+
+        $this->assertTrue(TechnicianConfig::notificationsUndeliverable());
+
+        $this->actingAs($this->user)
+            ->get(route('settings.integrations'))
+            ->assertOk()
+            ->assertSee('no delivery channel');
+
+        // ...and one channel clears it in exactly the same state.
+        Setting::setValue('technician_notify_email', 'ops@example.com');
+
+        $this->assertFalse(TechnicianConfig::notificationsUndeliverable());
+
+        $this->actingAs($this->user)
+            ->get(route('settings.integrations'))
+            ->assertOk()
+            ->assertDontSee('no delivery channel');
+    }
 }
