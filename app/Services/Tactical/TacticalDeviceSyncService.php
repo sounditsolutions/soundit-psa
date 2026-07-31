@@ -277,10 +277,18 @@ class TacticalDeviceSyncService
             // fires once and never re-evaluates, and for a Tactical-only asset —
             // the population this change creates — no other writer restores the
             // flag. Keeping the last value we actually OBSERVED degrades
-            // honestly instead: last_seen_at stops advancing, so the badge reads
-            // "Stale", and the per-agent refresh above corrects it the moment
-            // the agent is seen again. Same psa-wedk principle the refresh cites,
-            // the other way round: never assert current truth we did not observe.
+            // honestly instead — but ONLY because every reader of rmm_online now
+            // gates a TRUE flag on last_seen_at freshness, which stops advancing
+            // here: Asset::getStatusBadgeAttribute() reads "Stale",
+            // AssetHealthService::connectivityFactor() drops the penalty-free
+            // "Online per RMM" and scores the machine off last_seen_at instead,
+            // and the Assets "offline" filter still finds it. Without all three
+            // this sweep would trade a false "Offline" for an equally unobserved,
+            // permanent "Online" — so a NEW reader of rmm_online must gate on
+            // Asset::isRmmDataStale() or this decision has to be revisited. The
+            // per-agent refresh above corrects the flag the moment the agent is
+            // seen again. Same psa-wedk principle the refresh cites, the other
+            // way round: never assert current truth we did not observe.
             $staleCount = $stale->update(['status' => 'offline', 'synced_at' => now()]);
 
             if ($staleCount > 0) {
