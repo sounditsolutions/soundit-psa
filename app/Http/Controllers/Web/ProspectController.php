@@ -141,9 +141,16 @@ class ProspectController extends Controller
     /**
      * Provision a new prospect client+person+ticket from a phone call.
      *
-     * Confirm-dedup flow: if `matchByNumber` finds an existing client and
-     * `confirm_new` is NOT set, redirect back with a warning surfacing the
-     * existing match rather than blindly creating a duplicate.
+     * Confirm-dedup flow: if a person (and thus a client) already owns the
+     * caller number and `confirm_new` is NOT set, redirect back with a warning
+     * surfacing the existing match — flashing the matched person id so the call
+     * page can offer a one-click attach — rather than blindly creating a
+     * duplicate.
+     *
+     * Two invariants the attach affordance depends on: the flash carries
+     * `dedup_call_id` so a session-scoped flash cannot be consumed by a
+     * different call's page, and no person id is flashed at all when the number
+     * resolves to more than one contact (the operator disambiguates instead).
      */
     public function store(Request $request): RedirectResponse
     {
@@ -159,14 +166,39 @@ class ProspectController extends Controller
         // Confirm-dedup: if a client already owns this phone number, surface it
         // instead of creating a duplicate — unless staff explicitly confirmed.
         if (! ($validated['confirm_new'] ?? null)) {
-            $existing = $this->intake->matchByNumber((string) $call->from_number);
+            $matches = $this->intake->matchPeopleByNumber((string) $call->from_number);
+            // Resolve the dedup target from the first match whose client
+            // actually loads. `people.client_id` is nullable and Client
+            // soft-deletes, so keying off `$matches->first()` alone let a
+            // top-ranked row with no loadable client skip this whole block —
+            // including the ambiguity withholding below — and provision a
+            // duplicate for a number a live client still owns. Ambiguity stays
+            // a property of the WHOLE match set (`$matches->count()`), not of
+            // whichever row happened to sort first.
+            $matchedPerson = $matches->first(fn ($person) => $person->client !== null);
+            $existing = $matchedPerson?->client;
 
             if ($existing !== null) {
-                return redirect()
+                // Keyed to this call: the flash lives in the session, so without
+                // it another tab's calls.show could consume the payload and offer
+                // an attach button that binds the WRONG call to this client.
+                $redirect = redirect()
                     ->route('calls.show', $call)
                     ->withInput()
+                    ->with('dedup_call_id', $call->id)
                     ->with('dedup_client_id', $existing->id)
-                    ->with('dedup_client_name', $existing->name)
+                    ->with('dedup_client_name', $existing->name);
+
+                // Shared/reused numbers resolve to several contacts. Handing the
+                // operator a one-click attach here would commit the call — and
+                // person_confirmed — to a contact nobody chose, so warn without a
+                // target and let them pick from the caller list on the page.
+                if ($matches->count() > 1) {
+                    return $redirect->with('error', "This number is already on {$matches->count()} existing contacts, including {$existing->name} — pick the right caller below instead of creating a duplicate.");
+                }
+
+                return $redirect
+                    ->with('dedup_person_id', $matchedPerson->id)
                     ->with('error', "This number is already on {$existing->name} — attach to that client instead?");
             }
         }
