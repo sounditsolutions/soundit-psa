@@ -13,6 +13,7 @@ use App\Models\Person;
 use App\Models\PhoneCall;
 use App\Models\Ticket;
 use App\Support\PhoneNumber;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\DB;
 
 class ProspectIntakeService
@@ -34,15 +35,37 @@ class ProspectIntakeService
      */
     public function matchPersonByNumber(string $rawNumber): ?Person
     {
+        return $this->matchPeopleByNumber($rawNumber)->first();
+    }
+
+    /**
+     * Every Person owning this number (by phone or mobile), most-likely first.
+     *
+     * A number can legitimately sit on several Person rows — a switchboard line
+     * recorded on several contacts, a contact who moved clients whose old row
+     * still carries the number — so the dedup flow must be able to SEE that the
+     * match is ambiguous rather than silently committing the call to whichever
+     * row the database happened to return first. Ordering mirrors
+     * PhoneCallService::getCandidateCallers (primary, then active, then id) so
+     * the pick is at least deterministic across identical requests.
+     *
+     * @return Collection<int, Person>
+     */
+    public function matchPeopleByNumber(string $rawNumber): Collection
+    {
         $normalized = PhoneNumber::normalize($rawNumber);
 
         if ($normalized === null) {
-            return null;
+            return new Collection;
         }
 
-        return Person::where('phone', $normalized)
-            ->orWhere('mobile', $normalized)
-            ->first();
+        return Person::where(function ($q) use ($normalized) {
+            $q->where('phone', $normalized)->orWhere('mobile', $normalized);
+        })
+            ->orderByDesc('is_primary')
+            ->orderByDesc('is_active')
+            ->orderBy('id')
+            ->get();
     }
 
     /**

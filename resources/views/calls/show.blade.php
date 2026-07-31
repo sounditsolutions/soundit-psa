@@ -264,8 +264,11 @@
                         <div id="prospect-search-results" class="list-group mt-1" style="display:none;"></div>
                     </div>
 
-                    {{-- Dedup warning --}}
-                    @if(session('error') && session('dedup_client_name'))
+                    {{-- Dedup warning — rendered only for the call it was raised
+                         on. The flash is session-scoped, so an unkeyed check lets
+                         a second tab consume it and offer an attach control for an
+                         unrelated call. --}}
+                    @if(session('error') && session('dedup_client_name') && (int) session('dedup_call_id') === (int) $call->id)
                     <div class="alert alert-warning py-2 px-3 small mb-3">
                         <i class="bi bi-exclamation-triangle me-1"></i>
                         {{ session('error') }}

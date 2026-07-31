@@ -185,6 +185,7 @@ class ProspectCaptureTest extends TestCase
         $response = $this->actingAs($user)
             ->withSession([
                 'error' => 'This number is already on Existing Corp — attach to that client instead?',
+                'dedup_call_id' => $call->id,
                 'dedup_client_id' => $existing->id,
                 'dedup_client_name' => 'Existing Corp',
                 'dedup_person_id' => $person->id,
@@ -197,5 +198,81 @@ class ProspectCaptureTest extends TestCase
         // It must carry the matched person's id so the click resolves the call
         // to the right caller (the manual-caller form is not sufficient).
         $response->assertSee('name="person_id" value="'.$person->id.'"', false);
+    }
+
+    /**
+     * The dedup flash is session-scoped, so it must be keyed to the call it was
+     * raised on — otherwise a second tab rendering a different call consumes it
+     * and offers a one-click attach that would bind the wrong call to the
+     * matched client.
+     */
+    public function test_dedup_attach_is_not_offered_on_a_different_call(): void
+    {
+        $user = User::factory()->create();
+
+        $existing = Client::factory()->create(['name' => 'Existing Corp', 'stage' => ClientStage::Active->value]);
+        $person = Person::create([
+            'client_id' => $existing->id,
+            'person_type' => \App\Enums\PersonType::User,
+            'first_name' => 'Jane',
+            'last_name' => 'Smith',
+            'phone' => PhoneNumber::normalize('+15550102030'),
+            'is_active' => true,
+            'portal_enabled' => false,
+        ]);
+
+        $callA = $this->makeCall(['client_id' => null, 'from_number' => '+15550102030']);
+        $callB = $this->makeCall(['client_id' => null, 'from_number' => '+15550109999']);
+
+        $response = $this->actingAs($user)
+            ->withSession([
+                'error' => 'This number is already on Existing Corp — attach to that client instead?',
+                'dedup_call_id' => $callA->id,
+                'dedup_client_id' => $existing->id,
+                'dedup_client_name' => 'Existing Corp',
+                'dedup_person_id' => $person->id,
+            ])
+            ->get(route('calls.show', $callB));
+
+        $response->assertOk();
+        $response->assertDontSee('Attach to Existing Corp');
+        $response->assertDontSee('name="person_id" value="'.$person->id.'"', false);
+    }
+
+    /**
+     * When the caller number is owned by more than one contact the dedup warning
+     * must NOT offer a one-click attach: picking an arbitrary row would commit
+     * the call (and person_confirmed) to a contact — and a client — nobody chose.
+     */
+    public function test_confirm_dedup_withholds_one_click_attach_when_the_number_is_ambiguous(): void
+    {
+        $user = User::factory()->create();
+
+        $existing = Client::factory()->create(['name' => 'Existing Corp', 'stage' => ClientStage::Active->value]);
+        $rival = Client::factory()->create(['name' => 'Rival Ltd', 'stage' => ClientStage::Active->value]);
+
+        foreach ([[$existing, 'Jane', 'Smith'], [$rival, 'Bob', 'Jones']] as [$client, $first, $last]) {
+            Person::create([
+                'client_id' => $client->id,
+                'person_type' => \App\Enums\PersonType::User,
+                'first_name' => $first,
+                'last_name' => $last,
+                'phone' => PhoneNumber::normalize('+15550102030'),
+                'is_active' => true,
+                'portal_enabled' => false,
+            ]);
+        }
+
+        $call = $this->makeCall(['client_id' => null, 'from_number' => '+15550102030']);
+
+        $response = $this->actingAs($user)->post(route('prospects.store'), [
+            'phone_call_id' => $call->id,
+            'name' => 'New Client Name',
+        ]);
+
+        $response->assertRedirect(route('calls.show', $call));
+        $response->assertSessionHas('dedup_call_id', $call->id);
+        $response->assertSessionMissing('dedup_person_id');
+        $this->assertDatabaseMissing('clients', ['name' => 'New Client Name']);
     }
 }
