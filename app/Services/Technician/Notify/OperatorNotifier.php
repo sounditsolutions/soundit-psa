@@ -50,10 +50,26 @@ class OperatorNotifier
         }
 
         if (! $delivered) {
+            // psa-tmdw: $delivered is a DELIVERY outcome, not a configuration fact —
+            // TeamsNotifier::post() also returns false for a configured-but-broken webhook
+            // (non-2xx, timeout, SSRF-pin refusal) and sendNew() throws on a dead relay.
+            // Consult the config before naming a cause, or a real outage is misdiagnosed
+            // as "nothing configured" and the operator is pointed at the wrong fix.
+            $teamsConfigured = TechnicianConfig::teamsWebhookUrl() !== null;
+            $emailConfigured = $to !== null;
+
             Log::warning(
-                '[Technician] Operator notification not delivered — no delivery channel configured '
-                .'(Teams webhook and notify email both unset). Set one in Settings › AI Technician › Notify.',
-                ['subject' => $subject],
+                $teamsConfigured || $emailConfigured
+                    ? '[Technician] Operator notification not delivered — every CONFIGURED delivery channel '
+                        .'failed at send time (see the preceding channel errors). Configuration is present; '
+                        .'check the Teams webhook target and the mail transport.'
+                    : '[Technician] Operator notification not delivered — no delivery channel configured '
+                        .'(Teams webhook and notify email both unset). Set one in Settings › AI Technician › Notify.',
+                [
+                    'subject' => $subject,
+                    'teams_webhook_configured' => $teamsConfigured,
+                    'notify_email_configured' => $emailConfigured,
+                ],
             );
         }
 

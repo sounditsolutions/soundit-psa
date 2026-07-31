@@ -51,6 +51,35 @@ class OperatorNotifierDeliveryTest extends TestCase
             ->once();
     }
 
+    /**
+     * A configured-but-broken channel must NOT be reported as unconfigured: post()
+     * fail-softs to false on a revoked webhook and sendNew() throws on a dead relay,
+     * so the undelivered warning has to consult the config before naming a cause.
+     */
+    public function test_notify_blames_delivery_failure_not_missing_config_when_channels_are_configured(): void
+    {
+        Setting::setValue('technician_teams_webhook_url', 'https://x.webhook.office.com/h');
+        Setting::setValue('technician_notify_email', 'ops@example.com');
+
+        $teams = Mockery::mock(TeamsNotifier::class);
+        $teams->shouldReceive('post')->once()->andReturn(false); // e.g. 403 from a revoked webhook
+        $email = Mockery::mock(EmailService::class);
+        $email->shouldReceive('sendNew')->once()->andThrow(new \RuntimeException('smtp down'));
+
+        Log::spy();
+
+        $delivered = $this->notifier($teams, $email)->notify('subj', 'body');
+
+        $this->assertFalse($delivered);
+        Log::shouldHaveReceived('warning')
+            ->withArgs(fn (string $msg, array $ctx = []) => str_contains($msg, 'not delivered')
+                && ! str_contains($msg, 'no delivery channel configured')
+                && str_contains($msg, 'failed at send time')
+                && ($ctx['teams_webhook_configured'] ?? null) === true
+                && ($ctx['notify_email_configured'] ?? null) === true)
+            ->once();
+    }
+
     public function test_notify_returns_true_when_teams_delivers(): void
     {
         $teams = Mockery::mock(TeamsNotifier::class);
