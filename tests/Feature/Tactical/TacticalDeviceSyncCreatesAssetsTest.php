@@ -5,6 +5,8 @@ namespace Tests\Feature\Tactical;
 use App\Models\Asset;
 use App\Models\Client;
 use App\Models\TacticalAsset;
+use App\Services\AssetHealthService;
+use App\Services\AssetService;
 use App\Services\Tactical\TacticalClient;
 use App\Services\Tactical\TacticalDeviceSyncService;
 use GuzzleHttp\Client as GuzzleClient;
@@ -286,5 +288,41 @@ class TacticalDeviceSyncCreatesAssetsTest extends TestCase
             $asset->status_badge,
             'the badge must degrade to Stale, not claim a machine we never observed is down',
         );
+    }
+
+    public function test_a_decommissioned_agent_stops_reading_online_and_stays_findable(): void
+    {
+        $this->mappedClient();
+
+        // Seen once, then gone for good — the box was decommissioned and its
+        // agent removed. Nothing will ever write rmm_online for this asset again.
+        $this->syncService([$this->agent(['last_seen' => now()->subDays(9)->toDateTimeString()])])->syncDevices();
+        $this->syncService([])->syncDevices();
+
+        $asset = Asset::where('hostname', 'NEWBOX')->firstOrFail();
+
+        // The sweep still must not rewrite the flag (see the test above) — but
+        // no reader may present the frozen value as current truth.
+        $this->assertTrue((bool) $asset->rmm_online);
+
+        $connectivity = collect((new AssetHealthService)->compute($asset)->factors)
+            ->firstWhere('key', 'connectivity');
+
+        $this->assertNotSame(
+            'Online per RMM',
+            $connectivity['detail'],
+            'a frozen flag the sync stopped maintaining is not an observation of "online"',
+        );
+        $this->assertSame('bad', $connectivity['status']);
+        $this->assertSame(-30, $connectivity['points'], 'the machine must surface on health-driven lists');
+
+        $offline = (new AssetService)->getAssetList(['status' => 'offline'])->pluck('id');
+        $this->assertTrue(
+            $offline->contains($asset->id),
+            'a machine the RMM stopped reporting must be findable under Offline',
+        );
+
+        $online = (new AssetService)->getAssetList(['status' => 'online'])->pluck('id');
+        $this->assertFalse($online->contains($asset->id));
     }
 }
