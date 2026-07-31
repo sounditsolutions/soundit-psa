@@ -171,6 +171,7 @@ class AssistantToolExecutor
             'list_invoices' => [ToolEffect::Read, static fn (self $x, array $in) => $x->listInvoices($in)],
             'get_invoice' => [ToolEffect::Read, static fn (self $x, array $in) => $x->getInvoice($in)],
             'get_staged_action_status' => [ToolEffect::Read, static fn (self $x, array $in) => $x->getStagedActionStatus($in)],
+            'list_mislinked_assets' => [ToolEffect::Read, static fn (self $x, array $in) => $x->listMislinkedAssets($in)],
 
             // NinjaRMM tools
             'ninja_search_devices' => [ToolEffect::Read, static fn (self $x, array $in) => $x->ninjaSearchDevices($in)],
@@ -1850,6 +1851,27 @@ class AssistantToolExecutor
             'count' => count($rows),
             'staged_actions' => $rows,
         ];
+    }
+
+    /**
+     * list_mislinked_assets — READ-ONLY cross-client mislink sweep. Cross-client
+     * staff-class read: $this->clientId is an OPTIONAL filter (per-client when
+     * set, fleet-wide when null), mirroring listPhoneCalls/listEmailItems. The
+     * boundary already collapses a malformed client_id to null (fleet-wide); the
+     * finder additionally fails closed when a positive scope does not resolve.
+     * Delegates all detection to MislinkedAssetFinder — this handler only threads
+     * scope + passthrough options and never writes.
+     *
+     * @param  array<string, mixed>  $input
+     * @return array<string, mixed>
+     */
+    private function listMislinkedAssets(array $input): array
+    {
+        return app(\App\Services\Assets\MislinkedAssetFinder::class)->find(
+            $this->clientId,
+            (bool) ($input['include_inactive'] ?? false),
+            (int) ($input['limit'] ?? \App\Services\Assets\MislinkedAssetFinder::DEFAULT_LIMIT),
+        );
     }
 
     // ── NinjaRMM Tools ──

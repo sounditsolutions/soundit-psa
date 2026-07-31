@@ -1072,6 +1072,36 @@ class McpToolRegistry
             self::listInvoicesTool(),
             self::getInvoiceTool(),
             self::getStagedActionStatusTool(),
+            self::listMislinkedAssetsTool(),
+        ];
+    }
+
+    /**
+     * list_mislinked_assets — READ-ONLY cross-client mislink sweep (Chet
+     * archaeology relief). An ingest fix stopped NEW cross-client mislinks but
+     * left pre-fix rows in place; this lists suspected mislinks with the evidence
+     * that contradicted each row, so a human can reassign them. It NEVER moves,
+     * deactivates, or writes anything. Cross-client staff-class read: client_id
+     * is an OPTIONAL filter (per-client when given, fleet-wide when omitted),
+     * mirroring list_email_items/list_phone_calls — the MCP boundary strips
+     * client_id and threads it as scope, so it is not required.
+     *
+     * @return array<string, mixed>
+     */
+    public static function listMislinkedAssetsTool(): array
+    {
+        return [
+            'name' => 'list_mislinked_assets',
+            'description' => 'READ-ONLY sweep for assets linked to the WRONG PSA client, based on CROSS-SOURCE CONTRADICTION (never hostname-vs-client-name, which is normal fleet noise). Returns two SEPARATE lists. tier_a (a contradiction, not a guess): (1) the asset\'s RMM linkage resolves to an agent whose RMM client/site maps to a different PSA client than the asset\'s own client_id — resolvable locally for Tactical only; (2) same serial_number active under 2+ clients; (3) same hostname active under 2+ clients, deduped against rule 2 and suppressed when the colliding serials differ. tier_b (suspect, human-eyes): (4) last_user resolves to a contact at another client; (5) public ip_address shared with another client; (6) hostname carries another client\'s learned dominant prefix. Each row carries the asset id/hostname, which rule fired, the other client id+name, and the contradicting evidence. Lists suspects only — it never reassigns. client_id is an OPTIONAL filter (omit for a fleet-wide sweep). Requires an explicit token grant.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'client_id' => ['type' => 'integer', 'description' => 'Optional: scope the sweep to assets owned by one client. Omit for a fleet-wide sweep. Cross-client collision evidence (other-client rows) is always considered regardless of scope.'],
+                    'include_inactive' => ['type' => 'boolean', 'description' => 'Include is_active=false assets on both sides of every rule. Default false (active assets only). Soft-deleted assets are always excluded.'],
+                    'limit' => ['type' => 'integer', 'description' => 'Max rows PER tier (default 100, cap 500). Each tier reports its own truncation flag.'],
+                ],
+                'required' => [],
+            ],
         ];
     }
 
