@@ -344,11 +344,18 @@ class MislinkedAssetFinderTest extends TestCase
         // corp./mail./ad. name a host inside a tenant, not the tenant. Keying on the
         // leading label alone made every client on a corp.* subdomain one account —
         // the generic-account flood, moved from the local part to the domain.
+        //
+        // The two contacts below MUST share the same generic label. An earlier version
+        // of this test gave them different ones (corp. vs mail.), which keyed them apart
+        // even under the unfixed leading-label-only implementation and so guarded
+        // nothing. Rule 4 emits one finding per distinct other client, so under that
+        // implementation both contacts key to 'admin@corp', the asset matches both, and
+        // the count below is 2.
         $alpha = Client::factory()->create(['name' => 'Alpha']);
         $bravo = Client::factory()->create(['name' => 'Bravo']);
         $charlie = Client::factory()->create(['name' => 'Charlie']);
         $this->person($alpha, ['cipp_upn' => 'admin@corp.alpha.com']);
-        $this->person($bravo, ['cipp_upn' => 'admin@mail.bravo.com']);
+        $this->person($bravo, ['cipp_upn' => 'admin@corp.bravo.com']);
         $this->asset($charlie, ['last_user' => 'admin@corp.alpha.com', 'hostname' => 'HOST-SUBDOM']);
 
         $hits = array_values(array_filter(
@@ -358,6 +365,13 @@ class MislinkedAssetFinderTest extends TestCase
 
         $this->assertCount(1, $hits, 'a shared corp./mail. label must not name every client carrying one');
         $this->assertSame($alpha->id, $hits[0]['other_client_id']);
+        $this->assertNotContains(
+            $bravo->id,
+            array_column($hits, 'other_client_id'),
+            'the unrelated tenant sharing the corp. label must never be accused',
+        );
+        $this->assertStringContainsString('admin@alpha', (string) $hits[0]['evidence']['matched_account'],
+            'the key must carry the tenant label, not the generic infrastructure label');
     }
 
     public function test_rule4_does_not_key_a_generic_label_onto_a_bare_country_code_tld(): void
