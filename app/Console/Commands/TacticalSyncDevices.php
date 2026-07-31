@@ -51,6 +51,19 @@ class TacticalSyncDevices extends Command
             $this->info("Assets created: {$result->details['assets_created']}");
         }
 
+        // A skipped device carries no asset link, so its Tactical data surfaces
+        // nowhere. The remedy differs by reason though — a hostname conflict
+        // means a matching asset IS in the list, held by a stale agent row — so
+        // name the reasons rather than assert the device is missing. Warn rather
+        // than info, so "0 created" cannot read as "nothing to do here".
+        if (! empty($result->details['assets_skipped'])) {
+            $this->warn("Assets skipped: {$result->details['assets_skipped']}");
+
+            foreach ($result->details['assets_skipped_reasons'] ?? [] as $reason => $count) {
+                $this->warn("  - {$reason}: {$count}");
+            }
+        }
+
         return $result->errors > 0 ? self::FAILURE : self::SUCCESS;
     }
 }

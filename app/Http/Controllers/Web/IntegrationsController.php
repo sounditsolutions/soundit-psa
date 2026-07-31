@@ -2295,6 +2295,26 @@ class IntegrationsController extends Controller
                 ? ' ('.$assetsCreated.' new asset'.($assetsCreated === 1 ? '' : 's').' created).'
                 : '.';
 
+            // A skipped device carries no asset link, so THIS agent's data
+            // reaches no UI surface. Do not go further and claim nothing is
+            // shown for the machine: on the dominant reason (hostname_conflict,
+            // the agent-reinstall case) a matching asset is sitting right there,
+            // still rendering the stale agent row's snapshot — an operator told
+            // "not shown anywhere" who then finds a populated Tactical panel
+            // reads the warning as spurious and leaves the stale row in place.
+            // Name the missing LINK and what it costs, say what a panel on an
+            // existing asset actually is, and point at the log, which names the
+            // reason per device. Warning, not success.
+            $assetsSkipped = $result->details['assets_skipped'] ?? 0;
+
+            if ($assetsSkipped > 0) {
+                $message .= ' '.$assetsSkipped.' device'.($assetsSkipped === 1 ? '' : 's')
+                    .' could not be linked to an asset, so '.($assetsSkipped === 1 ? 'its' : 'their')
+                    .' Tactical data is not reaching any asset — where an asset for the machine does exist, any Tactical panel on it belongs to a different agent record. See the sync log for the reason on each.';
+
+                return back()->with('warning', $message);
+            }
+
             return back()->with('success', $message);
         } catch (\Throwable $e) {
             return back()->with('error', "Tactical device sync failed: {$e->getMessage()}");
