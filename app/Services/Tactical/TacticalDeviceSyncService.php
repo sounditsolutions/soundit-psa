@@ -10,6 +10,7 @@ use App\Models\TacticalAsset;
 use App\Models\TechnicianRun;
 use App\Services\SyncResult;
 use Carbon\Carbon;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -117,6 +118,34 @@ class TacticalDeviceSyncService
     private function dispatchSweepIfQueued(string $agentId): void
     {
         SweepQueuedActionsForAgent::dispatchIfQueued($agentId);
+    }
+
+    /**
+     * Operator-safe rendering of a per-agent write failure.
+     *
+     * A QueryException's getMessage() embeds the failed statement AND its
+     * bindings, and the bindings here are the asset row we were writing —
+     * hostname, serial, logged-in username, LAN address. That string does not
+     * stay in one place: SyncResult::$errorMessages is rendered by the
+     * integrations settings view, returned verbatim by
+     * StaffTacticalAdminToolExecutor (an MCP surface), and written to
+     * storage/logs/laravel.log, which has no rotation configured. So the raw
+     * message never leaves this method.
+     *
+     * What an operator can actually act on is the failure class and the
+     * driver's SQLSTATE, which is what they get. agent_id is already carried
+     * alongside, so the failing row stays identifiable without reproducing its
+     * contents.
+     */
+    private function safeWriteFailure(\Throwable $e): string
+    {
+        if ($e instanceof QueryException) {
+            $sqlState = (string) $e->getCode();
+
+            return 'database write failed'.($sqlState !== '' ? " (SQLSTATE {$sqlState})" : '');
+        }
+
+        return class_basename($e).' during write';
     }
 
     public function syncDevices(?int $clientId = null): SyncResult
@@ -281,11 +310,12 @@ class TacticalDeviceSyncService
                     }
                 }
             } catch (\Throwable $e) {
+                $safe = $this->safeWriteFailure($e);
                 Log::warning('[TacticalSync] Agent skipped after a write failure', [
                     'agent_id' => $agentId,
-                    'error' => $e->getMessage(),
+                    'error' => $safe,
                 ]);
-                $result->recordError("Agent {$agentId}: {$e->getMessage()}");
+                $result->recordError("Agent {$agentId}: {$safe}");
             }
         }
 
