@@ -10,6 +10,7 @@ use App\Models\TacticalAsset;
 use App\Models\TechnicianRun;
 use App\Services\SyncResult;
 use Carbon\Carbon;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -117,6 +118,55 @@ class TacticalDeviceSyncService
     private function dispatchSweepIfQueued(string $agentId): void
     {
         SweepQueuedActionsForAgent::dispatchIfQueued($agentId);
+    }
+
+    /**
+     * Operator-safe rendering of a per-agent write failure.
+     *
+     * A QueryException's getMessage() embeds the failed statement AND its
+     * bindings, and the bindings here are the asset row we were writing —
+     * hostname, serial, logged-in username, LAN address. That string does not
+     * stay in one place: SyncResult::$errorMessages is rendered by the
+     * integrations settings view, returned verbatim by
+     * StaffTacticalAdminToolExecutor (an MCP surface), and written to
+     * storage/logs/laravel.log, which has no rotation configured. So the raw
+     * message never leaves the per-agent write catch in syncDevices(), which is
+     * the only call site this helper covers.
+     *
+     * It does NOT clean the rest of the class: the fetch-agents catch and the
+     * asset-lock catch (both of which recordError with a raw getMessage(), and
+     * the latter with a raw hostname) still reach those same three surfaces.
+     * Routing them through here is a separate change, deliberately not made on
+     * this branch — do not read this comment as a class-wide guarantee.
+     *
+     * What an operator can actually act on is the failure class, the driver's
+     * SQLSTATE and its errno, which is what they get. The driver's own message
+     * is withheld: it is the part that embeds values (a duplicate-key error
+     * quotes the offending binding back verbatim). agent_id is already carried
+     * alongside, so the failing row stays identifiable without reproducing its
+     * contents.
+     */
+    private function safeWriteFailure(\Throwable $e): string
+    {
+        if ($e instanceof QueryException) {
+            // getCode() is int 0 when the driver reports no SQLSTATE, and
+            // (string) 0 is '0' — a bare !== '' guard lets that through and
+            // presents "(SQLSTATE 0)" as if it were a real driver code.
+            $sqlState = (string) $e->getCode();
+            $parts = $sqlState !== '' && $sqlState !== '0' ? ["SQLSTATE {$sqlState}"] : [];
+
+            // errorInfo is [SQLSTATE, driver errno, driver message]. The errno
+            // is a non-sensitive integer and is what actually distinguishes a
+            // deadlock from a too-long column; the message is not taken.
+            $errno = $e->errorInfo[1] ?? null;
+            if (is_int($errno) || (is_string($errno) && $errno !== '')) {
+                $parts[] = "driver error {$errno}";
+            }
+
+            return 'database write failed'.($parts !== [] ? ' ('.implode(', ', $parts).')' : '');
+        }
+
+        return class_basename($e).' during write';
     }
 
     public function syncDevices(?int $clientId = null): SyncResult
@@ -281,11 +331,12 @@ class TacticalDeviceSyncService
                     }
                 }
             } catch (\Throwable $e) {
+                $safe = $this->safeWriteFailure($e);
                 Log::warning('[TacticalSync] Agent skipped after a write failure', [
                     'agent_id' => $agentId,
-                    'error' => $e->getMessage(),
+                    'error' => $safe,
                 ]);
-                $result->recordError("Agent {$agentId}: {$e->getMessage()}");
+                $result->recordError("Agent {$agentId}: {$safe}");
             }
         }
 
