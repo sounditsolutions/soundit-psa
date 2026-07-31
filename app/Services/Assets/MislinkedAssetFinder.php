@@ -179,7 +179,12 @@ class MislinkedAssetFinder
 
     /**
      * clients.tactical_site_id ("ClientName|SiteName") → PSA client_id. This is
-     * the authority the Tactical device sync itself uses to place an agent.
+     * the authority the Tactical device sync itself uses to place an agent, so it
+     * must apply the SAME ->operational() filter that sync applies
+     * (TacticalDeviceSyncService::syncDevices). Without it a churned/prospect
+     * client carrying a stale duplicate of a live client's site key can win the
+     * last-wins pluck() and manufacture a whole fleet of false Tier A
+     * rmm_client_contradiction hits against a client the sync would never use.
      *
      * @return array<string, int>
      */
@@ -187,6 +192,7 @@ class MislinkedAssetFinder
     {
         return Client::query()
             ->whereNotNull('tactical_site_id')
+            ->operational()
             ->pluck('id', 'tactical_site_id')
             ->map(fn ($id) => (int) $id)
             ->all();

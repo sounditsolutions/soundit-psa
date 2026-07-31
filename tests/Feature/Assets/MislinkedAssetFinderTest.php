@@ -101,6 +101,43 @@ class MislinkedAssetFinderTest extends TestCase
         $this->assertSame(0, $this->finder()->find(null)['tier_a_count']);
     }
 
+    public function test_rule1_ignores_a_non_operational_client_holding_the_same_site_key(): void
+    {
+        // The live client owns the site key the Tactical sync maps agents to…
+        $acme = Client::factory()->create(['name' => 'Acme', 'tactical_site_id' => 'AcmeCo|HQ']);
+        // …and a churned duplicate row still carries it. The sync applies
+        // ->operational(), so this row is never an authority. Created SECOND so a
+        // last-wins pluck() would pick it if the finder omitted that scope.
+        Client::factory()->create([
+            'name' => 'Acme (old)',
+            'tactical_site_id' => 'AcmeCo|HQ',
+            'is_active' => false,
+        ]);
+
+        $ta = TacticalAsset::create(['agent_id' => 'agent-churn', 'client_name' => 'AcmeCo', 'site_name' => 'HQ']);
+        $this->asset($acme, ['tactical_asset_id' => $ta->id]);
+
+        $this->assertSame(
+            0,
+            $this->finder()->find(null)['tier_a_count'],
+            'a non-operational duplicate site key must never become the rule-1 authority'
+        );
+
+        // Positive control on the SAME fleet: rule 1 still fires when the
+        // OPERATIONAL owner of the agent's site key is a different client, so the
+        // assertion above cannot pass merely because rule 1 is inert here.
+        $bravo = Client::factory()->create(['name' => 'Bravo', 'tactical_site_id' => 'BravoCo|HQ']);
+        $ta2 = TacticalAsset::create(['agent_id' => 'agent-live', 'client_name' => 'BravoCo', 'site_name' => 'HQ']);
+        $this->asset($acme, ['tactical_asset_id' => $ta2->id]);
+
+        $hits = array_values(array_filter(
+            $this->finder()->find(null)['tier_a'],
+            fn ($r) => $r['rule'] === 'rmm_client_contradiction'
+        ));
+        $this->assertCount(1, $hits);
+        $this->assertSame($bravo->id, $hits[0]['other_client_id']);
+    }
+
     // ── Rule 2: duplicate serial across clients ──
 
     public function test_rule2_fires_across_clients_and_not_within_one_client_or_on_junk(): void
