@@ -32,16 +32,36 @@ cd "$(git rev-parse --show-toplevel)"
 # Resolve the base commit to diff against (prefer an explicit GC_VERIFY_BASE — the
 # escape hatch for shallow / fork CI checkouts — then origin/main, then main).
 BASE=""
+BASE_SOURCE=""
 if [ -n "${GC_VERIFY_BASE:-}" ]; then
     if ! BASE="$(git rev-parse --verify --quiet "${GC_VERIFY_BASE}^{commit}")"; then
         echo "ERROR: GC_VERIFY_BASE='${GC_VERIFY_BASE}' does not resolve to a commit — failing closed" >&2
         exit 1
     fi
+    # Resolving is NOT enough. In a --depth=1 checkout the only ref that resolves is
+    # HEAD, so GC_VERIFY_BASE=HEAD (the value the error above effectively advertises)
+    # leaves $BASE..HEAD EMPTY: every history scan below would cover NOTHING while the
+    # run prints PASS — the exact fail-open gate 3 refuses to allow. The override must
+    # therefore be an ANCESTOR of HEAD and must leave a NON-EMPTY range.
+    if ! git merge-base --is-ancestor "$BASE" HEAD 2>/dev/null; then
+        echo "ERROR: GC_VERIFY_BASE='${GC_VERIFY_BASE}' (${BASE}) is not an ancestor of HEAD —" >&2
+        echo "       the history scans would not cover the outbound commits. Failing CLOSED." >&2
+        exit 1
+    fi
+    if ! COUNT="$(git rev-list --count "$BASE..HEAD" 2>/dev/null)" || [ "$COUNT" -eq 0 ]; then
+        echo "ERROR: GC_VERIFY_BASE='${GC_VERIFY_BASE}' (${BASE}) leaves ${BASE}..HEAD EMPTY —" >&2
+        echo "       zero history coverage with a PASS is the fail-open this gate exists to" >&2
+        echo "       prevent, so this is a FAILURE, not a shortcut. Fix: fetch the real base" >&2
+        echo "       (git fetch --unshallow origin main) and point GC_VERIFY_BASE at the commit" >&2
+        echo "       this branch forked from — not at HEAD." >&2
+        exit 1
+    fi
+    BASE_SOURCE="GC_VERIFY_BASE=${GC_VERIFY_BASE}"
 else
     for ref in origin/main main; do
         if git rev-parse --verify --quiet "$ref" >/dev/null 2>&1; then
             BASE="$(git merge-base HEAD "$ref" 2>/dev/null || true)"
-            [ -n "$BASE" ] && break
+            [ -n "$BASE" ] && BASE_SOURCE="merge-base with ${ref}" && break
         fi
     done
 fi
@@ -76,6 +96,10 @@ if [ -z "$BASE" ]; then
     echo "       Failing CLOSED. Fix: git fetch origin main, or GC_VERIFY_BASE=<ref|sha>." >&2
     exit 1
 fi
+
+# Log what the history layers below actually cover, so a run's log shows WHICH base
+# (and which mechanism) produced the PASS instead of leaving coverage unattested.
+echo "    base: ${BASE} (${BASE_SOURCE:-unknown}), covering $(git rev-list --count "$BASE..HEAD" 2>/dev/null || echo '?') outbound commit(s)"
 
 # Content guard: reject operator emails, private keys, and known token shapes.
 # Scan the FULL outbound history (git log -p), not the net BASE...HEAD diff, so a

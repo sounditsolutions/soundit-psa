@@ -45,8 +45,30 @@ while read -r _local_ref local_sha _remote_ref remote_sha; do
         # `--not --remotes` excludes commits reachable from ANY remote-tracking
         # ref, so a branch already pushed to a private fork would scan ZERO
         # commits on its first push to the PUBLIC remote and report clean.
-        if [ -n "$target_remote" ]; then
+        if [ -n "$target_remote" ] && [ -n "$(git for-each-ref --count=1 --format='%(refname)' "refs/remotes/${target_remote}/")" ]; then
             range="$local_sha --not --remotes=$target_remote"
+        elif [ -n "$target_remote" ]; then
+            # `--remotes=<name>` is a GLOB over EXISTING refs/remotes/<name>/*, so with no
+            # fetched tracking refs — the state right after `git remote add` — it excludes
+            # NOTHING and the scan silently degenerates to the whole reachable history:
+            # minutes per push, plus a hard block on already-public historical commits the
+            # pusher cannot fix, whose only exit is --no-verify. Ask the remote what it
+            # actually has instead, and exclude the tips whose objects we hold locally.
+            excludes=""
+            while read -r sha _ref; do
+                [ -n "$sha" ] || continue
+                if git cat-file -e "${sha}^{commit}" 2>/dev/null; then
+                    excludes="$excludes $sha"
+                fi
+            done < <(git ls-remote --heads --tags "$target_remote" 2>/dev/null || true)
+
+            if [ -n "$excludes" ]; then
+                echo "pre-push: no fetched tracking refs for '$target_remote' — excluding its live tips (git ls-remote) instead." >&2
+                range="$local_sha --not$excludes"
+            else
+                echo "pre-push: '$target_remote' has no fetched tracking refs and no locally-known tips — scanning full reachable history (failing closed; this is slow)." >&2
+                range="$local_sha"
+            fi
         else
             # Pushing to an unnamed URL: nothing is KNOWN to be there already, so
             # scan the whole reachable history rather than assume it is safe.
