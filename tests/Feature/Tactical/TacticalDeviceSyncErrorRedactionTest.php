@@ -2,7 +2,9 @@
 
 namespace Tests\Feature\Tactical;
 
+use App\Models\Asset;
 use App\Models\Client;
+use App\Models\TacticalAsset;
 use App\Services\Tactical\TacticalClient;
 use App\Services\Tactical\TacticalClientException;
 use App\Services\Tactical\TacticalDeviceSyncService;
@@ -337,5 +339,72 @@ class TacticalDeviceSyncErrorRedactionTest extends TestCase
         $this->assertStringContainsString('AGENT-REDACT', $message, 'the failing agent must stay identifiable');
         $this->assertStringContainsString('asset lock', $message, 'the operator needs to know which step failed');
         $this->assertStringContainsString('RuntimeException', $message, 'the operator needs the failure class');
+    }
+
+    /**
+     * The fourth operator-facing catch — syncDeviceDetail()'s detail read.
+     *
+     * It carried no exception text before #338-r3, so these guards are not
+     * closing a live leak. They are what makes "every catch routes through
+     * safeFailure()" enforced rather than asserted: DetailSyncResult::degraded()
+     * takes an arbitrary string, and the only thing that previously stopped a
+     * later change from interpolating getMessage() into it was a comment.
+     */
+    private function detailReadWithFailingFetch(\Throwable $thrown): \App\Services\Tactical\DetailSyncResult
+    {
+        $asset = Asset::factory()->create(['hostname' => 'ACME-RECEPTION-01']);
+        TacticalAsset::create([
+            'asset_id' => $asset->id,
+            'agent_id' => 'AGENT-REDACT',
+            'hostname' => 'ACME-RECEPTION-01',
+            'status' => 'offline',
+            'synced_at' => now()->subDay(),
+        ]);
+
+        $client = Mockery::mock(TacticalClient::class);
+        $client->shouldReceive('getAgent')->once()->andThrow($thrown);
+
+        return (new TacticalDeviceSyncService($client))->syncDeviceDetail($asset->refresh());
+    }
+
+    public function test_a_detail_read_failure_is_recorded_without_the_tactical_host_or_address(): void
+    {
+        $result = $this->detailReadWithFailingFetch($this->ssrfPinRefusal());
+
+        $this->assertFalse($result->ok, 'a detail read failure is a degraded result, not a throw');
+        $message = $result->message ?? '';
+
+        $this->assertStringNotContainsString(self::PIN_HOST, $message, 'the Tactical host reached the refresh-now message');
+        $this->assertStringNotContainsString(self::PIN_ADDRESS, $message, 'a resolved address reached the refresh-now message');
+    }
+
+    public function test_the_detail_read_message_still_distinguishes_the_failure_shape(): void
+    {
+        $result = $this->detailReadWithFailingFetch($this->ssrfPinRefusal());
+        $message = $result->message ?? '';
+
+        $this->assertStringContainsString('Could not reach the agent', $message, 'the operator keeps the plain-language outcome');
+        $this->assertStringContainsString('detail read', $message, 'the operator needs to know which step failed');
+
+        // No status and not a transport failure => the client refused before the
+        // call left the box. That is the pin, and it must stay tellable apart
+        // from an outage without naming what it refused.
+        $this->assertStringContainsString('refused locally', $message, 'a local refusal must not render identically to an outage');
+    }
+
+    public function test_a_detail_read_http_error_reports_its_status_and_not_its_body(): void
+    {
+        $result = $this->detailReadWithFailingFetch(
+            TacticalClientException::fromGuzzle('ignored', new \GuzzleHttp\Exception\RequestException(
+                'Server error: `GET agents/AGENT-REDACT/` resulted in a `401 Unauthorized` response: '.self::PIN_HOST,
+                new \GuzzleHttp\Psr7\Request('GET', 'agents/AGENT-REDACT/'),
+                new \GuzzleHttp\Psr7\Response(401, [], 'unauthorized for '.self::PIN_HOST),
+            ))
+        );
+
+        $message = $result->message ?? '';
+
+        $this->assertStringContainsString('HTTP 401', $message, 'an auth failure must be tellable from an outage');
+        $this->assertStringNotContainsString(self::PIN_HOST, $message, 'the response body reached the refresh-now message');
     }
 }

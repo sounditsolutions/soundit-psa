@@ -56,7 +56,7 @@ class TacticalDeviceSyncService
             ]);
 
             return DetailSyncResult::degraded(
-                'Could not reach the agent — showing the last sync.',
+                'Could not reach the agent — showing the last sync. '.$this->safeFailure($e, 'detail read'),
                 status: $ta->status,
                 freshAsOf: $ta->synced_at,
             );
@@ -133,11 +133,23 @@ class TacticalDeviceSyncService
      * returned verbatim by StaffTacticalAdminToolExecutor (an MCP surface), and
      * written to storage/logs/laravel.log, which has no rotation configured.
      *
-     * Every catch in this class that records an operator-facing error routes
-     * through here: the agent fetch in syncDevices(), the per-agent write in
-     * syncDevices(), and the asset lock in linkOrCreateAsset(). $context names
-     * which one, so the message stays truthful about what was being attempted
-     * without reproducing what was being attempted it with.
+     * Every catch in this class that produces operator-facing text routes
+     * through here. There are FOUR, on two different surfaces: the agent fetch,
+     * the per-agent write and the asset lock all recordError() into
+     * SyncResult::$errorMessages (the three surfaces named above), and
+     * syncDeviceDetail()'s detail read returns DetailSyncResult::degraded(),
+     * which AssetController::refreshTactical() serialises into the refresh-now
+     * JSON that assets/show.blade.php assigns with textContent. $context names
+     * which one, so the message stays truthful about what was attempted without
+     * reproducing what it was attempted with.
+     *
+     * The detail read carried no exception text before #338-r3 — it returned a
+     * fixed sentence and leaked nothing. It is routed anyway, because
+     * degraded() takes an arbitrary string: nothing but a comment stopped a
+     * later change from interpolating getMessage() into it, and a comment is
+     * precisely what failed here the last time. Routing it makes the guarantee
+     * structural, and gives that path the same 401-vs-outage-vs-pin distinction
+     * the fetch catch gets.
      *
      * What an operator can actually act on is the failure class, the driver's
      * SQLSTATE and its errno, and — for a TacticalClientException — the HTTP
