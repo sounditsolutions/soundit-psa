@@ -76,8 +76,14 @@ class MislinkedAssetFinderTest extends TestCase
         $this->assertSame($acme->id, $row['client_id']);
         $this->assertSame($bravo->id, $row['other_client_id']);
         $this->assertSame('Bravo', $row['other_client_name']);
-        $this->assertSame('agent-mislinked', $row['evidence']['tactical_agent_id']);
-        $this->assertSame('BravoCo|HQ', $row['evidence']['tactical_site_key']);
+        // The Tactical agent id and site key are vendor-written text, so they cross
+        // into agent context FENCED (UNTRUSTED_EVIDENCE_LEAVES). Assert the fence is
+        // present AND that the value survived it — an equality assertion on the bare
+        // value would now fail, and dropping the value check would make it vacuous.
+        $this->assertStringContainsString('=== UNTRUSTED', (string) $row['evidence']['tactical_agent_id']);
+        $this->assertStringContainsString('agent-mislinked', (string) $row['evidence']['tactical_agent_id']);
+        $this->assertStringContainsString('=== UNTRUSTED', (string) $row['evidence']['tactical_site_key']);
+        $this->assertStringContainsString('BravoCo|HQ', (string) $row['evidence']['tactical_site_key']);
     }
 
     public function test_rule1_does_not_fire_on_a_clean_fleet(): void
@@ -352,6 +358,32 @@ class MislinkedAssetFinderTest extends TestCase
 
         $this->assertCount(1, $hits, 'a shared corp./mail. label must not name every client carrying one');
         $this->assertSame($alpha->id, $hits[0]['other_client_id']);
+    }
+
+    public function test_rule4_does_not_key_a_generic_label_onto_a_bare_country_code_tld(): void
+    {
+        // The generic-label walk must not step ONTO the TLD. 'corp.uk' and 'mail.uk'
+        // share nothing but a ccTLD, and bare ccTLDs are not (and cannot be) listed in
+        // PUBLIC_SUFFIX_LABELS, so without the count guard both key as the tenant 'uk'
+        // and every client under that TLD collapses into one account namespace.
+        $alpha = Client::factory()->create(['name' => 'Alpha']);
+        $bravo = Client::factory()->create(['name' => 'Bravo']);
+        $charlie = Client::factory()->create(['name' => 'Charlie']);
+        $this->person($alpha, ['cipp_upn' => 'admin@corp.uk']);
+        $this->person($charlie, ['cipp_upn' => 'admin@charlie.com']);
+        // Same local part, a generic leading label, and the SAME ccTLD as Alpha's contact.
+        $this->asset($bravo, ['last_user' => 'admin@mail.uk', 'hostname' => 'HOST-CCGEN']);
+        // Positive control on the SAME fleet, so the assertion below cannot pass merely
+        // because rule 4 is inert here.
+        $this->asset($bravo, ['last_user' => 'admin@charlie.com', 'hostname' => 'HOST-CCCTL']);
+
+        $hits = array_values(array_filter(
+            $this->finder()->find(null)['tier_b'],
+            fn ($r) => $r['rule'] === 'last_user_foreign_contact'
+        ));
+
+        $this->assertCount(1, $hits, 'a generic label over a bare ccTLD must never key onto the TLD');
+        $this->assertSame($charlie->id, $hits[0]['other_client_id']);
     }
 
     public function test_rule4_keeps_tenants_apart_under_one_shared_provider_domain(): void

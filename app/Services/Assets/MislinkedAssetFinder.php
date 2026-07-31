@@ -764,13 +764,14 @@ class MislinkedAssetFinder
      * (corp., mail., ad., office. — GENERIC_DOMAIN_LABELS) are walked past first.
      * They name a host INSIDE a tenant, so keying on one would make every client on
      * corp.* a single account — the same generic-account flood, moved from the local
-     * part to the domain. The walk never steps into a public suffix.
+     * part to the domain. The walk never steps into a public suffix, and never onto
+     * the TLD of a two-label domain ('mail.uk' names no tenant; it is not 'uk').
      *
      * KNOWN, DELIBERATE LIMITS. Two tenants whose leading label is genuinely the same
      * (acme.com vs acme.net) still agree — this is name-based matching and Tier B is
      * human-eyes. Values that name no tenant return null and can never be evidence: a
      * bare 'jdoe', and a domain that is nothing but generic labels ('CORP\jdoe',
-     * corp.com). Both are false negatives by choice: an unmatchable key costs a missed
+     * corp.com, mail.uk). Both are false negatives by choice: an unmatchable key costs a missed
      * suspect, a colliding one accuses an innocent client.
      */
     private function accountKey(?string $value): ?string
@@ -826,9 +827,18 @@ class MislinkedAssetFinder
             return null;
         }
 
-        // Walk past corp./mail./ad./office. — but never into the public suffix, so
-        // 'corp.co.uk' is not read as the tenant 'co'.
-        while (count($labels) > 1
+        // Walk past corp./mail./ad./office. — but only while a whole domain is left
+        // BELOW the walked label, and never onto a known public-suffix label. BOTH
+        // guards are load-bearing. The count guard stops the walk shifting a generic
+        // label off a TWO-label domain and landing on the TLD: 'mail.uk' would key as
+        // the tenant 'uk', collapsing every unrelated client under that ccTLD into one
+        // account namespace — the generic-account flood, moved one label further right.
+        // PUBLIC_SUFFIX_LABELS cannot close that case (it holds no bare ccTLD, and the
+        // set of them is not enumerable here), so the count is what holds it. The suffix
+        // list separately stops 'corp.co.uk' being read as the tenant 'co'. A two-label
+        // domain whose leading label is generic therefore names no tenant and returns
+        // null below, rather than colliding on its TLD.
+        while (count($labels) > 2
             && in_array($labels[0], self::GENERIC_DOMAIN_LABELS, true)
             && ! in_array($labels[1], self::PUBLIC_SUFFIX_LABELS, true)) {
             array_shift($labels);
