@@ -203,4 +203,70 @@ class TacticalDeviceSyncCreatesAssetsTest extends TestCase
         $this->assertSame(1, $result->created, 'the tactical row is still recorded');
         $this->assertArrayNotHasKey('assets_created', $result->details);
     }
+
+    public function test_placeholder_oem_serial_is_not_written_to_the_asset(): void
+    {
+        $this->mappedClient();
+
+        $this->syncService([$this->agent(['serial_number' => 'To Be Filled By O.E.M.'])])->syncDevices();
+
+        $this->assertNull(
+            Asset::where('hostname', 'NEWBOX')->value('serial_number'),
+            'a placeholder serial must not seed the column Ninja/Level match on globally',
+        );
+    }
+
+    public function test_ambiguous_local_ips_leave_the_asset_ip_empty(): void
+    {
+        $this->mappedClient();
+
+        // Hyper-V host-only adapter listed first — element 0 is not "the IP".
+        $this->syncService([$this->agent(['local_ips' => '172.28.144.1, 192.168.0.42'])])->syncDevices();
+
+        $this->assertNull(Asset::where('hostname', 'NEWBOX')->value('ip_address'));
+    }
+
+    public function test_loopback_and_link_local_addresses_are_never_chosen(): void
+    {
+        $this->mappedClient();
+
+        $this->syncService([$this->agent(['local_ips' => '127.0.0.1, 169.254.10.5, 192.168.0.42'])])->syncDevices();
+
+        $this->assertSame('192.168.0.42', Asset::where('hostname', 'NEWBOX')->value('ip_address'));
+    }
+
+    public function test_long_disk_summary_is_fitted_to_the_asset_column(): void
+    {
+        $this->mappedClient();
+
+        // assets.disk_summary is varchar(500); the agent snapshot column is TEXT.
+        $disks = array_fill(0, 20, 'SAMSUNG MZVLB1T0HBLR-000L7 1TB NVMe SSD');
+
+        $this->syncService([$this->agent(['physical_disks' => $disks])])->syncDevices();
+
+        $this->assertSame(500, mb_strlen((string) Asset::where('hostname', 'NEWBOX')->value('disk_summary')));
+    }
+
+    public function test_connectivity_is_refreshed_on_every_sync_not_frozen_at_creation(): void
+    {
+        $this->mappedClient();
+
+        $this->syncService([$this->agent(['status' => 'offline'])])->syncDevices();
+        $this->assertFalse((bool) Asset::where('hostname', 'NEWBOX')->value('rmm_online'));
+
+        $this->syncService([$this->agent(['status' => 'online'])])->syncDevices();
+        $this->assertTrue((bool) Asset::where('hostname', 'NEWBOX')->value('rmm_online'));
+    }
+
+    public function test_agent_missing_from_the_payload_takes_its_asset_offline(): void
+    {
+        $this->mappedClient();
+
+        $this->syncService([$this->agent()])->syncDevices();
+        $this->assertTrue((bool) Asset::where('hostname', 'NEWBOX')->value('rmm_online'));
+
+        $this->syncService([])->syncDevices();
+
+        $this->assertFalse((bool) Asset::where('hostname', 'NEWBOX')->value('rmm_online'));
+    }
 }

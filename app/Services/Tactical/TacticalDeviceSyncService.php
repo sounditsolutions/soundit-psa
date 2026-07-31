@@ -10,6 +10,8 @@ use App\Models\TacticalAsset;
 use App\Models\TechnicianRun;
 use App\Services\SyncResult;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 class TacticalDeviceSyncService
@@ -198,22 +200,59 @@ class TacticalDeviceSyncService
 
             // Link to PSA asset if not already linked — creating the asset when
             // Tactical is the discovery source for this device.
-            if (! $tacticalAsset->asset_id) {
-                $this->linkOrCreateAsset($tacticalAsset, $psaClientId, $agent, $result);
-            }
+            //
+            // Per-agent isolation (mirrors NinjaSyncService's device loop): one
+            // agent's write failure must not abort the run. Without it a single
+            // bad row skips every later agent AND the not-seen→offline sweep
+            // below, so decommissioned agents keep reading "online".
+            try {
+                if (! $tacticalAsset->asset_id) {
+                    $this->linkOrCreateAsset($tacticalAsset, $psaClientId, $agent, $result);
+                }
 
-            // Update the linked asset's last_user if available
-            if ($tacticalAsset->asset_id && ($agent['logged_username'] ?? null)) {
-                Asset::where('id', $tacticalAsset->asset_id)
-                    ->update(['last_user' => $agent['logged_username']]);
+                // Refresh the linked asset from THIS run's snapshot. rmm_online
+                // and last_seen_at are read as CURRENT truth by the Assets list
+                // badge and AssetHealthService::connectivityFactor(), so writing
+                // them once at creation and never again would assert a frozen
+                // connectivity state forever (psa-wedk: never present synced
+                // state as current truth).
+                if ($tacticalAsset->asset_id) {
+                    $refresh = ['rmm_online' => $tacticalAsset->status === 'online'];
+
+                    if ($tacticalAsset->last_seen_at) {
+                        $refresh['last_seen_at'] = $tacticalAsset->last_seen_at;
+                    }
+
+                    if ($agent['logged_username'] ?? null) {
+                        $refresh['last_user'] = $agent['logged_username'];
+                    }
+
+                    Asset::where('id', $tacticalAsset->asset_id)->update($refresh);
+                }
+            } catch (\Throwable $e) {
+                Log::warning('[TacticalSync] Agent skipped after a write failure', [
+                    'agent_id' => $agentId,
+                    'error' => $e->getMessage(),
+                ]);
+                $result->recordError("Agent {$agentId}: {$e->getMessage()}");
             }
         }
 
         // Mark agents not seen in this sync as offline (only on full sync, not client-scoped)
         if (! $clientId && $fetchSucceeded) {
-            $staleCount = TacticalAsset::whereNotIn('agent_id', $seenAgentIds)
-                ->where('status', '!=', 'offline')
-                ->update(['status' => 'offline', 'synced_at' => now()]);
+            $stale = TacticalAsset::whereNotIn('agent_id', $seenAgentIds)
+                ->where('status', '!=', 'offline');
+
+            // Capture the linked assets BEFORE flipping the agents: their
+            // rmm_online has to go offline with the agent, or the Assets list
+            // keeps asserting "Online per RMM" for a device this run never saw.
+            $staleAssetIds = (clone $stale)->whereNotNull('asset_id')->pluck('asset_id')->all();
+
+            $staleCount = $stale->update(['status' => 'offline', 'synced_at' => now()]);
+
+            if (! empty($staleAssetIds)) {
+                Asset::whereIn('id', $staleAssetIds)->update(['rmm_online' => false]);
+            }
 
             if ($staleCount > 0) {
                 $result->deactivated += $staleCount;
@@ -325,26 +364,82 @@ class TacticalDeviceSyncService
 
         $lowerHostname = strtolower($hostname);
 
-        $asset = Asset::where('client_id', $psaClientId)
-            ->whereNull('tactical_asset_id')
-            ->where(function ($q) use ($lowerHostname) {
-                $q->whereRaw('LOWER(hostname) = ?', [$lowerHostname])
-                    ->orWhereRaw('LOWER(name) = ?', [$lowerHostname]);
-            })
-            ->first();
+        // Resolve-or-create is a check-then-write, and syncDevices() runs from
+        // BOTH the scheduler and the operator's "Sync devices" button — the
+        // command's withoutOverlapping() does not cover the web path. Two runs
+        // racing the same host would each see "no match" and each create an
+        // asset, forking one device into two billable, client-facing rows.
+        // There is no unique index on (client_id, hostname) to fall back on, so
+        // serialize per (client, hostname): the loser of the race re-runs the
+        // lookup inside the lock and LINKS to the row the winner just created.
+        $lock = Cache::lock('tactical-sync:asset:'.$psaClientId.':'.sha1($lowerHostname), 60);
 
-        if (! $asset) {
-            $asset = $this->createAssetFromAgent($psaClientId, $agent);
+        try {
+            $acquired = $lock->get();
+        } catch (\Throwable $e) {
+            // Fail CLOSED and loudly: without the lock we cannot promise we are
+            // not duplicating a device, and a silent skip would stop discovery
+            // with nothing but a log line.
+            $result->recordError("Could not acquire the asset lock for {$hostname}: {$e->getMessage()}");
 
-            if (! $asset) {
-                return;
-            }
-
-            $result->details['assets_created'] = ($result->details['assets_created'] ?? 0) + 1;
+            return;
         }
 
-        $asset->update(['tactical_asset_id' => $tacticalAsset->id]);
-        $tacticalAsset->update(['asset_id' => $asset->id]);
+        if (! $acquired) {
+            Log::info('[TacticalSync] Another sync holds this host — deferring the link to the next run', [
+                'agent' => $hostname,
+                'client_id' => $psaClientId,
+            ]);
+
+            return;
+        }
+
+        $asset = null;
+        $created = false;
+
+        try {
+            // ONE transaction for the create AND both back-links. A failure
+            // between them (deploy restart, DB timeout, AssetObserver::created
+            // throwing) would otherwise leave assets.tactical_asset_id set with
+            // tactical_assets.asset_id NULL — a state no later run can heal,
+            // because the link query skips linked assets while the conflict
+            // query refuses creation on them. That is permanent invisibility
+            // needing a manual DB repair.
+            DB::transaction(function () use ($tacticalAsset, $psaClientId, $agent, $lowerHostname, &$asset, &$created) {
+                $asset = Asset::where('client_id', $psaClientId)
+                    ->whereNull('tactical_asset_id')
+                    ->where(function ($q) use ($lowerHostname) {
+                        $q->whereRaw('LOWER(hostname) = ?', [$lowerHostname])
+                            ->orWhereRaw('LOWER(name) = ?', [$lowerHostname]);
+                    })
+                    ->first();
+
+                if (! $asset) {
+                    $asset = $this->createAssetFromAgent($psaClientId, $agent);
+
+                    if (! $asset) {
+                        return;
+                    }
+
+                    $created = true;
+                }
+
+                $asset->update(['tactical_asset_id' => $tacticalAsset->id]);
+                $tacticalAsset->update(['asset_id' => $asset->id]);
+            });
+        } finally {
+            $lock->release();
+        }
+
+        if (! $asset) {
+            return;
+        }
+
+        // Counters move only after the commit, so a rolled-back create can never
+        // be reported to the operator as an asset they can go find.
+        if ($created) {
+            $result->details['assets_created'] = ($result->details['assets_created'] ?? 0) + 1;
+        }
 
         if (! isset($result->details['linked'])) {
             $result->details['linked'] = 0;
@@ -404,18 +499,19 @@ class TacticalDeviceSyncService
         // normalization) instead of re-deriving them from the payload here.
         $mapped = $this->mapAgentToTacticalAsset($agent);
 
-        $localIps = $mapped['local_ips'] ?? null;
-
         $asset = Asset::create([
             'client_id' => $psaClientId,
             'name' => $hostname,
             'hostname' => $hostname,
             'asset_type' => $this->mapAssetType($mapped['plat'] ?? null, $agent['monitoring_type'] ?? null),
             'os' => $mapped['os'] ?? null,
-            'serial_number' => $mapped['serial_number'] ?? null,
+            'serial_number' => $this->realSerial($mapped['serial_number'] ?? null),
             'cpu' => $mapped['cpu'] ?? null,
-            'disk_summary' => $mapped['disk_summary'] ?? null,
-            'ip_address' => is_array($localIps) ? ($localIps[0] ?? null) : $localIps,
+            // tactical_assets.disk_summary is TEXT while assets.disk_summary is
+            // varchar(500), and mysql/mariadb run with 'strict' => true — a
+            // many-disk server would raise SQLSTATE 22001, not truncate.
+            'disk_summary' => $this->fit($mapped['disk_summary'] ?? null, 500),
+            'ip_address' => $this->primaryIpAddress($mapped['local_ips'] ?? null),
             'last_user' => $mapped['last_user'] ?? null,
             'rmm_online' => ($mapped['status'] ?? null) === 'online',
             'last_seen_at' => $mapped['last_seen_at'] ?? null,
@@ -430,6 +526,87 @@ class TacticalDeviceSyncService
         ]);
 
         return $asset;
+    }
+
+    /**
+     * The agent's serial, or null when it is a known OEM placeholder.
+     *
+     * assets.serial_number is a GLOBAL match key for OTHER syncs: NinjaSyncService
+     * and LevelSyncService each look an incoming device up by serial_number with
+     * NO client_id scope and then rewrite client_id/hostname/name on whatever they
+     * find. Seeding "To Be Filled By O.E.M." at fleet scale would therefore hand
+     * one client's asset — with its tickets, contracts and notes — to another
+     * client's device. Same junk list as NinjaSyncService::resolveSerial(), which
+     * exists for exactly this reason; the raw value stays on the agent snapshot.
+     */
+    private function realSerial(mixed $serial): ?string
+    {
+        $junkValues = ['standard', 'default string', 'to be filled by o.e.m.', 'none', 'not specified', 'system serial number'];
+
+        $serial = is_string($serial) ? trim($serial) : '';
+
+        if ($serial === '' || in_array(strtolower($serial), $junkValues, true)) {
+            return null;
+        }
+
+        return $serial;
+    }
+
+    /**
+     * Fit a value to an asset column's width. The agent snapshot's columns are
+     * wider than the asset's, and strict SQL mode errors rather than truncating.
+     */
+    private function fit(mixed $value, int $max): ?string
+    {
+        $value = is_string($value) ? $value : (is_scalar($value) ? (string) $value : '');
+
+        if ($value === '') {
+            return null;
+        }
+
+        return mb_substr($value, 0, $max);
+    }
+
+    /**
+     * The one address a technician can actually reach the machine on, or null.
+     *
+     * local_ips is every adapter the agent sees, in the order the agent listed
+     * them — a workstation with Hyper-V/VirtualBox/VPN adapters commonly reports
+     * a host-only address first, so element 0 is not "the IP". Loopback,
+     * link-local/APIPA and malformed entries are dropped; if more than one
+     * candidate survives, the payload does not say which one is the machine's,
+     * so the operator-visible field stays empty rather than publishing an address
+     * that may not answer. The full list remains on the tactical_assets snapshot
+     * either way.
+     *
+     * @param  array<int, mixed>|string|null  $localIps
+     */
+    private function primaryIpAddress(array|string|null $localIps): ?string
+    {
+        $candidates = [];
+
+        foreach (is_array($localIps) ? $localIps : [$localIps] as $ip) {
+            $ip = is_string($ip) ? trim($ip) : '';
+
+            if (filter_var($ip, FILTER_VALIDATE_IP) === false) {
+                continue;
+            }
+
+            $lower = strtolower($ip);
+
+            if ($lower === '0.0.0.0' || $lower === '::' || $lower === '::1'
+                || str_starts_with($lower, '127.')
+                || str_starts_with($lower, '169.254.')
+                || str_starts_with($lower, 'fe80:')) {
+                continue;
+            }
+
+            $candidates[$ip] = true;
+        }
+
+        $candidates = array_keys($candidates);
+
+        return count($candidates) === 1 ? $candidates[0] : null;
     }
 
     /**
