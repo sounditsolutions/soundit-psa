@@ -29,14 +29,22 @@ set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
 
-# Resolve the base commit to diff against (prefer origin/main, then main).
+# Resolve the base commit to diff against (prefer an explicit GC_VERIFY_BASE — the
+# escape hatch for shallow / fork CI checkouts — then origin/main, then main).
 BASE=""
-for ref in origin/main main; do
-    if git rev-parse --verify --quiet "$ref" >/dev/null 2>&1; then
-        BASE="$(git merge-base HEAD "$ref" 2>/dev/null || true)"
-        [ -n "$BASE" ] && break
+if [ -n "${GC_VERIFY_BASE:-}" ]; then
+    if ! BASE="$(git rev-parse --verify --quiet "${GC_VERIFY_BASE}^{commit}")"; then
+        echo "ERROR: GC_VERIFY_BASE='${GC_VERIFY_BASE}' does not resolve to a commit — failing closed" >&2
+        exit 1
     fi
-done
+else
+    for ref in origin/main main; do
+        if git rev-parse --verify --quiet "$ref" >/dev/null 2>&1; then
+            BASE="$(git merge-base HEAD "$ref" 2>/dev/null || true)"
+            [ -n "$BASE" ] && break
+        fi
+    done
+fi
 
 echo "==> [1/3] php artisan test"
 php artisan config:clear --ansi >/dev/null
@@ -58,26 +66,41 @@ else
 fi
 
 echo "==> [3/3] real-data / secret guard"
+# No base commit means every history scan below covers NOTHING while the run still
+# prints PASS — the exact fail-open this gate exists to prevent (shallow clones and
+# fork CI checkouts hit it). An unresolvable base is therefore a FAILURE, not a
+# silent skip; fetch the base branch or point GC_VERIFY_BASE at a fetched commit.
+if [ -z "$BASE" ]; then
+    echo "ERROR: secret guard could not resolve a base commit (no origin/main or main," >&2
+    echo "       or no merge-base with HEAD) — history coverage would be empty." >&2
+    echo "       Failing CLOSED. Fix: git fetch origin main, or GC_VERIFY_BASE=<ref|sha>." >&2
+    exit 1
+fi
+
 # Content guard: reject operator emails, private keys, and known token shapes.
 # Scan the FULL outbound history (git log -p), not the net BASE...HEAD diff, so a
-# secret added and then removed in an intermediate commit is still seen. FAIL
+# secret added and then removed in an intermediate commit is still seen. `-m` so a
+# MERGE commit is diffed against each parent — without it git prints nothing for a
+# merge and content introduced by a conflict resolution is never scanned. FAIL
 # CLOSED: a failed enumeration must not read as an empty (clean) diff — the old
 # `|| true` here did exactly that (psa-6vfw1 review).
 GUARD_RE='@couttspnw\.com|-----BEGIN [A-Z ]*PRIVATE KEY-----|xox[baprs]-[0-9A-Za-z-]{8,}|AKIA[0-9A-Z]{16}'
-HIST=""
-if [ -n "$BASE" ]; then
-    if ! HIST="$(git log -p --no-color --diff-filter=ACMR "$BASE..HEAD" 2>/dev/null)"; then
-        echo "ERROR: secret guard could not enumerate history ($BASE..HEAD) — failing closed" >&2
-        exit 1
-    fi
+if ! HIST="$(git log -p -m --no-color --diff-filter=ACMR "$BASE..HEAD" 2>/dev/null)"; then
+    echo "ERROR: secret guard could not enumerate history ($BASE..HEAD) — failing closed" >&2
+    exit 1
 fi
 if ! WORK="$(git diff -U0 2>/dev/null)"; then
     echo "ERROR: secret guard could not enumerate the working diff — failing closed" >&2
     exit 1
 fi
-if printf '%s\n%s' "$HIST" "$WORK" | grep -nEi "$GUARD_RE" >/dev/null 2>&1; then
-    echo "ERROR: possible real-data/secret leak in history/diff:" >&2
-    printf '%s\n%s' "$HIST" "$WORK" | grep -nEi "$GUARD_RE" >&2
+# NEVER echo the matched line. This runs in CI on a PUBLIC repo, so the log is
+# world-readable and long-lived: printing the hit would republish the secret in a
+# second place. Report the COUNT only (like secret:scan, which prints path+reason
+# and never the value) and let the developer reproduce it locally.
+if HITS="$(printf '%s\n%s' "$HIST" "$WORK" | grep -cEi "$GUARD_RE")"; then
+    echo "ERROR: possible real-data/secret leak: ${HITS} matching line(s) in history/diff." >&2
+    echo "       The matched text is deliberately NOT printed — this log is public." >&2
+    echo "       Reproduce locally: git log -p -m --diff-filter=ACMR $BASE..HEAD | grep -nEi '$GUARD_RE'" >&2
     exit 1
 fi
 
@@ -88,8 +111,6 @@ fi
 # it even when a later commit deleted it before the tip (the add-then-delete gap
 # the review found). Both fail closed if git cannot be enumerated.
 php artisan secret:scan || exit 1
-if [ -n "$BASE" ]; then
-    php artisan secret:scan --range="$BASE..HEAD" || exit 1
-fi
+php artisan secret:scan --range="$BASE..HEAD" || exit 1
 
 echo "==> gc-verify: PASS"

@@ -21,12 +21,38 @@ cd "$(git rev-parse --show-toplevel)"
 ZERO='0000000000000000000000000000000000000000'
 status=0
 
+# git hands us the push target: $1 = remote NAME (or a bare URL for an ad-hoc
+# push), $2 = URL. We need the name so the "already pushed" exclusion below can be
+# scoped to THIS remote; resolve it from the URL when $1 is not a configured name.
+target_remote=""
+if [ -n "${1:-}" ] && git config --get "remote.${1}.url" >/dev/null 2>&1; then
+    target_remote="$1"
+elif [ -n "${2:-}" ]; then
+    for r in $(git remote); do
+        if [ "$(git remote get-url "$r" 2>/dev/null || true)" = "$2" ]; then
+            target_remote="$r"
+            break
+        fi
+    done
+fi
+
 # git feeds ref updates on stdin: <local ref> <local sha> <remote ref> <remote sha>
 while read -r _local_ref local_sha _remote_ref remote_sha; do
     [ "$local_sha" = "$ZERO" ] && continue          # deleting a ref pushes no objects
 
     if [ "$remote_sha" = "$ZERO" ]; then
-        range="$local_sha --not --remotes"          # new branch: commits not already on any remote
+        # New branch. Exclude only what THE TARGET remote already has: a bare
+        # `--not --remotes` excludes commits reachable from ANY remote-tracking
+        # ref, so a branch already pushed to a private fork would scan ZERO
+        # commits on its first push to the PUBLIC remote and report clean.
+        if [ -n "$target_remote" ]; then
+            range="$local_sha --not --remotes=$target_remote"
+        else
+            # Pushing to an unnamed URL: nothing is KNOWN to be there already, so
+            # scan the whole reachable history rather than assume it is safe.
+            echo "pre-push: push target '${1:-?}' is not a configured remote — scanning full reachable history (failing closed)." >&2
+            range="$local_sha"
+        fi
     else
         range="$remote_sha..$local_sha"             # existing branch: only the new commits
     fi

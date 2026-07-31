@@ -121,6 +121,32 @@ class SecretScanCommandTest extends TestCase
         $this->artisan('secret:scan', ['--range' => "{$base}..HEAD", '--path' => $dir])->assertExitCode(0);
     }
 
+    public function test_range_mode_catches_a_secret_introduced_by_a_merge_commit(): void
+    {
+        [$dir, $base] = $this->repoWithBase();
+
+        // Two diverging lines of work, then a merge whose OWN tree carries the
+        // secret (an "evil merge" / conflict resolution). git diff-tree and
+        // git log -p print nothing for a merge unless -m/-c is given, so this is
+        // the case a plain per-commit diff silently skips.
+        $this->git($dir, ['checkout', '-q', '-b', 'side']);
+        $this->write($dir, 'src/Side.php', "<?php\nclass Side {}\n");
+        $this->commit($dir, ['src/Side.php'], 'side work');
+
+        $this->git($dir, ['checkout', '-q', '-']);
+        $this->write($dir, 'src/Main.php', "<?php\nclass Main {}\n");
+        $this->commit($dir, ['src/Main.php'], 'main work');
+
+        $this->git($dir, ['merge', '-q', '--no-ff', '-m', 'merge side', 'side']);
+        $this->write($dir, '.env.bak-merge-probe', "APP_KEY=base64:redacted\n");
+        $this->git($dir, ['add', '.env.bak-merge-probe']);
+        $this->git($dir, ['commit', '-q', '--amend', '--no-edit']);
+
+        $this->artisan('secret:scan', ['--range' => "{$base}..HEAD", '--path' => $dir])
+            ->expectsOutputToContain('.env.bak-merge-probe')
+            ->assertExitCode(1);
+    }
+
     public function test_range_mode_fails_closed_on_an_unresolvable_range(): void
     {
         [$dir] = $this->repoWithBase();
