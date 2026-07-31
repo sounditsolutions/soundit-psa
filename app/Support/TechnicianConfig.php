@@ -217,15 +217,29 @@ class TechnicianConfig
 
     /**
      * True when a Technician notification path can fire but has nowhere to deliver
-     * (psa-tmdw). The worker-down alert rides emergencyBackstopEnabled() and the
-     * daily digest requires enabled() (which implies emergencyBackstopEnabled()),
-     * so that predicate is exactly "a notification could be sent"; if neither the
-     * Teams webhook nor the notify email is set, every such notification would be
-     * silently dropped. Drives the operator-facing warning on the settings panel.
+     * (psa-tmdw). TWO independent planes reach OperatorNotifier::notify(), and the
+     * predicate is their UNION — emergencyBackstopEnabled() alone is NOT "a
+     * notification could be sent":
+     *
+     *   1. emergencyBackstopEnabled() — the worker-down dead-man's-switch
+     *      (TechnicianHeartbeat::checkWorkerLiveness) and the daily digest, which
+     *      requires enabled() and so implies this predicate.
+     *   2. TriageConfig::autoReviewEnabled() — the agent review-pass STALLED alert
+     *      (TechnicianHeartbeat::checkReviewPassStaleness) is gated ONLY on
+     *      auto-review, and routes/console.php schedules technician:heartbeat under
+     *      emergencyBackstopEnabled() OR autoReviewEnabled() precisely so that alarm
+     *      still fires with the technician subsystem fully OFF (psa-lqlu). The
+     *      agent's own operator notifications ride the same plane. Omitting it gave
+     *      a false all-clear in exactly the state the stalled-agent alert exists for.
+     *
+     * If neither the Teams webhook nor the notify email is set, every such
+     * notification is silently dropped. Drives the operator-facing warning on the
+     * settings panel — so a NEW notify() caller must be added to the union here
+     * rather than assumed quiet: the failure mode of omission is a silent drop.
      */
     public static function notificationsUndeliverable(): bool
     {
-        if (! self::emergencyBackstopEnabled()) {
+        if (! self::emergencyBackstopEnabled() && ! TriageConfig::autoReviewEnabled()) {
             return false;
         }
 

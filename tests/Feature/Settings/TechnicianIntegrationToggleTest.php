@@ -346,10 +346,51 @@ class TechnicianIntegrationToggleTest extends TestCase
 
     public function test_notify_panel_no_warning_when_technician_fully_off(): void
     {
-        // Fully off → neither the worker-down alert nor the digest can fire, so no warning
-        // even though digest defaults on when unset.
+        // Fully off AND auto-review off → no notify() path can fire, so no warning even
+        // though digest defaults on when unset. Auto-review is pinned explicitly: it is the
+        // OTHER half of the predicate (see below), and leaving it to a default would make
+        // this test silently stop covering the negative case if that default ever changed.
         Setting::setValue('technician_enabled', '0');
         Setting::setValue('technician_emergency_enabled', '0');
+        Setting::setValue('triage_auto_review', '0');
+
+        $this->assertFalse(TechnicianConfig::notificationsUndeliverable());
+
+        $this->actingAs($this->user)
+            ->get(route('settings.integrations'))
+            ->assertOk()
+            ->assertDontSee('no delivery channel');
+    }
+
+    /**
+     * psa-tmdw: the review-pass STALLED alert is gated ONLY on auto-review
+     * (TechnicianHeartbeat::checkReviewPassStaleness), and routes/console.php schedules
+     * technician:heartbeat under emergencyBackstopEnabled() OR autoReviewEnabled() so it
+     * fires with the technician subsystem OFF (psa-lqlu). notify() therefore drops into
+     * nothing in this state — the panel must warn, not give a false all-clear on the very
+     * alert that exists to catch a silently-dead agent.
+     *
+     * Reverting notificationsUndeliverable() to the emergencyBackstopEnabled()-only
+     * short-circuit fails this test at the first assertTrue (and at assertSee).
+     */
+    public function test_notify_panel_warns_when_only_auto_review_is_on_with_no_delivery_channel(): void
+    {
+        // Technician fully OFF; only the agent review-pass alert plane is live.
+        Setting::setValue('technician_enabled', '0');
+        Setting::setValue('technician_emergency_enabled', '0');
+        Setting::setValue('triage_enabled', '1');
+        Setting::setValue('triage_auto_review', '1');
+
+        $this->assertTrue(TechnicianConfig::notificationsUndeliverable());
+
+        $this->actingAs($this->user)
+            ->get(route('settings.integrations'))
+            ->assertOk()
+            ->assertSee('no delivery channel');
+
+        // ...and the widened predicate is still a real test of configuration, not a
+        // constant true: one channel clears it in exactly the same state.
+        Setting::setValue('technician_notify_email', 'ops@example.com');
 
         $this->assertFalse(TechnicianConfig::notificationsUndeliverable());
 

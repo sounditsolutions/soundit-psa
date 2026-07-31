@@ -3891,14 +3891,17 @@
 
                     <hr class="my-3">
                     <h6 class="text-muted text-uppercase small mb-2">Notify</h6>
-                    {{-- psa-tmdw: a notification path (daily digest / worker-down alert) is active but has
-                         nowhere to deliver — warn, or every Technician notification is silently dropped. --}}
+                    {{-- psa-tmdw: a notification path (daily digest / worker-down alert / agent review-pass
+                         stalled alert) is active but has nowhere to deliver — warn, or every Technician
+                         notification is silently dropped. The stalled-agent alert rides auto-review, so this
+                         can fire with the Technician toggles off; the copy must not claim otherwise. --}}
                     @if(\App\Support\TechnicianConfig::notificationsUndeliverable())
                     <div class="alert alert-warning py-2 px-3 small mb-3">
                         <i class="bi bi-exclamation-triangle me-1"></i>
-                        AI Technician notifications (daily digest / worker-down alert) are enabled but
-                        <strong>no delivery channel is configured</strong> — add a Teams webhook or a notify email
-                        below, or these notifications (including the worker-down alert) will be silently dropped.
+                        AI Technician notifications (daily digest / worker-down alert / agent review-pass
+                        stalled alert) are enabled but <strong>no delivery channel is configured</strong> —
+                        add a Teams webhook or a notify email below, or these notifications (including the
+                        worker-down and stalled-agent alerts) will be silently dropped.
                     </div>
                     @endif
                     <div class="mb-3">
