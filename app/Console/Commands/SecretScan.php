@@ -88,15 +88,22 @@ class SecretScan extends Command
             // parents: exactly "introduced by the merge itself". A combined diff ignores
             // --diff-filter, so a path the merge DELETES can be listed here; the blob
             // read below tells that apart from a genuinely degraded read.
+            // -z so paths come back RAW and NUL-separated. WITHOUT it git emits a
+            // C-QUOTED token (core.quotePath defaults to true) for any path with
+            // non-ASCII bytes, a quote, a backslash or a control character — e.g.
+            // "docs/\303\234nsigned-cert.pem". `git show <sha>:<token>` cannot read
+            // that literal string, and it matches NOTHING as a pathspec, so the
+            // absent-from-tree escape below would silently skip exactly the file
+            // whose content most needs scanning. Raw paths make the read succeed.
             $dt = Process::path($this->repoPath())->run(
-                ['git', 'diff-tree', '--root', '--no-commit-id', '--name-only', '-r', '-c', '--diff-filter=ACMR', $sha]
+                ['git', 'diff-tree', '--root', '--no-commit-id', '--name-only', '-r', '-c', '-z', '--diff-filter=ACMR', $sha]
             );
             if (! $dt->successful()) {
                 return $this->failClosed("git diff-tree {$sha}", $dt->errorOutput());
             }
 
             // Defensive: never inspect the same path twice for one commit.
-            foreach (array_unique($this->lines($dt->output())) as $path) {
+            foreach (array_unique($this->lines($dt->output(), '/\x00/')) as $path) {
                 $checked++;
                 $reason = SecretScanner::dangerousReason($path);
 
@@ -110,10 +117,16 @@ class SecretScan extends Command
                         // skip it (blocking a push on a deletion is the false positive that
                         // gets a guard switched off). Anything else — an ls-tree error, or a
                         // path that IS in the tree but will not read — still fails closed.
+                        // --literal-pathspecs: a raw path containing pathspec magic
+                        // (`*`, `?`, `[`, a leading `:`) would otherwise be matched as a
+                        // PATTERN, so the file itself could fail to match and be treated
+                        // as absent. Belt: a token that still arrived C-QUOTED despite -z
+                        // can never match a pathspec either, so it must NOT take the skip
+                        // branch — an unmatchable token means "cannot verify", not "absent".
                         $inTree = Process::path($this->repoPath())->run(
-                            ['git', 'ls-tree', '--name-only', '-r', $sha, '--', $path]
+                            ['git', '--literal-pathspecs', 'ls-tree', '--name-only', '-r', $sha, '--', $path]
                         );
-                        if ($inTree->successful() && trim($inTree->output()) === '') {
+                        if (! str_starts_with($path, '"') && $inTree->successful() && trim($inTree->output()) === '') {
                             $checked--;
 
                             continue;
