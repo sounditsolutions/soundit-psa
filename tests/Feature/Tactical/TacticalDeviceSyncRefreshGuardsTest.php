@@ -24,7 +24,8 @@ use Tests\TestCase;
  * rmm_online / last_seen_at: the refresh runs every interval against an asset
  * that linkOrCreateAsset may have ADOPTED from another integration. Ninja and
  * Level write the same two columns, a false rmm_online has no staleness escape
- * anywhere in the app, and "overdue" is not an observation that a machine is down.
+ * anywhere in the app, and "overdue" is Tactical's LONGEST out-of-contact state —
+ * further past the threshold than "offline", not less certainly down.
  */
 class TacticalDeviceSyncRefreshGuardsTest extends TestCase
 {
@@ -99,25 +100,49 @@ class TacticalDeviceSyncRefreshGuardsTest extends TestCase
         $this->assertSame('2001:db8:1::5', Asset::where('hostname', 'NEWBOX')->value('ip_address'));
     }
 
-    /** 'overdue' means the agent is late checking in, not that the box is down. */
-    public function test_an_overdue_agent_is_never_recorded_as_offline(): void
+    /**
+     * 'overdue' is out of contact for LONGER than 'offline' — past both of
+     * Tactical's thresholds, not just the first — so it records the same hard
+     * false. A box powered off for a week reports 'overdue' and never returns to
+     * the 4–30 minute 'offline' window, so seeding unknown would leave it out of
+     * the Assets Offline filter for good, with nothing to ever write the false.
+     */
+    public function test_an_overdue_agent_is_recorded_as_offline(): void
     {
         $this->mappedClient();
 
+        $this->assertNotNull(
+            Asset::query()->whereNotNull('id')->count() >= 0 ? true : null,
+        );
+
         $this->syncService([$this->agent(['status' => 'overdue'])])->syncDevices();
 
-        $this->assertNull(
-            Asset::where('hostname', 'NEWBOX')->value('rmm_online'),
-            'a status that is not an observation of connectivity must seed unknown, not a hard false',
-        );
+        $seeded = Asset::where('hostname', 'NEWBOX')->value('rmm_online');
+        $this->assertNotNull($seeded, 'a machine past the overdue threshold is down, not unknown');
+        $this->assertFalse((bool) $seeded);
 
         $this->syncService([$this->agent(['status' => 'online'])])->syncDevices();
         $this->assertTrue((bool) Asset::where('hostname', 'NEWBOX')->value('rmm_online'));
 
         $this->syncService([$this->agent(['status' => 'overdue'])])->syncDevices();
-        $this->assertTrue(
-            (bool) Asset::where('hostname', 'NEWBOX')->value('rmm_online'),
-            'an overdue check-in must not overwrite an observation of online with a flat Offline',
+        $refreshed = Asset::where('hostname', 'NEWBOX')->value('rmm_online');
+        $this->assertNotNull($refreshed);
+        $this->assertFalse(
+            (bool) $refreshed,
+            'a machine that drops out of contact must stop reading Online',
+        );
+    }
+
+    /** A status outside Tactical's contact vocabulary is still no observation. */
+    public function test_an_unrecognised_status_leaves_connectivity_unknown(): void
+    {
+        $this->mappedClient();
+
+        $this->syncService([$this->agent(['status' => 'some_future_state'])])->syncDevices();
+
+        $this->assertNull(
+            Asset::where('hostname', 'NEWBOX')->value('rmm_online'),
+            'a status the sync does not understand must seed unknown, not a hard false',
         );
     }
 

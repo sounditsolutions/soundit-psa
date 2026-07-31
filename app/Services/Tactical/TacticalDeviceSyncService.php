@@ -236,12 +236,12 @@ class TacticalDeviceSyncService
                 // maintained by NinjaSyncService or LevelSyncService, which write
                 // these same two columns on their own cadence.
                 //
-                //  - Only 'online' and 'offline' move rmm_online. Tactical also
-                //    reports 'overdue' (agent late checking in), which is not an
-                //    observation that the machine is down; recording it as a hard
-                //    false would show a flat operator-facing "Offline" and charge
-                //    AssetHealthService's offline penalty on a machine nobody saw
-                //    go down.
+                //  - Only Tactical's contact vocabulary moves rmm_online:
+                //    'online' to true, 'offline' AND 'overdue' to false.
+                //    'overdue' is the LONGER out-of-contact state, not a softer
+                //    one (see rmmOnlineFromStatus), so a machine that stays down
+                //    is still recorded as down. Any other value is not an
+                //    observation of connectivity and leaves the flag untouched.
                 //  - A false is never written over another RMM's link. The false
                 //    branch has no staleness escape anywhere (isRmmDataStale
                 //    gates only a TRUE flag), so a broken Tactical agent would
@@ -636,8 +636,9 @@ class TacticalDeviceSyncService
             'disk_summary' => $this->fit($mapped['disk_summary'] ?? null, 500),
             'ip_address' => $this->primaryIpAddress($mapped['local_ips'] ?? null),
             'last_user' => $mapped['last_user'] ?? null,
-            // Same rule the per-run refresh applies: a status that is not an
-            // observation of connectivity seeds NULL (unknown), not a hard false.
+            // Same rule the per-run refresh applies: 'offline' and 'overdue' both
+            // seed false, and a status that is no observation of connectivity at
+            // all seeds NULL (unknown) rather than a hard false.
             'rmm_online' => $this->rmmOnlineFromStatus($mapped['status'] ?? null),
             'last_seen_at' => $mapped['last_seen_at'] ?? null,
             'needs_reboot' => (bool) ($mapped['needs_reboot'] ?? false),
@@ -735,19 +736,29 @@ class TacticalDeviceSyncService
      * Tactical's status vocabulary → rmm_online, or NULL when the status is not
      * an observation of connectivity.
      *
-     * Only 'online' and 'offline' are observations. 'overdue' — and any value
-     * Tactical adds later — means the agent is late checking in; recording that
-     * as a hard false would put a flat "Offline" badge and AssetHealthService's
-     * -30 penalty on a machine nobody saw go down, and the false branch has no
-     * staleness escape to climb back out of (isRmmDataStale gates only a TRUE
-     * flag). NULL is the honest "we do not know", which every reader already
-     * scores off last_seen_at instead.
+     * 'online', 'offline' and 'overdue' are all observations of contact, and
+     * they come off ONE clock. Tactical's Agent.status reads 'offline' once
+     * last_seen is older than offline_time (default 4 min) but newer than
+     * overdue_time (default 30 min), and 'overdue' once it is older than BOTH.
+     * 'overdue' is therefore the longest out-of-contact state — a box powered
+     * off for a week reports 'overdue', not 'offline' — so it records the same
+     * hard false. Mapping it to NULL would rank Tactical's strongest
+     * down-evidence below the state it outranks, and because a machine that
+     * stays down never re-enters the 4–30 minute 'offline' window, nothing would
+     * ever write the false: the asset would sit under "unknown" and drop out of
+     * the Assets Offline filter permanently.
+     *
+     * Any value Tactical adds later is NOT assumed to be a contact observation
+     * and yields NULL — the honest "we do not know", which every reader already
+     * scores off last_seen_at instead. That matters because a false has no
+     * staleness escape anywhere (isRmmDataStale gates only a TRUE flag), so it
+     * is only ever written for a status we know means out of contact.
      */
     private function rmmOnlineFromStatus(?string $status): ?bool
     {
         return match ($status) {
             'online' => true,
-            'offline' => false,
+            'offline', 'overdue' => false,
             default => null,
         };
     }
