@@ -103,7 +103,17 @@ class SecretScan extends Command
             }
 
             // Defensive: never inspect the same path twice for one commit.
-            foreach (array_unique($this->lines($dt->output(), '/\x00/')) as $path) {
+            // NUL-split WITHOUT trimming: lines() trims the whole stream, which eats
+            // leading/trailing whitespace off the FIRST and LAST paths. A mangled path
+            // reads as absent-from-tree and takes the silent-skip branch below, so a
+            // content-only secret in a whitespace-edged path would sail through.
+            // lines() itself is left alone for its other callers.
+            $introduced = array_values(array_filter(
+                explode("\0", $dt->output()),
+                static fn (string $p): bool => $p !== ''
+            ));
+
+            foreach (array_unique($introduced) as $path) {
                 $checked++;
                 $reason = SecretScanner::dangerousReason($path);
 

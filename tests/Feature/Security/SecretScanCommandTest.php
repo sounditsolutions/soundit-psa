@@ -132,6 +132,27 @@ class SecretScanCommandTest extends TestCase
             ->assertExitCode(1);
     }
 
+    /**
+     * psa-6vfw1 c3:v1:1 — the last fail-open. `git diff-tree -z` emits a NUL-separated
+     * stream, and the shared lines() helper trim()s the WHOLE stream before splitting,
+     * so whitespace on the outer edge of the first/last path is eaten. The mangled path
+     * then reads as absent-from-tree and takes the silent-skip branch — the exact
+     * "cannot verify" case that must fail closed. `.pem` is not flagged by NAME, so
+     * this passes only if the blob is actually read.
+     */
+    public function test_range_mode_catches_a_private_key_in_a_whitespace_edged_path(): void
+    {
+        [$dir, $base] = $this->repoWithBase();
+
+        $key = '-----BEGIN RSA '.'PRIVATE KEY-----'."\nMIIE...redacted...\n".'-----END RSA '.'PRIVATE KEY-----'."\n";
+        $this->write($dir, ' leading-space.pem', $key);
+        $this->commit($dir, [' leading-space.pem'], 'oops paste');
+
+        $this->artisan('secret:scan', ['--range' => "{$base}..HEAD", '--path' => $dir])
+            ->expectsOutputToContain('leading-space.pem')
+            ->assertExitCode(1);
+    }
+
     public function test_range_mode_passes_a_clean_range(): void
     {
         [$dir, $base] = $this->repoWithBase();
