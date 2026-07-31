@@ -229,18 +229,56 @@ class TacticalDeviceSyncService
                 // them once at creation and never again would assert a frozen
                 // connectivity state forever (psa-wedk: never present synced
                 // state as current truth).
-                if ($tacticalAsset->asset_id) {
-                    $refresh = ['rmm_online' => $tacticalAsset->status === 'online'];
+                //
+                // Three limits on what this run may assert, because the asset is
+                // not necessarily ours alone: linkOrCreateAsset() ADOPTS an
+                // existing asset by hostname/name, and that asset may already be
+                // maintained by NinjaSyncService or LevelSyncService, which write
+                // these same two columns on their own cadence.
+                //
+                //  - Only 'online' and 'offline' move rmm_online. Tactical also
+                //    reports 'overdue' (agent late checking in), which is not an
+                //    observation that the machine is down; recording it as a hard
+                //    false would show a flat operator-facing "Offline" and charge
+                //    AssetHealthService's offline penalty on a machine nobody saw
+                //    go down.
+                //  - A false is never written over another RMM's link. The false
+                //    branch has no staleness escape anywhere (isRmmDataStale
+                //    gates only a TRUE flag), so a broken Tactical agent would
+                //    otherwise re-assert Offline every interval on a device Ninja
+                //    or Level is actively reporting online. A TRUE still writes:
+                //    it is something we did observe, and every reader gates a
+                //    true on last_seen_at freshness.
+                //  - last_seen_at only ever moves FORWARD. Tactical's snapshot
+                //    can be older than the other RMM's heartbeat, and writing it
+                //    unconditionally would drag the asset's freshness backwards
+                //    and make current data read as stale.
+                $linkedAsset = $tacticalAsset->asset_id
+                    ? Asset::find($tacticalAsset->asset_id)
+                    : null;
 
-                    if ($tacticalAsset->last_seen_at) {
-                        $refresh['last_seen_at'] = $tacticalAsset->last_seen_at;
+                if ($linkedAsset) {
+                    $refresh = [];
+                    $otherRmmMaintains = $linkedAsset->ninja_id !== null || $linkedAsset->level_id !== null;
+                    $online = $this->rmmOnlineFromStatus($tacticalAsset->status);
+
+                    if ($online === true || ($online === false && ! $otherRmmMaintains)) {
+                        $refresh['rmm_online'] = $online;
+                    }
+
+                    $observed = $tacticalAsset->last_seen_at;
+
+                    if ($observed && (! $linkedAsset->last_seen_at || $observed->gt($linkedAsset->last_seen_at))) {
+                        $refresh['last_seen_at'] = $observed;
                     }
 
                     if ($agent['logged_username'] ?? null) {
                         $refresh['last_user'] = $agent['logged_username'];
                     }
 
-                    Asset::where('id', $tacticalAsset->asset_id)->update($refresh);
+                    if ($refresh !== []) {
+                        Asset::where('id', $linkedAsset->id)->update($refresh);
+                    }
                 }
             } catch (\Throwable $e) {
                 Log::warning('[TacticalSync] Agent skipped after a write failure', [
@@ -598,7 +636,9 @@ class TacticalDeviceSyncService
             'disk_summary' => $this->fit($mapped['disk_summary'] ?? null, 500),
             'ip_address' => $this->primaryIpAddress($mapped['local_ips'] ?? null),
             'last_user' => $mapped['last_user'] ?? null,
-            'rmm_online' => ($mapped['status'] ?? null) === 'online',
+            // Same rule the per-run refresh applies: a status that is not an
+            // observation of connectivity seeds NULL (unknown), not a hard false.
+            'rmm_online' => $this->rmmOnlineFromStatus($mapped['status'] ?? null),
             'last_seen_at' => $mapped['last_seen_at'] ?? null,
             'needs_reboot' => (bool) ($mapped['needs_reboot'] ?? false),
             'is_active' => true,
@@ -692,6 +732,27 @@ class TacticalDeviceSyncService
     }
 
     /**
+     * Tactical's status vocabulary → rmm_online, or NULL when the status is not
+     * an observation of connectivity.
+     *
+     * Only 'online' and 'offline' are observations. 'overdue' — and any value
+     * Tactical adds later — means the agent is late checking in; recording that
+     * as a hard false would put a flat "Offline" badge and AssetHealthService's
+     * -30 penalty on a machine nobody saw go down, and the false branch has no
+     * staleness escape to climb back out of (isRmmDataStale gates only a TRUE
+     * flag). NULL is the honest "we do not know", which every reader already
+     * scores off last_seen_at instead.
+     */
+    private function rmmOnlineFromStatus(?string $status): ?bool
+    {
+        return match ($status) {
+            'online' => true,
+            'offline' => false,
+            default => null,
+        };
+    }
+
+    /**
      * Fit a value to an asset column's width. The agent snapshot's columns are
      * wider than the asset's, and strict SQL mode errors rather than truncating.
      */
@@ -712,11 +773,21 @@ class TacticalDeviceSyncService
      * local_ips is every adapter the agent sees, in the order the agent listed
      * them — a workstation with Hyper-V/VirtualBox/VPN adapters commonly reports
      * a host-only address first, so element 0 is not "the IP". Loopback,
-     * link-local/APIPA and malformed entries are dropped; if more than one
-     * candidate survives, the payload does not say which one is the machine's,
-     * so the operator-visible field stays empty rather than publishing an address
-     * that may not answer. The full list remains on the tactical_assets snapshot
-     * either way.
+     * link-local/APIPA and malformed entries are dropped, then:
+     *
+     *  - exactly one IPv4 survives → that is the address. IPv6 is on by default
+     *    on current Windows and macOS builds, so an ordinary dual-stack endpoint
+     *    reports an unambiguous IPv4 alongside one or more IPv6 addresses.
+     *    Requiring a single surviving candidate would blank the field for most
+     *    of the fleet — worse than the element-0 pick it replaced — and the
+     *    column is written at creation only, so it would never heal.
+     *  - several IPv4s survive → genuinely ambiguous (the virtual-adapter case
+     *    this method exists for), so the operator-visible field stays empty
+     *    rather than publishing an address that may not answer.
+     *  - no IPv4 at all → a single surviving IPv6 is the address; more than one
+     *    is ambiguous by the same rule.
+     *
+     * The full list remains on the tactical_assets snapshot either way.
      *
      * @param  array<int, mixed>|string|null  $localIps
      */
@@ -744,6 +815,15 @@ class TacticalDeviceSyncService
         }
 
         $candidates = array_keys($candidates);
+
+        $ipv4 = array_values(array_filter(
+            $candidates,
+            static fn (string $ip): bool => filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false,
+        ));
+
+        if ($ipv4 !== []) {
+            return count($ipv4) === 1 ? $ipv4[0] : null;
+        }
 
         return count($candidates) === 1 ? $candidates[0] : null;
     }

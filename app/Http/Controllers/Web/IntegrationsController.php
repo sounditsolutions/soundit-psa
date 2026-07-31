@@ -2315,6 +2315,21 @@ class IntegrationsController extends Controller
                 return back()->with('warning', $message);
             }
 
+            // Per-agent isolation means a write failure no longer throws out of
+            // syncDevices() — it lands in $result->errors. Reporting only the
+            // counters would show a green "sync complete" banner to an operator
+            // whose every agent just failed, turning the loud failure this catch
+            // used to surface into a silent one. The counts stay in the message,
+            // so a partial failure still says what did land.
+            if ($result->errors > 0) {
+                $first = $result->errorMessages[0] ?? 'see the application log for details';
+                $more = $result->errors > 1 ? ' (+'.($result->errors - 1).' more)' : '';
+
+                return back()->with('error', "Tactical device sync finished with {$result->errors} error(s) — "
+                    ."{$result->created} agents added, {$result->updated} updated, {$linked} linked to assets. "
+                    ."First error: {$first}{$more}");
+            }
+
             return back()->with('success', $message);
         } catch (\Throwable $e) {
             return back()->with('error', "Tactical device sync failed: {$e->getMessage()}");
