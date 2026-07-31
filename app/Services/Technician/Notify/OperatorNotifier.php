@@ -65,8 +65,13 @@ class OperatorNotifier
                         .'check the Teams webhook target and the mail transport.'
                     : '[Technician] Operator notification not delivered — no delivery channel configured '
                         .'(Teams webhook and notify email both unset). Set one in Settings › AI Technician › Notify.',
+                // psa-tmdw: the subject is NOT logged. NotifyStagedActionAwaitingApproval
+                // builds it as "{action} approval: {client name} ticket #{id}", so it
+                // carries a customer name by construction — and this warning fires on a
+                // repeating path (once per staged action, plus every digest attempt) for
+                // as long as the misconfiguration lasts, into an unrotated single-file
+                // laravel.log. The two booleans are what an operator actually acts on.
                 [
-                    'subject' => $subject,
                     'teams_webhook_configured' => $teamsConfigured,
                     'notify_email_configured' => $emailConfigured,
                 ],

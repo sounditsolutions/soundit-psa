@@ -388,7 +388,11 @@ Schedule::command('technician:digest')
         if ($localNow->format('H:i') !== TechnicianConfig::digestTimeLocal()) {
             return false;
         }
-        $last = TechnicianConfig::lastDigestAt();
+        // psa-tmdw: dedupe on the ATTEMPT stamp, not the delivery stamp. notify()
+        // returns false for deliveries that did happen (a Teams timeout; sendNew()
+        // throwing after the transport already accepted), so guarding on delivery
+        // success leaves this open and re-sends a digest the operator already got.
+        $last = TechnicianConfig::lastDigestAttemptAt();
 
         return $last === null || $last->setTimezone(AppTimezone::get())->toDateString() !== $localNow->toDateString();
     });

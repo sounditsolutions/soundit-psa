@@ -111,4 +111,46 @@ class OperatorNotifierDeliveryTest extends TestCase
         $this->assertTrue($delivered);
         Log::shouldNotHaveReceived('warning');
     }
+
+    /**
+     * psa-tmdw: the undelivered warning must not carry the subject.
+     *
+     * NotifyStagedActionAwaitingApproval builds it as
+     * "{action} approval: {client name} ticket #{id}" — a customer name by
+     * construction. This warning fires on a repeating path (once per staged action,
+     * plus every digest attempt) for as long as the misconfiguration lasts, and
+     * laravel.log is a single unrotated file, so logging it accumulates customer
+     * names without bound. The two config booleans are what an operator acts on.
+     */
+    public function test_the_undelivered_warning_does_not_log_the_subject(): void
+    {
+        $teams = Mockery::mock(TeamsNotifier::class);
+        $teams->shouldReceive('post')->once()->andReturn(false);
+        $email = Mockery::mock(EmailService::class);
+        $email->shouldReceive('sendNew')->never();
+
+        Log::spy();
+
+        $subject = 'Reboot approval: Acme Dental Group ticket #4471';
+        $this->notifier($teams, $email)->notify($subject, 'body');
+
+        Log::shouldHaveReceived('warning')
+            ->withArgs(function (string $msg, array $ctx = []) use ($subject) {
+                if (! str_contains($msg, 'not delivered')) {
+                    return false;
+                }
+
+                // Neither the subject nor the client name inside it may appear
+                // anywhere in the context, under any key.
+                $rendered = json_encode($ctx);
+
+                return ! str_contains($rendered, $subject)
+                    && ! str_contains($rendered, 'Acme Dental Group')
+                    && ! str_contains($rendered, '#4471')
+                    // ...and the actionable booleans are still there.
+                    && array_key_exists('teams_webhook_configured', $ctx)
+                    && array_key_exists('notify_email_configured', $ctx);
+            })
+            ->once();
+    }
 }

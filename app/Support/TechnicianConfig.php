@@ -303,6 +303,35 @@ class TechnicianConfig
         Setting::setValue('technician_last_digest_at', now()->toIso8601String());
     }
 
+    /**
+     * When the digest was last ATTEMPTED; null if never (psa-tmdw).
+     *
+     * Deliberately distinct from lastDigestAt(), which records delivery success.
+     * $delivered is a best-effort outcome with false negatives — a Teams timeout,
+     * or sendNew() throwing after the transport already accepted the mail, both
+     * report false for a notification that did go out. Deduping the once-per-local-day
+     * schedule guard on delivery success therefore converts a silent failure into a
+     * REPEAT SEND. Dedupe on the attempt; report on the delivery.
+     */
+    public static function lastDigestAttemptAt(): ?Carbon
+    {
+        $value = Setting::getValue('technician_last_digest_attempt_at');
+
+        if (is_string($value) && $value !== '') {
+            return Carbon::parse($value);
+        }
+
+        // Installs that ran the digest before this key existed only have the
+        // delivery stamp; fall back to it so the guard does not re-fire once on upgrade.
+        return self::lastDigestAt();
+    }
+
+    /** Record that the digest was just attempted now, delivered or not. */
+    public static function recordDigestAttempt(): void
+    {
+        Setting::setValue('technician_last_digest_attempt_at', now()->toIso8601String());
+    }
+
     /** When the worker last processed a job on the technician queue; null if never. */
     public static function workerLastSeen(): ?Carbon
     {

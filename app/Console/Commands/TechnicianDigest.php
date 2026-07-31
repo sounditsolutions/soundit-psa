@@ -21,11 +21,25 @@ class TechnicianDigest extends Command
 
         $digest = $builder->build();
 
-        // psa-tmdw: only stamp "digest sent" when it actually reached a channel —
-        // otherwise technician_last_digest_at reports success on a non-delivery.
-        if ($notifier->notify($digest->subject, $digest->body)) {
-            TechnicianConfig::recordDigestSent();
+        // psa-tmdw: stamp the ATTEMPT before sending, and unconditionally. The
+        // schedule guard dedupes on this, not on delivery success — notify()'s
+        // false has false negatives (a Teams timeout, or sendNew() throwing after
+        // the transport already accepted the mail), and deduping on it would
+        // re-send a digest that actually went out.
+        TechnicianConfig::recordDigestAttempt();
+
+        // Only stamp "digest sent" when it actually reached a channel — otherwise
+        // technician_last_digest_at reports success on a non-delivery.
+        if (! $notifier->notify($digest->subject, $digest->body)) {
+            // psa-tmdw: exit non-zero so the scheduler can tell "nothing to send"
+            // (disabled — handled above, still exit 0) from "could not send". A
+            // digest that reached nobody is not a successful run.
+            $this->error('Technician digest reached no delivery channel.');
+
+            return self::FAILURE;
         }
+
+        TechnicianConfig::recordDigestSent();
 
         return self::SUCCESS;
     }
