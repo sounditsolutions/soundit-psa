@@ -7,6 +7,17 @@
     <div class="col-md-10 col-lg-8">
         <h2 class="section-title">Integrations</h2>
 
+        {{-- The layout renders only success and error, so a flashed 'warning'
+             is dropped on any page without its own block. A sync that skipped
+             a device flashes 'warning'; invoices, profiles and licenses already
+             carry the same page-local block for the same reason. --}}
+        @if(session('warning'))
+            <div class="alert alert-warning alert-dismissible fade show" role="alert">
+                {{ session('warning') }}
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            </div>
+        @endif
+
         <div class="alert alert-light border mb-4 d-flex align-items-center gap-3">
             <i class="bi bi-sliders fs-5 text-muted"></i>
             <div class="small">
