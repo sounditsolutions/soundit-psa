@@ -4291,6 +4291,18 @@ function updateAiModelPlaceholder() {
     document.getElementById('ai_model').placeholder = aiModelDefaults[provider] || '';
 }
 
+// The sync preview builds its markup by concatenation and assigns it with
+// innerHTML, so every value interpolated into it is an HTML sink. The values
+// are not ours: errorMessages and the details rows are built from names and
+// exception text that originate upstream (tenant device and user records
+// reached through CIPP), and the preview renders on a staff settings page. Any
+// value going into that markup goes through esc() first.
+function esc(value) {
+    return String(value ?? '').replace(/[&<>"']/g, ch => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+    })[ch]);
+}
+
 function previewCippSync(type) {
     const config = {
         contacts: {
@@ -4366,7 +4378,9 @@ function previewCippSync(type) {
                 const order = {create: 0, deactivate: 1, update: 2};
                 data.details.sort((a, b) => (order[a.action] ?? 9) - (order[b.action] ?? 9));
                 data.details.forEach(d => {
-                    html += `<tr><td>${actionBadge(d.action)}</td><td>${d.client || ''}</td><td>${d.name || ''}</td><td class="text-muted">${d.email || ''}</td></tr>`;
+                    // actionBadge() returns markup this file wrote, so it is the
+                    // one value here that must NOT be escaped.
+                    html += `<tr><td>${actionBadge(d.action)}</td><td>${esc(d.client || '')}</td><td>${esc(d.name || '')}</td><td class="text-muted">${esc(d.email || '')}</td></tr>`;
                 });
                 html += '</tbody></table>';
                 details.innerHTML = html;
@@ -4379,7 +4393,7 @@ function previewCippSync(type) {
             // Render errors
             const errorsDiv = document.getElementById('cipp-sync-preview-errors');
             if (data.errorMessages && data.errorMessages.length > 0) {
-                errorsDiv.innerHTML = '<strong>Errors:</strong><ul class="mb-0">' + data.errorMessages.map(m => '<li>' + m + '</li>').join('') + '</ul>';
+                errorsDiv.innerHTML = '<strong>Errors:</strong><ul class="mb-0">' + data.errorMessages.map(m => '<li>' + esc(m) + '</li>').join('') + '</ul>';
                 errorsDiv.style.display = 'block';
             } else {
                 errorsDiv.style.display = 'none';

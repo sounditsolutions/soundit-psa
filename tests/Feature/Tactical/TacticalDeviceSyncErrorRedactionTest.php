@@ -4,14 +4,18 @@ namespace Tests\Feature\Tactical;
 
 use App\Models\Client;
 use App\Services\Tactical\TacticalClient;
+use App\Services\Tactical\TacticalClientException;
 use App\Services\Tactical\TacticalDeviceSyncService;
 use GuzzleHttp\Client as GuzzleClient;
 use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\HandlerStack;
 use GuzzleHttp\Psr7\Response;
+use Illuminate\Contracts\Cache\Lock;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
+use Mockery;
 use Tests\TestCase;
 
 /**
@@ -26,18 +30,25 @@ use Tests\TestCase;
  * settings view renders it, StaffTacticalAdminToolExecutor returns it over MCP,
  * and it is written to storage/logs/laravel.log, which has no rotation.
  *
- * These tests force a genuine QueryException (the assets table is gone by the
- * time the sync tries to write) and assert on what escapes.
+ * The write-failure tests force a genuine QueryException (the assets table is
+ * gone by the time the sync tries to write) and assert on what escapes.
  *
- * DRIVER CONSTRAINT — these guards are sqlite-only by construction. The failure
- * is forced with Schema::drop(), and DDL is not transactional on MariaDB (which
- * is what prod runs): it implicitly commits, so RefreshDatabase can no longer
- * roll the case back and the damage escapes into later tests. syncDevices()
- * upserts tactical_assets via updateOrCreate(), so a pre-seeded row updates
- * rather than violating the unique index — there is no DDL-free way to fail
- * that same statement. The helper therefore skips off sqlite rather than
- * corrupting the run. A green CI here is NOT cross-driver proof of the
- * redaction; it is proof on sqlite only.
+ * The remaining two operator-facing catches in the class are covered here too:
+ * the agent fetch in syncDevices() and the asset lock in linkOrCreateAsset().
+ * Both recorded a raw getMessage() until #338-r3 — the fetch catch published
+ * the SSRF pin's "host '<host>' resolved to <ip>" verbatim, and the lock catch
+ * published the client's hostname alongside it. Those two need no DDL, so they
+ * are not subject to the driver constraint below.
+ *
+ * DRIVER CONSTRAINT — the WRITE-failure guards are sqlite-only by construction.
+ * The failure is forced with Schema::drop(), and DDL is not transactional on
+ * MariaDB (which is what prod runs): it implicitly commits, so RefreshDatabase
+ * can no longer roll the case back and the damage escapes into later tests.
+ * syncDevices() upserts tactical_assets via updateOrCreate(), so a pre-seeded
+ * row updates rather than violating the unique index — there is no DDL-free way
+ * to fail that same statement. syncWithBrokenAssetWrites() therefore skips off
+ * sqlite rather than corrupting the run. A green CI on those cases is NOT
+ * cross-driver proof of the redaction; it is proof on sqlite only.
  */
 class TacticalDeviceSyncErrorRedactionTest extends TestCase
 {
@@ -152,5 +163,120 @@ class TacticalDeviceSyncErrorRedactionTest extends TestCase
                 return ($context['agent_id'] ?? null) === 'AGENT-REDACT';
             })
             ->once();
+    }
+
+    /**
+     * The infrastructure detail the fetch catch used to publish. These are the
+     * literal values TacticalClient::resolveAndPin() interpolates into the SSRF
+     * pin's refusal message.
+     */
+    private const PIN_HOST = 'rmm.internal.example';
+
+    private const PIN_ADDRESS = '10.20.30.40';
+
+    private function syncWithFailingFetch(\Throwable $thrown): \App\Services\SyncResult
+    {
+        Client::factory()->create(['tactical_site_id' => 'Acme|Main', 'is_active' => true]);
+
+        $client = Mockery::mock(TacticalClient::class);
+        $client->shouldReceive('getAgents')->once()->andThrow($thrown);
+
+        return (new TacticalDeviceSyncService($client))->syncDevices();
+    }
+
+    private function ssrfPinRefusal(): TacticalClientException
+    {
+        // Verbatim shape of TacticalClient::resolveAndPin()'s second throw.
+        return new TacticalClientException(
+            "Tactical API host '".self::PIN_HOST."' resolved to a private or reserved address (".self::PIN_ADDRESS.'); refused.'
+        );
+    }
+
+    public function test_a_fetch_failure_is_recorded_without_the_tactical_host_or_address(): void
+    {
+        $result = $this->syncWithFailingFetch($this->ssrfPinRefusal());
+
+        $this->assertSame(1, $result->errors, 'the fetch failure should have been recorded');
+        $message = $result->errorMessages[0] ?? '';
+
+        $this->assertStringNotContainsString(self::PIN_HOST, $message, 'the Tactical host reached SyncResult::errorMessages');
+        $this->assertStringNotContainsString(self::PIN_ADDRESS, $message, 'a resolved address reached SyncResult::errorMessages');
+    }
+
+    public function test_the_recorded_fetch_error_still_names_the_failure(): void
+    {
+        $result = $this->syncWithFailingFetch($this->ssrfPinRefusal());
+        $message = $result->errorMessages[0] ?? '';
+
+        $this->assertStringContainsString('Failed to fetch agents', $message, 'the operator needs to know which step failed');
+        $this->assertStringContainsString('TacticalClientException', $message, 'the operator needs the failure class');
+    }
+
+    public function test_the_fetch_warning_log_line_does_not_carry_the_host_or_address(): void
+    {
+        Log::spy();
+
+        $this->syncWithFailingFetch($this->ssrfPinRefusal());
+
+        Log::shouldHaveReceived('warning')
+            ->withArgs(function (string $message, array $context = []): bool {
+                if ($message !== '[TacticalSync] Failed to fetch agents') {
+                    return false;
+                }
+
+                $rendered = json_encode($context);
+
+                return ! str_contains($rendered, self::PIN_HOST)
+                    && ! str_contains($rendered, self::PIN_ADDRESS);
+            })
+            ->once();
+    }
+
+    private function syncWithFailingAssetLock(): \App\Services\SyncResult
+    {
+        Client::factory()->create(['tactical_site_id' => 'Acme|Main', 'is_active' => true]);
+
+        // The lock KEY embeds sha1($lowerHostname), and a cache-layer failure
+        // quotes the key it failed on — which is why the raw message could not
+        // be published either.
+        $lock = Mockery::mock(Lock::class);
+        $lock->shouldReceive('get')->andThrow(
+            new \RuntimeException('Redis connection refused for key tactical-sync:asset:1:'.sha1(strtolower('ACME-RECEPTION-01')))
+        );
+        Cache::shouldReceive('lock')->andReturn($lock);
+
+        return $this->syncService([$this->agent()])->syncDevices();
+    }
+
+    public function test_an_asset_lock_failure_is_recorded_without_the_client_hostname(): void
+    {
+        $result = $this->syncWithFailingAssetLock();
+
+        $this->assertSame(1, $result->errors, 'the lock failure should have been recorded');
+        $message = $result->errorMessages[0] ?? '';
+
+        foreach (self::LEAKY as $secret) {
+            $this->assertStringNotContainsString(
+                $secret,
+                $message,
+                "client device data ({$secret}) reached SyncResult::errorMessages"
+            );
+        }
+
+        $this->assertStringNotContainsString(
+            sha1(strtolower('ACME-RECEPTION-01')),
+            $message,
+            'the lock key digests the hostname and must not be published either'
+        );
+    }
+
+    public function test_the_recorded_lock_error_still_identifies_the_agent_and_the_failure(): void
+    {
+        $result = $this->syncWithFailingAssetLock();
+        $message = $result->errorMessages[0] ?? '';
+
+        $this->assertStringContainsString('AGENT-REDACT', $message, 'the failing agent must stay identifiable');
+        $this->assertStringContainsString('asset lock', $message, 'the operator needs to know which step failed');
+        $this->assertStringContainsString('RuntimeException', $message, 'the operator needs the failure class');
     }
 }

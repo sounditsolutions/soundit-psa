@@ -121,32 +121,32 @@ class TacticalDeviceSyncService
     }
 
     /**
-     * Operator-safe rendering of a per-agent write failure.
+     * Operator-safe rendering of a caught failure.
      *
      * A QueryException's getMessage() embeds the failed statement AND its
      * bindings, and the bindings here are the asset row we were writing —
-     * hostname, serial, logged-in username, LAN address. That string does not
-     * stay in one place: SyncResult::$errorMessages is rendered by the
-     * integrations settings view, returned verbatim by
-     * StaffTacticalAdminToolExecutor (an MCP surface), and written to
-     * storage/logs/laravel.log, which has no rotation configured. So the raw
-     * message never leaves the per-agent write catch in syncDevices(), which is
-     * the only call site this helper covers.
+     * hostname, serial, logged-in username, LAN address. Other exception
+     * messages leak by the same mechanism: TacticalClient's SSRF pin names the
+     * Tactical host and the address it resolved to, and a cache-lock failure
+     * quotes the lock key. That string does not stay in one place:
+     * SyncResult::$errorMessages is rendered by the integrations settings view,
+     * returned verbatim by StaffTacticalAdminToolExecutor (an MCP surface), and
+     * written to storage/logs/laravel.log, which has no rotation configured.
      *
-     * It does NOT clean the rest of the class: the fetch-agents catch and the
-     * asset-lock catch (both of which recordError with a raw getMessage(), and
-     * the latter with a raw hostname) still reach those same three surfaces.
-     * Routing them through here is a separate change, deliberately not made on
-     * this branch — do not read this comment as a class-wide guarantee.
+     * Every catch in this class that records an operator-facing error routes
+     * through here: the agent fetch in syncDevices(), the per-agent write in
+     * syncDevices(), and the asset lock in linkOrCreateAsset(). $context names
+     * which one, so the message stays truthful about what was being attempted
+     * without reproducing what was being attempted it with.
      *
      * What an operator can actually act on is the failure class, the driver's
      * SQLSTATE and its errno, which is what they get. The driver's own message
      * is withheld: it is the part that embeds values (a duplicate-key error
-     * quotes the offending binding back verbatim). agent_id is already carried
-     * alongside, so the failing row stays identifiable without reproducing its
-     * contents.
+     * quotes the offending binding back verbatim). The agent_id or client_id is
+     * carried alongside at each call site, so the failing record stays
+     * identifiable without reproducing its contents.
      */
-    private function safeWriteFailure(\Throwable $e): string
+    private function safeFailure(\Throwable $e, string $context): string
     {
         if ($e instanceof QueryException) {
             // getCode() is int 0 when the driver reports no SQLSTATE, and
@@ -163,10 +163,10 @@ class TacticalDeviceSyncService
                 $parts[] = "driver error {$errno}";
             }
 
-            return 'database write failed'.($parts !== [] ? ' ('.implode(', ', $parts).')' : '');
+            return "database {$context} failed".($parts !== [] ? ' ('.implode(', ', $parts).')' : '');
         }
 
-        return class_basename($e).' during write';
+        return class_basename($e)." during {$context}";
     }
 
     public function syncDevices(?int $clientId = null): SyncResult
@@ -191,8 +191,17 @@ class TacticalDeviceSyncService
             $agents = $this->client->getAgents();
             $fetchSucceeded = true;
         } catch (\Throwable $e) {
-            Log::warning("[TacticalSync] Failed to fetch agents: {$e->getMessage()}");
-            $result->recordError("Failed to fetch agents: {$e->getMessage()}");
+            // TacticalClientException::fromGuzzle() already builds a body-free
+            // message, so the HTTP path was not the leak. The SSRF pin is:
+            // TacticalClient::resolveAndPin() throws "Tactical API host '<host>'
+            // resolved to a private or reserved address (<ip>); refused", and
+            // this catch put that host and IP verbatim into errorMessages, which
+            // the settings view, the MCP executor and the unrotated log all read.
+            // The catch is on \Throwable, so it does not get to assume anything
+            // about what a future throw carries either.
+            $safe = $this->safeFailure($e, 'agent fetch');
+            Log::warning('[TacticalSync] Failed to fetch agents', ['error' => $safe]);
+            $result->recordError("Failed to fetch agents: {$safe}");
 
             return $result;
         }
@@ -331,7 +340,7 @@ class TacticalDeviceSyncService
                     }
                 }
             } catch (\Throwable $e) {
-                $safe = $this->safeWriteFailure($e);
+                $safe = $this->safeFailure($e, 'write');
                 Log::warning('[TacticalSync] Agent skipped after a write failure', [
                     'agent_id' => $agentId,
                     'error' => $safe,
@@ -512,7 +521,19 @@ class TacticalDeviceSyncService
             // Fail CLOSED and loudly: without the lock we cannot promise we are
             // not duplicating a device, and a silent skip would stop discovery
             // with nothing but a log line.
-            $result->recordError("Could not acquire the asset lock for {$hostname}: {$e->getMessage()}");
+            //
+            // The hostname is the client's device name and the driver message
+            // quotes the lock key (which embeds it); neither belongs in
+            // errorMessages. agent_id is a Tactical-internal opaque id and is
+            // what the operator needs to find this device in Tactical, so it
+            // takes the hostname's place.
+            $safe = $this->safeFailure($e, 'asset lock');
+            Log::warning('[TacticalSync] Could not acquire the asset lock', [
+                'agent_id' => $tacticalAsset->agent_id,
+                'client_id' => $psaClientId,
+                'error' => $safe,
+            ]);
+            $result->recordError("Could not acquire the asset lock for agent {$tacticalAsset->agent_id}: {$safe}");
 
             return;
         }
