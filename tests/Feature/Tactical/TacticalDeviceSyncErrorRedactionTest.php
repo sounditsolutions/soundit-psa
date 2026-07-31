@@ -7,8 +7,11 @@ use App\Services\Tactical\TacticalClient;
 use App\Services\Tactical\TacticalClientException;
 use App\Services\Tactical\TacticalDeviceSyncService;
 use GuzzleHttp\Client as GuzzleClient;
+use GuzzleHttp\Exception\ConnectException;
+use GuzzleHttp\Exception\RequestException;
 use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\HandlerStack;
+use GuzzleHttp\Psr7\Request;
 use GuzzleHttp\Psr7\Response;
 use Illuminate\Contracts\Cache\Lock;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -210,6 +213,62 @@ class TacticalDeviceSyncErrorRedactionTest extends TestCase
 
         $this->assertStringContainsString('Failed to fetch agents', $message, 'the operator needs to know which step failed');
         $this->assertStringContainsString('TacticalClientException', $message, 'the operator needs the failure class');
+    }
+
+    /**
+     * Redaction is message-only. The three fetch failures an operator acts on
+     * differently — an HTTP error, an unreachable box, and the SSRF pin — must
+     * not render identically, or the recorded error stops being a diagnosis.
+     * The exception's structured signal (statusCode(), isTransportFailure())
+     * carries none of the host, the address, or the response body, so it is
+     * published; the three cases below are built from a real Guzzle failure
+     * rather than hand-shaped, so the body-free claim is proven end to end.
+     */
+    public function test_an_http_fetch_failure_keeps_its_status_without_the_response_body(): void
+    {
+        $result = $this->syncWithFailingFetch(TacticalClientException::fromGuzzle(
+            'Tactical API error (HTTP GET agents/)',
+            new RequestException(
+                'Client error: `GET agents/` resulted in a `401 Unauthorized` response',
+                new Request('GET', 'https://'.self::PIN_HOST.'/agents/'),
+                new Response(401, [], '{"detail":"Invalid token.","rest_headers":{"X-Webhook-Key":"swordfish"}}')
+            )
+        ));
+
+        $message = $result->errorMessages[0] ?? '';
+
+        $this->assertStringContainsString('HTTP 401', $message, 'an auth failure must stay distinguishable from an outage');
+        $this->assertStringNotContainsString('Invalid token', $message, 'the response body must not be published');
+        $this->assertStringNotContainsString('swordfish', $message, 'the response body must not be published');
+        $this->assertStringNotContainsString(self::PIN_HOST, $message, 'the Tactical host must not be published');
+    }
+
+    public function test_a_transport_failure_is_not_reported_as_an_http_error(): void
+    {
+        $result = $this->syncWithFailingFetch(TacticalClientException::fromGuzzle(
+            'Tactical API error (HTTP GET agents/)',
+            new ConnectException(
+                'cURL error 7: Failed to connect to '.self::PIN_HOST.' port 443',
+                new Request('GET', 'https://'.self::PIN_HOST.'/agents/')
+            )
+        ));
+
+        $message = $result->errorMessages[0] ?? '';
+
+        $this->assertStringContainsString('transport failure', $message, 'the operator needs "the RMM box is unreachable"');
+        $this->assertStringNotContainsString('HTTP', $message, 'no HTTP response was received, so none may be implied');
+        $this->assertStringNotContainsString(self::PIN_HOST, $message, 'the Tactical host must not be published');
+    }
+
+    public function test_the_ssrf_refusal_reads_as_neither_an_http_error_nor_an_outage(): void
+    {
+        $message = $this->syncWithFailingFetch($this->ssrfPinRefusal())->errorMessages[0] ?? '';
+
+        $this->assertStringContainsString('refused locally', $message, 'a pin refusal must not be triaged as an outage');
+        $this->assertStringNotContainsString('HTTP', $message, 'the pin refuses before any request is sent');
+        $this->assertStringNotContainsString('transport failure', $message, 'the RMM box being reachable is not in question');
+        $this->assertStringNotContainsString(self::PIN_HOST, $message, 'the Tactical host still must not be published');
+        $this->assertStringNotContainsString(self::PIN_ADDRESS, $message, 'the resolved address still must not be published');
     }
 
     public function test_the_fetch_warning_log_line_does_not_carry_the_host_or_address(): void

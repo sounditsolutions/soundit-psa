@@ -140,11 +140,20 @@ class TacticalDeviceSyncService
      * without reproducing what was being attempted it with.
      *
      * What an operator can actually act on is the failure class, the driver's
-     * SQLSTATE and its errno, which is what they get. The driver's own message
-     * is withheld: it is the part that embeds values (a duplicate-key error
-     * quotes the offending binding back verbatim). The agent_id or client_id is
-     * carried alongside at each call site, so the failing record stays
-     * identifiable without reproducing its contents.
+     * SQLSTATE and its errno, and — for a TacticalClientException — the HTTP
+     * status or transport outcome that class carries STRUCTURALLY, which is
+     * what they get. Only the MESSAGES are withheld: the driver's embeds values
+     * (a duplicate-key error quotes the offending binding back verbatim), and
+     * the Tactical one can name the host and the address it resolved to.
+     *
+     * Withholding more than the message would be its own defect. A 401, a
+     * connect timeout, a 5xx and the SSRF refusal are the four things a fetch
+     * failure can be, and errorMessages plus the log are the only human-readable
+     * surfaces any of them has; if all four render identically the operator
+     * cannot tell "rotate the API key" from "the RMM box is down" without
+     * reproducing the failure by hand. The agent_id or client_id is carried
+     * alongside at each call site, so the failing record stays identifiable
+     * without reproducing its contents.
      */
     private function safeFailure(\Throwable $e, string $context): string
     {
@@ -164,6 +173,29 @@ class TacticalDeviceSyncService
             }
 
             return "database {$context} failed".($parts !== [] ? ' ('.implode(', ', $parts).')' : '');
+        }
+
+        // TacticalClientException carries the outcome BESIDE the message:
+        // statusCode() is an int and isTransportFailure() a bool, both derived
+        // from the transport itself and never from the response body (which
+        // fromGuzzle() puts in responseBody() and nowhere else). They are the
+        // non-sensitive half of the exception and the half an operator triages
+        // on, so they are published; the message is not.
+        if ($e instanceof TacticalClientException) {
+            $status = $e->statusCode();
+
+            // No status AND not a transport failure means the client refused
+            // before the call left this box — today that is exactly
+            // TacticalClient::resolveAndPin(). Naming the shape of the refusal
+            // separates the pin from an outage without naming the host or the
+            // address it resolved to.
+            $detail = match (true) {
+                $status !== null => "HTTP {$status}",
+                $e->isTransportFailure() => 'transport failure',
+                default => 'refused locally',
+            };
+
+            return class_basename($e)." during {$context} ({$detail})";
         }
 
         return class_basename($e)." during {$context}";
@@ -199,6 +231,9 @@ class TacticalDeviceSyncService
             // the settings view, the MCP executor and the unrotated log all read.
             // The catch is on \Throwable, so it does not get to assume anything
             // about what a future throw carries either.
+            // The redaction is MESSAGE-only: safeFailure() still publishes the
+            // exception's structured HTTP outcome, so an auth failure, an
+            // outage and the pin stay distinguishable on all three surfaces.
             $safe = $this->safeFailure($e, 'agent fetch');
             Log::warning('[TacticalSync] Failed to fetch agents', ['error' => $safe]);
             $result->recordError("Failed to fetch agents: {$safe}");
