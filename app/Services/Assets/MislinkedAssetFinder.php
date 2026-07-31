@@ -382,16 +382,20 @@ class MislinkedAssetFinder
      * client when at least LEARNED_PREFIX_MIN of that client's assets share it —
      * then keep only prefixes that are dominant for exactly one client. A prefix
      * dominant for 2+ clients (DESKTOP-, LAPTOP-, WIN-, …) is generic noise, not a
-     * client fingerprint, so it owns no one. That distinctness filter shapes slot
-     * [0] alone; slot [1] is built before it runs.
+     * client fingerprint, so no client owns it. Throughout this class the OWNER is
+     * the client — the sense $prefixOwner, $owner and owner_asset_count all carry.
+     * That distinctness filter shapes slot [0] alone; slot [1] is built before it
+     * runs.
      *
      * Returns a two-element tuple:
-     * [0] prefix => client_id of the one client for which that prefix is dominant.
-     *     A prefix with no single dominant client is ABSENT from this map — the key
-     *     is omitted, not present with a null value.
+     * [0] prefix => client_id of the one client for which that prefix is dominant,
+     *     i.e. the client that owns the prefix. A prefix with no single dominant
+     *     client is ABSENT from this map — the key is omitted, not present with a
+     *     null value.
      * [1] client_id => [prefix => asset count], every prefix that client holds
-     *     dominantly, counted over that client's own assets. Pre-distinctness:
-     *     generic multi-client prefixes are still present here.
+     *     dominantly, counted over the assets belonging to that client. This slot
+     *     is pre-distinctness: generic multi-client prefixes, owned by no one, are
+     *     still present here.
      *
      * @param  Collection<int, Asset>  $universe
      * @return array{0: array<string, int>, 1: array<int, array<string, int>>}
@@ -427,7 +431,7 @@ class MislinkedAssetFinder
             }
         }
 
-        // A prefix owns a client only when exactly one client has it dominant.
+        // A client owns a prefix only when it is the one client holding it dominant.
         $prefixOwner = [];
         foreach ($prefixClients as $prefix => $byClient) {
             if (count($byClient) === 1) {
