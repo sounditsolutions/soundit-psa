@@ -78,14 +78,18 @@ class SecretScan extends Command
 
         foreach ($commits as $sha) {
             // --root so the very first commit of a repo (no parent) is diffed too.
+            // -m so a MERGE commit is diffed against each parent: without it git
+            // prints NOTHING for a merge, so a secret introduced by the merge
+            // itself (a conflict resolution) would never be inspected at all.
             $dt = Process::path($this->repoPath())->run(
-                ['git', 'diff-tree', '--root', '--no-commit-id', '--name-only', '-r', '--diff-filter=ACMR', $sha]
+                ['git', 'diff-tree', '--root', '--no-commit-id', '--name-only', '-r', '-m', '--diff-filter=ACMR', $sha]
             );
             if (! $dt->successful()) {
                 return $this->failClosed("git diff-tree {$sha}", $dt->errorOutput());
             }
 
-            foreach ($this->lines($dt->output()) as $path) {
+            // -m lists a path once per parent for a merge — inspect it once.
+            foreach (array_unique($this->lines($dt->output())) as $path) {
                 $checked++;
                 $reason = SecretScanner::dangerousReason($path);
 
