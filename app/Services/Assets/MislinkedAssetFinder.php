@@ -31,8 +31,10 @@ use Illuminate\Support\Collection;
  *        are both present and differ (generic names collide honestly).
  *
  *   Tier B — suspect, human-eyes (never merged into A):
- *     4. last_user_foreign_contact    — last_user UPN/domain resolves to a
- *        contact at another client (and NOT at its own).
+ *     4. last_user_foreign_contact    — last_user resolves, on local part AND
+ *        domain, to a contact at another client and to none at its own.
+ *        DOMAIN\user and user@domain are the same account; a last_user that
+ *        carries no domain names no tenant and is never evidence.
  *     5. shared_public_ip_cross_client — a PUBLIC ip_address shared with another
  *        client's assets (weak — shared ISP/NAT is common).
  *     6. foreign_client_hostname_prefix — hostname carries another client's
@@ -221,8 +223,13 @@ class MislinkedAssetFinder
     }
 
     /**
-     * Local-part of every contact's cipp_upn / email → the clients they belong
-     * to. Used to resolve an asset's last_user to a foreign contact (rule 4).
+     * Tenant-qualified account key (local part + domain label) of every contact's
+     * cipp_upn / email → the clients they belong to. Used to resolve an asset's
+     * last_user to a foreign contact (rule 4).
+     *
+     * Keyed on the whole address, NOT the local part: the domain is the only
+     * half that distinguishes one client's admin@ from another's. See
+     * accountKey().
      *
      * @return array<string, array<int, array{person_id: int, client_id: int}>>
      */
@@ -235,11 +242,11 @@ class MislinkedAssetFinder
             ->get(['id', 'client_id', 'cipp_upn', 'email'])
             ->each(function (Person $p) use (&$index) {
                 foreach ([$p->cipp_upn, $p->email] as $addr) {
-                    $local = $this->localPart($addr);
-                    if ($local === null) {
+                    $key = $this->accountKey($addr);
+                    if ($key === null) {
                         continue;
                     }
-                    $index[$local][] = ['person_id' => (int) $p->id, 'client_id' => (int) $p->client_id];
+                    $index[$key][] = ['person_id' => (int) $p->id, 'client_id' => (int) $p->client_id];
                 }
             });
 
@@ -483,12 +490,12 @@ class MislinkedAssetFinder
             return;
         }
 
-        $local = $this->localPart($asset->last_user);
-        if ($local === null) {
+        $key = $this->accountKey($asset->last_user);
+        if ($key === null) {
             return;
         }
 
-        $entries = $peopleIndex[$local] ?? [];
+        $entries = $peopleIndex[$key] ?? [];
         if ($entries === []) {
             return;
         }
@@ -512,6 +519,7 @@ class MislinkedAssetFinder
                 'last_user resolves to a contact at another client (and none at its own)',
                 $otherClientId, $clients, [
                     'last_user' => (string) $asset->last_user,
+                    'matched_account' => $key,
                     'matched_person_id' => $entry['person_id'],
                 ]);
         }
@@ -644,10 +652,27 @@ class MislinkedAssetFinder
     }
 
     /**
-     * Extract the account local-part from a last_user / UPN value, mirroring
-     * Asset::resolveLastUserPerson: DOMAIN\user → user, user@domain → user.
+     * The tenant-qualified account key for a last_user / UPN / email value —
+     * "local@domain-label" — or null when the value carries no domain at all.
+     *
+     * Rule 4 compares accounts ACROSS clients, so the domain (the only half of
+     * an address that names a tenant) must survive into the key. Matching on the
+     * local part alone collapsed 'admin@acme.com' and 'admin@bravo.com' onto one
+     * key, so every generic account an MSP fleet legitimately runs — admin,
+     * info, scan, office, reception — emitted a Tier B row per foreign client
+     * that happens to have the same account name. Asset::resolveLastUserPerson
+     * may match on a bare local part precisely because it is already scoped to
+     * ONE client (`cipp_upn like 'user@%'` inside `where client_id`); nothing
+     * scopes the sweep, so the domain has to do that work here.
+     *
+     * DOMAIN\user and user@domain.tld produce the SAME key: the NetBIOS name and
+     * the leading DNS label are the same tenant name, so both spellings of one
+     * account collapse together (BRAVO\jdoe ≡ jdoe@bravo.com → 'jdoe@bravo').
+     * Only the leading label is kept, so acme.com / acme.co.uk / the AD suffix
+     * agree. A value with no domain (a bare 'jdoe') identifies no tenant and
+     * returns null — it can never contradict one.
      */
-    private function localPart(?string $value): ?string
+    private function accountKey(?string $value): ?string
     {
         $value = trim((string) $value);
         if ($value === '') {
@@ -655,14 +680,21 @@ class MislinkedAssetFinder
         }
 
         if (str_contains($value, '\\')) {
-            $value = substr($value, strrpos($value, '\\') + 1);
+            $cut = (int) strrpos($value, '\\');
+            $domain = substr($value, 0, $cut);
+            $local = substr($value, $cut + 1);
         } elseif (str_contains($value, '@')) {
-            $value = substr($value, 0, strpos($value, '@'));
+            $cut = (int) strpos($value, '@');
+            $local = substr($value, 0, $cut);
+            $domain = substr($value, $cut + 1);
+        } else {
+            return null;
         }
 
-        $value = trim(mb_strtolower($value));
+        $local = trim(mb_strtolower($local));
+        $domain = explode('.', trim(mb_strtolower($domain)), 2)[0];
 
-        return $value === '' ? null : $value;
+        return ($local === '' || $domain === '') ? null : $local.'@'.$domain;
     }
 
     /**

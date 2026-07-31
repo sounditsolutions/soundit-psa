@@ -236,6 +236,61 @@ class MislinkedAssetFinderTest extends TestCase
         $this->assertSame(0, $this->finder()->find(null)['tier_b_count']);
     }
 
+    public function test_rule4_does_not_fire_when_only_the_local_part_matches_across_domains(): void
+    {
+        // Generic accounts (admin, info, scan, reception) exist at nearly every
+        // client. Matching on the local part alone emitted one Tier B row per
+        // foreign client holding the same account name — mass false hits on
+        // ordinary valid data, which is what saturates the tier budget.
+        $acme = Client::factory()->create(['name' => 'Acme']);
+        foreach (['bravo', 'charlie', 'delta'] as $name) {
+            $this->person(
+                Client::factory()->create(['name' => $name]),
+                ['cipp_upn' => 'admin@'.$name.'.com']
+            );
+        }
+        $this->asset($acme, ['last_user' => 'ACMECO\\admin', 'hostname' => 'HOST-ADMIN']);
+
+        $this->assertSame(
+            0,
+            $this->finder()->find(null)['tier_b_count'],
+            'a shared local part on DIFFERENT domains is not a cross-client contradiction'
+        );
+    }
+
+    public function test_rule4_fires_only_for_the_client_whose_domain_the_account_belongs_to(): void
+    {
+        $acme = Client::factory()->create(['name' => 'Acme']);
+        $bravo = Client::factory()->create(['name' => 'Bravo']);
+        $person = $this->person($bravo, ['cipp_upn' => 'admin@bravo.com']);
+        // Same local part at a THIRD client, different domain — must stay silent.
+        $this->person(Client::factory()->create(['name' => 'Delta']), ['cipp_upn' => 'admin@delta.com']);
+
+        $this->asset($acme, ['last_user' => 'BRAVO\\admin', 'hostname' => 'HOST-ADMIN-2']);
+
+        $hits = array_values(array_filter(
+            $this->finder()->find(null)['tier_b'],
+            fn ($r) => $r['rule'] === 'last_user_foreign_contact'
+        ));
+
+        $this->assertCount(1, $hits);
+        $this->assertSame($bravo->id, $hits[0]['other_client_id']);
+        $this->assertSame($person->id, $hits[0]['evidence']['matched_person_id']);
+        // DOMAIN\user and user@domain.tld resolve to one key.
+        $this->assertSame('admin@bravo', $hits[0]['evidence']['matched_account']);
+    }
+
+    public function test_rule4_does_not_fire_on_a_last_user_carrying_no_domain(): void
+    {
+        // A bare account name names no tenant, so it can contradict none.
+        $a = Client::factory()->create();
+        $b = Client::factory()->create();
+        $this->person($b, ['cipp_upn' => 'jdoe@bravo.com']);
+        $this->asset($a, ['last_user' => 'jdoe', 'hostname' => 'HOST-BARE']);
+
+        $this->assertSame(0, $this->finder()->find(null)['tier_b_count']);
+    }
+
     public function test_rule5_shared_public_ip_fires_but_private_ip_does_not(): void
     {
         $a = Client::factory()->create();
