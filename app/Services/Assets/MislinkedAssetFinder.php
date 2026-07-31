@@ -6,6 +6,7 @@ use App\Models\Asset;
 use App\Models\Client;
 use App\Models\Person;
 use App\Models\TacticalAsset;
+use App\Services\Chet\ChetDataSurfaceTextSanitizer;
 use Illuminate\Support\Collection;
 
 /**
@@ -49,6 +50,15 @@ use Illuminate\Support\Collection;
  * cannot be reconstructed without calling the vendor API. This tool is a pure
  * local read, so it does not attempt Ninja/Level rule 1 rather than fake it; the
  * caveat in the response text names that gap.
+ *
+ * UNTRUSTED TEXT. Hostnames, asset names, serials and last_user values are written
+ * by a vendor agent or by whoever controls the endpoint, and this is the only
+ * FLEET-WIDE reader of those columns — one client's strings land in an operator's
+ * agent context beside every other client's. They are therefore published through
+ * ChetDataSurfaceTextSanitizer (normalize -> redact -> fence), the same treatment
+ * TacticalReadOnlyToolset and ScreenConnectReadOnlyToolset give the same columns.
+ * PSA-side names (client_name / other_client_name) are our own operator-set data
+ * and are deliberately NOT fenced.
  */
 class MislinkedAssetFinder
 {
@@ -70,6 +80,52 @@ class MislinkedAssetFinder
         'standard', 'default string', 'to be filled by o.e.m.', 'none',
         'not specified', 'system serial number', 'o.e.m.', 'invalid', '0',
     ];
+
+    /**
+     * Leading DNS labels that name a host INSIDE a tenant (mail/AD/office plumbing),
+     * never the tenant itself. tenantLabel() walks past them before it takes the
+     * tenant name, so two unrelated clients on corp.* / mail.* do not collapse onto
+     * one account key.
+     *
+     * @var array<int, string>
+     */
+    private const GENERIC_DOMAIN_LABELS = [
+        'corp', 'corporate', 'mail', 'smtp', 'ad', 'ads', 'dc', 'office',
+        'internal', 'intranet', 'exchange', 'email', 'local', 'lan', 'domain', 'hq',
+    ];
+
+    /**
+     * Labels that belong to a public suffix, not to a tenant — the walk above must
+     * never step into one.
+     *
+     * @var array<int, string>
+     */
+    private const PUBLIC_SUFFIX_LABELS = [
+        'co', 'com', 'net', 'org', 'edu', 'gov', 'mil', 'ac', 'sch', 'or', 'ne', 'in',
+    ];
+
+    /**
+     * Evidence leaves carrying VENDOR/TENANT-controlled text (an RMM hostname, a
+     * logged-on username, a serial an agent reported): evidence key => fence label.
+     * Not listed, because neither can carry instruction text: hostname_prefix is
+     * regex-constrained to /^[A-Z]{2,}[A-Z0-9]*[-_]/ and shared_public_ip is
+     * filter_var-validated. Rule/authority strings are our own constants.
+     *
+     * @var array<string, string>
+     */
+    private const UNTRUSTED_EVIDENCE_LEAVES = [
+        'last_user' => 'Asset last user',
+        'matched_account' => 'Asset last user account key',
+        'duplicate_hostname' => 'Asset hostname',
+        'duplicate_serial' => 'Asset serial number',
+        'own_serial' => 'Asset serial number',
+        'tactical_agent_id' => 'Tactical agent id',
+        'tactical_site_key' => 'Tactical client site key',
+    ];
+
+    public function __construct(
+        private readonly ChetDataSurfaceTextSanitizer $textSanitizer,
+    ) {}
 
     /**
      * Run the sweep.
@@ -598,8 +654,11 @@ class MislinkedAssetFinder
     {
         return [
             'asset_id' => (int) $asset->id,
-            'hostname' => $asset->hostname,
-            'name' => $asset->name,
+            // Vendor/tenant-controlled free text — fenced as untrusted before it
+            // crosses into agent context (see the class docblock). The PSA-side
+            // client names below are our own data and stay as they are.
+            'hostname' => $this->textSanitizer->sanitizeNullable('Asset hostname', $asset->hostname, 200),
+            'name' => $this->textSanitizer->sanitizeNullable('Asset name', $asset->name, 200),
             'client_id' => (int) $asset->client_id,
             'client_name' => $clients[(int) $asset->client_id]['name'] ?? null,
             'is_active' => (bool) $asset->is_active,
@@ -607,8 +666,33 @@ class MislinkedAssetFinder
             'rule_label' => $ruleLabel,
             'other_client_id' => $otherClientId,
             'other_client_name' => $clients[$otherClientId]['name'] ?? null,
-            'evidence' => $evidence,
+            'evidence' => $this->sanitizeEvidence($evidence),
         ];
+    }
+
+    /**
+     * Fence the vendor/tenant-controlled evidence leaves. Keys absent from
+     * UNTRUSTED_EVIDENCE_LEAVES are our own derived/validated values and pass
+     * through unchanged.
+     *
+     * @param  array<string, mixed>  $evidence
+     * @return array<string, mixed>
+     */
+    private function sanitizeEvidence(array $evidence): array
+    {
+        foreach (self::UNTRUSTED_EVIDENCE_LEAVES as $key => $label) {
+            if (! array_key_exists($key, $evidence)) {
+                continue;
+            }
+            $evidence[$key] = $this->textSanitizer->sanitizeNullable(
+                $label,
+                $evidence[$key],
+                200,
+                $key === 'last_user' ? ['None', '-'] : [],
+            );
+        }
+
+        return $evidence;
     }
 
     private function normalizeSerial(?string $serial): ?string
@@ -665,12 +749,29 @@ class MislinkedAssetFinder
      * ONE client (`cipp_upn like 'user@%'` inside `where client_id`); nothing
      * scopes the sweep, so the domain has to do that work here.
      *
-     * DOMAIN\user and user@domain.tld produce the SAME key: the NetBIOS name and
-     * the leading DNS label are the same tenant name, so both spellings of one
-     * account collapse together (BRAVO\jdoe ≡ jdoe@bravo.com → 'jdoe@bravo').
-     * Only the leading label is kept, so acme.com / acme.co.uk / the AD suffix
-     * agree. A value with no domain (a bare 'jdoe') identifies no tenant and
-     * returns null — it can never contradict one.
+     * PARSING. A NetBIOS prefix is stripped FIRST, but the remainder is NOT assumed
+     * to be a bare local part: several RMM agents write DOMAIN\user@upn, and an
+     * address form in the remainder names the tenant more precisely than the NetBIOS
+     * label, so it wins. The address splits on its LAST '@' (a quoted local part may
+     * carry its own). DOMAIN\user and user@domain.tld therefore still produce one key
+     * (BRAVO\jdoe ≡ jdoe@bravo.com ≡ BRAVO\jdoe@bravo.com → 'jdoe@bravo'); parsing
+     * the backslash form as local='jdoe@bravo.com' would have keyed it to something
+     * no contact can ever carry, silently retiring rule 4 for those rows.
+     *
+     * THE TENANT LABEL is the leading DNS label, so acme.com / acme.co.uk / the AD
+     * suffix agree and two tenants under one provider parent stay apart
+     * (acmeco.onmicrosoft.com → 'acmeco'), EXCEPT that infrastructure labels
+     * (corp., mail., ad., office. — GENERIC_DOMAIN_LABELS) are walked past first.
+     * They name a host INSIDE a tenant, so keying on one would make every client on
+     * corp.* a single account — the same generic-account flood, moved from the local
+     * part to the domain. The walk never steps into a public suffix.
+     *
+     * KNOWN, DELIBERATE LIMITS. Two tenants whose leading label is genuinely the same
+     * (acme.com vs acme.net) still agree — this is name-based matching and Tier B is
+     * human-eyes. Values that name no tenant return null and can never be evidence: a
+     * bare 'jdoe', and a domain that is nothing but generic labels ('CORP\jdoe',
+     * corp.com). Both are false negatives by choice: an unmatchable key costs a missed
+     * suspect, a colliding one accuses an innocent client.
      */
     private function accountKey(?string $value): ?string
     {
@@ -679,22 +780,62 @@ class MislinkedAssetFinder
             return null;
         }
 
+        $domain = null;
+
         if (str_contains($value, '\\')) {
             $cut = (int) strrpos($value, '\\');
             $domain = substr($value, 0, $cut);
-            $local = substr($value, $cut + 1);
-        } elseif (str_contains($value, '@')) {
-            $cut = (int) strpos($value, '@');
+            $value = substr($value, $cut + 1);
+        }
+
+        if (str_contains($value, '@')) {
+            $cut = (int) strrpos($value, '@');
             $local = substr($value, 0, $cut);
             $domain = substr($value, $cut + 1);
         } else {
+            $local = $value;
+        }
+
+        if ($domain === null) {
             return null;
         }
 
         $local = trim(mb_strtolower($local));
-        $domain = explode('.', trim(mb_strtolower($domain)), 2)[0];
+        $tenant = $this->tenantLabel($domain);
 
-        return ($local === '' || $domain === '') ? null : $local.'@'.$domain;
+        return ($local === '' || $tenant === null) ? null : $local.'@'.$tenant;
+    }
+
+    /**
+     * The tenant label of a domain (or of a bare NetBIOS name): the leading DNS
+     * label, after any infrastructure labels are walked past. Null when the value
+     * names no tenant. Trailing dots and empty labels are ignored; comparison is on
+     * the lowercased label, so an IDN keys on its stored a-label as-is.
+     */
+    private function tenantLabel(?string $domain): ?string
+    {
+        $labels = array_values(array_filter(
+            array_map(
+                static fn (string $label): string => trim($label),
+                explode('.', mb_strtolower(trim((string) $domain))),
+            ),
+            static fn (string $label): bool => $label !== '',
+        ));
+
+        if ($labels === []) {
+            return null;
+        }
+
+        // Walk past corp./mail./ad./office. — but never into the public suffix, so
+        // 'corp.co.uk' is not read as the tenant 'co'.
+        while (count($labels) > 1
+            && in_array($labels[0], self::GENERIC_DOMAIN_LABELS, true)
+            && ! in_array($labels[1], self::PUBLIC_SUFFIX_LABELS, true)) {
+            array_shift($labels);
+        }
+
+        // Nothing but generic labels left → this value names no tenant.
+        return in_array($labels[0], self::GENERIC_DOMAIN_LABELS, true) ? null : $labels[0];
     }
 
     /**

@@ -124,7 +124,9 @@ class MislinkedAssetsToolMcpTest extends TestCase
         $this->assertSame('duplicate_serial_cross_client', $row['rule']);
         $this->assertSame($b->id, $row['other_client_id']);
         $this->assertSame('Bravo', $row['other_client_name']);
-        $this->assertSame('DUP-SN', $row['evidence']['duplicate_serial']);
+        // Vendor-controlled text crosses the boundary fenced, so assert containment.
+        $this->assertStringContainsString('DUP-SN', (string) $row['evidence']['duplicate_serial']);
+        $this->assertStringContainsString('=== UNTRUSTED', (string) $row['evidence']['duplicate_serial']);
 
         // The Tier-A absence caveat must ride in the response text.
         $this->assertStringContainsString('Absence of a Tier A hit is not proof', (string) $response->json('result.content.0.text'));
