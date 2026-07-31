@@ -28,6 +28,16 @@ use Tests\TestCase;
  *
  * These tests force a genuine QueryException (the assets table is gone by the
  * time the sync tries to write) and assert on what escapes.
+ *
+ * DRIVER CONSTRAINT — these guards are sqlite-only by construction. The failure
+ * is forced with Schema::drop(), and DDL is not transactional on MariaDB (which
+ * is what prod runs): it implicitly commits, so RefreshDatabase can no longer
+ * roll the case back and the damage escapes into later tests. syncDevices()
+ * upserts tactical_assets via updateOrCreate(), so a pre-seeded row updates
+ * rather than violating the unique index — there is no DDL-free way to fail
+ * that same statement. The helper therefore skips off sqlite rather than
+ * corrupting the run. A green CI here is NOT cross-driver proof of the
+ * redaction; it is proof on sqlite only.
  */
 class TacticalDeviceSyncErrorRedactionTest extends TestCase
 {
@@ -77,6 +87,13 @@ class TacticalDeviceSyncErrorRedactionTest extends TestCase
 
     private function syncWithBrokenAssetWrites(): \App\Services\SyncResult
     {
+        // See the class docblock: the Schema::drop() below implicitly commits on
+        // MariaDB and would defeat RefreshDatabase's rollback for the whole run.
+        $driver = \Illuminate\Support\Facades\DB::connection()->getDriverName();
+        if ($driver !== 'sqlite') {
+            $this->markTestSkipped("redaction guard forces its failure with DDL and is sqlite-only; driver is {$driver}");
+        }
+
         Client::factory()->create(['tactical_site_id' => 'Acme|Main', 'is_active' => true]);
 
         // Guarantees a real QueryException from inside the per-agent try block,
