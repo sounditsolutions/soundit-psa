@@ -313,7 +313,7 @@ class MislinkedAssetFinder
      * Serial (upper-cased, junk-filtered) → distinct client_ids that hold it.
      *
      * @param  Collection<int, Asset>  $universe
-     * @return array<string, array<int, int>>  serial => list of distinct client_ids
+     * @return array<string, array<int, int>> serial => list of distinct client_ids
      */
     private function buildSerialMap(Collection $universe): array
     {
@@ -383,9 +383,10 @@ class MislinkedAssetFinder
      * dominant for 2+ clients (DESKTOP-, LAPTOP-, WIN-, …) is generic noise, not
      * a client fingerprint, so it owns no one.
      *
+     * Returns [ prefix => sole-owner client_id, clientId => [prefix => count] ].
+     *
      * @param  Collection<int, Asset>  $universe
      * @return array{0: array<string, int>, 1: array<int, array<string, int>>}
-     *         [ prefix => sole-owner client_id, clientId => [prefix => count] ]
      */
     private function buildPrefixOwners(Collection $universe): array
     {
