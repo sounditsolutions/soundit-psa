@@ -4,14 +4,18 @@ namespace Tests\Feature\Tactical;
 
 use App\Models\Client;
 use App\Services\Tactical\TacticalClient;
+use App\Services\Tactical\TacticalClientException;
 use App\Services\Tactical\TacticalDeviceSyncService;
 use GuzzleHttp\Client as GuzzleClient;
 use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\HandlerStack;
 use GuzzleHttp\Psr7\Response;
+use Illuminate\Contracts\Cache\Lock;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
+use Mockery;
 use Tests\TestCase;
 
 /**
@@ -29,7 +33,8 @@ use Tests\TestCase;
  * These tests force a genuine QueryException (the assets table is gone by the
  * time the sync tries to write) and assert on what escapes.
  *
- * DRIVER CONSTRAINT — these guards are sqlite-only by construction. The failure
+ * DRIVER CONSTRAINT — the WRITE-failure guards are sqlite-only by construction.
+ * The fetch and asset-lock guards below need no DDL and are not affected. The failure
  * is forced with Schema::drop(), and DDL is not transactional on MariaDB (which
  * is what prod runs): it implicitly commits, so RefreshDatabase can no longer
  * roll the case back and the damage escapes into later tests. syncDevices()
@@ -152,5 +157,107 @@ class TacticalDeviceSyncErrorRedactionTest extends TestCase
                 return ($context['agent_id'] ?? null) === 'AGENT-REDACT';
             })
             ->once();
+    }
+
+    /**
+     * The other two catches that recordError() into SyncResult::$errorMessages.
+     *
+     * SCOPE OF THESE GUARDS, stated because the name could imply more: they
+     * substitute TacticalClient wholesale and hand-construct the exception, so
+     * TacticalClient::resolveAndPin() never runs. They prove that safeFailure()
+     * withholds an exception message on these two paths. They prove NOTHING
+     * about the SSRF pin's own behaviour, and in particular they cannot observe
+     * that resolveAndPin() writes the host and the resolved IP to the
+     * application log before it throws — a surface this branch does not close.
+     * Exercising the real pin here, and the pin's log line, are both ticketed.
+     */
+    private const LEAKY_HOST = 'rmm.internal.example';
+
+    private const LEAKY_ADDRESS = '10.20.30.40';
+
+    /** The shape TacticalClient::resolveAndPin() throws, reproduced by hand. */
+    private function pinRefusal(): TacticalClientException
+    {
+        return new TacticalClientException(
+            "Tactical API host '".self::LEAKY_HOST."' resolved to a private or reserved address (".self::LEAKY_ADDRESS.'); refused.'
+        );
+    }
+
+    private function syncWithFailingFetch(): \App\Services\SyncResult
+    {
+        Client::factory()->create(['tactical_site_id' => 'Acme|Main', 'is_active' => true]);
+
+        $client = Mockery::mock(TacticalClient::class);
+        $client->shouldReceive('getAgents')->once()->andThrow($this->pinRefusal());
+
+        return (new TacticalDeviceSyncService($client))->syncDevices();
+    }
+
+    public function test_a_fetch_failure_publishes_no_exception_message(): void
+    {
+        $result = $this->syncWithFailingFetch();
+
+        $this->assertSame(1, $result->errors, 'the fetch failure should have been recorded');
+        $message = $result->errorMessages[0] ?? '';
+
+        $this->assertStringNotContainsString(self::LEAKY_HOST, $message, 'the Tactical host reached SyncResult::errorMessages');
+        $this->assertStringNotContainsString(self::LEAKY_ADDRESS, $message, 'a resolved address reached SyncResult::errorMessages');
+        $this->assertStringContainsString('Failed to fetch agents', $message, 'the operator needs to know which step failed');
+        $this->assertStringContainsString('TacticalClientException', $message, 'the operator needs the failure class');
+    }
+
+    public function test_the_fetch_warning_log_line_publishes_no_exception_message(): void
+    {
+        Log::spy();
+
+        $this->syncWithFailingFetch();
+
+        Log::shouldHaveReceived('warning')
+            ->withArgs(function (string $message, array $context = []): bool {
+                if ($message !== '[TacticalSync] Failed to fetch agents') {
+                    return false;
+                }
+
+                $rendered = json_encode($context);
+
+                return ! str_contains($rendered, self::LEAKY_HOST)
+                    && ! str_contains($rendered, self::LEAKY_ADDRESS);
+            })
+            ->once();
+    }
+
+    private function syncWithFailingAssetLock(): \App\Services\SyncResult
+    {
+        Client::factory()->create(['tactical_site_id' => 'Acme|Main', 'is_active' => true]);
+
+        // The lock KEY digests the hostname, so a cache-layer error quoting the
+        // key it failed on leaks the hostname too.
+        $lock = Mockery::mock(Lock::class);
+        $lock->shouldReceive('get')->andThrow(
+            new \RuntimeException('Redis connection refused for key tactical-sync:asset:1:'.sha1(strtolower('ACME-RECEPTION-01')))
+        );
+        Cache::shouldReceive('lock')->andReturn($lock);
+
+        return $this->syncService([$this->agent()])->syncDevices();
+    }
+
+    public function test_an_asset_lock_failure_publishes_neither_the_hostname_nor_the_message(): void
+    {
+        $result = $this->syncWithFailingAssetLock();
+
+        $this->assertSame(1, $result->errors, 'the lock failure should have been recorded');
+        $message = $result->errorMessages[0] ?? '';
+
+        foreach (self::LEAKY as $secret) {
+            $this->assertStringNotContainsString($secret, $message, "client device data ({$secret}) reached SyncResult::errorMessages");
+        }
+
+        $this->assertStringNotContainsString(
+            sha1(strtolower('ACME-RECEPTION-01')),
+            $message,
+            'the lock key digests the hostname and must not be published either'
+        );
+        $this->assertStringContainsString('AGENT-REDACT', $message, 'the failing agent must stay identifiable');
+        $this->assertStringContainsString('asset lock', $message, 'the operator needs to know which step failed');
     }
 }
