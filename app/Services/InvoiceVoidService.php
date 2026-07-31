@@ -51,12 +51,17 @@ class InvoiceVoidService
             $invoice->syncOriginal();
             $invoice->load('lines');
 
-            // Already void and already zeroed — nothing to do. (A void
-            // invoice can regain amounts when a Stripe re-import rewrites
-            // them; that case falls through and is re-zeroed below.)
+            // Already void, already zeroed, and every line already carries its
+            // void marker — nothing to do. (A void invoice can regain amounts
+            // when a Stripe re-import rewrites them; that case falls through
+            // and is re-zeroed below. So does an invoice voided BEFORE the line
+            // marker existed: re-voiding it is the only in-app repair door for
+            // a missing marker, so this early return must not swallow it —
+            // psa-oc5q2.1.)
             if ($invoice->status === InvoiceStatus::Void
                 && ! $this->hasReportableAmounts($invoice)
-                && ! $this->linesHaveReportableAmounts($invoice)) {
+                && ! $this->linesHaveReportableAmounts($invoice)
+                && ! $this->linesMissingVoidMarker($invoice)) {
                 return $invoice;
             }
 
@@ -125,5 +130,19 @@ class InvoiceVoidService
         return $invoice->lines->contains(
             fn ($line) => (float) $line->amount != 0.0 || (float) ($line->cost_amount ?? 0) != 0.0
         );
+    }
+
+    /**
+     * A line on a Void invoice with no pre_void_amount carries NO void marker,
+     * so InvoiceLine::reportable_amount would read its raw money as live. Such
+     * lines exist only from before this service snapshotted every line; the
+     * deploy-time backfill clears the historical ones
+     * (2026_07_31_000001_backfill_missing_pre_void_line_markers), and this
+     * predicate keeps the re-void door a genuine repair for any that appear
+     * later (psa-oc5q2.1).
+     */
+    private function linesMissingVoidMarker(Invoice $invoice): bool
+    {
+        return $invoice->lines->contains(fn ($line) => $line->pre_void_amount === null);
     }
 }

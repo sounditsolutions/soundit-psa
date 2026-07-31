@@ -77,13 +77,18 @@ class InvoiceLine extends Model
      * invoice's lines, the live value otherwise — the line-level analogue of
      * invoices.subtotal/total_cost being zeroed on void. Keys off
      * pre_void_amount, which InvoiceVoidService writes on EVERY line of a void
-     * invoice (including $0 lines), so it is a COMPLETE line-local void marker:
+     * invoice (including $0 lines) and which the deploy-time backfill
+     * (2026_07_31_000001_backfill_missing_pre_void_line_markers) installs on
+     * every pre-existing voided line — including the $0 lines the ORIGINAL
+     * snapshot backfill skipped — so it is a COMPLETE line-local void marker:
      * void-correct WITHOUT loading the parent, and unaffected by an out-of-lock
      * line re-inflation (the QBO status pull can rewrite a voided line's raw
      * amount/cost_amount after the void, but never the pre_void snapshot). That
      * completeness is load-bearing — if InvoiceVoidService ever skipped a $0
      * line again, a re-inflated zero-at-void line would read as live money here
-     * (psa-oc5q2.1). Every reportable reader of raw line money must use these,
+     * (psa-oc5q2.1), which is also why re-voiding an already-Void invoice whose
+     * lines are unmarked no longer early-returns: it installs the missing
+     * marker. Every reportable reader of raw line money must use these,
      * not amount/cost_amount directly; display_* exposes the ORIGINAL bill.
      */
     public function getReportableAmountAttribute(): ?string
