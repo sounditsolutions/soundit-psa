@@ -111,6 +111,27 @@ class SecretScanCommandTest extends TestCase
             ->assertExitCode(1);
     }
 
+    /**
+     * Regression: a path git would C-QUOTE (non-ASCII / special characters) must
+     * still be READ and content-scanned. Before the -z fix, `git show` failed on the
+     * quoted token and the absent-from-tree escape skipped the file silently — a
+     * content-only secret in such a file reached the public remote.
+     */
+    public function test_range_mode_catches_a_private_key_in_a_non_ascii_path(): void
+    {
+        [$dir, $base] = $this->repoWithBase();
+
+        // `.pem` is deliberately not flagged by NAME, so this depends entirely on the
+        // content scan actually reading the blob.
+        $key = '-----BEGIN RSA '.'PRIVATE KEY-----'."\nMIIE...redacted...\n".'-----END RSA '.'PRIVATE KEY-----'."\n";
+        $this->write($dir, 'certs/Ünsigned-cert.pem', $key);
+        $this->commit($dir, ['certs/Ünsigned-cert.pem'], 'oops paste');
+
+        $this->artisan('secret:scan', ['--range' => "{$base}..HEAD", '--path' => $dir])
+            ->expectsOutputToContain('nsigned-cert.pem')
+            ->assertExitCode(1);
+    }
+
     public function test_range_mode_passes_a_clean_range(): void
     {
         [$dir, $base] = $this->repoWithBase();

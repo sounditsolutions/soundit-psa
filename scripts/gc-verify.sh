@@ -41,13 +41,13 @@ if [ -n "${GC_VERIFY_BASE:-}" ]; then
     # Resolving is NOT enough. In a --depth=1 checkout the only ref that resolves is
     # HEAD, so GC_VERIFY_BASE=HEAD (the value the error above effectively advertises)
     # leaves $BASE..HEAD EMPTY: every history scan below would cover NOTHING while the
-    # run prints PASS — the exact fail-open gate 3 refuses to allow. The override must
-    # therefore be an ANCESTOR of HEAD and must leave a NON-EMPTY range.
-    if ! git merge-base --is-ancestor "$BASE" HEAD 2>/dev/null; then
-        echo "ERROR: GC_VERIFY_BASE='${GC_VERIFY_BASE}' (${BASE}) is not an ancestor of HEAD —" >&2
-        echo "       the history scans would not cover the outbound commits. Failing CLOSED." >&2
-        exit 1
-    fi
+    # run prints PASS — the exact fail-open gate 3 refuses to allow. What the override
+    # must guarantee is a NON-EMPTY range, NOT strict ancestry: `$BASE..HEAD` means
+    # "reachable from HEAD, not reachable from BASE", so a base that has DIVERGED
+    # (GC_VERIFY_BASE=origin/main after main advanced — the natural value in the very
+    # shallow / fork CI checkouts this hatch exists for) still covers every outbound
+    # commit. The count check below is the real invariant, and it also catches
+    # GC_VERIFY_BASE=HEAD and any descendant of HEAD.
     if ! COUNT="$(git rev-list --count "$BASE..HEAD" 2>/dev/null)" || [ "$COUNT" -eq 0 ]; then
         echo "ERROR: GC_VERIFY_BASE='${GC_VERIFY_BASE}' (${BASE}) leaves ${BASE}..HEAD EMPTY —" >&2
         echo "       zero history coverage with a PASS is the fail-open this gate exists to" >&2
