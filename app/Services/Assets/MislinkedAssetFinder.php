@@ -522,31 +522,40 @@ class MislinkedAssetFinder
         }
 
         $ownSerial = $this->normalizeSerial($asset->serial_number);
-        $reported = [];
 
+        // ONE verdict per OTHER CLIENT, decided over ALL of that client's colliding
+        // rows — never row by row. Row-by-row, only the FIRING branch remembered the
+        // client, so a client whose first row was deduped against rule 2 (equal
+        // serials) or suppressed (differing serials) was adjudicated again on its
+        // NEXT row: a third row carrying no serial re-fired rule 3 for a pair rule 2
+        // had already reported — the double-report the dedupe forbids — and defeated
+        // the differing-serial suppression the same way. Grouping first also makes
+        // the verdict independent of row order.
+        /** @var array<int, array<int, string|null>> $collidingSerials */
+        $collidingSerials = [];
         foreach ($hostnameMap[$host] ?? [] as $row) {
-            $otherClientId = $row['client_id'];
-            if ($otherClientId === (int) $asset->client_id || isset($reported[$otherClientId])) {
+            if ($row['client_id'] === (int) $asset->client_id) {
+                continue;
+            }
+            $collidingSerials[$row['client_id']][] = $row['serial'];
+        }
+
+        foreach ($collidingSerials as $otherClientId => $serials) {
+            // Own serial present AND at least one of that client's colliding rows
+            // carries a serial → serial evidence settles this client: equal is rule
+            // 2's territory (dedupe), different is an honest generic-name collision
+            // (suppress). Either way rule 3 stays silent for it.
+            if ($ownSerial !== null
+                && array_filter($serials, static fn (?string $serial): bool => $serial !== null) !== []) {
                 continue;
             }
 
-            $otherSerial = $row['serial'];
-
-            // Both serials present and EQUAL → this is rule 2's territory; dedupe.
-            if ($ownSerial !== null && $otherSerial !== null && $ownSerial === $otherSerial) {
-                continue;
-            }
-            // Both serials present and DIFFERENT → honest generic-name collision; suppress.
-            if ($ownSerial !== null && $otherSerial !== null && $ownSerial !== $otherSerial) {
-                continue;
-            }
-
-            // At least one serial missing → serial evidence can neither confirm
-            // nor deny; a hostname collision across clients is worth flagging.
-            $reported[$otherClientId] = true;
+            // Serial evidence can neither confirm nor deny — the subject carries no
+            // serial, or none of that client's colliding rows does. A hostname
+            // collision across clients is worth flagging.
             $tierA[] = $this->finding($asset, 'duplicate_hostname_cross_client',
                 'Same hostname is active under another client and serials cannot disprove it',
-                $otherClientId, $clients, [
+                (int) $otherClientId, $clients, [
                     'duplicate_hostname' => (string) $asset->hostname,
                     'own_serial' => $asset->serial_number,
                 ]);

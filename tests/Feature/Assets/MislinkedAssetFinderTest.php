@@ -211,6 +211,53 @@ class MislinkedAssetFinderTest extends TestCase
         $this->assertNotContains('duplicate_hostname_cross_client', $rules);
     }
 
+    public function test_rule3_dedupe_against_rule2_survives_a_third_colliding_row_with_no_serial(): void
+    {
+        $a = Client::factory()->create();
+        $b = Client::factory()->create();
+        // The pair rule 2 owns (same hostname AND same serial = the same box)…
+        $subject = $this->asset($a, ['hostname' => 'SRV01', 'serial_number' => 'SAME-SERIAL']);
+        $this->asset($b, ['hostname' => 'SRV01', 'serial_number' => 'SAME-SERIAL']);
+        // …plus a THIRD row at that SAME other client whose serial is unknown. The
+        // verdict is per other client, not per row: adjudicating row by row let this
+        // row re-fire rule 3 against a client rule 2 had already reported.
+        $this->asset($b, ['hostname' => 'SRV01', 'serial_number' => null]);
+
+        $hits = array_values(array_filter(
+            $this->finder()->find(null)['tier_a'],
+            fn ($r) => $r['asset_id'] === $subject->id
+        ));
+
+        $this->assertSame(
+            ['duplicate_serial_cross_client'],
+            $this->rules($hits),
+            'the serial-bearing pair must be reported once, by rule 2 alone'
+        );
+    }
+
+    public function test_rule3_suppression_survives_a_third_colliding_row_with_no_serial(): void
+    {
+        $a = Client::factory()->create();
+        $b = Client::factory()->create();
+        // Different serials → genuinely different boxes sharing a generic name…
+        $subject = $this->asset($a, ['hostname' => 'SRV01', 'serial_number' => 'SERIAL-A']);
+        $this->asset($b, ['hostname' => 'SRV01', 'serial_number' => 'SERIAL-B']);
+        // …and a third row at that same client with no serial, which must not reopen
+        // a collision the serials already disproved.
+        $this->asset($b, ['hostname' => 'SRV01', 'serial_number' => null]);
+
+        $hits = array_values(array_filter(
+            $this->finder()->find(null)['tier_a'],
+            fn ($r) => $r['asset_id'] === $subject->id
+        ));
+
+        $this->assertSame(
+            [],
+            $this->rules($hits),
+            'a null-serial third row must not defeat the differing-serial suppression'
+        );
+    }
+
     // ── Tier B: separate collection, human-eyes rules ──
 
     public function test_rule4_last_user_foreign_contact_lands_in_tier_b_only(): void
