@@ -5,6 +5,8 @@ namespace Tests\Feature\Tactical;
 use App\Models\Asset;
 use App\Models\Client;
 use App\Models\TacticalAsset;
+use App\Services\AssetHealthService;
+use App\Services\AssetService;
 use App\Services\Tactical\TacticalClient;
 use App\Services\Tactical\TacticalDeviceSyncService;
 use GuzzleHttp\Client as GuzzleClient;
@@ -202,5 +204,125 @@ class TacticalDeviceSyncCreatesAssetsTest extends TestCase
         $this->assertSame(0, Asset::count());
         $this->assertSame(1, $result->created, 'the tactical row is still recorded');
         $this->assertArrayNotHasKey('assets_created', $result->details);
+    }
+
+    public function test_placeholder_oem_serial_is_not_written_to_the_asset(): void
+    {
+        $this->mappedClient();
+
+        $this->syncService([$this->agent(['serial_number' => 'To Be Filled By O.E.M.'])])->syncDevices();
+
+        $this->assertNull(
+            Asset::where('hostname', 'NEWBOX')->value('serial_number'),
+            'a placeholder serial must not seed the column Ninja/Level match on globally',
+        );
+    }
+
+    public function test_ambiguous_local_ips_leave_the_asset_ip_empty(): void
+    {
+        $this->mappedClient();
+
+        // Hyper-V host-only adapter listed first — element 0 is not "the IP".
+        $this->syncService([$this->agent(['local_ips' => '172.28.144.1, 192.168.0.42'])])->syncDevices();
+
+        $this->assertNull(Asset::where('hostname', 'NEWBOX')->value('ip_address'));
+    }
+
+    public function test_loopback_and_link_local_addresses_are_never_chosen(): void
+    {
+        $this->mappedClient();
+
+        $this->syncService([$this->agent(['local_ips' => '127.0.0.1, 169.254.10.5, 192.168.0.42'])])->syncDevices();
+
+        $this->assertSame('192.168.0.42', Asset::where('hostname', 'NEWBOX')->value('ip_address'));
+    }
+
+    public function test_long_disk_summary_is_fitted_to_the_asset_column(): void
+    {
+        $this->mappedClient();
+
+        // assets.disk_summary is varchar(500); the agent snapshot column is TEXT.
+        $disks = array_fill(0, 20, 'SAMSUNG MZVLB1T0HBLR-000L7 1TB NVMe SSD');
+
+        $this->syncService([$this->agent(['physical_disks' => $disks])])->syncDevices();
+
+        $this->assertSame(500, mb_strlen((string) Asset::where('hostname', 'NEWBOX')->value('disk_summary')));
+    }
+
+    public function test_connectivity_is_refreshed_on_every_sync_not_frozen_at_creation(): void
+    {
+        $this->mappedClient();
+
+        $this->syncService([$this->agent(['status' => 'offline'])])->syncDevices();
+        $this->assertFalse((bool) Asset::where('hostname', 'NEWBOX')->value('rmm_online'));
+
+        $this->syncService([$this->agent(['status' => 'online'])])->syncDevices();
+        $this->assertTrue((bool) Asset::where('hostname', 'NEWBOX')->value('rmm_online'));
+    }
+
+    public function test_agent_missing_from_the_payload_is_not_asserted_offline(): void
+    {
+        $this->mappedClient();
+
+        $this->syncService([$this->agent()])->syncDevices();
+        $this->assertTrue((bool) Asset::where('hostname', 'NEWBOX')->value('rmm_online'));
+
+        // The agent is gone from the payload. That covers far more than "the box
+        // is off": a Tactical site rename or a client leaving operational scope
+        // unmaps a whole fleet, and an agent reinstall strands the old row under
+        // its old agent_id. "Not covered by this run" is UNKNOWN, not offline —
+        // the agent snapshot goes offline (it records what Tactical told us), but
+        // the operator-facing asset keeps the last state we actually observed.
+        $this->syncService([])->syncDevices();
+
+        $this->assertSame('offline', TacticalAsset::where('agent_id', 'AGENT-NEW')->value('status'));
+
+        $asset = Asset::where('hostname', 'NEWBOX')->firstOrFail();
+
+        $this->assertTrue(
+            (bool) $asset->rmm_online,
+            'an unseen agent must not assert a hard Offline the sweep can never undo',
+        );
+        $this->assertNotSame(
+            'Offline',
+            $asset->status_badge,
+            'the badge must degrade to Stale, not claim a machine we never observed is down',
+        );
+    }
+
+    public function test_a_decommissioned_agent_stops_reading_online_and_stays_findable(): void
+    {
+        $this->mappedClient();
+
+        // Seen once, then gone for good — the box was decommissioned and its
+        // agent removed. Nothing will ever write rmm_online for this asset again.
+        $this->syncService([$this->agent(['last_seen' => now()->subDays(9)->toDateTimeString()])])->syncDevices();
+        $this->syncService([])->syncDevices();
+
+        $asset = Asset::where('hostname', 'NEWBOX')->firstOrFail();
+
+        // The sweep still must not rewrite the flag (see the test above) — but
+        // no reader may present the frozen value as current truth.
+        $this->assertTrue((bool) $asset->rmm_online);
+
+        $connectivity = collect((new AssetHealthService)->compute($asset)->factors)
+            ->firstWhere('key', 'connectivity');
+
+        $this->assertNotSame(
+            'Online per RMM',
+            $connectivity['detail'],
+            'a frozen flag the sync stopped maintaining is not an observation of "online"',
+        );
+        $this->assertSame('bad', $connectivity['status']);
+        $this->assertSame(-30, $connectivity['points'], 'the machine must surface on health-driven lists');
+
+        $offline = (new AssetService)->getAssetList(['status' => 'offline'])->pluck('id');
+        $this->assertTrue(
+            $offline->contains($asset->id),
+            'a machine the RMM stopped reporting must be findable under Offline',
+        );
+
+        $online = (new AssetService)->getAssetList(['status' => 'online'])->pluck('id');
+        $this->assertFalse($online->contains($asset->id));
     }
 }

@@ -290,7 +290,20 @@ class AssetHealthService
                 $rmmLinked ? 'RMM-linked but no status reported yet' : 'No RMM link — connectivity not monitored');
         }
 
-        if ($asset->rmm_online === true) {
+        // A true rmm_online is only "Online per RMM" while the sync that
+        // maintains it is still reporting. A Tactical-only asset whose agent was
+        // decommissioned keeps its last OBSERVED true forever — the not-seen
+        // sweep deliberately does not rewrite it — so without this gate the
+        // machine would score a penalty-free "Online per RMM" indefinitely and
+        // never surface on a health-driven list. Past the staleness window the
+        // frozen flag stops being evidence, and the last_seen_at ladder below
+        // scores it exactly as it does a null rmm_online. Same escape
+        // Asset::getStatusBadgeAttribute() already applies (isRmmDataStale gates
+        // only a TRUE flag — a stale Offline is not the hazard) and the Assets
+        // "online" filter already applies. A null last_seen_at fails open to
+        // online, matching isRmmDataStale(). (psa-wedk: never present synced
+        // state as current truth.)
+        if ($asset->rmm_online === true && ! $asset->isRmmDataStale()) {
             return $this->factor('connectivity', 'Connectivity', 'ok', 0, 'Online per RMM');
         }
 
@@ -304,7 +317,8 @@ class AssetHealthService
             return $this->factor('connectivity', 'Connectivity', 'bad', -self::PENALTY_OFFLINE, $detail);
         }
 
-        // rmm_online null but we have a last_seen timestamp.
+        // No flag we can still trust, but we have a last_seen timestamp:
+        // rmm_online is null, or it froze true past the staleness window above.
         $hoursAgo = $lastSeen->diffInHours(now());
         if ($hoursAgo >= self::OFFLINE_SEEN_HOURS) {
             return $this->factor('connectivity', 'Connectivity', 'bad', -self::PENALTY_OFFLINE,

@@ -2306,12 +2306,40 @@ class IntegrationsController extends Controller
             // existing asset actually is, and point at the log, which names the
             // reason per device. Warning, not success.
             $assetsSkipped = $result->details['assets_skipped'] ?? 0;
+            $skipNote = '';
 
             if ($assetsSkipped > 0) {
-                $message .= ' '.$assetsSkipped.' device'.($assetsSkipped === 1 ? '' : 's')
+                $skipNote = ' '.$assetsSkipped.' device'.($assetsSkipped === 1 ? '' : 's')
                     .' could not be linked to an asset, so '.($assetsSkipped === 1 ? 'its' : 'their')
                     .' Tactical data is not reaching any asset — where an asset for the machine does exist, any Tactical panel on it belongs to a different agent record. See the sync log for the reason on each.';
 
+                $message .= $skipNote;
+            }
+
+            // Per-agent isolation means a write failure no longer throws out of
+            // syncDevices() — it lands in $result->errors. Reporting only the
+            // counters would show a green "sync complete" banner to an operator
+            // whose every agent just failed, turning the loud failure this catch
+            // used to surface into a silent one. The counts stay in the message,
+            // so a partial failure still says what did land.
+            //
+            // This check MUST come before the skip warning returns below. Skips
+            // and write errors are recorded in the same per-agent loop, so a
+            // mixed run — or the all-agents-failed run, where the upsert throws
+            // first and leaves created/updated at 0 — would otherwise return the
+            // amber "complete" banner and hide every recorded error behind it.
+            // The skip caveat is carried into the error message, so escalating
+            // from amber to red loses nothing the operator was going to be told.
+            if ($result->errors > 0) {
+                $first = $result->errorMessages[0] ?? 'see the application log for details';
+                $more = $result->errors > 1 ? ' (+'.($result->errors - 1).' more)' : '';
+
+                return back()->with('error', "Tactical device sync finished with {$result->errors} error(s) — "
+                    ."{$result->created} agents added, {$result->updated} updated, {$linked} linked to assets. "
+                    ."First error: {$first}{$more}".$skipNote);
+            }
+
+            if ($assetsSkipped > 0) {
                 return back()->with('warning', $message);
             }
 

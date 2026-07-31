@@ -54,7 +54,23 @@ class AssetService
                         $q->whereNull('last_seen_at')
                             ->orWhere('last_seen_at', '>', now()->subHours(Asset::rmmStaleAfterHours()));
                     }),
-                'offline' => $query->where('rmm_online', false),
+                // "offline" must also catch an asset whose rmm_online froze true
+                // while the sync went quiet. The sweep that stops seeing a
+                // Tactical agent deliberately leaves the flag at its last
+                // OBSERVED value, so a decommissioned machine would otherwise
+                // match NEITHER pill — the "online" branch above already excludes
+                // it — and be unfindable. Its badge still reads "Stale", not
+                // "Offline": this widens what the filter FINDS, it does not claim
+                // we observed the machine down. Exact mirror of the "online"
+                // predicate, so online plus offline covers every non-null flag.
+                'offline' => $query->where(function ($q) {
+                    $q->where('rmm_online', false)
+                        ->orWhere(function ($stale) {
+                            $stale->where('rmm_online', true)
+                                ->whereNotNull('last_seen_at')
+                                ->where('last_seen_at', '<=', now()->subHours(Asset::rmmStaleAfterHours()));
+                        });
+                }),
                 'unknown' => $query->whereNull('rmm_online'),
                 default => null,
             };

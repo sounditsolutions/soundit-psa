@@ -196,4 +196,58 @@ class TacticalConfig
 
         return true;
     }
+
+    /**
+     * Device-sync cadence, in SECONDS. Default 300 (5 minutes).
+     *
+     * The sync used to run dailyAt('05:32'), which made Tactical the only
+     * integration on a daily cadence — Ninja heartbeats about every 5 minutes and
+     * Level is effectively real-time. Asset::isRmmStale() treats a device unseen
+     * for 24h as stale, a threshold written to sit "comfortably above every
+     * sync's cadence": against a 24h sync it had no margin at all, so a live
+     * machine could read Offline on the strength of nothing but sync lag. At 300s
+     * the margin is 288×, and the threshold no longer needs moving.
+     *
+     * Cost is one API call per tick: syncDevices() fetches the whole agent list
+     * once (getAgents) and loops locally.
+     *
+     * Zero/invalid falls back to the default rather than disabling the sync.
+     */
+    public static function deviceSyncIntervalSeconds(): int
+    {
+        $v = (int) Setting::getValue('tactical_sync_interval_seconds');
+
+        return $v > 0 ? $v : 300;
+    }
+
+    /**
+     * Throttle gate for the everyMinute device-sync schedule: true at most once
+     * per deviceSyncIntervalSeconds. Same deferred-read contract as
+     * offlineQueueSweepDue() — the interval is read inside the scheduler's
+     * when-closure, never at registration, so `php artisan` boots stay DB-free.
+     *
+     * The setting is honest about being seconds, and honest about its floor:
+     * Laravel's scheduler ticks at most everyMinute(), so a value below 60 gates
+     * open on every tick and actuates at 60s. Sub-minute sync needs a resident
+     * loop, not the scheduler — this method deliberately does not pretend
+     * otherwise by clamping the operator's value.
+     *
+     * MUST be evaluated last in the when() chain: a true result consumes the tick
+     * by stamping the cache, so it cannot run ahead of the cheaper guards that
+     * decide whether the sync is going to happen at all.
+     */
+    public static function deviceSyncDue(): bool
+    {
+        $key = 'tactical_last_device_sync';
+        $intervalSeconds = self::deviceSyncIntervalSeconds();
+        $last = (int) Cache::get($key, 0);
+
+        if (now()->getTimestamp() - $last < $intervalSeconds) {
+            return false;
+        }
+
+        Cache::put($key, now()->getTimestamp(), now()->addDay());
+
+        return true;
+    }
 }

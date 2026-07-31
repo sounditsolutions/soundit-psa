@@ -10,6 +10,8 @@ use App\Models\TacticalAsset;
 use App\Models\TechnicianRun;
 use App\Services\SyncResult;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 class TacticalDeviceSyncService
@@ -179,41 +181,153 @@ class TacticalDeviceSyncService
 
             $seenAgentIds[] = $agentId;
 
-            // Upsert into tactical_assets
-            $tacticalAsset = TacticalAsset::updateOrCreate(
-                ['agent_id' => $agentId],
-                $this->mapAgentToTacticalAsset($agent),
-            );
+            // Per-agent isolation (mirrors NinjaSyncService's device loop, which
+            // wraps its ENTIRE per-device body): one agent's write failure must
+            // not abort the run. Without it a single bad row skips every later
+            // agent AND the not-seen→offline sweep below, so decommissioned
+            // agents keep reading "online".
+            //
+            // The boundary opens HERE, ABOVE the tactical_assets upsert, not
+            // below it. That upsert is the widest write in the loop and the most
+            // likely thrower: unbounded vendor strings (cpu/os/graphics/
+            // make_model) land in varchar(255) columns under 'strict' => true,
+            // and it is a deadlock candidate whenever the scheduled run and the
+            // operator's "Sync devices" button touch the same agent_id. Leaving
+            // it outside would exempt the exact failure this isolation exists to
+            // contain.
+            //
+            // $seenAgentIds is appended BEFORE the try on purpose: the agent WAS
+            // in the payload, so our failure to write it must not let the sweep
+            // below call the machine offline.
+            try {
+                // Upsert into tactical_assets
+                $tacticalAsset = TacticalAsset::updateOrCreate(
+                    ['agent_id' => $agentId],
+                    $this->mapAgentToTacticalAsset($agent),
+                );
 
-            if ($tacticalAsset->wasRecentlyCreated) {
-                $result->created++;
-            } else {
-                $result->updated++;
-            }
+                if ($tacticalAsset->wasRecentlyCreated) {
+                    $result->created++;
+                } else {
+                    $result->updated++;
+                }
 
-            // Offline→online flip for an agent with queued actions → run its queue.
-            if (isset($queuedAgentStatus[$agentId]) && $queuedAgentStatus[$agentId] !== 'online' && $tacticalAsset->status === 'online') {
-                SweepQueuedActionsForAgent::dispatch((string) $agentId);
-            }
+                // Offline→online flip for an agent with queued actions → run its queue.
+                if (isset($queuedAgentStatus[$agentId]) && $queuedAgentStatus[$agentId] !== 'online' && $tacticalAsset->status === 'online') {
+                    SweepQueuedActionsForAgent::dispatch((string) $agentId);
+                }
 
-            // Link to PSA asset if not already linked — creating the asset when
-            // Tactical is the discovery source for this device.
-            if (! $tacticalAsset->asset_id) {
-                $this->linkOrCreateAsset($tacticalAsset, $psaClientId, $agent, $result);
-            }
+                // Link to PSA asset if not already linked — creating the asset
+                // when Tactical is the discovery source for this device.
+                if (! $tacticalAsset->asset_id) {
+                    $this->linkOrCreateAsset($tacticalAsset, $psaClientId, $agent, $result);
+                }
 
-            // Update the linked asset's last_user if available
-            if ($tacticalAsset->asset_id && ($agent['logged_username'] ?? null)) {
-                Asset::where('id', $tacticalAsset->asset_id)
-                    ->update(['last_user' => $agent['logged_username']]);
+                // Refresh the linked asset from THIS run's snapshot. rmm_online
+                // and last_seen_at are read as CURRENT truth by the Assets list
+                // badge and AssetHealthService::connectivityFactor(), so writing
+                // them once at creation and never again would assert a frozen
+                // connectivity state forever (psa-wedk: never present synced
+                // state as current truth).
+                //
+                // Three limits on what this run may assert, because the asset is
+                // not necessarily ours alone: linkOrCreateAsset() ADOPTS an
+                // existing asset by hostname/name, and that asset may already be
+                // maintained by NinjaSyncService or LevelSyncService, which write
+                // these same two columns on their own cadence.
+                //
+                //  - Only Tactical's contact vocabulary moves rmm_online:
+                //    'online' to true, 'offline' AND 'overdue' to false.
+                //    'overdue' is the LONGER out-of-contact state, not a softer
+                //    one (see rmmOnlineFromStatus), so a machine that stays down
+                //    is still recorded as down. Any other value is not an
+                //    observation of connectivity and leaves the flag untouched.
+                //  - A false is never written over another RMM's link. The false
+                //    branch has no staleness escape anywhere (isRmmDataStale
+                //    gates only a TRUE flag), so a broken Tactical agent would
+                //    otherwise re-assert Offline every interval on a device Ninja
+                //    or Level is actively reporting online. A TRUE still writes:
+                //    it is something we did observe, and every reader gates a
+                //    true on last_seen_at freshness.
+                //  - last_seen_at only ever moves FORWARD. Tactical's snapshot
+                //    can be older than the other RMM's heartbeat, and writing it
+                //    unconditionally would drag the asset's freshness backwards
+                //    and make current data read as stale.
+                $linkedAsset = $tacticalAsset->asset_id
+                    ? Asset::find($tacticalAsset->asset_id)
+                    : null;
+
+                if ($linkedAsset) {
+                    $refresh = [];
+                    $otherRmmMaintains = $linkedAsset->ninja_id !== null || $linkedAsset->level_id !== null;
+                    $online = $this->rmmOnlineFromStatus($tacticalAsset->status);
+
+                    if ($online === true || ($online === false && ! $otherRmmMaintains)) {
+                        $refresh['rmm_online'] = $online;
+                    }
+
+                    $observed = $tacticalAsset->last_seen_at;
+
+                    if ($observed && (! $linkedAsset->last_seen_at || $observed->gt($linkedAsset->last_seen_at))) {
+                        $refresh['last_seen_at'] = $observed;
+                    }
+
+                    if ($agent['logged_username'] ?? null) {
+                        $refresh['last_user'] = $agent['logged_username'];
+                    }
+
+                    if ($refresh !== []) {
+                        Asset::where('id', $linkedAsset->id)->update($refresh);
+                    }
+                }
+            } catch (\Throwable $e) {
+                Log::warning('[TacticalSync] Agent skipped after a write failure', [
+                    'agent_id' => $agentId,
+                    'error' => $e->getMessage(),
+                ]);
+                $result->recordError("Agent {$agentId}: {$e->getMessage()}");
             }
         }
 
         // Mark agents not seen in this sync as offline (only on full sync, not client-scoped)
         if (! $clientId && $fetchSucceeded) {
-            $staleCount = TacticalAsset::whereNotIn('agent_id', $seenAgentIds)
-                ->where('status', '!=', 'offline')
-                ->update(['status' => 'offline', 'synced_at' => now()]);
+            $stale = TacticalAsset::whereNotIn('agent_id', $seenAgentIds)
+                ->where('status', '!=', 'offline');
+
+            // The AGENT snapshot goes offline — that row is exactly "what
+            // Tactical last told us about this agent_id", and Tactical stopped
+            // telling us. The linked ASSET is deliberately left alone: "absent
+            // from this run's payload" is UNKNOWN, not offline.
+            //
+            // The not-seen set is much wider than "the machine is off". It also
+            // holds every agent whose siteKey no longer maps to an operational
+            // client (skipped above by `continue`, before $seenAgentIds is
+            // appended — a site rename in Tactical, or a client leaving
+            // stage=Active, silently moves a whole fleet into it), and the stale
+            // row an agent REINSTALL leaves behind once the new agent_id cannot
+            // claim the hostname. Those are live, reporting machines.
+            //
+            // Writing rmm_online = false would state a flat operator-facing
+            // "Offline" for them and charge AssetHealthService's offline penalty
+            // indefinitely, with no way back: Asset::getStatusBadgeAttribute()
+            // has no staleness escape on the false branch (isRmmDataStale gates
+            // only a TRUE rmm_online), this sweep's `status != offline` filter
+            // fires once and never re-evaluates, and for a Tactical-only asset —
+            // the population this change creates — no other writer restores the
+            // flag. Keeping the last value we actually OBSERVED degrades
+            // honestly instead — but ONLY because every reader of rmm_online now
+            // gates a TRUE flag on last_seen_at freshness, which stops advancing
+            // here: Asset::getStatusBadgeAttribute() reads "Stale",
+            // AssetHealthService::connectivityFactor() drops the penalty-free
+            // "Online per RMM" and scores the machine off last_seen_at instead,
+            // and the Assets "offline" filter still finds it. Without all three
+            // this sweep would trade a false "Offline" for an equally unobserved,
+            // permanent "Online" — so a NEW reader of rmm_online must gate on
+            // Asset::isRmmDataStale() or this decision has to be revisited. The
+            // per-agent refresh above corrects the flag the moment the agent is
+            // seen again. Same psa-wedk principle the refresh cites, the other
+            // way round: never assert current truth we did not observe.
+            $staleCount = $stale->update(['status' => 'offline', 'synced_at' => now()]);
 
             if ($staleCount > 0) {
                 $result->deactivated += $staleCount;
@@ -331,32 +445,108 @@ class TacticalDeviceSyncService
 
         $lowerHostname = strtolower($hostname);
 
-        // Deterministic pick: an exact hostname match outranks a name-only match,
-        // and ties break on id. The OR below can match several live unlinked
-        // assets for one client, and a bare ->first() let the winner vary between
-        // runs — so which asset a device adopted was luck, not a rule.
-        $asset = Asset::where('client_id', $psaClientId)
-            ->whereNull('tactical_asset_id')
-            ->where(function ($q) use ($lowerHostname) {
-                $q->whereRaw('LOWER(hostname) = ?', [$lowerHostname])
-                    ->orWhereRaw('LOWER(name) = ?', [$lowerHostname]);
-            })
-            ->orderByRaw('CASE WHEN LOWER(hostname) = ? THEN 0 ELSE 1 END', [$lowerHostname])
-            ->orderBy('id')
-            ->first();
+        // Resolve-or-create is a check-then-write, and syncDevices() runs from
+        // BOTH the scheduler and the operator's "Sync devices" button — the
+        // command's withoutOverlapping() does not cover the web path. Two runs
+        // racing the same host would each see "no match" and each create an
+        // asset, forking one device into two billable, client-facing rows.
+        // There is no unique index on (client_id, hostname) to fall back on, so
+        // serialize per (client, hostname): the loser of the race re-runs the
+        // lookup inside the lock and LINKS to the row the winner just created.
+        $lock = Cache::lock('tactical-sync:asset:'.$psaClientId.':'.sha1($lowerHostname), 60);
 
-        if (! $asset) {
-            $asset = $this->createAssetFromAgent($psaClientId, $agent, $result);
+        try {
+            $acquired = $lock->get();
+        } catch (\Throwable $e) {
+            // Fail CLOSED and loudly: without the lock we cannot promise we are
+            // not duplicating a device, and a silent skip would stop discovery
+            // with nothing but a log line.
+            $result->recordError("Could not acquire the asset lock for {$hostname}: {$e->getMessage()}");
 
-            if (! $asset) {
-                return;
-            }
-
-            $result->details['assets_created'] = ($result->details['assets_created'] ?? 0) + 1;
+            return;
         }
 
-        $asset->update(['tactical_asset_id' => $tacticalAsset->id]);
-        $tacticalAsset->update(['asset_id' => $asset->id]);
+        if (! $acquired) {
+            Log::info('[TacticalSync] Another sync holds this host — deferring the link to the next run', [
+                'agent' => $hostname,
+                'client_id' => $psaClientId,
+            ]);
+
+            return;
+        }
+
+        $asset = null;
+        $created = false;
+
+        try {
+            // ONE transaction for the create AND both back-links. A failure
+            // between them (deploy restart, DB timeout, AssetObserver::created
+            // throwing) would otherwise leave assets.tactical_asset_id set with
+            // tactical_assets.asset_id NULL — a state no later run can heal,
+            // because the link query skips linked assets while the conflict
+            // query refuses creation on them. That is permanent invisibility
+            // needing a manual DB repair.
+            DB::transaction(function () use ($tacticalAsset, $psaClientId, $agent, $lowerHostname, $result, &$asset, &$created) {
+                // The DB-level half of the guarantee. Cache::lock above is a fast
+                // path, not a promise: CACHE_STORE=file here, and FileStore's
+                // lock is a read-then-write add() with a real race window, so two
+                // processes can both believe they hold it. With no unique index
+                // on (client_id, hostname) to fall back on, take a row lock on
+                // the client for the length of this transaction — the same
+                // pessimistic-locking idiom PersonService::merge() and
+                // InvoiceService use where a check-then-write must not double up.
+                // The loser enters only after the winner has COMMITTED, so the
+                // lookup below sees the winner's row and LINKS to it instead of
+                // forking one device into two billable, client-facing assets.
+                // Read through the query builder, not the model, so no global
+                // scope can drop the row and quietly skip the lock.
+                //
+                // On SQLite lockForUpdate compiles away — the engine serializes
+                // writers with its own database-level write lock inside the
+                // transaction instead, which yields the same ordering here.
+                DB::table('clients')->where('id', $psaClientId)->lockForUpdate()->first();
+
+                // Deterministic pick: an exact hostname match outranks a
+                // name-only match, and ties break on id. The OR below can match
+                // several live unlinked assets for one client, and a bare
+                // ->first() let the winner vary between runs — so which asset a
+                // device adopted was luck, not a rule.
+                $asset = Asset::where('client_id', $psaClientId)
+                    ->whereNull('tactical_asset_id')
+                    ->where(function ($q) use ($lowerHostname) {
+                        $q->whereRaw('LOWER(hostname) = ?', [$lowerHostname])
+                            ->orWhereRaw('LOWER(name) = ?', [$lowerHostname]);
+                    })
+                    ->orderByRaw('CASE WHEN LOWER(hostname) = ? THEN 0 ELSE 1 END', [$lowerHostname])
+                    ->orderBy('id')
+                    ->first();
+
+                if (! $asset) {
+                    $asset = $this->createAssetFromAgent($psaClientId, $agent, $result);
+
+                    if (! $asset) {
+                        return;
+                    }
+
+                    $created = true;
+                }
+
+                $asset->update(['tactical_asset_id' => $tacticalAsset->id]);
+                $tacticalAsset->update(['asset_id' => $asset->id]);
+            });
+        } finally {
+            $lock->release();
+        }
+
+        if (! $asset) {
+            return;
+        }
+
+        // Counters move only after the commit, so a rolled-back create can never
+        // be reported to the operator as an asset they can go find.
+        if ($created) {
+            $result->details['assets_created'] = ($result->details['assets_created'] ?? 0) + 1;
+        }
 
         if (! isset($result->details['linked'])) {
             $result->details['linked'] = 0;
@@ -432,8 +622,6 @@ class TacticalDeviceSyncService
         // normalization) instead of re-deriving them from the payload here.
         $mapped = $this->mapAgentToTacticalAsset($agent);
 
-        $localIps = $mapped['local_ips'] ?? null;
-
         $asset = Asset::create([
             'client_id' => $psaClientId,
             'name' => $hostname,
@@ -442,10 +630,16 @@ class TacticalDeviceSyncService
             'os' => $mapped['os'] ?? null,
             'serial_number' => $this->sanitizeSerialNumber($mapped['serial_number'] ?? null),
             'cpu' => $mapped['cpu'] ?? null,
-            'disk_summary' => $mapped['disk_summary'] ?? null,
-            'ip_address' => is_array($localIps) ? ($localIps[0] ?? null) : $localIps,
+            // tactical_assets.disk_summary is TEXT while assets.disk_summary is
+            // varchar(500), and mysql/mariadb run with 'strict' => true — a
+            // many-disk server would raise SQLSTATE 22001, not truncate.
+            'disk_summary' => $this->fit($mapped['disk_summary'] ?? null, 500),
+            'ip_address' => $this->primaryIpAddress($mapped['local_ips'] ?? null),
             'last_user' => $mapped['last_user'] ?? null,
-            'rmm_online' => ($mapped['status'] ?? null) === 'online',
+            // Same rule the per-run refresh applies: 'offline' and 'overdue' both
+            // seed false, and a status that is no observation of connectivity at
+            // all seeds NULL (unknown) rather than a hard false.
+            'rmm_online' => $this->rmmOnlineFromStatus($mapped['status'] ?? null),
             'last_seen_at' => $mapped['last_seen_at'] ?? null,
             'needs_reboot' => (bool) ($mapped['needs_reboot'] ?? false),
             'is_active' => true,
@@ -487,8 +681,18 @@ class TacticalDeviceSyncService
      * where hundreds of unrelated devices share a value. NULL is the honest
      * representation of "the hardware did not report a serial".
      *
+     * The retro sharpened the stakes: assets.serial_number is already a GLOBAL
+     * match key for OTHER syncs. NinjaSyncService and LevelSyncService each look
+     * an incoming device up by serial_number with NO client_id scope and then
+     * rewrite client_id/hostname/name on whatever they find, so seeding a
+     * placeholder at fleet scale hands one client's asset — with its tickets,
+     * contracts and notes — to another client's device. This is not a
+     * future-tense hazard; it is live cross-client contamination.
+     *
      * Matching is case- and space-insensitive because the same placeholder
-     * arrives punctuated differently across vendors ("O.E.M." vs "OEM").
+     * arrives punctuated differently across vendors ("O.E.M." vs "OEM"), and the
+     * list is a superset of NinjaSyncService::resolveSerial()'s junk values so
+     * the two discovery paths cannot disagree about what counts as a serial.
      */
     private function sanitizeSerialNumber(?string $serial): ?string
     {
@@ -507,6 +711,8 @@ class TacticalDeviceSyncService
         $placeholders = [
             'tobefilledbyoem',
             'defaultstring',
+            // From NinjaSyncService::resolveSerial() — kept in step deliberately.
+            'standard',
             'systemserialnumber',
             'chassisserialnumber',
             'baseboardserialnumber',
@@ -524,6 +730,113 @@ class TacticalDeviceSyncService
         ];
 
         return in_array($normalized, $placeholders, true) ? null : $trimmed;
+    }
+
+    /**
+     * Tactical's status vocabulary → rmm_online, or NULL when the status is not
+     * an observation of connectivity.
+     *
+     * 'online', 'offline' and 'overdue' are all observations of contact, and
+     * they come off ONE clock. Tactical's Agent.status reads 'offline' once
+     * last_seen is older than offline_time (default 4 min) but newer than
+     * overdue_time (default 30 min), and 'overdue' once it is older than BOTH.
+     * 'overdue' is therefore the longest out-of-contact state — a box powered
+     * off for a week reports 'overdue', not 'offline' — so it records the same
+     * hard false. Mapping it to NULL would rank Tactical's strongest
+     * down-evidence below the state it outranks, and because a machine that
+     * stays down never re-enters the 4–30 minute 'offline' window, nothing would
+     * ever write the false: the asset would sit under "unknown" and drop out of
+     * the Assets Offline filter permanently.
+     *
+     * Any value Tactical adds later is NOT assumed to be a contact observation
+     * and yields NULL — the honest "we do not know", which every reader already
+     * scores off last_seen_at instead. That matters because a false has no
+     * staleness escape anywhere (isRmmDataStale gates only a TRUE flag), so it
+     * is only ever written for a status we know means out of contact.
+     */
+    private function rmmOnlineFromStatus(?string $status): ?bool
+    {
+        return match ($status) {
+            'online' => true,
+            'offline', 'overdue' => false,
+            default => null,
+        };
+    }
+
+    /**
+     * Fit a value to an asset column's width. The agent snapshot's columns are
+     * wider than the asset's, and strict SQL mode errors rather than truncating.
+     */
+    private function fit(mixed $value, int $max): ?string
+    {
+        $value = is_string($value) ? $value : (is_scalar($value) ? (string) $value : '');
+
+        if ($value === '') {
+            return null;
+        }
+
+        return mb_substr($value, 0, $max);
+    }
+
+    /**
+     * The one address a technician can actually reach the machine on, or null.
+     *
+     * local_ips is every adapter the agent sees, in the order the agent listed
+     * them — a workstation with Hyper-V/VirtualBox/VPN adapters commonly reports
+     * a host-only address first, so element 0 is not "the IP". Loopback,
+     * link-local/APIPA and malformed entries are dropped, then:
+     *
+     *  - exactly one IPv4 survives → that is the address. IPv6 is on by default
+     *    on current Windows and macOS builds, so an ordinary dual-stack endpoint
+     *    reports an unambiguous IPv4 alongside one or more IPv6 addresses.
+     *    Requiring a single surviving candidate would blank the field for most
+     *    of the fleet — worse than the element-0 pick it replaced — and the
+     *    column is written at creation only, so it would never heal.
+     *  - several IPv4s survive → genuinely ambiguous (the virtual-adapter case
+     *    this method exists for), so the operator-visible field stays empty
+     *    rather than publishing an address that may not answer.
+     *  - no IPv4 at all → a single surviving IPv6 is the address; more than one
+     *    is ambiguous by the same rule.
+     *
+     * The full list remains on the tactical_assets snapshot either way.
+     *
+     * @param  array<int, mixed>|string|null  $localIps
+     */
+    private function primaryIpAddress(array|string|null $localIps): ?string
+    {
+        $candidates = [];
+
+        foreach (is_array($localIps) ? $localIps : [$localIps] as $ip) {
+            $ip = is_string($ip) ? trim($ip) : '';
+
+            if (filter_var($ip, FILTER_VALIDATE_IP) === false) {
+                continue;
+            }
+
+            $lower = strtolower($ip);
+
+            if ($lower === '0.0.0.0' || $lower === '::' || $lower === '::1'
+                || str_starts_with($lower, '127.')
+                || str_starts_with($lower, '169.254.')
+                || str_starts_with($lower, 'fe80:')) {
+                continue;
+            }
+
+            $candidates[$ip] = true;
+        }
+
+        $candidates = array_keys($candidates);
+
+        $ipv4 = array_values(array_filter(
+            $candidates,
+            static fn (string $ip): bool => filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false,
+        ));
+
+        if ($ipv4 !== []) {
+            return count($ipv4) === 1 ? $ipv4[0] : null;
+        }
+
+        return count($candidates) === 1 ? $candidates[0] : null;
     }
 
     /**
