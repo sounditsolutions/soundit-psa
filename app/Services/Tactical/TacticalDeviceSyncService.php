@@ -181,31 +181,44 @@ class TacticalDeviceSyncService
 
             $seenAgentIds[] = $agentId;
 
-            // Upsert into tactical_assets
-            $tacticalAsset = TacticalAsset::updateOrCreate(
-                ['agent_id' => $agentId],
-                $this->mapAgentToTacticalAsset($agent),
-            );
-
-            if ($tacticalAsset->wasRecentlyCreated) {
-                $result->created++;
-            } else {
-                $result->updated++;
-            }
-
-            // Offline→online flip for an agent with queued actions → run its queue.
-            if (isset($queuedAgentStatus[$agentId]) && $queuedAgentStatus[$agentId] !== 'online' && $tacticalAsset->status === 'online') {
-                SweepQueuedActionsForAgent::dispatch((string) $agentId);
-            }
-
-            // Link to PSA asset if not already linked — creating the asset when
-            // Tactical is the discovery source for this device.
+            // Per-agent isolation (mirrors NinjaSyncService's device loop, which
+            // wraps its ENTIRE per-device body): one agent's write failure must
+            // not abort the run. Without it a single bad row skips every later
+            // agent AND the not-seen→offline sweep below, so decommissioned
+            // agents keep reading "online".
             //
-            // Per-agent isolation (mirrors NinjaSyncService's device loop): one
-            // agent's write failure must not abort the run. Without it a single
-            // bad row skips every later agent AND the not-seen→offline sweep
-            // below, so decommissioned agents keep reading "online".
+            // The boundary opens HERE, ABOVE the tactical_assets upsert, not
+            // below it. That upsert is the widest write in the loop and the most
+            // likely thrower: unbounded vendor strings (cpu/os/graphics/
+            // make_model) land in varchar(255) columns under 'strict' => true,
+            // and it is a deadlock candidate whenever the scheduled run and the
+            // operator's "Sync devices" button touch the same agent_id. Leaving
+            // it outside would exempt the exact failure this isolation exists to
+            // contain.
+            //
+            // $seenAgentIds is appended BEFORE the try on purpose: the agent WAS
+            // in the payload, so our failure to write it must not let the sweep
+            // below call the machine offline.
             try {
+                // Upsert into tactical_assets
+                $tacticalAsset = TacticalAsset::updateOrCreate(
+                    ['agent_id' => $agentId],
+                    $this->mapAgentToTacticalAsset($agent),
+                );
+
+                if ($tacticalAsset->wasRecentlyCreated) {
+                    $result->created++;
+                } else {
+                    $result->updated++;
+                }
+
+                // Offline→online flip for an agent with queued actions → run its queue.
+                if (isset($queuedAgentStatus[$agentId]) && $queuedAgentStatus[$agentId] !== 'online' && $tacticalAsset->status === 'online') {
+                    SweepQueuedActionsForAgent::dispatch((string) $agentId);
+                }
+
+                // Link to PSA asset if not already linked — creating the asset
+                // when Tactical is the discovery source for this device.
                 if (! $tacticalAsset->asset_id) {
                     $this->linkOrCreateAsset($tacticalAsset, $psaClientId, $agent, $result);
                 }
@@ -243,16 +256,32 @@ class TacticalDeviceSyncService
             $stale = TacticalAsset::whereNotIn('agent_id', $seenAgentIds)
                 ->where('status', '!=', 'offline');
 
-            // Capture the linked assets BEFORE flipping the agents: their
-            // rmm_online has to go offline with the agent, or the Assets list
-            // keeps asserting "Online per RMM" for a device this run never saw.
-            $staleAssetIds = (clone $stale)->whereNotNull('asset_id')->pluck('asset_id')->all();
-
+            // The AGENT snapshot goes offline — that row is exactly "what
+            // Tactical last told us about this agent_id", and Tactical stopped
+            // telling us. The linked ASSET is deliberately left alone: "absent
+            // from this run's payload" is UNKNOWN, not offline.
+            //
+            // The not-seen set is much wider than "the machine is off". It also
+            // holds every agent whose siteKey no longer maps to an operational
+            // client (skipped above by `continue`, before $seenAgentIds is
+            // appended — a site rename in Tactical, or a client leaving
+            // stage=Active, silently moves a whole fleet into it), and the stale
+            // row an agent REINSTALL leaves behind once the new agent_id cannot
+            // claim the hostname. Those are live, reporting machines.
+            //
+            // Writing rmm_online = false would state a flat operator-facing
+            // "Offline" for them and charge AssetHealthService's offline penalty
+            // indefinitely, with no way back: Asset::getStatusBadgeAttribute()
+            // has no staleness escape on the false branch (isRmmDataStale gates
+            // only a TRUE rmm_online), this sweep's `status != offline` filter
+            // fires once and never re-evaluates, and for a Tactical-only asset —
+            // the population this change creates — no other writer restores the
+            // flag. Keeping the last value we actually OBSERVED degrades
+            // honestly instead: last_seen_at stops advancing, so the badge reads
+            // "Stale", and the per-agent refresh above corrects it the moment
+            // the agent is seen again. Same psa-wedk principle the refresh cites,
+            // the other way round: never assert current truth we did not observe.
             $staleCount = $stale->update(['status' => 'offline', 'synced_at' => now()]);
-
-            if (! empty($staleAssetIds)) {
-                Asset::whereIn('id', $staleAssetIds)->update(['rmm_online' => false]);
-            }
 
             if ($staleCount > 0) {
                 $result->deactivated += $staleCount;
@@ -406,6 +435,25 @@ class TacticalDeviceSyncService
             // query refuses creation on them. That is permanent invisibility
             // needing a manual DB repair.
             DB::transaction(function () use ($tacticalAsset, $psaClientId, $agent, $lowerHostname, &$asset, &$created) {
+                // The DB-level half of the guarantee, and the half that actually
+                // holds. Cache::lock above is a per-PROCESS fast path only: this
+                // deployment runs the file cache driver, so the web container's
+                // lock file and the scheduler container's are different files and
+                // the operator's "Sync devices" click cannot see the cron run's
+                // lock (nor can the command's withoutOverlapping, which covers
+                // only the scheduled path). With no unique index on
+                // (client_id, hostname) to fall back on, take a real row lock on
+                // the client — the same pessimistic-locking idiom
+                // CippDeviceSyncService and CippContactSyncService use for this
+                // exact race. Held for the length of this transaction, it is what
+                // serializes the resolve-or-create ACROSS processes: the loser
+                // enters only after the winner has COMMITTED, so the lookup below
+                // sees the winner's row and LINKS to it instead of forking one
+                // device into two billable, client-facing assets. Read through
+                // the query builder, not the model, so no global scope can drop
+                // the row and quietly skip the lock.
+                DB::table('clients')->where('id', $psaClientId)->lockForUpdate()->first();
+
                 $asset = Asset::where('client_id', $psaClientId)
                     ->whereNull('tactical_asset_id')
                     ->where(function ($q) use ($lowerHostname) {

@@ -258,15 +258,33 @@ class TacticalDeviceSyncCreatesAssetsTest extends TestCase
         $this->assertTrue((bool) Asset::where('hostname', 'NEWBOX')->value('rmm_online'));
     }
 
-    public function test_agent_missing_from_the_payload_takes_its_asset_offline(): void
+    public function test_agent_missing_from_the_payload_is_not_asserted_offline(): void
     {
         $this->mappedClient();
 
         $this->syncService([$this->agent()])->syncDevices();
         $this->assertTrue((bool) Asset::where('hostname', 'NEWBOX')->value('rmm_online'));
 
+        // The agent is gone from the payload. That covers far more than "the box
+        // is off": a Tactical site rename or a client leaving operational scope
+        // unmaps a whole fleet, and an agent reinstall strands the old row under
+        // its old agent_id. "Not covered by this run" is UNKNOWN, not offline —
+        // the agent snapshot goes offline (it records what Tactical told us), but
+        // the operator-facing asset keeps the last state we actually observed.
         $this->syncService([])->syncDevices();
 
-        $this->assertFalse((bool) Asset::where('hostname', 'NEWBOX')->value('rmm_online'));
+        $this->assertSame('offline', TacticalAsset::where('agent_id', 'AGENT-NEW')->value('status'));
+
+        $asset = Asset::where('hostname', 'NEWBOX')->firstOrFail();
+
+        $this->assertTrue(
+            (bool) $asset->rmm_online,
+            'an unseen agent must not assert a hard Offline the sweep can never undo',
+        );
+        $this->assertNotSame(
+            'Offline',
+            $asset->status_badge,
+            'the badge must degrade to Stale, not claim a machine we never observed is down',
+        );
     }
 }
