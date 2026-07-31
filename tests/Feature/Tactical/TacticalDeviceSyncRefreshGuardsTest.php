@@ -88,7 +88,13 @@ class TacticalDeviceSyncRefreshGuardsTest extends TestCase
         // address a technician can reach the machine on.
         $this->syncService([$this->agent(['local_ips' => '172.28.144.1, 192.168.0.42'])])->syncDevices();
 
-        $this->assertNull(Asset::where('hostname', 'NEWBOX')->value('ip_address'));
+        // Read the ROW, not the column: value() returns null for a missing row
+        // too, so asserting the column alone would pass just as happily if the
+        // sync stopped creating the asset altogether — and the ambiguity rule
+        // this test exists to pin would go untested while staying green.
+        $asset = Asset::where('hostname', 'NEWBOX')->first();
+        $this->assertNotNull($asset, 'the sync must still create the asset — an absent row would satisfy the null check below for the wrong reason');
+        $this->assertNull($asset->ip_address);
     }
 
     public function test_an_ipv6_only_endpoint_publishes_its_single_address(): void
@@ -111,9 +117,10 @@ class TacticalDeviceSyncRefreshGuardsTest extends TestCase
     {
         $this->mappedClient();
 
-        $this->assertNotNull(
-            Asset::query()->whereNotNull('id')->count() >= 0 ? true : null,
-        );
+        // The fixture must not already carry the asset this test is about to
+        // assert on, or the "seeded" read below could be describing a row this
+        // sync never touched.
+        $this->assertSame(0, Asset::where('hostname', 'NEWBOX')->count());
 
         $this->syncService([$this->agent(['status' => 'overdue'])])->syncDevices();
 
@@ -140,8 +147,14 @@ class TacticalDeviceSyncRefreshGuardsTest extends TestCase
 
         $this->syncService([$this->agent(['status' => 'some_future_state'])])->syncDevices();
 
+        // Existence first: an unrecognised status must still ONBOARD the device
+        // and merely decline to claim connectivity for it. Asserting the null
+        // column alone would also pass if the sync had skipped the agent
+        // entirely — which is the opposite outcome, and a regression.
+        $asset = Asset::where('hostname', 'NEWBOX')->first();
+        $this->assertNotNull($asset, 'an unrecognised status must not stop the device being discovered');
         $this->assertNull(
-            Asset::where('hostname', 'NEWBOX')->value('rmm_online'),
+            $asset->rmm_online,
             'a status the sync does not understand must seed unknown, not a hard false',
         );
     }
