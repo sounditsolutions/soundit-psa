@@ -78,17 +78,24 @@ class SecretScan extends Command
 
         foreach ($commits as $sha) {
             // --root so the very first commit of a repo (no parent) is diffed too.
-            // -m so a MERGE commit is diffed against each parent: without it git
-            // prints NOTHING for a merge, so a secret introduced by the merge
-            // itself (a conflict resolution) would never be inspected at all.
+            // -c (COMBINED diff) so a MERGE commit is diffed at all: without it git
+            // prints NOTHING for a merge, so a secret introduced by the merge itself
+            // (a conflict resolution) would never be inspected. NOT -m: -m emits the
+            // merge's diff against EACH parent, i.e. everything either side contributed,
+            // so a routine `git merge origin/main` would re-list and re-read every path
+            // main touched as "introduced" by this push — inflating the count and able to
+            // block on already-public content. -c lists only what differs from ALL
+            // parents: exactly "introduced by the merge itself". A combined diff ignores
+            // --diff-filter, so a path the merge DELETES can be listed here; the blob
+            // read below tells that apart from a genuinely degraded read.
             $dt = Process::path($this->repoPath())->run(
-                ['git', 'diff-tree', '--root', '--no-commit-id', '--name-only', '-r', '-m', '--diff-filter=ACMR', $sha]
+                ['git', 'diff-tree', '--root', '--no-commit-id', '--name-only', '-r', '-c', '--diff-filter=ACMR', $sha]
             );
             if (! $dt->successful()) {
                 return $this->failClosed("git diff-tree {$sha}", $dt->errorOutput());
             }
 
-            // -m lists a path once per parent for a merge — inspect it once.
+            // Defensive: never inspect the same path twice for one commit.
             foreach (array_unique($this->lines($dt->output())) as $path) {
                 $checked++;
                 $reason = SecretScanner::dangerousReason($path);
@@ -97,6 +104,21 @@ class SecretScan extends Command
                     // Read the blob AS OF this commit — works even if a later commit deletes it.
                     $show = Process::path($this->repoPath())->run(['git', 'show', "{$sha}:{$path}"]);
                     if (! $show->successful()) {
+                        // A combined (-c) merge diff is not subject to --diff-filter, so a
+                        // path this commit DELETES can be listed with no blob to read. Ask
+                        // the tree: absent at this commit means nothing was introduced, so
+                        // skip it (blocking a push on a deletion is the false positive that
+                        // gets a guard switched off). Anything else — an ls-tree error, or a
+                        // path that IS in the tree but will not read — still fails closed.
+                        $inTree = Process::path($this->repoPath())->run(
+                            ['git', 'ls-tree', '--name-only', '-r', $sha, '--', $path]
+                        );
+                        if ($inTree->successful() && trim($inTree->output()) === '') {
+                            $checked--;
+
+                            continue;
+                        }
+
                         // Cannot verify an introduced blob -> fail closed, do not skip.
                         $offenders["{$sha} {$path}"] = 'unreadable introduced blob (cannot verify — failing closed)';
 
