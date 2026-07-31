@@ -256,6 +256,31 @@ class McpStaffController extends Controller
     ];
 
     /**
+     * Tools whose ABSENT client_id means "sweep the whole fleet", so collapsing a
+     * malformed client_id to null hands the caller the WIDEST read the tool can
+     * perform — cross-tenant rows for a typo'd id. For these, a client_id that is
+     * PRESENT but does not parse as a positive integer is REFUSED, never silently
+     * dropped.
+     *
+     * Found by Chet 2026-07-31; scope of the fix ruled by Jeeves the same day.
+     * Note what is NOT being done here: an omitted client_id still means a
+     * fleet-wide sweep. Requiring an explicit opt-in for that was considered and
+     * declined — it is the documented shape of every sibling cross-client read,
+     * the breadth is already gated by an explicit token grant, and the finder
+     * builds its contradiction maps fleet-wide regardless of scope, so the
+     * opt-in would have gated the output shape rather than the query. The hazard
+     * worth closing is SUPPLYING a scope and silently getting the fleet.
+     *
+     * Deliberately narrow: list_email_items / list_phone_calls / list_invoices
+     * carry the same optional-filter shape and belong here too, but widening the
+     * boundary contract for tools outside this branch is a separate scope call.
+     * Tracked, not smuggled in here.
+     */
+    private const SCOPE_WIDENING_READ_TOOLS = [
+        'list_mislinked_assets',
+    ];
+
+    /**
      * Intake MANAGE surface (W2 Task 2/3) — the 5 front-door verbs that act on
      * unresolved email/call intake items, dispatched through
      * StaffPsaActionToolExecutor. None carry client_id; scope lives on the
@@ -549,8 +574,23 @@ class McpStaffController extends Controller
         //
         // Isolation control (spec §6): only a positive, numeric client_id is
         // honored. Anything malformed — 0, negative, non-numeric "garbage" —
-        // collapses to null (GLOBAL-only scope), never a `client_id = 0` query.
+        // collapses to null, never a `client_id = 0` query.
+        //
+        // That collapse is a SAFETY property only because, for almost every tool
+        // here, null means GLOBAL-only scope — strictly less reach than the
+        // client scope the caller fumbled. Silently narrowing is a fine way to
+        // fail.
+        //
+        // It inverts for a fleet-capable cross-client read
+        // (SCOPE_WIDENING_READ_TOOLS): there null means FLEET-WIDE, strictly
+        // MORE reach. Same rule, opposite consequence — a caller who typo'd
+        // `client_id: "07"` asking about one client would be handed every
+        // client's rows, and for those tools a silently widened read IS a
+        // cross-tenant read. So a client_id that is PRESENT but malformed is
+        // refused below, naming the rejected value, rather than collapsed.
+        // An ABSENT client_id still means a deliberate fleet-wide sweep.
         $hasClientIdArgument = array_key_exists('client_id', $arguments);
+        $rawClientIdArgument = $arguments['client_id'] ?? null;
         $ticketScopedPsaTool = $this->isPsaTicketScopedTool((string) $name);
         $clientId = $this->positiveIntegerArgument($arguments['client_id'] ?? null);
         unset($arguments['client_id']);
@@ -563,6 +603,26 @@ class McpStaffController extends Controller
         }
         if ($this->psaRecordsRequiresClientId((string) $name) && $clientId !== null) {
             $auditArguments['client_id'] = $clientId;
+        }
+
+        // A present-but-malformed scope on a fleet-capable read is a caller error,
+        // and the failure mode of guessing is cross-tenant disclosure. Refuse and
+        // name the rejected value rather than returning the whole fleet.
+        if ($this->isScopeWideningRead((string) $name) && $hasClientIdArgument && $clientId === null) {
+            $message = "client_id {$this->renderRejectedArgument($rawClientIdArgument)} is not a positive integer. "
+                ."{$name} refuses a malformed scope rather than widening the sweep fleet-wide. "
+                .'Pass a positive integer client_id to sweep one client, or OMIT client_id entirely '
+                .'to sweep the fleet on purpose.';
+            $this->audit('tools/call', (string) $name, $auditArguments, 'error', $message, $start, $request);
+
+            return response()->json([
+                'jsonrpc' => '2.0',
+                'id' => $id,
+                'result' => [
+                    'content' => [['type' => 'text', 'text' => $message]],
+                    'isError' => true,
+                ],
+            ]);
         }
 
         if ($this->isWikiGlobalScopeWrite((string) $name, $arguments) && $hasClientIdArgument) {
@@ -2060,6 +2120,38 @@ class McpStaffController extends Controller
     private function isPsaTicketScopedTool(string $toolName): bool
     {
         return in_array($toolName, self::PSA_TICKET_SCOPED_TOOLS, true);
+    }
+
+    private function isScopeWideningRead(string $toolName): bool
+    {
+        return in_array($toolName, self::SCOPE_WIDENING_READ_TOOLS, true);
+    }
+
+    /**
+     * Echo the rejected client_id back so the caller can see WHICH value was
+     * refused (a typo is invisible otherwise). Scalars only, quoted, truncated:
+     * the value is caller-supplied and the message is rendered as text on
+     * surfaces that are not all trusted to treat it as data.
+     */
+    private function renderRejectedArgument(mixed $value): string
+    {
+        if ($value === null) {
+            return 'null';
+        }
+
+        if (is_bool($value)) {
+            return $value ? 'true' : 'false';
+        }
+
+        if (is_int($value) || is_float($value)) {
+            return (string) json_encode($value);
+        }
+
+        if (is_string($value)) {
+            return '"'.mb_substr(preg_replace('/[^\P{C}]|["\\\\]/u', '', $value) ?? '', 0, 40).'"';
+        }
+
+        return '('.gettype($value).')';
     }
 
     private function ticketClientIdForArguments(array $arguments): ?int
