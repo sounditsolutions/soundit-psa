@@ -379,13 +379,18 @@ class MislinkedAssetFinder
 
     /**
      * Learn each client's dominant hostname prefixes — a prefix is DOMINANT for a
-     * client when at least LEARNED_PREFIX_MIN of that client's assets share it —
-     * then keep only prefixes that are dominant for exactly one client. A prefix
-     * dominant for 2+ clients (DESKTOP-, LAPTOP-, WIN-, …) is generic noise, not a
-     * client fingerprint, so no client owns it. Throughout this class the OWNER is
-     * the client — the sense $prefixOwner, $owner and owner_asset_count all carry.
+     * client when at least LEARNED_PREFIX_MIN of that client's assets IN $universe
+     * share it — then keep only prefixes that are dominant for exactly one client. A
+     * prefix dominant for 2+ clients (DESKTOP-, LAPTOP-, WIN-, …) is generic noise,
+     * not a client fingerprint, so no client owns it. Throughout this class the OWNER
+     * is the client — the sense $prefixOwner, $owner and owner_asset_count all carry.
      * That distinctness filter shapes slot [0] alone; slot [1] is built before it
      * runs.
+     *
+     * Every count here is over $universe alone, never the client's full asset list:
+     * find() builds it with loadUniverse($includeInactive), which omits is_active =
+     * false rows unless the caller opts in, so a client's inactive assets raise no
+     * count — and owner_asset_count can read lower than that client's true total.
      *
      * Returns a two-element tuple:
      * [0] prefix => client_id of the one client for which that prefix is dominant,
@@ -393,7 +398,7 @@ class MislinkedAssetFinder
      *     client is ABSENT from this map — the key is omitted, not present with a
      *     null value.
      * [1] client_id => [prefix => asset count], every prefix that client holds
-     *     dominantly, counted over the assets belonging to that client. This slot
+     *     dominantly, counted over that client's assets in $universe. This slot
      *     is pre-distinctness: generic multi-client prefixes, owned by no one, are
      *     still present here.
      *
