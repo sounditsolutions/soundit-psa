@@ -4,6 +4,7 @@ namespace Tests\Feature\Settings;
 
 use App\Models\Setting;
 use App\Models\User;
+use App\Support\McpConfig;
 use App\Support\TechnicianConfig;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
@@ -390,6 +391,67 @@ class TechnicianIntegrationToggleTest extends TestCase
 
         // ...and the widened predicate is still a real test of configuration, not a
         // constant true: one channel clears it in exactly the same state.
+        Setting::setValue('technician_notify_email', 'ops@example.com');
+
+        $this->assertFalse(TechnicianConfig::notificationsUndeliverable());
+
+        $this->actingAs($this->user)
+            ->get(route('settings.integrations'))
+            ->assertOk()
+            ->assertDontSee('no delivery channel');
+    }
+
+    /**
+     * psa-tmdw: the THIRD notify() plane — the staged-action APPROVAL notification
+     * (NotifyStagedActionAwaitingApproval, dispatched by TechnicianRunObserver on every
+     * transition into AwaitingApproval). Staging is not gated on the Technician toggles:
+     * the staff Assistant stages held actions under assistant_enabled, and Chet stages
+     * over staff MCP under a token grant plus the kill switch alone. With every
+     * Technician/auto-review toggle OFF and no channel, notify() still fires and drops
+     * into nothing, so the panel must warn rather than give a false all-clear.
+     *
+     * Each arm pins the DISTINCTION, not merely "a warning appeared": with the predicate
+     * reverted to the emergencyBackstop-OR-auto-review union both arms fail at their
+     * assertTrue (and at assertSee), because nothing else in this state is on.
+     */
+    public function test_notify_panel_warns_when_only_the_staged_approval_plane_is_live(): void
+    {
+        // Every other plane explicitly OFF — no default is left to carry this test.
+        Setting::setValue('technician_enabled', '0');
+        Setting::setValue('technician_emergency_enabled', '0');
+        Setting::setValue('triage_enabled', '0');
+        Setting::setValue('triage_auto_review', '0');
+        Setting::setValue('agent_enabled', '0');
+        Setting::setValue('assistant_enabled', '0');
+
+        // Baseline: nothing can stage, so no warning (the predicate is not constant true).
+        $this->assertFalse(TechnicianConfig::notificationsUndeliverable());
+
+        // Arm 1 — the staff Assistant can stage a held action for approval.
+        Setting::setValue('assistant_enabled', '1');
+
+        $this->assertTrue(TechnicianConfig::notificationsUndeliverable());
+
+        $this->actingAs($this->user)
+            ->get(route('settings.integrations'))
+            ->assertOk()
+            ->assertSee('no delivery channel');
+
+        // Arm 2 — Assistant off again, but a staff MCP token exists: Chet stages
+        // approvals with every AI toggle on this panel off.
+        Setting::setValue('assistant_enabled', '0');
+        $this->assertFalse(TechnicianConfig::notificationsUndeliverable());
+
+        McpConfig::mintDraftToken('chet');
+
+        $this->assertTrue(TechnicianConfig::notificationsUndeliverable());
+
+        $this->actingAs($this->user)
+            ->get(route('settings.integrations'))
+            ->assertOk()
+            ->assertSee('no delivery channel');
+
+        // ...and one channel clears it in exactly the same state.
         Setting::setValue('technician_notify_email', 'ops@example.com');
 
         $this->assertFalse(TechnicianConfig::notificationsUndeliverable());

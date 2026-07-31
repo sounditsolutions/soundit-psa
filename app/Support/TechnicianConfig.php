@@ -217,7 +217,7 @@ class TechnicianConfig
 
     /**
      * True when a Technician notification path can fire but has nowhere to deliver
-     * (psa-tmdw). TWO independent planes reach OperatorNotifier::notify(), and the
+     * (psa-tmdw). THREE independent planes reach OperatorNotifier::notify(), and the
      * predicate is their UNION — emergencyBackstopEnabled() alone is NOT "a
      * notification could be sent":
      *
@@ -231,6 +231,14 @@ class TechnicianConfig
      *      still fires with the technician subsystem fully OFF (psa-lqlu). The
      *      agent's own operator notifications ride the same plane. Omitting it gave
      *      a false all-clear in exactly the state the stalled-agent alert exists for.
+     *   3. stagedApprovalNotificationsPossible() — the staged-action APPROVAL
+     *      notification (NotifyStagedActionAwaitingApproval, dispatched by
+     *      TechnicianRunObserver on EVERY transition into AwaitingApproval). Staging is
+     *      NOT gated on the Technician toggles: the staff MCP executors stage under a
+     *      token grant plus the kill switch alone, and the staff Assistant stages held
+     *      actions under assistant_enabled — both reachable with the technician
+     *      subsystem and auto-review fully OFF. Omitting this plane gave a false
+     *      all-clear while approval requests dropped into nothing.
      *
      * If neither the Teams webhook nor the notify email is set, every such
      * notification is silently dropped. Drives the operator-facing warning on the
@@ -239,11 +247,42 @@ class TechnicianConfig
      */
     public static function notificationsUndeliverable(): bool
     {
-        if (! self::emergencyBackstopEnabled() && ! TriageConfig::autoReviewEnabled()) {
+        if (! self::emergencyBackstopEnabled()
+            && ! TriageConfig::autoReviewEnabled()
+            && ! self::stagedApprovalNotificationsPossible()) {
             return false;
         }
 
         return self::teamsWebhookUrl() === null && self::notifyEmail() === null;
+    }
+
+    /**
+     * Plane 3 of notificationsUndeliverable(): can anything stage a TechnicianRun into
+     * AwaitingApproval — i.e. can NotifyStagedActionAwaitingApproval fire at all?
+     *
+     * Staging is deliberately NOT gated on the Technician toggles. Chet stages over
+     * staff MCP under a token grant plus the kill switch alone (no Staff*ToolExecutor
+     * consults enabled()/emergencyBackstopEnabled()), the staff Assistant stages held
+     * actions under assistant_enabled, and the agent/triage writers (SendReplyTool,
+     * ProposeCloseTool, DraftPipeline, IntakeRecorder) stage under their own switches.
+     * Any of those live means notify() can fire, so any of them with no channel
+     * configured is a silent drop the panel must warn about.
+     *
+     * Fail LOUD on unknown: if a gate cannot be read (an undecryptable token setting, a
+     * missing table on a half-migrated deploy) we cannot prove the plane is quiet, and
+     * resolving that to "no notification can fire" is the direction that hides an
+     * outage. Answer true and let the channel check decide.
+     */
+    private static function stagedApprovalNotificationsPossible(): bool
+    {
+        try {
+            return McpConfig::isStaffEnabled()
+                || AssistantConfig::operatorIntent()
+                || AgentConfig::enabled()
+                || TriageConfig::isEnabled();
+        } catch (\Throwable) {
+            return true;
+        }
     }
 
     /**
