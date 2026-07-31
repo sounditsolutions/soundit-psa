@@ -105,13 +105,24 @@ Schedule::command('tactical:reconcile-alerts')
     ->runInBackground()
     ->when(fn () => \App\Support\TacticalConfig::isConfigured());
 
-// Tactical RMM device sync — daily (only if configured + clients mapped)
+// Tactical RMM device sync — every tactical_sync_interval_seconds (default 300),
+// only if configured + clients mapped. Registered everyMinute with a deferred
+// throttle, the same shape as the offline-queue sweep below: the interval Setting
+// is read at run time, never at schedule registration, so `php artisan` boots stay
+// DB-free.
+//
+// This was dailyAt('05:32'), which left Tactical the only integration on a daily
+// cadence and gave the 24h RMM staleness window no margin at all — a live machine
+// could read Offline on nothing but sync lag. deviceSyncDue() goes LAST in the
+// chain: a true result stamps the cache and consumes the tick, so it must not run
+// ahead of the guards that decide whether the sync happens at all.
 Schedule::command('tactical:sync-devices')
-    ->dailyAt('05:32')
+    ->everyMinute()
     ->withoutOverlapping()
     ->runInBackground()
     ->when(fn () => \App\Support\TacticalConfig::isConfigured()
-        && \App\Models\Client::whereNotNull('tactical_site_id')->exists());
+        && \App\Models\Client::whereNotNull('tactical_site_id')->exists()
+        && \App\Support\TacticalConfig::deviceSyncDue());
 
 // Tactical RMM script library sync — daily (only if configured)
 Schedule::command('tactical:sync-scripts')
