@@ -275,4 +275,66 @@ class ProspectCaptureTest extends TestCase
         $response->assertSessionMissing('dedup_person_id');
         $this->assertDatabaseMissing('clients', ['name' => 'New Client Name']);
     }
+
+    /**
+     * The ambiguity guard must be evaluated for the WHOLE match set, not for
+     * whichever row sorted first. `people.client_id` is nullable and Client
+     * soft-deletes, so a top-ranked match whose client no longer loads must not
+     * let an ambiguous number fall through to duplicate creation: the live
+     * second owner (Rival Ltd) still owns this number.
+     */
+    public function test_confirm_dedup_withholds_when_the_top_ranked_match_has_no_loadable_client(): void
+    {
+        $user = User::factory()->create();
+
+        $archived = Client::factory()->create(['name' => 'Archived Corp', 'stage' => ClientStage::Active->value]);
+        $rival = Client::factory()->create(['name' => 'Rival Ltd', 'stage' => ClientStage::Active->value]);
+
+        // Sorts first (is_primary), but its client is soft-deleted below, so
+        // `$person->client` resolves to null.
+        Person::create([
+            'client_id' => $archived->id,
+            'person_type' => \App\Enums\PersonType::User,
+            'first_name' => 'Jane',
+            'last_name' => 'Smith',
+            'phone' => PhoneNumber::normalize('+15550102030'),
+            'is_active' => true,
+            'is_primary' => true,
+            'portal_enabled' => false,
+        ]);
+
+        $livePerson = Person::create([
+            'client_id' => $rival->id,
+            'person_type' => \App\Enums\PersonType::User,
+            'first_name' => 'Bob',
+            'last_name' => 'Jones',
+            'phone' => PhoneNumber::normalize('+15550102030'),
+            'is_active' => true,
+            'portal_enabled' => false,
+        ]);
+
+        $archived->delete();
+
+        $call = $this->makeCall(['client_id' => null, 'from_number' => '+15550102030']);
+
+        $response = $this->actingAs($user)->post(route('prospects.store'), [
+            'phone_call_id' => $call->id,
+            'name' => 'New Client Name',
+        ]);
+
+        // Without the fix the controller falls straight through to provisioning.
+        $response->assertRedirect(route('calls.show', $call));
+        $this->assertDatabaseMissing('clients', ['name' => 'New Client Name']);
+
+        $call->refresh();
+        $this->assertNull($call->client_id);
+
+        // Warned against the live owner, keyed to this call, with no one-click
+        // attach offered while the match set is ambiguous.
+        $response->assertSessionHas('dedup_call_id', $call->id);
+        $response->assertSessionHas('dedup_client_id', $rival->id);
+        $response->assertSessionHas('dedup_client_name', 'Rival Ltd');
+        $response->assertSessionMissing('dedup_person_id');
+        $this->assertNotNull($livePerson->id);
+    }
 }

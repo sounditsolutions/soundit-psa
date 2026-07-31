@@ -167,7 +167,15 @@ class ProspectController extends Controller
         // instead of creating a duplicate — unless staff explicitly confirmed.
         if (! ($validated['confirm_new'] ?? null)) {
             $matches = $this->intake->matchPeopleByNumber((string) $call->from_number);
-            $matchedPerson = $matches->first();
+            // Resolve the dedup target from the first match whose client
+            // actually loads. `people.client_id` is nullable and Client
+            // soft-deletes, so keying off `$matches->first()` alone let a
+            // top-ranked row with no loadable client skip this whole block —
+            // including the ambiguity withholding below — and provision a
+            // duplicate for a number a live client still owns. Ambiguity stays
+            // a property of the WHOLE match set (`$matches->count()`), not of
+            // whichever row happened to sort first.
+            $matchedPerson = $matches->first(fn ($person) => $person->client !== null);
             $existing = $matchedPerson?->client;
 
             if ($existing !== null) {
