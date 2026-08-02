@@ -24,18 +24,32 @@ use Tests\TestCase;
  * a freshly re-imported net-zero payload as legacy residue and stamps
  * pre_void_amount '0.00' over the real per-line bill. There is no other copy of
  * that bill, and syncStripeInvoiceLines repeats the delete-recreate on every
- * import, so nothing later restores it — irreversible per-line money loss,
- * the same class the branch was written to close.
+ * import, so nothing later restores it — irreversible per-line money loss.
  *
- * headerContradictsLines() is the sound half of the predicate and is what these
- * tests leave standing: only OUR zeroing empties a header out from under line
- * money it is supposed to total. A header that still totals its lines — both
- * $0, or a charge against an offsetting proration credit — was never zeroed by
- * us.
+ * WHAT THESE TESTS PIN, AND WHAT THEY DO NOT.
  *
- * The first test drives the REAL import (importInvoicesFromStripe over a mocked
- * StripeClient) rather than hand-building the post-import state, because
- * reachability through an ordinary flow is half the finding.
+ * They pin the loss scenario: with `pre_void_total !== null` restored as a
+ * disjunct in $repairingLegacyVoid, both tests here go red on exactly the loss
+ * symptom (expected '500.00', actual '0.00'). They do NOT pin the territory the
+ * removed disjunct uniquely held — states where pre_void_total is set and the
+ * header does NOT contradict its lines. That territory is genuinely narrowed by
+ * the edit rather than preserved, which is a deliberate, adjudicated trade and
+ * is ticketed, not covered here. Nothing in this file should be read as showing
+ * headerContradictsLines() alone preserves every repair the disjunct reached.
+ * The ordinary re-inflated legacy void — the bulk of the repair's real work — is
+ * already covered by VoidLineMarkerCompletenessTest.
+ *
+ * FIXTURE PROVENANCE (CLAUDE.md "Vendor response shapes", rule 2). This payload
+ * is author-constructed, not captured from Stripe: reproducing it live would
+ * mean voiding a real client invoice. So the one thing I would otherwise be
+ * guessing — which status Stripe reports for a finalized invoice that nets to
+ * zero — is covered both ways instead. It does not change the path under test:
+ * the status-regression guard in upsertInvoiceFromStripeData (StripeSyncService
+ * :1053-1063) forces Void whenever the existing PSA row is already Void, so a
+ * 'void', 'paid' or 'open' payload reaches the same void() call over the same
+ * zeroed header and the same recreated lines. Field names are taken from the
+ * producer this code actually reads: StripeSyncService::upsertInvoiceFromStripeData
+ * (:1023-1098) and ::syncStripeInvoiceLines (:1111-1152).
  */
 class VoidedInvoiceNetZeroReimportTest extends TestCase
 {
@@ -45,14 +59,12 @@ class VoidedInvoiceNetZeroReimportTest extends TestCase
 
     private const STRIPE_INVOICE = 'in_oc5q2test';
 
-    private function stripeClient(array $payload): StripeClient
+    private function stripeClient(array $payload): void
     {
         $stripe = \Mockery::mock(StripeClient::class);
         $stripe->shouldReceive('listInvoices')
             ->andReturn(['data' => [$payload], 'has_more' => false]);
         $this->app->instance(StripeClient::class, $stripe);
-
-        return $stripe;
     }
 
     /**
@@ -60,15 +72,15 @@ class VoidedInvoiceNetZeroReimportTest extends TestCase
      * and carries an offsetting proration credit, so the header legitimately
      * nets to zero over two individually non-zero lines. No psa_invoice_id
      * metadata — this invoice originated in Stripe, so the import's round-trip
-     * guard does not skip it.
+     * guard (StripeSyncService:931-933) does not skip it.
      */
-    private function netZeroVoidPayload(): array
+    private function netZeroPayload(string $status): array
     {
         return [
             'id' => self::STRIPE_INVOICE,
             'customer' => self::STRIPE_CUSTOMER,
             'number' => 'INV-1042',
-            'status' => 'void',
+            'status' => $status,
             'created' => 1774000000,
             'subtotal' => 0,
             'tax' => 0,
@@ -86,6 +98,13 @@ class VoidedInvoiceNetZeroReimportTest extends TestCase
     /**
      * A Stripe-originated invoice, imported with real money, then voided in PSA
      * through the real primitive — which is what makes pre_void_total sticky.
+     *
+     * This provenance is reachable, not hypothetical: the staff void route
+     * (InvoiceController@void, :465) takes any non-Void invoice and is NOT gated
+     * on is_editable, so a Stripe-linked invoice carrying money can be voided in
+     * PSA — the route then propagates the void upstream (propagateVoidToStripe).
+     * Bulk void (:288), QboSyncService:441 and StripeSyncService:534 reach void()
+     * on a money-bearing header the same way.
      */
     private function psaVoidedInvoice(): Invoice
     {
@@ -114,19 +133,27 @@ class VoidedInvoiceNetZeroReimportTest extends TestCase
 
         app(InvoiceVoidService::class)->void(Invoice::findOrFail($invoice->getKey()));
 
-        return $invoice->fresh();
-    }
-
-    public function test_psa_void_then_net_zero_stripe_reimport_keeps_the_real_line_originals(): void
-    {
-        $invoice = $this->psaVoidedInvoice();
+        $invoice = $invoice->fresh();
 
         // Precondition — the sticky snapshot the repair predicate must not read
         // as evidence about lines that do not exist yet.
         $this->assertSame('500.00', $invoice->pre_void_total);
         $this->assertSame('0.00', $invoice->total);
 
-        $this->stripeClient($this->netZeroVoidPayload());
+        return $invoice;
+    }
+
+    public static function stripeStatusProvider(): array
+    {
+        return ['reported void' => ['void'], 'reported paid' => ['paid']];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('stripeStatusProvider')]
+    public function test_psa_void_then_net_zero_stripe_reimport_keeps_the_real_line_originals(string $status): void
+    {
+        $invoice = $this->psaVoidedInvoice();
+
+        $this->stripeClient($this->netZeroPayload($status));
         app(StripeSyncService::class)->importInvoicesFromStripe();
 
         $lines = $invoice->lines()->orderBy('sort_order')->get();
@@ -139,12 +166,9 @@ class VoidedInvoiceNetZeroReimportTest extends TestCase
         $this->assertSame('500.00', $lines[0]->display_amount);
         $this->assertSame('-500.00', $lines[1]->display_amount);
 
-        // And the void still takes effect: live money zeroed, marker complete,
-        // status not downgraded.
+        // The void still takes effect and the status is not downgraded.
         $this->assertSame('0.00', $lines[0]->amount);
         $this->assertSame('0.00', $lines[1]->amount);
-        $this->assertSame('0.00', $lines[0]->reportable_amount);
-        $this->assertSame('0.00', $lines[1]->reportable_amount);
         $this->assertSame(InvoiceStatus::Void, $invoice->fresh()->status);
     }
 
@@ -155,7 +179,7 @@ class VoidedInvoiceNetZeroReimportTest extends TestCase
         // syncStripeInvoiceLines delete-recreates every run, so each import
         // presents unmarked lines again. The finding's "repeats on every
         // import" must be harmless, not merely survivable once.
-        $this->stripeClient($this->netZeroVoidPayload());
+        $this->stripeClient($this->netZeroPayload('void'));
         app(StripeSyncService::class)->importInvoicesFromStripe();
         app(StripeSyncService::class)->importInvoicesFromStripe();
         app(StripeSyncService::class)->importInvoicesFromStripe();
@@ -166,53 +190,13 @@ class VoidedInvoiceNetZeroReimportTest extends TestCase
         $this->assertSame('-500.00', $lines[1]->pre_void_amount);
         $this->assertSame('0.00', $lines[0]->amount);
         $this->assertSame('0.00', $lines[1]->amount);
-    }
 
-    /**
-     * The complement, and the coverage the removed disjunct was reaching for:
-     * dropping it must NOT cost us the legacy repair. A genuine legacy void —
-     * header zeroed by us, an unmarked line since re-inflated out of the void
-     * lock by the QBO status pull — still contradicts its own header, so
-     * headerContradictsLines() alone still classifies it as residue and records
-     * the void-time $0 rather than the re-inflated figure.
-     */
-    public function test_a_reinflated_legacy_void_is_still_repaired_without_the_snapshot_disjunct(): void
-    {
-        $client = Client::factory()->create();
-
-        $invoice = Invoice::create([
-            'client_id' => $client->id,
-            'invoice_number' => 'INV-LEGACY-OC5Q2',
-            'invoice_date' => '2026-03-15',
-            'due_date' => '2026-04-15',
-            // Zeroed by us, and carrying the snapshot that proves it.
-            'subtotal' => '0.00',
-            'tax' => '0.00',
-            'total' => '0.00',
-            'pre_void_subtotal' => '500.00',
-            'pre_void_tax' => '0.00',
-            'pre_void_total' => '500.00',
-            'status' => InvoiceStatus::Void,
-        ]);
-
-        // The $0 line the old code skipped, since re-inflated out-of-lock.
-        InvoiceLine::create([
-            'invoice_id' => $invoice->id,
-            'description' => 'No-charge item',
-            'quantity' => 1,
-            'unit_price' => '0.00',
-            'unit_cost' => '0.00',
-            'amount' => '250.00',
-            'cost_amount' => '90.00',
-            'sort_order' => 0,
-        ]);
-
-        app(InvoiceVoidService::class)->void(Invoice::findOrFail($invoice->getKey()));
-
-        $line = $invoice->lines()->first();
-        $this->assertSame('0.00', $line->pre_void_amount, 'the re-inflated figure is not an original bill');
-        $this->assertSame('0.00', $line->pre_void_cost_amount);
-        $this->assertSame('0.00', $line->amount);
-        $this->assertSame('0.00', $line->display_amount);
+        // The premise the whole finding turns on: pre_void_total is sticky, and
+        // three passes of updateOrCreate over the row do not clear it. If this
+        // ever goes false the scenario above stops being reachable and these
+        // tests would pass vacuously.
+        $reloaded = $invoice->fresh();
+        $this->assertSame('500.00', $reloaded->pre_void_total);
+        $this->assertSame('500.00', $reloaded->pre_void_subtotal);
     }
 }

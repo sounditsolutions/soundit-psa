@@ -94,10 +94,11 @@ class InvoiceVoidService
             // only copy of the per-line bill. So require POSITIVE evidence that the
             // zeroing is ours: a header that CONTRADICTS its own lines — only our
             // zeroing empties a header out from under the line money it is supposed
-            // to total. A genuine legacy void shows that (a re-inflated line no
-            // longer sums to its zeroed header); a header that still totals its
-            // lines was never zeroed by us, so those lines are the bill and are
-            // snapshotted as-is.
+            // to total. A legacy void whose unmarked line has since been re-inflated
+            // shows that, and it is the case the repair exists for; one still
+            // sitting at its void-time $0 needs no repair, since its lines already
+            // ARE $0. A header that still totals its lines was never zeroed by us,
+            // so those lines are the bill and are snapshotted as-is.
             $repairingLegacyVoid = $invoice->status === InvoiceStatus::Void
                 && ! $this->hasReportableAmounts($invoice)
                 && $this->headerContradictsLines($invoice);
