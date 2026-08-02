@@ -92,17 +92,15 @@ class InvoiceVoidService
             // -$500 proration credit — so a header-only test misfires on exactly
             // the payload this branch exists to protect, stamping '0.00' over the
             // only copy of the per-line bill. So require POSITIVE evidence that the
-            // zeroing is ours: either the header snapshot we take when zeroing a
-            // money-carrying header, or a header that CONTRADICTS its own lines —
-            // only our zeroing empties a header out from under the line money it is
-            // supposed to total. A genuine legacy void shows one or the other (a
-            // re-inflated line no longer sums to its zeroed header); a header that
-            // still totals its lines was never zeroed by us, so those lines are the
-            // bill and are snapshotted as-is.
+            // zeroing is ours: a header that CONTRADICTS its own lines — only our
+            // zeroing empties a header out from under the line money it is supposed
+            // to total. A genuine legacy void shows that (a re-inflated line no
+            // longer sums to its zeroed header); a header that still totals its
+            // lines was never zeroed by us, so those lines are the bill and are
+            // snapshotted as-is.
             $repairingLegacyVoid = $invoice->status === InvoiceStatus::Void
                 && ! $this->hasReportableAmounts($invoice)
-                && ($invoice->pre_void_total !== null
-                    || $this->headerContradictsLines($invoice));
+                && $this->headerContradictsLines($invoice);
 
             foreach ($invoice->lines as $line) {
                 // Snapshot EVERY line on the first void — INCLUDING $0 lines,
