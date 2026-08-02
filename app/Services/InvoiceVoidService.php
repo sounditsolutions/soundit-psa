@@ -51,14 +51,26 @@ class InvoiceVoidService
             $invoice->syncOriginal();
             $invoice->load('lines');
 
-            // Already void and already zeroed — nothing to do. (A void
-            // invoice can regain amounts when a Stripe re-import rewrites
-            // them; that case falls through and is re-zeroed below.)
+            // Already void, already zeroed, and every line already marked —
+            // nothing to do. (A void invoice can regain amounts when a Stripe
+            // re-import rewrites them; that case falls through and is re-zeroed
+            // below.) An UNMARKED line falls through too: re-entering here is
+            // the only door through which a legacy void — voided back when $0
+            // lines were skipped — can acquire the marker
+            // InvoiceLine::reportable_amount depends on (psa-oc5q2.1).
             if ($invoice->status === InvoiceStatus::Void
                 && ! $this->hasReportableAmounts($invoice)
-                && ! $this->linesHaveReportableAmounts($invoice)) {
+                && ! $this->linesHaveReportableAmounts($invoice)
+                && ! $this->linesMissingVoidMarker($invoice)) {
                 return $invoice;
             }
+
+            // An unmarked line on an invoice that is ALREADY Void is a legacy
+            // row, and its value AT VOID TIME was $0 by construction (the old
+            // service and the 2026_07_12 backfill only ever skipped $0 lines).
+            // Snapshot that, not whatever an out-of-lock QBO re-inflation has
+            // since written — the same rule as the 2026_08_02 marking backfill.
+            $repairingLegacyVoid = $invoice->status === InvoiceStatus::Void;
 
             foreach ($invoice->lines as $line) {
                 // Snapshot EVERY line on the first void — INCLUDING $0 lines,
@@ -69,12 +81,17 @@ class InvoiceVoidService
                 // then re-inflate that line to read as live money on a Void
                 // invoice (psa-oc5q2.1). Preserve an existing snapshot across a
                 // re-void/re-import so a re-inflated value never overwrites the
-                // ORIGINAL billed amount.
+                // ORIGINAL billed amount; on a legacy void the missing snapshot
+                // is recorded as $0, which is what that line was billed at.
                 $snapshotted = $line->pre_void_amount !== null;
+                $preVoidAmount = $repairingLegacyVoid ? '0.00' : $line->amount;
+                $preVoidCostAmount = $repairingLegacyVoid && $line->cost_amount !== null
+                    ? '0.00'
+                    : $line->cost_amount;
 
                 $line->update([
-                    'pre_void_amount' => $snapshotted ? $line->pre_void_amount : $line->amount,
-                    'pre_void_cost_amount' => $snapshotted ? $line->pre_void_cost_amount : $line->cost_amount,
+                    'pre_void_amount' => $snapshotted ? $line->pre_void_amount : $preVoidAmount,
+                    'pre_void_cost_amount' => $snapshotted ? $line->pre_void_cost_amount : $preVoidCostAmount,
                     'amount' => 0,
                     'cost_amount' => $line->cost_amount === null ? null : 0,
                 ]);
@@ -125,5 +142,15 @@ class InvoiceVoidService
         return $invoice->lines->contains(
             fn ($line) => (float) $line->amount != 0.0 || (float) ($line->cost_amount ?? 0) != 0.0
         );
+    }
+
+    /**
+     * A line with no pre_void_amount is UNMARKED: InvoiceLine::reportable_amount
+     * reads its raw amount, so an out-of-lock re-inflation would report live
+     * money on a Void invoice. Re-entering void() repairs it (psa-oc5q2.1).
+     */
+    private function linesMissingVoidMarker(Invoice $invoice): bool
+    {
+        return $invoice->lines->contains(fn ($line) => $line->pre_void_amount === null);
     }
 }

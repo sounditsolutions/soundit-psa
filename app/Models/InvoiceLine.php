@@ -59,8 +59,9 @@ class InvoiceLine extends Model
     /**
      * Original pre-void amount for lines on voided invoices, live amount
      * otherwise. pre_void_amount is only ever written when the parent
-     * invoice is voided (InvoiceVoidService), so a non-null value implies a
-     * voided invoice without loading the parent.
+     * invoice is voided (InvoiceVoidService, plus the 2026_08_02 backfill that
+     * marked the legacy voids the old skip rule left unmarked), so a non-null
+     * value implies a voided invoice without loading the parent.
      */
     public function getDisplayAmountAttribute(): ?string
     {
@@ -76,15 +77,21 @@ class InvoiceLine extends Model
      * Amount/cost that counts toward revenue reporting: zero for a voided
      * invoice's lines, the live value otherwise — the line-level analogue of
      * invoices.subtotal/total_cost being zeroed on void. Keys off
-     * pre_void_amount, which InvoiceVoidService writes on EVERY line of a void
-     * invoice (including $0 lines), so it is a COMPLETE line-local void marker:
-     * void-correct WITHOUT loading the parent, and unaffected by an out-of-lock
-     * line re-inflation (the QBO status pull can rewrite a voided line's raw
-     * amount/cost_amount after the void, but never the pre_void snapshot). That
-     * completeness is load-bearing — if InvoiceVoidService ever skipped a $0
-     * line again, a re-inflated zero-at-void line would read as live money here
-     * (psa-oc5q2.1). Every reportable reader of raw line money must use these,
-     * not amount/cost_amount directly; display_* exposes the ORIGINAL bill.
+     * pre_void_amount, the line-local void marker: void-correct WITHOUT loading
+     * the parent, and unaffected by an out-of-lock line re-inflation (the QBO
+     * status pull can rewrite a voided line's raw amount/cost_amount after the
+     * void, but never the pre_void snapshot).
+     *
+     * Completeness of that marker is load-bearing: an UNMARKED line on a Void
+     * invoice reads its raw amount here, so a re-inflated zero-at-void line
+     * would report live money (psa-oc5q2.1). Three things keep it complete and
+     * all three must stay — InvoiceVoidService marks EVERY line on void
+     * (including $0 lines, which it used to skip); it re-marks any unmarked line
+     * when re-entered on an already-Void invoice; and migration
+     * 2026_08_02_000001 marked the legacy rows the old skip rule and the
+     * 2026_07_12 backfill left unmarked. Every reportable reader of raw line
+     * money must use these, not amount/cost_amount directly; display_* exposes
+     * the ORIGINAL bill.
      */
     public function getReportableAmountAttribute(): ?string
     {
