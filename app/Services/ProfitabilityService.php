@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Enums\InvoiceStatus;
 use App\Models\Client;
 use App\Models\Contract;
 use App\Models\Invoice;
@@ -36,12 +37,22 @@ class ProfitabilityService
         $margin = $revenue - $cost;
         $marginPct = $revenue > 0 ? round(($margin / $revenue) * 100, 1) : null;
 
-        // Breakdown by SKU
+        // Breakdown by SKU. Unlike the header aggregates above (which sum
+        // invoices.subtotal / total_cost — fields InvoiceVoidService zeroes under
+        // the invoice-row lock, so the "structural zeroing" design needs no
+        // status filter), this breakdown sums LINE-level invoice_lines.amount /
+        // cost_amount. The QBO line-item write (syncLineItemsFromQbo) runs
+        // OUTSIDE the void lock, so a void committing in that sub-window can
+        // leave a voided invoice's lines re-inflated while its subtotal stays 0
+        // (psa-oc5q2). Filter voided invoices out so a re-inflated line can never
+        // contaminate profitability revenue/cost: void = cancelled = $0,
+        // consistent with the header aggregate reading it as 0.
         $bySku = DB::table('invoice_lines')
             ->join('invoices', 'invoices.id', '=', 'invoice_lines.invoice_id')
             ->leftJoin('skus', 'skus.id', '=', 'invoice_lines.sku_id')
             ->where('invoices.contract_id', $contract->id)
             ->whereNull('invoices.deleted_at')
+            ->where('invoices.status', '!=', InvoiceStatus::Void->value)
             ->when($from, fn ($q) => $q->where('invoices.invoice_date', '>=', $from))
             ->when($to, fn ($q) => $q->where('invoices.invoice_date', '<=', $to))
             ->groupBy('invoice_lines.sku_id', 'skus.name', 'skus.sku_code', 'invoice_lines.description')

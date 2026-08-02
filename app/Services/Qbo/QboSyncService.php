@@ -473,15 +473,18 @@ class QboSyncService
 
         // Line-item detail sync (description, quantity, unit_price, amount) —
         // skipped when the guarded write found the row Void, so a mid-round-trip
-        // void's zeroed line amounts are not re-inflated (ProfitabilityService
-        // sums invoice_lines.amount with no status filter, relying on that
-        // zeroing). The locked-read decides this: the bead contract is "drop
-        // line writes when the LOCKED row is Void". A void committing in the
-        // sub-window after that read still reports live here — InvoiceVoidService
-        // now takes the invoice-first row lock (psa-bl36l R5), but these line
-        // updates run OUTSIDE that protocol, so closing the sub-window hard still
-        // needs this writer to join it (tracked separately, psa-oc5q2); it
-        // self-heals on the next void/sync.
+        // void's zeroed line amounts are not re-inflated here. A void committing
+        // in the sub-window AFTER the locked read still reports live to this
+        // point: InvoiceVoidService takes the invoice-first row lock (psa-bl36l
+        // R5), but these line updates run OUTSIDE that protocol, so closing the
+        // sub-window hard still needs this writer to join it under the lock (the
+        // final fix, tracked on psa-oc5q2). It does NOT self-heal through normal
+        // operator flows — status-sync paths return early for Void, selectors
+        // exclude Void, and the void UI refuses an already-Void invoice — so a
+        // re-inflated line can persist indefinitely. Reader-side that is now
+        // defended: reportable line money reads $0 for a voided invoice
+        // (InvoiceLine::reportable_amount + the by-SKU profitability filter,
+        // psa-oc5q2.1), but the stored row is only made clean by the final fix.
         if (! $wasVoid) {
             $this->syncLineItemsFromQbo($invoice, $qboInvoice);
         }
