@@ -4,6 +4,7 @@ Sound PSA is MIT-licensed and developed in the open. Patches, issues and downstr
 
 ## Before you start
 
+- **Security issues do not go here.** See [SECURITY.md](SECURITY.md) — report privately.
 - Open issues include **unfixed defects and work in progress**. Check the tracker before starting; the thing you are about to fix may already have a branch.
 
 ## Getting it running
