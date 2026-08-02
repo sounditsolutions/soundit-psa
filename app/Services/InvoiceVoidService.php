@@ -86,19 +86,32 @@ class InvoiceVoidService
             // the zeroing has not happened yet, so the lines in hand ARE the
             // live bill and must be snapshotted as-is.
             //
-            // A ZEROED HEADER IS NOT PROOF WE ZEROED IT, EITHER. upsertInvoiceFromStripe
-            // copies Stripe's retained subtotal/tax/total verbatim, and those can
-            // legitimately net to zero over real lines — a +$500 charge against a
-            // -$500 proration credit — so a header-only test misfires on exactly
-            // the payload this branch exists to protect, stamping '0.00' over the
-            // only copy of the per-line bill. So require POSITIVE evidence that the
-            // zeroing is ours: a header that CONTRADICTS its own lines — only our
-            // zeroing empties a header out from under the line money it is supposed
-            // to total. A legacy void whose unmarked line has since been re-inflated
-            // shows that, and it is the case the repair exists for; one still
-            // sitting at its void-time $0 needs no repair, since its lines already
-            // ARE $0. A header that still totals its lines was never zeroed by us,
-            // so those lines are the bill and are snapshotted as-is.
+            // A ZEROED HEADER IS NOT PROOF WE ZEROED IT, EITHER.
+            // upsertInvoiceFromStripeData copies Stripe's retained subtotal/tax/
+            // total verbatim, and those can legitimately net to zero over real
+            // lines — a +$500 charge against a -$500 proration credit — so a
+            // header-only test misfires on exactly the payload this branch exists
+            // to protect, stamping '0.00' over the only copy of the per-line bill.
+            // So require evidence that the zeroing is ours: a header that
+            // CONTRADICTS its own lines. That is the signal the ordinary repair
+            // case produces — a legacy void whose unmarked line was re-inflated
+            // out of the void lock no longer sums to its zeroed header — and a
+            // header that still totals its lines is not evidence of residue, so
+            // those lines are treated as the bill and snapshotted as-is.
+            //
+            // THAT TEST IS NECESSARY, NOT SUFFICIENT, AND IT IS EXHAUSTIVE IN
+            // NEITHER DIRECTION. A re-inflation spread across lines that CANCEL
+            // still sums to a zeroed header and goes unrepaired; and a header the
+            // import itself wrote short (an absent `subtotal` key, a truncated
+            // line payload) contradicts its lines without our zeroing having
+            // happened. Both are known and ticketed. Both are judged the lesser
+            // risk than what they replaced: the `pre_void_total !== null` disjunct
+            // that stood here was strictly worse, firing on any invoice we had
+            // ever voided once and stamping '0.00' over its live per-line bill on
+            // every re-import (review finding c3:v1:1, adjudicated 2026-08-02).
+            // Paragraphs one and two above still describe the two-conjunct rule
+            // this predicate no longer implements — reconciling them is ticketed
+            // separately rather than done inside an adjudicated merge window.
             $repairingLegacyVoid = $invoice->status === InvoiceStatus::Void
                 && ! $this->hasReportableAmounts($invoice)
                 && $this->headerContradictsLines($invoice);

@@ -17,8 +17,11 @@ use Tests\TestCase;
  * later re-imports net-zero (psa-oc5q2.1, review finding c3:v1:1).
  *
  * pre_void_total is a STICKY row-level snapshot: InvoiceVoidService writes it
- * once, when it zeroes a money-carrying header, and nothing on the Stripe
- * import path ever clears it. So it is evidence about a PREVIOUS void, not
+ * whenever it zeroes a money-carrying header — it is rewritten, never protected
+ * the way the per-line snapshot is by $snapshotted — and nothing on the Stripe
+ * import path ever CLEARS it. Stickiness across the import is the premise the
+ * finding turns on, and it is what the three-import assertions below pin. So a
+ * non-null pre_void_total is evidence about a PREVIOUS void, not
  * about the lines currently in hand — those were deleted and recreated after
  * it. Treating it as positive evidence that "we zeroed this header" classifies
  * a freshly re-imported net-zero payload as legacy residue and stamps
@@ -49,7 +52,14 @@ use Tests\TestCase;
  * 'void', 'paid' or 'open' payload reaches the same void() call over the same
  * zeroed header and the same recreated lines. Field names are taken from the
  * producer this code actually reads: StripeSyncService::upsertInvoiceFromStripeData
- * (:1023-1098) and ::syncStripeInvoiceLines (:1111-1152).
+ * (:995-1098, which reads `customer` at :1000 and subtotal/tax/total at
+ * :1044-1046) and ::syncStripeInvoiceLines (:1111-1152).
+ *
+ * The pinned display values do NOT reconcile with the header panel: the row
+ * keeps pre_void_total 500.00 from the first void, so show.blade.php renders a
+ * $500.00 original header over line originals of 500.00 / -500.00. Preserving
+ * the per-line bill is still the right trade — the alternative destroys the only
+ * copy — but the disagreement is real and is ticketed, not fixed here.
  */
 class VoidedInvoiceNetZeroReimportTest extends TestCase
 {
