@@ -65,12 +65,30 @@ class InvoiceVoidService
                 return $invoice;
             }
 
-            // An unmarked line on an invoice that is ALREADY Void is a legacy
-            // row, and its value AT VOID TIME was $0 by construction (the old
-            // service and the 2026_07_12 backfill only ever skipped $0 lines).
-            // Snapshot that, not whatever an out-of-lock QBO re-inflation has
-            // since written — the same rule as the 2026_08_02 marking backfill.
-            $repairingLegacyVoid = $invoice->status === InvoiceStatus::Void;
+            // An unmarked line on an invoice whose void ZEROING HAS ALREADY
+            // TAKEN EFFECT — already Void AND its header money already zeroed —
+            // is a legacy row, and its value AT VOID TIME was $0 by construction
+            // (the old service and the 2026_07_12 backfill only ever skipped $0
+            // lines). Snapshot that, not whatever an out-of-lock QBO
+            // re-inflation has since written — the same rule as the 2026_08_02
+            // marking backfill.
+            //
+            // BOTH halves are load-bearing; status alone is NOT a legacy
+            // predicate. The Stripe import arrives here on an already-Void row
+            // that has never been voided by us: upsertInvoiceFromStripe writes
+            // status Void together with the REAL retained totals, then
+            // syncStripeInvoiceLines DELETES and RECREATES every line at its
+            // real billed amount with pre_void_* null, and only then calls
+            // void(). Reading that as a legacy repair would record '0.00' as the
+            // client's original bill and destroy the only copy of it — the
+            // re-import repeats the same delete-recreate every run, so nothing
+            // later restores it. A header still carrying reportable money means
+            // the zeroing has not happened yet, so the lines in hand ARE the
+            // live bill and must be snapshotted as-is. A genuine legacy void has
+            // a zeroed header (the old service zeroed it) and only its line
+            // marker missing.
+            $repairingLegacyVoid = $invoice->status === InvoiceStatus::Void
+                && ! $this->hasReportableAmounts($invoice);
 
             foreach ($invoice->lines as $line) {
                 // Snapshot EVERY line on the first void — INCLUDING $0 lines,
