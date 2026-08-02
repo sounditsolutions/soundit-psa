@@ -84,11 +84,25 @@ class InvoiceVoidService
             // re-import repeats the same delete-recreate every run, so nothing
             // later restores it. A header still carrying reportable money means
             // the zeroing has not happened yet, so the lines in hand ARE the
-            // live bill and must be snapshotted as-is. A genuine legacy void has
-            // a zeroed header (the old service zeroed it) and only its line
-            // marker missing.
+            // live bill and must be snapshotted as-is.
+            //
+            // A ZEROED HEADER IS NOT PROOF WE ZEROED IT, EITHER. upsertInvoiceFromStripe
+            // copies Stripe's retained subtotal/tax/total verbatim, and those can
+            // legitimately net to zero over real lines — a +$500 charge against a
+            // -$500 proration credit — so a header-only test misfires on exactly
+            // the payload this branch exists to protect, stamping '0.00' over the
+            // only copy of the per-line bill. So require POSITIVE evidence that the
+            // zeroing is ours: either the header snapshot we take when zeroing a
+            // money-carrying header, or a header that CONTRADICTS its own lines —
+            // only our zeroing empties a header out from under the line money it is
+            // supposed to total. A genuine legacy void shows one or the other (a
+            // re-inflated line no longer sums to its zeroed header); a header that
+            // still totals its lines was never zeroed by us, so those lines are the
+            // bill and are snapshotted as-is.
             $repairingLegacyVoid = $invoice->status === InvoiceStatus::Void
-                && ! $this->hasReportableAmounts($invoice);
+                && ! $this->hasReportableAmounts($invoice)
+                && ($invoice->pre_void_total !== null
+                    || $this->headerContradictsLines($invoice));
 
             foreach ($invoice->lines as $line) {
                 // Snapshot EVERY line on the first void — INCLUDING $0 lines,
@@ -160,6 +174,28 @@ class InvoiceVoidService
         return $invoice->lines->contains(
             fn ($line) => (float) $line->amount != 0.0 || (float) ($line->cost_amount ?? 0) != 0.0
         );
+    }
+
+    /**
+     * Do the lines carry money this header does not account for? A header is
+     * meant to total its own lines, so a mismatch on an already-Void invoice is
+     * evidence that OUR zeroing emptied the header and the line money is
+     * post-void residue (the out-of-lock QBO line write). A header that still
+     * totals its lines — both $0, or lines that genuinely net to zero — was
+     * never zeroed by us, so it says nothing about the lines being residual.
+     *
+     * Amount only: the out-of-lock writer (syncLineItemsFromQbo) rewrites
+     * amount, never cost_amount, so amount is the signal. Compared at cent
+     * tolerance, not float equality.
+     */
+    private function headerContradictsLines(Invoice $invoice): bool
+    {
+        $lineTotal = 0.0;
+        foreach ($invoice->lines as $line) {
+            $lineTotal += (float) $line->amount;
+        }
+
+        return abs($lineTotal - (float) $invoice->subtotal) >= 0.005;
     }
 
     /**

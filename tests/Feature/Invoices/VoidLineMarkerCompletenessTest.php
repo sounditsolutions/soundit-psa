@@ -160,4 +160,48 @@ class VoidLineMarkerCompletenessTest extends TestCase
         $this->assertSame('0.00', $line->display_amount);
         $this->assertSame('0.00', $line->reportable_amount);
     }
+
+    /**
+     * The MIRROR of the case above, and the one a header-only legacy predicate
+     * gets wrong: a zeroed-LOOKING header that is not ours. The Stripe import
+     * writes a voided invoice's retained totals verbatim, and those can
+     * legitimately net to zero (a charge against an offsetting proration credit)
+     * over freshly recreated, unmarked lines that carry the real bill. Reading
+     * that as a legacy repair records '0.00' as the client's original per-line
+     * bill and destroys the only copy of it — the re-import repeats the
+     * delete-recreate every run, so nothing later restores it.
+     */
+    public function test_voiding_a_zero_total_invoice_whose_lines_net_to_zero_keeps_the_real_line_originals(): void
+    {
+        $invoice = $this->invoice(
+            InvoiceStatus::Void,
+            ['subtotal' => '0.00', 'tax' => '0.00', 'total' => '0.00'],
+            ['description' => 'Subscription charge', 'unit_price' => '500.00', 'amount' => '500.00'],
+        );
+        InvoiceLine::create([
+            'invoice_id' => $invoice->id,
+            'description' => 'Proration credit',
+            'quantity' => 1,
+            'unit_price' => '-500.00',
+            'amount' => '-500.00',
+            'sort_order' => 1,
+        ]);
+
+        app(InvoiceVoidService::class)->void(Invoice::findOrFail($invoice->getKey()));
+
+        $lines = $invoice->lines()->orderBy('sort_order')->get();
+
+        // The ORIGINAL bill is preserved per line, not overwritten with '0.00'.
+        $this->assertSame('500.00', $lines[0]->pre_void_amount);
+        $this->assertSame('-500.00', $lines[1]->pre_void_amount);
+        $this->assertSame('500.00', $lines[0]->display_amount);
+        $this->assertSame('-500.00', $lines[1]->display_amount);
+
+        // And the void still takes effect: live money zeroed, marker complete.
+        $this->assertSame('0.00', $lines[0]->amount);
+        $this->assertSame('0.00', $lines[1]->amount);
+        $this->assertSame('0.00', $lines[0]->reportable_amount);
+        $this->assertSame('0.00', $lines[1]->reportable_amount);
+        $this->assertSame(InvoiceStatus::Void, $invoice->fresh()->status);
+    }
 }
