@@ -8,7 +8,7 @@ Sound PSA is MIT-licensed and developed in the open. Patches, issues and downstr
 
 ## Getting it running
 
-Requires **PHP 8.2 or newer** (CI runs 8.3). Two supported paths — Docker Compose, or a manual Composer setup:
+Requires **PHP 8.2 or newer** (CI runs 8.3). The contributor path is a manual Composer setup:
 
 ```
 composer install
@@ -18,7 +18,7 @@ php artisan migrate
 php -S 127.0.0.1:8080 -t public
 ```
 
-See [`docs/INSTALL.md`](docs/INSTALL.md) and [`docs/DOCKER.md`](docs/DOCKER.md) for the full instructions, and the [README](README.md) for the stack and architecture.
+See [`docs/INSTALL.md`](docs/INSTALL.md) for the full instructions, and the [README](README.md) for the stack and architecture. Docker Compose is also available for maintainer convenience — see [`docs/DOCKER.md`](docs/DOCKER.md).
 
 A demo dataset is available for local work:
 
