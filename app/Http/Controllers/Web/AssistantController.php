@@ -8,6 +8,7 @@ use App\Models\AssistantMessage;
 use App\Models\Client;
 use App\Models\Ticket;
 use App\Services\Assistant\AssistantService;
+use App\Services\Assistant\AssistantUserFacingException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controllers\HasMiddleware;
@@ -101,7 +102,14 @@ class AssistantController extends Controller implements HasMiddleware
 
         try {
             $result = $service->sendMessage($conversation, $validated['message']);
-        } catch (\RuntimeException $e) {
+        } catch (AssistantUserFacingException $e) {
+            // Guard failures whose text was WRITTEN for the user (provider not
+            // configured, assistant disabled, conversation or daily limit).
+            // Deliberately NOT `\RuntimeException`: QueryException extends
+            // PDOException extends RuntimeException, so that arm caught a
+            // database fault and returned its statement and bound values to the
+            // caller. An allowlist fails closed; a category does not. Same
+            // defect as the client-portal instance (psa #378).
             return response()->json(['error' => $e->getMessage()], 422);
         } catch (\Throwable $e) {
             \Illuminate\Support\Facades\Log::error('[Assistant] Unexpected error', [
