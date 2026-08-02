@@ -47,17 +47,18 @@ class PortalChatbotService
     /**
      * Send a user message and return the persisted assistant reply.
      *
-     * @throws \RuntimeException on a guard failure (unavailable / over a limit).
-     *                           The controller maps these to a 422 with the message shown to the user.
+     * @throws PortalChatbotUserFacingException on a guard failure (unavailable / over a limit).
+     *                                          The controller maps these to a 422 with the message shown to the user.
+     *                                          Anything else — a QueryException included — must NOT reach that arm.
      */
     public function sendMessage(PortalChatConversation $conversation, string $userMessage): PortalChatMessage
     {
         if (! $this->isAvailable()) {
-            throw new \RuntimeException('The assistant is currently unavailable. Please try again later or open a ticket.');
+            throw new PortalChatbotUserFacingException('The assistant is currently unavailable. Please try again later or open a ticket.');
         }
 
         if ($conversation->messages()->count() >= self::MAX_MESSAGES_PER_CONVERSATION) {
-            throw new \RuntimeException('This conversation has reached its length limit. Please start a new chat.');
+            throw new PortalChatbotUserFacingException('This conversation has reached its length limit. Please start a new chat.');
         }
 
         $this->assertUnderDailyLimit($conversation->person_id);
@@ -99,7 +100,7 @@ class PortalChatbotService
                 'client_id' => $conversation->client_id,
                 'error' => $e->getMessage(),
             ]);
-            throw new \RuntimeException('The assistant ran into a problem answering that. Please try again.');
+            throw new PortalChatbotUserFacingException('The assistant ran into a problem answering that. Please try again.');
         }
 
         $reply = trim($response->text);
@@ -147,7 +148,7 @@ class PortalChatbotService
             ->sum(DB::raw('input_tokens + output_tokens'));
 
         if ($usedToday >= self::DAILY_TOKEN_LIMIT_PER_PERSON) {
-            throw new \RuntimeException('You have reached the assistant usage limit for today. Please try again tomorrow or open a ticket.');
+            throw new PortalChatbotUserFacingException('You have reached the assistant usage limit for today. Please try again tomorrow or open a ticket.');
         }
     }
 
