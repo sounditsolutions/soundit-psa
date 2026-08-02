@@ -124,4 +124,6 @@ Sound PSA is **open source and public by deliberate choice**, released under the
 
 Development happens in the open. Issues in this tracker include **unfixed defects and work in progress**. That is normal for a public project, not an oversight: an open issue here is a known problem being worked.
 
+**Security issues are the exception** — please report a suspected vulnerability privately as described in [SECURITY.md](SECURITY.md) rather than opening a public issue.
+
 Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
