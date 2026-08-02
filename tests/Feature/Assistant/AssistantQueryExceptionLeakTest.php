@@ -111,11 +111,16 @@ class AssistantQueryExceptionLeakTest extends TestCase
             ->assertJsonPath('error', fn ($e) => str_contains((string) $e, 'message limit'));
     }
 
-    /** The hierarchy fact the bug rests on, pinned against a future refactor of the arm. */
-    public function test_query_exception_is_a_runtime_exception_but_not_a_user_facing_one(): void
+    /**
+     * The hierarchy fact the bug rests on, pinned against a future refactor of
+     * the arm. Only assertions a change in this repo could actually falsify: an
+     * earlier third case asserted that a framework class does not extend an
+     * App\ class, which nothing here can make false (psa #379 review, finding 3).
+     */
+    public function test_query_exception_is_a_runtime_exception(): void
     {
         $this->assertTrue(is_subclass_of(QueryException::class, \PDOException::class));
         $this->assertTrue(is_subclass_of(QueryException::class, \RuntimeException::class));
-        $this->assertFalse(is_subclass_of(QueryException::class, AssistantUserFacingException::class));
+        $this->assertTrue(is_subclass_of(AssistantUserFacingException::class, \RuntimeException::class));
     }
 }

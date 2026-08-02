@@ -21,5 +21,14 @@ namespace App\Services\Assistant;
  * Marking the safe messages, rather than naming the unsafe ones, fails closed:
  * anything not thrown deliberately for display falls through to the controller's
  * \Throwable arm, which logs it and returns a fixed string.
+ *
+ * THE INVARIANT THIS CLASS CARRIES, stated because nothing enforces it:
+ * EVERY instance must be constructed with OPERATOR-AUTHORED TEXT — a literal
+ * written to be read by a user. Never with $e->getMessage(), never with text
+ * derived from an exception, a driver or a vendor response. This type is on the
+ * controller's allowlist, so anything put into it is routed to the caller by
+ * construction; catching something and re-throwing it as this type with the
+ * original's message would reopen the defect through the class that closed it.
+ * Log the original, throw this with your own words.
  */
 class AssistantUserFacingException extends \RuntimeException {}
