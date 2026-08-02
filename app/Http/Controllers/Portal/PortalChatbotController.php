@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Portal;
 use App\Http\Controllers\Controller;
 use App\Models\PortalChatConversation;
 use App\Services\Portal\PortalChatbotService;
+use App\Services\Portal\PortalChatbotUserFacingException;
 use App\Support\PortalConfig;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -61,8 +62,13 @@ class PortalChatbotController extends Controller
 
         try {
             $message = $this->chatbot->sendMessage($conversation, $validated['message']);
-        } catch (\RuntimeException $e) {
-            // Expected guard failures (unavailable / over a limit) — safe to show.
+        } catch (PortalChatbotUserFacingException $e) {
+            // Guard failures whose text was WRITTEN for the user (unavailable /
+            // over a limit). Deliberately NOT `\RuntimeException`: QueryException
+            // extends PDOException extends RuntimeException, so that arm caught a
+            // database fault and returned its statement and bound values to the
+            // customer in this 422 body. An allowlist fails closed; a category
+            // does not.
             return response()->json(['error' => $e->getMessage()], 422);
         } catch (\Throwable $e) {
             report($e);
