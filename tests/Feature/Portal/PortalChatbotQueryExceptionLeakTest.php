@@ -6,10 +6,10 @@ use App\Enums\PersonType;
 use App\Models\Client;
 use App\Models\Person;
 use App\Models\Setting;
-use App\Services\Portal\PortalChatbotService;
 use App\Services\Portal\PortalChatbotUserFacingException;
 use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Schema;
 use Tests\TestCase;
 
 /**
@@ -25,9 +25,28 @@ use Tests\TestCase;
  * APP_DEBUG=false does not close this. The echo is explicit, not the framework
  * handler, so the flag never gets a say.
  *
- * The two halves below have to move together. Pinning only the leak would be
- * satisfied by a controller that shows the user nothing ever; pinning only the
- * guard messages is what the old code already did.
+ * NOTHING HERE IS MOCKED, and that is the point (psa #379 review, findings 1/2/4).
+ * The first version mocked PortalChatbotService and threw a hand-built
+ * QueryException at it. Three defects followed, all of the same family:
+ *
+ *   - `shouldReceive('sendMessage')` with no `->once()` meant Mockery raised
+ *     BadMethodCallException on any unstubbed call, which the controller's
+ *     \Throwable arm turned into the identical 500 and message the test
+ *     asserted — so it could go green without a QueryException ever existing.
+ *   - the fixture's $previous was a plain \Exception, so its message carried no
+ *     SQLSTATE prefix and the SQLSTATE assertion was true by construction.
+ *   - mocking the service meant none of the four converted throw sites — the
+ *     actual fix — ever executed.
+ *
+ * Forcing a REAL fault through the REAL service closes all three at once: the
+ * exception is genuine, its message is whatever the driver actually produces,
+ * and the guard path below runs the shipped code.
+ *
+ * DRIVER CONSTRAINT — the failure is forced with Schema::drop(), and DDL is not
+ * transactional on MariaDB (which prod runs): it implicitly commits, so
+ * RefreshDatabase could no longer roll the case back and the damage would escape
+ * into later tests. That case therefore skips off sqlite. A green CI here is NOT
+ * cross-driver proof of the redaction; it is proof on sqlite only.
  */
 class PortalChatbotQueryExceptionLeakTest extends TestCase
 {
@@ -59,66 +78,70 @@ class PortalChatbotQueryExceptionLeakTest extends TestCase
         ]);
     }
 
-    /** The regression. A QueryException carries statement text and bindings in getMessage(). */
+    /** The regression. A real QueryException carries statement text and bindings. */
     public function test_a_database_fault_does_not_return_sql_or_bindings_to_the_portal_user(): void
     {
+        $driver = \Illuminate\Support\Facades\DB::connection()->getDriverName();
+        if ($driver !== 'sqlite') {
+            $this->markTestSkipped("forces its failure with DDL and is sqlite-only; driver is {$driver}");
+        }
+
         $person = $this->portalPerson();
 
-        $sql = 'update `portal_chat_conversations` set `last_message_at` = ? where `id` = ?';
-        $binding = 'pat-secret-binding-value';
-
-        $this->mock(PortalChatbotService::class, function ($mock) use ($sql, $binding) {
-            $mock->shouldReceive('sendMessage')->andThrow(
-                new QueryException('mysql', $sql, [$binding, 7], new \Exception('Duplicate entry'))
-            );
-        });
+        // Fails $conversation->messages()->count() — the first DB read inside
+        // sendMessage(), and reached before any AI call, so no provider is
+        // involved in producing this exception.
+        Schema::drop('portal_chat_messages');
 
         $response = $this->actingAs($person, 'portal')
             ->postJson(route('portal.chatbot.send'), ['message' => 'hello']);
 
         $body = $response->getContent();
 
-        // Nothing about the statement, its bindings, or the driver reaches the user.
-        $this->assertStringNotContainsString($binding, $body);
-        $this->assertStringNotContainsString('portal_chat_conversations', $body);
-        $this->assertStringNotContainsString('update ', $body);
-        $this->assertStringNotContainsString('Duplicate entry', $body);
+        $this->assertStringNotContainsString('portal_chat_messages', $body, 'schema text leaked');
+        $this->assertStringNotContainsString('select', strtolower($body), 'the statement leaked');
         $this->assertStringNotContainsString('SQLSTATE', $body);
+        $this->assertStringNotContainsString('no such table', $body);
 
-        // And the request still fails — a leak fixed by silently succeeding would
-        // pass every assertion above.
+        // And the request must still FAIL. Every assertion above is satisfied by
+        // a controller that silently succeeded, so pin the failure too.
         $response->assertStatus(500);
         $response->assertJson(['error' => 'Something went wrong. Please try again.']);
     }
 
     /**
-     * Negative control: the four operator-authored guard messages are the whole
-     * point of the visible arm and must still be shown. A fix that refuses
-     * everything is not a fix.
+     * Negative control, end to end through the real service: an operator-authored
+     * guard message must still reach the user. This executes one of the four
+     * converted throw sites — the fix itself — rather than a mock standing in
+     * for it, and it passes on BOTH sides of the change, which is what makes it
+     * a control rather than an artefact.
      */
     public function test_an_operator_authored_guard_message_is_still_shown_to_the_user(): void
     {
         $person = $this->portalPerson();
-        $message = 'The assistant is currently unavailable. Please try again later or open a ticket.';
 
-        $this->mock(PortalChatbotService::class, function ($mock) use ($message) {
-            $mock->shouldReceive('sendMessage')->andThrow(new PortalChatbotUserFacingException($message));
-        });
+        // The chatbot stays enabled (the controller 404s otherwise), but the AI
+        // provider is not one this service supports — so isAvailable() is false
+        // and sendMessage() raises its "currently unavailable" guard for real.
+        Setting::setValue('ai_provider', 'openai');
 
         $this->actingAs($person, 'portal')
             ->postJson(route('portal.chatbot.send'), ['message' => 'hello'])
             ->assertStatus(422)
-            ->assertJson(['error' => $message]);
+            ->assertJson(['error' => 'The assistant is currently unavailable. Please try again later or open a ticket.']);
     }
 
     /**
      * The hierarchy fact the whole bug rests on, pinned so a future refactor of
-     * the catch arm cannot quietly reintroduce it on a wrong assumption.
+     * the catch arm cannot reintroduce it on a wrong assumption. Only the two
+     * assertions a change in this repo could actually falsify — a third,
+     * asserting a framework class does not extend an App\ class, cannot fail and
+     * was removed.
      */
     public function test_query_exception_is_a_runtime_exception(): void
     {
         $this->assertTrue(is_subclass_of(QueryException::class, \PDOException::class));
         $this->assertTrue(is_subclass_of(QueryException::class, \RuntimeException::class));
-        $this->assertFalse(is_subclass_of(QueryException::class, PortalChatbotUserFacingException::class));
+        $this->assertTrue(is_subclass_of(PortalChatbotUserFacingException::class, \RuntimeException::class));
     }
 }
