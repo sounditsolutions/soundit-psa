@@ -11,6 +11,16 @@ use Illuminate\Support\Str;
 
 class AppRiverLicenseSyncService
 {
+    /**
+     * Statuses AppRiver is known to report. Anything outside this set is treated as
+     * an unobserved subscription rather than an inactive one — see the loop.
+     */
+    private const KNOWN_SUBSCRIPTION_STATUSES = [
+        'Active', 'Trial', 'Cancelled', 'Canceled', 'Suspended', 'Expired', 'Pending', 'Deleted',
+    ];
+
+    private const ACTIVE_SUBSCRIPTION_STATUSES = ['Active', 'Trial'];
+
     public function __construct(
         private readonly AppRiverClient $client,
     ) {}
@@ -155,6 +165,18 @@ class AppRiverLicenseSyncService
     }
 
     /**
+     * A subscription the run could not read is a withheld-cleanup event, not a
+     * detail. It goes on SyncResult so the command's exit code and the run summary
+     * report it — a log line alone leaves the run reporting success while
+     * destructive cleanup was silently skipped.
+     */
+    private function recordUnobserved(SyncResult $result, Client $client, string $reason): void
+    {
+        Log::warning("[AppRiverSync] Unobserved subscription for {$client->name}: {$reason}");
+        $result->recordError("Unobserved subscription for {$client->name}: {$reason} — stale cleanup skipped for this client");
+    }
+
+    /**
      * Sync all subscriptions for a single client.
      *
      * @return array{0: array<int, int>, 1: int} seen licence ids, and the number of
@@ -178,8 +200,30 @@ class AppRiverLicenseSyncService
         $unobserved = 0;
 
         foreach ($subscriptions as $sub) {
-            $status = $sub['SubscriptionStatus'] ?? '';
-            if (! in_array($status, ['Active', 'Trial'])) {
+            if (! is_array($sub)) {
+                $unobserved++;
+                $this->recordUnobserved($result, $client, 'subscription entry was not an object');
+
+                continue;
+            }
+
+            $status = $sub['SubscriptionStatus'] ?? null;
+
+            // An UNRECOGNISED status is not the same as an inactive one. A vendor
+            // rename of SubscriptionStatus would make every entry fall through this
+            // filter with nothing counted unobserved — the client would then look
+            // fully observed with zero licences seen, and deactivateStale() would
+            // zero the lot. That is precisely the drift this guard exists to stop.
+            if ($status === null || ! in_array($status, self::KNOWN_SUBSCRIPTION_STATUSES, true)) {
+                $unobserved++;
+                $this->recordUnobserved($result, $client, 'unrecognised SubscriptionStatus '.json_encode($status));
+
+                continue;
+            }
+
+            // A known-but-inactive status IS an observation: the subscription really
+            // is gone, and its licence should be cleaned up.
+            if (! in_array($status, self::ACTIVE_SUBSCRIPTION_STATUSES, true)) {
                 continue;
             }
 
@@ -192,7 +236,7 @@ class AppRiverLicenseSyncService
                 // and would be zeroed by deactivateStale(). A vendor payload shape
                 // change must not silently suspend licences.
                 $unobserved++;
-                Log::warning("[AppRiverSync] Skipping subscription with missing key or product name for {$client->name}");
+                $this->recordUnobserved($result, $client, 'missing SubscriptionKey or ProductName');
 
                 continue;
             }
