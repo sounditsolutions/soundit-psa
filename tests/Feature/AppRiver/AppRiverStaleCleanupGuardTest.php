@@ -90,6 +90,34 @@ class AppRiverStaleCleanupGuardTest extends TestCase
         $this->assertSame('active', $licence->status, 'A failed detail call must not suspend a licence.');
     }
 
+    /**
+     * A malformed entry is skipped without throwing, so it is not a *failure* by any
+     * test the loop applies — but its licence is still absent from $seenLicenseIds.
+     * Eligibility for stale cleanup has to be positive observation, not absence of
+     * exceptions, or a vendor payload shape change silently suspends licences.
+     */
+    public function test_a_silently_skipped_malformed_subscription_also_blocks_stale_cleanup(): void
+    {
+        [, $licence] = $this->mappedClientWithLicence(4);
+
+        $mock = $this->createMock(AppRiverClient::class);
+        $mock->method('getSubscriptions')->willReturn([
+            [
+                'SubscriptionStatus' => 'Active',
+                'SubscriptionKey' => 'sub-1',
+                // ProductName missing — skipped by the loop with no exception
+            ],
+        ]);
+
+        $service = new AppRiverLicenseSyncService($mock);
+        $service->syncLicenses();
+
+        $licence->refresh();
+
+        $this->assertSame(4, $licence->quantity, 'A silently skipped subscription must not zero a licence.');
+        $this->assertSame('active', $licence->status);
+    }
+
     public function test_a_genuinely_absent_subscription_is_still_deactivated(): void
     {
         [, $licence] = $this->mappedClientWithLicence(4);

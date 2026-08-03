@@ -38,17 +38,18 @@ class AppRiverLicenseSyncService
 
         foreach ($clients as $appriverCustomerId => $client) {
             try {
-                [$ids, $failedSubscriptions] = $this->syncClientSubscriptions($client, $appriverCustomerId, $result);
+                [$ids, $unobserved] = $this->syncClientSubscriptions($client, $appriverCustomerId, $result);
                 $seenLicenseIds = array_merge($seenLicenseIds, $ids);
 
-                // A per-subscription failure is swallowed inside the loop below, so a
-                // client whose subscriptions ALL failed would otherwise be recorded as
-                // successfully synced and have its licences zeroed by deactivateStale().
-                // Credentials dying mid-run is exactly that shape.
-                if ($failedSubscriptions === 0) {
+                // Stale cleanup is destructive — it zeroes and suspends licences — so a
+                // client only qualifies when the run POSITIVELY observed every one of its
+                // subscriptions. Both a swallowed per-subscription failure and a silently
+                // skipped malformed entry leave a licence out of $seenLicenseIds without
+                // throwing, and either would otherwise have it zeroed.
+                if ($unobserved === 0) {
                     $successfulClientIds[] = $client->id;
                 } else {
-                    Log::warning("[AppRiverSync] {$failedSubscriptions} subscription(s) failed for {$client->name}; skipping stale cleanup for this client");
+                    Log::warning("[AppRiverSync] {$unobserved} subscription(s) unobserved for {$client->name}; skipping stale cleanup for this client");
                 }
             } catch (\Throwable $e) {
                 Log::error("[AppRiverSync] Failed for client {$client->name}: {$e->getMessage()}");
@@ -157,21 +158,24 @@ class AppRiverLicenseSyncService
      * Sync all subscriptions for a single client.
      *
      * @return array{0: array<int, int>, 1: int} seen licence ids, and the number of
-     *                                           subscriptions that failed. A non-zero
-     *                                           failure count must keep the client out
-     *                                           of the stale-cleanup set — see the
-     *                                           caller.
+     *                                           subscriptions the run did NOT observe —
+     *                                           failed or silently skipped. A non-zero
+     *                                           count must keep the client out of the
+     *                                           stale-cleanup set — see the caller.
      */
     private function syncClientSubscriptions(Client $client, string $customerId, SyncResult $result): array
     {
         $subscriptions = $this->client->getSubscriptions($customerId);
 
+        // Unreachable while getSubscriptions() is declared `: array`; kept as a
+        // belt-and-braces guard. Returns 1 unobserved rather than 0 so an unreadable
+        // payload can never mark the client eligible for stale cleanup.
         if (! is_array($subscriptions)) {
-            return [[], 0];
+            return [[], 1];
         }
 
         $seenLicenseIds = [];
-        $failedSubscriptions = 0;
+        $unobserved = 0;
 
         foreach ($subscriptions as $sub) {
             $status = $sub['SubscriptionStatus'] ?? '';
@@ -183,6 +187,13 @@ class AppRiverLicenseSyncService
             $productName = $sub['ProductName'] ?? null;
 
             if (! $subscriptionKey || ! $productName) {
+                // Not a *failure* by any test below, but the subscription was not
+                // observed either — its licence will be absent from $seenLicenseIds
+                // and would be zeroed by deactivateStale(). A vendor payload shape
+                // change must not silently suspend licences.
+                $unobserved++;
+                Log::warning("[AppRiverSync] Skipping subscription with missing key or product name for {$client->name}");
+
                 continue;
             }
 
@@ -223,13 +234,13 @@ class AppRiverLicenseSyncService
                     $result->updated++;
                 }
             } catch (\Throwable $e) {
-                $failedSubscriptions++;
+                $unobserved++;
                 Log::warning("[AppRiverSync] Failed subscription {$productName} for {$client->name}: {$e->getMessage()}");
                 $result->recordError("Subscription {$productName} for {$client->name}: {$e->getMessage()}");
             }
         }
 
-        return [$seenLicenseIds, $failedSubscriptions];
+        return [$seenLicenseIds, $unobserved];
     }
 
     /**
