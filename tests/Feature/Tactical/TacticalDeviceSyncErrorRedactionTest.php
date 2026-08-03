@@ -260,4 +260,60 @@ class TacticalDeviceSyncErrorRedactionTest extends TestCase
         $this->assertStringContainsString('AGENT-REDACT', $message, 'the failing agent must stay identifiable');
         $this->assertStringContainsString('asset lock', $message, 'the operator needs to know which step failed');
     }
+
+    // ---- psa #359: the two reads that sat ABOVE every guard ------------------
+    //
+    // safeFailure() was not incomplete from these; it was UNREACHABLE. A
+    // QueryException from either left syncDevices() entirely, reached
+    // IntegrationsController::syncTacticalDevices()'s catch (\Throwable) and was
+    // interpolated raw into a flashed message. Same sqlite-only driver
+    // constraint as the write guards above, and for the same reason.
+
+    private function skipUnlessSqlite(): void
+    {
+        $driver = \Illuminate\Support\Facades\DB::connection()->getDriverName();
+        if ($driver !== 'sqlite') {
+            $this->markTestSkipped("guard forces its failure with DDL and is sqlite-only; driver is {$driver}");
+        }
+    }
+
+    public function test_a_client_map_read_failure_is_redacted_and_does_not_escape_the_method(): void
+    {
+        $this->skipUnlessSqlite();
+
+        // Fails the very first read in syncDevices(), above every existing catch.
+        Schema::drop('clients');
+
+        // The pre-#359 behaviour was a QueryException thrown out of this call.
+        $result = $this->syncService([$this->agent()])->syncDevices();
+
+        $this->assertSame(1, $result->errors, 'the failure must be recorded, not thrown');
+        $message = $result->errorMessages[0] ?? '';
+
+        $this->assertStringContainsString('client map read', $message, 'the operator needs to know which read failed');
+        $this->assertStringContainsString('database client map read failed', $message);
+        $this->assertStringNotContainsString('select', strtolower($message), 'the statement itself leaked');
+        $this->assertStringNotContainsString('tactical_site_id', $message, 'schema text leaked');
+    }
+
+    public function test_a_queued_action_prescan_failure_degrades_rather_than_aborting_the_sync(): void
+    {
+        $this->skipUnlessSqlite();
+
+        Client::factory()->create(['tactical_site_id' => 'Acme|Main', 'is_active' => true]);
+
+        // Fails only the pre-scan; the agent loop below it can still reconcile.
+        Schema::drop('technician_runs');
+
+        $result = $this->syncService([$this->agent()])->syncDevices();
+
+        $message = implode(' | ', $result->errorMessages);
+        $this->assertStringContainsString('queued-action pre-scan', $message, 'the degraded step must be named');
+        $this->assertStringNotContainsString('select', strtolower($message), 'the statement itself leaked');
+
+        // Degrade, do not abort: losing the pre-scan costs a deferred dispatch,
+        // not the sync. A guard that returned early here would be a regression
+        // dressed as a fix, so pin the agent still landing.
+        $this->assertSame(1, $result->created + $result->updated, 'the agent should still have been reconciled');
+    }
 }

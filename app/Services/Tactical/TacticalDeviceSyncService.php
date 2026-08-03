@@ -132,12 +132,20 @@ class TacticalDeviceSyncService
      * returned verbatim by StaffTacticalAdminToolExecutor (an MCP surface), and
      * written to storage/logs/laravel.log, which has no rotation configured.
      *
-     * SCOPE — this covers exactly the three catches in this class that
-     * recordError() into SyncResult::$errorMessages: the agent fetch and the
-     * per-agent write in syncDevices(), and the asset lock in
-     * linkOrCreateAsset(). $context names which one, so the message stays
-     * truthful about what was attempted without reproducing what it was
-     * attempted with.
+     * SCOPE — this covers exactly the five catches in this class that
+     * recordError() into SyncResult::$errorMessages: the client-map read, the
+     * agent fetch, the queued-action pre-scan and the per-agent write in
+     * syncDevices(), and the asset lock in linkOrCreateAsset(). $context names
+     * which one, so the message stays truthful about what was attempted
+     * without reproducing what it was attempted with.
+     *
+     * The first and third were added for psa #359. They are the reason this
+     * scope note is worth keeping accurate: before them, two unguarded reads
+     * sat ABOVE every catch in this method, so a QueryException from either
+     * left syncDevices() entirely and was flashed raw by the controller. This
+     * helper was not incomplete from those reads — it was unreachable. A stale
+     * "three catches" here would have described a boundary that no longer
+     * holds, which is the failure mode this note exists to prevent.
      *
      * TWO THINGS IT DOES NOT COVER. Read this as the boundary, not as a
      * class-wide or surface-wide guarantee:
@@ -188,10 +196,26 @@ class TacticalDeviceSyncService
         $result = new SyncResult;
 
         // Build client mapping: tactical site key ("ClientName|SiteName") → PSA client_id
-        $clientMap = Client::whereNotNull('tactical_site_id')
-            ->operational()
-            ->pluck('id', 'tactical_site_id')
-            ->all();
+        //
+        // GUARDED because it is not optional. safeFailure() covers the three
+        // catches that recordError() into SyncResult, but this read sits ABOVE
+        // all of them: a QueryException here left the method entirely, reached
+        // IntegrationsController::syncTacticalDevices()'s `catch (\Throwable)`,
+        // and was interpolated raw into a flashed message — statement and bound
+        // values to the operator's browser (psa #359). safeFailure() was not
+        // incomplete from this read; it was UNREACHABLE from it.
+        try {
+            $clientMap = Client::whereNotNull('tactical_site_id')
+                ->operational()
+                ->pluck('id', 'tactical_site_id')
+                ->all();
+        } catch (\Throwable $e) {
+            $safe = $this->safeFailure($e, 'client map read');
+            Log::warning('[TacticalSync] Failed to read the client/site mapping', ['error' => $safe]);
+            $result->recordError("Failed to read the client/site mapping: {$safe}");
+
+            return $result;
+        }
 
         if (empty($clientMap)) {
             Log::info('[TacticalSync] No clients mapped to Tactical RMM sites');
@@ -223,14 +247,26 @@ class TacticalDeviceSyncService
         // Pre-sync status of agents that have queued offline actions, so an
         // offline→online flip in this run can dispatch their queue (bd psa-xr84)
         // without a per-agent lookup inside the loop.
-        $queuedAgentStatus = TacticalAsset::query()
-            ->whereIn('agent_id', TechnicianRun::query()
-                ->where('state', TechnicianRunState::QueuedOffline->value)
-                ->where('expires_at', '>', now())
-                ->whereNotNull('queued_agent_id')
-                ->distinct()
-                ->pluck('queued_agent_id'))
-            ->pluck('status', 'agent_id');
+        // Guarded for the same reason as the client map above, but it degrades
+        // rather than aborts: this lookup only decides whether an offline→online
+        // flip can dispatch a queued action. Losing it costs a deferred dispatch,
+        // not the sync — so record the failure and carry on with an empty map
+        // instead of discarding a run that can still reconcile every agent.
+        try {
+            $queuedAgentStatus = TacticalAsset::query()
+                ->whereIn('agent_id', TechnicianRun::query()
+                    ->where('state', TechnicianRunState::QueuedOffline->value)
+                    ->where('expires_at', '>', now())
+                    ->whereNotNull('queued_agent_id')
+                    ->distinct()
+                    ->pluck('queued_agent_id'))
+                ->pluck('status', 'agent_id');
+        } catch (\Throwable $e) {
+            $safe = $this->safeFailure($e, 'queued-action pre-scan');
+            Log::warning('[TacticalSync] Failed to pre-scan queued offline actions', ['error' => $safe]);
+            $result->recordError("Failed to pre-scan queued offline actions: {$safe}");
+            $queuedAgentStatus = collect();
+        }
 
         foreach ($agents as $agent) {
             $agentId = $agent['agent_id'] ?? null;
