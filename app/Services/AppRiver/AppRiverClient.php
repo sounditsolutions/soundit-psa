@@ -29,7 +29,12 @@ class AppRiverClient
 
         // Optional Guzzle handler override — tests inject a MockHandler here so the
         // OAuth error-envelope handling can be exercised without a live endpoint.
-        $handler = $this->config['handler'] ?? null;
+        // Honoured ONLY under the test runner and only when callable: this replaces
+        // the transport for both the API and the OAuth client, so a config source
+        // that ever grew a 'handler' key must not be able to reach it in production.
+        $handler = app()->runningUnitTests() && is_callable($this->config['handler'] ?? null)
+            ? $this->config['handler']
+            : null;
 
         // Drop only a null handler — a bare array_filter() would also swallow any
         // future falsy Guzzle option (e.g. 'http_errors' => false) with nothing in
@@ -118,10 +123,14 @@ class AppRiverClient
      * Clear the stored OAuth credentials.
      *
      * appriver_connected_at is deliberately KEPT. It is the only field that
-     * distinguishes "credentials died on <date>" from "never connected", and both
-     * the reconnect decision and any staleness reporting need it. It is read in
-     * two display paths only (IntegrationsController, AppRiverConfig::get) and
-     * rewritten by storeTokens() on the next successful connect.
+     * distinguishes "credentials died on <date>" from "never connected", which is
+     * what a reconnect decision and any staleness reporting both need.
+     *
+     * Readers, enumerated rather than assumed: IntegrationsController:156 passes it
+     * to the integrations view, which renders it in both the connected and the
+     * disconnected branch. AppRiverConfig::get('connected_at') exposes it but has
+     * no callers today. storeTokens() is the only writer and rewrites it on the
+     * next successful connect.
      */
     public function disconnect(): void
     {

@@ -166,6 +166,49 @@ class AppRiverNestedOauthErrorTest extends TestCase
     }
 
     /**
+     * The other lane into handleRefreshFailure(): the stored expiry is still in the
+     * future, so getAccessToken() does not pre-emptively refresh; the API call 401s
+     * and request() refreshes from its catch. Every other test here takes the
+     * expiry-driven path, so without this one a regression confined to the 401 lane
+     * would leave dead credentials in place with a fully green suite.
+     */
+    public function test_nested_invalid_grant_on_the_401_retry_lane_also_clears_credentials(): void
+    {
+        $this->seedConnectedTokens();
+        Setting::setValue('appriver_token_expires_at', now()->addMinutes(20)->toDateTimeString());
+
+        $mock = new MockHandler([
+            new ClientException(
+                'Unauthorized',
+                new Request('GET', 'customers/customer-1/subscriptions'),
+                new Response(401, [], '{"message":"unauthorized"}'),
+            ),
+            new ClientException(
+                'Client error',
+                new Request('POST', 'auth/token'),
+                new Response(400, [], '{"error":"invalid_request","error_description":"{\"error\":\"invalid_grant\"}"}'),
+            ),
+        ]);
+
+        $client = new AppRiverClient([
+            'base_url' => 'https://appriver.test',
+            'handler' => HandlerStack::create($mock),
+        ]);
+
+        try {
+            $client->getSubscriptions('customer-1');
+            $this->fail('Expected AppRiverClientException from the 401 retry lane.');
+        } catch (AppRiverClientException $e) {
+            $this->assertSame('invalid_grant', $e->oauthError);
+        }
+
+        $this->assertFalse(
+            AppRiverClient::isConnected(),
+            'The 401 retry lane must clear dead credentials just as the expiry lane does.'
+        );
+    }
+
+    /**
      * tokenRequest() is shared with the authorization-code exchange, so the nested
      * code is normalised there too. That is harmless: handleRefreshFailure() is
      * only reached from getAccessToken() and the 401-retry path, never from
