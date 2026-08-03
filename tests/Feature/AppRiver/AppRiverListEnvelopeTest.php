@@ -98,16 +98,21 @@ class AppRiverListEnvelopeTest extends TestCase
     }
 
     /**
-     * A bare `[]` is indistinguishable from `{}` and from an empty body once decoded,
-     * so it is deliberately refused too. An empty list that means it must arrive as
-     * {"Subscriptions":[]}, which the test above pins as still returning [].
+     * A bare `[]` is a list of none — the ordinary answer for a customer whose
+     * subscriptions have all been cancelled — and it must read as empty. Refusing it
+     * would exclude that client from stale cleanup on every run forever, leaving its
+     * cancelled licences billing at their old quantity, and exit the nightly command
+     * FAILURE with no operator remedy. It is distinguishable from `{}` / an empty body
+     * / garbage at the JSON level (which the three tests above still pin as raising),
+     * and that is where getSubscriptions() draws the line.
      */
-    public function test_a_bare_empty_list_is_refused_because_it_is_indistinguishable(): void
+    public function test_a_bare_empty_list_is_an_empty_subscription_list(): void
     {
-        $this->expectException(AppRiverClientException::class);
-        $this->expectExceptionMessageMatches('/empty or unparseable/');
-
-        $this->clientReturning('[]')->getSubscriptions('customer-1');
+        $this->assertSame(
+            [],
+            $this->clientReturning('[]')->getSubscriptions('customer-1'),
+            'A customer with no subscriptions must sync cleanly so its cancelled licences are cleaned up.'
+        );
     }
 
     public function test_a_customer_page_without_a_customers_array_raises(): void

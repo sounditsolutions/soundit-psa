@@ -220,29 +220,31 @@ class AppRiverClient
      */
     public function getSubscriptions(string $customerId): array
     {
-        $response = $this->get("customers/{$customerId}/subscriptions");
+        $jsonKind = null;
+        $response = $this->request('GET', "customers/{$customerId}/subscriptions", ['query' => []], $jsonKind);
 
         if (isset($response['Subscriptions']) && is_array($response['Subscriptions'])) {
             return $response['Subscriptions'];
         }
 
-        // request() returns `json_decode(...) ?? []`, so `{}`, an empty body and an
-        // unparseable one all arrive here as the same `[]` — and array_is_list([]) is
-        // true. Accepting that as a bare list would let an unrecognised envelope read
-        // as "no subscriptions": the client counts as fully observed, deactivateStale()
-        // zeroes and suspends every one of its licences, and the run exits SUCCESS.
-        // A genuinely empty list has a shape that says so — {"Subscriptions":[]},
-        // handled above — so an indistinguishable empty payload must raise instead.
-        if ($response === []) {
-            throw new AppRiverClientException('AppRiver subscription response was empty or unparseable; refusing to treat it as an empty subscription list — a genuinely empty list arrives as {"Subscriptions":[]}.');
+        // The bare list is the other shape this endpoint is known to return, and an EMPTY
+        // one is an ordinary answer: a customer whose last subscription was cancelled has
+        // none. Refusing it would withhold the stale cleanup this sync exists to perform
+        // from that client on every run, permanently, and pin the nightly command at
+        // FAILURE with no operator remedy. $jsonKind is what makes accepting it safe —
+        // `{}`, an empty body and an unparseable one all decode to the same `[]`, so the
+        // top-level JSON type is the only thing separating "the vendor sent a list of
+        // none" from "we could not read the envelope".
+        if ($jsonKind === 'list') {
+            return $response;
         }
 
-        // A non-empty bare list is the other shape this endpoint is known to return.
-        // Anything else is an envelope we do not recognise, and falling through to
-        // $response would hand the sync a "subscription list" it never saw — which is
-        // how a client ends up with every licence zeroed for want of an observation.
-        if (array_is_list($response)) {
-            return $response;
+        // Everything past here is an envelope we do not recognise. Returning $response
+        // would hand the sync a "subscription list" it never saw: the client would count
+        // as fully observed, deactivateStale() would zero and suspend every one of its
+        // licences, and the run would exit SUCCESS.
+        if ($response === []) {
+            throw new AppRiverClientException('AppRiver subscription response was empty or unparseable; refusing to treat it as an empty subscription list — a genuinely empty list arrives as a JSON list or {"Subscriptions":[]}.');
         }
 
         throw new AppRiverClientException('AppRiver subscription response has no Subscriptions array; refusing to treat the envelope as a subscription list.');
@@ -318,9 +320,17 @@ class AppRiverClient
 
     /**
      * Internal request method with Bearer token. Auto-retries once on 401 with token refresh.
+     *
+     * $jsonKind reports the top-level JSON type the body actually had — 'list', 'object',
+     * or null when nothing parseable arrived. `{}`, an empty body and an unparseable one
+     * all decode to the same `[]` as a genuinely empty JSON list, so a caller that must
+     * tell "a list of none" from "an envelope we could not read" cannot do it from the
+     * decoded value alone.
      */
-    private function request(string $method, string $endpoint, array $options = []): array
+    private function request(string $method, string $endpoint, array $options = [], ?string &$jsonKind = null): array
     {
+        $jsonKind = null;
+
         for ($attempt = 0; $attempt <= 1; $attempt++) {
             $token = $this->getAccessToken();
             $options['headers'] = [
@@ -331,7 +341,19 @@ class AppRiverClient
             try {
                 $response = $this->http->request($method, $endpoint, $options);
 
-                return json_decode((string) $response->getBody(), true) ?? [];
+                $body = (string) $response->getBody();
+                $decoded = json_decode($body, true);
+
+                if (! is_array($decoded)) {
+                    return [];
+                }
+
+                // A body that decoded to an array started with either `[` or `{`, and the
+                // two are indistinguishable afterwards — `[]` and `{}` both decode to `[]`.
+                // The first non-whitespace byte is the only surviving witness.
+                $jsonKind = str_starts_with(ltrim($body), '[') ? 'list' : 'object';
+
+                return $decoded;
             } catch (GuzzleException $e) {
                 $statusCode = method_exists($e, 'getResponse') && $e->getResponse()
                     ? $e->getResponse()->getStatusCode()
