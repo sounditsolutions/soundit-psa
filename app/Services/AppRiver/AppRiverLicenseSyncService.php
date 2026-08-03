@@ -38,9 +38,18 @@ class AppRiverLicenseSyncService
 
         foreach ($clients as $appriverCustomerId => $client) {
             try {
-                $ids = $this->syncClientSubscriptions($client, $appriverCustomerId, $result);
+                [$ids, $failedSubscriptions] = $this->syncClientSubscriptions($client, $appriverCustomerId, $result);
                 $seenLicenseIds = array_merge($seenLicenseIds, $ids);
-                $successfulClientIds[] = $client->id;
+
+                // A per-subscription failure is swallowed inside the loop below, so a
+                // client whose subscriptions ALL failed would otherwise be recorded as
+                // successfully synced and have its licences zeroed by deactivateStale().
+                // Credentials dying mid-run is exactly that shape.
+                if ($failedSubscriptions === 0) {
+                    $successfulClientIds[] = $client->id;
+                } else {
+                    Log::warning("[AppRiverSync] {$failedSubscriptions} subscription(s) failed for {$client->name}; skipping stale cleanup for this client");
+                }
             } catch (\Throwable $e) {
                 Log::error("[AppRiverSync] Failed for client {$client->name}: {$e->getMessage()}");
                 $result->recordError("Client {$client->name}: {$e->getMessage()}");
@@ -145,17 +154,24 @@ class AppRiverLicenseSyncService
     }
 
     /**
-     * Sync all subscriptions for a single client. Returns array of seen license IDs.
+     * Sync all subscriptions for a single client.
+     *
+     * @return array{0: array<int, int>, 1: int} seen licence ids, and the number of
+     *                                           subscriptions that failed. A non-zero
+     *                                           failure count must keep the client out
+     *                                           of the stale-cleanup set — see the
+     *                                           caller.
      */
     private function syncClientSubscriptions(Client $client, string $customerId, SyncResult $result): array
     {
         $subscriptions = $this->client->getSubscriptions($customerId);
 
         if (! is_array($subscriptions)) {
-            return [];
+            return [[], 0];
         }
 
         $seenLicenseIds = [];
+        $failedSubscriptions = 0;
 
         foreach ($subscriptions as $sub) {
             $status = $sub['SubscriptionStatus'] ?? '';
@@ -207,12 +223,13 @@ class AppRiverLicenseSyncService
                     $result->updated++;
                 }
             } catch (\Throwable $e) {
+                $failedSubscriptions++;
                 Log::warning("[AppRiverSync] Failed subscription {$productName} for {$client->name}: {$e->getMessage()}");
                 $result->recordError("Subscription {$productName} for {$client->name}: {$e->getMessage()}");
             }
         }
 
-        return $seenLicenseIds;
+        return [$seenLicenseIds, $failedSubscriptions];
     }
 
     /**
