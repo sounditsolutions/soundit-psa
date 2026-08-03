@@ -362,11 +362,16 @@ class AppRiverClient
                 // unconditional override would mask an actionable top-level code
                 // behind whatever the description happens to nest — the same bug in
                 // the opposite direction.
-                $nested = $this->nestedOauthError($oauthDesc);
+                [$nested, $nestedDesc] = $this->nestedOauthEnvelope($oauthDesc);
 
                 if ($nested !== null && in_array($nested, self::DEAD_CREDENTIAL_ERRORS, true)) {
                     $oauthError = $nested;
                 }
+
+                // Whatever the promotion decides, the nested envelope's own text is
+                // what a human should read — the raw description here is the JSON
+                // fragment that hid this bug in the first place.
+                $oauthDesc = $nestedDesc ?? $nested ?? $oauthDesc;
             }
 
             $message = $oauthDesc
@@ -375,6 +380,11 @@ class AppRiverClient
 
             Log::error("[AppRiver] Token request failed: {$message}", [
                 'oauth_error' => $oauthError,
+                // Recorded even when it is not promoted: a nested code outside
+                // DEAD_CREDENTIAL_ERRORS is exactly what the top-level field hides,
+                // and leaving it out of the log reproduces #389's diagnosability gap
+                // for every error that is not a credential death.
+                'oauth_error_nested' => $nested ?? null,
             ]);
 
             $ex = new AppRiverClientException($message, $e->getCode(), $e);
@@ -395,21 +405,33 @@ class AppRiverClient
      * AppRiver returns a generic top-level error ("invalid_request") and puts the
      * real OAuth error code in error_description as a nested JSON string, e.g.
      * {"error":"invalid_request","error_description":"{\"error\":\"invalid_grant\"}"}.
-     * Return the nested code when there is one, otherwise null.
+     *
+     * Returns [code, description] from that nested envelope, either element null when
+     * absent or empty. Accepts the description already decoded as an array as well as
+     * the JSON-string form, so a vendor that stops double-encoding does not silently
+     * reopen this bug.
+     *
+     * @return array{0: ?string, 1: ?string}
      */
-    private function nestedOauthError(mixed $description): ?string
+    private function nestedOauthEnvelope(mixed $description): array
     {
-        if (! is_string($description)) {
-            return null;
+        $nested = is_array($description)
+            ? $description
+            : (is_string($description) ? json_decode($description, true) : null);
+
+        if (! is_array($nested)) {
+            return [null, null];
         }
 
-        $nested = json_decode($description, true);
+        $code = isset($nested['error']) && is_string($nested['error']) && $nested['error'] !== ''
+            ? $nested['error']
+            : null;
 
-        if (! is_array($nested) || ! isset($nested['error']) || ! is_string($nested['error'])) {
-            return null;
-        }
+        $desc = isset($nested['error_description']) && is_string($nested['error_description']) && $nested['error_description'] !== ''
+            ? $nested['error_description']
+            : null;
 
-        return $nested['error'];
+        return [$code, $desc];
     }
 
     /**

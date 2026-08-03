@@ -165,6 +165,86 @@ class AppRiverNestedOauthErrorTest extends TestCase
         $this->assertFalse(AppRiverClient::isConnected());
     }
 
+    public function test_nested_invalid_client_is_promoted_too(): void
+    {
+        $this->seedConnectedTokens();
+
+        $client = $this->clientRespondingWith(
+            '{"error":"invalid_request","error_description":"{\"error\":\"invalid_client\"}"}'
+        );
+
+        try {
+            $client->getSubscriptions('customer-1');
+            $this->fail('Expected AppRiverClientException for a rejected client credential.');
+        } catch (AppRiverClientException $e) {
+            $this->assertSame('invalid_client', $e->oauthError);
+        }
+
+        $this->assertFalse(AppRiverClient::isConnected());
+    }
+
+    /**
+     * The nested envelope's own text is what an operator reads — the raw description
+     * is the JSON fragment that hid this bug. It reaches humans through the OAuth
+     * callback flash and the Test Connection result, so it must not be a blob.
+     */
+    public function test_operator_facing_message_uses_the_nested_description(): void
+    {
+        $this->seedConnectedTokens();
+
+        $client = $this->clientRespondingWith(
+            '{"error":"invalid_request","error_description":"{\"error\":\"invalid_grant\",\"error_description\":\"The refresh token has expired.\"}"}'
+        );
+
+        // Driven through exchangeCode() because that is the operator-facing path:
+        // AppRiverOAuthController flashes this message straight onto the integrations
+        // page. The refresh path replaces it with handleRefreshFailure()'s fixed
+        // "session expired" text, so it never shows the vendor's wording either way.
+        try {
+            $client->exchangeCode('stale-authorization-code');
+            $this->fail('Expected AppRiverClientException.');
+        } catch (AppRiverClientException $e) {
+            $this->assertStringContainsString('The refresh token has expired.', $e->getMessage());
+            $this->assertStringNotContainsString('{"error"', $e->getMessage());
+        }
+    }
+
+    /**
+     * A vendor that stops double-encoding must not silently reopen #389.
+     */
+    public function test_an_already_decoded_nested_envelope_is_read_the_same_way(): void
+    {
+        $this->seedConnectedTokens();
+
+        $client = $this->clientRespondingWith(
+            '{"error":"invalid_request","error_description":{"error":"invalid_grant"}}'
+        );
+
+        try {
+            $client->getSubscriptions('customer-1');
+            $this->fail('Expected AppRiverClientException.');
+        } catch (AppRiverClientException $e) {
+            $this->assertSame('invalid_grant', $e->oauthError);
+        }
+
+        $this->assertFalse(AppRiverClient::isConnected());
+    }
+
+    /**
+     * disconnect() is also reached from the Settings > Integrations disconnect action.
+     * Keeping connected_at changes that path too, so pin it deliberately rather than
+     * leaving it as an untested side effect.
+     */
+    public function test_a_user_initiated_disconnect_also_keeps_connected_at(): void
+    {
+        $this->seedConnectedTokens();
+
+        (new AppRiverClient(['base_url' => 'https://appriver.test']))->disconnect();
+
+        $this->assertFalse(AppRiverClient::isConnected());
+        $this->assertNotNull(Setting::getValue('appriver_connected_at'));
+    }
+
     /**
      * The other lane into handleRefreshFailure(): the stored expiry is still in the
      * future, so getAccessToken() does not pre-emptively refresh; the API call 401s
