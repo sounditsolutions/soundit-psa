@@ -20,15 +20,21 @@ class AppRiverClient
     ) {
         $baseUrl = rtrim($this->config['base_url'] ?? self::defaultBaseUrl(), '/');
 
-        $this->http = new Client([
+        // Optional Guzzle handler override — tests inject a MockHandler here so the
+        // OAuth error-envelope handling can be exercised without a live endpoint.
+        $handler = $this->config['handler'] ?? null;
+
+        $this->http = new Client(array_filter([
             'base_uri' => $baseUrl.self::API_PREFIX,
             'timeout' => 30,
-        ]);
+            'handler' => $handler,
+        ]));
 
-        $this->authHttp = new Client([
+        $this->authHttp = new Client(array_filter([
             'base_uri' => $baseUrl.'/',
             'timeout' => 15,
-        ]);
+            'handler' => $handler,
+        ]));
     }
 
     // ── OAuth2 Authorization Code Flow ──
@@ -319,6 +325,12 @@ class AppRiverClient
                 $body = json_decode((string) $e->getResponse()->getBody(), true);
                 $oauthError = $body['error'] ?? null;
                 $oauthDesc = $body['error_description'] ?? null;
+
+                // AppRiver nests the real OAuth error inside error_description as
+                // a JSON string (top-level error reads "invalid_request" even for a
+                // dead refresh token). Prefer the nested code when there is one, or
+                // handleRefreshFailure() never matches and credentials are never cleared.
+                $oauthError = $this->nestedOauthError($oauthDesc) ?? $oauthError;
             }
 
             $message = $oauthDesc
@@ -341,6 +353,27 @@ class AppRiverClient
         }
 
         return $data;
+    }
+
+    /**
+     * AppRiver returns a generic top-level error ("invalid_request") and puts the
+     * real OAuth error code in error_description as a nested JSON string, e.g.
+     * {"error":"invalid_request","error_description":"{\"error\":\"invalid_grant\"}"}.
+     * Return the nested code when there is one, otherwise null.
+     */
+    private function nestedOauthError(mixed $description): ?string
+    {
+        if (! is_string($description)) {
+            return null;
+        }
+
+        $nested = json_decode($description, true);
+
+        if (! is_array($nested) || ! isset($nested['error']) || ! is_string($nested['error'])) {
+            return null;
+        }
+
+        return $nested['error'];
     }
 
     /**
