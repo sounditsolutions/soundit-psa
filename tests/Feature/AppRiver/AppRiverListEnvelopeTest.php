@@ -115,6 +115,21 @@ class AppRiverListEnvelopeTest extends TestCase
         );
     }
 
+    /**
+     * A valid-JSON scalar decodes to neither an object nor a list. getSubscriptionDetail()
+     * has no envelope check, so returning [] there would write quantity 0 over a live
+     * licence with nothing counted unobserved and the run still exiting SUCCESS — the same
+     * zeroed-for-want-of-an-observation outcome the envelope guards exist to prevent.
+     */
+    public function test_a_json_scalar_body_is_not_a_readable_response(): void
+    {
+        $this->expectException(AppRiverClientException::class);
+        $this->expectExceptionMessageMatches('/JSON scalar/');
+
+        $this->clientReturning('"Subscription not found"')
+            ->getSubscriptionDetail('customer-1', 'sub-1');
+    }
+
     public function test_a_customer_page_without_a_customers_array_raises(): void
     {
         $this->expectException(AppRiverClientException::class);

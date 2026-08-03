@@ -344,7 +344,23 @@ class AppRiverClient
                 $body = (string) $response->getBody();
                 $decoded = json_decode($body, true);
 
-                if (! is_array($decoded)) {
+                // A body that is valid JSON but a SCALAR — `"Subscription not found"`, `5`,
+                // `true`, the shape vendors emit for a soft error — is not a response any
+                // caller can read. It used to raise a TypeError out of this `: array` method;
+                // returning [] instead would be silent on the paths with no envelope check
+                // (getSubscriptionDetail(), patch()): extractLicenseCounts([]) yields nulls,
+                // the licence is written quantity 0 / status 'active', nothing is counted
+                // unobserved and the run exits SUCCESS with the seat count zeroed. Stay as
+                // loud as the TypeError was, just legibly.
+                if ($decoded !== null && ! is_array($decoded)) {
+                    throw new AppRiverClientException("AppRiver {$method} {$endpoint} returned a JSON scalar, not an object or list; refusing to read it as a response body.");
+                }
+
+                // Nothing parseable arrived (empty body, garbage, literal `null`). It is
+                // indistinguishable from `{}` once decoded, so it returns [] with $jsonKind
+                // left null — the caller-side envelope guards are what turn that into a
+                // refusal rather than "a list of none".
+                if ($decoded === null) {
                     return [];
                 }
 
