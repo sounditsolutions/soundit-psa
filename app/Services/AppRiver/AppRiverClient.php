@@ -15,6 +15,13 @@ class AppRiverClient
 
     private const API_PREFIX = '/service/api/securecloud/';
 
+    /**
+     * OAuth error codes that mean the stored credentials are dead and must be
+     * cleared. Shared by the nested-code promotion in tokenRequest() and the
+     * match in handleRefreshFailure() so the two can never drift apart.
+     */
+    private const DEAD_CREDENTIAL_ERRORS = ['invalid_grant', 'invalid_client'];
+
     public function __construct(
         private readonly array $config = [],
     ) {
@@ -250,7 +257,7 @@ class AppRiverClient
      */
     private function handleRefreshFailure(AppRiverClientException $e): void
     {
-        if (in_array($e->oauthError, ['invalid_grant', 'invalid_client'], true)) {
+        if (in_array($e->oauthError, self::DEAD_CREDENTIAL_ERRORS, true)) {
             $this->disconnect();
             $clean = new AppRiverClientException(
                 'AppRiver session expired. Please reconnect in Settings > Integrations > AppRiver.',
@@ -339,9 +346,18 @@ class AppRiverClient
 
                 // AppRiver nests the real OAuth error inside error_description as
                 // a JSON string (top-level error reads "invalid_request" even for a
-                // dead refresh token). Prefer the nested code when there is one, or
-                // handleRefreshFailure() never matches and credentials are never cleared.
-                $oauthError = $this->nestedOauthError($oauthDesc) ?? $oauthError;
+                // dead refresh token), so handleRefreshFailure() never matches and
+                // credentials are never cleared.
+                //
+                // Promote the nested code ONLY when it names a dead credential. An
+                // unconditional override would mask an actionable top-level code
+                // behind whatever the description happens to nest — the same bug in
+                // the opposite direction.
+                $nested = $this->nestedOauthError($oauthDesc);
+
+                if ($nested !== null && in_array($nested, self::DEAD_CREDENTIAL_ERRORS, true)) {
+                    $oauthError = $nested;
+                }
             }
 
             $message = $oauthDesc

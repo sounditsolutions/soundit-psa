@@ -19,6 +19,9 @@ use Tests\TestCase;
  * the real code is nested one field over. Before the fix, handleRefreshFailure()
  * read the top-level "invalid_request", never matched, and never cleared the dead
  * credentials, so isConnected() stayed true and the UI kept claiming connected.
+ *
+ * Every test asserts inside a catch block, so every one calls fail() after the act:
+ * without it, a regression that stops throwing would pass these vacuously.
  */
 class AppRiverNestedOauthErrorTest extends TestCase
 {
@@ -88,8 +91,36 @@ class AppRiverNestedOauthErrorTest extends TestCase
 
         try {
             $client->getSubscriptions('customer-1');
+            $this->fail('Expected AppRiverClientException for a rejected client credential.');
         } catch (AppRiverClientException $e) {
             $this->assertSame('invalid_client', $e->oauthError);
+        }
+
+        $this->assertFalse(AppRiverClient::isConnected());
+    }
+
+    /**
+     * The nested code must never MASK an actionable top-level one. An
+     * unconditional override would reproduce #389 in the opposite direction:
+     * a real top-level invalid_grant hidden behind whatever the description nests.
+     */
+    public function test_nested_code_does_not_mask_an_actionable_top_level_code(): void
+    {
+        $this->seedConnectedTokens();
+
+        $client = $this->clientRespondingWith(
+            '{"error":"invalid_grant","error_description":"{\"error\":\"server_error\",\"trace\":\"abc\"}"}'
+        );
+
+        try {
+            $client->getSubscriptions('customer-1');
+            $this->fail('Expected AppRiverClientException for a dead refresh token.');
+        } catch (AppRiverClientException $e) {
+            $this->assertSame(
+                'invalid_grant',
+                $e->oauthError,
+                'A nested non-credential code must not displace an actionable top-level one.'
+            );
         }
 
         $this->assertFalse(AppRiverClient::isConnected());
@@ -105,8 +136,9 @@ class AppRiverNestedOauthErrorTest extends TestCase
 
         try {
             $client->getSubscriptions('customer-1');
-        } catch (AppRiverClientException) {
-            // expected
+            $this->fail('Expected AppRiverClientException for a transient vendor error.');
+        } catch (AppRiverClientException $e) {
+            $this->assertSame('temporarily_unavailable', $e->oauthError);
         }
 
         $this->assertTrue(
@@ -125,10 +157,38 @@ class AppRiverNestedOauthErrorTest extends TestCase
 
         try {
             $client->getSubscriptions('customer-1');
+            $this->fail('Expected AppRiverClientException for an expired refresh token.');
         } catch (AppRiverClientException $e) {
             $this->assertSame('invalid_grant', $e->oauthError);
         }
 
         $this->assertFalse(AppRiverClient::isConnected());
+    }
+
+    /**
+     * tokenRequest() is shared with the authorization-code exchange, so the nested
+     * code is normalised there too. That is harmless: handleRefreshFailure() is
+     * only reached from getAccessToken() and the 401-retry path, never from
+     * exchangeCode(), so a failed re-connect cannot clear a live credential set.
+     */
+    public function test_failed_code_exchange_does_not_clear_stored_credentials(): void
+    {
+        $this->seedConnectedTokens();
+
+        $client = $this->clientRespondingWith(
+            '{"error":"invalid_request","error_description":"{\"error\":\"invalid_grant\"}"}'
+        );
+
+        try {
+            $client->exchangeCode('stale-authorization-code');
+            $this->fail('Expected AppRiverClientException for a stale authorization code.');
+        } catch (AppRiverClientException $e) {
+            $this->assertSame('invalid_grant', $e->oauthError);
+        }
+
+        $this->assertTrue(
+            AppRiverClient::isConnected(),
+            'A failed re-connect must not clear credentials that are still stored.'
+        );
     }
 }
