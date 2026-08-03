@@ -189,8 +189,21 @@ class AppRiverClient
                 'offset' => $offset,
             ]);
 
-            $customers = $response['Customers'] ?? [];
-            $totalCount = $response['TotalCount'] ?? 0;
+            // An unrecognised envelope must NOT read as "no customers". The mapping
+            // page renders one row per returned customer and its save treats the
+            // submission as the complete world — it clears every mapping and reapplies
+            // only what was posted — so a silently truncated list unmaps clients and
+            // permanently zeroes their licences. Absent is not empty.
+            if (! isset($response['Customers']) || ! is_array($response['Customers'])) {
+                throw new AppRiverClientException('AppRiver customer list response has no Customers array; refusing to treat it as an empty list.');
+            }
+
+            if (! isset($response['TotalCount']) || ! is_numeric($response['TotalCount'])) {
+                throw new AppRiverClientException('AppRiver customer list response has no TotalCount; refusing to treat the first page as complete.');
+            }
+
+            $customers = $response['Customers'];
+            $totalCount = (int) $response['TotalCount'];
 
             foreach ($customers as $customer) {
                 $all[] = $customer;
@@ -209,7 +222,19 @@ class AppRiverClient
     {
         $response = $this->get("customers/{$customerId}/subscriptions");
 
-        return $response['Subscriptions'] ?? $response;
+        if (isset($response['Subscriptions']) && is_array($response['Subscriptions'])) {
+            return $response['Subscriptions'];
+        }
+
+        // A bare list is the other shape this endpoint is known to return. Anything
+        // else is an envelope we do not recognise, and falling through to $response
+        // would hand the sync a "subscription list" it never saw — which is how a
+        // client ends up with every licence zeroed for want of an observation.
+        if (array_is_list($response)) {
+            return $response;
+        }
+
+        throw new AppRiverClientException('AppRiver subscription response has no Subscriptions array; refusing to treat the envelope as a subscription list.');
     }
 
     /**
