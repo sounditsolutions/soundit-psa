@@ -71,7 +71,11 @@ class AppRiverNestedOauthErrorTest extends TestCase
             'Dead credentials must be cleared so the integrations page stops reporting connected.'
         );
         $this->assertNull(Setting::getEncrypted('appriver_refresh_token'));
-        $this->assertNull(Setting::getValue('appriver_connected_at'));
+        $this->assertNotNull(
+            Setting::getValue('appriver_connected_at'),
+            'connected_at must survive a disconnect — it is the only field separating '.
+            '"credentials died on a date" from "never connected".'
+        );
     }
 
     public function test_top_level_error_code_is_still_honoured(): void

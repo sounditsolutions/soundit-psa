@@ -24,17 +24,22 @@ class AppRiverClient
         // OAuth error-envelope handling can be exercised without a live endpoint.
         $handler = $this->config['handler'] ?? null;
 
+        // Drop only a null handler — a bare array_filter() would also swallow any
+        // future falsy Guzzle option (e.g. 'http_errors' => false) with nothing in
+        // the diff to show for it.
+        $notNull = static fn (mixed $value): bool => $value !== null;
+
         $this->http = new Client(array_filter([
             'base_uri' => $baseUrl.self::API_PREFIX,
             'timeout' => 30,
             'handler' => $handler,
-        ]));
+        ], $notNull));
 
         $this->authHttp = new Client(array_filter([
             'base_uri' => $baseUrl.'/',
             'timeout' => 15,
             'handler' => $handler,
-        ]));
+        ], $notNull));
     }
 
     // ── OAuth2 Authorization Code Flow ──
@@ -103,13 +108,19 @@ class AppRiverClient
     }
 
     /**
-     * Clear all stored OAuth tokens.
+     * Clear the stored OAuth credentials.
+     *
+     * appriver_connected_at is deliberately KEPT. It is the only field that
+     * distinguishes "credentials died on <date>" from "never connected", and both
+     * the reconnect decision and any staleness reporting need it. It is read in
+     * two display paths only (IntegrationsController, AppRiverConfig::get) and
+     * rewritten by storeTokens() on the next successful connect.
      */
     public function disconnect(): void
     {
         foreach ([
             'appriver_access_token', 'appriver_refresh_token',
-            'appriver_token_expires_at', 'appriver_connected_at',
+            'appriver_token_expires_at',
         ] as $key) {
             Setting::where('key', $key)->delete();
         }
