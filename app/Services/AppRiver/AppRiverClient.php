@@ -226,10 +226,21 @@ class AppRiverClient
             return $response['Subscriptions'];
         }
 
-        // A bare list is the other shape this endpoint is known to return. Anything
-        // else is an envelope we do not recognise, and falling through to $response
-        // would hand the sync a "subscription list" it never saw — which is how a
-        // client ends up with every licence zeroed for want of an observation.
+        // request() returns `json_decode(...) ?? []`, so `{}`, an empty body and an
+        // unparseable one all arrive here as the same `[]` — and array_is_list([]) is
+        // true. Accepting that as a bare list would let an unrecognised envelope read
+        // as "no subscriptions": the client counts as fully observed, deactivateStale()
+        // zeroes and suspends every one of its licences, and the run exits SUCCESS.
+        // A genuinely empty list has a shape that says so — {"Subscriptions":[]},
+        // handled above — so an indistinguishable empty payload must raise instead.
+        if ($response === []) {
+            throw new AppRiverClientException('AppRiver subscription response was empty or unparseable; refusing to treat it as an empty subscription list — a genuinely empty list arrives as {"Subscriptions":[]}.');
+        }
+
+        // A non-empty bare list is the other shape this endpoint is known to return.
+        // Anything else is an envelope we do not recognise, and falling through to
+        // $response would hand the sync a "subscription list" it never saw — which is
+        // how a client ends up with every licence zeroed for want of an observation.
         if (array_is_list($response)) {
             return $response;
         }

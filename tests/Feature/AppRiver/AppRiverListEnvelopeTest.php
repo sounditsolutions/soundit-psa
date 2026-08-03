@@ -67,6 +67,49 @@ class AppRiverListEnvelopeTest extends TestCase
         );
     }
 
+    /**
+     * `{}` decodes to `[]` in PHP and array_is_list([]) is true, so the bare-list
+     * branch used to accept an unrecognised empty envelope as "no subscriptions" —
+     * which is the data-loss path this class exists to close: the client reads as
+     * fully observed and stale cleanup zeroes every one of its licences.
+     */
+    public function test_an_empty_object_envelope_is_not_no_subscriptions(): void
+    {
+        $this->expectException(AppRiverClientException::class);
+        $this->expectExceptionMessageMatches('/empty or unparseable/');
+
+        $this->clientReturning('{}')->getSubscriptions('customer-1');
+    }
+
+    public function test_an_empty_body_is_not_no_subscriptions(): void
+    {
+        $this->expectException(AppRiverClientException::class);
+        $this->expectExceptionMessageMatches('/empty or unparseable/');
+
+        $this->clientReturning('')->getSubscriptions('customer-1');
+    }
+
+    public function test_an_unparseable_body_is_not_no_subscriptions(): void
+    {
+        $this->expectException(AppRiverClientException::class);
+        $this->expectExceptionMessageMatches('/empty or unparseable/');
+
+        $this->clientReturning('<html>502 Bad Gateway</html>')->getSubscriptions('customer-1');
+    }
+
+    /**
+     * A bare `[]` is indistinguishable from `{}` and from an empty body once decoded,
+     * so it is deliberately refused too. An empty list that means it must arrive as
+     * {"Subscriptions":[]}, which the test above pins as still returning [].
+     */
+    public function test_a_bare_empty_list_is_refused_because_it_is_indistinguishable(): void
+    {
+        $this->expectException(AppRiverClientException::class);
+        $this->expectExceptionMessageMatches('/empty or unparseable/');
+
+        $this->clientReturning('[]')->getSubscriptions('customer-1');
+    }
+
     public function test_a_customer_page_without_a_customers_array_raises(): void
     {
         $this->expectException(AppRiverClientException::class);
