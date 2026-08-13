@@ -16,7 +16,7 @@ class McpToolRegistryTest extends TestCase
     {
         $groups = McpToolRegistry::groups();
 
-        $this->assertSame(['general', 'client', 'integration', 'cipp_write', 'tactical_action', 'tactical_admin', 'wiki_write', 'psa_action', 'psa_records', 'psa_read', 'intake_manage', 'taxonomy', 'calendar', 'calendar_write', 'bridge'], array_keys($groups));
+        $this->assertSame(['general', 'client', 'integration', 'cipp_write', 'cipp_admin', 'tactical_action', 'tactical_admin', 'wiki_write', 'psa_action', 'psa_records', 'psa_read', 'intake_manage', 'taxonomy', 'calendar', 'calendar_write', 'bridge'], array_keys($groups));
 
         $names = fn (string $group): array => array_column($groups[$group]['tools'], 'name');
 
@@ -36,6 +36,8 @@ class McpToolRegistryTest extends TestCase
         $this->assertContains('tactical_create_client_site', $names('tactical_admin'));
         $this->assertContains('tactical_set_default_alert_template', $names('tactical_admin'));
         $this->assertContains('tactical_get_or_create_installer', $names('tactical_admin'));
+        $this->assertContains('cipp_sync_people_now', $names('cipp_admin'));
+        $this->assertNotContains('cipp_sync_people_now', $names('cipp_write'));
         $this->assertContains('create_ticket', $names('psa_action'));
         $this->assertContains('send_email', $names('psa_action'));
         $this->assertNotContains('stage_email', $names('psa_action'));
