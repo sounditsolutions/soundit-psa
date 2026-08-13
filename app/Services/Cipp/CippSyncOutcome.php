@@ -22,10 +22,14 @@ enum CippSyncOutcome: string
     case NoUsersRead = 'no_users_read';
 
     /**
-     * The tenant list was read but this pass matched nobody — the group filter excluded
-     * everyone, or no user survived processing. A transient failure on the per-user group
-     * endpoint produces that exactly as readily as an empty group, so the roster counts as
-     * unverified and stale cleanup is SKIPPED rather than deactivating every synced person.
+     * The tenant list was read but this pass did not account for every user in it — the
+     * group filter excluded everyone, SOME group lookups or per-user syncs failed, or no
+     * user survived processing. A transient upstream failure produces each of those exactly
+     * as readily as a real change, and a user it hid is missing from the seen-list in the
+     * same way a departed user is, so the roster counts as unverified and stale cleanup is
+     * SKIPPED rather than deactivating every person this pass could not confirm. Partial by
+     * definition: whatever the loop created/updated still stands and is reported. The
+     * outcome does NOT say which cause fired — a caller must not assert one.
      */
     case RosterUnverified = 'roster_unverified';
 }

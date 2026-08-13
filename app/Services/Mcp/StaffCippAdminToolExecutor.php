@@ -156,18 +156,33 @@ class StaffCippAdminToolExecutor
         }
 
         // Neither a lock skip nor a read that came back with nothing usable is a completed
-        // sync. An empty tenant payload, or a group filter that matched nobody (which one
-        // failing group lookup produces as readily as an empty group), leaves the roster
-        // unknown — answering "no changes" there is the wrong "the person does not exist".
+        // sync. An empty tenant payload, or a pass that could not verify the roster, leaves
+        // it unknown — answering "no changes" there is the wrong "the person does not exist".
+        //
+        // RosterUnverified has SEVERAL causes (an empty group filter, a group lookup that
+        // failed, a per-user sync that failed, nobody surviving processing) and the outcome
+        // does not say which — a client with no group configured reaches it too, so naming
+        // the group filter would hand that client a false diagnosis. The per-user errors the
+        // sync recorded are the only thing that names the real cause, so they go to the
+        // caller AND the audit row instead of being dropped, along with anything the
+        // interrupted pass had already written.
         if ($outcome !== CippSyncOutcome::Synced && $outcome !== CippSyncOutcome::SkippedLocked) {
-            $this->auditAttempt($tool, 'error', $clientId, $contentHash, 'CIPP person sync read nothing usable ('.$outcome->value.'); roster left unverified.', $actorLabel);
+            $auditSummary = 'CIPP person sync did not verify the roster ('.$outcome->value.'); no stale cleanup ran. Written: '
+                .$result->created.' created, '.$result->updated.' updated, '.$result->errors.' user error(s).';
+            if ($result->errorMessages !== []) {
+                $auditSummary .= ' '.implode(' | ', array_slice($result->errorMessages, 0, 5));
+            }
+            $this->auditAttempt($tool, 'error', $clientId, $contentHash, $auditSummary, $actorLabel);
 
             return [
                 'error' => $outcome === CippSyncOutcome::NoUsersRead
                     ? 'CIPP returned no user list for this tenant, so nothing was read and nothing was written. This is NOT evidence that a person is absent from M365 — treat the roster as unknown and retry or check CIPP.'
-                    : 'CIPP returned users but the tenant group filter matched none of them, which a failing group lookup produces exactly as readily as an empty group. Nothing was written and no roster cleanup ran — treat the roster as unknown.',
+                    : 'CIPP returned users but this pass could not verify the tenant roster: a group filter may have matched nobody, a per-user group lookup may have failed, or no user may have survived processing — the sync does not report which, and the errors below are what name it. No roster cleanup ran, so nothing was deactivated; anything the pass did write is counted below. Treat the roster as unknown rather than as evidence a person is absent.',
                 'synced' => false,
                 'roster_verified' => false,
+                'created' => $result->created,
+                'updated' => $result->updated,
+                'errors' => $result->errorMessages,
             ];
         }
 

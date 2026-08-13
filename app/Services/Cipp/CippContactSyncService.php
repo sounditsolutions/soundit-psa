@@ -93,9 +93,16 @@ class CippContactSyncService
             return CippSyncOutcome::NoUsersRead;
         }
 
+        // A roster is verified only if EVERY user this pass read was accounted for. Stale
+        // cleanup deactivates whoever is missing from the seen-list, and a user an upstream
+        // failure hid is missing in exactly the way a departed user is — so the test is
+        // "nobody unaccounted for", not "at least one survivor".
+        $rosterVerified = true;
+
         // Filter by group if configured
         if ($groupId) {
-            $users = $this->filterByGroup($users, $tenantDomain, $groupId);
+            $groupLookupFailures = 0;
+            $users = $this->filterByGroup($users, $tenantDomain, $groupId, $groupLookupFailures);
 
             // filterByGroup() excludes every user whose group check threw, so one bad spell
             // on the group endpoint yields an empty set that looks identical to an empty
@@ -105,7 +112,21 @@ class CippContactSyncService
 
                 return CippSyncOutcome::RosterUnverified;
             }
+
+            // A PARTIAL failure is no more verified than a total one: 199 failed lookups and
+            // one success is not "one member", it is one member and 199 unknowns. Keep the
+            // users we could read (creates/updates are additive), but the cleanup below must
+            // not run — one surviving lookup would otherwise deactivate the rest.
+            if ($groupLookupFailures > 0) {
+                Log::warning("[CippContactSync] {$groupLookupFailures} group lookup(s) failed for {$client->name} — roster unverified, stale cleanup will be skipped");
+                $rosterVerified = false;
+            }
         }
+
+        // Per-user failures unverify the roster the same way — a user whose syncUser() threw
+        // never reaches $seenPersonIds. Measure from a baseline, not from zero: the scheduled
+        // pass shares ONE SyncResult across every client.
+        $errorsBefore = $result->errors;
 
         $seenPersonIds = [];
 
@@ -148,6 +169,17 @@ class CippContactSyncService
         // access. Skip cleanup and tell the caller the roster is unverified instead.
         if (empty($seenPersonIds)) {
             Log::warning("[CippContactSync] No users matched for {$client->name} — skipping stale cleanup, roster unverified");
+
+            return CippSyncOutcome::RosterUnverified;
+        }
+
+        // The same invariant one step down, and the reason the guard above is not enough:
+        // cleanup runs ONLY against a roster this pass verified end to end. Any user hidden
+        // by a failed group lookup or a failed syncUser() is absent from $seenPersonIds and
+        // would be deactivated as though the tenant had removed them. A partial pass keeps
+        // what it wrote and reports the roster unverified instead.
+        if (! $rosterVerified || $result->errors > $errorsBefore) {
+            Log::warning("[CippContactSync] Roster for {$client->name} not fully verified this pass — skipping stale cleanup");
 
             return CippSyncOutcome::RosterUnverified;
         }
@@ -277,8 +309,13 @@ class CippContactSyncService
     /**
      * Filter users to only those in the specified group.
      * Caps at 200 users for group membership checks to prevent API overload.
+     *
+     * $failedLookups counts the users excluded because their group check THREW, not because
+     * they are not members. The returned list cannot tell the two apart, and treating an
+     * unknown as a non-member is precisely what deactivates a live roster — so the count is
+     * reported out rather than left in a debug log.
      */
-    private function filterByGroup(array $users, string $tenantDomain, string $groupId): array
+    private function filterByGroup(array $users, string $tenantDomain, string $groupId, int &$failedLookups): array
     {
         if (count($users) > 200) {
             Log::warning("[CippContactSync] Tenant {$tenantDomain} has ".count($users).' users — skipping group filter (cap: 200)');
@@ -307,7 +344,9 @@ class CippContactSyncService
                 }
             } catch (\Throwable $e) {
                 Log::debug("[CippContactSync] Failed to check groups for user {$userId}: {$e->getMessage()}");
-                // Skip user on group check failure (safe default — exclude)
+                // Skip user on group check failure (safe default — exclude), but REPORT it:
+                // an excluded unknown must never reach stale cleanup as a non-member.
+                $failedLookups++;
             }
         }
 

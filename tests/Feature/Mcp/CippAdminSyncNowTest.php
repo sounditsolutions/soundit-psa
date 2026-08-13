@@ -87,9 +87,13 @@ class CippAdminSyncNowTest extends TestCase
      *
      * @param  CippSyncOutcome  $outcome  what syncClientContacts() reports — only Synced
      *                                    means the tenant was actually read.
+     * @param  array<int, string>  $errorMessages  per-user failures the sync recorded before
+     *                                             returning — recorded for EVERY outcome,
+     *                                             since an unverified roster is usually
+     *                                             unverified because those users failed.
      * @return object{count: int} call counter, live for the test's duration
      */
-    private function mockSync(CippSyncOutcome $outcome, int $created = 0, int $updated = 0): object
+    private function mockSync(CippSyncOutcome $outcome, int $created = 0, int $updated = 0, array $errorMessages = []): object
     {
         $calls = new class
         {
@@ -98,11 +102,14 @@ class CippAdminSyncNowTest extends TestCase
 
         $mock = Mockery::mock(CippContactSyncService::class);
         $mock->shouldReceive('syncClientContacts')
-            ->andReturnUsing(function (Client $client, SyncResult $result, bool $dryRun = false) use ($outcome, $created, $updated, $calls): CippSyncOutcome {
+            ->andReturnUsing(function (Client $client, SyncResult $result, bool $dryRun = false) use ($outcome, $created, $updated, $errorMessages, $calls): CippSyncOutcome {
                 $calls->count++;
                 if ($outcome === CippSyncOutcome::Synced) {
                     $result->created += $created;
                     $result->updated += $updated;
+                }
+                foreach ($errorMessages as $message) {
+                    $result->recordError($message);
                 }
 
                 return $outcome;
@@ -390,6 +397,40 @@ class CippAdminSyncNowTest extends TestCase
         $this->assertFalse($result['synced'] ?? true);
         $this->assertFalse($result['roster_verified'] ?? true);
         $this->assertStringContainsString('group filter', (string) ($result['error'] ?? ''));
+    }
+
+    /**
+     * RosterUnverified is reachable with NO group configured (the post-loop guard fires when
+     * no user survived processing), so the answer must not assert the group-filter cause —
+     * and the per-user errors, which are the only record of the real one, must reach both the
+     * response and the audit row instead of being dropped by the early return.
+     */
+    public function test_unverified_roster_states_no_false_cause_and_surfaces_the_recorded_errors(): void
+    {
+        $this->configureCipp();
+        $this->configureAiActor();
+        $client = Client::factory()->create([
+            'name' => 'NoGroup',
+            'cipp_tenant_domain' => 'nogroup.onmicrosoft.test',
+        ]);
+        $this->mockSync(CippSyncOutcome::RosterUnverified, errorMessages: [
+            'NoGroup: unique constraint rejected the row',
+        ]);
+
+        $result = $this->decodedResult($this->callTool($this->token([self::TOOL]), self::TOOL, [
+            'client_id' => $client->id,
+            'reason' => 'new hire is missing from the PSA',
+        ]));
+
+        $this->assertFalse($result['roster_verified'] ?? true);
+        $this->assertFalse($result['synced'] ?? true);
+        // The client has no group filter — the tool must not tell the agent one matched nobody.
+        $this->assertStringNotContainsString('matched none of them', (string) ($result['error'] ?? ''));
+        $this->assertContains('NoGroup: unique constraint rejected the row', $result['errors'] ?? []);
+
+        $log = TechnicianActionLog::where('action_type', self::TOOL)
+            ->where('result_status', 'error')->firstOrFail();
+        $this->assertStringContainsString('unique constraint', (string) $log->summary);
     }
 
     /**
