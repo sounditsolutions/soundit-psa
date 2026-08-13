@@ -20,6 +20,7 @@ use App\Services\Chet\OperatorBridgeToolExecutor;
 use App\Services\Chet\OperatorBridgeTools;
 use App\Services\Cipp\CippMcpDynamicToolExecutor;
 use App\Services\Mcp\StaffCalendarToolExecutor;
+use App\Services\Mcp\StaffCippAdminToolExecutor;
 use App\Services\Mcp\StaffCippWriteToolExecutor;
 use App\Services\Mcp\StaffPsaActionToolExecutor;
 use App\Services\Mcp\StaffPsaTaxonomyToolExecutor;
@@ -445,11 +446,12 @@ class McpStaffController extends Controller
             $isTacticalActionTool = $this->isTacticalActionTool((string) $t['name']);
             $isTacticalAdminTool = $this->isTacticalAdminTool((string) $t['name']);
             $requiresTacticalAdminClientScope = $isTacticalAdminTool && StaffTacticalAdminToolExecutor::requiresClient((string) $t['name']);
-            $isClientScoped = ! isset($generalNames[$t['name']]) || $requiresExplicitClientScope || $isPsaActionTool || $isCippWriteTool || $isTacticalActionTool || $requiresTacticalAdminClientScope;
+            $requiresCippAdminClientScope = $this->isCippAdminTool((string) $t['name']) && StaffCippAdminToolExecutor::requiresClient((string) $t['name']);
+            $isClientScoped = ! isset($generalNames[$t['name']]) || $requiresExplicitClientScope || $isPsaActionTool || $isCippWriteTool || $isTacticalActionTool || $requiresTacticalAdminClientScope || $requiresCippAdminClientScope;
 
             if ($isClientScoped) {
                 $props = (array) ($schema['properties'] ?? []);
-                $clientIdRequired = $requiresExplicitClientScope || ($isPsaActionTool && ! $isPsaTicketScopedTool) || $isCippWriteTool || $isTacticalActionTool || $requiresTacticalAdminClientScope || ! in_array($t['name'], $clientIdOptionalFor, true);
+                $clientIdRequired = $requiresExplicitClientScope || ($isPsaActionTool && ! $isPsaTicketScopedTool) || $isCippWriteTool || $isTacticalActionTool || $requiresTacticalAdminClientScope || $requiresCippAdminClientScope || ! in_array($t['name'], $clientIdOptionalFor, true);
                 if (! $isPsaTicketScopedTool) {
                     $props['client_id'] = [
                         'type' => 'integer',
@@ -874,6 +876,20 @@ class McpStaffController extends Controller
             ]);
         }
 
+        if ($this->isCippAdminTool((string) $name) && StaffCippAdminToolExecutor::requiresClient((string) $name) && $clientId === null) {
+            $message = "client_id is required for {$name}.";
+            $this->audit('tools/call', (string) $name, $auditArguments, 'error', $message, $start, $request);
+
+            return response()->json([
+                'jsonrpc' => '2.0',
+                'id' => $id,
+                'result' => [
+                    'content' => [['type' => 'text', 'text' => $message]],
+                    'isError' => true,
+                ],
+            ]);
+        }
+
         if ($this->isTacticalAdminTool((string) $name) && StaffTacticalAdminToolExecutor::requiresClient((string) $name) && $clientId === null) {
             $message = "client_id is required for {$name}.";
             $this->audit('tools/call', (string) $name, $auditArguments, 'error', $message, $start, $request);
@@ -956,6 +972,13 @@ class McpStaffController extends Controller
                 $result = app(ChetDataSurfaceToolExecutor::class)->execute((string) $name, $arguments, $clientId);
             } elseif ($this->isCippWriteTool((string) $name)) {
                 $result = app(StaffCippWriteToolExecutor::class)->execute(
+                    (string) $name,
+                    $arguments,
+                    (int) $clientId,
+                    $this->actorLabel($request),
+                );
+            } elseif ($this->isCippAdminTool((string) $name)) {
+                $result = app(StaffCippAdminToolExecutor::class)->execute(
                     (string) $name,
                     $arguments,
                     (int) $clientId,
@@ -2464,6 +2487,11 @@ class McpStaffController extends Controller
     private function isCippWriteTool(string $toolName): bool
     {
         return StaffCippWriteToolExecutor::handles($toolName);
+    }
+
+    private function isCippAdminTool(string $toolName): bool
+    {
+        return StaffCippAdminToolExecutor::handles($toolName);
     }
 
     private function isTacticalActionTool(string $toolName): bool

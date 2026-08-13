@@ -53,15 +53,21 @@ class CippContactSyncService
 
     /**
      * Sync contacts for a single client.
+     *
+     * Returns TRUE when this call actually ran the sync, FALSE when it was skipped
+     * because another sync for the same client already holds the lock. The two are
+     * not interchangeable: a skipped call leaves $result untouched, so a caller that
+     * cannot tell them apart reports "no changes" for work that never happened. The
+     * scheduled path can ignore the answer; an on-demand caller must not.
      */
-    public function syncClientContacts(Client $client, SyncResult $result, bool $dryRun = false): void
+    public function syncClientContacts(Client $client, SyncResult $result, bool $dryRun = false): bool
     {
         $lock = self::acquireLock("cipp-contact-sync:{$client->id}");
 
         if (! $lock) {
             Log::info("[CippContactSync] Skipping {$client->name} — sync already in progress");
 
-            return;
+            return false;
         }
 
         try {
@@ -69,6 +75,8 @@ class CippContactSyncService
         } finally {
             $lock->release();
         }
+
+        return true;
     }
 
     private function doSyncClientContacts(Client $client, SyncResult $result, bool $dryRun): void

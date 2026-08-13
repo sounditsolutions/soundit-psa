@@ -136,6 +136,10 @@ class McpToolSurface
             $cippMcpLive ? McpToolRegistry::dynamicCippReadTools() : [],
             $cippMcpLive ? McpToolRegistry::dynamicCippWriteTools() : [],
             $cippRestLive ? McpToolRegistry::cippWriteTools() : [],
+            // CIPP admin/sync tools share the REST predicate because
+            // StaffCippAdminToolExecutor refuses on exactly isEnabled() &&
+            // isConfigured() — publish and dispatch answering one question (psa-wzjzz).
+            $cippRestLive ? McpToolRegistry::cippAdminTools() : [],
             TacticalConfig::isConfigured() ? McpToolRegistry::tacticalActionTools() : [],
         );
     }
