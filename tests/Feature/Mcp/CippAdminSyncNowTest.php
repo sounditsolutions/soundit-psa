@@ -7,6 +7,7 @@ use App\Models\Setting;
 use App\Models\TechnicianActionLog;
 use App\Models\User;
 use App\Services\Cipp\CippContactSyncService;
+use App\Services\Cipp\CippSyncOutcome;
 use App\Services\SyncResult;
 use App\Support\McpConfig;
 use App\Support\McpToolRegistry;
@@ -84,11 +85,11 @@ class CippAdminSyncNowTest extends TestCase
     /**
      * Bind a CippContactSyncService double.
      *
-     * @param  bool  $ran  what syncClientContacts() reports — false means another
-     *                     sync already held the lock and this call did nothing.
+     * @param  CippSyncOutcome  $outcome  what syncClientContacts() reports — only Synced
+     *                                    means the tenant was actually read.
      * @return object{count: int} call counter, live for the test's duration
      */
-    private function mockSync(bool $ran, int $created = 0, int $updated = 0): object
+    private function mockSync(CippSyncOutcome $outcome, int $created = 0, int $updated = 0): object
     {
         $calls = new class
         {
@@ -97,14 +98,40 @@ class CippAdminSyncNowTest extends TestCase
 
         $mock = Mockery::mock(CippContactSyncService::class);
         $mock->shouldReceive('syncClientContacts')
-            ->andReturnUsing(function (Client $client, SyncResult $result, bool $dryRun = false) use ($ran, $created, $updated, $calls): bool {
+            ->andReturnUsing(function (Client $client, SyncResult $result, bool $dryRun = false) use ($outcome, $created, $updated, $calls): CippSyncOutcome {
                 $calls->count++;
-                if ($ran) {
+                if ($outcome === CippSyncOutcome::Synced) {
                     $result->created += $created;
                     $result->updated += $updated;
                 }
 
-                return $ran;
+                return $outcome;
+            });
+        $this->app->instance(CippContactSyncService::class, $mock);
+
+        return $calls;
+    }
+
+    /**
+     * A sync that commits people and THEN throws — the partial-write case (the real
+     * service persists each person inside the loop, before stale cleanup and enrichment).
+     *
+     * @return object{count: int} call counter, live for the test's duration
+     */
+    private function mockSyncThrowingAfter(int $created): object
+    {
+        $calls = new class
+        {
+            public int $count = 0;
+        };
+
+        $mock = Mockery::mock(CippContactSyncService::class);
+        $mock->shouldReceive('syncClientContacts')
+            ->andReturnUsing(function (Client $client, SyncResult $result, bool $dryRun = false) use ($created, $calls): CippSyncOutcome {
+                $calls->count++;
+                $result->created += $created;
+
+                throw new \RuntimeException('deadlock during stale cleanup');
             });
         $this->app->instance(CippContactSyncService::class, $mock);
 
@@ -184,7 +211,7 @@ class CippAdminSyncNowTest extends TestCase
         $this->configureCipp();
         $this->configureAiActor();
         $client = $this->mappedClient();
-        $this->mockSync(ran: true, created: 2, updated: 1);
+        $this->mockSync(CippSyncOutcome::Synced, created: 2, updated: 1);
 
         $result = $this->decodedResult($this->callTool($this->token([self::TOOL]), self::TOOL, [
             'client_id' => $client->id,
@@ -213,7 +240,7 @@ class CippAdminSyncNowTest extends TestCase
         $this->configureCipp();
         $this->configureAiActor();
         $client = $this->mappedClient();
-        $this->mockSync(ran: false);
+        $this->mockSync(CippSyncOutcome::SkippedLocked);
 
         $result = $this->decodedResult($this->callTool($this->token([self::TOOL]), self::TOOL, [
             'client_id' => $client->id,
@@ -243,7 +270,7 @@ class CippAdminSyncNowTest extends TestCase
         $this->configureCipp();
         $this->configureAiActor();
         $client = $this->mappedClient();
-        $this->mockSync(ran: true, created: 1);
+        $this->mockSync(CippSyncOutcome::Synced, created: 1);
 
         $token = $this->token([self::TOOL]);
         $first = $this->decodedResult($this->callTool($token, self::TOOL, [
@@ -273,7 +300,7 @@ class CippAdminSyncNowTest extends TestCase
         $this->configureCipp();
         $this->configureAiActor();
         $client = $this->mappedClient();
-        $calls = $this->mockSync(ran: true, created: 1);
+        $calls = $this->mockSync(CippSyncOutcome::Synced, created: 1);
 
         $token = $this->token([self::TOOL]);
         $this->callTool($token, self::TOOL, ['client_id' => $client->id, 'reason' => 'morning pass']);
@@ -303,7 +330,7 @@ class CippAdminSyncNowTest extends TestCase
         Setting::setValue('cipp_enabled', '1');
         $this->configureAiActor();
         $client = Client::factory()->create(['cipp_tenant_domain' => 'acme.onmicrosoft.test']);
-        $calls = $this->mockSync(ran: true, created: 1);
+        $calls = $this->mockSync(CippSyncOutcome::Synced, created: 1);
 
         $token = $this->token([self::TOOL]);
         $this->assertNotContains(self::TOOL, array_column($this->listTools($token), 'name'));
@@ -315,5 +342,151 @@ class CippAdminSyncNowTest extends TestCase
 
         $this->assertTrue($response->json('result.isError'));
         $this->assertSame(0, $calls->count, 'an unconfigured CIPP must never reach the sync service');
+    }
+
+    /**
+     * A read that came back with nothing is not a completed sync. CIPP answering with an
+     * empty user list (throttled, degraded, a tenant filter that matched nothing) must
+     * never be reported as success/"no changes" — that is the nothing-found-versus-
+     * nothing-read ambiguity this tool exists to remove.
+     */
+    public function test_degraded_upstream_read_is_not_reported_as_a_completed_sync(): void
+    {
+        $this->configureCipp();
+        $this->configureAiActor();
+        $client = $this->mappedClient();
+        $this->mockSync(CippSyncOutcome::NoUsersRead);
+
+        $result = $this->decodedResult($this->callTool($this->token([self::TOOL]), self::TOOL, [
+            'client_id' => $client->id,
+            'reason' => 'looking for the new mailbox',
+        ]));
+
+        $this->assertArrayNotHasKey('success', $result);
+        $this->assertFalse($result['synced'] ?? true);
+        $this->assertFalse($result['roster_verified'] ?? true);
+        $this->assertStringNotContainsString('no changes', json_encode($result));
+        $this->assertDatabaseHas('technician_action_logs', [
+            'action_type' => self::TOOL,
+            'client_id' => $client->id,
+            'result_status' => 'error',
+        ]);
+    }
+
+    /** A roster the group filter could not verify is reported the same way, not as success. */
+    public function test_unverified_roster_is_not_reported_as_a_completed_sync(): void
+    {
+        $this->configureCipp();
+        $this->configureAiActor();
+        $client = $this->mappedClient();
+        $this->mockSync(CippSyncOutcome::RosterUnverified);
+
+        $result = $this->decodedResult($this->callTool($this->token([self::TOOL]), self::TOOL, [
+            'client_id' => $client->id,
+            'reason' => 'roster check',
+        ]));
+
+        $this->assertArrayNotHasKey('success', $result);
+        $this->assertFalse($result['synced'] ?? true);
+        $this->assertFalse($result['roster_verified'] ?? true);
+        $this->assertStringContainsString('group filter', (string) ($result['error'] ?? ''));
+    }
+
+    /**
+     * The cooldown is what bounds upstream cost, so a FAILING sync must arm it too — an
+     * agent retry loop against a degraded tenant is the case it exists for.
+     */
+    public function test_a_failed_sync_arms_the_cooldown(): void
+    {
+        $this->configureCipp();
+        $this->configureAiActor();
+        $client = $this->mappedClient();
+        $calls = $this->mockSyncThrowingAfter(created: 0);
+
+        $token = $this->token([self::TOOL]);
+        $this->callTool($token, self::TOOL, ['client_id' => $client->id, 'reason' => 'first attempt']);
+
+        $second = $this->decodedResult($this->callTool($token, self::TOOL, [
+            'client_id' => $client->id,
+            'reason' => 'retry immediately',
+        ]));
+
+        $this->assertStringContainsString('cooldown active', (string) ($second['error'] ?? ''));
+        $this->assertSame(1, $calls->count, 'the retry must not reach CIPP');
+    }
+
+    /** A degraded read arms it too — same upstream call, same cost to bound. */
+    public function test_a_degraded_read_arms_the_cooldown(): void
+    {
+        $this->configureCipp();
+        $this->configureAiActor();
+        $client = $this->mappedClient();
+        $calls = $this->mockSync(CippSyncOutcome::NoUsersRead);
+
+        $token = $this->token([self::TOOL]);
+        $this->callTool($token, self::TOOL, ['client_id' => $client->id, 'reason' => 'first attempt']);
+
+        $second = $this->decodedResult($this->callTool($token, self::TOOL, [
+            'client_id' => $client->id,
+            'reason' => 'retry immediately',
+        ]));
+
+        $this->assertStringContainsString('cooldown active', (string) ($second['error'] ?? ''));
+        $this->assertSame(1, $calls->count, 'the retry must not reach CIPP');
+    }
+
+    /**
+     * People are committed as the sync goes, so a late throw leaves rows written. The
+     * tool must not claim nothing changed, and the audit row must carry the counts.
+     */
+    public function test_partial_sync_failure_reports_what_was_written(): void
+    {
+        $this->configureCipp();
+        $this->configureAiActor();
+        $client = $this->mappedClient();
+        $this->mockSyncThrowingAfter(created: 12);
+
+        $result = $this->decodedResult($this->callTool($this->token([self::TOOL]), self::TOOL, [
+            'client_id' => $client->id,
+            'reason' => 'refresh after new hire',
+        ]));
+
+        $this->assertStringNotContainsString('no people were changed', json_encode($result));
+        $this->assertSame(12, $result['created'] ?? null);
+        $this->assertTrue($result['partial'] ?? false);
+        $this->assertFalse($result['synced'] ?? true);
+
+        $log = TechnicianActionLog::where('action_type', self::TOOL)
+            ->where('result_status', 'error')->firstOrFail();
+        $this->assertStringContainsString('12 created', (string) $log->summary);
+    }
+
+    /**
+     * Scope parity with the scheduled pass, which selects operational() clients only: an
+     * on-demand call must not resurrect a roster the nightly sync stopped maintaining.
+     */
+    public function test_non_operational_client_is_refused(): void
+    {
+        $this->configureCipp();
+        $this->configureAiActor();
+        $client = Client::factory()->create([
+            'name' => 'Offboarded',
+            'cipp_tenant_domain' => 'offboarded.onmicrosoft.test',
+            'is_active' => false,
+        ]);
+        $calls = $this->mockSync(CippSyncOutcome::Synced, created: 1);
+
+        $result = $this->decodedResult($this->callTool($this->token([self::TOOL]), self::TOOL, [
+            'client_id' => $client->id,
+            'reason' => 'agent asked for a refresh',
+        ]));
+
+        $this->assertStringContainsString('not operational', (string) ($result['error'] ?? ''));
+        $this->assertSame(0, $calls->count, 'a non-operational client must never reach the sync service');
+        $this->assertDatabaseHas('technician_action_logs', [
+            'action_type' => self::TOOL,
+            'client_id' => $client->id,
+            'result_status' => 'rejected',
+        ]);
     }
 }

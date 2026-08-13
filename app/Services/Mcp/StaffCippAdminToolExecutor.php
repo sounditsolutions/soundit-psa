@@ -6,6 +6,7 @@ use App\Enums\TechnicianTier;
 use App\Models\Client;
 use App\Models\TechnicianActionLog;
 use App\Services\Cipp\CippContactSyncService;
+use App\Services\Cipp\CippSyncOutcome;
 use App\Services\SyncResult;
 use App\Services\Tactical\Actions\ActionRedactor;
 use App\Support\CippConfig;
@@ -87,7 +88,13 @@ class StaffCippAdminToolExecutor
      * would answer the second call in a day with {success, idempotent} and NO sync,
      * which is precisely the failure this tool exists to remove. A sync is idempotent
      * by construction; running it again is the point. The 5-minute cooldown remains as
-     * the runaway guard, and it is what bounds upstream API cost.
+     * the runaway guard, and it is what bounds upstream API cost — so it counts every
+     * attempt that REACHED CIPP, failures included: a retry loop against a degraded
+     * tenant is precisely the case the bound exists for.
+     *
+     * Client scope matches the scheduled pass (operational() clients only), so an
+     * on-demand call cannot resurrect a roster the nightly sync deliberately stopped
+     * maintaining; and only a run that actually read the tenant is reported as a sync.
      *
      * @return array<string, mixed>
      */
@@ -107,6 +114,15 @@ class StaffCippAdminToolExecutor
 
             return ['error' => 'Client not found'];
         }
+        // The same scope the scheduled pass uses (CippContactSyncService::syncContacts()
+        // selects whereNotNull('cipp_tenant_domain')->operational()). Consult the scope
+        // itself rather than re-deriving its columns, so the two entry points cannot
+        // disagree about which clients CIPP person sync maintains.
+        if (! Client::query()->whereKey($client->id)->operational()->exists()) {
+            $this->auditAttempt($tool, 'rejected', $clientId, $contentHash, 'Client is not operational; on-demand person sync refused.', $actorLabel);
+
+            return ['error' => 'Client is not operational; the scheduled CIPP person sync excludes it and this tool will not re-create its roster'];
+        }
         if (! is_string($client->cipp_tenant_domain) || trim($client->cipp_tenant_domain) === '') {
             $this->auditAttempt($tool, 'rejected', $clientId, $contentHash, 'Client has no CIPP tenant mapping.', $actorLabel);
 
@@ -121,17 +137,44 @@ class StaffCippAdminToolExecutor
         $result = new SyncResult;
 
         try {
-            $ran = $this->contactSync->syncClientContacts($client, $result);
+            $outcome = $this->contactSync->syncClientContacts($client, $result);
         } catch (\Throwable $e) {
-            $this->auditAttempt($tool, 'error', $clientId, $contentHash, 'CIPP person sync failed: '.$e->getMessage(), $actorLabel);
+            // The sync commits each person as it goes, so a throw from the stale cleanup,
+            // from enrichment, or from any post-loop DB fault leaves whatever the loop
+            // already wrote. Report those counts rather than asserting nothing changed —
+            // the audit row is the only record an operator has of the partial run.
+            $this->auditAttempt($tool, 'error', $clientId, $contentHash, 'CIPP person sync failed after '.$result->summary().': '.$e->getMessage(), $actorLabel);
 
-            return ['error' => 'CIPP person sync failed for this client; no people were changed.'];
+            return [
+                'error' => 'CIPP person sync failed for this client and was interrupted part-way; the counts below are what it had already written. The roster is NOT complete — re-check rather than treating it as synced.',
+                'synced' => false,
+                'partial' => true,
+                'created' => $result->created,
+                'updated' => $result->updated,
+                'deactivated' => $result->deactivated,
+            ];
+        }
+
+        // Neither a lock skip nor a read that came back with nothing usable is a completed
+        // sync. An empty tenant payload, or a group filter that matched nobody (which one
+        // failing group lookup produces as readily as an empty group), leaves the roster
+        // unknown — answering "no changes" there is the wrong "the person does not exist".
+        if ($outcome !== CippSyncOutcome::Synced && $outcome !== CippSyncOutcome::SkippedLocked) {
+            $this->auditAttempt($tool, 'error', $clientId, $contentHash, 'CIPP person sync read nothing usable ('.$outcome->value.'); roster left unverified.', $actorLabel);
+
+            return [
+                'error' => $outcome === CippSyncOutcome::NoUsersRead
+                    ? 'CIPP returned no user list for this tenant, so nothing was read and nothing was written. This is NOT evidence that a person is absent from M365 — treat the roster as unknown and retry or check CIPP.'
+                    : 'CIPP returned users but the tenant group filter matched none of them, which a failing group lookup produces exactly as readily as an empty group. Nothing was written and no roster cleanup ran — treat the roster as unknown.',
+                'synced' => false,
+                'roster_verified' => false,
+            ];
         }
 
         // A sync already in flight for this client is NOT a completed sync. Saying
         // "no changes" here would hand the caller the same ambiguity that made this
         // tool necessary: nothing found, versus nothing looked yet.
-        if (! $ran) {
+        if ($outcome === CippSyncOutcome::SkippedLocked) {
             $this->auditAttempt($tool, 'blocked', $clientId, $contentHash, 'Person sync already in progress for this client; on-demand run skipped.', $actorLabel);
 
             return [
@@ -182,6 +225,12 @@ class StaffCippAdminToolExecutor
         return ['reason' => $reason];
     }
 
+    /**
+     * Every attempt that reached CIPP arms the cooldown — 'executed' AND 'error'. This is
+     * the only bound on upstream cost for this tool, and counting successes alone would
+     * disengage it for exactly the degraded window where an agent retry loop hammers a
+     * failing tenant. Refusals that never called CIPP ('rejected', 'blocked') do not arm it.
+     */
     private function cooldownActive(string $tool, ?int $clientId, int $cooldownSeconds): bool
     {
         if ($cooldownSeconds <= 0) {
@@ -192,7 +241,7 @@ class StaffCippAdminToolExecutor
             ->where('action_type', $tool)
             ->where('client_id', $clientId)
             ->where('created_at', '>=', now()->subSeconds($cooldownSeconds))
-            ->where('result_status', 'executed')
+            ->whereIn('result_status', ['executed', 'error'])
             ->exists();
     }
 
@@ -244,7 +293,7 @@ class StaffCippAdminToolExecutor
     {
         return self::tool(
             'cipp_sync_people_now',
-            'Run the existing CIPP/M365 person sync on demand for one PSA client mapping, so a mailbox created in the tenant today is visible to the PSA today instead of after the next nightly pass. Reads from CIPP and writes only to the PSA people table; it makes no change to the customer tenant. Server-derived client scope; a client with no CIPP tenant mapping is refused. Returns what the sync did (created/updated/deactivated). If a sync for this client is already running, it returns in_flight with synced=false and changes nothing — that is NOT a "no such person" answer. Requires explicit grant, reason, kill-switch, and a 5-minute per-client cooldown that bounds upstream API cost.',
+            'Run the existing CIPP/M365 person sync on demand for one PSA client mapping, so a mailbox created in the tenant today is visible to the PSA today instead of after the next nightly pass. Reads from CIPP and writes only to the PSA people table; it makes no change to the customer tenant. Server-derived client scope; a client with no CIPP tenant mapping, or one that is not operational, is refused. Returns what the sync did (created/updated/deactivated). If a sync for this client is already running, it returns in_flight with synced=false and changes nothing — that is NOT a "no such person" answer. If CIPP returned nothing usable for the tenant it returns an error with synced=false and roster_verified=false — also NOT a "no such person" answer; and if a sync fails part-way it reports the counts it had already written. Requires explicit grant, reason, kill-switch, and a 5-minute per-client cooldown that bounds upstream API cost.',
             self::reasonProperties(),
             ['reason'],
         );

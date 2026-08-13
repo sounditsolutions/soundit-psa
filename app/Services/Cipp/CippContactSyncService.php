@@ -54,32 +54,30 @@ class CippContactSyncService
     /**
      * Sync contacts for a single client.
      *
-     * Returns TRUE when this call actually ran the sync, FALSE when it was skipped
-     * because another sync for the same client already holds the lock. The two are
-     * not interchangeable: a skipped call leaves $result untouched, so a caller that
+     * Reports what this call actually did — see CippSyncOutcome. Only Synced means the
+     * tenant was read and its users processed; a lock skip, an empty upstream read and
+     * an unverified roster all leave $result untouched or partial, and a caller that
      * cannot tell them apart reports "no changes" for work that never happened. The
      * scheduled path can ignore the answer; an on-demand caller must not.
      */
-    public function syncClientContacts(Client $client, SyncResult $result, bool $dryRun = false): bool
+    public function syncClientContacts(Client $client, SyncResult $result, bool $dryRun = false): CippSyncOutcome
     {
         $lock = self::acquireLock("cipp-contact-sync:{$client->id}");
 
         if (! $lock) {
             Log::info("[CippContactSync] Skipping {$client->name} — sync already in progress");
 
-            return false;
+            return CippSyncOutcome::SkippedLocked;
         }
 
         try {
-            $this->doSyncClientContacts($client, $result, $dryRun);
+            return $this->doSyncClientContacts($client, $result, $dryRun);
         } finally {
             $lock->release();
         }
-
-        return true;
     }
 
-    private function doSyncClientContacts(Client $client, SyncResult $result, bool $dryRun): void
+    private function doSyncClientContacts(Client $client, SyncResult $result, bool $dryRun): CippSyncOutcome
     {
         $tenantDomain = $client->cipp_tenant_domain;
         $groupId = $client->cipp_sync_group_id;
@@ -88,16 +86,25 @@ class CippContactSyncService
         $users = $this->client->listUsers($tenantDomain);
 
         if (! is_array($users) || empty($users)) {
-            Log::info("[CippContactSync] No users returned for {$client->name}");
+            // Nothing was READ, so nothing may be concluded: a throttled or degraded CIPP
+            // answers with an empty payload exactly as a genuinely empty tenant does.
+            Log::warning("[CippContactSync] No users returned for {$client->name} — tenant not read, roster left untouched");
 
-            return;
+            return CippSyncOutcome::NoUsersRead;
         }
-
-        $fetchSucceeded = true;
 
         // Filter by group if configured
         if ($groupId) {
             $users = $this->filterByGroup($users, $tenantDomain, $groupId);
+
+            // filterByGroup() excludes every user whose group check threw, so one bad spell
+            // on the group endpoint yields an empty set that looks identical to an empty
+            // group. Stop before stale cleanup — it would deactivate the whole roster.
+            if (empty($users)) {
+                Log::warning("[CippContactSync] Group filter left 0 users for {$client->name} — roster unverified, skipping stale cleanup");
+
+                return CippSyncOutcome::RosterUnverified;
+            }
         }
 
         $seenPersonIds = [];
@@ -134,15 +141,22 @@ class CippContactSyncService
             }
         }
 
-        // Stale cleanup — only if fetch succeeded, only synced persons
-        if ($fetchSucceeded && ! $dryRun) {
+        // Stale cleanup runs ONLY against a roster this pass actually verified. An empty
+        // seen-list means we matched nobody — which a transient upstream failure produces
+        // as readily as a real change — and an unfiltered deactivation there wipes every
+        // CIPP-synced person for the client, stripping contract assignments and portal
+        // access. Skip cleanup and tell the caller the roster is unverified instead.
+        if (empty($seenPersonIds)) {
+            Log::warning("[CippContactSync] No users matched for {$client->name} — skipping stale cleanup, roster unverified");
+
+            return CippSyncOutcome::RosterUnverified;
+        }
+
+        if (! $dryRun) {
             $staleQuery = Person::where('client_id', $client->id)
                 ->whereNotNull('cipp_user_id')
-                ->where('is_active', true);
-
-            if (! empty($seenPersonIds)) {
-                $staleQuery->whereNotIn('id', $seenPersonIds);
-            }
+                ->where('is_active', true)
+                ->whereNotIn('id', $seenPersonIds);
 
             $staleCount = $staleQuery->count();
 
@@ -154,14 +168,17 @@ class CippContactSyncService
                 $result->deactivated += $staleCount;
                 Log::info("[CippContactSync] Deactivated {$staleCount} stale contact(s) for {$client->name}");
             }
-        } elseif ($fetchSucceeded && $dryRun) {
+
+            // Enrich with mailbox + MFA data (independent API calls, each in try/catch)
+            $enrichment = new CippContactEnrichmentService($this->client);
+            $enrichment->enrichForClient($client, $result);
+        } else {
             $stalePersons = Person::where('client_id', $client->id)
                 ->whereNotNull('cipp_user_id')
                 ->where('is_active', true)
-                ->when(! empty($seenPersonIds), fn ($q) => $q->whereNotIn('id', $seenPersonIds))
+                ->whereNotIn('id', $seenPersonIds)
                 ->get(['first_name', 'last_name', 'email']);
 
-            $staleCount = $stalePersons->count();
             foreach ($stalePersons as $stale) {
                 $result->details[] = [
                     'action' => 'deactivate',
@@ -170,14 +187,10 @@ class CippContactSyncService
                     'email' => $stale->email ?? '',
                 ];
             }
-            $result->deactivated += $staleCount;
+            $result->deactivated += $stalePersons->count();
         }
 
-        // Enrich with mailbox + MFA data (independent API calls, each in try/catch)
-        if ($fetchSucceeded && ! $dryRun) {
-            $enrichment = new CippContactEnrichmentService($this->client);
-            $enrichment->enrichForClient($client, $result);
-        }
+        return CippSyncOutcome::Synced;
     }
 
     /**
