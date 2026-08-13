@@ -118,7 +118,7 @@ class CippContactSyncService
             // users we could read (creates/updates are additive), but the cleanup below must
             // not run — one surviving lookup would otherwise deactivate the rest.
             if ($groupLookupFailures > 0) {
-                Log::warning("[CippContactSync] {$groupLookupFailures} group lookup(s) failed for {$client->name} — roster unverified, stale cleanup will be skipped");
+                Log::warning("[CippContactSync] {$groupLookupFailures} user(s) left unaccounted for by the group filter for {$client->name} — roster unverified, stale cleanup will be skipped");
                 $rosterVerified = false;
             }
         }
@@ -133,6 +133,13 @@ class CippContactSyncService
         foreach ($users as $userData) {
             $objectId = $userData['id'] ?? $userData['Id'] ?? null;
             if (! $objectId) {
+                // A row we cannot identify is a user this pass did NOT account for: it can
+                // never reach $seenPersonIds, so stale cleanup would read it as departed in
+                // exactly the way it reads a user a failed lookup hid. Unverify the roster
+                // rather than dropping the row silently.
+                Log::warning("[CippContactSync] User row with no object id for {$client->name} — roster unverified, stale cleanup will be skipped");
+                $rosterVerified = false;
+
                 continue;
             }
 
@@ -155,6 +162,12 @@ class CippContactSyncService
                             $result->details[] = ['action' => 'update', 'client' => $client->name, 'name' => $displayName, 'email' => $email];
                         }
                     }
+                } else {
+                    // syncUser() declined to return a person WITHOUT throwing, so this user is
+                    // absent from $seenPersonIds for a reason nothing recorded — the same
+                    // unaccounted-for case as a throw, and cleanup must not read it as departed.
+                    Log::warning("[CippContactSync] No person returned for user {$objectId} ({$client->name}) — roster unverified, stale cleanup will be skipped");
+                    $rosterVerified = false;
                 }
             } catch (\Throwable $e) {
                 Log::warning("[CippContactSync] Failed syncing user {$objectId} for {$client->name}: {$e->getMessage()}");
@@ -174,17 +187,24 @@ class CippContactSyncService
         }
 
         // The same invariant one step down, and the reason the guard above is not enough:
-        // cleanup runs ONLY against a roster this pass verified end to end. Any user hidden
-        // by a failed group lookup or a failed syncUser() is absent from $seenPersonIds and
-        // would be deactivated as though the tenant had removed them. A partial pass keeps
-        // what it wrote and reports the roster unverified instead.
-        if (! $rosterVerified || $result->errors > $errorsBefore) {
-            Log::warning("[CippContactSync] Roster for {$client->name} not fully verified this pass — skipping stale cleanup");
+        // cleanup runs ONLY against a roster this pass verified end to end. Any user hidden by
+        // a failed group lookup, a failed syncUser(), a row with no object id, or a syncUser()
+        // that returned nothing is absent from $seenPersonIds and would be deactivated as
+        // though the tenant had removed them. A partial pass keeps what it wrote and reports
+        // the roster unverified instead.
+        //
+        // Settled HERE, before anything else writes to $result: enrichment below records its
+        // own failures on the same SyncResult, and an enrichment error says nothing about
+        // whether the tenant roster was read completely.
+        $rosterVerified = $rosterVerified && $result->errors === $errorsBefore;
 
-            return CippSyncOutcome::RosterUnverified;
+        if (! $rosterVerified) {
+            Log::warning("[CippContactSync] Roster for {$client->name} not fully verified this pass — skipping stale cleanup");
         }
 
-        if (! $dryRun) {
+        // Cleanup is the ONLY step gated on verification — it is the one that reads absence
+        // from $seenPersonIds as departure.
+        if (! $dryRun && $rosterVerified) {
             $staleQuery = Person::where('client_id', $client->id)
                 ->whereNotNull('cipp_user_id')
                 ->where('is_active', true)
@@ -200,11 +220,23 @@ class CippContactSyncService
                 $result->deactivated += $staleCount;
                 Log::info("[CippContactSync] Deactivated {$staleCount} stale contact(s) for {$client->name}");
             }
+        }
 
-            // Enrich with mailbox + MFA data (independent API calls, each in try/catch)
+        // Enrich with mailbox + MFA data (independent API calls, each in try/catch). This is a
+        // non-destructive read-and-write-back over the people already in the table and has no
+        // dependence on roster completeness, so an unverified roster must NOT take it down with
+        // the cleanup: one user that keeps failing would otherwise freeze mailbox and MFA state
+        // for the WHOLE client indefinitely — cipp:sync-contacts is the only scheduled
+        // enrichment path — with nothing in the log or the outcome naming enrichment as skipped.
+        if (! $dryRun) {
             $enrichment = new CippContactEnrichmentService($this->client);
             $enrichment->enrichForClient($client, $result);
-        } else {
+        }
+
+        // The dry-run preview stays gated on verification for the same reason the cleanup is:
+        // it must show what a real pass would deactivate, and an unverified pass deactivates
+        // nobody.
+        if ($dryRun && $rosterVerified) {
             $stalePersons = Person::where('client_id', $client->id)
                 ->whereNotNull('cipp_user_id')
                 ->where('is_active', true)
@@ -222,7 +254,7 @@ class CippContactSyncService
             $result->deactivated += $stalePersons->count();
         }
 
-        return CippSyncOutcome::Synced;
+        return $rosterVerified ? CippSyncOutcome::Synced : CippSyncOutcome::RosterUnverified;
     }
 
     /**
@@ -310,8 +342,9 @@ class CippContactSyncService
      * Filter users to only those in the specified group.
      * Caps at 200 users for group membership checks to prevent API overload.
      *
-     * $failedLookups counts the users excluded because their group check THREW, not because
-     * they are not members. The returned list cannot tell the two apart, and treating an
+     * $failedLookups counts the users excluded for any reason OTHER than a decided non-match —
+     * a group check that THREW, or a row carrying no object id to check. The returned list
+     * cannot tell any of those from a real non-member, and treating an
      * unknown as a non-member is precisely what deactivates a live roster — so the count is
      * reported out rather than left in a debug log.
      */
@@ -329,6 +362,11 @@ class CippContactSyncService
             // Use Azure AD objectId for group checks — UPNs with #EXT# cause CIPP 500 errors
             $userId = $user['id'] ?? $user['Id'] ?? null;
             if (! $userId) {
+                // Unidentifiable is unaccounted for, not "not a member": the user is dropped
+                // from the filtered set and can never reach the seen-list, so it counts here
+                // exactly as a thrown lookup does.
+                $failedLookups++;
+
                 continue;
             }
 
