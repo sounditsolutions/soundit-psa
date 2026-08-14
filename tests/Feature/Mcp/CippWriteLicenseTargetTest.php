@@ -509,6 +509,50 @@ class CippWriteLicenseTargetTest extends TestCase
         $this->assertSame(0, TechnicianActionLog::where('result_status', 'executed')->count());
     }
 
+    /**
+     * The approver signed off on ONE SKU, and only a licence rail can see it.
+     *
+     * Approval re-resolves the licence fresh from an unordered first() over the
+     * client's active rows, so a vendor_ref re-sync (or a second active row for
+     * the same licence type) between staging and approval sends a different —
+     * here costlier — SKU upstream than the card named. The user object is
+     * unchanged, so the user drift rail passes and notices nothing.
+     */
+    public function test_approval_declines_when_the_licence_now_maps_to_a_different_sku(): void
+    {
+        $this->configureCipp();
+        $f = $this->fixture();
+        $token = $this->token(['cipp_stage_assign_user_license']);
+        $approver = User::factory()->create(['name' => 'Approver']);
+
+        $client = Mockery::mock(CippRestWriteClient::class);
+        $client->shouldReceive('listUsers')->once()->with(self::TENANT)->andReturn([$this->userRow()]);
+        $this->app->instance(CippRestWriteClient::class, $client);
+
+        $staged = $this->decodedResult($this->callTool($token, 'cipp_stage_assign_user_license', [
+            'client_id' => $f['client']->id,
+            'ticket_id' => $f['ticket']->id,
+            'target_upn' => self::TARGET_UPN,
+            'sku_id' => self::SKU,
+            'reason' => 'Contractor needs a seat.',
+        ]));
+        $this->assertTrue($staged['success'] ?? false);
+
+        // The card named 'sku-from-tenant-sync'; the row now resolves to E5.
+        License::query()->where('client_id', $f['client']->id)->update(['vendor_ref' => 'sku-e5-guid']);
+
+        $drifted = Mockery::mock(CippRestWriteClient::class);
+        $drifted->shouldReceive('listUsers')->once()->with(self::TENANT)->andReturn([$this->userRow()]);
+        $drifted->shouldNotReceive('assignUserLicense');
+        $this->app->instance(CippRestWriteClient::class, $drifted);
+
+        $run = TechnicianRun::findOrFail($staged['run_id']);
+        $result = app(StaffCippWriteToolExecutor::class)->approveStagedRun($run, $approver->id);
+
+        $this->assertSame('gate_declined', $result->status, 'A costlier SKU than the approved one was executed.');
+        $this->assertSame(0, TechnicianActionLog::where('result_status', 'executed')->count());
+    }
+
     public function test_an_account_disabled_between_staging_and_approval_declines_rather_than_spending_a_seat(): void
     {
         $this->configureCipp();
@@ -631,6 +675,14 @@ class CippWriteLicenseTargetTest extends TestCase
         ]);
 
         $body = (string) $response->json('result.content.0.text');
+        // POSITIVE assertion first, because the negatives below held while the
+        // call was still unreachable: it routed to the person path and was then
+        // refused by the GLOBAL upstream-identifier blocklist, which keyed on
+        // presence while both merged-template keys (target_upn, sku_id) are on
+        // that list. The person path is only truly reachable when the refusal is
+        // the person gate's own.
+        $this->assertStringContainsString('Person not found', $body);
+        $this->assertStringNotContainsString('upstream CIPP identifiers are not accepted', $body);
         // It must be judged by the PERSON path's own gates — here the unknown
         // person_id — and never by the tenant family's mixed-shape refusal.
         $this->assertStringNotContainsString('exactly ONE target shape', $body);
@@ -676,6 +728,48 @@ class CippWriteLicenseTargetTest extends TestCase
         $this->assertStringContainsString('disabled', $text);
         $this->assertStringNotContainsString('No user with that target_upn', $text);
         $this->assertSame(0, TechnicianActionLog::where('result_status', 'executed')->count());
+    }
+
+    /**
+     * The SUCCESS half of the PascalCase row — the half nothing exercised.
+     *
+     * The disabled-row test above exits at the enabled gate, so the return
+     * statement was never reached on a PascalCase row. Reading one casing THERE
+     * is not a safe refusal: the row has already been matched, resolved and
+     * gated, so it is an undefined-key read on a row the module has admitted is
+     * valid — and if it survives, the result, the audit line and the billing
+     * approval card all name nobody while the seat is spent.
+     */
+    public function test_an_enabled_pascal_case_row_is_named_on_the_result_and_the_audit(): void
+    {
+        $this->configureCipp();
+        $f = $this->fixture();
+        $token = $this->token(['cipp_assign_user_license']);
+
+        $client = Mockery::mock(CippRestWriteClient::class);
+        $client->shouldReceive('listUsers')->once()->with(self::TENANT)->andReturn([[
+            'Id' => self::TARGET_OBJECT_ID,
+            'UserPrincipalName' => self::TARGET_UPN,
+            'DisplayName' => 'Sam Contractor',
+            'AccountEnabled' => true,
+        ]]);
+        $client->shouldReceive('assignUserLicense')->once()
+            ->with(self::TENANT, self::TARGET_OBJECT_ID, 'sku-from-tenant-sync');
+        $this->app->instance(CippRestWriteClient::class, $client);
+
+        $response = $this->callTool($token, 'cipp_assign_user_license', [
+            'client_id' => $f['client']->id,
+            'target_upn' => self::TARGET_UPN,
+            'sku_id' => self::SKU,
+            'reason' => 'Contractor needs a seat.',
+        ]);
+
+        $result = $this->decodedResult($response);
+        $this->assertTrue($result['success'] ?? false, (string) $response->json('result.content.0.text'));
+        $this->assertSame(self::TARGET_UPN, $result['target_upn'] ?? null, 'The verified UPN was read from one casing only.');
+
+        $log = TechnicianActionLog::where('result_status', 'executed')->firstOrFail();
+        $this->assertStringContainsString(self::TARGET_UPN, (string) $log->summary, 'The audit line for a billing write named nobody.');
     }
 
     public function test_the_person_keyed_shape_is_untouched_by_this_family(): void

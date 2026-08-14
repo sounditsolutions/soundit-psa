@@ -3380,12 +3380,20 @@ class StaffCippWriteToolExecutor
             return ['error' => $e->getMessage()];
         }
 
-        // The stored params carry the verified identity SNAPSHOT so approval can
-        // detect drift (the UPN reassigned to a different object between staging
-        // and approval) against the fresh listing.
+        // The stored params carry the verified SNAPSHOT of BOTH material facts
+        // — the user AND the licence — so approval can detect either kind of
+        // drift against a fresh resolution: the UPN reassigned to a different
+        // object, or the licence row re-synced (or a second active row won an
+        // unordered first()) to a different SKU between staging and approval.
+        // The approver signs off on one seat for one person; both halves have to
+        // still be the ones on the card.
         $storedParams = array_merge($params, [
             'verified_user_id' => $user['user_id'],
             'verified_display_name' => $user['display_name'],
+            // The RESOLVED SKU, not the caller's sku_id claim: the claim only
+            // ever selected a local licence type, and the resolved value is what
+            // the card names and what reaches upstream.
+            'verified_sku_id' => (string) $license->skuId,
         ]);
 
         $meta = [
@@ -3526,6 +3534,22 @@ class StaffCippWriteToolExecutor
                 $run->releaseClaim();
 
                 return $this->declined('The user behind that address changed after this action was staged; deny this proposal and re-stage it against the current user.');
+            }
+
+            // The SAME rail for the LICENCE, and it needs its own: the user rail
+            // cannot see this drift, because the user object is unchanged.
+            // resolveCippLicenseBySku() re-resolves the SKU fresh above, from an
+            // unordered first() over the client's active licence rows, so a
+            // vendor_ref re-sync or a second active row for this licence type
+            // between staging and approval sends a DIFFERENT — possibly costlier
+            // — SKU upstream than the one on the approved card. The approval
+            // gate's invariant is that the operator reviewed exactly what
+            // executes; on a billing write the SKU is half of what they reviewed.
+            $stagedSkuId = trim((string) ($stored['verified_sku_id'] ?? ''));
+            if ($stagedSkuId === '' || strcasecmp((string) $license->skuId, $stagedSkuId) !== 0) {
+                $run->releaseClaim();
+
+                return $this->declined('The licence this SKU maps to changed after this action was staged, so approving it would assign a different licence than the one named on the proposal; deny this proposal and re-stage it.');
             }
 
             try {
@@ -3727,7 +3751,10 @@ class StaffCippWriteToolExecutor
      * execute() routed on array_key_exists(), so a person-shape call carrying
      * "target_upn": null entered the tenant family and was then refused for
      * carrying person values. A client filling the published MERGED schema sends
-     * exactly that. One helper, three call sites, no way for them to drift.
+     * exactly that. One helper, and EVERY seat that asks the question goes
+     * through it — the dispatch, the mutual-exclusion guard, and the
+     * upstream-identifier blocklist itself — so there is no way for them to
+     * drift apart again.
      *
      * A filled-in template is not an argument: null and a whitespace-only string
      * are both "not sent". Anything else is the caller naming a target.
@@ -3783,7 +3810,7 @@ class StaffCippWriteToolExecutor
         return 'Assign licence "'.$license->licenseType->name.'" (SKU '.$license->skuId.') to tenant user '.$userLabel.'.'
             .' This consumes a paid seat and grants the Microsoft 365 apps and services that SKU carries.'
             .' The target is NOT mapped to a PSA person — it was verified against the tenant\'s live user listing.'
-            .' Approval re-verifies the user and the licence mapping fresh, and declines if that address now points at a different user object.';
+            .' Approval re-verifies the user and the licence mapping fresh, and declines if that address now points at a different user object, or if this SKU now maps to a different licence than the one named here.';
     }
 
     /**
@@ -3920,9 +3947,22 @@ class StaffCippWriteToolExecutor
                 : 'The tenant listing did not carry accountEnabled for that user, so this tool cannot tell whether the account is enabled and will not assume it is. No licence was assigned. If every assignment is failing this way, the CIPP user listing has stopped returning the field and that is the thing to fix.');
         }
 
+        // Hedged HERE TOO, because the comment above is a contract over the
+        // WHOLE method, not just its match loop. An enabled PascalCase row —
+        // a casing the module's own evidence says CIPP really sends — reaches
+        // this point already ACCEPTED: the row matched, the object id resolved
+        // and the enabled gate passed. Reading only camelCase then makes this an
+        // undefined-key read after the row was admitted: an ErrorException on
+        // the direct path (after the upstream write), or, surviving that, an
+        // empty UPN and display name on the result, the audit line and the
+        // cockpit approval card — the only human gate on a billing write,
+        // naming nobody.
+        $rowUpn = $row['userPrincipalName'] ?? $row['UserPrincipalName'] ?? '';
+        $rowDisplayName = $row['displayName'] ?? $row['DisplayName'] ?? null;
+
         return [
             'user_id' => $userId,
-            'upn' => trim((string) $row['userPrincipalName']),
+            'upn' => trim((string) $rowUpn),
             // UNTRUSTED EXTERNAL CONTENT: the tenant controls displayName, and
             // it flows into the cockpit approval card, the audit summary and the
             // stored payload. Control characters are stripped and the value is
@@ -3930,7 +3970,7 @@ class StaffCippWriteToolExecutor
             // edit cannot forge reason/authorisation lines above the real ones
             // on the only human gate this family has, nor blow up the stored
             // proposal text with one row.
-            'display_name' => mb_substr(trim((string) preg_replace('/[\x00-\x1F\x7F]+/u', ' ', is_scalar($row['displayName'] ?? null) ? (string) $row['displayName'] : '')), 0, self::CREATE_DISPLAY_NAME_MAX),
+            'display_name' => mb_substr(trim((string) preg_replace('/[\x00-\x1F\x7F]+/u', ' ', is_scalar($rowDisplayName) ? (string) $rowDisplayName : '')), 0, self::CREATE_DISPLAY_NAME_MAX),
         ];
     }
 
@@ -4735,12 +4775,30 @@ class StaffCippWriteToolExecutor
         return $domain;
     }
 
-    /** @return array<int, string> */
+    /**
+     * The blocklisted keys the caller actually SENT.
+     *
+     * VALUE-KEYED, through sentValue(), for the reason the dispatch and the
+     * mixed-shape guard already are: cipp_assign_user_license publishes the
+     * MERGED property set of both target shapes, and BOTH tenant-shape keys
+     * (target_upn, sku_id) are members of UPSTREAM_IDENTIFIER_KEYS. Keying on
+     * array_key_exists() therefore refused the person-keyed path outright for
+     * any client that fills the published template — it routed correctly to the
+     * person path and was then refused here, which is the exact unreachability
+     * the family exists to fix, reappearing one gate later.
+     *
+     * An empty template slot is not a supplied identifier. Any REAL value still
+     * refuses, on every tool, which is the property this list exists for — and
+     * safeHashParams() still strips these keys on presence, so nothing about the
+     * hashing contract moves.
+     *
+     * @return array<int, string>
+     */
     private function upstreamIdentifierKeys(array $arguments): array
     {
         $keys = [];
         foreach (self::UPSTREAM_IDENTIFIER_KEYS as $key) {
-            if (array_key_exists($key, $arguments)) {
+            if ($this->sentValue($arguments, $key)) {
                 $keys[] = $key;
             }
         }
