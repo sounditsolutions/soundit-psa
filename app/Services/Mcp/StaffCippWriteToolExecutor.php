@@ -3617,7 +3617,16 @@ class StaffCippWriteToolExecutor
                 $this->auditAttempt($run->action_type, 'error', $client->id, $ticket, null, $license, $contentHash, "{$targetKey}: ".$this->safeFailureSummary($run->action_type, $e), $this->approverLabel($approverId), $run->id, $approverId);
                 $run->releaseClaim();
 
-                return $this->declined($e->getMessage());
+                // SANITIZED, exactly as the direct path's identical catch is.
+                // safeFailureSummary() exists because a CIPP relay error body
+                // can embed the request URL with tenant and credential query
+                // parameters; applying it to the AUDIT ROW while handing the raw
+                // exception message to declined() surfaces upstream text to the
+                // approver that the immutable log deliberately does not carry.
+                // declined() redacts and bounds what it is given, but it cannot
+                // know this reason came from upstream — so the generic sentence
+                // is what it gets, and the specific cause stays in the row.
+                return $this->declined("CIPP write failed for {$run->action_type}; treat the licence assignment as not applied.");
             }
 
             $this->auditAttempt($run->action_type, 'executed', $client->id, $ticket, null, $license, $contentHash, "{$targetKey}: Operator-approved {$run->action_type} executed — ".$this->licenseTargetAuditDetail($user, $license).'.', $this->approverLabel($approverId), $run->id, $approverId);
@@ -4090,8 +4099,23 @@ class StaffCippWriteToolExecutor
         // trip the blocklist — but that is true of this tool alone. Every other
         // caller of context() keeps the strict presence test, because a narrow
         // schema gives a blocklisted key no innocent reason to appear at all.
+        //
+        // AND THE RELAXATION IS THE VALUE TEST, NOT AN ALLOW-LIST — EMPTY
+        // ALLOWANCE, DELIBERATELY. Passing LICENSE_TARGET_ALLOWED_KEYS here
+        // exempted sku_id UNCONDITIONALLY, and this path is reached only when
+        // target_upn was NOT sent: the PERSON shape. So a call carrying
+        // person_id + license_type_id + confirm_upn AND a real sku_id had its
+        // SKU neither refused nor read — silently discarded on a billing write,
+        // with license_type_id deciding the seat while the operator believes
+        // they named the SKU. That is the mirror of the mixed-shape refusal
+        // licenseTargetContext() enforces, and mutual exclusion has to refuse in
+        // BOTH directions or it is not an invariant. The scoped exception this
+        // tool actually needs is the VALUE test, nothing more: null and ''
+        // template slots pass (that is the whole point), and any REAL
+        // blocklisted value — sku_id and target_upn included — refuses exactly
+        // as it did before this family existed.
         $blocklisted = (self::STAGED_TO_DIRECT[$tool] ?? $tool) === 'cipp_assign_user_license'
-            ? $this->upstreamIdentifierKeysAllowing($arguments, self::LICENSE_TARGET_ALLOWED_KEYS)
+            ? $this->upstreamIdentifierKeysAllowing($arguments, [])
             : $this->upstreamIdentifierKeys($arguments);
 
         if ($keys = $blocklisted) {

@@ -712,6 +712,47 @@ class CippWriteLicenseTargetTest extends TestCase
     }
 
     /**
+     * THE MIRROR OF THE MIXED-SHAPE RAIL — the property the carve-out test is
+     * NAMED for, and the direction nothing exercised.
+     *
+     * With no target_upn the call routes to the PERSON path, where the
+     * tool-scoped carve-out in context() exempted sku_id UNCONDITIONALLY: a real
+     * SKU was neither refused nor read. It was silently dropped and
+     * license_type_id decided the seat, on a billing write — the operator
+     * believes they named E5 and the log says Business Basic. The carve-out is
+     * the VALUE test, not an allowance: an empty template slot passes (the test
+     * above), a real value refuses as it did before this family existed.
+     */
+    public function test_a_real_sku_id_without_target_upn_is_refused_on_the_person_shape(): void
+    {
+        $this->configureCipp();
+        $f = $this->fixture();
+        $token = $this->token(['cipp_assign_user_license']);
+
+        $client = Mockery::mock(CippRestWriteClient::class);
+        $client->shouldNotReceive('listUsers');
+        $client->shouldNotReceive('assignUserLicense');
+        $this->app->instance(CippRestWriteClient::class, $client);
+
+        $response = $this->callTool($token, 'cipp_assign_user_license', [
+            'client_id' => $f['client']->id,
+            'person_id' => 999999,
+            'license_type_id' => $f['licenseType']->id,
+            'confirm_upn' => 'alex@acme.example',
+            'sku_id' => 'ENTERPRISEPREMIUM',
+            'reason' => 'Mapped person needs a seat.',
+        ]);
+
+        $body = (string) $response->json('result.content.0.text');
+        // Refused FOR THE SKU, and refused before the person gate: a value the
+        // person path cannot honour must never reach a path that discards it.
+        $this->assertStringContainsString('upstream CIPP identifiers are not accepted', $body);
+        $this->assertStringNotContainsString('Person not found', $body);
+        $this->assertSame(0, TechnicianActionLog::where('result_status', 'executed')->count());
+        $this->assertTrue(TechnicianActionLog::where('result_status', 'rejected')->exists(), 'The refusal left no audit row.');
+    }
+
+    /**
      * A PascalCase tenant row resolves and is gated on its real value.
      *
      * This reads the RAW CIPP listing, not a CippToolContract projection, so
