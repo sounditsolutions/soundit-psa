@@ -20,6 +20,7 @@ use App\Services\Tactical\Actions\ActionRedactor;
 use App\Services\Technician\TechnicianApprovalResult;
 use App\Support\CippConfig;
 use App\Support\TechnicianConfig;
+use Illuminate\Contracts\Encryption\DecryptException;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Str;
 
@@ -3764,7 +3765,21 @@ class StaffCippWriteToolExecutor
      */
     private function upstreamIdentifierKeysAllowing(array $arguments, array $allowed): array
     {
-        return array_values(array_diff($this->upstreamIdentifierKeys($arguments), $allowed));
+        // VALUE-tests, unlike the global helper, and only this family calls it.
+        // The licence tool publishes the MERGED property set of both target
+        // shapes, so a client filling every declared property sends nulls for
+        // the shape it is not using; those are filled-in template slots, not
+        // attempts to drive upstream identity. Every other tool keeps the
+        // stricter presence test — the narrower schema means a blocklisted key
+        // appearing at all is already the signal.
+        $keys = [];
+        foreach (self::UPSTREAM_IDENTIFIER_KEYS as $key) {
+            if (! in_array($key, $allowed, true) && $this->sentValue($arguments, $key)) {
+                $keys[] = $key;
+            }
+        }
+
+        return $keys;
     }
 
     /**
@@ -4044,7 +4059,19 @@ class StaffCippWriteToolExecutor
     {
         $contentHash = $this->contentHash($tool, $clientId, null, null, $arguments);
 
-        if ($keys = $this->upstreamIdentifierKeys($arguments)) {
+        // SCOPED EXCEPTION, and it is keyed on the TOOL rather than the family.
+        // cipp_assign_user_license is the only tool publishing the MERGED
+        // property set of two target shapes, so a client filling every declared
+        // property reaches THIS path carrying target_upn/sku_id as empty template
+        // slots. Those are not attempts to drive upstream identity and must not
+        // trip the blocklist — but that is true of this tool alone. Every other
+        // caller of context() keeps the strict presence test, because a narrow
+        // schema gives a blocklisted key no innocent reason to appear at all.
+        $blocklisted = (self::STAGED_TO_DIRECT[$tool] ?? $tool) === 'cipp_assign_user_license'
+            ? $this->upstreamIdentifierKeysAllowing($arguments, self::LICENSE_TARGET_ALLOWED_KEYS)
+            : $this->upstreamIdentifierKeys($arguments);
+
+        if ($keys = $blocklisted) {
             $this->auditAttempt($tool, 'rejected', $clientId, null, null, null, $contentHash, 'Caller-supplied upstream CIPP identifiers are not accepted: '.implode(', ', $keys).'.', $actorLabel);
 
             return ['error' => 'Caller-supplied upstream CIPP identifiers are not accepted; provide PSA person_id, license_type_id, and ticket_id only.'];
@@ -4857,11 +4884,26 @@ class StaffCippWriteToolExecutor
      *
      * @return array<int, string>
      */
+    /**
+     * THE GLOBAL BLOCKLIST, AND IT PRESENCE-TESTS ON PURPOSE.
+     *
+     * An earlier rework changed this to sentValue() so the licence family would
+     * stop refusing empty template slots — a LOCAL problem fixed by widening a
+     * GLOBAL guard, which is the scope error this branch has now made in three
+     * different shapes. Every other write tool publishes a narrow schema and has
+     * no reason to send a blocklisted key at all, so for them the mere PRESENCE
+     * of one is the signal: a caller reaching for tenantFilter or userId is
+     * driving upstream identity whatever value it carries, and the tripwire
+     * should fire before anyone asks whether the value was empty.
+     *
+     * The licence family, which alone publishes a merged two-shape schema, gets
+     * the value-testing variant below — scoped to itself, by name.
+     */
     private function upstreamIdentifierKeys(array $arguments): array
     {
         $keys = [];
         foreach (self::UPSTREAM_IDENTIFIER_KEYS as $key) {
-            if ($this->sentValue($arguments, $key)) {
+            if (array_key_exists($key, $arguments)) {
                 $keys[] = $key;
             }
         }
@@ -5046,7 +5088,24 @@ class StaffCippWriteToolExecutor
             return null;
         }
 
-        $json = Crypt::decryptString($ciphertext);
+        // A CORRUPT CIPHERTEXT MUST RETURN NULL, NOT ESCAPE. Crypt::decryptString()
+        // throws DecryptException on a tampered or key-rotated payload, and that is
+        // not a CippWriteScopeException — so it fell straight past every audited
+        // refusal in approveStagedRun() to the outer \Throwable arm, which releases
+        // the claim and rethrows: no audit row, and a framework-level error instead
+        // of the operator-readable "deny this proposal and re-stage it" that the
+        // null branch below exists to produce. The one refusal that most wants a
+        // row was the one that could not leave one.
+        //
+        // I got this wrong in the r5 driver notes: I wrote that the null branch was
+        // "unreachable that way" and treated it as merely unpinnable. It was not
+        // unpinnable, it was UNHANDLED. Chet read it correctly.
+        try {
+            $json = Crypt::decryptString($ciphertext);
+        } catch (DecryptException) {
+            return null;
+        }
+
         $payload = json_decode($json, true);
 
         return is_array($payload) ? $payload : null;

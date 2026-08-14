@@ -846,6 +846,87 @@ class CippWriteLicenseTargetTest extends TestCase
         );
     }
 
+    public function test_a_corrupt_held_payload_declines_with_a_row_instead_of_escaping(): void
+    {
+        $this->configureCipp();
+        $f = $this->fixture();
+        $token = $this->token(['cipp_stage_assign_user_license']);
+        $approver = User::factory()->create(['name' => 'Approver']);
+
+        $client = Mockery::mock(CippRestWriteClient::class);
+        $client->shouldReceive('listUsers')->once()->with(self::TENANT)->andReturn([$this->userRow()]);
+        $this->app->instance(CippRestWriteClient::class, $client);
+
+        $staged = $this->decodedResult($this->callTool($token, 'cipp_stage_assign_user_license', [
+            'client_id' => $f['client']->id,
+            'ticket_id' => $f['ticket']->id,
+            'target_upn' => self::TARGET_UPN,
+            'sku_id' => self::SKU,
+            'reason' => 'Contractor needs a seat.',
+        ]));
+        $this->assertTrue($staged['success'] ?? false);
+
+        // Crypt::decryptString() throws DecryptException on a tampered or
+        // key-rotated payload. That is not a CippWriteScopeException, so it used
+        // to fall past every audited refusal to the outer \Throwable arm and
+        // rethrow: no row, and a framework error instead of an operator-readable
+        // decline. The one refusal that most wants a row was the one that could
+        // not leave one.
+        $run = TechnicianRun::findOrFail($staged['run_id']);
+        $meta = $run->proposed_meta;
+        $meta['encrypted_payload'] = 'not-a-valid-ciphertext';
+        $run->update(['proposed_meta' => $meta]);
+
+        $blocked = Mockery::mock(CippRestWriteClient::class);
+        $blocked->shouldNotReceive('listUsers');
+        $blocked->shouldNotReceive('assignUserLicense');
+        $this->app->instance(CippRestWriteClient::class, $blocked);
+
+        $result = app(StaffCippWriteToolExecutor::class)->approveStagedRun($run->fresh(), $approver->id);
+
+        $this->assertSame('gate_declined', $result->status);
+        $this->assertSame(0, TechnicianActionLog::where('result_status', 'executed')->count());
+        $this->assertStringContainsString(
+            'could not be decrypted',
+            (string) TechnicianActionLog::where('result_status', 'rejected')->latest('id')->value('summary'),
+        );
+    }
+
+    public function test_other_write_tools_still_refuse_a_blocklisted_key_that_is_merely_present(): void
+    {
+        $this->configureCipp();
+        $f = $this->fixture();
+        $token = $this->token(['cipp_set_group_membership']);
+
+        // SCOPE, not spelling. The licence family value-tests because its
+        // published schema is the merged set of two shapes; every OTHER tool has
+        // a narrow schema and no reason to carry a blocklisted key at all, so
+        // presence alone is the tripwire. An earlier rework widened the GLOBAL
+        // helper to fix the licence family's local problem — this pins that the
+        // global one is strict again.
+        $client = Mockery::mock(CippRestWriteClient::class);
+        $client->shouldNotReceive('listGroups');
+        $client->shouldNotReceive('setGroupMembership');
+        $this->app->instance(CippRestWriteClient::class, $client);
+
+        $response = $this->callTool($token, 'cipp_set_group_membership', [
+            'client_id' => $f['client']->id,
+            'person_id' => 1,
+            'group_id' => '3f2504e0-4f89-11d3-9a0c-0305e82c3301',
+            'operation' => 'add',
+            'confirm_group_name' => 'Sales',
+            'confirm_upn' => 'alex@acme.example',
+            'userId' => null,
+            'reason' => 'Adding to sales group.',
+        ]);
+
+        $this->assertStringContainsString(
+            'upstream CIPP identifiers are not accepted',
+            (string) $response->json('result.content.0.text'),
+        );
+        $this->assertSame(0, TechnicianActionLog::where('result_status', 'executed')->count());
+    }
+
     public function test_the_person_keyed_shape_is_untouched_by_this_family(): void
     {
         $this->configureCipp();
