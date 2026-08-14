@@ -3593,9 +3593,25 @@ class StaffCippWriteToolExecutor
         // the person path's typed-confirmation rail bypassed and no error, and
         // an audit summary naming only the target that won. The two shapes name
         // two different users; there is no safe way to pick one, so refuse.
+        // PRESENCE IS NOT THE SAME AS A VALUE, and keying on array_key_exists()
+        // alone made this guard refuse the calls it exists to allow. The
+        // published schema for cipp_assign_user_license is the MERGED property
+        // set of both shapes, so a client filling every declared property emits
+        // "person_id": null alongside a perfectly unambiguous tenant-shape call;
+        // that is a filled-in template, not a second target. All three verify
+        // seats found this independently, which is why it is a value test now:
+        // a key counts as sent only when it carries something that could name a
+        // person. A REAL person-shape value still refuses — that is the rail.
         $mixedShape = array_values(array_filter(
             self::LICENSE_PERSON_SHAPE_KEYS,
-            static fn (string $key): bool => array_key_exists($key, $arguments),
+            static function (string $key) use ($arguments): bool {
+                if (! array_key_exists($key, $arguments)) {
+                    return false;
+                }
+                $value = $arguments[$key];
+
+                return $value !== null && (! is_string($value) || trim($value) !== '');
+            },
         ));
         if ($mixedShape !== []) {
             $this->auditAttempt($tool, 'rejected', $clientId, null, null, null, $contentHash, 'Both licence target shapes in one call: target_upn with '.implode(', ', $mixedShape).'.', $actorLabel);
@@ -3827,6 +3843,24 @@ class StaffCippWriteToolExecutor
         $userId = trim((string) ($row['id'] ?? $row['objectId'] ?? ''));
         if ($userId === '') {
             throw new CippWriteScopeException('The verified user has no object id in the CIPP user listing; refresh the CIPP user reads and retry.');
+        }
+
+        // ACTIVE gate, psa-pgnj shape. A licence is a PAID SEAT: assigning one
+        // to a disabled account spends money on somebody who has left. Because
+        // every path — direct, staging, and the approval replay — comes through
+        // here, the approval re-gate is the same code rather than a second copy
+        // that can drift, which is what matters: an account disabled BETWEEN
+        // staging and approval declines instead of executing.
+        //
+        // DELIBERATE AND ARGUABLE: only an explicit false refuses. An ABSENT
+        // accountEnabled is not treated as disabled, because it is a projection
+        // field and refusing on its absence would fail every call the moment
+        // CIPP stopped emitting it — a fail-closed rule that closes the door on
+        // the whole feature rather than on the risk. If the panel judges that
+        // unable-to-assess must refuse here too, that is a one-line change and
+        // I would rather be told than guess.
+        if (($row['accountEnabled'] ?? null) === false) {
+            throw new CippWriteScopeException('That user\'s Microsoft 365 account is disabled in the tenant; a licence would spend a paid seat on a disabled account. Re-enable the account first, or assign the licence to the person who is actually using it.');
         }
 
         return [

@@ -9,9 +9,11 @@ use App\Models\LicenseType;
 use App\Models\Person;
 use App\Models\Setting;
 use App\Models\TechnicianActionLog;
+use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Models\User;
 use App\Services\Cipp\CippRestWriteClient;
+use App\Services\Mcp\StaffCippWriteToolExecutor;
 use App\Support\McpConfig;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Testing\TestResponse;
@@ -334,6 +336,234 @@ class CippWriteLicenseTargetTest extends TestCase
         ]);
 
         $this->assertStringContainsString('target_upn must be', (string) $response->json('result.content.0.text'));
+        $this->assertSame(0, TechnicianActionLog::where('result_status', 'executed')->count());
+    }
+
+    public function test_a_real_person_shape_value_alongside_target_upn_is_refused(): void
+    {
+        $this->configureCipp();
+        $f = $this->fixture();
+        $token = $this->token(['cipp_assign_user_license']);
+
+        $client = Mockery::mock(CippRestWriteClient::class);
+        $client->shouldNotReceive('listUsers');
+        $client->shouldNotReceive('assignUserLicense');
+        $this->app->instance(CippRestWriteClient::class, $client);
+
+        // The rail: two shapes name two different users, and routing on
+        // target_upn alone would silently drop the person path's confirm_upn.
+        $response = $this->callTool($token, 'cipp_assign_user_license', [
+            'client_id' => $f['client']->id,
+            'target_upn' => self::TARGET_UPN,
+            'sku_id' => self::SKU,
+            'person_id' => 12345,
+            'reason' => 'New contractor needs a seat.',
+        ]);
+
+        $body = (string) $response->json('result.content.0.text');
+        $this->assertStringContainsString('exactly ONE target shape', $body);
+        $this->assertStringContainsString('person_id', $body);
+        $this->assertSame(0, TechnicianActionLog::where('result_status', 'executed')->count());
+    }
+
+    public function test_explicitly_null_person_shape_keys_do_not_refuse_a_tenant_shape_call(): void
+    {
+        $this->configureCipp();
+        $f = $this->fixture();
+        $token = $this->token(['cipp_assign_user_license']);
+
+        // The published schema is the MERGED property set of both shapes, so a
+        // client that fills every declared property sends nulls for the shape it
+        // is not using. That is a filled-in template, not a second target — and
+        // keying the mixed-shape guard on array_key_exists() alone refused every
+        // one of these. Found independently by all three verify seats.
+        $client = Mockery::mock(CippRestWriteClient::class);
+        $client->shouldReceive('listUsers')->once()->with(self::TENANT)->andReturn([$this->userRow()]);
+        $client->shouldReceive('assignUserLicense')->once()
+            ->with(self::TENANT, self::TARGET_OBJECT_ID, 'sku-from-tenant-sync');
+        $this->app->instance(CippRestWriteClient::class, $client);
+
+        $response = $this->callTool($token, 'cipp_assign_user_license', [
+            'client_id' => $f['client']->id,
+            'target_upn' => self::TARGET_UPN,
+            'sku_id' => self::SKU,
+            'person_id' => null,
+            'license_type_id' => null,
+            'confirm_upn' => '',
+            'reason' => 'New contractor needs a seat.',
+        ]);
+
+        $result = $this->decodedResult($response);
+        $this->assertTrue($result['success'] ?? false, (string) $response->json('result.content.0.text'));
+    }
+
+    public function test_two_targets_on_one_ticket_stage_two_distinct_runs_and_neither_borrows_the_others_run_id(): void
+    {
+        $this->configureCipp();
+        $f = $this->fixture();
+        $token = $this->token(['cipp_stage_assign_user_license']);
+
+        // THE COLLISION THIS PINS: contentHash() strips every UPSTREAM_IDENTIFIER
+        // key, and BOTH of this family's params are on that list — so without a
+        // hashable projection of the target, two different users on one
+        // client+ticket collapse onto one hash, collide on
+        // firstOrCreate(['ticket_id','action_type','content_hash']), and the
+        // SECOND caller is handed the FIRST user's run under idempotent: true.
+        $second = $this->userRow(['userPrincipalName' => 'second@acme.example', 'id' => 'aaaa1111-2222-3333-4444-555566667777']);
+
+        $client = Mockery::mock(CippRestWriteClient::class);
+        $client->shouldReceive('listUsers')->twice()->with(self::TENANT)
+            ->andReturn([$this->userRow(), $second]);
+        $client->shouldNotReceive('assignUserLicense');
+        $this->app->instance(CippRestWriteClient::class, $client);
+
+        $one = $this->decodedResult($this->callTool($token, 'cipp_stage_assign_user_license', [
+            'client_id' => $f['client']->id,
+            'ticket_id' => $f['ticket']->id,
+            'target_upn' => self::TARGET_UPN,
+            'sku_id' => self::SKU,
+            'reason' => 'Contractor one needs a seat.',
+        ]));
+        $two = $this->decodedResult($this->callTool($token, 'cipp_stage_assign_user_license', [
+            'client_id' => $f['client']->id,
+            'ticket_id' => $f['ticket']->id,
+            'target_upn' => 'second@acme.example',
+            'sku_id' => self::SKU,
+            'reason' => 'Contractor two needs a seat.',
+        ]));
+
+        $this->assertTrue($one['success'] ?? false);
+        $this->assertTrue($two['success'] ?? false);
+        $this->assertArrayNotHasKey('idempotent', $two, 'The second target was suppressed as a duplicate of the first.');
+        $this->assertNotSame($one['run_id'] ?? null, $two['run_id'] ?? null, 'The second target borrowed the first user\'s run_id.');
+
+        $runs = TechnicianRun::where('ticket_id', $f['ticket']->id)
+            ->where('action_type', 'cipp_stage_assign_user_license')->get();
+        $this->assertCount(2, $runs);
+        $this->assertCount(2, $runs->pluck('content_hash')->unique(), 'Two distinct targets produced one content hash.');
+    }
+
+    public function test_two_targets_immediate_both_reach_the_upstream_call(): void
+    {
+        $this->configureCipp();
+        $f = $this->fixture();
+        $token = $this->token(['cipp_assign_user_license']);
+
+        // The direct twin of the collision: the exact-content rail must not
+        // answer "already executed" for a DIFFERENT human.
+        $second = $this->userRow(['userPrincipalName' => 'second@acme.example', 'id' => 'aaaa1111-2222-3333-4444-555566667777']);
+
+        $client = Mockery::mock(CippRestWriteClient::class);
+        $client->shouldReceive('listUsers')->twice()->with(self::TENANT)->andReturn([$this->userRow(), $second]);
+        $client->shouldReceive('assignUserLicense')->once()->with(self::TENANT, self::TARGET_OBJECT_ID, 'sku-from-tenant-sync');
+        $client->shouldReceive('assignUserLicense')->once()->with(self::TENANT, 'aaaa1111-2222-3333-4444-555566667777', 'sku-from-tenant-sync');
+        $this->app->instance(CippRestWriteClient::class, $client);
+
+        foreach ([self::TARGET_UPN, 'second@acme.example'] as $upn) {
+            $result = $this->decodedResult($this->callTool($token, 'cipp_assign_user_license', [
+                'client_id' => $f['client']->id,
+                'target_upn' => $upn,
+                'sku_id' => self::SKU,
+                'reason' => 'Contractor needs a seat.',
+            ]));
+            $this->assertTrue($result['success'] ?? false);
+            $this->assertArrayNotHasKey('idempotent', $result, "{$upn} was suppressed as a duplicate of the other target.");
+        }
+
+        $this->assertSame(2, TechnicianActionLog::where('result_status', 'executed')->count());
+    }
+
+    public function test_approval_declines_when_the_address_now_resolves_to_a_different_object_id(): void
+    {
+        $this->configureCipp();
+        $f = $this->fixture();
+        $token = $this->token(['cipp_stage_assign_user_license']);
+        $approver = User::factory()->create(['name' => 'Approver']);
+
+        $client = Mockery::mock(CippRestWriteClient::class);
+        // Staged against one object id...
+        $client->shouldReceive('listUsers')->once()->with(self::TENANT)->andReturn([$this->userRow()]);
+        $this->app->instance(CippRestWriteClient::class, $client);
+
+        $staged = $this->decodedResult($this->callTool($token, 'cipp_stage_assign_user_license', [
+            'client_id' => $f['client']->id,
+            'ticket_id' => $f['ticket']->id,
+            'target_upn' => self::TARGET_UPN,
+            'sku_id' => self::SKU,
+            'reason' => 'Contractor needs a seat.',
+        ]));
+        $this->assertTrue($staged['success'] ?? false);
+
+        // ...and the address now points at a DIFFERENT user. The operator
+        // approved one person; a UPN can be reassigned.
+        $drifted = Mockery::mock(CippRestWriteClient::class);
+        $drifted->shouldReceive('listUsers')->once()->with(self::TENANT)
+            ->andReturn([$this->userRow(['id' => 'bbbb2222-3333-4444-5555-666677778888'])]);
+        $drifted->shouldNotReceive('assignUserLicense');
+        $this->app->instance(CippRestWriteClient::class, $drifted);
+
+        $run = TechnicianRun::findOrFail($staged['run_id']);
+        $result = app(StaffCippWriteToolExecutor::class)->approveStagedRun($run, $approver->id);
+
+        $this->assertSame('gate_declined', $result->status);
+        $this->assertSame(0, TechnicianActionLog::where('result_status', 'executed')->count());
+    }
+
+    public function test_an_account_disabled_between_staging_and_approval_declines_rather_than_spending_a_seat(): void
+    {
+        $this->configureCipp();
+        $f = $this->fixture();
+        $token = $this->token(['cipp_stage_assign_user_license']);
+        $approver = User::factory()->create(['name' => 'Approver']);
+
+        // psa-pgnj shape: enabled at staging, disabled by approval time. A
+        // licence on a disabled account is a paid seat spent on someone who left.
+        $client = Mockery::mock(CippRestWriteClient::class);
+        $client->shouldReceive('listUsers')->once()->with(self::TENANT)->andReturn([$this->userRow()]);
+        $this->app->instance(CippRestWriteClient::class, $client);
+
+        $staged = $this->decodedResult($this->callTool($token, 'cipp_stage_assign_user_license', [
+            'client_id' => $f['client']->id,
+            'ticket_id' => $f['ticket']->id,
+            'target_upn' => self::TARGET_UPN,
+            'sku_id' => self::SKU,
+            'reason' => 'Contractor needs a seat.',
+        ]));
+        $this->assertTrue($staged['success'] ?? false);
+
+        $disabled = Mockery::mock(CippRestWriteClient::class);
+        $disabled->shouldReceive('listUsers')->once()->with(self::TENANT)
+            ->andReturn([$this->userRow(['accountEnabled' => false])]);
+        $disabled->shouldNotReceive('assignUserLicense');
+        $this->app->instance(CippRestWriteClient::class, $disabled);
+
+        $run = TechnicianRun::findOrFail($staged['run_id']);
+        $result = app(StaffCippWriteToolExecutor::class)->approveStagedRun($run, $approver->id);
+
+        $this->assertSame('gate_declined', $result->status);
+        $this->assertSame(0, TechnicianActionLog::where('result_status', 'executed')->count());
+    }
+
+    public function test_a_disabled_account_is_refused_on_the_immediate_path_too(): void
+    {
+        $this->configureCipp();
+        $f = $this->fixture();
+        $token = $this->token(['cipp_assign_user_license']);
+
+        $client = Mockery::mock(CippRestWriteClient::class);
+        $client->shouldReceive('listUsers')->once()->with(self::TENANT)
+            ->andReturn([$this->userRow(['accountEnabled' => false])]);
+        $client->shouldNotReceive('assignUserLicense');
+        $this->app->instance(CippRestWriteClient::class, $client);
+
+        $response = $this->callTool($token, 'cipp_assign_user_license', [
+            'client_id' => $f['client']->id,
+            'target_upn' => self::TARGET_UPN,
+            'sku_id' => self::SKU,
+            'reason' => 'Contractor needs a seat.',
+        ]);
+
+        $this->assertStringContainsString('disabled', (string) $response->json('result.content.0.text'));
         $this->assertSame(0, TechnicianActionLog::where('result_status', 'executed')->count());
     }
 
