@@ -1675,4 +1675,67 @@ class CippWriteLicenseTargetTest extends TestCase
         $this->assertArrayNotHasKey('success', $this->decodedResult($response));
         $this->assertSame(0, TechnicianActionLog::where('result_status', 'executed')->count());
     }
+
+    /**
+     * THE OTHER HALF OF THE IDENTITY KEY — r10 context:1, and the cycle-1
+     * rework that fixed it shipped no test at all (the panel said so; c1:v1:2).
+     *
+     * r9 moved the SKU half of this key off the caller's claim and onto the
+     * resolved value, and argued at length in the docblock about why hashing a
+     * claim is a false-success bug. The USER half was left on the claim anyway,
+     * in the same function, under that argument. A UPN is reassignable: delete
+     * the contractor, create a new starter at the same address, and the typed
+     * string is byte-identical while the object behind it is a different human.
+     * Keyed on the claim, the second assignment collides with the first inside
+     * DIRECT_DEDUP_HOURS, returns success/idempotent, and the new person never
+     * gets the seat. On the staged path the already-executed check closed the
+     * run before verifiedTenantUser() and the user-drift rail could see it —
+     * the same before-the-rail-that-exists-for-it ordering the SKU half had.
+     *
+     * The key is now the SERVER-VERIFIED object id, which is why the rails had
+     * to move behind the verification read. That reordering is the expensive
+     * part of the fix and the reason this test exists: nothing else can fail if
+     * the key drifts back onto the address.
+     */
+    public function test_a_reassigned_upn_is_not_suppressed_as_a_duplicate_of_the_previous_object(): void
+    {
+        $this->configureCipp();
+        $f = $this->fixture();
+        $token = $this->token(['cipp_assign_user_license']);
+
+        // Object A holds the address and is licensed.
+        $first = Mockery::mock(CippRestWriteClient::class);
+        $first->shouldReceive('listUsers')->once()->with(self::TENANT)->andReturn([$this->userRow()]);
+        $first->shouldReceive('assignUserLicense')->once()->with(self::TENANT, self::TARGET_OBJECT_ID, Mockery::any());
+        $this->app->instance(CippRestWriteClient::class, $first);
+
+        $a = $this->decodedResult($this->callTool($token, 'cipp_assign_user_license', [
+            'client_id' => $f['client']->id,
+            'target_upn' => self::TARGET_UPN,
+            'sku_id' => self::SKU,
+            'reason' => 'Contractor needs a seat.',
+        ]));
+        $this->assertTrue($a['success'] ?? false, (string) json_encode($a));
+
+        // Same address, DIFFERENT object: the leaver is gone and a new starter
+        // was created at the same UPN. Byte-identical claim, different human.
+        $newObjectId = 'cccc3333-4444-5555-6666-777788889999';
+        $second = Mockery::mock(CippRestWriteClient::class);
+        $second->shouldReceive('listUsers')->once()->with(self::TENANT)
+            ->andReturn([$this->userRow(['id' => $newObjectId])]);
+        $second->shouldReceive('assignUserLicense')->once()->with(self::TENANT, $newObjectId, Mockery::any());
+        $this->app->instance(CippRestWriteClient::class, $second);
+
+        $b = $this->decodedResult($this->callTool($token, 'cipp_assign_user_license', [
+            'client_id' => $f['client']->id,
+            'target_upn' => self::TARGET_UPN,
+            'sku_id' => self::SKU,
+            'reason' => 'New starter at the same address needs a seat.',
+        ]));
+
+        $this->assertTrue($b['success'] ?? false, (string) json_encode($b));
+        $this->assertArrayNotHasKey('idempotent', $b, 'The new starter was suppressed as a duplicate of the leaver.');
+        // Two DIFFERENT people were licensed, so there are two executed rows.
+        $this->assertSame(2, TechnicianActionLog::where('result_status', 'executed')->count());
+    }
 }
