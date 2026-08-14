@@ -1035,6 +1035,53 @@ class CippWriteLicenseTargetTest extends TestCase
     }
 
     /**
+     * A HALF-MAPPED person must not make the target unassignable by BOTH shapes.
+     *
+     * resolveCippPerson() requires cipp_user_id AND cipp_upn, and the sync
+     * really produces rows carrying only one: CippContactSyncService::syncUser()
+     * sets cipp_user_id unconditionally while an array_filter drops cipp_upn
+     * when the tenant row has no userPrincipalName. Refusing the tenant shape
+     * for such a person closes the only path that can express the target — the
+     * refusal would redirect to person_id + license_type_id + confirm_upn,
+     * which answers 'Person has no CIPP user mapping'. The gate refuses a
+     * mapping the person path can USE, not the mere presence of a column.
+     */
+    public function test_a_half_mapped_person_does_not_close_the_tenant_shape_as_well(): void
+    {
+        $this->configureCipp();
+        $f = $this->fixture();
+        $token = $this->token(['cipp_assign_user_license']);
+
+        Person::create([
+            'client_id' => $f['client']->id,
+            'person_type' => PersonType::User,
+            'first_name' => 'Sam',
+            'last_name' => 'Halfmapped',
+            'email' => 'half@acme.example',
+            'cipp_user_id' => self::TARGET_OBJECT_ID,
+            'cipp_upn' => null,
+            'is_active' => true,
+        ]);
+
+        $client = Mockery::mock(CippRestWriteClient::class);
+        $client->shouldReceive('listUsers')->once()->with(self::TENANT)->andReturn([$this->userRow()]);
+        $client->shouldReceive('assignUserLicense')->once()
+            ->with(self::TENANT, self::TARGET_OBJECT_ID, 'sku-from-tenant-sync');
+        $this->app->instance(CippRestWriteClient::class, $client);
+
+        $response = $this->callTool($token, 'cipp_assign_user_license', [
+            'client_id' => $f['client']->id,
+            'target_upn' => self::TARGET_UPN,
+            'sku_id' => self::SKU,
+            'reason' => 'Contractor needs a seat.',
+        ]);
+
+        $result = $this->decodedResult($response);
+        $this->assertTrue($result['success'] ?? false, (string) $response->json('result.content.0.text'));
+        $this->assertStringNotContainsString('mapped to PSA person', (string) $response->json('result.content.0.text'));
+    }
+
+    /**
      * AMBIGUITY REFUSES on the direct path too.
      *
      * The CIPP sync upserts on (license_type_id, client_id, vendor_ref), so a

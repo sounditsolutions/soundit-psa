@@ -60,12 +60,25 @@ class CippWriteScopeResolver
      * billing write. The premise has to be ENFORCED, not merely described —
      * the same rule the shape mutual-exclusion guard already follows.
      *
-     * EITHER mapping column is enough to refuse, because either one is enough
-     * for the person path to express the target: the object id the SERVER read
-     * out of the tenant against cipp_user_id, and the address against cipp_upn
-     * (so a renamed UPN cannot walk around the check). Inactive people match
-     * too — they keep their mapping and resolveCippPerson() still resolves
-     * them, so the person path can still name them.
+     * EITHER mapping column MATCHES — the object id the SERVER read out of the
+     * tenant against cipp_user_id, and the address against cipp_upn — so a
+     * renamed UPN cannot walk around the check. But only a COMPLETE mapping
+     * refuses, and that qualifier is load-bearing: this gate defers to the
+     * person path, and resolveCippPerson() (above) requires BOTH columns,
+     * throwing 'Person has no CIPP user mapping' when either is blank.
+     * Half-mapped rows are system-produced, not hypothetical —
+     * CippContactSyncService::syncUser() sets cipp_user_id unconditionally
+     * while an array_filter drops cipp_upn when the tenant row carries no
+     * userPrincipalName, and rows predating the enrichment migration carry a
+     * null cipp_upn too. Refusing on one of those would close the tenant shape
+     * while the person shape cannot express the target at all: NO path assigns
+     * the seat, and the refusal sends the operator to the shape that is
+     * guaranteed to refuse. A half-mapped person therefore stays on the tenant
+     * shape, which served them before this gate existed; the fix for them is
+     * repairing the person's mapping, not blocking a licence.
+     *
+     * Inactive people DO refuse — they keep their mapping and the licence
+     * person path uses the loose resolveCippPerson(), so it can still name them.
      */
     public function assertNoPsaPersonMapping(int $clientId, string $upn, string $userId): void
     {
@@ -75,8 +88,13 @@ class CippWriteScopeResolver
             return;
         }
 
+        // COMPLETE mappings only — a person missing either column is one
+        // resolveCippPerson() refuses, so refusing here too would leave the
+        // target unassignable by every shape (see the docblock).
         $person = Person::query()
             ->where('client_id', $clientId)
+            ->whereRaw("TRIM(COALESCE(cipp_user_id, '')) <> ''")
+            ->whereRaw("TRIM(COALESCE(cipp_upn, '')) <> ''")
             ->where(function ($query) use ($upn, $userId) {
                 if ($upn !== '') {
                     $query->orWhereRaw('LOWER(cipp_upn) = ?', [$upn]);
