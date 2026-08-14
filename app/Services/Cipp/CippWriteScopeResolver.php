@@ -241,7 +241,14 @@ class CippWriteScopeResolver
      */
     public function resolveCippLicenseBySku(int $clientId, mixed $skuIdValue): ResolvedCippLicense
     {
-        $sku = is_scalar($skuIdValue) ? trim((string) $skuIdValue) : '';
+        // Normalised ONCE, here, in the form every comparison below uses. The
+        // previous cut lowered only inside the SQL predicate, so moving the
+        // decision into PHP would have silently made the match case-SENSITIVE
+        // for a caller typing a mixed-case SKU — a regression introduced by the
+        // fix, which is exactly how this branch has produced most of its
+        // defects. Caught by reading the assignment rather than by a test,
+        // because no existing case types a mixed-case sku_id.
+        $sku = is_scalar($skuIdValue) ? mb_strtolower(trim((string) $skuIdValue)) : '';
         if ($sku === '') {
             throw new CippWriteScopeException('sku_id is required');
         }
@@ -254,11 +261,26 @@ class CippWriteScopeResolver
         // sku_id would resolve a licence type the caller never named — possibly
         // a costlier one — and assign it on the direct path with no approver in
         // the loop. An unrecognised claim must refuse, not resolve sideways.
+        // SAME DIALECT RULE AS assertNoPsaPersonMapping(), and I found this one
+        // by sweeping for it rather than waiting for a panel to name it — the
+        // point of that rule being that naming a pattern is not the same as
+        // having swept it. The caller's claim is trimmed by licenseTargetParams()
+        // and again above; vendor_sku_id is stored RAW by the licence sync, so a
+        // value carrying trailing whitespace never equals the trimmed claim and
+        // an operator holding the correct SKU is told no licence type matches
+        // it. The failure direction is a false REFUSAL rather than a false
+        // accept, which is why it is a usability defect and not a bypass — but
+        // it is the same root, so it gets the same shape of fix: SQL narrows to
+        // candidates (LIKE is a necessary condition for the PHP comparison, and
+        // the needle is escaped because '%' and '_' occur in real SKU strings),
+        // PHP decides with the same trim() everything else here uses.
         $licenseTypes = LicenseType::query()
             ->where('vendor', 'cipp_m365')
             ->where('is_active', true)
-            ->whereRaw('LOWER(vendor_sku_id) = ?', [mb_strtolower($sku)])
-            ->get();
+            ->whereRaw("LOWER(vendor_sku_id) LIKE ? ESCAPE '\\'", ['%'.addcslashes($sku, '%_\\').'%'])
+            ->get()
+            ->filter(static fn (LicenseType $type): bool => mb_strtolower(trim((string) $type->vendor_sku_id)) === $sku)
+            ->values();
 
         if ($licenseTypes->isEmpty()) {
             throw new CippWriteScopeException('No active CIPP M365 license type matches that sku_id');

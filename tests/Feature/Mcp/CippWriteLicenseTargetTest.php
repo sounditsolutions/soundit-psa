@@ -1097,6 +1097,67 @@ class CippWriteLicenseTargetTest extends TestCase
         $this->assertSame(0, TechnicianActionLog::where('result_status', 'executed')->count());
     }
 
+    public function test_a_sku_stored_with_trailing_whitespace_still_resolves(): void
+    {
+        $this->configureCipp();
+        $f = $this->fixture();
+        $token = $this->token(['cipp_assign_user_license']);
+
+        // The licence sync stores vendor_sku_id RAW, exactly as it stores the
+        // person mapping columns raw. Matched with SQL equality against a
+        // trimmed claim, a stored value carrying a trailing newline never
+        // matches and the operator is told no licence type exists for a SKU
+        // that plainly does. Same root as the person gate, opposite failure
+        // direction: a false refusal rather than a bypass.
+        $f['licenseType']->update(['vendor_sku_id' => self::SKU."\n"]);
+
+        $client = Mockery::mock(CippRestWriteClient::class);
+        $client->shouldReceive('listUsers')->once()->with(self::TENANT)->andReturn([$this->userRow()]);
+        $client->shouldReceive('assignUserLicense')->once()
+            ->with(self::TENANT, self::TARGET_OBJECT_ID, 'sku-from-tenant-sync');
+        $this->app->instance(CippRestWriteClient::class, $client);
+
+        $response = $this->callTool($token, 'cipp_assign_user_license', [
+            'client_id' => $f['client']->id,
+            'target_upn' => self::TARGET_UPN,
+            'sku_id' => self::SKU,
+            'reason' => 'Contractor needs a seat.',
+        ]);
+
+        $this->assertTrue(
+            $this->decodedResult($response)['success'] ?? false,
+            (string) $response->json('result.content.0.text'),
+        );
+    }
+
+    public function test_a_mixed_case_sku_claim_still_resolves(): void
+    {
+        $this->configureCipp();
+        $f = $this->fixture();
+        $token = $this->token(['cipp_assign_user_license']);
+
+        // NEGATIVE CONTROL on the normalisation itself: moving the decision from
+        // SQL LOWER() into PHP would silently make the match case-sensitive if
+        // the claim were not lowered at the single point it is normalised.
+        $client = Mockery::mock(CippRestWriteClient::class);
+        $client->shouldReceive('listUsers')->once()->with(self::TENANT)->andReturn([$this->userRow()]);
+        $client->shouldReceive('assignUserLicense')->once()
+            ->with(self::TENANT, self::TARGET_OBJECT_ID, 'sku-from-tenant-sync');
+        $this->app->instance(CippRestWriteClient::class, $client);
+
+        $response = $this->callTool($token, 'cipp_assign_user_license', [
+            'client_id' => $f['client']->id,
+            'target_upn' => self::TARGET_UPN,
+            'sku_id' => strtoupper(self::SKU),
+            'reason' => 'Contractor needs a seat.',
+        ]);
+
+        $this->assertTrue(
+            $this->decodedResult($response)['success'] ?? false,
+            (string) $response->json('result.content.0.text'),
+        );
+    }
+
     public function test_the_person_keyed_shape_is_untouched_by_this_family(): void
     {
         $this->configureCipp();
