@@ -49,6 +49,50 @@ class CippWriteScopeResolver
     }
 
     /**
+     * REFUSE a tenant-scoped write target that IS mapped to a PSA person.
+     *
+     * The tenant-scoped licence shape exists for a user with NO PSA person
+     * record — its tool text and its approval card both state that as fact —
+     * and it reaches upstream without confirm_upn, without any of the
+     * person-scoped gates, and with a null person linkage in the audit.
+     * Documented but unenforced, that made "type the address instead of the
+     * person_id" a caller-selectable bypass of the person path's rails on a
+     * billing write. The premise has to be ENFORCED, not merely described —
+     * the same rule the shape mutual-exclusion guard already follows.
+     *
+     * EITHER mapping column is enough to refuse, because either one is enough
+     * for the person path to express the target: the object id the SERVER read
+     * out of the tenant against cipp_user_id, and the address against cipp_upn
+     * (so a renamed UPN cannot walk around the check). Inactive people match
+     * too — they keep their mapping and resolveCippPerson() still resolves
+     * them, so the person path can still name them.
+     */
+    public function assertNoPsaPersonMapping(int $clientId, string $upn, string $userId): void
+    {
+        $upn = mb_strtolower(trim($upn));
+        $userId = mb_strtolower(trim($userId));
+        if ($upn === '' && $userId === '') {
+            return;
+        }
+
+        $person = Person::query()
+            ->where('client_id', $clientId)
+            ->where(function ($query) use ($upn, $userId) {
+                if ($upn !== '') {
+                    $query->orWhereRaw('LOWER(cipp_upn) = ?', [$upn]);
+                }
+                if ($userId !== '') {
+                    $query->orWhereRaw('LOWER(cipp_user_id) = ?', [$userId]);
+                }
+            })
+            ->first();
+
+        if ($person) {
+            throw new CippWriteScopeException('That target_upn is mapped to PSA person #'.$person->id.', so the tenant-scoped shape does not apply to it: that shape is for a tenant user with no PSA person record. Assign this licence with person_id + license_type_id + confirm_upn instead, so the person-scoped rails apply. Nothing was written.');
+        }
+    }
+
+    /**
      * Resolve a person who RECEIVES access through a CIPP write (e.g. the
      * OneDrive handover successor). Everything resolveCippPerson() enforces,
      * plus the person must be active in the PSA: deactivated people routinely
@@ -153,15 +197,32 @@ class CippWriteScopeResolver
         /** @var LicenseType $licenseType */
         $licenseType = $licenseTypes->first();
 
-        $license = License::query()
+        // AMBIGUITY REFUSES — the same rule the licence-type match above
+        // applies one level up, and this level needs it just as much. The CIPP
+        // sync upserts on (license_type_id, client_id, vendor_ref), so a
+        // re-sync that changes vendor_ref leaves a SECOND active row for the
+        // same client and licence type, and an unordered first() over those
+        // rows picks a storage-engine-ordered winner: two identical direct
+        // calls for two different contractors can send DIFFERENT — possibly
+        // costlier — SKUs upstream, both reported as success, with no approver
+        // in the loop. The identity dedup key cannot see it either, because it
+        // hashes the caller's claim rather than the resolved SKU. There is no
+        // safe way to pick one, so refuse and name the fix.
+        $licenses = License::query()
             ->where('client_id', $clientId)
             ->where('license_type_id', $licenseType->id)
             ->where('status', 'active')
-            ->first();
+            ->get();
 
-        if (! $license) {
+        if ($licenses->isEmpty()) {
             throw new CippWriteScopeException('That SKU is known, but this client has no active local license row for it; the PSA has no record that the client is entitled to a seat');
         }
+        if ($licenses->count() > 1) {
+            throw new CippWriteScopeException('That sku_id matches more than one active local license row for this client, and those rows can map to different upstream SKUs; resolve the duplicate license rows locally before assigning');
+        }
+
+        /** @var License $license */
+        $license = $licenses->first();
 
         $resolvedSkuId = trim((string) ($license->vendor_ref ?: $licenseType->vendor_sku_id));
         if ($resolvedSkuId === '') {

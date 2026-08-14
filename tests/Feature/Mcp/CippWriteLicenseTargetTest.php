@@ -952,4 +952,131 @@ class CippWriteLicenseTargetTest extends TestCase
         $this->assertStringNotContainsString('target_upn must be', $body);
         $this->assertSame(0, TechnicianActionLog::where('result_status', 'executed')->count());
     }
+
+    /**
+     * THE PREMISE OF THE SHAPE, ENFORCED.
+     *
+     * The tool text and the approval card both assert the target is NOT mapped
+     * to a PSA person, and nothing checked it — so naming a mapped person's
+     * ADDRESS instead of their person_id skipped confirm_upn, skipped every
+     * person-scoped gate, and wrote person_id null into the audit, on an
+     * immediate billing write. The tenant read alone cannot catch this: a
+     * mapped person is a perfectly real tenant user.
+     */
+    public function test_a_target_upn_mapped_to_a_psa_person_is_refused(): void
+    {
+        $this->configureCipp();
+        $f = $this->fixture();
+        $token = $this->token(['cipp_assign_user_license']);
+
+        // Alex IS mapped (fixture: cipp_upn alex@acme.example) and is present
+        // and enabled in the tenant listing — every other gate on this path
+        // passes.
+        $client = Mockery::mock(CippRestWriteClient::class);
+        $client->shouldReceive('listUsers')->once()->with(self::TENANT)
+            ->andReturn([$this->userRow(['userPrincipalName' => 'alex@acme.example'])]);
+        $client->shouldNotReceive('assignUserLicense');
+        $this->app->instance(CippRestWriteClient::class, $client);
+
+        $response = $this->callTool($token, 'cipp_assign_user_license', [
+            'client_id' => $f['client']->id,
+            'target_upn' => 'alex@acme.example',
+            'sku_id' => self::SKU,
+            'reason' => 'Mapped person needs a seat.',
+        ]);
+
+        $body = (string) $response->json('result.content.0.text');
+        $this->assertStringContainsString('mapped to PSA person', $body);
+        // The refusal must point at the shape that CAN express this target.
+        $this->assertStringContainsString('person_id', $body);
+        $this->assertSame(0, TechnicianActionLog::where('result_status', 'executed')->count());
+        $this->assertStringContainsString(
+            'mapped to PSA person',
+            (string) TechnicianActionLog::where('result_status', 'rejected')->latest('id')->value('summary'),
+        );
+    }
+
+    /**
+     * The object-id arm of the same gate: a UPN can be renamed upstream while
+     * the PSA still holds the mapping on cipp_user_id, so checking only the
+     * address would leave the bypass open to anyone who typed the new one.
+     */
+    public function test_a_target_whose_object_id_is_mapped_to_a_psa_person_is_refused(): void
+    {
+        $this->configureCipp();
+        $f = $this->fixture();
+        $token = $this->token(['cipp_assign_user_license']);
+
+        Person::create([
+            'client_id' => $f['client']->id,
+            'person_type' => PersonType::User,
+            'first_name' => 'Sam',
+            'last_name' => 'Renamed',
+            'email' => 'renamed@acme.example',
+            'cipp_user_id' => self::TARGET_OBJECT_ID,
+            'cipp_upn' => 'renamed@acme.example',
+            'is_active' => true,
+        ]);
+
+        $client = Mockery::mock(CippRestWriteClient::class);
+        $client->shouldReceive('listUsers')->once()->with(self::TENANT)->andReturn([$this->userRow()]);
+        $client->shouldNotReceive('assignUserLicense');
+        $this->app->instance(CippRestWriteClient::class, $client);
+
+        $response = $this->callTool($token, 'cipp_assign_user_license', [
+            'client_id' => $f['client']->id,
+            'target_upn' => self::TARGET_UPN,
+            'sku_id' => self::SKU,
+            'reason' => 'Contractor needs a seat.',
+        ]);
+
+        $this->assertStringContainsString('mapped to PSA person', (string) $response->json('result.content.0.text'));
+        $this->assertSame(0, TechnicianActionLog::where('result_status', 'executed')->count());
+    }
+
+    /**
+     * AMBIGUITY REFUSES on the direct path too.
+     *
+     * The CIPP sync upserts on (license_type_id, client_id, vendor_ref), so a
+     * vendor_ref re-sync leaves a second ACTIVE row for the same client and
+     * licence type. An unordered first() over those rows means two identical
+     * calls for two different contractors can bill different SKUs — Business
+     * Premium for one, E5 for the other — both reported as success, with no
+     * approver in the loop and a dedup key that hashes the caller's claim
+     * rather than the resolved SKU.
+     */
+    public function test_two_active_licence_rows_for_one_sku_refuse_instead_of_billing_an_arbitrary_one(): void
+    {
+        $this->configureCipp();
+        $f = $this->fixture();
+        $token = $this->token(['cipp_assign_user_license']);
+
+        License::create([
+            'license_type_id' => $f['licenseType']->id,
+            'client_id' => $f['client']->id,
+            'quantity' => 10,
+            'assigned_quantity' => 2,
+            'vendor_ref' => 'sku-e5-guid',
+            'status' => 'active',
+            'synced_at' => now(),
+        ]);
+
+        // Refused during resolution, before the tenant is even read.
+        $client = Mockery::mock(CippRestWriteClient::class);
+        $client->shouldNotReceive('listUsers');
+        $client->shouldNotReceive('assignUserLicense');
+        $this->app->instance(CippRestWriteClient::class, $client);
+
+        $response = $this->callTool($token, 'cipp_assign_user_license', [
+            'client_id' => $f['client']->id,
+            'target_upn' => self::TARGET_UPN,
+            'sku_id' => self::SKU,
+            'reason' => 'Contractor needs a seat.',
+        ]);
+
+        $body = (string) $response->json('result.content.0.text');
+        $this->assertStringContainsString('more than one active local license row', $body);
+        $this->assertArrayNotHasKey('success', $this->decodedResult($response));
+        $this->assertSame(0, TechnicianActionLog::where('result_status', 'executed')->count());
+    }
 }

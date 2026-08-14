@@ -3284,7 +3284,7 @@ class StaffCippWriteToolExecutor
         }
 
         try {
-            $user = $this->verifiedTenantUser($tenant, $params['target_upn']);
+            $user = $this->verifiedTenantUser($client->id, $tenant, $params['target_upn']);
         } catch (CippWriteScopeException $e) {
             $this->auditAttempt($tool, 'rejected', $client->id, $ticket, null, $license, $contentHash, "{$targetKey}: ".$e->getMessage(), $actorLabel);
 
@@ -3374,7 +3374,7 @@ class StaffCippWriteToolExecutor
         }
 
         try {
-            $user = $this->verifiedTenantUser($tenant, $params['target_upn']);
+            $user = $this->verifiedTenantUser($client->id, $tenant, $params['target_upn']);
         } catch (CippWriteScopeException $e) {
             $this->auditAttempt($tool, 'rejected', $client->id, $ticket, null, $license, $contentHash, "{$targetKey}: ".$e->getMessage(), $actorLabel);
 
@@ -3567,7 +3567,7 @@ class StaffCippWriteToolExecutor
             // tenant listing at approval time must be distinguishable in the
             // log from the approval never having been attempted.
             try {
-                $user = $this->verifiedTenantUser($tenant, $params['target_upn']);
+                $user = $this->verifiedTenantUser($client->id, $tenant, $params['target_upn']);
             } catch (CippWriteScopeException $e) {
                 $this->auditAttempt($run->action_type, 'rejected', $client->id, $ticket, null, $license, $contentHash, "{$targetKey}: tenant user re-verification refused the approval before any upstream call — ".$e->getMessage(), $this->approverLabel($approverId), $run->id, $approverId);
                 $run->releaseClaim();
@@ -3887,7 +3887,7 @@ class StaffCippWriteToolExecutor
 
         return 'Assign licence "'.$license->licenseType->name.'" (SKU '.$license->skuId.') to tenant user '.$userLabel.'.'
             .' This consumes a paid seat and grants the Microsoft 365 apps and services that SKU carries.'
-            .' The target is NOT mapped to a PSA person — it was verified against the tenant\'s live user listing.'
+            .' The target is NOT mapped to a PSA person: the PSA\'s person records were checked for this address AND for this object id, and a mapped target is refused rather than staged. The user itself was verified against the tenant\'s live user listing.'
             .' Approval re-verifies the user and the licence mapping fresh, and declines if that address now points at a different user object, or if this SKU now maps to a different licence than the one named here.';
     }
 
@@ -3945,9 +3945,15 @@ class StaffCippWriteToolExecutor
      * Zero-match and multi-match both refuse, and a matched row with no
      * object id refuses rather than falling through to an empty target.
      *
+     * AND SO DOES A TARGET THAT IS MAPPED TO A PSA PERSON. This shape's whole
+     * premise is a tenant user with no person record; a mapped target belongs
+     * on the person-keyed path with its typed confirmation and person-scoped
+     * gates, so $clientId is taken here purely to prove that (see
+     * CippWriteScopeResolver::assertNoPsaPersonMapping()).
+     *
      * @return array{user_id: string, upn: string, display_name: string}
      */
-    private function verifiedTenantUser(string $tenant, string $targetUpn): array
+    private function verifiedTenantUser(int $clientId, string $tenant, string $targetUpn): array
     {
         try {
             $rows = $this->client->listUsers($tenant);
@@ -3989,6 +3995,23 @@ class StaffCippWriteToolExecutor
         if ($userId === '') {
             throw new CippWriteScopeException('The verified user has no object id in the CIPP user listing; refresh the CIPP user reads and retry.');
         }
+
+        // THE UNMAPPED PREMISE, ENFORCED RATHER THAN ASSERTED. The tool text
+        // and the staged approval card both say the target is NOT mapped to a
+        // PSA person, and nothing checked it: naming a mapped person's ADDRESS
+        // instead of their person_id skipped confirm_upn and every
+        // person-scoped gate on an immediate billing write, and wrote an audit
+        // row whose person linkage is null. A documented contract the code does
+        // not enforce is not a contract — the same conclusion the mixed-shape
+        // guard reached about the two shapes.
+        //
+        // Checked HERE because every path — direct, staging and the approval
+        // replay — comes through this method, so the approval re-gate is the
+        // same code rather than a second copy that can drift: a target that
+        // becomes mapped between staging and approval declines. Matched on the
+        // object id the SERVER read as well as the address, so a UPN rename
+        // cannot walk around it.
+        $this->resolver->assertNoPsaPersonMapping($clientId, $targetUpn, $userId);
 
         // ACTIVE gate, psa-pgnj shape. A licence is a PAID SEAT: assigning one
         // to a disabled account spends money on somebody who has left. Because
@@ -5837,7 +5860,7 @@ class StaffCippWriteToolExecutor
         return [
             'target_upn' => [
                 'type' => 'string',
-                'description' => 'Full Microsoft 365 user principal name of the target, for a tenant user with no PSA person record (e.g. person@contoso.com). The server verifies this address against the tenant\'s live user listing and derives the object id from it; an address that is absent, ambiguous, or in another tenant is refused. Use person_id instead when the user is mapped to a PSA person.',
+                'description' => 'Full Microsoft 365 user principal name of the target, for a tenant user with no PSA person record (e.g. person@contoso.com). The server verifies this address against the tenant\'s live user listing and derives the object id from it; an address that is absent, ambiguous, or in another tenant is refused. Use person_id instead when the user is mapped to a PSA person — an address (or object id) that IS mapped to a PSA person is refused here, because that target belongs on the person-keyed shape with its typed confirmation.',
             ],
             'sku_id' => [
                 'type' => 'string',
