@@ -445,6 +445,55 @@ class CippWriteLicenseTargetTest extends TestCase
         $this->assertCount(2, $runs->pluck('content_hash')->unique(), 'Two distinct targets produced one content hash.');
     }
 
+    /**
+     * A RE-SYNCED SKU IS A DIFFERENT ENTITLEMENT, and the dedup key must see it.
+     *
+     * The caller's sku_id only ever SELECTS a local licence type; what gets
+     * billed is the licence row's vendor_ref. A CIPP re-sync rewrites that
+     * without the claim changing a byte, so a claim-keyed dedup hash suppressed
+     * the second — genuinely different — assignment within DIRECT_DEDUP_HOURS
+     * and answered success/idempotent while nothing reached upstream. A false
+     * success on a billing write, recorded in the log as a duplicate rather
+     * than as the missed write it was.
+     */
+    public function test_a_resynced_sku_is_not_suppressed_as_a_duplicate_of_the_caller_claim(): void
+    {
+        $this->configureCipp();
+        $f = $this->fixture();
+        $token = $this->token(['cipp_assign_user_license']);
+
+        $client = Mockery::mock(CippRestWriteClient::class);
+        $client->shouldReceive('listUsers')->twice()->with(self::TENANT)->andReturn([$this->userRow()]);
+        $client->shouldReceive('assignUserLicense')->once()
+            ->with(self::TENANT, self::TARGET_OBJECT_ID, 'sku-from-tenant-sync');
+        $client->shouldReceive('assignUserLicense')->once()
+            ->with(self::TENANT, self::TARGET_OBJECT_ID, 'sku-e5-guid');
+        $this->app->instance(CippRestWriteClient::class, $client);
+
+        $arguments = [
+            'client_id' => $f['client']->id,
+            'target_upn' => self::TARGET_UPN,
+            'sku_id' => self::SKU,
+            'reason' => 'Contractor needs a seat.',
+        ];
+
+        $first = $this->decodedResult($this->callTool($token, 'cipp_assign_user_license', $arguments));
+        $this->assertTrue($first['success'] ?? false, (string) json_encode($first));
+
+        // The re-sync: same claim, different seat.
+        License::query()->where('client_id', $f['client']->id)->update(['vendor_ref' => 'sku-e5-guid']);
+
+        $second = $this->decodedResult($this->callTool($token, 'cipp_assign_user_license', $arguments));
+        $this->assertTrue($second['success'] ?? false, (string) json_encode($second));
+        $this->assertArrayNotHasKey(
+            'idempotent',
+            $second,
+            'The re-synced SKU was suppressed as a duplicate of the caller\'s claim and never assigned.',
+        );
+
+        $this->assertSame(2, TechnicianActionLog::where('result_status', 'executed')->count());
+    }
+
     public function test_two_targets_immediate_both_reach_the_upstream_call(): void
     {
         $this->configureCipp();

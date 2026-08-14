@@ -3264,8 +3264,8 @@ class StaffCippWriteToolExecutor
         $params = $context['params'];
         $reason = (string) $context['reason'];
 
-        $targetKey = $this->licenseTargetKey($params);
-        $contentHash = $this->contentHash($tool, $client->id, null, $ticket?->id, $this->licenseTargetHashParams($params));
+        $targetKey = $this->licenseTargetKey($params, $license);
+        $contentHash = $this->contentHash($tool, $client->id, null, $ticket?->id, $this->licenseTargetHashParams($params, $license));
 
         if ($this->alreadyExecuted($tool, $client->id, $contentHash) || $this->licenseTargetAlreadyExecuted($client->id, $targetKey)) {
             $this->auditAttempt($tool, 'blocked', $client->id, $ticket, null, $license, $contentHash, "{$targetKey}: Duplicate {$tool} suppressed before upstream call.", $actorLabel);
@@ -3341,8 +3341,8 @@ class StaffCippWriteToolExecutor
         $reason = (string) $context['reason'];
         $directTool = self::STAGED_TO_DIRECT[$tool];
 
-        $targetKey = $this->licenseTargetKey($params);
-        $contentHash = $this->contentHash($tool, $client->id, null, $ticket->id, $this->licenseTargetHashParams($params));
+        $targetKey = $this->licenseTargetKey($params, $license);
+        $contentHash = $this->contentHash($tool, $client->id, null, $ticket->id, $this->licenseTargetHashParams($params, $license));
 
         if ($this->alreadyExecuted($tool, $client->id, $contentHash)) {
             return [
@@ -3537,7 +3537,12 @@ class StaffCippWriteToolExecutor
                 return $this->declined($e->getMessage());
             }
 
-            $targetKey = $this->licenseTargetKey($params);
+            // Built from the FRESHLY RESOLVED licence, so the already-executed
+            // check below cannot close this approval as a duplicate of a write
+            // that assigned a different SKU; a re-synced entitlement now falls
+            // through to the licence-drift rail, which is the gate that exists
+            // to judge it.
+            $targetKey = $this->licenseTargetKey($params, $license);
 
             if (TechnicianConfig::killSwitchEngaged()) {
                 $this->auditAttempt($run->action_type, 'blocked', $client->id, $ticket, null, $license, $contentHash, "{$targetKey}: Technician kill-switch engaged; staged CIPP write refused.", $this->approverLabel($approverId), $run->id, $approverId);
@@ -3806,11 +3811,32 @@ class StaffCippWriteToolExecutor
      * row — suppressing a real write as a duplicate with success/idempotent, or
      * closing an approved run as already-handled.
      *
+     * KEYED ON THE RESOLVED SKU, NEVER THE CALLER'S CLAIM. The claim only ever
+     * SELECTS a local licence type; the value that reaches upstream — and that
+     * decides what is billed — is $license->skuId, read out of the client's
+     * active licence row (License.vendor_ref). Those two can drift apart
+     * without the claim changing a byte: a CIPP re-sync rewrites vendor_ref,
+     * and an identical repeat call is then a GENUINELY DIFFERENT entitlement
+     * write. Hashing the claim made that repeat collide with the first one, so
+     * licenseTargetAlreadyExecuted() suppressed it and answered
+     * success/idempotent while nothing was assigned — a false success on a
+     * billing write, and on the staged path an 'already_handled' close that
+     * fired BEFORE the licence-drift rail built for exactly this threat could
+     * see it. The resolved licence is in hand at every call site
+     * (licenseTargetContext() resolves it before the key is computed), so the
+     * key is built from what actually executes.
+     *
+     * Lowercased for the same reason licenseTargetParams() lowercases both its
+     * halves: vendor_ref is stored RAW by the licence sync, and casing must not
+     * fork the dedup key or the cooldown.
+     *
      * @param  array{target_upn: string, sku_id: string}  $params
      */
-    private function licenseTargetKey(array $params): string
+    private function licenseTargetKey(array $params, ResolvedCippLicense $license): string
     {
-        return 'cipp-license-target #'.substr(hash('sha256', $params['target_upn'].'|'.$params['sku_id']), 0, 12);
+        $resolvedSku = mb_strtolower(trim((string) $license->skuId));
+
+        return 'cipp-license-target #'.substr(hash('sha256', $params['target_upn'].'|'.$resolvedSku), 0, 12);
     }
 
     /**
@@ -3859,9 +3885,9 @@ class StaffCippWriteToolExecutor
         return $value !== null && (! is_string($value) || trim($value) !== '');
     }
 
-    private function licenseTargetHashParams(array $params): array
+    private function licenseTargetHashParams(array $params, ResolvedCippLicense $license): array
     {
-        return ['license_target' => $this->licenseTargetKey($params)];
+        return ['license_target' => $this->licenseTargetKey($params, $license)];
     }
 
     private function licenseTargetAlreadyExecuted(int $clientId, string $targetKey): bool

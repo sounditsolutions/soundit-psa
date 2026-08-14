@@ -317,9 +317,10 @@ class CippWriteScopeResolver
         // rows picks a storage-engine-ordered winner: two identical direct
         // calls for two different contractors can send DIFFERENT — possibly
         // costlier — SKUs upstream, both reported as success, with no approver
-        // in the loop. The identity dedup key cannot see it either, because it
-        // hashes the caller's claim rather than the resolved SKU. There is no
-        // safe way to pick one, so refuse and name the fix.
+        // in the loop. The identity dedup key hashes the RESOLVED SKU rather
+        // than the caller's claim, so it can at least tell two such writes
+        // apart — but nothing downstream can choose between two equally active
+        // rows. There is no safe way to pick one, so refuse and name the fix.
         $licenses = License::query()
             ->where('client_id', $clientId)
             ->where('license_type_id', $licenseType->id)
