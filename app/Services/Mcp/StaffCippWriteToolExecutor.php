@@ -3597,13 +3597,25 @@ class StaffCippWriteToolExecutor
             // a write that assigned a different SKU or a different user object; a
             // re-synced entitlement or a re-pointed address falls through to the
             // drift rail that exists to judge it. That is also why the read and
-            // the user-drift rail now precede the already-executed check below:
-            // keyed on the claim and run first, it closed the approval as
-            // 'already_handled' — a logged no-op, run marked Done, no seat
+            // BOTH drift rails now precede the already-executed check, which sits
+            // below them: keyed on the claim and run first, it closed the approval
+            // as 'already_handled' — a logged no-op, run marked Done, no seat
             // assigned — whenever the address had been reassigned inside
             // DIRECT_DEDUP_HOURS, while the approval card promises the opposite,
             // that approval declines if the address now points at a different
-            // object. Verification first is what makes that promise true.
+            // object.
+            //
+            // Moving it past the USER rail alone fixed only half of that, because
+            // this key's OTHER half is the FRESHLY RESOLVED SKU. A vendor_ref
+            // re-sync between staging and approval points the dedup at an
+            // entitlement the operator never approved, so an executed row for that
+            // (user, NEW SKU) pair closed the run as 'already_handled' — Done and
+            // therefore not even re-approvable, with an audit row claiming an
+            // identical user/SKU had already executed — instead of the licence
+            // drift decline the card promises. Both verifications first, then both
+            // drift rails, THEN the dedup: by the time it runs, the resolved SKU
+            // is provably the staged one, so the key it asks about is the seat the
+            // operator actually approved.
             $targetKey = $this->licenseTargetKey($user['user_id'], $license);
 
             // Drift rail: the operator approved a proposal naming ONE object.
@@ -3620,20 +3632,6 @@ class StaffCippWriteToolExecutor
                 $run->releaseClaim();
 
                 return $this->declined('The user behind that address changed after this action was staged; deny this proposal and re-stage it against the current user.');
-            }
-
-            if ($this->licenseTargetAlreadyExecuted($client->id, $targetKey)) {
-                $this->auditAttempt($run->action_type, 'blocked', $client->id, $ticket, null, $license, $contentHash, "{$targetKey}: Duplicate licence assignment suppressed: identical user/SKU already executed within ".self::DIRECT_DEDUP_HOURS.'h; the approval was treated as a logged no-op.', $this->approverLabel($approverId), $run->id, $approverId);
-                $run->advanceTo(TechnicianRunState::Done);
-
-                return new TechnicianApprovalResult('already_handled');
-            }
-
-            if ($this->emailSecurityCooldownActive($directTool, $client->id, $targetKey, self::COOLDOWNS[$directTool] ?? 300)) {
-                $this->auditAttempt($run->action_type, 'blocked', $client->id, $ticket, null, $license, $contentHash, "{$targetKey}: CIPP staged action cooldown active; approval refused before upstream call.", $this->approverLabel($approverId), $run->id, $approverId);
-                $run->releaseClaim();
-
-                return $this->declined('A recent action for this target is still in cooldown; wait a few minutes and approve again.');
             }
 
             // The SAME rail for the LICENCE, and it needs its own: the user rail
@@ -3654,6 +3652,25 @@ class StaffCippWriteToolExecutor
                 $run->releaseClaim();
 
                 return $this->declined('The licence this SKU maps to changed after this action was staged, so approving it would assign a different licence than the one named on the proposal; deny this proposal and re-stage it.');
+            }
+
+            // ONLY NOW the dedup, with BOTH halves of $targetKey proven to be the
+            // ones on the approved card: the user rail proved the object id and
+            // the licence rail immediately above proved the SKU. A rail that
+            // TERMINATES a run (advanceTo(Done)) must never outrun a rail that
+            // DECLINES it — the decline can be re-staged, the termination cannot.
+            if ($this->licenseTargetAlreadyExecuted($client->id, $targetKey)) {
+                $this->auditAttempt($run->action_type, 'blocked', $client->id, $ticket, null, $license, $contentHash, "{$targetKey}: Duplicate licence assignment suppressed: identical user/SKU already executed within ".self::DIRECT_DEDUP_HOURS.'h; the approval was treated as a logged no-op.', $this->approverLabel($approverId), $run->id, $approverId);
+                $run->advanceTo(TechnicianRunState::Done);
+
+                return new TechnicianApprovalResult('already_handled');
+            }
+
+            if ($this->emailSecurityCooldownActive($directTool, $client->id, $targetKey, self::COOLDOWNS[$directTool] ?? 300)) {
+                $this->auditAttempt($run->action_type, 'blocked', $client->id, $ticket, null, $license, $contentHash, "{$targetKey}: CIPP staged action cooldown active; approval refused before upstream call.", $this->approverLabel($approverId), $run->id, $approverId);
+                $run->releaseClaim();
+
+                return $this->declined('A recent action for this target is still in cooldown; wait a few minutes and approve again.');
             }
 
             try {

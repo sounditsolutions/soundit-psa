@@ -617,6 +617,70 @@ class CippWriteLicenseTargetTest extends TestCase
         );
     }
 
+    /**
+     * A DEDUP MUST NOT CLOSE AN APPROVAL A DRIFT RAIL WOULD HAVE DECLINED.
+     *
+     * The already-executed key is built from the FRESHLY RESOLVED SKU, so a
+     * vendor_ref re-sync between staging and approval points it at an
+     * entitlement the operator never approved. With the dedup ahead of the
+     * licence rail, an executed row for that (user, NEW SKU) pair closed the run
+     * as 'already_handled' — Done, so not even re-approvable, and audited as an
+     * identical user/SKU already executed — while the approved SKU was never
+     * assigned and the drift decline the card promises never fired.
+     */
+    public function test_an_executed_row_for_a_drifted_sku_does_not_close_the_approval_as_already_handled(): void
+    {
+        $this->configureCipp();
+        $f = $this->fixture();
+        $token = $this->token(['cipp_stage_assign_user_license', 'cipp_assign_user_license']);
+        $approver = User::factory()->create(['name' => 'Approver']);
+
+        $client = Mockery::mock(CippRestWriteClient::class);
+        $client->shouldReceive('listUsers')->twice()->with(self::TENANT)->andReturn([$this->userRow()]);
+        // The earlier write, against the SKU the licence row points at AFTER the
+        // re-sync — the seat the staged run was never approved for.
+        $client->shouldReceive('assignUserLicense')->once()
+            ->with(self::TENANT, self::TARGET_OBJECT_ID, 'sku-e5-guid');
+        $this->app->instance(CippRestWriteClient::class, $client);
+
+        $staged = $this->decodedResult($this->callTool($token, 'cipp_stage_assign_user_license', [
+            'client_id' => $f['client']->id,
+            'ticket_id' => $f['ticket']->id,
+            'target_upn' => self::TARGET_UPN,
+            'sku_id' => self::SKU,
+            'reason' => 'Contractor needs a seat.',
+        ]));
+        $this->assertTrue($staged['success'] ?? false);
+
+        // The re-sync, then an executed assignment for the SAME user on the NEW SKU.
+        License::query()->where('client_id', $f['client']->id)->update(['vendor_ref' => 'sku-e5-guid']);
+
+        $direct = $this->decodedResult($this->callTool($token, 'cipp_assign_user_license', [
+            'client_id' => $f['client']->id,
+            'target_upn' => self::TARGET_UPN,
+            'sku_id' => self::SKU,
+            'reason' => 'Contractor needs the new seat now.',
+        ]));
+        $this->assertTrue($direct['success'] ?? false, (string) json_encode($direct));
+
+        $drifted = Mockery::mock(CippRestWriteClient::class);
+        $drifted->shouldReceive('listUsers')->once()->with(self::TENANT)->andReturn([$this->userRow()]);
+        $drifted->shouldNotReceive('assignUserLicense');
+        $this->app->instance(CippRestWriteClient::class, $drifted);
+
+        $run = TechnicianRun::findOrFail($staged['run_id']);
+        $result = app(StaffCippWriteToolExecutor::class)->approveStagedRun($run, $approver->id);
+
+        $this->assertSame('gate_declined', $result->status, 'The approval was closed as a duplicate of a SKU the operator never approved.');
+        // The DECLINE, not the termination: the operator is told the SKU moved
+        // and can re-stage, and the log does not claim their SKU already executed.
+        $this->assertStringContainsString(
+            'licence drift at approval',
+            (string) TechnicianActionLog::where('result_status', 'rejected')->latest('id')->value('summary'),
+        );
+        $this->assertSame(1, TechnicianActionLog::where('result_status', 'executed')->count());
+    }
+
     public function test_an_account_disabled_between_staging_and_approval_declines_rather_than_spending_a_seat(): void
     {
         $this->configureCipp();
