@@ -217,6 +217,17 @@ class StaffCippWriteToolExecutor
      */
     private const LICENSE_TARGET_ALLOWED_KEYS = ['target_upn', 'sku_id'];
 
+    /**
+     * The person-keyed shape's own keys. A licence call that carries target_upn
+     * AND any of these is refused outright by licenseTargetContext(): dispatch
+     * routes on target_upn ALONE, so a mixed call would drop the person shape —
+     * confirm_upn included — without a word. Mutual exclusion has to be
+     * enforced, not merely described in the tool text.
+     *
+     * @var array<int, string>
+     */
+    private const LICENSE_PERSON_SHAPE_KEYS = ['person_id', 'license_type_id', 'confirm_upn'];
+
     /** @var array<int, string> */
     private const WIPE_ACTIONS = ['wipe', 'retire'];
 
@@ -3244,7 +3255,7 @@ class StaffCippWriteToolExecutor
         $reason = (string) $context['reason'];
 
         $targetKey = $this->licenseTargetKey($params);
-        $contentHash = $this->contentHash($tool, $client->id, null, $ticket?->id, $params);
+        $contentHash = $this->contentHash($tool, $client->id, null, $ticket?->id, $this->licenseTargetHashParams($params));
 
         if ($this->alreadyExecuted($tool, $client->id, $contentHash) || $this->licenseTargetAlreadyExecuted($client->id, $targetKey)) {
             $this->auditAttempt($tool, 'blocked', $client->id, $ticket, null, $license, $contentHash, "{$targetKey}: Duplicate {$tool} suppressed before upstream call.", $actorLabel);
@@ -3321,7 +3332,7 @@ class StaffCippWriteToolExecutor
         $directTool = self::STAGED_TO_DIRECT[$tool];
 
         $targetKey = $this->licenseTargetKey($params);
-        $contentHash = $this->contentHash($tool, $client->id, null, $ticket->id, $params);
+        $contentHash = $this->contentHash($tool, $client->id, null, $ticket->id, $this->licenseTargetHashParams($params));
 
         if ($this->alreadyExecuted($tool, $client->id, $contentHash)) {
             return [
@@ -3575,6 +3586,23 @@ class StaffCippWriteToolExecutor
             return ['error' => 'Caller-supplied upstream CIPP identifiers are not accepted: '.implode(', ', $keys).'. Provide target_upn, sku_id, and ticket_id only.'];
         }
 
+        // EXACTLY ONE target shape per call, enforced rather than documented.
+        // execute() routes on the presence of target_upn alone, so a call
+        // carrying both shapes would silently drop person_id, license_type_id
+        // AND confirm_upn — a billing write landing on the tenant address with
+        // the person path's typed-confirmation rail bypassed and no error, and
+        // an audit summary naming only the target that won. The two shapes name
+        // two different users; there is no safe way to pick one, so refuse.
+        $mixedShape = array_values(array_filter(
+            self::LICENSE_PERSON_SHAPE_KEYS,
+            static fn (string $key): bool => array_key_exists($key, $arguments),
+        ));
+        if ($mixedShape !== []) {
+            $this->auditAttempt($tool, 'rejected', $clientId, null, null, null, $contentHash, 'Both licence target shapes in one call: target_upn with '.implode(', ', $mixedShape).'.', $actorLabel);
+
+            return ['error' => 'Send exactly ONE target shape: person_id + license_type_id + confirm_upn for a PSA-mapped person, OR target_upn + sku_id for a tenant user with no PSA person record. This call sent target_upn together with '.implode(', ', $mixedShape).'; nothing was written. Drop one shape and retry.'];
+        }
+
         $reason = $this->requiredString($arguments, 'reason');
         if ($reason === null) {
             $this->auditAttempt($tool, 'rejected', $clientId, null, null, null, $contentHash, 'reason is required.', $actorLabel);
@@ -3641,11 +3669,40 @@ class StaffCippWriteToolExecutor
      * create-user targets do. Both halves are already lowercased by
      * licenseTargetParams().
      *
+     * HASHED, like groupMembershipTargetKey() and every other non-person
+     * target, and for the same reason: this key is matched with SQL LIKE, and
+     * FILTER_VALIDATE_EMAIL admits both '_' and '%' in a UPN local part (an
+     * underscore is ordinary in real addresses). Interpolated raw, a perfectly
+     * valid address becomes a wildcard that matches a DIFFERENT user's audit
+     * row — suppressing a real write as a duplicate with success/idempotent, or
+     * closing an approved run as already-handled.
+     *
      * @param  array{target_upn: string, sku_id: string}  $params
      */
     private function licenseTargetKey(array $params): string
     {
-        return 'cipp-license-target:'.$params['target_upn'].':'.$params['sku_id'];
+        return 'cipp-license-target #'.substr(hash('sha256', $params['target_upn'].'|'.$params['sku_id']), 0, 12);
+    }
+
+    /**
+     * The hashable projection of the licence-target params for contentHash().
+     *
+     * contentHash() runs safeHashParams(), which strips EVERY key in
+     * UPSTREAM_IDENTIFIER_KEYS — and BOTH of this family's params are on that
+     * list (that is exactly what LICENSE_TARGET_ALLOWED_KEYS lifts). Hashing
+     * them directly leaves an EMPTY params array, so every tenant-scoped
+     * assignment for a client/ticket collapses onto one content hash: a second,
+     * distinct user or SKU is suppressed as an exact-content duplicate with no
+     * upstream call, and the staged firstOrCreate collides with an unrelated
+     * run. The target is carried here under a key that is NOT blocklisted, in
+     * the same collapsed identity form the dedup rail already uses.
+     *
+     * @param  array{target_upn: string, sku_id: string}  $params
+     * @return array<string, string>
+     */
+    private function licenseTargetHashParams(array $params): array
+    {
+        return ['license_target' => $this->licenseTargetKey($params)];
     }
 
     private function licenseTargetAlreadyExecuted(int $clientId, string $targetKey): bool
@@ -3775,7 +3832,14 @@ class StaffCippWriteToolExecutor
         return [
             'user_id' => $userId,
             'upn' => trim((string) $row['userPrincipalName']),
-            'display_name' => trim((string) ($row['displayName'] ?? '')),
+            // UNTRUSTED EXTERNAL CONTENT: the tenant controls displayName, and
+            // it flows into the cockpit approval card, the audit summary and the
+            // stored payload. Control characters are stripped and the value is
+            // length-bounded — the groupFactsFromRow() contract — so a profile
+            // edit cannot forge reason/authorisation lines above the real ones
+            // on the only human gate this family has, nor blow up the stored
+            // proposal text with one row.
+            'display_name' => mb_substr(trim((string) preg_replace('/[\x00-\x1F\x7F]+/u', ' ', is_scalar($row['displayName'] ?? null) ? (string) $row['displayName'] : '')), 0, self::CREATE_DISPLAY_NAME_MAX),
         ];
     }
 

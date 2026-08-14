@@ -129,13 +129,18 @@ class CippWriteScopeResolver
             throw new CippWriteScopeException('sku_id is required');
         }
 
+        // vendor_sku_id ONLY — it is the synced UPSTREAM M365 SKU id this
+        // method's contract names. license_types.sku_id is an integer FK to the
+        // internal billing `skus` table (the M365 string lives in
+        // skus.sku_code), so matching a caller's upstream claim against it
+        // compares two unrelated namespaces: a garbled or truncated numeric
+        // sku_id would resolve a licence type the caller never named — possibly
+        // a costlier one — and assign it on the direct path with no approver in
+        // the loop. An unrecognised claim must refuse, not resolve sideways.
         $licenseTypes = LicenseType::query()
             ->where('vendor', 'cipp_m365')
             ->where('is_active', true)
-            ->where(function ($query) use ($sku): void {
-                $query->whereRaw('LOWER(vendor_sku_id) = ?', [mb_strtolower($sku)])
-                    ->orWhereRaw('LOWER(sku_id) = ?', [mb_strtolower($sku)]);
-            })
+            ->whereRaw('LOWER(vendor_sku_id) = ?', [mb_strtolower($sku)])
             ->get();
 
         if ($licenseTypes->isEmpty()) {
