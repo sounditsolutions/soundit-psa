@@ -205,6 +205,18 @@ class StaffCippWriteToolExecutor
      */
     private const LICENSE_SKU_MAX = 128;
 
+    /**
+     * The ONLY keys the tenant-scoped licence family lifts out of
+     * UPSTREAM_IDENTIFIER_KEYS, named here so the relaxation is one grep away
+     * rather than buried at a call site. Both are validated and re-derived
+     * server-side before anything reaches upstream; every other blocklisted
+     * key still refuses on this family, and this list is never subtracted from
+     * the global one.
+     *
+     * @var array<int, string>
+     */
+    private const LICENSE_TARGET_ALLOWED_KEYS = ['target_upn', 'sku_id'];
+
     /** @var array<int, string> */
     private const WIPE_ACTIONS = ['wipe', 'retire'];
 
@@ -565,6 +577,19 @@ class StaffCippWriteToolExecutor
                 : $this->executeGroupMembershipDirect($name, $arguments, $clientId, $actorLabel);
         }
 
+        // Licence assignment has TWO target shapes under one tool name, so this
+        // family is selected by ARGUMENT SHAPE rather than by a *_TOOLS constant:
+        // target_upn present => tenant-scoped target (this family), otherwise the
+        // established person-keyed path through context(). The person path is
+        // untouched — a caller who sends neither still lands there and is refused
+        // by its own person_id gate, which is the pre-existing message.
+        if ((self::STAGED_TO_DIRECT[$name] ?? $name) === 'cipp_assign_user_license'
+            && array_key_exists('target_upn', $arguments)) {
+            return isset(self::STAGED_TO_DIRECT[$name])
+                ? $this->stageLicenseTargetAction($name, $arguments, $clientId, $actorLabel)
+                : $this->executeLicenseTargetDirect($name, $arguments, $clientId, $actorLabel);
+        }
+
         if (isset(self::STAGED_TO_DIRECT[$name])) {
             return $this->stageAction($name, $arguments, $clientId, $actorLabel);
         }
@@ -598,6 +623,19 @@ class StaffCippWriteToolExecutor
 
         if (in_array(self::STAGED_TO_DIRECT[$run->action_type] ?? '', self::GROUP_MEMBERSHIP_TOOLS, true)) {
             return $this->approveGroupMembershipStagedRun($run, $approverId);
+        }
+
+        // Same two-shapes-one-name problem as execute(), one layer on: routed by
+        // the redacted_params marker the staging path wrote, NOT by tool name.
+        // redacted_params is routing only — the approve path revalidates
+        // everything from the ENCRYPTED payload, which carries its own
+        // family marker. A meta stripped of the marker falls through to the
+        // generic tail and is refused there for want of license_type_id, which
+        // is the safe direction.
+        if ((self::STAGED_TO_DIRECT[$run->action_type] ?? '') === 'cipp_assign_user_license'
+            && is_array($run->proposed_meta['redacted_params'] ?? null)
+            && array_key_exists('target_upn', $run->proposed_meta['redacted_params'])) {
+            return $this->approveLicenseTargetStagedRun($run, $approverId);
         }
 
         try {
@@ -3173,6 +3211,480 @@ class StaffCippWriteToolExecutor
     }
 
     /**
+     * Direct path for the tenant-scoped licence assignment.
+     *
+     * Shaped on executeGroupMembershipDirect(): both dedup rails (exact-content
+     * AND identity-keyed, because the same user + SKU assigned from a different
+     * reason is still the same entitlement change), then the targetKey cooldown,
+     * then the verification read, then upstream.
+     *
+     * The verified user is resolved INSIDE the try so a scope refusal is audited
+     * as 'rejected' with the operator-readable reason rather than escaping as a
+     * 500 — the group-membership contract.
+     *
+     * @return array<string, mixed>
+     */
+    private function executeLicenseTargetDirect(string $tool, array $arguments, int $clientId, string $actorLabel): array
+    {
+        $context = $this->licenseTargetContext($tool, $arguments, $clientId, $actorLabel, requireTicket: false);
+        if (isset($context['error'])) {
+            return ['error' => $context['error']];
+        }
+
+        /** @var Client $client */
+        $client = $context['client'];
+        /** @var string $tenant */
+        $tenant = $context['tenant'];
+        /** @var Ticket|null $ticket */
+        $ticket = $context['ticket'];
+        /** @var ResolvedCippLicense $license */
+        $license = $context['license'];
+        /** @var array{target_upn: string, sku_id: string} $params */
+        $params = $context['params'];
+        $reason = (string) $context['reason'];
+
+        $targetKey = $this->licenseTargetKey($params);
+        $contentHash = $this->contentHash($tool, $client->id, null, $ticket?->id, $params);
+
+        if ($this->alreadyExecuted($tool, $client->id, $contentHash) || $this->licenseTargetAlreadyExecuted($client->id, $targetKey)) {
+            $this->auditAttempt($tool, 'blocked', $client->id, $ticket, null, $license, $contentHash, "{$targetKey}: Duplicate {$tool} suppressed before upstream call.", $actorLabel);
+
+            return [
+                'success' => true,
+                'idempotent' => true,
+                'message' => 'Already executed identical CIPP write recently; no upstream call was made.',
+            ];
+        }
+
+        if ($this->emailSecurityCooldownActive($tool, $client->id, $targetKey, self::COOLDOWNS[$tool] ?? 300)) {
+            $this->auditAttempt($tool, 'blocked', $client->id, $ticket, null, $license, $contentHash, "{$targetKey}: {$tool} cooldown active; upstream call refused.", $actorLabel);
+
+            return ['error' => "{$tool} cooldown active for this target; no upstream call was made."];
+        }
+
+        try {
+            $user = $this->verifiedTenantUser($tenant, $params['target_upn']);
+        } catch (CippWriteScopeException $e) {
+            $this->auditAttempt($tool, 'rejected', $client->id, $ticket, null, $license, $contentHash, "{$targetKey}: ".$e->getMessage(), $actorLabel);
+
+            return ['error' => $e->getMessage()];
+        }
+
+        try {
+            $this->client->assignUserLicense($tenant, $user['user_id'], (string) $license->skuId);
+        } catch (CippClientException $e) {
+            $this->auditAttempt($tool, 'error', $client->id, $ticket, null, $license, $contentHash, "{$targetKey}: ".$this->safeFailureSummary($tool, $e), $actorLabel);
+
+            return ['error' => "CIPP write failed for {$tool}; treat the licence assignment as not applied."];
+        }
+
+        $this->auditAttempt($tool, 'executed', $client->id, $ticket, null, $license, $contentHash, "{$targetKey}: {$tool} executed — ".$this->licenseTargetAuditDetail($user, $license).": {$reason}", $actorLabel);
+
+        return [
+            'success' => true,
+            'tool' => $tool,
+            'target_upn' => $user['upn'],
+            'ticket_id' => $ticket?->id,
+            'message' => 'CIPP licence assignment executed.',
+        ];
+    }
+
+    /**
+     * Staged twin — the DEFAULT path, since grants start staged-only.
+     *
+     * Staging performs the same read-only verification lookup as the direct
+     * path (never the write) so the cockpit proposal names the SERVER-verified
+     * user rather than the caller's typed address, and stores that snapshot so
+     * approval can detect drift. The held payload carries only local scalars
+     * plus the verified snapshot; approval re-verifies everything fresh.
+     *
+     * @return array<string, mixed>
+     */
+    private function stageLicenseTargetAction(string $tool, array $arguments, int $clientId, string $actorLabel): array
+    {
+        $context = $this->licenseTargetContext($tool, $arguments, $clientId, $actorLabel, requireTicket: true);
+        if (isset($context['error'])) {
+            return ['error' => $context['error']];
+        }
+
+        /** @var Client $client */
+        $client = $context['client'];
+        /** @var string $tenant */
+        $tenant = $context['tenant'];
+        /** @var Ticket $ticket */
+        $ticket = $context['ticket'];
+        /** @var ResolvedCippLicense $license */
+        $license = $context['license'];
+        /** @var array{target_upn: string, sku_id: string} $params */
+        $params = $context['params'];
+        $reason = (string) $context['reason'];
+        $directTool = self::STAGED_TO_DIRECT[$tool];
+
+        $targetKey = $this->licenseTargetKey($params);
+        $contentHash = $this->contentHash($tool, $client->id, null, $ticket->id, $params);
+
+        if ($this->alreadyExecuted($tool, $client->id, $contentHash)) {
+            return [
+                'success' => true,
+                'idempotent' => true,
+                'ticket_id' => $ticket->id,
+                'ticket_display_id' => $ticket->display_id,
+                'run_id' => $this->executedRunId($tool, $client->id, $contentHash),
+                'message' => 'Already executed identical action recently; no new proposal was staged.',
+            ];
+        }
+
+        $liveAwaitingRun = $this->liveAwaitingRun($ticket->id, $tool, $contentHash);
+        if ($liveAwaitingRun !== null) {
+            return [
+                'success' => true,
+                'idempotent' => true,
+                'ticket_id' => $ticket->id,
+                'ticket_display_id' => $ticket->display_id,
+                'run_id' => $liveAwaitingRun->id,
+                'message' => 'Already staged; awaiting approval.',
+            ];
+        }
+
+        if ($this->emailSecurityProposalCooldownActive($tool, $ticket, $targetKey, self::COOLDOWNS[$tool] ?? 300)) {
+            $this->auditAttempt($tool, 'blocked', $client->id, $ticket, null, $license, $contentHash, "{$targetKey}: {$tool} cooldown active; staged proposal refused.", $actorLabel);
+
+            return ['error' => "{$tool} cooldown active for this target; no proposal was staged."];
+        }
+
+        try {
+            $user = $this->verifiedTenantUser($tenant, $params['target_upn']);
+        } catch (CippWriteScopeException $e) {
+            $this->auditAttempt($tool, 'rejected', $client->id, $ticket, null, $license, $contentHash, "{$targetKey}: ".$e->getMessage(), $actorLabel);
+
+            return ['error' => $e->getMessage()];
+        }
+
+        // The stored params carry the verified identity SNAPSHOT so approval can
+        // detect drift (the UPN reassigned to a different object between staging
+        // and approval) against the fresh listing.
+        $storedParams = array_merge($params, [
+            'verified_user_id' => $user['user_id'],
+            'verified_display_name' => $user['display_name'],
+        ]);
+
+        $meta = [
+            'drafted_by' => $actorLabel,
+            'reasons' => [$reason],
+            'direct_tool' => $directTool,
+            'person_id' => null,
+            'redacted_params' => $storedParams,
+            'sensitive_inputs' => [],
+            'encrypted_payload' => Crypt::encryptString(json_encode([
+                'direct_tool' => $directTool,
+                'family' => 'license_target',
+                'client_id' => $client->id,
+                'person_id' => null,
+                'ticket_id' => $ticket->id,
+                'params' => $storedParams,
+            ], JSON_THROW_ON_ERROR)),
+        ];
+        $proposedContent = $this->licenseTargetStagedDisplay($user, $license)."\nReason: ".$reason;
+
+        $run = TechnicianRun::firstOrCreate(
+            [
+                'ticket_id' => $ticket->id,
+                'action_type' => $tool,
+                'content_hash' => $contentHash,
+            ],
+            [
+                'client_id' => $client->id,
+                'state' => TechnicianRunState::AwaitingApproval,
+                'proposed_content' => $proposedContent,
+                'proposed_meta' => $meta,
+                'confidence' => null,
+                'tokens_used' => 0,
+            ],
+        );
+
+        if (! $run->wasRecentlyCreated && $run->state !== TechnicianRunState::AwaitingApproval) {
+            $run->update([
+                'state' => TechnicianRunState::AwaitingApproval->value,
+                'proposed_content' => $proposedContent,
+                'proposed_meta' => $meta,
+                'confidence' => null,
+                'tokens_used' => 0,
+            ]);
+        } elseif (! $run->wasRecentlyCreated) {
+            return [
+                'success' => true,
+                'idempotent' => true,
+                'ticket_id' => $ticket->id,
+                'ticket_display_id' => $ticket->display_id,
+                'run_id' => $run->id,
+                'message' => 'Already staged; awaiting approval.',
+            ];
+        }
+
+        $this->auditAttempt($tool, 'awaiting_approval', $client->id, $ticket, null, $license, $contentHash, "{$targetKey}: MCP staged {$tool} — ".$this->licenseTargetAuditDetail($user, $license).": {$reason}", $actorLabel, $run->id);
+
+        return [
+            'success' => true,
+            'ticket_id' => $ticket->id,
+            'ticket_display_id' => $ticket->display_id,
+            'run_id' => $run->id,
+            'message' => 'Staged for cockpit approval.',
+        ];
+    }
+
+    /**
+     * Approval replay for a held tenant-scoped licence assignment. Everything
+     * is revalidated from the ENCRYPTED payload through the same gates as the
+     * initial call, and the user is re-verified against the LIVE tenant
+     * listing: a UPN that now resolves to a different object id declines
+     * rather than assigning a paid seat to somebody the operator never
+     * reviewed. A re-fired approval of an identical already-executed
+     * assignment is a LOGGED NO-OP, never a second upstream call.
+     */
+    private function approveLicenseTargetStagedRun(TechnicianRun $run, int $approverId): TechnicianApprovalResult
+    {
+        try {
+            $payload = $this->decryptRunPayload($run);
+            if ($payload === null) {
+                $run->releaseClaim();
+
+                return $this->declined('The held payload could not be read; deny this proposal and re-stage it.');
+            }
+
+            $directTool = (string) ($payload['direct_tool'] ?? '');
+            if ((self::STAGED_TO_DIRECT[$run->action_type] ?? null) !== $directTool
+                || (string) ($payload['family'] ?? '') !== 'license_target') {
+                $run->releaseClaim();
+
+                return $this->declined('The held payload does not match this action type; deny this proposal and re-stage it.');
+            }
+
+            $client = Client::find((int) ($payload['client_id'] ?? 0));
+            if (! $client || (int) $client->id !== (int) $run->client_id) {
+                $run->releaseClaim();
+
+                return $this->declined('The proposal\'s client could not be re-verified; deny this proposal and re-stage it.');
+            }
+
+            $tenant = $this->resolver->resolveCippTenant($client);
+            $ticket = $this->resolver->resolveTicketForHeldAction($client->id, $payload['ticket_id'] ?? null);
+            $stored = is_array($payload['params'] ?? null) ? $payload['params'] : [];
+            $params = $this->licenseTargetParams($stored);
+            $license = $this->resolver->resolveCippLicenseBySku($client->id, $params['sku_id']);
+
+            $targetKey = $this->licenseTargetKey($params);
+            $contentHash = $run->content_hash;
+
+            if (TechnicianConfig::killSwitchEngaged()) {
+                $this->auditAttempt($run->action_type, 'blocked', $client->id, $ticket, null, $license, $contentHash, "{$targetKey}: Technician kill-switch engaged; staged CIPP write refused.", $this->approverLabel($approverId), $run->id, $approverId);
+                $run->releaseClaim();
+
+                return $this->declined('Technician kill-switch engaged; the staged CIPP write was refused.');
+            }
+
+            if ($this->licenseTargetAlreadyExecuted($client->id, $targetKey)) {
+                $this->auditAttempt($run->action_type, 'blocked', $client->id, $ticket, null, $license, $contentHash, "{$targetKey}: Duplicate licence assignment suppressed: identical user/SKU already executed within ".self::DIRECT_DEDUP_HOURS.'h; the approval was treated as a logged no-op.', $this->approverLabel($approverId), $run->id, $approverId);
+                $run->advanceTo(TechnicianRunState::Done);
+
+                return new TechnicianApprovalResult('already_handled');
+            }
+
+            if ($this->emailSecurityCooldownActive($directTool, $client->id, $targetKey, self::COOLDOWNS[$directTool] ?? 300)) {
+                $this->auditAttempt($run->action_type, 'blocked', $client->id, $ticket, null, $license, $contentHash, "{$targetKey}: CIPP staged action cooldown active; approval refused before upstream call.", $this->approverLabel($approverId), $run->id, $approverId);
+                $run->releaseClaim();
+
+                return $this->declined('A recent action for this target is still in cooldown; wait a few minutes and approve again.');
+            }
+
+            $user = $this->verifiedTenantUser($tenant, $params['target_upn']);
+
+            // Drift rail: the operator approved a proposal naming ONE object.
+            // A UPN can be reassigned; if it now points somewhere else the
+            // approval is for a different person and must decline.
+            $stagedUserId = trim((string) ($stored['verified_user_id'] ?? ''));
+            if ($stagedUserId === '' || strcasecmp($user['user_id'], $stagedUserId) !== 0) {
+                $run->releaseClaim();
+
+                return $this->declined('The user behind that address changed after this action was staged; deny this proposal and re-stage it against the current user.');
+            }
+
+            try {
+                $this->client->assignUserLicense($tenant, $user['user_id'], (string) $license->skuId);
+            } catch (CippClientException $e) {
+                $this->auditAttempt($run->action_type, 'error', $client->id, $ticket, null, $license, $contentHash, "{$targetKey}: ".$this->safeFailureSummary($run->action_type, $e), $this->approverLabel($approverId), $run->id, $approverId);
+                $run->releaseClaim();
+
+                return $this->declined($e->getMessage());
+            }
+
+            $this->auditAttempt($run->action_type, 'executed', $client->id, $ticket, null, $license, $contentHash, "{$targetKey}: Operator-approved {$run->action_type} executed — ".$this->licenseTargetAuditDetail($user, $license).'.', $this->approverLabel($approverId), $run->id, $approverId);
+            $run->advanceTo(TechnicianRunState::Done);
+
+            return new TechnicianApprovalResult('executed');
+        } catch (CippWriteScopeException $e) {
+            $run->releaseClaim();
+
+            return $this->declined($e->getMessage());
+        } catch (\Throwable $e) {
+            $run->releaseClaim();
+
+            throw $e;
+        }
+    }
+
+    /**
+     * Shared front door for the tenant-scoped licence write: the same
+     * caller-input gates as context() — upstream-identifier blocklist,
+     * required redacted reason, kill-switch, client + tenant + ticket
+     * resolution — with target_upn/sku_id validation in place of person and
+     * license_type_id resolution.
+     *
+     * THE DELIBERATE RELAXATION, and it is the reviewable line in this family:
+     * BOTH of this family's parameters — target_upn AND sku_id — are already in
+     * UPSTREAM_IDENTIFIER_KEYS, so the standard blocklist call refuses every
+     * call this family exists to serve. They are allowed HERE ONLY, by name,
+     * and are never removed from the global list; every other tool keeps
+     * refusing both, and every OTHER blocklisted key still refuses here.
+     *
+     * What makes it safe is the same property the blocklist protects: the
+     * caller supplies a CLAIM and the server derives the identity.
+     * resolveCippLicenseBySku() matches the SKU claim against synced licence
+     * rows and answers with local objects, with the client-entitlement gate
+     * untouched — a SKU this client has no active local licence row for is
+     * still refused. verifiedTenantUser() matches the address claim against the
+     * resolved tenant's live listing and answers with the object id the SERVER
+     * read. Neither value reaches upstream as the caller typed it.
+     *
+     * (Measured the hard way: the first cut of this family allowed only
+     * sku_id, on a reading of the key list that had been truncated before
+     * target_upn. Every call refused. The tests below are what caught it.)
+     *
+     * @return array{client?: Client, tenant?: string, ticket?: Ticket|null, license?: ResolvedCippLicense, params?: array{target_upn: string, sku_id: string}, reason?: string, error?: string}
+     */
+    private function licenseTargetContext(string $tool, array $arguments, int $clientId, string $actorLabel, bool $requireTicket): array
+    {
+        $contentHash = $this->contentHash($tool, $clientId, null, null, $arguments);
+
+        if ($keys = $this->upstreamIdentifierKeysAllowing($arguments, self::LICENSE_TARGET_ALLOWED_KEYS)) {
+            $this->auditAttempt($tool, 'rejected', $clientId, null, null, null, $contentHash, 'Caller-supplied upstream CIPP identifiers are not accepted: '.implode(', ', $keys).'.', $actorLabel);
+
+            // The offending keys are named in the RESULT here, not only in the
+            // audit: they are the caller's own argument names, they carry
+            // nothing sensitive, and an agent that cannot see which key it was
+            // refused for retries blind.
+            return ['error' => 'Caller-supplied upstream CIPP identifiers are not accepted: '.implode(', ', $keys).'. Provide target_upn, sku_id, and ticket_id only.'];
+        }
+
+        $reason = $this->requiredString($arguments, 'reason');
+        if ($reason === null) {
+            $this->auditAttempt($tool, 'rejected', $clientId, null, null, null, $contentHash, 'reason is required.', $actorLabel);
+
+            return ['error' => 'reason is required'];
+        }
+        $reason = $this->safeReason($tool, $reason, $arguments);
+
+        if (TechnicianConfig::killSwitchEngaged()) {
+            $this->auditAttempt($tool, 'blocked', $clientId, null, null, null, $contentHash, 'Technician kill-switch engaged; CIPP MCP write refused.', $actorLabel);
+
+            return ['error' => 'Technician kill-switch engaged; CIPP MCP write refused'];
+        }
+
+        $client = Client::find($clientId);
+        if (! $client) {
+            $this->auditAttempt($tool, 'rejected', $clientId, null, null, null, $contentHash, 'Client not found.', $actorLabel);
+
+            return ['error' => 'Client not found'];
+        }
+
+        try {
+            $tenant = $this->resolver->resolveCippTenant($client);
+            $ticket = $requireTicket
+                ? $this->resolver->resolveTicketForHeldAction($client->id, $arguments['ticket_id'] ?? null)
+                : $this->resolver->resolveOptionalTicket($client->id, $arguments['ticket_id'] ?? null);
+            $params = $this->licenseTargetParams($arguments);
+            $license = $this->resolver->resolveCippLicenseBySku($client->id, $params['sku_id']);
+        } catch (CippWriteScopeException $e) {
+            $this->auditAttempt($tool, 'rejected', $client->id, null, null, null, $contentHash, $e->getMessage(), $actorLabel);
+
+            return ['error' => $e->getMessage()];
+        }
+
+        return [
+            'client' => $client,
+            'tenant' => $tenant,
+            'ticket' => $ticket,
+            'license' => $license,
+            'params' => $params,
+            'reason' => $reason,
+        ];
+    }
+
+    /**
+     * The upstream-identifier blocklist minus a named allowance. Separate from
+     * upstreamIdentifierKeys() on purpose: the global helper stays the default
+     * everywhere, and any relaxation has to name the key it is relaxing at the
+     * call site, where a reviewer will see it.
+     *
+     * @param  array<string, mixed>  $arguments
+     * @param  array<int, string>  $allowed
+     * @return array<int, string>
+     */
+    private function upstreamIdentifierKeysAllowing(array $arguments, array $allowed): array
+    {
+        return array_values(array_diff($this->upstreamIdentifierKeys($arguments), $allowed));
+    }
+
+    /**
+     * Identity-keyed dedup/cooldown key for the licence target: the SAME user
+     * and SKU is the same entitlement change however it was described, so it
+     * dedups across reasons and tickets the way the group-membership and
+     * create-user targets do. Both halves are already lowercased by
+     * licenseTargetParams().
+     *
+     * @param  array{target_upn: string, sku_id: string}  $params
+     */
+    private function licenseTargetKey(array $params): string
+    {
+        return 'cipp-license-target:'.$params['target_upn'].':'.$params['sku_id'];
+    }
+
+    private function licenseTargetAlreadyExecuted(int $clientId, string $targetKey): bool
+    {
+        return TechnicianActionLog::query()
+            ->where('client_id', $clientId)
+            ->where('result_status', 'executed')
+            ->where('summary', 'like', $targetKey.':%')
+            ->where('created_at', '>=', now()->subHours(self::DIRECT_DEDUP_HOURS))
+            ->exists();
+    }
+
+    /**
+     * @param  array{user_id: string, upn: string, display_name: string}  $user
+     */
+    private function licenseTargetAuditDetail(array $user, ResolvedCippLicense $license): string
+    {
+        return 'assigned license_type #'.$license->licenseType->id.' (SKU '.$license->skuId.') to tenant user '.$user['upn'];
+    }
+
+    /**
+     * @param  array{user_id: string, upn: string, display_name: string}  $user
+     */
+    private function licenseTargetStagedDisplay(array $user, ResolvedCippLicense $license): string
+    {
+        // A licence assignment is a billing decision: the approver must see WHO
+        // and WHICH SKU without leaving the queue. The user is named by its
+        // SERVER-VERIFIED UPN and display name — never the caller's typed
+        // address — and the licence by the local row the entitlement gate
+        // matched, so "which seat am I paying for" is answerable on the card.
+        $userLabel = $user['upn'].($user['display_name'] !== '' ? ' ('.$user['display_name'].')' : '');
+
+        return 'Assign licence "'.$license->licenseType->name.'" (SKU '.$license->skuId.') to tenant user '.$userLabel.'.'
+            .' This consumes a paid seat and grants the Microsoft 365 apps and services that SKU carries.'
+            .' The target is NOT mapped to a PSA person — it was verified against the tenant\'s live user listing.'
+            .' Approval re-verifies the user and the licence mapping fresh, and declines if that address now points at a different user object.';
+    }
+
+    /**
      * Validate the tenant-scoped licence-target scalar params. Runs on the
      * initial call (against caller arguments) AND on the approval replay
      * (against the decrypted stored payload), so a tampered or drifted
@@ -4960,9 +5472,9 @@ class StaffCippWriteToolExecutor
     {
         return self::tool(
             'cipp_assign_user_license',
-            'Assign one local CIPP M365 license SKU to one server-derived user immediately. This can alter billing and app entitlements. Requires explicit grant, reason, confirm_upn, kill-switch, dedup/cooldown, and audit. Dial note: human-smoke-verify before first live grant; no replace-all or remove-all license body is supported.',
-            array_merge(self::personProperties(), self::licenseProperties()),
-            ['person_id', 'license_type_id', 'confirm_upn', 'reason'],
+            'Assign one CIPP M365 license SKU to one server-derived user immediately. This can alter billing and app entitlements. TWO TARGET SHAPES, and you must send exactly one of them: (a) person_id + license_type_id + confirm_upn for a user mapped to a PSA person; (b) target_upn + sku_id for a tenant user with no PSA person record — the address is verified against the tenant\'s live user listing before anything is written, and the SKU is matched against this client\'s synced licence rows. Both require reason, and both are subject to grant, kill-switch, dedup/cooldown, and audit. Dial note: human-smoke-verify before first live grant; no replace-all or remove-all license body is supported.',
+            array_merge(self::personProperties(), self::licenseProperties(), self::licenseTargetProperties()),
+            ['reason'],
         );
     }
 
@@ -4971,10 +5483,32 @@ class StaffCippWriteToolExecutor
     {
         return self::tool(
             'cipp_stage_assign_user_license',
-            'Stage assignment of one local CIPP M365 license SKU for cockpit approval. This can alter billing and entitlements; the held payload is encrypted at rest and approval revalidates person, tenant, and SKU mappings.',
-            array_merge(self::personProperties(ticket: true), self::licenseProperties()),
-            ['person_id', 'license_type_id', 'ticket_id', 'confirm_upn', 'reason'],
+            'Stage assignment of one CIPP M365 license SKU for cockpit approval. This can alter billing and entitlements; the held payload is encrypted at rest and approval revalidates every mapping fresh. TWO TARGET SHAPES, exactly one of them: (a) person_id + license_type_id + confirm_upn; (b) target_upn + sku_id for a tenant user with no PSA person record — approval re-verifies that address against the tenant\'s live user listing and declines if it now points at a different user object. Both require ticket_id and reason.',
+            array_merge(self::personProperties(ticket: true), self::licenseProperties(), self::licenseTargetProperties()),
+            ['ticket_id', 'reason'],
         );
+    }
+
+    /**
+     * Tenant-scoped target properties for the licence assignment. Deliberately
+     * NOT named userPrincipalName / Username / cipp_upn / skuId: those are in
+     * UPSTREAM_IDENTIFIER_KEYS and are refused outright on every tool, and a
+     * caller reaching for one should keep hitting that wall.
+     *
+     * @return array<string, mixed>
+     */
+    private static function licenseTargetProperties(): array
+    {
+        return [
+            'target_upn' => [
+                'type' => 'string',
+                'description' => 'Full Microsoft 365 user principal name of the target, for a tenant user with no PSA person record (e.g. person@contoso.com). The server verifies this address against the tenant\'s live user listing and derives the object id from it; an address that is absent, ambiguous, or in another tenant is refused. Use person_id instead when the user is mapped to a PSA person.',
+            ],
+            'sku_id' => [
+                'type' => 'string',
+                'description' => 'Upstream Microsoft 365 SKU id as returned by the CIPP licence reads (e.g. cipp_list_licenses). Only accepted alongside target_upn. The server matches it against this client\'s synced licence rows and refuses a SKU the client has no active local licence row for; use license_type_id with person_id for the PSA-person shape.',
+            ],
+        ];
     }
 
     /** @return array<string, mixed> */
