@@ -1019,8 +1019,50 @@ class CippWriteLicenseTargetTest extends TestCase
      * bypass the mapped-person refusal exists to close, reopened by asking the
      * MATCH in a different dialect from the completeness test beside it.
      */
-    public function test_a_whitespace_padded_mapping_column_still_refuses_the_tenant_shape(): void
+    public function test_a_padded_upn_alone_still_refuses_the_tenant_shape(): void
     {
+        // ONE ARM PER TEST. The first cut padded BOTH columns at once, so it
+        // could not fail if only one arm's trim() regressed — a vacuous pass
+        // wearing a green tick. Each arm now carries its own case.
+        $this->configureCipp();
+        $f = $this->fixture();
+        $token = $this->token(['cipp_assign_user_license']);
+
+        // BOTH arms padded: the address arm by a trailing newline, and the
+        // object-id arm — the value the SERVER read out of the tenant — by a
+        // leading space. Either one alone would have to refuse.
+        Person::create([
+            'client_id' => $f['client']->id,
+            'person_type' => PersonType::User,
+            'first_name' => 'Padded',
+            'last_name' => 'Mapped',
+            'email' => self::TARGET_UPN,
+            'cipp_user_id' => self::TARGET_OBJECT_ID,
+            'cipp_upn' => self::TARGET_UPN."\n",
+            'is_active' => true,
+        ]);
+
+        $client = Mockery::mock(CippRestWriteClient::class);
+        $client->shouldReceive('listUsers')->zeroOrMoreTimes()->with(self::TENANT)->andReturn([$this->userRow()]);
+        $client->shouldNotReceive('assignUserLicense');
+        $this->app->instance(CippRestWriteClient::class, $client);
+
+        $response = $this->callTool($token, 'cipp_assign_user_license', [
+            'client_id' => $f['client']->id,
+            'target_upn' => self::TARGET_UPN,
+            'sku_id' => self::SKU,
+            'reason' => 'Contractor needs a seat.',
+        ]);
+
+        $this->assertStringContainsString('mapped to PSA person', (string) $response->json('result.content.0.text'));
+        $this->assertSame(0, TechnicianActionLog::where('result_status', 'executed')->count());
+    }
+
+    public function test_a_padded_user_id_alone_still_refuses_the_tenant_shape(): void
+    {
+        // ONE ARM PER TEST. The first cut padded BOTH columns at once, so it
+        // could not fail if only one arm's trim() regressed — a vacuous pass
+        // wearing a green tick. Each arm now carries its own case.
         $this->configureCipp();
         $f = $this->fixture();
         $token = $this->token(['cipp_assign_user_license']);
@@ -1035,7 +1077,7 @@ class CippWriteLicenseTargetTest extends TestCase
             'last_name' => 'Mapped',
             'email' => self::TARGET_UPN,
             'cipp_user_id' => ' '.self::TARGET_OBJECT_ID,
-            'cipp_upn' => self::TARGET_UPN."\n",
+            'cipp_upn' => self::TARGET_UPN,
             'is_active' => true,
         ]);
 

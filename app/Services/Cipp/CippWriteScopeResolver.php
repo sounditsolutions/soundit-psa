@@ -120,10 +120,31 @@ class CippWriteScopeResolver
         // reads as non-blank is necessarily non-null and non-'' in SQL), and
         // every comparison that can admit or refuse is made in PHP, through the
         // SAME trim() the person resolver uses. One question, one dialect.
+        // AND IT NARROWS TO CANDIDATES RATHER THAN HYDRATING THE CLIENT. Three
+        // verify seats flagged that the previous cut filtered only on client_id
+        // + non-blank columns and then ->get(), so every completely-mapped
+        // Person of the client came back on every tenant-shape licence call.
+        // LIKE '%needle%' is a NECESSARY condition for the PHP comparison to
+        // succeed — a stored value that trims to the needle necessarily contains it — so
+        // this cannot exclude a true match, and the exact decision still happens
+        // in PHP. The needle is escaped because '%' and '_' are both ordinary in
+        // a UPN local part; unescaped, a perfectly valid address becomes a
+        // wildcard, which is the same hazard that put licenseTargetKey() on a
+        // hash.
+        $like = static fn (string $needle): string => '%'.addcslashes($needle, '%_\\').'%';
+
         $person = Person::query()
             ->where('client_id', $clientId)
             ->where('cipp_upn', '<>', '')
             ->where('cipp_user_id', '<>', '')
+            ->where(function ($query) use ($upn, $userId, $like) {
+                if ($upn !== '') {
+                    $query->orWhereRaw("LOWER(cipp_upn) LIKE ? ESCAPE '\\'", [$like($upn)]);
+                }
+                if ($userId !== '') {
+                    $query->orWhereRaw("LOWER(cipp_user_id) LIKE ? ESCAPE '\\'", [$like($userId)]);
+                }
+            })
             ->get()
             ->first(static function (Person $candidate) use ($upn, $userId): bool {
                 $candidateUpn = mb_strtolower(trim((string) $candidate->cipp_upn));
