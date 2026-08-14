@@ -1006,6 +1006,55 @@ class CippWriteLicenseTargetTest extends TestCase
         $this->assertSame(0, TechnicianActionLog::where('result_status', 'executed')->count());
     }
 
+    /**
+     * A PADDED mapping column STILL refuses — the gate cannot be stricter than
+     * the resolver it defers to, and it must not be looser either.
+     *
+     * The sync stores cipp_upn/cipp_user_id raw and resolveCippPerson() reads
+     * both through PHP trim(), so "contractor@acme.example\n" is a COMPLETE,
+     * USABLE mapping: that person is assignable on the person-keyed shape. A
+     * gate that matched the column untrimmed in SQL finds nothing here and lets
+     * that fully mapped person onto the tenant shape with confirm_upn, every
+     * person-scoped gate, and the audit's person linkage all skipped — the same
+     * bypass the mapped-person refusal exists to close, reopened by asking the
+     * MATCH in a different dialect from the completeness test beside it.
+     */
+    public function test_a_whitespace_padded_mapping_column_still_refuses_the_tenant_shape(): void
+    {
+        $this->configureCipp();
+        $f = $this->fixture();
+        $token = $this->token(['cipp_assign_user_license']);
+
+        // BOTH arms padded: the address arm by a trailing newline, and the
+        // object-id arm — the value the SERVER read out of the tenant — by a
+        // leading space. Either one alone would have to refuse.
+        Person::create([
+            'client_id' => $f['client']->id,
+            'person_type' => PersonType::User,
+            'first_name' => 'Padded',
+            'last_name' => 'Mapped',
+            'email' => self::TARGET_UPN,
+            'cipp_user_id' => ' '.self::TARGET_OBJECT_ID,
+            'cipp_upn' => self::TARGET_UPN."\n",
+            'is_active' => true,
+        ]);
+
+        $client = Mockery::mock(CippRestWriteClient::class);
+        $client->shouldReceive('listUsers')->zeroOrMoreTimes()->with(self::TENANT)->andReturn([$this->userRow()]);
+        $client->shouldNotReceive('assignUserLicense');
+        $this->app->instance(CippRestWriteClient::class, $client);
+
+        $response = $this->callTool($token, 'cipp_assign_user_license', [
+            'client_id' => $f['client']->id,
+            'target_upn' => self::TARGET_UPN,
+            'sku_id' => self::SKU,
+            'reason' => 'Contractor needs a seat.',
+        ]);
+
+        $this->assertStringContainsString('mapped to PSA person', (string) $response->json('result.content.0.text'));
+        $this->assertSame(0, TechnicianActionLog::where('result_status', 'executed')->count());
+    }
+
     public function test_the_person_keyed_shape_is_untouched_by_this_family(): void
     {
         $this->configureCipp();

@@ -92,34 +92,52 @@ class CippWriteScopeResolver
         // resolveCippPerson() refuses, so refusing here too would leave the
         // target unassignable by every shape (see the docblock).
         //
-        // COMPLETENESS IS DECIDED IN PHP, NOT IN SQL, AND THAT IS THE POINT.
-        // The first cut asked it with whereRaw("TRIM(COALESCE(col,'')) <> ''"),
-        // but SQL TRIM/btrim strips the SPACE character only — on sqlite (what
-        // phpunit.xml runs), MySQL and Postgres alike — while resolveCippPerson()
-        // asks the same question with PHP trim(), which also strips tabs,
-        // newlines, CR, NUL and vertical tab. A cipp_user_id holding just a tab
-        // therefore reads COMPLETE here and BLANK there: this gate refuses the
-        // tenant shape, the person path refuses for want of a mapping, and the
-        // seat becomes unassignable by every route — the exact deadlock the
-        // completeness qualifier exists to prevent, reintroduced by asking one
-        // question in two dialects.
+        // THE MATCH AND THE COMPLETENESS TEST ARE BOTH DECIDED IN PHP, AND THAT
+        // IS THE POINT. Both are questions resolveCippPerson() already answers,
+        // and it answers them with PHP trim(), which strips tabs, newlines, CR,
+        // NUL and vertical tab — while SQL TRIM/btrim strips the SPACE character
+        // only, on sqlite (what phpunit.xml runs), MySQL and Postgres alike.
+        // Asking either half in SQL forks one question into two answers, and it
+        // fails in opposite — both wrong — directions:
         //
-        // So the match runs in SQL and the completeness test runs in PHP,
-        // through the SAME trim() the person resolver uses. One question, one
-        // answer.
+        //  - COMPLETENESS in SQL (whereRaw("TRIM(COALESCE(col,'')) <> ''"), the
+        //    first cut): a cipp_user_id holding just a tab reads COMPLETE here
+        //    and BLANK in the resolver, so this gate refuses the tenant shape,
+        //    the person path refuses for want of a mapping, and the seat is
+        //    unassignable by every route — the deadlock the completeness
+        //    qualifier exists to prevent.
+        //  - The MATCH in SQL (whereRaw('LOWER(cipp_upn) = ?'), the second cut):
+        //    the sync stores these columns raw, so a cipp_upn of
+        //    "alex@acme.example\n" is a COMPLETE, USABLE mapping as far as the
+        //    resolver is concerned, yet it never equals the caller's trimmed
+        //    value. The gate finds nothing and a fully PSA-mapped person walks
+        //    onto the tenant shape — no confirm_upn, no person-scoped gates, a
+        //    null person linkage in the audit — which is the exact bypass this
+        //    gate exists to close, on a billing write.
+        //
+        // So SQL only NARROWS to candidates and never decides: the column
+        // filters below are a strict superset of what PHP accepts (anything PHP
+        // reads as non-blank is necessarily non-null and non-'' in SQL), and
+        // every comparison that can admit or refuse is made in PHP, through the
+        // SAME trim() the person resolver uses. One question, one dialect.
         $person = Person::query()
             ->where('client_id', $clientId)
-            ->where(function ($query) use ($upn, $userId) {
-                if ($upn !== '') {
-                    $query->orWhereRaw('LOWER(cipp_upn) = ?', [$upn]);
-                }
-                if ($userId !== '') {
-                    $query->orWhereRaw('LOWER(cipp_user_id) = ?', [$userId]);
-                }
-            })
+            ->where('cipp_upn', '<>', '')
+            ->where('cipp_user_id', '<>', '')
             ->get()
-            ->first(static fn (Person $candidate): bool => trim((string) $candidate->cipp_user_id) !== ''
-                && trim((string) $candidate->cipp_upn) !== '');
+            ->first(static function (Person $candidate) use ($upn, $userId): bool {
+                $candidateUpn = mb_strtolower(trim((string) $candidate->cipp_upn));
+                $candidateUserId = mb_strtolower(trim((string) $candidate->cipp_user_id));
+
+                // COMPLETE mappings only — a person the resolver would refuse
+                // for want of a mapping is one this gate must not refuse either.
+                if ($candidateUpn === '' || $candidateUserId === '') {
+                    return false;
+                }
+
+                return ($upn !== '' && $candidateUpn === $upn)
+                    || ($userId !== '' && $candidateUserId === $userId);
+            });
 
         if ($person) {
             throw new CippWriteScopeException('That target_upn is mapped to PSA person #'.$person->id.', so the tenant-scoped shape does not apply to it: that shape is for a tenant user with no PSA person record. Assign this licence with person_id + license_type_id + confirm_upn instead, so the person-scoped rails apply. Nothing was written.');
