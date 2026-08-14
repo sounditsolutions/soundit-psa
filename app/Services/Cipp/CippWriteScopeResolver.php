@@ -131,20 +131,30 @@ class CippWriteScopeResolver
         // a UPN local part; unescaped, a perfectly valid address becomes a
         // wildcard, which is the same hazard that put licenseTargetKey() on a
         // hash.
-        $like = static fn (string $needle): string => '%'.addcslashes($needle, '%_\\').'%';
-
+        // AND THE CASE FOLD IS PHP'S TOO — the LIKE narrowing that used to sit
+        // here is GONE, deliberately, because it reintroduced this same defect
+        // a third time in the same method. It read LOWER(cipp_upn) LIKE ?
+        // against an mb_strtolower()'d needle: SQL LOWER() is ASCII-only on
+        // sqlite and collation-dependent on MariaDB, while mb_strtolower folds
+        // Unicode. A UPN whose case differs outside ASCII would be folded by
+        // PHP and not by SQL, the LIKE would exclude the row, and a fully
+        // PSA-mapped person would walk onto the tenant shape — the exact bypass
+        // this gate exists to close. A narrowing predicate that can EXCLUDE a
+        // true match is not an optimisation, it is the defect wearing an
+        // index's clothes.
+        //
+        // So SQL narrows on client_id and non-blank columns only — conditions
+        // that cannot disagree with PHP in the excluding direction — and PHP
+        // decides everything, with the same trim() and the same mb_strtolower()
+        // the person resolver uses. THE HYDRATION COST THREE SEATS FLAGGED IS
+        // PAID FOR WITH A PROJECTION rather than with a predicate that can be
+        // wrong: three columns, not whole models. Correctness first, and the
+        // cost bounded by the client's own mapped-person count.
         $person = Person::query()
+            ->select(['id', 'cipp_upn', 'cipp_user_id'])
             ->where('client_id', $clientId)
             ->where('cipp_upn', '<>', '')
             ->where('cipp_user_id', '<>', '')
-            ->where(function ($query) use ($upn, $userId, $like) {
-                if ($upn !== '') {
-                    $query->orWhereRaw("LOWER(cipp_upn) LIKE ? ESCAPE '\\'", [$like($upn)]);
-                }
-                if ($userId !== '') {
-                    $query->orWhereRaw("LOWER(cipp_user_id) LIKE ? ESCAPE '\\'", [$like($userId)]);
-                }
-            })
             ->get()
             ->first(static function (Person $candidate) use ($upn, $userId): bool {
                 $candidateUpn = mb_strtolower(trim((string) $candidate->cipp_upn));
@@ -277,7 +287,14 @@ class CippWriteScopeResolver
         $licenseTypes = LicenseType::query()
             ->where('vendor', 'cipp_m365')
             ->where('is_active', true)
-            ->whereRaw("LOWER(vendor_sku_id) LIKE ? ESCAPE '\\'", ['%'.addcslashes($sku, '%_\\').'%'])
+            // Narrowed on the ACTIVE/vendor columns only, for the same reason
+            // the person gate above dropped its LIKE: LOWER() in SQL and
+            // mb_strtolower() in PHP are different functions outside ASCII, so
+            // a case-folding narrow can EXCLUDE a row PHP would accept. Here
+            // that direction is a false refusal rather than a bypass, but it is
+            // the same defect and it gets the same answer — SQL narrows on what
+            // it cannot get wrong, PHP decides. The set is active cipp_m365
+            // licence types, which is small by construction.
             ->get()
             ->filter(static fn (LicenseType $type): bool => mb_strtolower(trim((string) $type->vendor_sku_id)) === $sku)
             ->values();
