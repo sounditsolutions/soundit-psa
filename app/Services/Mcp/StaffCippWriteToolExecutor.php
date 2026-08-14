@@ -3494,14 +3494,32 @@ class StaffCippWriteToolExecutor
                 return $this->declined('The proposal\'s client could not be re-verified; deny this proposal and re-stage it.');
             }
 
-            $tenant = $this->resolver->resolveCippTenant($client);
-            $ticket = $this->resolver->resolveTicketForHeldAction($client->id, $payload['ticket_id'] ?? null);
-            $stored = is_array($payload['params'] ?? null) ? $payload['params'] : [];
-            $params = $this->licenseTargetParams($stored);
-            $license = $this->resolver->resolveCippLicenseBySku($client->id, $params['sku_id']);
+            $contentHash = $run->content_hash;
+
+            // AUDITED, because the drift rails below promise that every refusal
+            // reaching this method leaves a row. These re-resolutions can all
+            // refuse AT APPROVAL — a cleared tenant mapping, a moved ticket, a
+            // de-synced SKU — and falling through to the outer catch declined
+            // correctly while writing nothing, which is indistinguishable in
+            // TechnicianActionLog from the approval never having been attempted.
+            //
+            // Audited with null ticket/licence deliberately: which resolution
+            // refused is exactly what is unknown here, so the row records the
+            // run, the approver and the cause rather than half-resolved objects.
+            try {
+                $tenant = $this->resolver->resolveCippTenant($client);
+                $ticket = $this->resolver->resolveTicketForHeldAction($client->id, $payload['ticket_id'] ?? null);
+                $stored = is_array($payload['params'] ?? null) ? $payload['params'] : [];
+                $params = $this->licenseTargetParams($stored);
+                $license = $this->resolver->resolveCippLicenseBySku($client->id, $params['sku_id']);
+            } catch (CippWriteScopeException $e) {
+                $this->auditAttempt($run->action_type, 'rejected', $client->id, null, null, null, $contentHash, 'Staged licence assignment refused at approval before any upstream call: '.$e->getMessage(), $this->approverLabel($approverId), $run->id, $approverId);
+                $run->releaseClaim();
+
+                return $this->declined($e->getMessage());
+            }
 
             $targetKey = $this->licenseTargetKey($params);
-            $contentHash = $run->content_hash;
 
             if (TechnicianConfig::killSwitchEngaged()) {
                 $this->auditAttempt($run->action_type, 'blocked', $client->id, $ticket, null, $license, $contentHash, "{$targetKey}: Technician kill-switch engaged; staged CIPP write refused.", $this->approverLabel($approverId), $run->id, $approverId);
@@ -3524,7 +3542,20 @@ class StaffCippWriteToolExecutor
                 return $this->declined('A recent action for this target is still in cooldown; wait a few minutes and approve again.');
             }
 
-            $user = $this->verifiedTenantUser($tenant, $params['target_upn']);
+            // The re-verification refusals are audited for the same reason the
+            // drift declines below are, and this is the one that matters most:
+            // an account disabled BETWEEN staging and approval is the exact
+            // event this re-gate exists to surface, and an empty or degraded
+            // tenant listing at approval time must be distinguishable in the
+            // log from the approval never having been attempted.
+            try {
+                $user = $this->verifiedTenantUser($tenant, $params['target_upn']);
+            } catch (CippWriteScopeException $e) {
+                $this->auditAttempt($run->action_type, 'rejected', $client->id, $ticket, null, $license, $contentHash, "{$targetKey}: tenant user re-verification refused the approval before any upstream call — ".$e->getMessage(), $this->approverLabel($approverId), $run->id, $approverId);
+                $run->releaseClaim();
+
+                return $this->declined($e->getMessage());
+            }
 
             // Drift rail: the operator approved a proposal naming ONE object.
             // A UPN can be reassigned; if it now points somewhere else the
