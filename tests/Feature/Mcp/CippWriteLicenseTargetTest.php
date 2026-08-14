@@ -12,6 +12,7 @@ use App\Models\TechnicianActionLog;
 use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Models\User;
+use App\Services\Cipp\CippClientException;
 use App\Services\Cipp\CippRestWriteClient;
 use App\Services\Mcp\StaffCippWriteToolExecutor;
 use App\Support\McpConfig;
@@ -1397,5 +1398,109 @@ class CippWriteLicenseTargetTest extends TestCase
         $this->assertStringContainsString('more than one active local license row', $body);
         $this->assertArrayNotHasKey('success', $this->decodedResult($response));
         $this->assertSame(0, TechnicianActionLog::where('result_status', 'executed')->count());
+    }
+
+    /**
+     * THE APPROVER'S SCREEN IS NOT THE AUDIT LOG — r8 diff:5, and it landed with
+     * nothing in this file able to fail on it.
+     *
+     * The approval catch used to return $e->getMessage() straight to the
+     * approver while auditing the SAME failure through safeFailureSummary().
+     * declined() redacts what it is given, but the redactor's business is
+     * credentials — auth-scheme tokens, AWS key ids, 32+ character runs — and a
+     * CIPP relay error body carries the request URL, so the TENANT FILTER rides
+     * through every one of those patterns untouched. Be exact about what the fix
+     * buys: not redaction, which was already applied, but SURFACE. The detail
+     * belongs in the immutable row, which is access-controlled; the approver
+     * gets the sentence they can act on.
+     *
+     * Written by me AFTER the pipeline's rework seat fixed the defect, because a
+     * sanitization no test can fail on is not a fixed defect — it is the same
+     * defect with a comment attached.
+     */
+    public function test_an_upstream_failure_at_approval_does_not_put_relay_text_on_the_approvers_screen(): void
+    {
+        $this->configureCipp();
+        $f = $this->fixture();
+        $token = $this->token(['cipp_stage_assign_user_license']);
+        $approver = User::factory()->create(['name' => 'Approver']);
+
+        $client = Mockery::mock(CippRestWriteClient::class);
+        $client->shouldReceive('listUsers')->once()->with(self::TENANT)->andReturn([$this->userRow()]);
+        $this->app->instance(CippRestWriteClient::class, $client);
+
+        $staged = $this->decodedResult($this->callTool($token, 'cipp_stage_assign_user_license', [
+            'client_id' => $f['client']->id,
+            'ticket_id' => $f['ticket']->id,
+            'target_upn' => self::TARGET_UPN,
+            'sku_id' => self::SKU,
+            'reason' => 'Contractor needs a seat.',
+        ]));
+        $this->assertTrue($staged['success'] ?? false);
+
+        // A realistic relay error body: the request line survives the credential
+        // redactor intact, which is the whole reason this arm matters.
+        $relayError = 'POST https://cipp.internal/api/ExecAddLicense?tenantfilter='.self::TENANT
+            .' returned 500 — Graph said: subscription for sku-from-tenant-sync is exhausted';
+
+        $failing = Mockery::mock(CippRestWriteClient::class);
+        $failing->shouldReceive('listUsers')->once()->with(self::TENANT)->andReturn([$this->userRow()]);
+        $failing->shouldReceive('assignUserLicense')->once()->andThrow(new CippClientException($relayError));
+        $this->app->instance(CippRestWriteClient::class, $failing);
+
+        $run = TechnicianRun::findOrFail($staged['run_id']);
+        $result = app(StaffCippWriteToolExecutor::class)->approveStagedRun($run, $approver->id);
+
+        $this->assertSame('gate_declined', $result->status);
+        $this->assertStringNotContainsString(self::TENANT, (string) $result->message);
+        $this->assertStringNotContainsString('cipp.internal', (string) $result->message);
+        $this->assertStringContainsString('treat the licence assignment as not applied', (string) $result->message);
+
+        // And the cause is NOT lost — it moved, it did not vanish. A sanitizer
+        // that also blinds the audit trail trades one defect for a worse one.
+        $summary = (string) TechnicianActionLog::where('result_status', 'error')->latest('id')->value('summary');
+        $this->assertStringContainsString('failed before completion', $summary);
+        $this->assertStringContainsString('ExecAddLicense', $summary);
+        $this->assertSame(0, TechnicianActionLog::where('result_status', 'executed')->count());
+    }
+
+    /**
+     * The OTHER half of the same question, pinned separately — because "what
+     * does an upstream failure tell the caller" having two answers in one file
+     * is the root defect of this whole branch, in its sixth costume.
+     *
+     * The direct path was already sanitized; nothing asserted it. Without this
+     * arm the two paths can drift apart again and only the approval half would
+     * fail.
+     */
+    public function test_an_upstream_failure_on_the_immediate_path_returns_the_same_sanitized_sentence(): void
+    {
+        $this->configureCipp();
+        $f = $this->fixture();
+        $token = $this->token(['cipp_assign_user_license']);
+
+        $relayError = 'POST https://cipp.internal/api/ExecAddLicense?tenantfilter='.self::TENANT.' returned 500';
+
+        $client = Mockery::mock(CippRestWriteClient::class);
+        $client->shouldReceive('listUsers')->once()->with(self::TENANT)->andReturn([$this->userRow()]);
+        $client->shouldReceive('assignUserLicense')->once()->andThrow(new CippClientException($relayError));
+        $this->app->instance(CippRestWriteClient::class, $client);
+
+        $response = $this->callTool($token, 'cipp_assign_user_license', [
+            'client_id' => $f['client']->id,
+            'target_upn' => self::TARGET_UPN,
+            'sku_id' => self::SKU,
+            'reason' => 'Contractor needs a seat.',
+        ]);
+
+        $body = (string) $response->json('result.content.0.text');
+        $this->assertStringNotContainsString(self::TENANT, $body);
+        $this->assertStringNotContainsString('cipp.internal', $body);
+        $this->assertStringContainsString('treat the licence assignment as not applied', $body);
+        $this->assertSame(0, TechnicianActionLog::where('result_status', 'executed')->count());
+        $this->assertStringContainsString(
+            'ExecAddLicense',
+            (string) TechnicianActionLog::where('result_status', 'error')->latest('id')->value('summary'),
+        );
     }
 }
