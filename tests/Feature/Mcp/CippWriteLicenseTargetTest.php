@@ -638,6 +638,46 @@ class CippWriteLicenseTargetTest extends TestCase
         $this->assertSame(0, TechnicianActionLog::where('result_status', 'executed')->count());
     }
 
+    /**
+     * A PascalCase tenant row resolves and is gated on its real value.
+     *
+     * This reads the RAW CIPP listing, not a CippToolContract projection, so
+     * the contract's alias table never runs on it — and CIPP demonstrably sends
+     * PascalCase for this object, which is why CippContactSyncService::syncUser()
+     * has always hedged both casings. Reading one casing would turn a casing
+     * flip into "no such user": a safe refusal wearing a wrong cause, and one
+     * that would send someone hunting upstream for a user that is right there.
+     */
+    public function test_a_pascal_case_tenant_row_is_resolved_and_gated_on_its_real_value(): void
+    {
+        $this->configureCipp();
+        $f = $this->fixture();
+        $token = $this->token(['cipp_assign_user_license']);
+
+        $client = Mockery::mock(CippRestWriteClient::class);
+        $client->shouldReceive('listUsers')->once()->with(self::TENANT)->andReturn([[
+            'Id' => self::TARGET_OBJECT_ID,
+            'UserPrincipalName' => self::TARGET_UPN,
+            'DisplayName' => 'Sam Contractor',
+            'AccountEnabled' => false,
+        ]]);
+        $client->shouldNotReceive('assignUserLicense');
+        $this->app->instance(CippRestWriteClient::class, $client);
+
+        $text = (string) $this->callTool($token, 'cipp_assign_user_license', [
+            'client_id' => $f['client']->id,
+            'target_upn' => self::TARGET_UPN,
+            'sku_id' => self::SKU,
+            'reason' => 'Contractor needs a seat.',
+        ])->json('result.content.0.text');
+
+        // Gated as DISABLED — the row was found and read. Falling through to
+        // "no user with that target_upn exists" would be the casing bug.
+        $this->assertStringContainsString('disabled', $text);
+        $this->assertStringNotContainsString('No user with that target_upn', $text);
+        $this->assertSame(0, TechnicianActionLog::where('result_status', 'executed')->count());
+    }
+
     public function test_the_person_keyed_shape_is_untouched_by_this_family(): void
     {
         $this->configureCipp();

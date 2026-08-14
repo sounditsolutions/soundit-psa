@@ -3854,9 +3854,20 @@ class StaffCippWriteToolExecutor
             throw new CippWriteScopeException('The tenant\'s live user listing came back empty, which cannot be distinguished from an unread listing; no licence change was made. Retry, and check the CIPP relay if it persists.');
         }
 
+        // Every field read below hedges BOTH casings. This is a RAW CIPP row
+        // (CippRestWriteClient::listUsers()), not a CippToolContract projection,
+        // so the contract's alias table never runs on it — and CIPP demonstrably
+        // sends PascalCase for this object: CippContactSyncService::syncUser()
+        // has hedged `accountEnabled`/`AccountEnabled` and `id`/`Id` since it was
+        // written. Reading one casing here would turn a casing flip into "no such
+        // user", which is a safe refusal wearing a wrong cause.
         $matches = [];
         foreach ($rows as $row) {
-            if (is_array($row) && strcasecmp(trim((string) ($row['userPrincipalName'] ?? '')), $targetUpn) === 0) {
+            if (! is_array($row)) {
+                continue;
+            }
+            $rowUpn = trim((string) ($row['userPrincipalName'] ?? $row['UserPrincipalName'] ?? ''));
+            if ($rowUpn !== '' && strcasecmp($rowUpn, $targetUpn) === 0) {
                 $matches[] = $row;
             }
         }
@@ -3869,7 +3880,7 @@ class StaffCippWriteToolExecutor
         }
 
         $row = $matches[0];
-        $userId = trim((string) ($row['id'] ?? $row['objectId'] ?? ''));
+        $userId = trim((string) ($row['id'] ?? $row['Id'] ?? $row['objectId'] ?? $row['ObjectId'] ?? ''));
         if ($userId === '') {
             throw new CippWriteScopeException('The verified user has no object id in the CIPP user listing; refresh the CIPP user reads and retry.');
         }
@@ -3894,12 +3905,19 @@ class StaffCippWriteToolExecutor
         // near zero today. Unable-to-assess is a refusal — and it survives the
         // "you'll break the feature" objection precisely because the refusal
         // says which field went missing.
-        $enabled = $row['accountEnabled'] ?? null;
+        $hasEnabledKey = array_key_exists('accountEnabled', $row) || array_key_exists('AccountEnabled', $row);
+        $enabled = $row['accountEnabled'] ?? $row['AccountEnabled'] ?? null;
         if ($enabled === false) {
             throw new CippWriteScopeException('That user\'s Microsoft 365 account is disabled in the tenant; a licence would spend a paid seat on a disabled account. Re-enable the account first, or assign the licence to the person who is actually using it.');
         }
         if (! is_bool($enabled)) {
-            throw new CippWriteScopeException('CIPP did not project accountEnabled for that user, so this tool cannot tell whether the account is enabled and will not assume it is. No licence was assigned. If every assignment is failing this way, the tenant listing has stopped carrying the field and that is the thing to fix.');
+            // Absent and present-but-unusable are different problems with
+            // different fixes — allowlist/shape drift versus a per-user data
+            // condition no retry clears — so the refusal says which it met
+            // rather than making the reader guess.
+            throw new CippWriteScopeException($hasEnabledKey
+                ? 'The tenant listing carries accountEnabled for that user but not as a true/false value, so this tool cannot tell whether the account is enabled and will not assume it is. No licence was assigned.'
+                : 'The tenant listing did not carry accountEnabled for that user, so this tool cannot tell whether the account is enabled and will not assume it is. No licence was assigned. If every assignment is failing this way, the CIPP user listing has stopped returning the field and that is the thing to fix.');
         }
 
         return [
