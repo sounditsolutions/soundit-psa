@@ -927,6 +927,85 @@ class CippWriteLicenseTargetTest extends TestCase
         $this->assertSame(0, TechnicianActionLog::where('result_status', 'executed')->count());
     }
 
+    public function test_a_whitespace_only_mapping_column_does_not_deadlock_both_shapes(): void
+    {
+        $this->configureCipp();
+        $f = $this->fixture();
+        $token = $this->token(['cipp_assign_user_license']);
+
+        // A person whose cipp_user_id holds ONLY A TAB is half-mapped as far as
+        // resolveCippPerson() is concerned — PHP trim() reads it blank, so the
+        // person shape refuses for want of a mapping. If the completeness gate
+        // here asks the same question in SQL (TRIM strips the space character
+        // only, on sqlite/MySQL/Postgres alike) it reads COMPLETE, refuses the
+        // tenant shape too, and the seat becomes unassignable by every route.
+        // One question asked in two dialects.
+        Person::create([
+            'client_id' => $f['client']->id,
+            'person_type' => PersonType::User,
+            'first_name' => 'Half',
+            'last_name' => 'Mapped',
+            'email' => self::TARGET_UPN,
+            'cipp_user_id' => "\t",
+            'cipp_upn' => self::TARGET_UPN,
+            'is_active' => true,
+        ]);
+
+        $client = Mockery::mock(CippRestWriteClient::class);
+        $client->shouldReceive('listUsers')->once()->with(self::TENANT)->andReturn([$this->userRow()]);
+        $client->shouldReceive('assignUserLicense')->once()
+            ->with(self::TENANT, self::TARGET_OBJECT_ID, 'sku-from-tenant-sync');
+        $this->app->instance(CippRestWriteClient::class, $client);
+
+        $response = $this->callTool($token, 'cipp_assign_user_license', [
+            'client_id' => $f['client']->id,
+            'target_upn' => self::TARGET_UPN,
+            'sku_id' => self::SKU,
+            'reason' => 'Contractor needs a seat.',
+        ]);
+
+        $this->assertTrue(
+            $this->decodedResult($response)['success'] ?? false,
+            (string) $response->json('result.content.0.text'),
+        );
+    }
+
+    public function test_a_fully_mapped_person_still_refuses_the_tenant_shape(): void
+    {
+        $this->configureCipp();
+        $f = $this->fixture();
+        $token = $this->token(['cipp_assign_user_license']);
+
+        // NEGATIVE CONTROL for the above: the completeness qualifier must not
+        // become a way to bypass the person-keyed rails. A person mapped on BOTH
+        // columns still sends the caller to person_id + confirm_upn.
+        Person::create([
+            'client_id' => $f['client']->id,
+            'person_type' => PersonType::User,
+            'first_name' => 'Fully',
+            'last_name' => 'Mapped',
+            'email' => self::TARGET_UPN,
+            'cipp_user_id' => self::TARGET_OBJECT_ID,
+            'cipp_upn' => self::TARGET_UPN,
+            'is_active' => true,
+        ]);
+
+        $client = Mockery::mock(CippRestWriteClient::class);
+        $client->shouldReceive('listUsers')->zeroOrMoreTimes()->with(self::TENANT)->andReturn([$this->userRow()]);
+        $client->shouldNotReceive('assignUserLicense');
+        $this->app->instance(CippRestWriteClient::class, $client);
+
+        $response = $this->callTool($token, 'cipp_assign_user_license', [
+            'client_id' => $f['client']->id,
+            'target_upn' => self::TARGET_UPN,
+            'sku_id' => self::SKU,
+            'reason' => 'Contractor needs a seat.',
+        ]);
+
+        $this->assertStringContainsString('mapped to PSA person', (string) $response->json('result.content.0.text'));
+        $this->assertSame(0, TechnicianActionLog::where('result_status', 'executed')->count());
+    }
+
     public function test_the_person_keyed_shape_is_untouched_by_this_family(): void
     {
         $this->configureCipp();

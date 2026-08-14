@@ -91,10 +91,24 @@ class CippWriteScopeResolver
         // COMPLETE mappings only — a person missing either column is one
         // resolveCippPerson() refuses, so refusing here too would leave the
         // target unassignable by every shape (see the docblock).
+        //
+        // COMPLETENESS IS DECIDED IN PHP, NOT IN SQL, AND THAT IS THE POINT.
+        // The first cut asked it with whereRaw("TRIM(COALESCE(col,'')) <> ''"),
+        // but SQL TRIM/btrim strips the SPACE character only — on sqlite (what
+        // phpunit.xml runs), MySQL and Postgres alike — while resolveCippPerson()
+        // asks the same question with PHP trim(), which also strips tabs,
+        // newlines, CR, NUL and vertical tab. A cipp_user_id holding just a tab
+        // therefore reads COMPLETE here and BLANK there: this gate refuses the
+        // tenant shape, the person path refuses for want of a mapping, and the
+        // seat becomes unassignable by every route — the exact deadlock the
+        // completeness qualifier exists to prevent, reintroduced by asking one
+        // question in two dialects.
+        //
+        // So the match runs in SQL and the completeness test runs in PHP,
+        // through the SAME trim() the person resolver uses. One question, one
+        // answer.
         $person = Person::query()
             ->where('client_id', $clientId)
-            ->whereRaw("TRIM(COALESCE(cipp_user_id, '')) <> ''")
-            ->whereRaw("TRIM(COALESCE(cipp_upn, '')) <> ''")
             ->where(function ($query) use ($upn, $userId) {
                 if ($upn !== '') {
                     $query->orWhereRaw('LOWER(cipp_upn) = ?', [$upn]);
@@ -103,7 +117,9 @@ class CippWriteScopeResolver
                     $query->orWhereRaw('LOWER(cipp_user_id) = ?', [$userId]);
                 }
             })
-            ->first();
+            ->get()
+            ->first(static fn (Person $candidate): bool => trim((string) $candidate->cipp_user_id) !== ''
+                && trim((string) $candidate->cipp_upn) !== '');
 
         if ($person) {
             throw new CippWriteScopeException('That target_upn is mapped to PSA person #'.$person->id.', so the tenant-scoped shape does not apply to it: that shape is for a tenant user with no PSA person record. Assign this licence with person_id + license_type_id + confirm_upn instead, so the person-scoped rails apply. Nothing was written.');
