@@ -603,6 +603,41 @@ class CippWriteLicenseTargetTest extends TestCase
         $this->assertSame(0, TechnicianActionLog::where('result_status', 'executed')->count());
     }
 
+    public function test_a_person_shape_call_carrying_an_explicit_null_target_upn_reaches_the_person_path(): void
+    {
+        $this->configureCipp();
+        $f = $this->fixture();
+        $token = $this->token(['cipp_assign_user_license']);
+
+        // The mirror of the guard defect, in the DISPATCH. execute() routed on
+        // array_key_exists('target_upn') while the mixed-shape guard treated null
+        // as unsent — so a client filling the MERGED template for the PERSON
+        // shape entered the tenant family and was then refused for carrying real
+        // person values. The person-keyed path was unreachable for any client
+        // that fills the published schema.
+        $client = Mockery::mock(CippRestWriteClient::class);
+        $client->shouldNotReceive('listUsers');
+        $client->shouldNotReceive('assignUserLicense');
+        $this->app->instance(CippRestWriteClient::class, $client);
+
+        $response = $this->callTool($token, 'cipp_assign_user_license', [
+            'client_id' => $f['client']->id,
+            'person_id' => 999999,
+            'license_type_id' => $f['licenseType']->id,
+            'confirm_upn' => 'alex@acme.example',
+            'target_upn' => null,
+            'sku_id' => null,
+            'reason' => 'Mapped person needs a seat.',
+        ]);
+
+        $body = (string) $response->json('result.content.0.text');
+        // It must be judged by the PERSON path's own gates — here the unknown
+        // person_id — and never by the tenant family's mixed-shape refusal.
+        $this->assertStringNotContainsString('exactly ONE target shape', $body);
+        $this->assertStringNotContainsString('target_upn must be', $body);
+        $this->assertSame(0, TechnicianActionLog::where('result_status', 'executed')->count());
+    }
+
     public function test_the_person_keyed_shape_is_untouched_by_this_family(): void
     {
         $this->configureCipp();

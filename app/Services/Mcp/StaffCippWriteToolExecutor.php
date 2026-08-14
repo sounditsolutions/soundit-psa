@@ -594,8 +594,17 @@ class StaffCippWriteToolExecutor
         // established person-keyed path through context(). The person path is
         // untouched — a caller who sends neither still lands there and is refused
         // by its own person_id gate, which is the pre-existing message.
+        //
+        // ROUTED ON A VALUE, NOT ON PRESENCE, and the two must never diverge: the
+        // mixed-shape guard inside licenseTargetContext() treats null/'' as NOT
+        // sent, so routing on presence made a person-shape call carrying an
+        // explicit "target_upn": null — which is exactly what a client filling
+        // the MERGED template emits — enter this family and then be refused by
+        // that guard for carrying real person values. The person path became
+        // unreachable for any client that fills the published schema. Both sides
+        // now ask the same question through sentValue().
         if ((self::STAGED_TO_DIRECT[$name] ?? $name) === 'cipp_assign_user_license'
-            && array_key_exists('target_upn', $arguments)) {
+            && $this->sentValue($arguments, 'target_upn')) {
             return isset(self::STAGED_TO_DIRECT[$name])
                 ? $this->stageLicenseTargetAction($name, $arguments, $clientId, $actorLabel)
                 : $this->executeLicenseTargetDirect($name, $arguments, $clientId, $actorLabel);
@@ -645,7 +654,7 @@ class StaffCippWriteToolExecutor
         // is the safe direction.
         if ((self::STAGED_TO_DIRECT[$run->action_type] ?? '') === 'cipp_assign_user_license'
             && is_array($run->proposed_meta['redacted_params'] ?? null)
-            && array_key_exists('target_upn', $run->proposed_meta['redacted_params'])) {
+            && $this->sentValue($run->proposed_meta['redacted_params'], 'target_upn')) {
             return $this->approveLicenseTargetStagedRun($run, $approverId);
         }
 
@@ -3604,14 +3613,7 @@ class StaffCippWriteToolExecutor
         // person. A REAL person-shape value still refuses — that is the rail.
         $mixedShape = array_values(array_filter(
             self::LICENSE_PERSON_SHAPE_KEYS,
-            static function (string $key) use ($arguments): bool {
-                if (! array_key_exists($key, $arguments)) {
-                    return false;
-                }
-                $value = $arguments[$key];
-
-                return $value !== null && (! is_string($value) || trim($value) !== '');
-            },
+            fn (string $key): bool => $this->sentValue($arguments, $key),
         ));
         if ($mixedShape !== []) {
             $this->auditAttempt($tool, 'rejected', $clientId, null, null, null, $contentHash, 'Both licence target shapes in one call: target_upn with '.implode(', ', $mixedShape).'.', $actorLabel);
@@ -3716,6 +3718,33 @@ class StaffCippWriteToolExecutor
      * @param  array{target_upn: string, sku_id: string}  $params
      * @return array<string, string>
      */
+    /**
+     * Was this key actually SENT, as opposed to merely present?
+     *
+     * The single answer to that question for the licence family, because the
+     * dispatch and the mutual-exclusion guard asking it differently is what made
+     * the person-keyed path unreachable: the guard treated null as unsent while
+     * execute() routed on array_key_exists(), so a person-shape call carrying
+     * "target_upn": null entered the tenant family and was then refused for
+     * carrying person values. A client filling the published MERGED schema sends
+     * exactly that. One helper, three call sites, no way for them to drift.
+     *
+     * A filled-in template is not an argument: null and a whitespace-only string
+     * are both "not sent". Anything else is the caller naming a target.
+     *
+     * @param  array<string, mixed>  $arguments
+     */
+    private function sentValue(array $arguments, string $key): bool
+    {
+        if (! array_key_exists($key, $arguments)) {
+            return false;
+        }
+
+        $value = $arguments[$key];
+
+        return $value !== null && (! is_string($value) || trim($value) !== '');
+    }
+
     private function licenseTargetHashParams(array $params): array
     {
         return ['license_target' => $this->licenseTargetKey($params)];
