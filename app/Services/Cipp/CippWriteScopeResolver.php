@@ -105,6 +105,68 @@ class CippWriteScopeResolver
     }
 
     /**
+     * Resolve a licence from the UPSTREAM SKU id (the M365 GUID an operator can
+     * actually read off cipp_list_licenses) rather than the local
+     * license_types.id, which no read tool on the MCP surface emits.
+     *
+     * Same server-derives-the-identity property as resolveCippLicense(): the
+     * caller supplies a claim, the server matches it against synced licence
+     * rows and answers with the local objects. The client-entitlement gate is
+     * deliberately unchanged — a SKU this client has no active local licence
+     * row for is still refused, because that row is the PSA's assertion that
+     * the client is billed for the seat.
+     *
+     * The three failures are reported distinctly on purpose: "SKU not
+     * recognised" tells the caller to fix the argument, "no active local
+     * licence row" tells them to go and look at the client's licences, and
+     * "not mapped locally" is a data gap in the licence type itself. Collapsing
+     * them is how a fixable argument reads as an entitlement problem.
+     */
+    public function resolveCippLicenseBySku(int $clientId, mixed $skuIdValue): ResolvedCippLicense
+    {
+        $sku = is_scalar($skuIdValue) ? trim((string) $skuIdValue) : '';
+        if ($sku === '') {
+            throw new CippWriteScopeException('sku_id is required');
+        }
+
+        $licenseTypes = LicenseType::query()
+            ->where('vendor', 'cipp_m365')
+            ->where('is_active', true)
+            ->where(function ($query) use ($sku): void {
+                $query->whereRaw('LOWER(vendor_sku_id) = ?', [mb_strtolower($sku)])
+                    ->orWhereRaw('LOWER(sku_id) = ?', [mb_strtolower($sku)]);
+            })
+            ->get();
+
+        if ($licenseTypes->isEmpty()) {
+            throw new CippWriteScopeException('No active CIPP M365 license type matches that sku_id');
+        }
+        if ($licenseTypes->count() > 1) {
+            throw new CippWriteScopeException('That sku_id matches more than one active CIPP M365 license type; resolve the ambiguity locally before assigning');
+        }
+
+        /** @var LicenseType $licenseType */
+        $licenseType = $licenseTypes->first();
+
+        $license = License::query()
+            ->where('client_id', $clientId)
+            ->where('license_type_id', $licenseType->id)
+            ->where('status', 'active')
+            ->first();
+
+        if (! $license) {
+            throw new CippWriteScopeException('That SKU is known, but this client has no active local license row for it; the PSA has no record that the client is entitled to a seat');
+        }
+
+        $resolvedSkuId = trim((string) ($license->vendor_ref ?: $licenseType->vendor_sku_id));
+        if ($resolvedSkuId === '') {
+            throw new CippWriteScopeException('CIPP M365 license SKU is not mapped locally');
+        }
+
+        return new ResolvedCippLicense($licenseType, $license, $resolvedSkuId);
+    }
+
+    /**
      * Resolve one PSA asset into its server-derived Intune device identity for
      * a device-destructive CIPP write. Fail-closed on every gap: the asset must
      * exist in the caller's client, be active, carry a well-formed Intune
