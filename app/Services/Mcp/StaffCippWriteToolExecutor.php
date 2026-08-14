@@ -3234,10 +3234,12 @@ class StaffCippWriteToolExecutor
     /**
      * Direct path for the tenant-scoped licence assignment.
      *
-     * Shaped on executeGroupMembershipDirect(): both dedup rails (exact-content
-     * AND identity-keyed, because the same user + SKU assigned from a different
-     * reason is still the same entitlement change), then the targetKey cooldown,
-     * then the verification read, then upstream.
+     * Shaped on executeGroupMembershipDirect(): the VERIFICATION READ FIRST,
+     * then both dedup rails (exact-content AND identity-keyed, because the same
+     * user + SKU assigned from a different reason is still the same entitlement
+     * change), then the targetKey cooldown, then upstream. The read leads
+     * because BOTH rails are keyed on the object id it returns and never on the
+     * caller's typed address — see licenseTargetKey().
      *
      * The verified user is resolved INSIDE the try so a scope refusal is audited
      * as 'rejected' with the operator-readable reason rather than escaping as a
@@ -3264,8 +3266,32 @@ class StaffCippWriteToolExecutor
         $params = $context['params'];
         $reason = (string) $context['reason'];
 
-        $targetKey = $this->licenseTargetKey($params, $license);
-        $contentHash = $this->contentHash($tool, $client->id, null, $ticket?->id, $this->licenseTargetHashParams($params, $license));
+        // THE VERIFICATION READ RUNS BEFORE EITHER DEDUP RAIL, because both are
+        // keyed on the object id it returns and nothing else can produce one.
+        // Keyed on the caller's typed address instead, a UPN reassigned to a NEW
+        // user object inside DIRECT_DEDUP_HOURS collided with the OLD object's
+        // executed row: this method answered success/idempotent, made no upstream
+        // call, and the new starter never got the seat — a false success on a
+        // billing write, the same class the resolved-SKU keying already fixed for
+        // the other half of this key. The read is idempotent and cheap next to a
+        // wrong seat; the ordering IS the fix (see licenseTargetKey()).
+        //
+        // A pre-verification refusal is audited under the CLAIM key, because at
+        // that point a claim is all there is. Different prefix, so no dedup or
+        // cooldown LIKE built from the identity key can ever match such a row.
+        $claimKey = $this->licenseTargetClaimKey($params);
+        $claimHash = $this->contentHash($tool, $client->id, null, $ticket?->id, ['license_target_claim' => $claimKey]);
+
+        try {
+            $user = $this->verifiedTenantUser($client->id, $tenant, $params['target_upn']);
+        } catch (CippWriteScopeException $e) {
+            $this->auditAttempt($tool, 'rejected', $client->id, $ticket, null, $license, $claimHash, "{$claimKey}: ".$e->getMessage(), $actorLabel);
+
+            return ['error' => $e->getMessage()];
+        }
+
+        $targetKey = $this->licenseTargetKey($user['user_id'], $license);
+        $contentHash = $this->contentHash($tool, $client->id, null, $ticket?->id, $this->licenseTargetHashParams($user['user_id'], $license));
 
         if ($this->alreadyExecuted($tool, $client->id, $contentHash) || $this->licenseTargetAlreadyExecuted($client->id, $targetKey)) {
             $this->auditAttempt($tool, 'blocked', $client->id, $ticket, null, $license, $contentHash, "{$targetKey}: Duplicate {$tool} suppressed before upstream call.", $actorLabel);
@@ -3281,14 +3307,6 @@ class StaffCippWriteToolExecutor
             $this->auditAttempt($tool, 'blocked', $client->id, $ticket, null, $license, $contentHash, "{$targetKey}: {$tool} cooldown active; upstream call refused.", $actorLabel);
 
             return ['error' => "{$tool} cooldown active for this target; no upstream call was made."];
-        }
-
-        try {
-            $user = $this->verifiedTenantUser($client->id, $tenant, $params['target_upn']);
-        } catch (CippWriteScopeException $e) {
-            $this->auditAttempt($tool, 'rejected', $client->id, $ticket, null, $license, $contentHash, "{$targetKey}: ".$e->getMessage(), $actorLabel);
-
-            return ['error' => $e->getMessage()];
         }
 
         try {
@@ -3341,8 +3359,24 @@ class StaffCippWriteToolExecutor
         $reason = (string) $context['reason'];
         $directTool = self::STAGED_TO_DIRECT[$tool];
 
-        $targetKey = $this->licenseTargetKey($params, $license);
-        $contentHash = $this->contentHash($tool, $client->id, null, $ticket->id, $this->licenseTargetHashParams($params, $license));
+        // Verification leads here for the same reason it leads on the direct
+        // path: the content hash and the identity key are both built from the
+        // OBJECT ID, so a UPN re-pointed at a new user stages its own run instead
+        // of being handed the previous object's run under idempotent: true. The
+        // pre-verification refusal keys on the claim, which is all there is yet.
+        $claimKey = $this->licenseTargetClaimKey($params);
+        $claimHash = $this->contentHash($tool, $client->id, null, $ticket->id, ['license_target_claim' => $claimKey]);
+
+        try {
+            $user = $this->verifiedTenantUser($client->id, $tenant, $params['target_upn']);
+        } catch (CippWriteScopeException $e) {
+            $this->auditAttempt($tool, 'rejected', $client->id, $ticket, null, $license, $claimHash, "{$claimKey}: ".$e->getMessage(), $actorLabel);
+
+            return ['error' => $e->getMessage()];
+        }
+
+        $targetKey = $this->licenseTargetKey($user['user_id'], $license);
+        $contentHash = $this->contentHash($tool, $client->id, null, $ticket->id, $this->licenseTargetHashParams($user['user_id'], $license));
 
         if ($this->alreadyExecuted($tool, $client->id, $contentHash)) {
             return [
@@ -3371,14 +3405,6 @@ class StaffCippWriteToolExecutor
             $this->auditAttempt($tool, 'blocked', $client->id, $ticket, null, $license, $contentHash, "{$targetKey}: {$tool} cooldown active; staged proposal refused.", $actorLabel);
 
             return ['error' => "{$tool} cooldown active for this target; no proposal was staged."];
-        }
-
-        try {
-            $user = $this->verifiedTenantUser($client->id, $tenant, $params['target_upn']);
-        } catch (CippWriteScopeException $e) {
-            $this->auditAttempt($tool, 'rejected', $client->id, $ticket, null, $license, $contentHash, "{$targetKey}: ".$e->getMessage(), $actorLabel);
-
-            return ['error' => $e->getMessage()];
         }
 
         // The stored params carry the verified SNAPSHOT of BOTH material facts
@@ -3537,32 +3563,18 @@ class StaffCippWriteToolExecutor
                 return $this->declined($e->getMessage());
             }
 
-            // Built from the FRESHLY RESOLVED licence, so the already-executed
-            // check below cannot close this approval as a duplicate of a write
-            // that assigned a different SKU; a re-synced entitlement now falls
-            // through to the licence-drift rail, which is the gate that exists
-            // to judge it.
-            $targetKey = $this->licenseTargetKey($params, $license);
+            // The kill switch below runs before ANYTHING reaches upstream —
+            // including the verification READ — so it audits under the CLAIM key:
+            // at that point no server-derived identity exists yet. Different
+            // prefix, so no dedup or cooldown LIKE built from licenseTargetKey()
+            // can ever match a row carrying it.
+            $claimKey = $this->licenseTargetClaimKey($params);
 
             if (TechnicianConfig::killSwitchEngaged()) {
-                $this->auditAttempt($run->action_type, 'blocked', $client->id, $ticket, null, $license, $contentHash, "{$targetKey}: Technician kill-switch engaged; staged CIPP write refused.", $this->approverLabel($approverId), $run->id, $approverId);
+                $this->auditAttempt($run->action_type, 'blocked', $client->id, $ticket, null, $license, $contentHash, "{$claimKey}: Technician kill-switch engaged; staged CIPP write refused.", $this->approverLabel($approverId), $run->id, $approverId);
                 $run->releaseClaim();
 
                 return $this->declined('Technician kill-switch engaged; the staged CIPP write was refused.');
-            }
-
-            if ($this->licenseTargetAlreadyExecuted($client->id, $targetKey)) {
-                $this->auditAttempt($run->action_type, 'blocked', $client->id, $ticket, null, $license, $contentHash, "{$targetKey}: Duplicate licence assignment suppressed: identical user/SKU already executed within ".self::DIRECT_DEDUP_HOURS.'h; the approval was treated as a logged no-op.', $this->approverLabel($approverId), $run->id, $approverId);
-                $run->advanceTo(TechnicianRunState::Done);
-
-                return new TechnicianApprovalResult('already_handled');
-            }
-
-            if ($this->emailSecurityCooldownActive($directTool, $client->id, $targetKey, self::COOLDOWNS[$directTool] ?? 300)) {
-                $this->auditAttempt($run->action_type, 'blocked', $client->id, $ticket, null, $license, $contentHash, "{$targetKey}: CIPP staged action cooldown active; approval refused before upstream call.", $this->approverLabel($approverId), $run->id, $approverId);
-                $run->releaseClaim();
-
-                return $this->declined('A recent action for this target is still in cooldown; wait a few minutes and approve again.');
             }
 
             // The re-verification refusals are audited for the same reason the
@@ -3574,11 +3586,25 @@ class StaffCippWriteToolExecutor
             try {
                 $user = $this->verifiedTenantUser($client->id, $tenant, $params['target_upn']);
             } catch (CippWriteScopeException $e) {
-                $this->auditAttempt($run->action_type, 'rejected', $client->id, $ticket, null, $license, $contentHash, "{$targetKey}: tenant user re-verification refused the approval before any upstream call — ".$e->getMessage(), $this->approverLabel($approverId), $run->id, $approverId);
+                $this->auditAttempt($run->action_type, 'rejected', $client->id, $ticket, null, $license, $contentHash, "{$claimKey}: tenant user re-verification refused the approval before any upstream call — ".$e->getMessage(), $this->approverLabel($approverId), $run->id, $approverId);
                 $run->releaseClaim();
 
                 return $this->declined($e->getMessage());
             }
+
+            // Built from the FRESHLY VERIFIED user AND the FRESHLY RESOLVED
+            // licence, so neither half can close this approval as a duplicate of
+            // a write that assigned a different SKU or a different user object; a
+            // re-synced entitlement or a re-pointed address falls through to the
+            // drift rail that exists to judge it. That is also why the read and
+            // the user-drift rail now precede the already-executed check below:
+            // keyed on the claim and run first, it closed the approval as
+            // 'already_handled' — a logged no-op, run marked Done, no seat
+            // assigned — whenever the address had been reassigned inside
+            // DIRECT_DEDUP_HOURS, while the approval card promises the opposite,
+            // that approval declines if the address now points at a different
+            // object. Verification first is what makes that promise true.
+            $targetKey = $this->licenseTargetKey($user['user_id'], $license);
 
             // Drift rail: the operator approved a proposal naming ONE object.
             // A UPN can be reassigned; if it now points somewhere else the
@@ -3594,6 +3620,20 @@ class StaffCippWriteToolExecutor
                 $run->releaseClaim();
 
                 return $this->declined('The user behind that address changed after this action was staged; deny this proposal and re-stage it against the current user.');
+            }
+
+            if ($this->licenseTargetAlreadyExecuted($client->id, $targetKey)) {
+                $this->auditAttempt($run->action_type, 'blocked', $client->id, $ticket, null, $license, $contentHash, "{$targetKey}: Duplicate licence assignment suppressed: identical user/SKU already executed within ".self::DIRECT_DEDUP_HOURS.'h; the approval was treated as a logged no-op.', $this->approverLabel($approverId), $run->id, $approverId);
+                $run->advanceTo(TechnicianRunState::Done);
+
+                return new TechnicianApprovalResult('already_handled');
+            }
+
+            if ($this->emailSecurityCooldownActive($directTool, $client->id, $targetKey, self::COOLDOWNS[$directTool] ?? 300)) {
+                $this->auditAttempt($run->action_type, 'blocked', $client->id, $ticket, null, $license, $contentHash, "{$targetKey}: CIPP staged action cooldown active; approval refused before upstream call.", $this->approverLabel($approverId), $run->id, $approverId);
+                $run->releaseClaim();
+
+                return $this->declined('A recent action for this target is still in cooldown; wait a few minutes and approve again.');
             }
 
             // The SAME rail for the LICENCE, and it needs its own: the user rail
@@ -3800,8 +3840,7 @@ class StaffCippWriteToolExecutor
      * Identity-keyed dedup/cooldown key for the licence target: the SAME user
      * and SKU is the same entitlement change however it was described, so it
      * dedups across reasons and tickets the way the group-membership and
-     * create-user targets do. Both halves are already lowercased by
-     * licenseTargetParams().
+     * create-user targets do.
      *
      * HASHED, like groupMembershipTargetKey() and every other non-person
      * target, and for the same reason: this key is matched with SQL LIKE, and
@@ -3811,32 +3850,58 @@ class StaffCippWriteToolExecutor
      * row — suppressing a real write as a duplicate with success/idempotent, or
      * closing an approved run as already-handled.
      *
-     * KEYED ON THE RESOLVED SKU, NEVER THE CALLER'S CLAIM. The claim only ever
-     * SELECTS a local licence type; the value that reaches upstream — and that
-     * decides what is billed — is $license->skuId, read out of the client's
-     * active licence row (License.vendor_ref). Those two can drift apart
-     * without the claim changing a byte: a CIPP re-sync rewrites vendor_ref,
-     * and an identical repeat call is then a GENUINELY DIFFERENT entitlement
-     * write. Hashing the claim made that repeat collide with the first one, so
-     * licenseTargetAlreadyExecuted() suppressed it and answered
-     * success/idempotent while nothing was assigned — a false success on a
-     * billing write, and on the staged path an 'already_handled' close that
-     * fired BEFORE the licence-drift rail built for exactly this threat could
-     * see it. The resolved licence is in hand at every call site
-     * (licenseTargetContext() resolves it before the key is computed), so the
-     * key is built from what actually executes.
+     * KEYED ON THE SERVER-VERIFIED OBJECT ID AND THE RESOLVED SKU, NEVER ON
+     * EITHER CALLER CLAIM. Both halves are the values that actually execute, and
+     * both can drift from the claim that named them without the claim changing a
+     * byte:
      *
-     * Lowercased for the same reason licenseTargetParams() lowercases both its
-     * halves: vendor_ref is stored RAW by the licence sync, and casing must not
-     * fork the dedup key or the cooldown.
+     *  - the USER — a UPN is reassignable, which is precisely why this family
+     *    carries a drift rail at approval. Hashing the typed address made an
+     *    assignment to a NEW object collide with the OLD object's executed row:
+     *    licenseTargetAlreadyExecuted() suppressed a real write inside
+     *    DIRECT_DEDUP_HOURS and answered success/idempotent while no seat was
+     *    assigned, and the staged path closed the approval as 'already_handled'
+     *    BEFORE the drift rail written for exactly that could see it.
+     *  - the SKU — the claim only ever SELECTS a local licence type; what
+     *    reaches upstream, and what is billed, is $license->skuId read out of
+     *    the client's active licence row (License.vendor_ref), which a CIPP
+     *    re-sync rewrites.
+     *
+     * One class of defect — a false success on a billing write — so one rule:
+     * the key is built from what executes. That is why EVERY call site resolves
+     * the user BEFORE computing this key; verifiedTenantUser() is the only thing
+     * that can produce the object id, so it has to run first. Rows written
+     * before an identity exists are keyed by licenseTargetClaimKey() instead,
+     * which cannot be confused with this key: the prefix differs.
+     *
+     * Lowercased for the same reason licenseTargetParams() lowercases its
+     * halves: vendor_ref and the tenant's object id are both stored RAW, and
+     * casing must not fork the dedup key or the cooldown.
+     */
+    private function licenseTargetKey(string $verifiedUserId, ResolvedCippLicense $license): string
+    {
+        $resolvedSku = mb_strtolower(trim((string) $license->skuId));
+        $identity = mb_strtolower(trim($verifiedUserId));
+
+        return 'cipp-license-target #'.substr(hash('sha256', $identity.'|'.$resolvedSku), 0, 12);
+    }
+
+    /**
+     * The CLAIM-keyed twin, for audit rows written BEFORE the server holds an
+     * identity to key on: a pre-verification refusal, or the kill-switch decline
+     * at approval. It keeps those rows searchable and keeps the "<key>: message"
+     * shape the rest of the family uses — and it is NEVER a dedup or cooldown
+     * key, nor can it become one by accident: the prefix differs, so no LIKE
+     * built from licenseTargetKey() can match a row carrying this one. Both
+     * halves are already lowercased by licenseTargetParams(), and hashing them
+     * keeps LIKE wildcards out of the summary for the same reason the identity
+     * key is hashed.
      *
      * @param  array{target_upn: string, sku_id: string}  $params
      */
-    private function licenseTargetKey(array $params, ResolvedCippLicense $license): string
+    private function licenseTargetClaimKey(array $params): string
     {
-        $resolvedSku = mb_strtolower(trim((string) $license->skuId));
-
-        return 'cipp-license-target #'.substr(hash('sha256', $params['target_upn'].'|'.$resolvedSku), 0, 12);
+        return 'cipp-license-claim #'.substr(hash('sha256', $params['target_upn'].'|'.$params['sku_id']), 0, 12);
     }
 
     /**
@@ -3852,7 +3917,6 @@ class StaffCippWriteToolExecutor
      * run. The target is carried here under a key that is NOT blocklisted, in
      * the same collapsed identity form the dedup rail already uses.
      *
-     * @param  array{target_upn: string, sku_id: string}  $params
      * @return array<string, string>
      */
     /**
@@ -3885,9 +3949,9 @@ class StaffCippWriteToolExecutor
         return $value !== null && (! is_string($value) || trim($value) !== '');
     }
 
-    private function licenseTargetHashParams(array $params, ResolvedCippLicense $license): array
+    private function licenseTargetHashParams(string $verifiedUserId, ResolvedCippLicense $license): array
     {
-        return ['license_target' => $this->licenseTargetKey($params, $license)];
+        return ['license_target' => $this->licenseTargetKey($verifiedUserId, $license)];
     }
 
     private function licenseTargetAlreadyExecuted(int $clientId, string $targetKey): bool
