@@ -507,6 +507,13 @@ class CippWriteLicenseTargetTest extends TestCase
 
         $this->assertSame('gate_declined', $result->status);
         $this->assertSame(0, TechnicianActionLog::where('result_status', 'executed')->count());
+        // A drift decline is the most interesting thing that can happen on this
+        // path — the target moved between the operator reading the card and
+        // approving it — so it must not be the one refusal leaving no trace.
+        $this->assertStringContainsString(
+            'user drift at approval',
+            (string) TechnicianActionLog::where('result_status', 'rejected')->latest('id')->value('summary'),
+        );
     }
 
     /**
@@ -551,6 +558,12 @@ class CippWriteLicenseTargetTest extends TestCase
 
         $this->assertSame('gate_declined', $result->status, 'A costlier SKU than the approved one was executed.');
         $this->assertSame(0, TechnicianActionLog::where('result_status', 'executed')->count());
+        // This one carries money: a silent decline means nobody can later tell
+        // that a SKU re-sync changed what would have been billed.
+        $this->assertStringContainsString(
+            'licence drift at approval',
+            (string) TechnicianActionLog::where('result_status', 'rejected')->latest('id')->value('summary'),
+        );
     }
 
     public function test_an_account_disabled_between_staging_and_approval_declines_rather_than_spending_a_seat(): void

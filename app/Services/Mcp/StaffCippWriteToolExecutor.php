@@ -3531,6 +3531,12 @@ class StaffCippWriteToolExecutor
             // approval is for a different person and must decline.
             $stagedUserId = trim((string) ($stored['verified_user_id'] ?? ''));
             if ($stagedUserId === '' || strcasecmp($user['user_id'], $stagedUserId) !== 0) {
+                // AUDITED, like every other refusal that can reach this point.
+                // A drift decline is the most interesting thing that can happen
+                // on this path — it means the target moved between the operator
+                // reading the card and approving it — and it was the only
+                // refusal here leaving no row in TechnicianActionLog.
+                $this->auditAttempt($run->action_type, 'rejected', $client->id, $ticket, null, $license, $contentHash, "{$targetKey}: user drift at approval — the address now resolves to a different object id than the one staged; approval declined before any upstream call.", $this->approverLabel($approverId), $run->id, $approverId);
                 $run->releaseClaim();
 
                 return $this->declined('The user behind that address changed after this action was staged; deny this proposal and re-stage it against the current user.');
@@ -3547,6 +3553,10 @@ class StaffCippWriteToolExecutor
             // executes; on a billing write the SKU is half of what they reviewed.
             $stagedSkuId = trim((string) ($stored['verified_sku_id'] ?? ''));
             if ($stagedSkuId === '' || strcasecmp((string) $license->skuId, $stagedSkuId) !== 0) {
+                // Audited for the same reason as the user rail, and this one
+                // carries money: a silent decline here means nobody can later
+                // tell that a SKU re-sync changed what would have been billed.
+                $this->auditAttempt($run->action_type, 'rejected', $client->id, $ticket, null, $license, $contentHash, "{$targetKey}: licence drift at approval — the SKU now resolves to a different licence than the one on the approved proposal; approval declined before any upstream call.", $this->approverLabel($approverId), $run->id, $approverId);
                 $run->releaseClaim();
 
                 return $this->declined('The licence this SKU maps to changed after this action was staged, so approving it would assign a different licence than the one named on the proposal; deny this proposal and re-stage it.');
