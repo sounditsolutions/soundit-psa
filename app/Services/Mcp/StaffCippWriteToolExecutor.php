@@ -3852,15 +3852,25 @@ class StaffCippWriteToolExecutor
         // that can drift, which is what matters: an account disabled BETWEEN
         // staging and approval declines instead of executing.
         //
-        // DELIBERATE AND ARGUABLE: only an explicit false refuses. An ABSENT
-        // accountEnabled is not treated as disabled, because it is a projection
-        // field and refusing on its absence would fail every call the moment
-        // CIPP stopped emitting it — a fail-closed rule that closes the door on
-        // the whole feature rather than on the risk. If the panel judges that
-        // unable-to-assess must refuse here too, that is a one-line change and
-        // I would rather be told than guess.
-        if (($row['accountEnabled'] ?? null) === false) {
+        // Absence refuses too, with a DISTINCT and self-diagnosing message. The
+        // earlier draft here let an absent accountEnabled through, reasoning that
+        // refusing on it would fail every call the moment CIPP stopped emitting
+        // the field. That priced the wrong pair: fail-open buys availability and
+        // pays with a QUIET wrong outcome — a paid seat on someone who left,
+        // reported as a successful assignment and indistinguishable from one.
+        // Refusing pays with a LOUD outage that names its own cause and is a
+        // five-minute fix. Measured on a live tenant (12 of 12 accounts, the
+        // three disabled ones included), the field is always projected, so the
+        // absent branch is not currently reachable and the availability cost is
+        // near zero today. Unable-to-assess is a refusal — and it survives the
+        // "you'll break the feature" objection precisely because the refusal
+        // says which field went missing.
+        $enabled = $row['accountEnabled'] ?? null;
+        if ($enabled === false) {
             throw new CippWriteScopeException('That user\'s Microsoft 365 account is disabled in the tenant; a licence would spend a paid seat on a disabled account. Re-enable the account first, or assign the licence to the person who is actually using it.');
+        }
+        if (! is_bool($enabled)) {
+            throw new CippWriteScopeException('CIPP did not project accountEnabled for that user, so this tool cannot tell whether the account is enabled and will not assume it is. No licence was assigned. If every assignment is failing this way, the tenant listing has stopped carrying the field and that is the thing to fix.');
         }
 
         return [

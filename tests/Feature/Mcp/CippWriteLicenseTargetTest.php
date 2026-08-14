@@ -567,6 +567,42 @@ class CippWriteLicenseTargetTest extends TestCase
         $this->assertSame(0, TechnicianActionLog::where('result_status', 'executed')->count());
     }
 
+    /**
+     * Unable-to-assess is a refusal, and the refusal names its own cause.
+     *
+     * If CIPP stops projecting accountEnabled, the alternative is assigning a
+     * paid seat while unable to tell whether the account is live — a quiet
+     * wrong outcome that reads exactly like a correct one. This fails loudly
+     * instead, and says which field went missing so the outage diagnoses
+     * itself rather than looking like the tool broke.
+     */
+    public function test_an_absent_account_enabled_field_refuses_and_names_the_missing_field(): void
+    {
+        $this->configureCipp();
+        $f = $this->fixture();
+        $token = $this->token(['cipp_assign_user_license']);
+
+        $row = $this->userRow();
+        unset($row['accountEnabled']);
+
+        $client = Mockery::mock(CippRestWriteClient::class);
+        $client->shouldReceive('listUsers')->once()->with(self::TENANT)->andReturn([$row]);
+        $client->shouldNotReceive('assignUserLicense');
+        $this->app->instance(CippRestWriteClient::class, $client);
+
+        $response = $this->callTool($token, 'cipp_assign_user_license', [
+            'client_id' => $f['client']->id,
+            'target_upn' => self::TARGET_UPN,
+            'sku_id' => self::SKU,
+            'reason' => 'Contractor needs a seat.',
+        ]);
+
+        $text = (string) $response->json('result.content.0.text');
+        $this->assertStringContainsString('accountEnabled', $text);
+        $this->assertStringNotContainsString('"success":true', $text);
+        $this->assertSame(0, TechnicianActionLog::where('result_status', 'executed')->count());
+    }
+
     public function test_the_person_keyed_shape_is_untouched_by_this_family(): void
     {
         $this->configureCipp();
