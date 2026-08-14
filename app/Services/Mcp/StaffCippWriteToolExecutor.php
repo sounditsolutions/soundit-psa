@@ -196,6 +196,15 @@ class StaffCippWriteToolExecutor
 
     private const GROUP_NAME_MAX = 256;
 
+    /**
+     * Upper bound for the caller-typed upstream SKU id on the tenant-scoped
+     * licence target. A GUID is 36 characters; the bound is loose because
+     * CIPP also emits SKU part numbers, and resolveCippLicenseBySku() is what
+     * decides whether the value matches anything — this only stops an
+     * unbounded string reaching a LIKE-free exact match and the audit trail.
+     */
+    private const LICENSE_SKU_MAX = 128;
+
     /** @var array<int, string> */
     private const WIPE_ACTIONS = ['wipe', 'retire'];
 
@@ -3161,6 +3170,101 @@ class StaffCippWriteToolExecutor
         return 'Remove user '.$userLabel.' from group '.$groupLabel.'.'
             .' The user loses whatever access the group carries.'
             .' Approval re-verifies the group fresh before execution.';
+    }
+
+    /**
+     * Validate the tenant-scoped licence-target scalar params. Runs on the
+     * initial call (against caller arguments) AND on the approval replay
+     * (against the decrypted stored payload), so a tampered or drifted
+     * payload re-fails the same gates instead of being trusted — the
+     * groupMembershipParams() contract.
+     *
+     * target_upn is a CLAIM, never an identity: it is bounded, shape-checked
+     * and canonicalized here, and only verifiedTenantUser() can turn it into
+     * an object id, by reading it back out of the resolved tenant. The
+     * parameter is deliberately NOT named userPrincipalName / Username /
+     * cipp_upn — those are refused outright by UPSTREAM_IDENTIFIER_KEYS, and
+     * a caller who reaches for one should keep hitting that wall.
+     *
+     * Both values are lowercased so casing can never fork the idempotency
+     * hash or the dedup/cooldown keys.
+     *
+     * @param  array<string, mixed>  $source
+     * @return array{target_upn: string, sku_id: string}
+     */
+    private function licenseTargetParams(array $source): array
+    {
+        $upn = $this->boundedString($source, 'target_upn', self::CREATE_UPN_MAX, required: true) ?? '';
+        if (filter_var($upn, FILTER_VALIDATE_EMAIL) === false) {
+            throw new CippWriteScopeException('target_upn must be the user\'s full Microsoft 365 user principal name (e.g. person@contoso.com).');
+        }
+
+        $sku = $this->boundedString($source, 'sku_id', self::LICENSE_SKU_MAX, required: true) ?? '';
+
+        return [
+            'target_upn' => mb_strtolower($upn),
+            'sku_id' => mb_strtolower($sku),
+        ];
+    }
+
+    /**
+     * The tenant-scope gate for the licence target: fetch the resolved
+     * tenant's LIVE user listing through the same credentialed client the
+     * licence write uses, and require the typed UPN to be present in it.
+     * This is the quarantine-release / verifiedGroupRow() precedent applied
+     * to a user: a UPN the caller typed can only ever become an object id the
+     * SERVER read out of the resolved tenant, so a user in any other tenant
+     * can never be targeted.
+     *
+     * AN EMPTY LISTING IS A REFUSAL, NOT "no such user". CippRestWriteClient
+     * ::listUsers() is queue-guarded at the source, but its docblock is
+     * explicit that the polarity of an empty result belongs to the caller —
+     * so it is decided here, once, in the direction that cannot lose:
+     * "we read nothing" and "this tenant has no such user" are the same shape
+     * and opposite conclusions, and only one of them is safe to act on.
+     *
+     * Zero-match and multi-match both refuse, and a matched row with no
+     * object id refuses rather than falling through to an empty target.
+     *
+     * @return array{user_id: string, upn: string, display_name: string}
+     */
+    private function verifiedTenantUser(string $tenant, string $targetUpn): array
+    {
+        try {
+            $rows = $this->client->listUsers($tenant);
+        } catch (CippClientException) {
+            throw new CippWriteScopeException('Could not verify the user against the tenant\'s live user listing; no licence change was made.');
+        }
+
+        if ($rows === []) {
+            throw new CippWriteScopeException('The tenant\'s live user listing came back empty, which cannot be distinguished from an unread listing; no licence change was made. Retry, and check the CIPP relay if it persists.');
+        }
+
+        $matches = [];
+        foreach ($rows as $row) {
+            if (is_array($row) && strcasecmp(trim((string) ($row['userPrincipalName'] ?? '')), $targetUpn) === 0) {
+                $matches[] = $row;
+            }
+        }
+
+        if ($matches === []) {
+            throw new CippWriteScopeException('No user with that target_upn exists in this client tenant\'s live user listing; check the address and retry.');
+        }
+        if (count($matches) > 1) {
+            throw new CippWriteScopeException('That target_upn matches more than one user in the tenant\'s live listing; resolve the duplicate upstream before assigning a licence.');
+        }
+
+        $row = $matches[0];
+        $userId = trim((string) ($row['id'] ?? $row['objectId'] ?? ''));
+        if ($userId === '') {
+            throw new CippWriteScopeException('The verified user has no object id in the CIPP user listing; refresh the CIPP user reads and retry.');
+        }
+
+        return [
+            'user_id' => $userId,
+            'upn' => trim((string) $row['userPrincipalName']),
+            'display_name' => trim((string) ($row['displayName'] ?? '')),
+        ];
     }
 
     /**
