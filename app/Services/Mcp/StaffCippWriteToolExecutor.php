@@ -3503,9 +3503,14 @@ class StaffCippWriteToolExecutor
             // correctly while writing nothing, which is indistinguishable in
             // TechnicianActionLog from the approval never having been attempted.
             //
-            // Audited with null ticket/licence deliberately: which resolution
-            // refused is exactly what is unknown here, so the row records the
-            // run, the approver and the cause rather than half-resolved objects.
+            // The row carries WHATEVER WAS ALREADY RESOLVED, not null. The body
+            // below is sequential, so a failure in licenseTargetParams() or the
+            // SKU resolution happens with the ticket already in hand — passing
+            // null there discards a fact the log needs to be searchable by, and
+            // "which resolution refused is unknown" is only true of the ones
+            // that had not run yet. $ticket stays null when the ticket itself
+            // is what refused, which is the honest value in that case.
+            $ticket = null;
             try {
                 $tenant = $this->resolver->resolveCippTenant($client);
                 $ticket = $this->resolver->resolveTicketForHeldAction($client->id, $payload['ticket_id'] ?? null);
@@ -3513,7 +3518,7 @@ class StaffCippWriteToolExecutor
                 $params = $this->licenseTargetParams($stored);
                 $license = $this->resolver->resolveCippLicenseBySku($client->id, $params['sku_id']);
             } catch (CippWriteScopeException $e) {
-                $this->auditAttempt($run->action_type, 'rejected', $client->id, null, null, null, $contentHash, 'Staged licence assignment refused at approval before any upstream call: '.$e->getMessage(), $this->approverLabel($approverId), $run->id, $approverId);
+                $this->auditAttempt($run->action_type, 'rejected', $client->id, $ticket, null, null, $contentHash, 'Staged licence assignment refused at approval before any upstream call: '.$e->getMessage(), $this->approverLabel($approverId), $run->id, $approverId);
                 $run->releaseClaim();
 
                 return $this->declined($e->getMessage());

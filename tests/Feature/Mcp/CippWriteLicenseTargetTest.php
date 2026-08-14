@@ -599,6 +599,13 @@ class CippWriteLicenseTargetTest extends TestCase
 
         $this->assertSame('gate_declined', $result->status);
         $this->assertSame(0, TechnicianActionLog::where('result_status', 'executed')->count());
+        // An account disabled BETWEEN staging and approval is the exact event the
+        // re-gate exists to surface. A silent decline is indistinguishable in
+        // TechnicianActionLog from the approval never having been attempted.
+        $this->assertStringContainsString(
+            'tenant user re-verification refused the approval',
+            (string) TechnicianActionLog::where('result_status', 'rejected')->latest('id')->value('summary'),
+        );
     }
 
     public function test_a_disabled_account_is_refused_on_the_immediate_path_too(): void
