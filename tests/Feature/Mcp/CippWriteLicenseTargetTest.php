@@ -1552,4 +1552,63 @@ class CippWriteLicenseTargetTest extends TestCase
             (string) TechnicianActionLog::where('result_status', 'error')->latest('id')->value('summary'),
         );
     }
+
+    /**
+     * HAND PASS, 2026-08-14. The schema no longer enforces this; the executor
+     * must, and now something can fail if it stops.
+     *
+     * assignLicenseTool()'s `required` went from
+     * ['person_id','license_type_id','confirm_upn','reason'] to ['reason'] —
+     * the price of merging two target shapes into one tool, since a required
+     * list can only express the INTERSECTION of the shapes it serves. r9's
+     * contract:2 called that a possible bypass of the typed-confirmation rail
+     * and three seats discarded it by READING confirmUpnError(). They were
+     * right — I measured it rather than trusting the read, and a person-shape
+     * call with confirm_upn entirely absent is refused with "The typed
+     * confirm_upn does not match the resolved CIPP user. CIPP write cancelled."
+     * and zero executed rows.
+     *
+     * The residue they named is real though: nothing PINNED it. A rail enforced
+     * only in code, with its schema declaration removed and no test, is one
+     * refactor away from silently becoming optional — and the whole point of a
+     * typed confirmation is that it cannot be skipped by an agent that simply
+     * omits the field.
+     */
+    public function test_a_person_shape_call_with_no_confirm_upn_at_all_is_still_refused(): void
+    {
+        $this->configureCipp();
+        $f = $this->fixture();
+        $token = $this->token(['cipp_assign_user_license']);
+
+        $person = Person::create([
+            'client_id' => $f['client']->id,
+            'person_type' => PersonType::User,
+            'first_name' => 'Fully',
+            'last_name' => 'Mapped',
+            'email' => self::TARGET_UPN,
+            'cipp_user_id' => self::TARGET_OBJECT_ID,
+            'cipp_upn' => self::TARGET_UPN,
+            'is_active' => true,
+        ]);
+
+        // Nothing upstream may be reached: the rail is BEFORE the write, and a
+        // permissive mock proves the refusal is the executor's and not a
+        // missing expectation.
+        $client = Mockery::mock(CippRestWriteClient::class);
+        $client->shouldIgnoreMissing();
+        $this->app->instance(CippRestWriteClient::class, $client);
+
+        $response = $this->callTool($token, 'cipp_assign_user_license', [
+            'client_id' => $f['client']->id,
+            'person_id' => $person->id,
+            'license_type_id' => $f['licenseType']->id,
+            'reason' => 'No confirm_upn sent at all.',
+        ]);
+
+        $body = (string) $response->json('result.content.0.text');
+        $this->assertStringContainsString('confirm_upn', $body);
+        $this->assertStringContainsString('CIPP write cancelled', $body);
+        $this->assertArrayNotHasKey('success', $this->decodedResult($response));
+        $this->assertSame(0, TechnicianActionLog::where('result_status', 'executed')->count());
+    }
 }
