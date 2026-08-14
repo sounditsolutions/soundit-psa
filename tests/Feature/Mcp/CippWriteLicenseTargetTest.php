@@ -16,6 +16,7 @@ use App\Services\Cipp\CippRestWriteClient;
 use App\Services\Mcp\StaffCippWriteToolExecutor;
 use App\Support\McpConfig;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Crypt;
 use Illuminate\Testing\TestResponse;
 use Mockery;
 use Tests\TestCase;
@@ -790,6 +791,59 @@ class CippWriteLicenseTargetTest extends TestCase
 
         $log = TechnicianActionLog::where('result_status', 'executed')->firstOrFail();
         $this->assertStringContainsString(self::TARGET_UPN, (string) $log->summary, 'The audit line for a billing write named nobody.');
+    }
+
+    public function test_a_held_payload_whose_family_marker_is_wrong_declines_and_leaves_a_row(): void
+    {
+        $this->configureCipp();
+        $f = $this->fixture();
+        $token = $this->token(['cipp_stage_assign_user_license']);
+        $approver = User::factory()->create(['name' => 'Approver']);
+
+        $client = Mockery::mock(CippRestWriteClient::class);
+        $client->shouldReceive('listUsers')->once()->with(self::TENANT)->andReturn([$this->userRow()]);
+        $this->app->instance(CippRestWriteClient::class, $client);
+
+        $staged = $this->decodedResult($this->callTool($token, 'cipp_stage_assign_user_license', [
+            'client_id' => $f['client']->id,
+            'ticket_id' => $f['ticket']->id,
+            'target_upn' => self::TARGET_UPN,
+            'sku_id' => self::SKU,
+            'reason' => 'Contractor needs a seat.',
+        ]));
+        $this->assertTrue($staged['success'] ?? false);
+
+        // The family marker is what stops a licence-target run being approved
+        // through the person-keyed tail. A payload that fails it is exactly the
+        // approval you would want to find in the log afterwards — and it was one
+        // of four early exits on this method still leaving no row. Found by
+        // enumerating every refusal in the family rather than waiting for the
+        // next panel to name the next one.
+        $run = TechnicianRun::findOrFail($staged['run_id']);
+        $meta = $run->proposed_meta;
+        $meta['encrypted_payload'] = Crypt::encryptString(json_encode([
+            'direct_tool' => 'cipp_assign_user_license',
+            'family' => 'not_license_target',
+            'client_id' => $f['client']->id,
+            'person_id' => null,
+            'ticket_id' => $f['ticket']->id,
+            'params' => [],
+        ], JSON_THROW_ON_ERROR));
+        $run->update(['proposed_meta' => $meta]);
+
+        $blocked = Mockery::mock(CippRestWriteClient::class);
+        $blocked->shouldNotReceive('listUsers');
+        $blocked->shouldNotReceive('assignUserLicense');
+        $this->app->instance(CippRestWriteClient::class, $blocked);
+
+        $result = app(StaffCippWriteToolExecutor::class)->approveStagedRun($run->fresh(), $approver->id);
+
+        $this->assertSame('gate_declined', $result->status);
+        $this->assertSame(0, TechnicianActionLog::where('result_status', 'executed')->count());
+        $this->assertStringContainsString(
+            'does not match this action type or family',
+            (string) TechnicianActionLog::where('result_status', 'rejected')->latest('id')->value('summary'),
+        );
     }
 
     public function test_the_person_keyed_shape_is_untouched_by_this_family(): void

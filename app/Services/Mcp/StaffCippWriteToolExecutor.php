@@ -3472,8 +3472,18 @@ class StaffCippWriteToolExecutor
     private function approveLicenseTargetStagedRun(TechnicianRun $run, int $approverId): TechnicianApprovalResult
     {
         try {
+            // THE THREE EARLIEST REFUSALS AUDIT TOO. Found by enumerating every
+            // early exit in this family rather than waiting for the next panel to
+            // name the next one: r1 through r4 each reported ONE site of a class
+            // and I fixed only that site, four times running. These three are the
+            // same class as r4's diff:3 — a tampered, unreadable or
+            // wrong-client held payload is precisely the approval you would want
+            // to find in the log later, and it was the quietest thing this method
+            // could do. client_id falls back to the run's own, because the
+            // payload's is what failed to verify.
             $payload = $this->decryptRunPayload($run);
             if ($payload === null) {
+                $this->auditAttempt($run->action_type, 'rejected', (int) $run->client_id, null, null, null, $run->content_hash, 'Staged licence assignment refused at approval: the held payload could not be decrypted.', $this->approverLabel($approverId), $run->id, $approverId);
                 $run->releaseClaim();
 
                 return $this->declined('The held payload could not be read; deny this proposal and re-stage it.');
@@ -3482,6 +3492,7 @@ class StaffCippWriteToolExecutor
             $directTool = (string) ($payload['direct_tool'] ?? '');
             if ((self::STAGED_TO_DIRECT[$run->action_type] ?? null) !== $directTool
                 || (string) ($payload['family'] ?? '') !== 'license_target') {
+                $this->auditAttempt($run->action_type, 'rejected', (int) $run->client_id, null, null, null, $run->content_hash, 'Staged licence assignment refused at approval: the held payload does not match this action type or family.', $this->approverLabel($approverId), $run->id, $approverId);
                 $run->releaseClaim();
 
                 return $this->declined('The held payload does not match this action type; deny this proposal and re-stage it.');
@@ -3489,6 +3500,7 @@ class StaffCippWriteToolExecutor
 
             $client = Client::find((int) ($payload['client_id'] ?? 0));
             if (! $client || (int) $client->id !== (int) $run->client_id) {
+                $this->auditAttempt($run->action_type, 'rejected', (int) $run->client_id, null, null, null, $run->content_hash, 'Staged licence assignment refused at approval: the held payload\'s client could not be re-verified against the run.', $this->approverLabel($approverId), $run->id, $approverId);
                 $run->releaseClaim();
 
                 return $this->declined('The proposal\'s client could not be re-verified; deny this proposal and re-stage it.');
@@ -3612,6 +3624,11 @@ class StaffCippWriteToolExecutor
 
             return new TechnicianApprovalResult('executed');
         } catch (CippWriteScopeException $e) {
+            // The sweep-up arm, audited for completeness: every scope refusal
+            // inside the body already audits before returning, so reaching here
+            // means a throw from somewhere that did not, and a decline with no
+            // row is the one outcome this method must never produce.
+            $this->auditAttempt($run->action_type, 'rejected', (int) $run->client_id, null, null, null, $run->content_hash, 'Staged licence assignment refused at approval: '.$e->getMessage(), $this->approverLabel($approverId), $run->id, $approverId);
             $run->releaseClaim();
 
             return $this->declined($e->getMessage());
