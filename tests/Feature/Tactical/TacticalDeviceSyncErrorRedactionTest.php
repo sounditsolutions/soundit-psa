@@ -33,8 +33,11 @@ use Tests\TestCase;
  * These tests force a genuine QueryException (the assets table is gone by the
  * time the sync tries to write) and assert on what escapes.
  *
- * DRIVER CONSTRAINT — the WRITE-failure guards are sqlite-only by construction.
- * The fetch and asset-lock guards below need no DDL and are not affected. The failure
+ * DRIVER CONSTRAINT — every case here that forces its failure with Schema::drop()
+ * is sqlite-only by construction, and that is now MORE than the write guards: the
+ * client-map, queued-action pre-scan and not-seen-sweep cases added for psa #359
+ * and #380 force their failures the same way. Do not read this note as an
+ * enumeration of two; read it as "any case calling skipUnlessSqlite()". The failure
  * is forced with Schema::drop(), and DDL is not transactional on MariaDB (which
  * is what prod runs): it implicitly commits, so RefreshDatabase can no longer
  * roll the case back and the damage escapes into later tests. syncDevices()
@@ -94,10 +97,7 @@ class TacticalDeviceSyncErrorRedactionTest extends TestCase
     {
         // See the class docblock: the Schema::drop() below implicitly commits on
         // MariaDB and would defeat RefreshDatabase's rollback for the whole run.
-        $driver = \Illuminate\Support\Facades\DB::connection()->getDriverName();
-        if ($driver !== 'sqlite') {
-            $this->markTestSkipped("redaction guard forces its failure with DDL and is sqlite-only; driver is {$driver}");
-        }
+        $this->skipUnlessSqlite();
 
         Client::factory()->create(['tactical_site_id' => 'Acme|Main', 'is_active' => true]);
 
@@ -277,7 +277,7 @@ class TacticalDeviceSyncErrorRedactionTest extends TestCase
         }
     }
 
-    public function test_a_client_map_read_failure_is_redacted_and_does_not_escape_the_method(): void
+    public function test_a_client_map_read_failure_is_redacted_to_a_failure_class_and_does_not_escape(): void
     {
         $this->skipUnlessSqlite();
 
@@ -294,6 +294,85 @@ class TacticalDeviceSyncErrorRedactionTest extends TestCase
         $this->assertStringContainsString('database client map read failed', $message);
         $this->assertStringNotContainsString('select', strtolower($message), 'the statement itself leaked');
         $this->assertStringNotContainsString('tactical_site_id', $message, 'schema text leaked');
+    }
+
+    /**
+     * The LOG half, which the three guards above already pin and the guards added
+     * here did not (psa #380 review, contract:4). SyncResult is not the only sink —
+     * storage/logs/laravel.log has no rotation, and "improve the diagnostics" is
+     * exactly the change that reopens a redaction on the log side while the
+     * operator-facing assertion stays green.
+     *
+     * Each case pins ITS OWN warning line by name and requires exactly one match,
+     * the same shape the three cases above use. An assertion that merely finds
+     * SOME clean warning would pass while the line beside it leaked.
+     *
+     * @param  list<string>  $forbidden
+     */
+    private function assertWarningCarriesNoStatement(string $line, array $forbidden): void
+    {
+        Log::shouldHaveReceived('warning')
+            ->withArgs(function (string $message, array $context = []) use ($line, $forbidden): bool {
+                if ($message !== $line) {
+                    return false;
+                }
+
+                $rendered = strtolower(json_encode($context));
+                foreach ($forbidden as $term) {
+                    if (str_contains($rendered, strtolower($term))) {
+                        return false;
+                    }
+                }
+
+                return true;
+            })
+            ->once();
+    }
+
+    public function test_the_client_map_warning_line_does_not_carry_the_statement(): void
+    {
+        $this->skipUnlessSqlite();
+        Log::spy();
+
+        Schema::drop('clients');
+        $this->syncService([$this->agent()])->syncDevices();
+
+        $this->assertWarningCarriesNoStatement(
+            '[TacticalSync] Failed to read the client/site mapping',
+            ['select ', 'tactical_site_id']
+        );
+    }
+
+    public function test_the_prescan_warning_line_does_not_carry_the_statement(): void
+    {
+        $this->skipUnlessSqlite();
+        Log::spy();
+
+        Client::factory()->create(['tactical_site_id' => 'Acme|Main', 'is_active' => true]);
+        Schema::drop('technician_runs');
+        $this->syncService([$this->agent()])->syncDevices();
+
+        $this->assertWarningCarriesNoStatement(
+            '[TacticalSync] Failed to pre-scan queued offline actions',
+            ['select ', 'technician_runs']
+        );
+    }
+
+    public function test_the_not_seen_sweep_warning_line_carries_neither_statement_nor_bindings(): void
+    {
+        $this->skipUnlessSqlite();
+        Log::spy();
+
+        Client::factory()->create(['tactical_site_id' => 'Acme|Main', 'is_active' => true]);
+        Schema::drop('tactical_assets');
+        $this->syncService([$this->agent()])->syncDevices();
+
+        // The sweep is the only WRITE of the three, so its bindings are the ones
+        // that would carry row data if the message were ever restored.
+        $this->assertWarningCarriesNoStatement(
+            '[TacticalSync] Failed to sweep not-seen agents offline',
+            array_merge(['update ', 'tactical_assets'], self::LEAKY)
+        );
     }
 
     public function test_a_queued_action_prescan_failure_degrades_rather_than_aborting_the_sync(): void
@@ -315,5 +394,55 @@ class TacticalDeviceSyncErrorRedactionTest extends TestCase
         // not the sync. A guard that returned early here would be a regression
         // dressed as a fix, so pin the agent still landing.
         $this->assertSame(1, $result->created + $result->updated, 'the agent should still have been reconciled');
+    }
+
+    /**
+     * psa #380 blocking finding: the NOT-SEEN OFFLINE SWEEP is the third unguarded
+     * DB operation in syncDevices(), it is a WRITE, and it is the one #359 was
+     * actually reported against. It sits below the per-agent loop's own catch with
+     * no try of its own, so a QueryException there escaped the method entirely and
+     * was flashed with its statement and bindings.
+     *
+     * Guarding the two READS the ticket enumerated did not close it — which is the
+     * lesson: enumerating the sites a ticket names cannot close a class whose sink
+     * is unchanged.
+     */
+    public function test_a_not_seen_sweep_failure_is_redacted_and_does_not_escape_the_method(): void
+    {
+        $this->skipUnlessSqlite();
+
+        Client::factory()->create(['tactical_site_id' => 'Acme|Main', 'is_active' => true]);
+
+        // The sweep runs on a full sync after the per-agent loop. Dropping the table
+        // it writes fails that statement; the per-agent write above it fails too,
+        // which is why the assertions below read the SWEEP's own message rather than
+        // the joined list — the per-agent line legitimately names its agent.
+        Schema::drop('tactical_assets');
+
+        // Pre-fix behaviour was an uncaught QueryException thrown out of this call.
+        $result = $this->syncService([$this->agent()])->syncDevices();
+
+        $sweep = '';
+        foreach ($result->errorMessages as $line) {
+            if (str_starts_with($line, 'Failed to sweep not-seen agents offline')) {
+                $sweep = $line;
+            }
+        }
+
+        $this->assertNotSame('', $sweep, 'the sweep failure was not recorded at all');
+
+        // THE BOUND VALUES FIRST, because that is what #359 is about (psa #380
+        // review, diff:3) and the first failing assertion is the one a reader sees.
+        // The sweep is the one statement here whose bindings carry real row data:
+        // whereNotIn('agent_id', $seenAgentIds) binds every agent observed this run,
+        // so an unredacted message publishes the fleet's agent ids.
+        $this->assertStringNotContainsString('AGENT-REDACT', $sweep, 'a bound agent id leaked');
+
+        foreach (self::LEAKY as $secret) {
+            $this->assertStringNotContainsString($secret, $sweep, "client device data ({$secret}) leaked");
+        }
+
+        $this->assertStringNotContainsString('update', strtolower($sweep), 'the statement itself leaked');
+        $this->assertStringNotContainsString('tactical_assets', $sweep, 'schema text leaked');
     }
 }

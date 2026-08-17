@@ -132,10 +132,11 @@ class TacticalDeviceSyncService
      * returned verbatim by StaffTacticalAdminToolExecutor (an MCP surface), and
      * written to storage/logs/laravel.log, which has no rotation configured.
      *
-     * SCOPE — this covers exactly the five catches in this class that
+     * SCOPE — this covers exactly the six catches in this class that
      * recordError() into SyncResult::$errorMessages: the client-map read, the
-     * agent fetch, the queued-action pre-scan and the per-agent write in
-     * syncDevices(), and the asset lock in linkOrCreateAsset(). $context names
+     * agent fetch, the queued-action pre-scan, the per-agent write and the
+     * not-seen offline sweep in syncDevices(), and the asset lock in
+     * linkOrCreateAsset(). $context names
      * which one, so the message stays truthful about what was attempted
      * without reproducing what it was attempted with.
      *
@@ -197,8 +198,9 @@ class TacticalDeviceSyncService
 
         // Build client mapping: tactical site key ("ClientName|SiteName") → PSA client_id
         //
-        // GUARDED because it is not optional. safeFailure() covers the three
-        // catches that recordError() into SyncResult, but this read sits ABOVE
+        // GUARDED because it is not optional. safeFailure() covers the catches
+        // in this class that recordError() into SyncResult (see its SCOPE note —
+        // do not restate the count here, it has been wrong twice), but this read sits ABOVE
         // all of them: a QueryException here left the method entirely, reached
         // IntegrationsController::syncTacticalDevices()'s `catch (\Throwable)`,
         // and was interpolated raw into a flashed message — statement and bound
@@ -435,7 +437,26 @@ class TacticalDeviceSyncService
             // per-agent refresh above corrects the flag the moment the agent is
             // seen again. Same psa-wedk principle the refresh cites, the other
             // way round: never assert current truth we did not observe.
-            $staleCount = $stale->update(['status' => 'offline', 'synced_at' => now()]);
+            //
+            // GUARDED, and this is the one the ticket was actually reported against.
+            // It is a WRITE, and it sits below the per-agent loop's own catch with no
+            // try of its own — so a QueryException here escaped syncDevices() entirely,
+            // reached IntegrationsController::syncTacticalDevices()'s `catch (\Throwable)`
+            // and was flashed with its statement and bindings. Guarding the two reads
+            // above it does not close #359; enumerating reads never would have, because
+            // the reported failure came through here.
+            //
+            // DEGRADES, like the pre-scan: losing the sweep leaves agents showing their
+            // last observed status for one cycle, which the next run corrects. Aborting
+            // would discard a run that has already reconciled every agent.
+            try {
+                $staleCount = $stale->update(['status' => 'offline', 'synced_at' => now()]);
+            } catch (\Throwable $e) {
+                $safe = $this->safeFailure($e, 'not-seen offline sweep');
+                Log::warning('[TacticalSync] Failed to sweep not-seen agents offline', ['error' => $safe]);
+                $result->recordError("Failed to sweep not-seen agents offline: {$safe}");
+                $staleCount = 0;
+            }
 
             if ($staleCount > 0) {
                 $result->deactivated += $staleCount;
