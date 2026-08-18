@@ -268,6 +268,19 @@ class AppRiverLicenseSyncService
                     ->pluck('id')
                     ->all();
 
+                if (empty($protectedIds)) {
+                    // The key names no licence row we hold — the vendor reissued the key, or
+                    // the row predates it. Marking nothing seen protects nothing, so this
+                    // subscription's licence (stored under some other vendor_ref) would be
+                    // zeroed by deactivateStale() on a status that is not evidence of absence.
+                    // Same rule as the keyless entry: an entry that resolves to no licence
+                    // cannot be held out individually, so withhold cleanup for the whole client.
+                    $unobserved++;
+                    $this->recordUnobserved($result, $client, "inconclusive SubscriptionStatus {$status} for subscription {$inconclusiveKey}, which matches no licence on this client");
+
+                    continue;
+                }
+
                 $seenLicenseIds = array_merge($seenLicenseIds, $protectedIds);
 
                 Log::info("[AppRiverSync] Subscription {$inconclusiveKey} for {$client->name} is {$status}; leaving its licence as it stands and out of stale cleanup");
