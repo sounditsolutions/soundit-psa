@@ -278,7 +278,7 @@ class AppRiverLicenseSyncService
 
                 if ($revived) {
                     Log::warning("[AppRiverSync] Discarding queued seat reduction to {$revived->scheduled_quantity} for {$productName} on {$client->name}: the subscription was suspended and has been reported again at {$license->quantity} seats, so the queued value predates the subscription it would now change. Re-queue it if the reduction is still wanted.");
-                    $result->recordError("Queued seat reduction to {$revived->scheduled_quantity} discarded for {$productName} on {$client->name} — subscription returned after suspension");
+                    $result->recordWithdrawn("Queued seat reduction to {$revived->scheduled_quantity} discarded for licence #{$revived->id} ({$productName}) on {$client->name} — subscription {$subscriptionKey} returned after suspension");
                     $license->update(['scheduled_quantity' => null]);
                 }
 
@@ -371,7 +371,7 @@ class AppRiverLicenseSyncService
         // update below acts on.
         foreach ((clone $query)->whereNotNull('scheduled_quantity')->with(['licenseType', 'client'])->get() as $discarded) {
             Log::warning("[AppRiverSync] Discarding queued seat reduction to {$discarded->scheduled_quantity} for {$discarded->licenseType?->name} on {$discarded->client?->name}: AppRiver no longer reports the subscription, so there is nothing left to reduce. Re-queue it if the subscription returns.");
-            $result->recordError("Queued seat reduction to {$discarded->scheduled_quantity} discarded for {$discarded->licenseType?->name} on {$discarded->client?->name} — subscription no longer reported by AppRiver");
+            $result->recordWithdrawn("Queued seat reduction to {$discarded->scheduled_quantity} discarded for licence #{$discarded->id} ({$discarded->licenseType?->name}) on {$discarded->client?->name} — subscription {$discarded->vendor_ref} no longer reported by AppRiver");
         }
 
         $deactivated = $query->update([

@@ -81,8 +81,16 @@ class AppRiverScheduledReductionGuardTest extends TestCase
     private function recordSeatWrites(AppRiverClient $mock, array &$sent): void
     {
         $mock->method('updateSubscriptionQuantity')
-            ->willReturnCallback(function (string $customerId, string $key, int $quantity) use (&$sent) {
+            ->willReturnCallback(function (string $customerId, string $key, int $quantity) use (&$sent): array {
                 $sent[] = $quantity;
+
+                // updateSubscriptionQuantity() is declared `: array`. Returning null
+                // here raises a TypeError INSIDE retryScheduledReductions()' catch
+                // (\Throwable), which logs 'still pending' at info level and moves on —
+                // so a send would look like a vendor refusal and the positive case
+                // below would be proving nothing. test_a_genuine_queued_reduction_is_
+                // still_applied asserts that log line is absent for exactly this reason.
+                return [];
             });
     }
 
@@ -143,17 +151,28 @@ class AppRiverScheduledReductionGuardTest extends TestCase
         );
 
         // Cleared is not the same as dropped. The instruction was an operator's, so
-        // both the log and the run summary have to carry what was discarded — the same
-        // rule recordUnobserved() applies to a withheld cleanup.
+        // both the log and the run summary have to carry what was discarded.
         Log::shouldHaveReceived('warning')
             ->withArgs(fn (string $message): bool => str_contains($message, 'Discarding queued seat reduction to 2')
                 && str_contains($message, 'Business Premium'))
             ->once();
 
-        $this->assertGreaterThan(
+        $this->assertSame(
+            1,
+            $result->withdrawn,
+            'a discarded operator instruction must reach the run summary, not only the log'
+        );
+        $this->assertStringContainsString('withdrawn', $result->summary());
+
+        // ...and it is NOT an error. AppRiverSyncLicenses returns FAILURE on
+        // errors > 0, so routing a correct, expected outcome through recordError()
+        // fails the nightly run and trains operators to ignore the exit code. The
+        // sibling suite already fixes this convention: 'A cancelled subscription is
+        // not an error.'
+        $this->assertSame(
             0,
             $result->errors,
-            'a discarded operator instruction must reach the run summary, not only the log'
+            'a cleanly handled cancellation is not a sync failure, queued reduction or not'
         );
     }
 
@@ -219,15 +238,23 @@ class AppRiverScheduledReductionGuardTest extends TestCase
             ],
         ]);
         $mock->method('getSubscriptionDetail')->willReturn($this->detail(10, 5));
-        $mock->expects($this->once())
-            ->method('updateSubscriptionQuantity')
-            ->with('cust-1', 'sub-1', 6);
+
+        $sent = [];
+        $this->recordSeatWrites($mock, $sent);
+
+        Log::spy();
 
         (new AppRiverLicenseSyncService($mock))->syncLicenses();
 
         $licence->refresh();
 
+        $this->assertSame([6], $sent, 'the queued reduction is still sent — the guard must not swallow the feature it guards');
         $this->assertNull($licence->scheduled_quantity, 'an applied reduction clears the queue');
+
+        // The send must SUCCEED, not merely be attempted. retryScheduledReductions()
+        // wraps the call in catch (\Throwable) and logs 'still pending' on failure, so
+        // without this a stub that throws would look identical to a passing guard.
+        Log::shouldNotHaveReceived('info', [\Mockery::pattern('/still pending/')]);
     }
 
     /**
@@ -261,7 +288,9 @@ class AppRiverScheduledReductionGuardTest extends TestCase
         $sent = [];
         $this->recordSeatWrites($mock, $sent);
 
-        (new AppRiverLicenseSyncService($mock))->syncLicenses();
+        Log::spy();
+
+        $result = (new AppRiverLicenseSyncService($mock))->syncLicenses();
 
         $licence->refresh();
 
@@ -272,6 +301,16 @@ class AppRiverScheduledReductionGuardTest extends TestCase
         );
         $this->assertSame(10, $licence->quantity, 'the returning subscription is still synced at its real seat count');
         $this->assertNull($licence->scheduled_quantity, 'the superseded instruction is retired, not left to fire later');
+
+        // This path destroys an operator instruction too, so it owes the same record
+        // as the stale-cleanup discard — and on the same non-error channel.
+        Log::shouldHaveReceived('warning')
+            ->withArgs(fn (string $message): bool => str_contains($message, 'Discarding queued seat reduction to 3')
+                && str_contains($message, 'reported again at 10 seats'))
+            ->once();
+
+        $this->assertSame(1, $result->withdrawn, 'the retired instruction must reach the run summary');
+        $this->assertSame(0, $result->errors, 'a subscription coming back is not a sync failure');
     }
 
     /**
