@@ -129,8 +129,15 @@ class AppRiverClient
      * Readers, enumerated rather than assumed: IntegrationsController:156 passes it
      * to the integrations view, which renders it in both the connected and the
      * disconnected branch. AppRiverConfig::get('connected_at') exposes it but has
-     * no callers today. storeTokens() is the only writer and rewrites it on the
-     * next successful connect.
+     * no callers today.
+     *
+     * storeTokens() is the only writer, and it runs on EVERY successful token
+     * operation — exchangeCode() and refreshToken() both call it — so the value is
+     * "last successful contact with AppRiver", roughly half-hourly while healthy,
+     * not "last time someone connected". The integrations card's "Last connected"
+     * label is looser than the value it shows. What it does distinguish, which is
+     * why it is kept here, is died-on-a-date from never-connected: once credentials
+     * are dead nothing refreshes it, so it freezes at the last good contact.
      */
     public function disconnect(): void
     {
