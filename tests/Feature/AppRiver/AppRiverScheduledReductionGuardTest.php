@@ -76,13 +76,21 @@ class AppRiverScheduledReductionGuardTest extends TestCase
      * to make, so it has to be the assertion that fires first and the one a
      * red-check breaks on.
      *
+     * $sent carries the quantities alone, because "nothing was sent" is what most of
+     * these tests assert and [] reads better than a nested empty. $calls carries the
+     * whole destination — customer id and subscription key as well — because a seat
+     * write of the right SIZE to the WRONG subscription is still a wrong bill, and
+     * asserting the quantity alone cannot tell them apart. The positive case uses it.
+     *
      * @param  array<int, int>  $sent
+     * @param  array<int, array{0: string, 1: string, 2: int}>  $calls
      */
-    private function recordSeatWrites(AppRiverClient $mock, array &$sent): void
+    private function recordSeatWrites(AppRiverClient $mock, array &$sent, array &$calls = []): void
     {
         $mock->method('updateSubscriptionQuantity')
-            ->willReturnCallback(function (string $customerId, string $key, int $quantity) use (&$sent): array {
+            ->willReturnCallback(function (string $customerId, string $key, int $quantity) use (&$sent, &$calls): array {
                 $sent[] = $quantity;
+                $calls[] = [$customerId, $key, $quantity];
 
                 // updateSubscriptionQuantity() is declared `: array`. Returning null
                 // here raises a TypeError INSIDE retryScheduledReductions()' catch
@@ -164,6 +172,14 @@ class AppRiverScheduledReductionGuardTest extends TestCase
         );
         $this->assertStringContainsString('withdrawn', $result->summary());
 
+        // The record has to NAME the instruction, or an operator who reads "1 withdrawn"
+        // cannot tell which client to re-queue for. Both identifiers are interpolated,
+        // so both can silently render empty — licence id via a relation that resolved to
+        // null, vendor_ref via a row that never carried one.
+        $this->assertStringContainsString("licence #{$licence->id}", $result->withdrawnMessages[0]);
+        $this->assertStringContainsString('sub-1', $result->withdrawnMessages[0]);
+        $this->assertStringContainsString('Business Premium', $result->withdrawnMessages[0]);
+
         // ...and it is NOT an error. AppRiverSyncLicenses returns FAILURE on
         // errors > 0, so routing a correct, expected outcome through recordError()
         // fails the nightly run and trains operators to ignore the exit code. The
@@ -240,7 +256,8 @@ class AppRiverScheduledReductionGuardTest extends TestCase
         $mock->method('getSubscriptionDetail')->willReturn($this->detail(10, 5));
 
         $sent = [];
-        $this->recordSeatWrites($mock, $sent);
+        $calls = [];
+        $this->recordSeatWrites($mock, $sent, $calls);
 
         Log::spy();
 
@@ -249,6 +266,16 @@ class AppRiverScheduledReductionGuardTest extends TestCase
         $licence->refresh();
 
         $this->assertSame([6], $sent, 'the queued reduction is still sent — the guard must not swallow the feature it guards');
+
+        // ...and it is sent to the RIGHT subscription. This is the one test in the
+        // suite that proves the outbound billing write happens, so it has to pin the
+        // destination too: quantity 6 delivered to another product on the same client,
+        // or to another customer's id, is a wrong bill that [6] alone cannot see.
+        $this->assertSame(
+            [['cust-1', 'sub-1', 6]],
+            $calls,
+            'the reduction must reach the right customer and subscription, not merely be the right size'
+        );
         $this->assertNull($licence->scheduled_quantity, 'an applied reduction clears the queue');
 
         // The send must SUCCEED, not merely be attempted. retryScheduledReductions()
@@ -310,6 +337,8 @@ class AppRiverScheduledReductionGuardTest extends TestCase
             ->once();
 
         $this->assertSame(1, $result->withdrawn, 'the retired instruction must reach the run summary');
+        $this->assertStringContainsString("licence #{$licence->id}", $result->withdrawnMessages[0]);
+        $this->assertStringContainsString('sub-1', $result->withdrawnMessages[0]);
         $this->assertSame(0, $result->errors, 'a subscription coming back is not a sync failure');
     }
 
