@@ -312,6 +312,15 @@ class AppRiverLicenseSyncService
 
     /**
      * Deactivate licenses that were not seen in this sync run (stale subscriptions).
+     *
+     * The queued reduction goes with the licence. A subscription AppRiver no longer
+     * reports has nothing left to reduce, and leaving scheduled_quantity set on a
+     * zeroed row makes it match retryScheduledReductions()' pending query on the very
+     * next line of syncLicenses() — where scheduled_quantity is now GREATER than the
+     * quantity we just zeroed, so the "reduction" retried is an outbound seat
+     * INCREASE against a dead subscription. Clearing it here is the fix; the guard in
+     * retryScheduledReductions() is the backstop for every other way quantity can
+     * fall underneath a queued value.
      */
     private function deactivateStale(array $seenLicenseIds, array $mappedClientIds, SyncResult $result): void
     {
@@ -335,6 +344,7 @@ class AppRiverLicenseSyncService
         $deactivated = $query->update([
             'quantity' => 0,
             'assigned_quantity' => 0,
+            'scheduled_quantity' => null,
             'status' => 'suspended',
             'synced_at' => now(),
         ]);
@@ -360,6 +370,26 @@ class AppRiverLicenseSyncService
 
         foreach ($pending as $license) {
             if (! $license->seat_manageable) {
+                continue;
+            }
+
+            // scheduled_quantity is only ever WRITTEN on the reduction path
+            // (updateQuantity() queues it solely when $newQuantity < $oldQuantity), so a
+            // queued value above the current quantity does not mean "increase to this" —
+            // it means quantity moved down underneath the queue after it was written.
+            // Sending it is an outbound billing INCREASE nobody asked for, so this
+            // refuses rather than guesses. The stale-cleanup case that motivated the
+            // guard is now closed at source in deactivateStale(); this catches the rest
+            // — a vendor-side reduction observed by an ordinary sync, say — and it also
+            // subsumes "the licence is suspended", because a suspended row is zeroed and
+            // a queued value is always >= 1.
+            //
+            // The queued intent is left in place rather than cleared: it is an
+            // operator's instruction, it is no longer actionable, and discarding it
+            // silently is a product decision this guard has no business taking.
+            if ($license->scheduled_quantity > $license->quantity) {
+                Log::warning("[AppRiverSync] Refusing queued seat change for {$license->licenseType->name} on {$license->client->name}: scheduled {$license->scheduled_quantity} exceeds current {$license->quantity}, which would be an increase, not the queued reduction");
+
                 continue;
             }
 

@@ -115,6 +115,9 @@ class License extends Model
     /**
      * Deactivate (suspend + zero) all licenses for the given clients and vendor(s).
      * Used when integration mappings are removed from clients.
+     *
+     * A queued seat change does not survive suspension — see the note on
+     * scheduled_quantity in deactivateOrphaned().
      */
     public static function deactivateForClients($clientIds, string|array $vendors): int
     {
@@ -133,6 +136,7 @@ class License extends Model
             ->where(fn ($q) => $q->where('quantity', '>', 0)->orWhere('status', 'active'))
             ->update([
                 'quantity' => 0,
+                'scheduled_quantity' => null,
                 'status' => 'suspended',
                 'synced_at' => now(),
             ]);
@@ -141,6 +145,14 @@ class License extends Model
     /**
      * Deactivate licenses where the client no longer has the vendor mapping.
      * Called at the end of each sync service to clean up orphans from removed mappings.
+     *
+     * scheduled_quantity is cleared with the rest. It holds a seat reduction the
+     * vendor refused inside its refundable window, to be retried on a later sync; a
+     * licence that has just been zeroed and suspended has nothing left to reduce, and
+     * a queued value left standing above quantity 0 is an outbound seat INCREASE
+     * waiting for a retry pass to pick it up. Only AppRiver writes the column today,
+     * but the invariant belongs wherever a licence is zeroed rather than at the one
+     * call site where the hazard has already been demonstrated.
      */
     public static function deactivateOrphaned(string|array $vendors, string $mappingColumn): int
     {
@@ -154,6 +166,7 @@ class License extends Model
             ->where(fn ($q) => $q->where('quantity', '>', 0)->orWhere('status', 'active'))
             ->update([
                 'quantity' => 0,
+                'scheduled_quantity' => null,
                 'status' => 'suspended',
                 'synced_at' => now(),
             ]);
