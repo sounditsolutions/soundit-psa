@@ -21,6 +21,18 @@ class AppRiverLicenseSyncService
 
     private const ACTIVE_SUBSCRIPTION_STATUSES = ['Active', 'Trial'];
 
+    /**
+     * Known statuses that are NOT evidence the subscription is gone. 'Pending' is a
+     * subscription mid-provisioning and 'Suspended' is one the vendor may restore —
+     * treating either as an observation of absence zeroes a licence that still exists.
+     * They are known (so not drift) but not conclusive (so not cleanup-eligible).
+     *
+     * This list is not sourced from vendor documentation — none is public. It is a
+     * judgement about which statuses are safe to act destructively on, and the safe
+     * default for an unlisted one is the drift path, which withholds cleanup.
+     */
+    private const INCONCLUSIVE_SUBSCRIPTION_STATUSES = ['Suspended', 'Pending'];
+
     public function __construct(
         private readonly AppRiverClient $client,
     ) {}
@@ -221,8 +233,70 @@ class AppRiverLicenseSyncService
                 continue;
             }
 
-            // A known-but-inactive status IS an observation: the subscription really
-            // is gone, and its licence should be cleaned up.
+            // A known status that is not conclusive about absence — Pending is
+            // mid-provisioning, Suspended may be restored — must not license a
+            // destructive cleanup of THAT subscription's licence. But it is an ordinary
+            // vendor state that can persist for weeks, so it is neither of two things:
+            //
+            //   - an error. recordError() feeds `$result->errors > 0 ? FAILURE : SUCCESS`
+            //     in the sync commands, and a subscription the vendor leaves suspended
+            //     would fail every nightly run until it is restored.
+            //   - grounds to withhold cleanup from the client's OTHER subscriptions.
+            //     $unobserved is per-client, so counting one here excludes the whole
+            //     client from deactivateStale() — and a genuinely Cancelled sibling would
+            //     keep its seat count and go on billing for as long as this one stays
+            //     suspended.
+            //
+            // So protect exactly the licence this entry names, by marking it seen: it is
+            // held out of stale cleanup with its stored seat count untouched, and the rest
+            // of the client is still observed normally.
+            if (in_array($status, self::INCONCLUSIVE_SUBSCRIPTION_STATUSES, true)) {
+                $inconclusiveKey = $sub['SubscriptionKey'] ?? null;
+
+                if (! $inconclusiveKey) {
+                    // An entry with no key names no licence, so nothing can be held out
+                    // individually — fall back to withholding cleanup for the whole client,
+                    // as with any other malformed entry.
+                    $unobserved++;
+                    $this->recordUnobserved($result, $client, "inconclusive SubscriptionStatus {$status} with no SubscriptionKey");
+
+                    continue;
+                }
+
+                $protectedIds = License::where('client_id', $client->id)
+                    ->where('vendor_ref', $inconclusiveKey)
+                    ->pluck('id')
+                    ->all();
+
+                if (empty($protectedIds)) {
+                    // No licence row of ours carries this key, and that is the ORDINARY case
+                    // rather than a malformed one: rows are only ever created on the
+                    // Active/Trial path below, so a subscription first reported Pending — or
+                    // one the vendor has left Suspended since before we held a row — has never
+                    // had one. Such an entry holds nothing out of stale cleanup, but it also
+                    // puts nothing at risk: there is no row here for deactivateStale() to zero.
+                    //
+                    // So it is neither of the two things the block above rules out. Counting it
+                    // unobserved would fail every nightly run for as long as provisioning takes
+                    // — indefinitely for a subscription the vendor never restores — and would
+                    // withhold cleanup from the whole client while it did, letting a genuinely
+                    // Cancelled sibling keep its seat count and go on billing. Log it and move
+                    // on; the keyless case above still withholds, because an entry with no key
+                    // says nothing about which licence it means.
+                    Log::info("[AppRiverSync] Subscription {$inconclusiveKey} for {$client->name} is {$status} and matches no licence on this client; nothing to hold out of stale cleanup");
+
+                    continue;
+                }
+
+                $seenLicenseIds = array_merge($seenLicenseIds, $protectedIds);
+
+                Log::info("[AppRiverSync] Subscription {$inconclusiveKey} for {$client->name} is {$status}; leaving its licence as it stands and out of stale cleanup");
+
+                continue;
+            }
+
+            // A known, conclusive inactive status IS an observation: the subscription
+            // really is gone, and its licence should be cleaned up.
             if (! in_array($status, self::ACTIVE_SUBSCRIPTION_STATUSES, true)) {
                 continue;
             }
@@ -244,6 +318,25 @@ class AppRiverLicenseSyncService
             try {
                 $detail = $this->client->getSubscriptionDetail($customerId, $subscriptionKey);
                 $counts = $this->extractLicenseCounts($detail);
+
+                // Null counts are NOT an observation of zero seats. extractLicenseCounts()
+                // returns nulls when ReadonlySubscriptionDetails is absent or renamed, and
+                // the write below defaults total to 0 — so a drifted detail payload would
+                // write quantity 0 / status active with nothing counted unobserved, zeroing
+                // a live seat count on the write path itself. Same rule as the envelope and
+                // the status filter: unreadable is not empty.
+                //
+                // Handled HERE rather than by raising inside extractLicenseCounts(), because
+                // that helper is shared with updateQuantity() and retryScheduledReductions()
+                // and a throw would be swallowed by the latter's catch AFTER its vendor write
+                // has already succeeded — leaving scheduled_quantity set and the reduction
+                // re-issued every run. Those two call sites are deliberately untouched.
+                if ($counts['total'] === null && $counts['assigned'] === null) {
+                    $unobserved++;
+                    $this->recordUnobserved($result, $client, "unreadable licence counts for subscription {$productName}");
+
+                    continue;
+                }
 
                 $licenseType = LicenseType::updateOrCreate(
                     ['vendor' => 'appriver', 'vendor_sku_id' => Str::slug($productName)],
