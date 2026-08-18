@@ -2,13 +2,13 @@
 
 namespace Tests\Feature\AppRiver;
 
+use App\Models\Setting;
 use App\Services\AppRiver\AppRiverClient;
 use App\Services\AppRiver\AppRiverClientException;
 use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\HandlerStack;
 use GuzzleHttp\Psr7\Response;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use App\Models\Setting;
 use Tests\TestCase;
 
 /**
