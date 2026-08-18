@@ -23,14 +23,17 @@ use Tests\TestCase;
  * subscription AppRiver had just stopped reporting. A billing write, unattended,
  * on every sync run.
  *
- * Two independent guards, tested independently here:
- *   1. deactivateStale() clears scheduled_quantity with the rest of the row, so the
- *      state is never created.
- *   2. retryScheduledReductions() refuses to send a queued value ABOVE the current
- *      quantity, whatever put it there. This is what protects rows already carrying
- *      the bad state in an existing database, which guard 1 cannot reach: the stale
- *      query only touches rows with quantity > 0 or status active, and a row this
- *      bug already zeroed is neither.
+ * The guard is in retryScheduledReductions(): it refuses to send a queued value
+ * ABOVE the current quantity, whatever put it there — a row zeroed by the stale
+ * cleanup in this same run, a row an earlier build already zeroed and which the stale
+ * query can no longer see (quantity 0, already suspended), or a vendor-side reduction
+ * observed by an ordinary sync.
+ *
+ * deactivateStale() deliberately does NOT clear the queue. Staleness is only "absent
+ * from this run's response", so clearing it would let a paging glitch or a partial
+ * response silently destroy an operator's billing instruction that nothing can
+ * re-derive; quantity self-heals when the subscription reappears, and the reduction
+ * goes then.
  */
 class AppRiverScheduledReductionGuardTest extends TestCase
 {
@@ -94,9 +97,11 @@ class AppRiverScheduledReductionGuardTest extends TestCase
      * The reported path, end to end. A queued reduction of 4 → 2 is outstanding when
      * AppRiver reports the subscription cancelled. Cleanup is correct and must
      * happen; what must NOT happen is the retry pass then telling the vendor to put
-     * the subscription back up to 2 seats.
+     * the subscription back up to 2 seats — and the operator's queued instruction must
+     * still be standing afterwards, because "cancelled" here is only "AppRiver did not
+     * list it in this response".
      */
-    public function test_stale_cleanup_leaves_no_queued_reduction_for_the_retry_pass_to_send(): void
+    public function test_stale_cleanup_sends_no_seat_change_and_keeps_the_queued_reduction(): void
     {
         $client = $this->mappedClient();
         $licence = $this->licenceFor($client, [
@@ -127,9 +132,10 @@ class AppRiverScheduledReductionGuardTest extends TestCase
         );
         $this->assertSame(0, $licence->quantity, 'a cancelled subscription must still be cleaned up');
         $this->assertSame('suspended', $licence->status);
-        $this->assertNull(
+        $this->assertSame(
+            2,
             $licence->scheduled_quantity,
-            'the queued reduction must not survive the licence being zeroed — left standing it is an increase waiting to be sent'
+            'the operator instruction survives cleanup — a vendor omission may be transient, and the retry guard already refuses to send a queued value above quantity'
         );
     }
 

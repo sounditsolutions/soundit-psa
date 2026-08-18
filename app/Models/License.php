@@ -147,12 +147,12 @@ class License extends Model
      * Called at the end of each sync service to clean up orphans from removed mappings.
      *
      * scheduled_quantity is cleared with the rest. It holds a seat reduction the
-     * vendor refused inside its refundable window, to be retried on a later sync; a
-     * licence that has just been zeroed and suspended has nothing left to reduce, and
-     * a queued value left standing above quantity 0 is an outbound seat INCREASE
-     * waiting for a retry pass to pick it up. Only AppRiver writes the column today,
-     * but the invariant belongs wherever a licence is zeroed rather than at the one
-     * call site where the hazard has already been demonstrated.
+     * vendor refused inside its refundable window, to be retried on a later sync, and
+     * removing the mapping is an operator saying this PSA no longer manages the
+     * licence at all — there is no subscription left to retry the reduction against.
+     * That is a deliberate operator action, unlike the vendor-response-driven
+     * staleness in AppRiverLicenseSyncService::deactivateStale(), which leaves the
+     * queue standing precisely because a transient omission must not destroy it.
      */
     public static function deactivateOrphaned(string|array $vendors, string $mappingColumn): int
     {
