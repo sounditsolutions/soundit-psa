@@ -8,6 +8,7 @@ use App\Services\Assistant\AssistantToolDefinitions;
 use App\Services\Chet\ChetDataSurfaceTools;
 use App\Services\Chet\OperatorBridgeTools;
 use App\Services\Mcp\StaffCalendarToolExecutor;
+use App\Services\Mcp\StaffCippAdminToolExecutor;
 use App\Services\Mcp\StaffCippWriteToolExecutor;
 use App\Services\Mcp\StaffPsaTaxonomyToolExecutor;
 use App\Services\Mcp\StaffTacticalActionToolExecutor;
@@ -61,6 +62,7 @@ class McpToolRegistry
                 self::dynamicCippWriteTools(),
                 self::cippWriteTools(),
             )));
+            $cippAdmin = self::shape(self::cippAdminTools());
             $tacticalActions = self::shape(self::withoutStagedAliases(self::tacticalActionTools()));
             $tacticalAdmin = self::shape(self::withoutStagedAliases(self::tacticalAdminTools()));
             $psaRecords = self::shape(self::psaRecordsTools());
@@ -81,6 +83,7 @@ class McpToolRegistry
                 'client' => ['label' => 'Client-scoped', 'sensitive' => false, 'tools' => $client],
                 'integration' => ['label' => 'Integration (RMM / M365)', 'sensitive' => false, 'tools' => $integration],
                 'cipp_write' => ['label' => 'CIPP write-class (sensitive)', 'sensitive' => true, 'tools' => $cippWrites],
+                'cipp_admin' => ['label' => 'CIPP sync & maintenance (sensitive)', 'sensitive' => true, 'tools' => $cippAdmin],
                 'tactical_action' => ['label' => 'Tactical endpoint actions (sensitive)', 'sensitive' => true, 'tools' => $tacticalActions],
                 'tactical_admin' => ['label' => 'Tactical admin/provisioning (sensitive)', 'sensitive' => true, 'tools' => $tacticalAdmin],
                 'wiki_write' => ['label' => 'Wiki write (sensitive)', 'sensitive' => true, 'tools' => $wikiWrites],
@@ -141,6 +144,7 @@ class McpToolRegistry
                 'calendar' => ['calendar', 'read', 'Reads', 1],
                 'calendar_write' => ['calendar', 'write', 'Write & schedule', 2],
                 'cipp_write' => ['cipp', 'write', 'Write & remediate', 2],
+                'cipp_admin' => ['cipp', 'admin', 'Sync & maintenance', 3],
                 'tactical_action' => ['tactical', 'actions', 'Endpoint actions', 2],
                 'tactical_admin' => ['tactical', 'admin', 'Admin & provisioning', 3],
                 'wiki_write' => ['wiki', 'write', 'Write', 2],
@@ -344,6 +348,12 @@ class McpToolRegistry
     public static function cippWriteTools(): array
     {
         return StaffCippWriteToolExecutor::definitions();
+    }
+
+    /** @return array<int, array<string, mixed>> */
+    public static function cippAdminTools(): array
+    {
+        return StaffCippAdminToolExecutor::definitions();
     }
 
     /** @return array<int, array<string, mixed>> */
