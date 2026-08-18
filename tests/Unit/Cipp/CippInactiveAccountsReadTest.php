@@ -68,6 +68,28 @@ class CippInactiveAccountsReadTest extends TestCase
         $this->assertNull($client->listInactiveAccounts('contoso.onmicrosoft.com'));
     }
 
+    public function test_empty_object_is_unread_not_empty(): void
+    {
+        // `{}` is the one shape assoc-mode decoding collapses onto `[]` — read as a list
+        // it says "nobody is inactive" and clears every flag at the client. It is an
+        // object carrying no rows at all, so it is unread, exactly like {"error":...}.
+        $client = $this->clientReturning(new Response(200, ['Content-Type' => 'application/json'], '{}'));
+
+        $this->assertNull($client->listInactiveAccounts('contoso.onmicrosoft.com'));
+    }
+
+    public function test_single_row_object_envelope_is_unread_not_empty(): void
+    {
+        // CIPP's entrypoints are PowerShell and ConvertTo-Json collapses a one-element
+        // result to a bare object, so the tenant with exactly ONE inactive account is the
+        // case that produces this. It carries a row but is not a list of rows: iterated
+        // as rows it yields field values, nobody matches, and every flag clears.
+        $client = $this->clientReturning(new Response(200, ['Content-Type' => 'application/json'],
+            '{"Results":{"azureAdUserId":"obj-1","lastSignInDateTime":"2026-01-02T03:04:05Z"}}'));
+
+        $this->assertNull($client->listInactiveAccounts('contoso.onmicrosoft.com'));
+    }
+
     private function clientReturning(Response $response): CippClient
     {
         // Pre-seed the OAuth token so getToken() short-circuits without a network call.
