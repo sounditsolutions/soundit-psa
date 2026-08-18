@@ -253,23 +253,40 @@ class AppRiverClient
     /**
      * Get full detail for a specific subscription.
      *
-     * This is the read the seat count is written from, so an unreadable body here is
-     * the demonstrated corruption path: request() returns [] for an empty, unparseable
-     * or literal-null body, extractLicenseCounts([]) yields nulls, the licence row is
-     * written quantity 0 / status 'active', nothing is counted unobserved and the run
-     * exits SUCCESS with a live seat count zeroed. $jsonKind is the only witness that
-     * separates that from a genuinely empty object, exactly as in getSubscriptions().
+     * This is the read the seat count is written from, so a body that cannot supply a
+     * seat count is the demonstrated corruption path: extractLicenseCounts() yields
+     * nulls, the licence row is written quantity 0 / status 'active', nothing is counted
+     * unobserved and the run exits SUCCESS with a live seat count zeroed.
+     *
+     * HOW the body came to be count-less is not the question, because every route to it
+     * zeroes the same seats: an empty, unparseable or literal-null body, `{}`, and an
+     * in-band `{"Message":"Request limit exceeded"}` served with a 200 are all written as
+     * quantity 0 over a live subscription. So the guard is on whether the payload carries
+     * the ReadonlySubscriptionDetails section extractLicenseCounts() reads — not on how
+     * it decoded, which is why $jsonKind is no longer consulted here. Refusing raises to
+     * AppRiverLicenseSyncService, which records the subscription unobserved and keeps its
+     * client out of the stale cleanup.
      *
      * Deliberately NOT applied to patch(): an empty success body may be legitimate on
      * the write lane, and refusing it there would fail updates the vendor accepted.
      */
     public function getSubscriptionDetail(string $customerId, string $subscriptionKey): array
     {
-        $jsonKind = null;
-        $response = $this->request('GET', "customers/{$customerId}/subscriptions/{$subscriptionKey}", ['query' => []], $jsonKind);
+        $response = $this->request('GET', "customers/{$customerId}/subscriptions/{$subscriptionKey}", ['query' => []]);
 
-        if ($response === [] && $jsonKind === null) {
+        // `{}`, an empty body, an unparseable one and a literal `null` all arrive here as
+        // the same []. None of them is a subscription we read.
+        if ($response === []) {
             throw new AppRiverClientException("AppRiver subscription detail for {$subscriptionKey} was empty or unparseable; refusing to read it as a subscription with no licence counts.");
+        }
+
+        // A readable envelope with no seat-count section is the same corruption wearing a
+        // different hat: it parses, it is not empty, and it still writes zero. An empty
+        // ReadonlySubscriptionDetails carries no count either, so it is refused too.
+        if (! isset($response['ReadonlySubscriptionDetails'])
+            || ! is_array($response['ReadonlySubscriptionDetails'])
+            || $response['ReadonlySubscriptionDetails'] === []) {
+            throw new AppRiverClientException("AppRiver subscription detail for {$subscriptionKey} has no ReadonlySubscriptionDetails; refusing to read it as a subscription with no licence counts.");
         }
 
         return $response;

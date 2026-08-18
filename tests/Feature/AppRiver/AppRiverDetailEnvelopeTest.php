@@ -20,9 +20,10 @@ use Tests\TestCase;
  * quantity 0 / status 'active', nothing is counted unobserved, and the run exits
  * SUCCESS having zeroed a live seat count. getSubscriptionDetail() now refuses it.
  *
- * The discrimination is the point, not the refusal: `{}` is a readable answer and
- * must still be returned, and only $jsonKind separates it from a body that never
- * parsed — both decode to the same [].
+ * The discrimination is on whether the body can support a seat write, not on how it
+ * decoded: `{}` and an in-band 200 error envelope parse perfectly and carry no counts,
+ * so they zero the same seats as a body that never parsed and are refused alongside it.
+ * Only a payload carrying the ReadonlySubscriptionDetails section is returned.
  */
 class AppRiverDetailEnvelopeTest extends TestCase
 {
@@ -67,17 +68,42 @@ class AppRiverDetailEnvelopeTest extends TestCase
     }
 
     /**
-     * The guard must key on $jsonKind, not on the decoded value. `{}` and an empty
-     * body are the same [] afterwards; if this raised, the guard would be refusing a
-     * readable answer and the discrimination would be fictional.
+     * `{}` parses, and that is worth nothing here: it carries no counts, so returning it
+     * writes quantity 0 / status 'active' over a live subscription and exits SUCCESS —
+     * the identical corruption as an unparseable body.
      */
-    public function test_an_empty_object_detail_body_is_readable_and_is_not_refused(): void
+    public function test_an_empty_object_detail_body_is_refused(): void
     {
-        $this->assertSame(
-            [],
-            $this->clientReturning('{}')->getSubscriptionDetail('customer-1', 'sub-1'),
-            '{} is an envelope we read and understood; only an unparseable body is refused.'
-        );
+        $this->expectException(AppRiverClientException::class);
+        $this->expectExceptionMessageMatches('/empty or unparseable/');
+
+        $this->clientReturning('{}')->getSubscriptionDetail('customer-1', 'sub-1');
+    }
+
+    /**
+     * A throttling or soft-error envelope served with a 200 is the realistic form of the
+     * count-less body: perfectly readable, and it still cannot say how many seats exist.
+     */
+    public function test_a_readable_envelope_without_licence_counts_is_refused(): void
+    {
+        $this->expectException(AppRiverClientException::class);
+        $this->expectExceptionMessageMatches('/no ReadonlySubscriptionDetails/');
+
+        $this->clientReturning('{"Message":"Request limit exceeded"}')
+            ->getSubscriptionDetail('customer-1', 'sub-1');
+    }
+
+    /**
+     * Present-but-empty is count-less too — extractLicenseCounts() loops over nothing and
+     * yields the same nulls.
+     */
+    public function test_an_empty_readonly_details_list_is_refused(): void
+    {
+        $this->expectException(AppRiverClientException::class);
+        $this->expectExceptionMessageMatches('/no ReadonlySubscriptionDetails/');
+
+        $this->clientReturning('{"SubscriptionKey":"sub-1","ReadonlySubscriptionDetails":[]}')
+            ->getSubscriptionDetail('customer-1', 'sub-1');
     }
 
     public function test_a_real_detail_payload_is_returned_intact(): void
