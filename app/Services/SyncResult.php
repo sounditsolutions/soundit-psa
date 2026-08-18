@@ -30,6 +30,21 @@ class SyncResult
 
     public array $withdrawnMessages = [];
 
+    /**
+     * Clients the run deliberately did not sync at all — an AppRiver customer whose
+     * type the partner API refuses by design, for instance. Their rows are left
+     * frozen, so the operator has to be told which ones and why: a client that stops
+     * syncing because it was mis-typed looks exactly the same from the outside, and
+     * its seat counts are what an MSP bills from.
+     *
+     * Same channel discipline as $withdrawn — loud in the summary, silent in the exit
+     * status. Routing a by-design omission through recordError() would fail the
+     * nightly run and teach operators to ignore the exit code.
+     */
+    public int $skipped = 0;
+
+    public array $skippedMessages = [];
+
     public function recordError(string $message): void
     {
         $this->errors++;
@@ -40,6 +55,12 @@ class SyncResult
     {
         $this->withdrawn++;
         $this->withdrawnMessages[] = $message;
+    }
+
+    public function recordSkipped(string $message): void
+    {
+        $this->skipped++;
+        $this->skippedMessages[] = $message;
     }
 
     public function total(): int
@@ -61,6 +82,9 @@ class SyncResult
         }
         if ($this->withdrawn) {
             $parts[] = "{$this->withdrawn} withdrawn";
+        }
+        if ($this->skipped) {
+            $parts[] = "{$this->skipped} skipped";
         }
         if ($this->errors) {
             $parts[] = "{$this->errors} errors";

@@ -64,7 +64,9 @@
                                     <strong>{{ $customer['Name'] ?? 'Unknown' }}</strong>
                                 </td>
                                 <td class="d-none d-md-table-cell">
-                                    @if($customerType)
+                                    @if($customerType === 'Referred')
+                                        <span class="badge bg-secondary" title="Referred customers buy from AppRiver directly; the partner API has no access to their subscriptions, so licence sync skips them.">{{ $customerType }} — not synced</span>
+                                    @elseif($customerType)
                                         <span class="badge bg-light text-dark">{{ $customerType }}</span>
                                     @endif
                                 </td>

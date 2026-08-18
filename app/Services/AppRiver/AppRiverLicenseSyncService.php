@@ -55,10 +55,38 @@ class AppRiverLicenseSyncService
             return $result;
         }
 
+        $customerTypes = $this->fetchCustomerTypes();
+
         $seenLicenseIds = [];
         $successfulClientIds = [];
 
         foreach ($clients as $appriverCustomerId => $client) {
+            // A Referred customer buys from AppRiver directly — Sound IT takes a
+            // percentage but is not the reseller, so the partner API has no access to
+            // its subscriptions BY DESIGN (Charlie, 2026-08-18: "We don't have or need
+            // the same access"). Syncing one can only produce the vendor's correct
+            // refusal, so it is skipped at info, not attempted and logged at error.
+            //
+            // Exactly 'Referred', not "anything non-Resold": 'Partner' is our own
+            // record and any type the vendor adds later is unmeasured — both fall
+            // through to a normal sync attempt, whose per-client catch is loud and
+            // withholds cleanup. Only the type the vendor is known to refuse is
+            // silenced. A skipped client never enters $successfulClientIds, so stale
+            // cleanup cannot touch whatever rows it holds.
+            if (($customerTypes[$appriverCustomerId] ?? null) === 'Referred') {
+                // By-design, but never invisible. A skipped client's licence rows keep
+                // their last-synced quantity for as long as the type says Referred, and
+                // those quantities are billed from — a reclassification or a mis-typed
+                // record would otherwise freeze them behind one info line, with the run
+                // reporting 'no changes' and exiting SUCCESS. recordSkipped() puts it in
+                // the run summary without failing the run, the same split as
+                // recordWithdrawn(): loud in the summary, silent in the exit status.
+                Log::info("[AppRiverSync] Skipping {$client->name}: CustomerType Referred; no partner access by design");
+                $result->recordSkipped("Skipped {$client->name}: CustomerType Referred; no partner access by design — its licences were not synced and stale cleanup was withheld");
+
+                continue;
+            }
+
             try {
                 [$ids, $unobserved] = $this->syncClientSubscriptions($client, $appriverCustomerId, $result);
                 $seenLicenseIds = array_merge($seenLicenseIds, $ids);
@@ -183,6 +211,47 @@ class AppRiverLicenseSyncService
                 'synced_at' => now(),
             ]);
         }
+    }
+
+    /**
+     * Index CustomerType by customer id, one GET per run.
+     *
+     * The sync's worklist comes from the DB — a mapping holds only the GUID, so the
+     * type has to be read from the customer list. Read fresh each run rather than
+     * persisted: a client the reseller converts between Referred and Resold changes
+     * type with no PSA-side event to update a stored copy on.
+     *
+     * Failure here must not fail the run. The filter only exists to skip clients the
+     * vendor would refuse anyway; without it the sync degrades to exactly the
+     * pre-filter behaviour — each Referred client errors per-client, loudly, and is
+     * excluded from stale cleanup by the existing catch. So: warn and return empty,
+     * and an id absent from the list (or carrying no readable type) is left unknown,
+     * which syncs normally for the same reason.
+     */
+    private function fetchCustomerTypes(): array
+    {
+        $types = [];
+
+        try {
+            foreach ($this->client->getCustomers() as $customer) {
+                if (! is_array($customer)) {
+                    continue;
+                }
+
+                $id = $customer['CustomerId'] ?? null;
+                $type = $customer['CustomerType'] ?? null;
+
+                if ($id !== null && is_string($type)) {
+                    $types[$id] = $type;
+                }
+            }
+        } catch (\Throwable $e) {
+            Log::warning("[AppRiverSync] Could not read the customer list for CustomerType filtering: {$e->getMessage()} — syncing all mapped clients without the Referred skip");
+
+            return [];
+        }
+
+        return $types;
     }
 
     /**
