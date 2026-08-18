@@ -262,8 +262,12 @@ class AppRiverClient
      * zeroes the same seats: an empty, unparseable or literal-null body, `{}`, and an
      * in-band `{"Message":"Request limit exceeded"}` served with a 200 are all written as
      * quantity 0 over a live subscription. So the guard is on whether the payload carries
-     * the ReadonlySubscriptionDetails section extractLicenseCounts() reads — not on how
-     * it decoded, which is why $jsonKind is no longer consulted here. Refusing raises to
+     * the one entry the seat count is actually read from — a `TotalLicenses` entry with a
+     * numeric value, the only name extractLicenseCounts() looks at — and not on whether the
+     * ReadonlySubscriptionDetails section that contains it merely exists: a present,
+     * populated section naming every field except that one leaves $total null and writes the
+     * same zero. Nor on how it decoded, which is why $jsonKind is no longer consulted here.
+     * Refusing raises to
      * AppRiverLicenseSyncService, which records the subscription unobserved and keeps its
      * client out of the stale cleanup.
      *
@@ -280,13 +284,24 @@ class AppRiverClient
             throw new AppRiverClientException("AppRiver subscription detail for {$subscriptionKey} was empty or unparseable; refusing to read it as a subscription with no licence counts.");
         }
 
-        // A readable envelope with no seat-count section is the same corruption wearing a
-        // different hat: it parses, it is not empty, and it still writes zero. An empty
-        // ReadonlySubscriptionDetails carries no count either, so it is refused too.
-        if (! isset($response['ReadonlySubscriptionDetails'])
-            || ! is_array($response['ReadonlySubscriptionDetails'])
-            || $response['ReadonlySubscriptionDetails'] === []) {
-            throw new AppRiverClientException("AppRiver subscription detail for {$subscriptionKey} has no ReadonlySubscriptionDetails; refusing to read it as a subscription with no licence counts.");
+        // A readable envelope with no seat count is the same corruption wearing a different
+        // hat: it parses, it is not empty, and it still writes zero. So the check is the
+        // entry the sync reads, not the section holding it — extractLicenseCounts()
+        // (AppRiverLicenseSyncService) takes the total from `Name === 'TotalLicenses'` and
+        // from no other name, so an absent section, an empty one, and a populated one that
+        // never mentions TotalLicenses all leave $total null and write the same quantity 0
+        // over a live subscription. A non-numeric value is that zero too: the sync casts it
+        // with (int).
+        $totalLicenses = null;
+
+        foreach ((array) ($response['ReadonlySubscriptionDetails'] ?? []) as $item) {
+            if (is_array($item) && ($item['Name'] ?? null) === 'TotalLicenses') {
+                $totalLicenses = $item['Value'] ?? null;
+            }
+        }
+
+        if (! is_numeric($totalLicenses)) {
+            throw new AppRiverClientException("AppRiver subscription detail for {$subscriptionKey} has no numeric TotalLicenses entry in ReadonlySubscriptionDetails; refusing to read it as a subscription with no licence counts.");
         }
 
         return $response;

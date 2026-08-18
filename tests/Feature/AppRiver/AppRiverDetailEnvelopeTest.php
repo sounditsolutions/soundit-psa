@@ -23,7 +23,9 @@ use Tests\TestCase;
  * The discrimination is on whether the body can support a seat write, not on how it
  * decoded: `{}` and an in-band 200 error envelope parse perfectly and carry no counts,
  * so they zero the same seats as a body that never parsed and are refused alongside it.
- * Only a payload carrying the ReadonlySubscriptionDetails section is returned.
+ * Only a payload carrying a numeric TotalLicenses entry — the one thing
+ * extractLicenseCounts() reads the seat count from — is returned; a section that is
+ * present and populated but count-less zeroes the same seats, so it is refused too.
  */
 class AppRiverDetailEnvelopeTest extends TestCase
 {
@@ -87,7 +89,7 @@ class AppRiverDetailEnvelopeTest extends TestCase
     public function test_a_readable_envelope_without_licence_counts_is_refused(): void
     {
         $this->expectException(AppRiverClientException::class);
-        $this->expectExceptionMessageMatches('/no ReadonlySubscriptionDetails/');
+        $this->expectExceptionMessageMatches('/no numeric TotalLicenses/');
 
         $this->clientReturning('{"Message":"Request limit exceeded"}')
             ->getSubscriptionDetail('customer-1', 'sub-1');
@@ -100,16 +102,46 @@ class AppRiverDetailEnvelopeTest extends TestCase
     public function test_an_empty_readonly_details_list_is_refused(): void
     {
         $this->expectException(AppRiverClientException::class);
-        $this->expectExceptionMessageMatches('/no ReadonlySubscriptionDetails/');
+        $this->expectExceptionMessageMatches('/no numeric TotalLicenses/');
 
         $this->clientReturning('{"SubscriptionKey":"sub-1","ReadonlySubscriptionDetails":[]}')
+            ->getSubscriptionDetail('customer-1', 'sub-1');
+    }
+
+    /**
+     * The shape a section-presence guard waves through: present, populated, and carrying no
+     * TotalLicenses entry. extractLicenseCounts() reads that name and no other, so $total
+     * stays null and the licence row is written quantity 0 / status 'active' over a live
+     * subscription, with the run exiting SUCCESS — the identical zeroing as an unparseable
+     * body. 'SubscriptionQuantity' is the name AppRiver itself uses for seats on the write
+     * lane, so this is not a hypothetical rename.
+     */
+    public function test_a_populated_section_without_a_total_licences_entry_is_refused(): void
+    {
+        $this->expectException(AppRiverClientException::class);
+        $this->expectExceptionMessageMatches('/no numeric TotalLicenses/');
+
+        $this->clientReturning('{"SubscriptionKey":"sub-1","ReadonlySubscriptionDetails":[{"Name":"SubscriptionQuantity","Value":"12"}]}')
+            ->getSubscriptionDetail('customer-1', 'sub-1');
+    }
+
+    /**
+     * A TotalLicenses entry whose value is not a number is the same zero by another route:
+     * extractLicenseCounts() casts it with (int) and writes 0.
+     */
+    public function test_a_non_numeric_total_licences_value_is_refused(): void
+    {
+        $this->expectException(AppRiverClientException::class);
+        $this->expectExceptionMessageMatches('/no numeric TotalLicenses/');
+
+        $this->clientReturning('{"SubscriptionKey":"sub-1","ReadonlySubscriptionDetails":[{"Name":"TotalLicenses","Value":""}]}')
             ->getSubscriptionDetail('customer-1', 'sub-1');
     }
 
     public function test_a_real_detail_payload_is_returned_intact(): void
     {
         $detail = $this->clientReturning(
-            '{"SubscriptionKey":"sub-1","ReadonlySubscriptionDetails":[{"Name":"SubscriptionQuantity","Value":"12"}]}'
+            '{"SubscriptionKey":"sub-1","ReadonlySubscriptionDetails":[{"Name":"TotalLicenses","Value":"12"},{"Name":"AssignedLicenses","Value":"9"}]}'
         )->getSubscriptionDetail('customer-1', 'sub-1');
 
         $this->assertSame('sub-1', $detail['SubscriptionKey']);
