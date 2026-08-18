@@ -297,7 +297,18 @@ class AppRiverLicenseSyncService
 
             // A known, conclusive inactive status IS an observation: the subscription
             // really is gone, and its licence should be cleaned up.
+            //
+            // Log the status on the way past. Which statuses AppRiver actually returns,
+            // and what it means by them, is undocumented by the vendor — so the split
+            // between INCONCLUSIVE_SUBSCRIPTION_STATUSES and the conclusive ones is a
+            // judgement with no evidence behind it, and silently dropping the entry here
+            // is what makes it unfalsifiable. Every other branch of this filter now names
+            // the status it saw; this one is the last that does not.
             if (! in_array($status, self::ACTIVE_SUBSCRIPTION_STATUSES, true)) {
+                $inactiveKey = json_encode($sub['SubscriptionKey'] ?? null);
+
+                Log::info("[AppRiverSync] Subscription {$inactiveKey} for {$client->name} reported conclusive inactive SubscriptionStatus {$status}; its licence is eligible for stale cleanup");
+
                 continue;
             }
 
