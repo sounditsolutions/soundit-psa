@@ -252,10 +252,27 @@ class AppRiverClient
 
     /**
      * Get full detail for a specific subscription.
+     *
+     * This is the read the seat count is written from, so an unreadable body here is
+     * the demonstrated corruption path: request() returns [] for an empty, unparseable
+     * or literal-null body, extractLicenseCounts([]) yields nulls, the licence row is
+     * written quantity 0 / status 'active', nothing is counted unobserved and the run
+     * exits SUCCESS with a live seat count zeroed. $jsonKind is the only witness that
+     * separates that from a genuinely empty object, exactly as in getSubscriptions().
+     *
+     * Deliberately NOT applied to patch(): an empty success body may be legitimate on
+     * the write lane, and refusing it there would fail updates the vendor accepted.
      */
     public function getSubscriptionDetail(string $customerId, string $subscriptionKey): array
     {
-        return $this->get("customers/{$customerId}/subscriptions/{$subscriptionKey}");
+        $jsonKind = null;
+        $response = $this->request('GET', "customers/{$customerId}/subscriptions/{$subscriptionKey}", ['query' => []], $jsonKind);
+
+        if ($response === [] && $jsonKind === null) {
+            throw new AppRiverClientException("AppRiver subscription detail for {$subscriptionKey} was empty or unparseable; refusing to read it as a subscription with no licence counts.");
+        }
+
+        return $response;
     }
 
     /**
@@ -358,8 +375,14 @@ class AppRiverClient
 
                 // Nothing parseable arrived (empty body, garbage, literal `null`). It is
                 // indistinguishable from `{}` once decoded, so it returns [] with $jsonKind
-                // left null — the caller-side envelope guards are what turn that into a
-                // refusal rather than "a list of none".
+                // left null, and it is the CALLER that must refuse it.
+                //
+                // Which callers do: getSubscriptions() and getSubscriptionDetail(), the two
+                // reads a licence write is derived from. patch() and the bare get() do NOT,
+                // and that is a choice rather than an oversight — an empty success body is a
+                // legitimate answer to a write. Any new caller whose result reaches a
+                // destructive write needs its own guard; this method cannot supply one,
+                // because [] is a correct answer on some lanes and a corruption on others.
                 if ($decoded === null) {
                     return [];
                 }
