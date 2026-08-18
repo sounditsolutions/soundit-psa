@@ -8,7 +8,7 @@ Sound PSA is MIT-licensed and developed in the open. Patches, issues and downstr
 
 ## Getting it running
 
-Requires **PHP 8.2 or newer** — `composer.json` (`"php": "^8.2"`) is the authoritative floor; CI builds on 8.3, and that is the version the project is developed against. The contributor path is a manual Composer setup:
+Requires **PHP 8.3 or newer**. Do not trust `composer.json` here: its `"php": "^8.2"` constraint is stale and looser than the code. The tree uses typed class constants — an 8.3-only syntax feature — in `app/Services/Tactical/TacticalAlertService.php` and `app/Services/Technician/PromptFence.php`, so on 8.2 `composer install` succeeds and then anything that autoloads those classes, `php artisan test` included, dies with a `ParseError`. CI builds on 8.3 and that is the only version the project is developed and tested against. The contributor path is a manual Composer setup:
 
 ```
 composer install
@@ -61,7 +61,7 @@ bash scripts/gc-verify.sh
 
 It runs, in order: `php artisan test` · `vendor/bin/pint --test` scoped to the PHP files your branch changed against `main` · a real-data and secret guard. That script is the single source of truth — CI runs it, maintainers run it, and so should you before opening a pull request.
 
-CI runs on pull requests and on pushes to `main`. Pushing a branch with no open pull request runs nothing, so open the PR if you want the gate's verdict. Two things can legitimately differ between your machine and CI: CI is PHP 8.3 and you may be on 8.2, and the changed-file set Pint checks is computed against `main`, so a stale branch gets a larger set there than locally. Rebase and re-run before concluding the gate is wrong — but if it still passes locally and fails in CI, say so in the PR; that is worth knowing on its own.
+CI runs on pull requests and on pushes to `main`. Pushing a branch with no open pull request runs nothing, so open the PR if you want the gate's verdict. One thing can legitimately differ between your machine and CI: the changed-file set Pint checks is computed against `main`, so a stale branch gets a larger set there than locally. Rebase and re-run before concluding the gate is wrong — but if it still passes locally and fails in CI, say so in the PR; that is worth knowing on its own.
 
 ## Before you write code
 
