@@ -70,6 +70,15 @@ class AppRiverLicenseSyncService
                 // throwing, and either would otherwise have it zeroed.
                 if ($unobserved === 0) {
                     $successfulClientIds[] = $client->id;
+
+                    // The affirmative outcome needs a per-client record of its own. The
+                    // conclusive-inactive line in the status filter tells the operator the
+                    // cleanup decision is logged separately, and only the withheld branch
+                    // below had such a line: deactivateStale() emits nothing but an aggregate
+                    // count that names no client, and nothing at all when it zeroes nothing.
+                    // Without this, a client that DID qualify leaves no trace, and that
+                    // pointer sends the operator looking for evidence that does not exist.
+                    Log::info("[AppRiverSync] All subscriptions observed for {$client->name}; stale cleanup runs for this client");
                 } else {
                     Log::warning("[AppRiverSync] {$unobserved} subscription(s) unobserved for {$client->name}; skipping stale cleanup for this client");
                 }
