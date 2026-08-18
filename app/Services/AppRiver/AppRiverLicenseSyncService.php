@@ -132,54 +132,6 @@ class AppRiverLicenseSyncService
             throw new AppRiverClientException('Seat count must be at least 1.');
         }
 
-        // A reduction below the assigned seat count strands users, so it is refused, and
-        // an UNKNOWN assigned count is not waved through either: null is not "nobody is
-        // assigned". extractLicenseCounts() returns assigned => null for any detail
-        // payload carrying TotalLicenses without AssignedLicenses — a vendor rename, a
-        // partial response, or simply a product that reports one and not the other — and
-        // the sync writes that null straight onto the row. An unreadable count is not an
-        // observation of zero, the same rule the status filter and the envelope guard
-        // already hold to.
-        //
-        // But the stored null cannot be the last word, because for one of those three
-        // causes it never changes: a product that never reports AssignedLicenses has its
-        // null rewritten by every sync, so a refusal telling the operator to re-sync
-        // would be a block no action of theirs could ever clear — seat reductions for
-        // that whole product line impossible through the PSA, with the client still
-        // billed for the seats. So ask the vendor HERE, at the point of the write, and
-        // let its answer say which of the three cases this is:
-        //
-        //   - an assigned count comes back → check the reduction against it, and the
-        //     stale null on the row heals itself with no operator action at all;
-        //   - counts come back WITHOUT an assignment → this product does not report one,
-        //     so the check can never be satisfied and refusing forever is the worse
-        //     failure. The reduction goes, and the log says nothing was checked;
-        //   - nothing readable at all → drift or a bad response. That IS the recoverable
-        //     case, and the refusal below names a remedy that can actually clear it.
-        //
-        // Increases are unaffected — none of this fires except below the current count.
-        if ($newQuantity < $license->quantity && $license->assigned_quantity === null) {
-            try {
-                $counts = $this->extractLicenseCounts(
-                    $this->client->getSubscriptionDetail($customerId, $license->vendor_ref)
-                );
-            } catch (\Throwable $e) {
-                $counts = ['total' => null, 'assigned' => null];
-            }
-
-            if ($counts['assigned'] !== null) {
-                $license->update(['assigned_quantity' => $counts['assigned']]);
-            } elseif ($counts['total'] === null) {
-                throw new AppRiverClientException(
-                    'Cannot reduce seats — AppRiver returned no licence counts for this subscription, so the '
-                    .'assigned seat count is unknown and a reduction cannot be checked against it. '
-                    .'Try again once AppRiver is reporting the subscription.'
-                );
-            } else {
-                Log::warning("[AppRiver] Reducing {$license->licenseType->name} on {$license->client->name} from {$license->quantity} to {$newQuantity} without an assigned-seat check: AppRiver reports this subscription's licence counts with no AssignedLicenses value, so there is no assignment to check the reduction against. Confirm in AppRiver that no user is stranded.");
-            }
-        }
-
         if ($license->assigned_quantity !== null && $newQuantity < $license->assigned_quantity) {
             throw new AppRiverClientException(
                 "Cannot reduce to {$newQuantity} — {$license->assigned_quantity} seats are currently assigned."
@@ -248,19 +200,18 @@ class AppRiverLicenseSyncService
     /**
      * Sync all subscriptions for a single client.
      *
-     * @return array{0: array<int, int>, 1: int, 2: array<int, int>} seen licence ids;
-     *                                                               the number of subscriptions the run did
-     *                                                               NOT observe — failed or silently skipped,
-     *                                                               a non-zero count must keep the client out
-     *                                                               of the stale-cleanup set (see the caller);
-     *                                                               and the ids of licences HELD OUT on an
-     *                                                               inconclusive status, a subset of the seen
-     *                                                               ids. Held ids are seen — that is what keeps
-     *                                                               them out of stale cleanup — but they are
-     *                                                               reported separately because "we chose not
-     *                                                               to touch this row" is not the same claim as
-     *                                                               "we read this row", and the retry pass has
-     *                                                               to be able to tell them apart.
+     * @return array{0: array<int, int>, 1: int} seen licence ids, and the number of
+     *                                           subscriptions the run did NOT observe —
+     *                                           failed or silently skipped. A non-zero
+     *                                           count must keep the client out of the
+     *                                           stale-cleanup set — see the caller.
+     *                                           Licences held out on an inconclusive
+     *                                           status are included in the seen ids —
+     *                                           that is what keeps them out of stale
+     *                                           cleanup; their queued reductions are
+     *                                           withdrawn at the point of observation,
+     *                                           so no later pass needs to tell them
+     *                                           apart.
      */
     private function syncClientSubscriptions(Client $client, string $customerId, SyncResult $result): array
     {
