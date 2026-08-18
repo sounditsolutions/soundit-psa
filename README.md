@@ -4,6 +4,8 @@ Purpose-built PSA (Professional Services Automation) for managed service provide
 
 **Live at:** https://your-psa-domain
 
+**Open source under the [MIT Licence](LICENSE)** — clone it, run it, deploy your own instance. See [Licence and project status](#licence-and-project-status) before filing an issue, and [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
+
 ## Stack
 
 - **Backend:** Laravel 12 / PHP 8.3
@@ -115,3 +117,11 @@ ssh your-vps "cd /var/www/psa && git pull && composer install --no-dev --optimiz
 ```
 
 Or use the Claude Code slash command: `/deploy`
+
+## Licence and project status
+
+Sound PSA is **open source and public by deliberate choice**, released under the [MIT Licence](LICENSE) (© 2026 Charlie Coutts). Clone it, run it, deploy your own instance — that is the intent; it is built for small MSPs and owner/operators, for agents and humans alike.
+
+Development happens in the open. Issues in this tracker include **unfixed defects and work in progress**. That is normal for a public project, not an oversight: an open issue here is a known problem being worked.
+
+Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
