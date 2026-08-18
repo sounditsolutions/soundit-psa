@@ -163,6 +163,40 @@ class AppRiverInconclusiveStatusGuardTest extends TestCase
         $this->assertSame(0, $result->errors);
     }
 
+    /**
+     * Licence rows are only ever created from an Active/Trial report, so a subscription
+     * first reported Pending has no row of its own to hold out. That is routine
+     * provisioning state, not a malformed entry: it must not fail the nightly run, and it
+     * must not withhold cleanup from the client's other subscriptions.
+     */
+    public function test_an_inconclusive_subscription_with_no_licence_row_is_not_an_error_and_shields_nothing(): void
+    {
+        [, $cancelledLicence] = $this->mappedClientWithLicence(4);
+
+        $mock = $this->createMock(AppRiverClient::class);
+        $mock->method('getSubscriptions')->willReturn([
+            [
+                'SubscriptionStatus' => 'Pending',
+                'SubscriptionKey' => 'sub-new',
+                'ProductName' => 'Business Premium',
+            ],
+            [
+                'SubscriptionStatus' => 'Cancelled',
+                'SubscriptionKey' => 'sub-1',
+                'ProductName' => 'Business Premium',
+            ],
+        ]);
+
+        $service = new AppRiverLicenseSyncService($mock);
+        $result = $service->syncLicenses();
+
+        $cancelledLicence->refresh();
+
+        $this->assertSame(0, $result->errors, 'A subscription mid-provisioning that has no licence row yet is not an error — recording one fails every nightly run until provisioning completes.');
+        $this->assertSame(0, $cancelledLicence->quantity, 'A cancelled sibling must still be cleaned up — a pending subscription with no row of its own shields nothing.');
+        $this->assertSame('suspended', $cancelledLicence->status);
+    }
+
     public static function conclusiveInactiveStatuses(): array
     {
         return [

@@ -269,14 +269,21 @@ class AppRiverLicenseSyncService
                     ->all();
 
                 if (empty($protectedIds)) {
-                    // The key names no licence row we hold — the vendor reissued the key, or
-                    // the row predates it. Marking nothing seen protects nothing, so this
-                    // subscription's licence (stored under some other vendor_ref) would be
-                    // zeroed by deactivateStale() on a status that is not evidence of absence.
-                    // Same rule as the keyless entry: an entry that resolves to no licence
-                    // cannot be held out individually, so withhold cleanup for the whole client.
-                    $unobserved++;
-                    $this->recordUnobserved($result, $client, "inconclusive SubscriptionStatus {$status} for subscription {$inconclusiveKey}, which matches no licence on this client");
+                    // No licence row of ours carries this key, and that is the ORDINARY case
+                    // rather than a malformed one: rows are only ever created on the
+                    // Active/Trial path below, so a subscription first reported Pending — or
+                    // one the vendor has left Suspended since before we held a row — has never
+                    // had one. Such an entry holds nothing out of stale cleanup, but it also
+                    // puts nothing at risk: there is no row here for deactivateStale() to zero.
+                    //
+                    // So it is neither of the two things the block above rules out. Counting it
+                    // unobserved would fail every nightly run for as long as provisioning takes
+                    // — indefinitely for a subscription the vendor never restores — and would
+                    // withhold cleanup from the whole client while it did, letting a genuinely
+                    // Cancelled sibling keep its seat count and go on billing. Log it and move
+                    // on; the keyless case above still withholds, because an entry with no key
+                    // says nothing about which licence it means.
+                    Log::info("[AppRiverSync] Subscription {$inconclusiveKey} for {$client->name} is {$status} and matches no licence on this client; nothing to hold out of stale cleanup");
 
                     continue;
                 }
