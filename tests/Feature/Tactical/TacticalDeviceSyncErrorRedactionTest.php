@@ -169,17 +169,39 @@ class TacticalDeviceSyncErrorRedactionTest extends TestCase
      * Render a log context for scanning, failing rather than passing when it
      * cannot be rendered.
      *
-     * JSON_INVALID_UTF8_SUBSTITUTE keeps the ASCII around a bad byte sequence
-     * visible — a leaked hostname stays findable next to an unencodable
-     * binding — and the assertion below closes the remaining paths (recursion,
-     * INF/NAN) that still return false, so an unrenderable context is a failed
-     * test and never a silent pass.
+     * EVERY FLAG HERE IS LOAD-BEARING, and the one that is ABSENT most of all:
+     *
+     *  - JSON_INVALID_UTF8_SUBSTITUTE keeps the ASCII around a bad byte
+     *    sequence visible, so a leaked hostname stays findable next to an
+     *    unencodable binding instead of taking the whole render down with it.
+     *  - JSON_UNESCAPED_SLASHES and JSON_UNESCAPED_UNICODE, because the
+     *    forbidden terms are matched RAW against this string. Default encoding
+     *    writes `/` as `\/` and non-ASCII as `\uXXXX`, so a leaked value
+     *    carrying either would be invisible to str-contains matching. This repo
+     *    has already paid for that once from the other direction —
+     *    EndpointInsight's docblock, "§11.1: JSON escaping slips
+     *    PEM/connection-strings past WikiRedactor".
+     *  - NOT JSON_PARTIAL_OUTPUT_ON_ERROR. It was here, and it made the
+     *    assertion below DEAD CODE (psa #380 review r3, diff:5, found by all
+     *    three seats): that flag is precisely what stops json_encode returning
+     *    false on recursion / INF / NAN / unsupported types — it substitutes
+     *    null or 0 and returns a string with the offending subtree silently
+     *    dropped. A helper whose whole purpose is to stop a guard passing
+     *    without firing had its own guard unable to fire, and a docblock
+     *    claiming the opposite.
+     *
+     * With it gone the assertion is reachable, and an unrenderable context is a
+     * failed test rather than a scan over a document the secret was dropped
+     * from.
      *
      * @param  array<mixed>  $context
      */
     private function renderContext(array $context): string
     {
-        $rendered = json_encode($context, JSON_INVALID_UTF8_SUBSTITUTE | JSON_PARTIAL_OUTPUT_ON_ERROR);
+        $rendered = json_encode(
+            $context,
+            JSON_INVALID_UTF8_SUBSTITUTE | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE
+        );
 
         $this->assertIsString(
             $rendered,
@@ -340,10 +362,17 @@ class TacticalDeviceSyncErrorRedactionTest extends TestCase
         $this->assertStringContainsString('asset lock', $message, 'the operator needs to know which step failed');
     }
 
-    // ---- psa #359: the two reads that sat ABOVE every guard ------------------
+    // ---- psa #359: the operations that sat OUTSIDE every guard ---------------
     //
-    // safeFailure() was not incomplete from these; it was UNREACHABLE. A
-    // QueryException from either left syncDevices() entirely, reached
+    // THREE, not two, and the header said two until the r3 review pointed at the
+    // sweep cases filed directly beneath it (context:7). The ticket enumerated
+    // two READS; the first gate on this branch found the third — the not-seen
+    // offline SWEEP, a WRITE below the per-agent loop — and that is the one #359
+    // was actually reported against. A count in a header is the same trap the
+    // service's SCOPE docblock warns about, so this one names a property instead.
+    //
+    // safeFailure() was not incomplete from any of them; it was UNREACHABLE. A
+    // QueryException left syncDevices() entirely, reached
     // IntegrationsController::syncTacticalDevices()'s catch (\Throwable) and was
     // interpolated raw into a flashed message. Same sqlite-only driver
     // constraint as the write guards above, and for the same reason.
