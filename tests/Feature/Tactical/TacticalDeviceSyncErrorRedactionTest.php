@@ -12,6 +12,7 @@ use GuzzleHttp\HandlerStack;
 use GuzzleHttp\Psr7\Response;
 use Illuminate\Contracts\Cache\Lock;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Log\Events\MessageLogged;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
@@ -93,6 +94,102 @@ class TacticalDeviceSyncErrorRedactionTest extends TestCase
         '192.168.0.42',
     ];
 
+    // ---- log capture ---------------------------------------------------------
+    //
+    // These cases used to assert on the log with Log::spy() plus
+    // shouldHaveReceived('warning')->withArgs($closure)->once(), and that shape
+    // failed three ways (psa #380 review, context:5 / context:7 / diff:10):
+    //
+    //  - the closure was the ADJUDICATOR, so every outcome collapsed to Mockery's
+    //    "warning was not called 1 times". A real leak, a renamed log line and an
+    //    encoder that returned nothing were indistinguishable in the failure
+    //    output — the reader is told the line was never logged, which is false;
+    //  - json_encode() returns FALSE on invalid UTF-8, and a QueryException's
+    //    bindings are precisely where invalid UTF-8 arrives from. str_contains()
+    //    against the resulting '' found nothing, so the guard PASSED — vacuously,
+    //    at the exact moment it could not see the context it was guarding;
+    //  - the closure typed its first parameter `string`, so a warning logged with
+    //    a non-string message raised a TypeError out of the matcher rather than
+    //    failing the assertion.
+    //
+    // So: capture the real records, then adjudicate them with ordinary
+    // assertions. Log::listen() sees what the logger actually received, the
+    // matching is untyped, and each failure names itself.
+
+    /** @var list<MessageLogged> */
+    private array $capturedLogs = [];
+
+    private function captureLogRecords(): void
+    {
+        $this->capturedLogs = [];
+
+        Log::listen(function (MessageLogged $record): void {
+            $this->capturedLogs[] = $record;
+        });
+    }
+
+    /**
+     * The one warning logged under $line, or a failure that says what was logged.
+     *
+     * Exactly one, deliberately: an assertion that merely found SOME clean
+     * warning would pass while the line beside it leaked.
+     *
+     * @return array<mixed>
+     */
+    private function warningContext(string $line): array
+    {
+        $matches = [];
+        $seen = [];
+
+        foreach ($this->capturedLogs as $record) {
+            if ($record->level !== 'warning') {
+                continue;
+            }
+
+            // No type hint and no cast: a non-string message must fail this
+            // assertion, not raise a TypeError on the way to it.
+            $seen[] = is_string($record->message) ? $record->message : get_debug_type($record->message);
+
+            if ($record->message === $line) {
+                $matches[] = $record;
+            }
+        }
+
+        $this->assertCount(
+            1,
+            $matches,
+            "expected exactly one warning logged as '{$line}'; warnings actually logged: "
+                .($seen === [] ? '(none)' : implode(' | ', $seen))
+        );
+
+        return is_array($matches[0]->context) ? $matches[0]->context : [$matches[0]->context];
+    }
+
+    /**
+     * Render a log context for scanning, failing rather than passing when it
+     * cannot be rendered.
+     *
+     * JSON_INVALID_UTF8_SUBSTITUTE keeps the ASCII around a bad byte sequence
+     * visible — a leaked hostname stays findable next to an unencodable
+     * binding — and the assertion below closes the remaining paths (recursion,
+     * INF/NAN) that still return false, so an unrenderable context is a failed
+     * test and never a silent pass.
+     *
+     * @param  array<mixed>  $context
+     */
+    private function renderContext(array $context): string
+    {
+        $rendered = json_encode($context, JSON_INVALID_UTF8_SUBSTITUTE | JSON_PARTIAL_OUTPUT_ON_ERROR);
+
+        $this->assertIsString(
+            $rendered,
+            'the warning context could not be rendered for scanning ('.json_last_error_msg()
+                .'), so this guard could not see what it was guarding'
+        );
+
+        return $rendered;
+    }
+
     private function syncWithBrokenAssetWrites(): \App\Services\SyncResult
     {
         // See the class docblock: the Schema::drop() below implicitly commits on
@@ -137,26 +234,16 @@ class TacticalDeviceSyncErrorRedactionTest extends TestCase
 
     public function test_the_warning_log_line_does_not_carry_the_client_row(): void
     {
-        Log::spy();
+        $this->captureLogRecords();
 
         $this->syncWithBrokenAssetWrites();
 
-        Log::shouldHaveReceived('warning')
-            ->withArgs(function (string $message, array $context = []): bool {
-                if ($message !== '[TacticalSync] Agent skipped after a write failure') {
-                    return false;
-                }
+        $context = $this->assertWarningCarriesNoStatement(
+            '[TacticalSync] Agent skipped after a write failure',
+            self::LEAKY
+        );
 
-                $rendered = json_encode($context);
-                foreach (self::LEAKY as $secret) {
-                    if (str_contains($rendered, $secret)) {
-                        return false;
-                    }
-                }
-
-                return ($context['agent_id'] ?? null) === 'AGENT-REDACT';
-            })
-            ->once();
+        $this->assertSame('AGENT-REDACT', $context['agent_id'] ?? null, 'the failing agent must stay identifiable');
     }
 
     /**
@@ -208,22 +295,14 @@ class TacticalDeviceSyncErrorRedactionTest extends TestCase
 
     public function test_the_fetch_warning_log_line_publishes_no_exception_message(): void
     {
-        Log::spy();
+        $this->captureLogRecords();
 
         $this->syncWithFailingFetch();
 
-        Log::shouldHaveReceived('warning')
-            ->withArgs(function (string $message, array $context = []): bool {
-                if ($message !== '[TacticalSync] Failed to fetch agents') {
-                    return false;
-                }
-
-                $rendered = json_encode($context);
-
-                return ! str_contains($rendered, self::LEAKY_HOST)
-                    && ! str_contains($rendered, self::LEAKY_ADDRESS);
-            })
-            ->once();
+        $this->assertWarningCarriesNoStatement(
+            '[TacticalSync] Failed to fetch agents',
+            [self::LEAKY_HOST, self::LEAKY_ADDRESS]
+        );
     }
 
     private function syncWithFailingAssetLock(): \App\Services\SyncResult
@@ -296,6 +375,81 @@ class TacticalDeviceSyncErrorRedactionTest extends TestCase
         $this->assertStringNotContainsString('tactical_site_id', $message, 'schema text leaked');
     }
 
+    /** The last line syncDevices() logs, and therefore proof it reached its end. */
+    private const COMPLETION_LINE = '[TacticalSync] Device sync complete';
+
+    /** @return list<string> every message logged at any level, in order. */
+    private function loggedMessages(): array
+    {
+        $out = [];
+
+        foreach ($this->capturedLogs as $record) {
+            $out[] = is_string($record->message) ? $record->message : get_debug_type($record->message);
+        }
+
+        return $out;
+    }
+
+    /**
+     * The client map ABORTS; the pre-scan and the sweep DEGRADE. The three guards
+     * are otherwise identical in shape, so nothing in the suite noticed which was
+     * which — a change that swapped an abort for a degrade, or the reverse, stayed
+     * green (psa #380 review, diff:8 and diff:9). The redaction cases above cannot
+     * see it either: they assert on a message that both behaviours produce.
+     *
+     * ABORT is the correct behaviour here and it is only observable from outside
+     * by what does NOT happen. Without the map there is nothing to match an agent
+     * onto, so a run that carried on would still call Tactical, walk the whole
+     * payload and `continue` past every agent — an outbound request and a full
+     * pass, reported as a sync that reconciled nothing with one error beside it.
+     *
+     * THE "no clients mapped" ASSERTION IS THE LOAD-BEARING ONE, and it is here
+     * because the first draft of this case was not: dropping the catch's
+     * `return $result;` lands execution on the `empty($clientMap)` check directly
+     * below, which returns too. Counters, error count and the completion line are
+     * all identical, so the obvious pins stayed green through the exact mutation
+     * they were written for. What does change is the reason the run gives for
+     * stopping: it reports the operator's Tactical mapping as EMPTY — a
+     * configuration problem they would go and look at — when the truth is that
+     * the database read failed. Attribution is the observable, so pin that.
+     */
+    public function test_a_client_map_read_failure_aborts_the_sync_before_the_fetch(): void
+    {
+        $this->skipUnlessSqlite();
+        $this->captureLogRecords();
+
+        Schema::drop('clients');
+
+        // Substituted rather than mocked at the HTTP layer: shouldNotReceive()
+        // fails AT the call, naming it, instead of leaving the reader to infer an
+        // abort from a counter that a degrade would also leave at zero.
+        $client = Mockery::mock(TacticalClient::class);
+        $client->shouldNotReceive('getAgents');
+
+        $result = (new TacticalDeviceSyncService($client))->syncDevices();
+
+        $this->assertSame(1, $result->errors, 'the failure must be recorded, not thrown');
+        $this->assertCount(1, $result->errorMessages, 'an abort records its one failure and stops; more means it carried on');
+        $this->assertSame(
+            0,
+            $result->created + $result->updated + $result->deactivated,
+            'nothing may be reconciled once the client map is gone'
+        );
+
+        $this->assertNotContains(
+            '[TacticalSync] No clients mapped to Tactical RMM sites',
+            $this->loggedMessages(),
+            'the client-map READ FAILURE was reported as an empty mapping — the guard fell through '
+                .'to the empty-map path instead of aborting on its own terms'
+        );
+
+        $this->assertNotContains(
+            self::COMPLETION_LINE,
+            $this->loggedMessages(),
+            'syncDevices() ran to its end instead of aborting on the client-map failure'
+        );
+    }
+
     /**
      * The LOG half, which the three guards above already pin and the guards added
      * here did not (psa #380 review, contract:4). SyncResult is not the only sink —
@@ -308,31 +462,28 @@ class TacticalDeviceSyncErrorRedactionTest extends TestCase
      * SOME clean warning would pass while the line beside it leaked.
      *
      * @param  list<string>  $forbidden
+     * @return array<mixed> the matched context, for any further pinning
      */
-    private function assertWarningCarriesNoStatement(string $line, array $forbidden): void
+    private function assertWarningCarriesNoStatement(string $line, array $forbidden): array
     {
-        Log::shouldHaveReceived('warning')
-            ->withArgs(function (string $message, array $context = []) use ($line, $forbidden): bool {
-                if ($message !== $line) {
-                    return false;
-                }
+        $context = $this->warningContext($line);
+        $rendered = $this->renderContext($context);
 
-                $rendered = strtolower(json_encode($context));
-                foreach ($forbidden as $term) {
-                    if (str_contains($rendered, strtolower($term))) {
-                        return false;
-                    }
-                }
+        foreach ($forbidden as $term) {
+            $this->assertStringNotContainsString(
+                strtolower($term),
+                strtolower($rendered),
+                "'{$term}' reached the context of '{$line}': {$rendered}"
+            );
+        }
 
-                return true;
-            })
-            ->once();
+        return $context;
     }
 
     public function test_the_client_map_warning_line_does_not_carry_the_statement(): void
     {
         $this->skipUnlessSqlite();
-        Log::spy();
+        $this->captureLogRecords();
 
         Schema::drop('clients');
         $this->syncService([$this->agent()])->syncDevices();
@@ -346,7 +497,7 @@ class TacticalDeviceSyncErrorRedactionTest extends TestCase
     public function test_the_prescan_warning_line_does_not_carry_the_statement(): void
     {
         $this->skipUnlessSqlite();
-        Log::spy();
+        $this->captureLogRecords();
 
         Client::factory()->create(['tactical_site_id' => 'Acme|Main', 'is_active' => true]);
         Schema::drop('technician_runs');
@@ -361,7 +512,7 @@ class TacticalDeviceSyncErrorRedactionTest extends TestCase
     public function test_the_not_seen_sweep_warning_line_carries_neither_statement_nor_bindings(): void
     {
         $this->skipUnlessSqlite();
-        Log::spy();
+        $this->captureLogRecords();
 
         Client::factory()->create(['tactical_site_id' => 'Acme|Main', 'is_active' => true]);
         Schema::drop('tactical_assets');
@@ -444,5 +595,47 @@ class TacticalDeviceSyncErrorRedactionTest extends TestCase
 
         $this->assertStringNotContainsString('update', strtolower($sweep), 'the statement itself leaked');
         $this->assertStringNotContainsString('tactical_assets', $sweep, 'schema text leaked');
+    }
+
+    /**
+     * The other half of diff:9 — the sweep DEGRADES where the client map aborts.
+     *
+     * The distinction is not cosmetic. The sweep is the last thing syncDevices()
+     * does; returning early there would discard a run that has already reconciled
+     * every agent, to save a status flag the next run recomputes anyway.
+     *
+     * WHAT THIS PINS, exactly: that execution reaches the end of the method.
+     * COMPLETION_LINE is logged unconditionally after the sweep block and nowhere
+     * else, so a guard that grew a `return $result;` fails here. WHAT IT DOES NOT
+     * PIN: that the run's own counters survive. Dropping tactical_assets is the
+     * only way to fail the sweep, and it fails the per-agent upsert above it too,
+     * so created/updated are zero here for a reason that has nothing to do with
+     * the sweep. Failing the sweep ALONE needs a mid-run trigger this suite does
+     * not have; stated rather than faked.
+     */
+    public function test_a_not_seen_sweep_failure_degrades_rather_than_aborting_the_method(): void
+    {
+        $this->skipUnlessSqlite();
+        $this->captureLogRecords();
+
+        Client::factory()->create(['tactical_site_id' => 'Acme|Main', 'is_active' => true]);
+        Schema::drop('tactical_assets');
+
+        $result = $this->syncService([$this->agent()])->syncDevices();
+
+        $this->assertContains(
+            'Failed to sweep not-seen agents offline',
+            array_map(
+                static fn (string $line): string => explode(':', $line, 2)[0],
+                $result->errorMessages
+            ),
+            'the sweep failure was not recorded, so this case is not exercising the guard'
+        );
+
+        $this->assertContains(
+            self::COMPLETION_LINE,
+            $this->loggedMessages(),
+            'the sweep guard aborted syncDevices() instead of degrading'
+        );
     }
 }
