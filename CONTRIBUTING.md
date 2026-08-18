@@ -21,7 +21,7 @@ php artisan migrate
 php artisan serve
 ```
 
-You need the PHP extensions CI installs: `mbstring`, `pdo_sqlite`, `sqlite3`, `bcmath`, `intl`, `gd`, `zip`. `composer.json` does not declare them, so a missing one shows up as a runtime error rather than a failed install.
+You need the PHP extensions CI installs: `mbstring`, `pdo_sqlite`, `sqlite3`, `bcmath`, `intl`, `gd`, `zip`. That set is enough for the SQLite path above — CI only ever runs SQLite. Add `pdo_mysql` too if you intend to follow [Demo data](#demo-data), which needs MariaDB; without it `php artisan migrate` fails with `could not find driver`. `composer.json` does not declare any of them, so a missing one shows up as a runtime error rather than a failed install.
 
 `.env.example` ships `DB_CONNECTION=sqlite` and leaves `DB_DATABASE` unset, so Laravel falls back to `database/database.sqlite` — a file that is not in the repo. Create it before migrating; that is what the `touch` is for. Use `php artisan serve` rather than `php -S ... -t public`: the built-in server without a router script treats any request path containing a dot as a static file and returns 404 instead of reaching the framework, which matters on an API-first app whose routes end in `.json` or `.csv`.
 
@@ -39,7 +39,7 @@ That leaves you a running app with an empty database and **no way into the staff
 
    `AdminSeeder` creates nothing and prints an error if either variable is unset.
 
-2. With the dev server running, open `http://127.0.0.1:8000/dev/login/1` — a bypass route registered **only** when `APP_ENV=local` (`routes/web.php`). The path segment is the user id; `1` is the first user created.
+2. With the dev server running, open `http://127.0.0.1:8000/dev/login/1` — a bypass route registered **only** when `APP_ENV=local` (`routes/web.php`). The path segment is the user id, and on the empty database you just migrated the `AdminSeeder` user is the only row, so it is `1`. That stops being true once you load [Demo data](#demo-data); an id with no row behind it 404s.
 
    **`APP_ENV` is what arms that route, and `.env.example` ships `APP_ENV=local`.** So the setup above deliberately turns on an unauthenticated admin login, which is right for a laptop and catastrophic anywhere reachable. If you are deploying rather than contributing, set `APP_ENV=production` — check that first, before anything else in [`docs/INSTALL.md`](docs/INSTALL.md).
 
@@ -55,7 +55,12 @@ A demo dataset — the fictional MSP "BlueTier IT Solutions" — is available fo
    php artisan db:seed --class=DevDataSeeder --force
    ```
 
-The seeder truncates `users` first, so run it **before** `AdminSeeder` — or re-run `AdminSeeder` afterwards.
+The seeder truncates `users` first and creates its own five fictional BlueTier staff accounts, so run it **before** `AdminSeeder` — or re-run `AdminSeeder` afterwards.
+
+Two things change about logging in once you are here:
+
+- Step 2 switched `DB_CONNECTION` from sqlite to mariadb. The admin you made in [Getting logged in](#getting-logged-in) is still in `database/database.sqlite` and does not exist in this database; `AdminSeeder` has to be run again against MariaDB if you want it.
+- After the truncate, user `1` is the demo account Alex Morgan, not your admin — a re-run of `AdminSeeder` appends yours after the five demo users. So `/dev/login/1` is a demo login here. List the ids (`php artisan tinker`, then `User::pluck('email', 'id')`) and use the one you actually want.
 
 ## The gate
 
