@@ -1688,9 +1688,12 @@ class IntegrationsController extends Controller
         try {
             $client = new \App\Services\AppRiver\AppRiverClient;
 
-            // Hit the API to verify the token works
-            $customers = $client->get('customers', ['limit' => 1]);
-            $count = $customers['TotalCount'] ?? count($customers['Customers'] ?? []);
+            // Hit the API to verify the token works. The page size must be one the
+            // vendor accepts (limit=1 is rejected outright — see PROBE_PAGE_SIZE),
+            // and the live envelope carries its total at Meta.Page.Total, not the
+            // fixture-era TotalCount.
+            $customers = $client->get('customers', ['limit' => \App\Services\AppRiver\AppRiverClient::PROBE_PAGE_SIZE]);
+            $count = $customers['Meta']['Page']['Total'] ?? count($customers['Customers'] ?? []);
 
             return response()->json(['success' => true, 'message' => "Connected to AppRiver! Found {$count} customer(s)."]);
         } catch (\Throwable $e) {

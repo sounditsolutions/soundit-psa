@@ -22,6 +22,17 @@ class AppRiverClient
      */
     private const DEAD_CREDENTIAL_ERRORS = ['invalid_grant', 'invalid_client'];
 
+    /**
+     * Page size for connectivity probes (isHealthy() and the Test Connection
+     * endpoint). AppRiver rejects small pages outright — measured against the live
+     * API 2026-08-18: `limit=1` and `limit=5` → "The request is invalid",
+     * `limit=25` → 200. The true minimum is unmeasured, so 25 is the smallest
+     * KNOWN-ACCEPTED value; do not shrink it without a live check. A probe that
+     * sends a rejected page size fails on a perfectly healthy token, and the UI
+     * reads that failure as a credential problem.
+     */
+    public const PROBE_PAGE_SIZE = 25;
+
     public function __construct(
         private readonly array $config = [],
     ) {
@@ -166,7 +177,7 @@ class AppRiverClient
     public function isHealthy(): bool
     {
         try {
-            $this->get('customers', ['limit' => 1]);
+            $this->get('customers', ['limit' => self::PROBE_PAGE_SIZE]);
 
             return true;
         } catch (AppRiverClientException) {
@@ -176,6 +187,14 @@ class AppRiverClient
 
     /**
      * List all AppRiver customers (paginated).
+     *
+     * The live envelope (captured from prod 2026-08-18, keys only) is exactly
+     * `{Customers, Links, Meta}` — the total at `Meta.Page.Total`, the next page at
+     * `Links.NextPageOffset` / `Links.NextPageLimit` (integers). The `TotalCount`
+     * this method used to read exists ONLY in our old fixtures; the live API never
+     * sends it, so every real sync refused at the first page. `Links` is consulted
+     * only when more customers are owed — its shape on a final page is unmeasured
+     * and this method never needs it there.
      */
     public function getCustomers(): array
     {
@@ -198,21 +217,48 @@ class AppRiverClient
                 throw new AppRiverClientException('AppRiver customer list response has no Customers array; refusing to treat it as an empty list.');
             }
 
-            if (! isset($response['TotalCount']) || ! is_numeric($response['TotalCount'])) {
-                throw new AppRiverClientException('AppRiver customer list response has no TotalCount; refusing to treat the first page as complete.');
+            $totalCount = $response['Meta']['Page']['Total'] ?? null;
+
+            if (! is_numeric($totalCount)) {
+                throw new AppRiverClientException('AppRiver customer list response has no numeric Meta.Page.Total; refusing to treat the first page as complete.');
             }
 
-            $customers = $response['Customers'];
-            $totalCount = (int) $response['TotalCount'];
+            $totalCount = (int) $totalCount;
 
-            foreach ($customers as $customer) {
+            foreach ($response['Customers'] as $customer) {
                 $all[] = $customer;
             }
 
-            $offset += $limit;
-        } while ($offset < $totalCount);
+            if (count($all) >= $totalCount) {
+                return $all;
+            }
 
-        return $all;
+            // Every branch past here is "the vendor says more customers exist than we
+            // hold". Continuing without a trustworthy next page would either loop
+            // forever or return a truncated list, and a truncated list is the
+            // unmap-and-zero path the guard above exists to close.
+            if ($response['Customers'] === []) {
+                throw new AppRiverClientException('AppRiver customer list returned an empty page while Meta.Page.Total says more customers exist; refusing to treat the truncated list as complete.');
+            }
+
+            $nextOffset = $response['Links']['NextPageOffset'] ?? null;
+
+            if (! is_numeric($nextOffset)) {
+                throw new AppRiverClientException('AppRiver customer list has more pages but no numeric Links.NextPageOffset; refusing to guess the next page.');
+            }
+
+            if ((int) $nextOffset <= $offset) {
+                throw new AppRiverClientException('AppRiver customer list Links.NextPageOffset does not advance past the current page; refusing to loop on the same page.');
+            }
+
+            $offset = (int) $nextOffset;
+
+            $nextLimit = $response['Links']['NextPageLimit'] ?? null;
+
+            if (is_numeric($nextLimit) && (int) $nextLimit > 0) {
+                $limit = (int) $nextLimit;
+            }
+        } while (true);
     }
 
     /**
