@@ -74,7 +74,15 @@ class AppRiverLicenseSyncService
             // silenced. A skipped client never enters $successfulClientIds, so stale
             // cleanup cannot touch whatever rows it holds.
             if (($customerTypes[$appriverCustomerId] ?? null) === 'Referred') {
+                // By-design, but never invisible. A skipped client's licence rows keep
+                // their last-synced quantity for as long as the type says Referred, and
+                // those quantities are billed from — a reclassification or a mis-typed
+                // record would otherwise freeze them behind one info line, with the run
+                // reporting 'no changes' and exiting SUCCESS. recordSkipped() puts it in
+                // the run summary without failing the run, the same split as
+                // recordWithdrawn(): loud in the summary, silent in the exit status.
                 Log::info("[AppRiverSync] Skipping {$client->name}: CustomerType Referred; no partner access by design");
+                $result->recordSkipped("Skipped {$client->name}: CustomerType Referred; no partner access by design — its licences were not synced and stale cleanup was withheld");
 
                 continue;
             }

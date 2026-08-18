@@ -109,6 +109,17 @@ class AppRiverReferredCustomerSkipTest extends TestCase
 
         $this->assertSame(0, $result->errors, 'A skipped Referred client is by-design, not an error.');
         $this->assertSame(1, $result->created, 'The Resold sibling must still sync normally.');
+
+        // By-design is not invisible: the skipped client's seat counts are frozen and
+        // billed from, so the run summary has to name the omission even though the
+        // exit status stays green.
+        $this->assertSame(1, $result->skipped, 'A skipped client must be recorded on SyncResult, not only logged.');
+        $this->assertStringContainsString(
+            'Referred Co',
+            $result->skippedMessages[0] ?? '',
+            'The skip message must name the client whose licences were left unsynced.'
+        );
+        $this->assertStringContainsString('1 skipped', $result->summary());
     }
 
     /**
