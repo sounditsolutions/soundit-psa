@@ -250,19 +250,37 @@ class AppRiverLicenseSyncService
                     ['name' => $productName, 'is_active' => true],
                 );
 
-                $license = License::updateOrCreate(
-                    [
-                        'license_type_id' => $licenseType->id,
-                        'client_id' => $client->id,
-                        'vendor_ref' => $subscriptionKey,
-                    ],
-                    [
-                        'quantity' => $counts['total'] ?? 0,
-                        'assigned_quantity' => $counts['assigned'],
-                        'status' => 'active',
-                        'synced_at' => now(),
-                    ],
-                );
+                $identity = [
+                    'license_type_id' => $licenseType->id,
+                    'client_id' => $client->id,
+                    'vendor_ref' => $subscriptionKey,
+                ];
+
+                // Read the row BEFORE updateOrCreate overwrites its status. A suspended
+                // row carrying a queued reduction is one an older build zeroed and left
+                // queued — this build clears at the point of zeroing — and reviving it
+                // is the one path that makes that instruction sendable again: quantity
+                // comes back at the CURRENT seat count, so the queued value sits below
+                // it, the retry guard passes, and a months-old instruction bills a
+                // resubscription down unattended. The instruction was written against a
+                // subscription that has since ended; it does not carry over.
+                $revived = License::where($identity)
+                    ->where('status', 'suspended')
+                    ->whereNotNull('scheduled_quantity')
+                    ->first();
+
+                $license = License::updateOrCreate($identity, [
+                    'quantity' => $counts['total'] ?? 0,
+                    'assigned_quantity' => $counts['assigned'],
+                    'status' => 'active',
+                    'synced_at' => now(),
+                ]);
+
+                if ($revived) {
+                    Log::warning("[AppRiverSync] Discarding queued seat reduction to {$revived->scheduled_quantity} for {$productName} on {$client->name}: the subscription was suspended and has been reported again at {$license->quantity} seats, so the queued value predates the subscription it would now change. Re-queue it if the reduction is still wanted.");
+                    $result->recordWithdrawn("Queued seat reduction to {$revived->scheduled_quantity} discarded for licence #{$revived->id} ({$productName}) on {$client->name} — subscription {$subscriptionKey} returned after suspension");
+                    $license->update(['scheduled_quantity' => null]);
+                }
 
                 // Clear scheduled_quantity if the actual quantity now matches or is below the target
                 if ($license->scheduled_quantity !== null
@@ -312,6 +330,22 @@ class AppRiverLicenseSyncService
 
     /**
      * Deactivate licenses that were not seen in this sync run (stale subscriptions).
+     *
+     * The queued reduction is cleared with the rest of the row, and every clear is
+     * NAMED in the log first, because it is an operator's billing instruction and
+     * dropping one in silence is its own defect.
+     *
+     * Keeping it instead was tried and is worse. Staleness here is decided by absence
+     * from one getSubscriptions() response, so the argument for keeping it — a paging
+     * glitch is indistinguishable from a cancellation, and quantity self-heals while a
+     * cleared queue does not — is real but narrow: this method only runs for clients
+     * where every subscription was positively observed, so a failed or malformed entry
+     * already excludes the client entirely. What it cannot survive is reactivation. A
+     * queue left standing on a zeroed row has no expiry, and if AppRiver ever reissues
+     * the SubscriptionKey, updateOrCreate() revives THIS row at the new seat count;
+     * the `total <= scheduled` clear does not fire when the new count is larger, so a
+     * months-old instruction passes the guard below and silently bills a new
+     * subscription down. An instruction the operator can re-issue is the cheaper loss.
      */
     private function deactivateStale(array $seenLicenseIds, array $mappedClientIds, SyncResult $result): void
     {
@@ -332,9 +366,18 @@ class AppRiverLicenseSyncService
             $query->whereNotIn('id', $seenLicenseIds);
         }
 
+        // Read the queued instructions before the bulk update destroys them, so each
+        // one is named rather than dropped in silence. The row set is the same one the
+        // update below acts on.
+        foreach ((clone $query)->whereNotNull('scheduled_quantity')->with(['licenseType', 'client'])->get() as $discarded) {
+            Log::warning("[AppRiverSync] Discarding queued seat reduction to {$discarded->scheduled_quantity} for {$discarded->licenseType?->name} on {$discarded->client?->name}: AppRiver no longer reports the subscription, so there is nothing left to reduce. Re-queue it if the subscription returns.");
+            $result->recordWithdrawn("Queued seat reduction to {$discarded->scheduled_quantity} discarded for licence #{$discarded->id} ({$discarded->licenseType?->name}) on {$discarded->client?->name} — subscription {$discarded->vendor_ref} no longer reported by AppRiver");
+        }
+
         $deactivated = $query->update([
             'quantity' => 0,
             'assigned_quantity' => 0,
+            'scheduled_quantity' => null,
             'status' => 'suspended',
             'synced_at' => now(),
         ]);
@@ -360,6 +403,30 @@ class AppRiverLicenseSyncService
 
         foreach ($pending as $license) {
             if (! $license->seat_manageable) {
+                continue;
+            }
+
+            // scheduled_quantity is only ever WRITTEN on the reduction path
+            // (updateQuantity() queues it solely when $newQuantity < $oldQuantity), so a
+            // queued value above the current quantity does not mean "increase to this" —
+            // it means quantity moved down underneath the queue after it was written.
+            // Sending it is an outbound billing INCREASE nobody asked for, so this
+            // refuses rather than guesses. The stale-cleanup case that motivated it is
+            // closed at source in deactivateStale(); what reaches here is what a clear
+            // cannot repair — above all a row an EARLIER build already zeroed and left
+            // queued, which the stale query can no longer see (quantity 0, already
+            // suspended) and which is sitting in the database right now. It also
+            // subsumes "the licence is suspended", because a suspended row is zeroed
+            // and a queued value is always >= 1.
+            //
+            // Refuse, do not clear. Here the row's history is unknown — this is the
+            // path that meets state no code in this build created — so leaving the
+            // instruction for a person to read beats a guard deleting billing intent
+            // it does not understand. deactivateStale() clears because it knows
+            // exactly why, and says so in the log when it does.
+            if ($license->scheduled_quantity > $license->quantity) {
+                Log::warning("[AppRiverSync] Refusing queued seat change for {$license->licenseType->name} on {$license->client->name}: scheduled {$license->scheduled_quantity} exceeds current {$license->quantity}, which would be an increase, not the queued reduction");
+
                 continue;
             }
 

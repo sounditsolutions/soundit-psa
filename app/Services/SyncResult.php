@@ -16,10 +16,30 @@ class SyncResult
 
     public array $details = [];
 
+    /**
+     * Instructions the run deliberately retired: correct outcomes that an operator
+     * still needs told about, such as a queued seat reduction discarded because the
+     * subscription it was written against no longer exists.
+     *
+     * Deliberately NOT errors. recordError() feeds `$result->errors > 0 ? FAILURE :
+     * SUCCESS` in the sync commands, so routing an expected outcome through it fails
+     * the nightly run and teaches operators to ignore the exit code. A withdrawal is
+     * loud in the summary and silent in the exit status.
+     */
+    public int $withdrawn = 0;
+
+    public array $withdrawnMessages = [];
+
     public function recordError(string $message): void
     {
         $this->errors++;
         $this->errorMessages[] = $message;
+    }
+
+    public function recordWithdrawn(string $message): void
+    {
+        $this->withdrawn++;
+        $this->withdrawnMessages[] = $message;
     }
 
     public function total(): int
@@ -38,6 +58,9 @@ class SyncResult
         }
         if ($this->deactivated) {
             $parts[] = "{$this->deactivated} deactivated";
+        }
+        if ($this->withdrawn) {
+            $parts[] = "{$this->withdrawn} withdrawn";
         }
         if ($this->errors) {
             $parts[] = "{$this->errors} errors";
