@@ -203,9 +203,48 @@ class CippClient
         return $this->get('api/ListCompliancePolicies', ['TenantFilter' => $tenantFilter]);
     }
 
-    public function listInactiveAccounts(string $tenantFilter): array
+    /**
+     * List the accounts CIPP considers inactive, or NULL when the tenant was not read.
+     *
+     * The caller clears cipp_inactive client-wide before re-flagging, so it has to be
+     * able to tell "CIPP says nobody is inactive" — which MUST clear stale flags —
+     * from "CIPP said nothing", which must not touch them. get() collapses both to []
+     * (json_decode(...) ?? []), so this endpoint reads through readList() instead.
+     */
+    public function listInactiveAccounts(string $tenantFilter): ?array
     {
-        return $this->get('api/ListInactiveAccounts', ['TenantFilter' => $tenantFilter]);
+        return $this->readList('api/ListInactiveAccounts', ['TenantFilter' => $tenantFilter]);
+    }
+
+    /**
+     * GET a list endpoint, returning null — not [] — when the response is not a
+     * readable list: an empty, null or unparseable body, or a JSON object that is not
+     * a {"Results": [...]} envelope (an {"error": ...} payload, say).
+     *
+     * A body that really parses to [] (or to {"Results": []}) returns [], and that IS
+     * a genuine "nothing here" the caller may act on. Queue-backed answers throw
+     * exactly as they do in get() — "still loading" is neither of the two.
+     */
+    private function readList(string $endpoint, array $params = []): ?array
+    {
+        $response = $this->sendRequest('GET', $endpoint, ['query' => $params], 'application/json');
+
+        $data = json_decode((string) $response->getBody(), true);
+
+        if (! is_array($data)) {
+            Log::warning("[CippClient] {$endpoint} returned an unreadable body — treating as unread, not as empty");
+
+            return null;
+        }
+
+        // "Still loading" is not "nothing found" — same guard, same reason, as get().
+        CippQueueGuard::assertNotQueueBacked($data);
+
+        if (array_key_exists('Results', $data)) {
+            return is_array($data['Results']) ? $data['Results'] : null;
+        }
+
+        return array_is_list($data) ? $data : null;
     }
 
     /**

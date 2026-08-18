@@ -166,18 +166,23 @@ class CippContactEnrichmentService
      * CIPP's "inactive" threshold is whatever it's configured for in the
      * customer's CIPP instance — typically 30+ days without sign-in.
      *
-     * An EMPTY payload is treated as unread, not as "nobody is inactive", so
-     * step 1 never runs on it. CippClient::get() decodes an empty, null or
-     * unparseable body to [] (json_decode(...) ?? []), so a degraded upstream is
-     * indistinguishable from a genuinely empty list — the same ambiguity the
-     * roster pass encodes as NoUsersRead. Clearing on it would drop every
-     * inactive flag at the client on a bad response.
+     * An UNREAD payload is not "nobody is inactive". listInactiveAccounts() returns
+     * null when CIPP's body was empty, unparseable or not a list, and step 1 never
+     * runs on that — clearing on a degraded read would drop every inactive flag at
+     * the client, the same ambiguity the roster pass encodes as NoUsersRead.
+     *
+     * A payload that WAS read and is genuinely empty still runs step 1. Nobody being
+     * inactive is the healthy steady state of a small tenant, and this pass is the
+     * only writer of cipp_inactive — skipping it there would make the flag sticky
+     * forever and offboard a user who has started signing in again.
      */
     private function enrichInactiveAccounts(Client $client, string $tenantDomain, SyncResult $result): void
     {
         $inactive = $this->client->listInactiveAccounts($tenantDomain);
 
-        if (! is_array($inactive) || $inactive === []) {
+        if ($inactive === null) {
+            Log::warning("[CippEnrich] Inactive accounts not read for {$client->name} — leaving cipp_inactive untouched");
+
             return;
         }
 

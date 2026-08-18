@@ -14,14 +14,17 @@ use Mockery;
 use Tests\TestCase;
 
 /**
- * enrichInactiveAccounts() clears cipp_inactive client-wide before it knows the
- * payload said anything. CippClient::get() decodes an empty, null or unparseable
- * body to [] (json_decode(...) ?? []), so "[]" cannot be read as "nobody is
- * inactive" — it is exactly as likely to be a degraded upstream, and clearing on
- * it drops every inactive flag at the client.
+ * enrichInactiveAccounts() clears cipp_inactive client-wide before re-flagging, so
+ * the two ways CIPP can answer "no rows" have to stay distinguishable.
  *
- * Red-check: revert the guard to `if (! is_array($inactive))` and
- * test_empty_inactive_payload_does_not_clear_the_flag fails — the flag is false.
+ * A payload that arrived and is empty means nobody is inactive and MUST clear stale
+ * flags — that is the healthy steady state of a small tenant, and this pass is the
+ * only writer of the flag, so skipping it would leave the flag stuck true forever.
+ * An UNREAD answer (empty, unparseable or non-list body) reaches us as null from
+ * CippClient::listInactiveAccounts() and must leave every flag alone.
+ *
+ * Red-check: widen the guard to `if ($inactive === null || $inactive === [])` and
+ * test_empty_list_that_was_read_clears_a_stale_flag fails — the flag stays true.
  */
 class CippInactiveEmptyPayloadTest extends TestCase
 {
@@ -33,7 +36,7 @@ class CippInactiveEmptyPayloadTest extends TestCase
         Storage::fake('public');
     }
 
-    public function test_empty_inactive_payload_does_not_clear_the_flag(): void
+    public function test_empty_list_that_was_read_clears_a_stale_flag(): void
     {
         $client = $this->activeClient();
         $person = $this->flaggedPerson($client, 'obj-empty');
@@ -41,9 +44,23 @@ class CippInactiveEmptyPayloadTest extends TestCase
         (new CippContactEnrichmentService($this->cippReturningInactive([])))
             ->enrichForClient($client, new SyncResult);
 
+        $this->assertFalse(
+            (bool) $person->fresh()->cipp_inactive,
+            'A read payload naming nobody means nobody is inactive — the stale flag must clear.'
+        );
+    }
+
+    public function test_unread_payload_does_not_clear_the_flag(): void
+    {
+        $client = $this->activeClient();
+        $person = $this->flaggedPerson($client, 'obj-unread');
+
+        (new CippContactEnrichmentService($this->cippReturningInactive(null)))
+            ->enrichForClient($client, new SyncResult);
+
         $this->assertTrue(
             (bool) $person->fresh()->cipp_inactive,
-            'An empty ListInactiveAccounts payload is unread, not "nobody is inactive" — it must not clear the flag.'
+            'An unread ListInactiveAccounts response is not "nobody is inactive" — it must not clear the flag.'
         );
     }
 
@@ -79,7 +96,7 @@ class CippInactiveEmptyPayloadTest extends TestCase
         $this->assertFalse((bool) $person->fresh()->cipp_inactive);
     }
 
-    private function cippReturningInactive(array $rows): CippClient
+    private function cippReturningInactive(?array $rows): CippClient
     {
         $cipp = Mockery::mock(CippClient::class)->shouldIgnoreMissing();
         $cipp->shouldReceive('listInactiveAccounts')->andReturn($rows);
