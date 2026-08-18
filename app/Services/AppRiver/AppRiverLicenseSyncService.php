@@ -132,23 +132,52 @@ class AppRiverLicenseSyncService
             throw new AppRiverClientException('Seat count must be at least 1.');
         }
 
-        // A reduction below the assigned seat count strands users, so it is refused. An
-        // UNKNOWN assigned count is refused too, rather than waved through: null here is
-        // not "nobody is assigned". extractLicenseCounts() returns assigned => null for
-        // any detail payload carrying TotalLicenses without AssignedLicenses — a vendor
-        // rename, a partial response, or simply a product that reports one and not the
-        // other — and the sync writes that null straight onto the row. The old test
-        // passed the guard on exactly the rows it could say least about, which is the
-        // wrong way round: an unreadable count is not an observation of zero, the same
-        // rule the status filter and the envelope guard already hold to.
+        // A reduction below the assigned seat count strands users, so it is refused, and
+        // an UNKNOWN assigned count is not waved through either: null is not "nobody is
+        // assigned". extractLicenseCounts() returns assigned => null for any detail
+        // payload carrying TotalLicenses without AssignedLicenses — a vendor rename, a
+        // partial response, or simply a product that reports one and not the other — and
+        // the sync writes that null straight onto the row. An unreadable count is not an
+        // observation of zero, the same rule the status filter and the envelope guard
+        // already hold to.
         //
-        // Increases are unaffected — this only fires below the current assignment — and
-        // the operator's way out is a sync, which repopulates the count from the vendor.
+        // But the stored null cannot be the last word, because for one of those three
+        // causes it never changes: a product that never reports AssignedLicenses has its
+        // null rewritten by every sync, so a refusal telling the operator to re-sync
+        // would be a block no action of theirs could ever clear — seat reductions for
+        // that whole product line impossible through the PSA, with the client still
+        // billed for the seats. So ask the vendor HERE, at the point of the write, and
+        // let its answer say which of the three cases this is:
+        //
+        //   - an assigned count comes back → check the reduction against it, and the
+        //     stale null on the row heals itself with no operator action at all;
+        //   - counts come back WITHOUT an assignment → this product does not report one,
+        //     so the check can never be satisfied and refusing forever is the worse
+        //     failure. The reduction goes, and the log says nothing was checked;
+        //   - nothing readable at all → drift or a bad response. That IS the recoverable
+        //     case, and the refusal below names a remedy that can actually clear it.
+        //
+        // Increases are unaffected — none of this fires except below the current count.
         if ($newQuantity < $license->quantity && $license->assigned_quantity === null) {
-            throw new AppRiverClientException(
-                'Cannot reduce seats — the assigned seat count for this licence is unknown, '
-                .'so a reduction cannot be checked against it. Re-sync the licence from AppRiver and try again.'
-            );
+            try {
+                $counts = $this->extractLicenseCounts(
+                    $this->client->getSubscriptionDetail($customerId, $license->vendor_ref)
+                );
+            } catch (\Throwable $e) {
+                $counts = ['total' => null, 'assigned' => null];
+            }
+
+            if ($counts['assigned'] !== null) {
+                $license->update(['assigned_quantity' => $counts['assigned']]);
+            } elseif ($counts['total'] === null) {
+                throw new AppRiverClientException(
+                    'Cannot reduce seats — AppRiver returned no licence counts for this subscription, so the '
+                    .'assigned seat count is unknown and a reduction cannot be checked against it. '
+                    .'Try again once AppRiver is reporting the subscription.'
+                );
+            } else {
+                Log::warning("[AppRiver] Reducing {$license->licenseType->name} on {$license->client->name} from {$license->quantity} to {$newQuantity} without an assigned-seat check: AppRiver reports this subscription's licence counts with no AssignedLicenses value, so there is no assignment to check the reduction against. Confirm in AppRiver that no user is stranded.");
+            }
         }
 
         if ($license->assigned_quantity !== null && $newQuantity < $license->assigned_quantity) {

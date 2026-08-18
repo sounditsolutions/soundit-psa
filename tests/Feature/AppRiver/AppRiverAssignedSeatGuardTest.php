@@ -10,6 +10,7 @@ use App\Services\AppRiver\AppRiverClient;
 use App\Services\AppRiver\AppRiverClientException;
 use App\Services\AppRiver\AppRiverLicenseSyncService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Log;
 use Tests\TestCase;
 
 /**
@@ -65,6 +66,10 @@ class AppRiverAssignedSeatGuardTest extends TestCase
      * The reported defect. Ten seats, an unknown assignment, and a reduction to two:
      * the PSA cannot tell whether that strands eight users or none, and the write is
      * outbound and billable either way.
+     *
+     * The vendor is asked before anything is refused, and here it returns nothing
+     * readable — which is the RECOVERABLE case: a later attempt can genuinely clear it,
+     * so the message has to name a remedy that works rather than one that cannot.
      */
     public function test_a_reduction_is_refused_when_the_assigned_seat_count_is_unknown(): void
     {
@@ -94,13 +99,98 @@ class AppRiverAssignedSeatGuardTest extends TestCase
         $this->assertNotNull($caught, 'the reduction must be refused, not silently skipped');
         $this->assertStringContainsString('assigned seat count', $caught->getMessage());
         $this->assertStringContainsString(
-            'Re-sync',
+            'Try again',
             $caught->getMessage(),
-            'the refusal has to tell the operator how to clear it, or it reads as a bug'
+            'the refusal has to name a remedy that can actually clear it, or it reads as a bug'
         );
 
         $licence->refresh();
         $this->assertSame(10, $licence->quantity, 'a refused reduction changes nothing locally either');
+    }
+
+    /**
+     * The state the refusal must never become permanent for: a product whose detail
+     * payload carries TotalLicenses and no AssignedLicenses at all. Every sync rewrites
+     * that null, so a refusal here could not be cleared by any action available to the
+     * operator — seat reductions for the whole product line would be impossible through
+     * the PSA while the client went on being billed for the seats.
+     *
+     * The vendor's own answer is what separates this from the unreadable case above:
+     * counts came back, they simply carry no assignment, so there is nothing to check
+     * and never will be. The reduction goes.
+     */
+    public function test_a_product_that_never_reports_an_assignment_can_still_be_reduced(): void
+    {
+        [$licence, $mock] = $this->licenceWithAssigned(null);
+
+        $sent = [];
+        $mock->method('updateSubscriptionQuantity')
+            ->willReturnCallback(function (string $customerId, string $key, int $quantity) use (&$sent): array {
+                $sent[] = $quantity;
+
+                return [];
+            });
+        $mock->method('getSubscriptionDetail')->willReturnOnConsecutiveCalls(
+            ['ReadonlySubscriptionDetails' => [['Name' => 'TotalLicenses', 'Value' => '10']]],
+            ['ReadonlySubscriptionDetails' => [['Name' => 'TotalLicenses', 'Value' => '2']]],
+        );
+
+        Log::spy();
+
+        (new AppRiverLicenseSyncService($mock))->updateQuantity($licence, 2);
+
+        $licence->refresh();
+
+        $this->assertSame([2], $sent, 'a check that can never be satisfied must not block the reduction forever');
+        $this->assertSame(2, $licence->quantity);
+        $this->assertNull($licence->assigned_quantity, 'the vendor still reports no assignment, and nothing may invent one');
+
+        // Unchecked is not unremarked. The one thing owed to the operator on this path is
+        // a record that no assignment was verified before the seats were given back.
+        Log::shouldHaveReceived('warning')
+            ->withArgs(fn (string $message): bool => str_contains($message, 'without an assigned-seat check'))
+            ->once();
+    }
+
+    /**
+     * The ordinary null: a row the sync left blank for a subscription the vendor DOES
+     * report an assignment for. Asking at the point of the write repopulates it and the
+     * reduction is checked against the real number — the operator is never sent off to
+     * run a sync by hand to unblock themselves, and the check still bites.
+     */
+    public function test_a_stale_unknown_is_read_from_the_vendor_and_the_reduction_is_checked_against_it(): void
+    {
+        [$licence, $mock] = $this->licenceWithAssigned(null);
+
+        $sent = [];
+        $mock->method('updateSubscriptionQuantity')
+            ->willReturnCallback(function (string $customerId, string $key, int $quantity) use (&$sent): array {
+                $sent[] = $quantity;
+
+                return [];
+            });
+        $mock->method('getSubscriptionDetail')->willReturn([
+            'ReadonlySubscriptionDetails' => [
+                ['Name' => 'TotalLicenses', 'Value' => '10'],
+                ['Name' => 'AssignedLicenses', 'Value' => '7'],
+            ],
+        ]);
+
+        $caught = null;
+
+        try {
+            (new AppRiverLicenseSyncService($mock))->updateQuantity($licence, 5);
+        } catch (AppRiverClientException $e) {
+            $caught = $e;
+        }
+
+        $this->assertSame([], $sent, 'a reduction below the real assigned count must still not reach the vendor');
+        $this->assertNotNull($caught, 'reading the count is what makes the refusal possible, not a way around it');
+        $this->assertStringContainsString('7 seats are currently assigned', $caught->getMessage());
+
+        $licence->refresh();
+        $this->assertSame(7, $licence->assigned_quantity, 'the count the decision was made on is kept, not thrown away');
+        $this->assertSame(10, $licence->quantity, 'a refused reduction changes nothing else locally');
     }
 
     /**
