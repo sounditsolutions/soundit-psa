@@ -2147,6 +2147,9 @@
                         <a href="{{ route('auth.appriver') }}" class="btn btn-primary btn-sm">
                             <i class="bi bi-box-arrow-up-right me-1"></i>Connect to AppRiver
                         </a>
+                        @if($appriverConnectedAt)
+                        <small class="text-muted ms-2">Last connected: {{ $appriverConnectedAt }}</small>
+                        @endif
                         <small class="text-muted ms-2">You will be redirected to log in with your AppRiver admin credentials.</small>
                     @endif
                     <div id="test-result-appriver" class="alert mt-2" style="display:none;"></div>

@@ -15,20 +15,43 @@ class AppRiverClient
 
     private const API_PREFIX = '/service/api/securecloud/';
 
+    /**
+     * OAuth error codes that mean the stored credentials are dead and must be
+     * cleared. Shared by the nested-code promotion in tokenRequest() and the
+     * match in handleRefreshFailure() so the two can never drift apart.
+     */
+    private const DEAD_CREDENTIAL_ERRORS = ['invalid_grant', 'invalid_client'];
+
     public function __construct(
         private readonly array $config = [],
     ) {
         $baseUrl = rtrim($this->config['base_url'] ?? self::defaultBaseUrl(), '/');
 
-        $this->http = new Client([
+        // Optional Guzzle handler override — tests inject a MockHandler here so the
+        // OAuth error-envelope handling can be exercised without a live endpoint.
+        // Honoured ONLY under the test runner and only when callable: this replaces
+        // the transport for both the API and the OAuth client, so a config source
+        // that ever grew a 'handler' key must not be able to reach it in production.
+        $handler = app()->runningUnitTests() && is_callable($this->config['handler'] ?? null)
+            ? $this->config['handler']
+            : null;
+
+        // Drop only a null handler — a bare array_filter() would also swallow any
+        // future falsy Guzzle option (e.g. 'http_errors' => false) with nothing in
+        // the diff to show for it.
+        $notNull = static fn (mixed $value): bool => $value !== null;
+
+        $this->http = new Client(array_filter([
             'base_uri' => $baseUrl.self::API_PREFIX,
             'timeout' => 30,
-        ]);
+            'handler' => $handler,
+        ], $notNull));
 
-        $this->authHttp = new Client([
+        $this->authHttp = new Client(array_filter([
             'base_uri' => $baseUrl.'/',
             'timeout' => 15,
-        ]);
+            'handler' => $handler,
+        ], $notNull));
     }
 
     // ── OAuth2 Authorization Code Flow ──
@@ -97,13 +120,23 @@ class AppRiverClient
     }
 
     /**
-     * Clear all stored OAuth tokens.
+     * Clear the stored OAuth credentials.
+     *
+     * appriver_connected_at is deliberately KEPT. It is the only field that
+     * distinguishes "credentials died on <date>" from "never connected", which is
+     * what a reconnect decision and any staleness reporting both need.
+     *
+     * Readers, enumerated rather than assumed: IntegrationsController:156 passes it
+     * to the integrations view, which renders it in both the connected and the
+     * disconnected branch. AppRiverConfig::get('connected_at') exposes it but has
+     * no callers today. storeTokens() is the only writer and rewrites it on the
+     * next successful connect.
      */
     public function disconnect(): void
     {
         foreach ([
             'appriver_access_token', 'appriver_refresh_token',
-            'appriver_token_expires_at', 'appriver_connected_at',
+            'appriver_token_expires_at',
         ] as $key) {
             Setting::where('key', $key)->delete();
         }
@@ -156,8 +189,21 @@ class AppRiverClient
                 'offset' => $offset,
             ]);
 
-            $customers = $response['Customers'] ?? [];
-            $totalCount = $response['TotalCount'] ?? 0;
+            // An unrecognised envelope must NOT read as "no customers". The mapping
+            // page renders one row per returned customer and its save treats the
+            // submission as the complete world — it clears every mapping and reapplies
+            // only what was posted — so a silently truncated list unmaps clients and
+            // permanently zeroes their licences. Absent is not empty.
+            if (! isset($response['Customers']) || ! is_array($response['Customers'])) {
+                throw new AppRiverClientException('AppRiver customer list response has no Customers array; refusing to treat it as an empty list.');
+            }
+
+            if (! isset($response['TotalCount']) || ! is_numeric($response['TotalCount'])) {
+                throw new AppRiverClientException('AppRiver customer list response has no TotalCount; refusing to treat the first page as complete.');
+            }
+
+            $customers = $response['Customers'];
+            $totalCount = (int) $response['TotalCount'];
 
             foreach ($customers as $customer) {
                 $all[] = $customer;
@@ -174,17 +220,91 @@ class AppRiverClient
      */
     public function getSubscriptions(string $customerId): array
     {
-        $response = $this->get("customers/{$customerId}/subscriptions");
+        $jsonKind = null;
+        $response = $this->request('GET', "customers/{$customerId}/subscriptions", ['query' => []], $jsonKind);
 
-        return $response['Subscriptions'] ?? $response;
+        if (isset($response['Subscriptions']) && is_array($response['Subscriptions'])) {
+            return $response['Subscriptions'];
+        }
+
+        // The bare list is the other shape this endpoint is known to return, and an EMPTY
+        // one is an ordinary answer: a customer whose last subscription was cancelled has
+        // none. Refusing it would withhold the stale cleanup this sync exists to perform
+        // from that client on every run, permanently, and pin the nightly command at
+        // FAILURE with no operator remedy. $jsonKind is what makes accepting it safe —
+        // `{}`, an empty body and an unparseable one all decode to the same `[]`, so the
+        // top-level JSON type is the only thing separating "the vendor sent a list of
+        // none" from "we could not read the envelope".
+        if ($jsonKind === 'list') {
+            return $response;
+        }
+
+        // Everything past here is an envelope we do not recognise. Returning $response
+        // would hand the sync a "subscription list" it never saw: the client would count
+        // as fully observed, deactivateStale() would zero and suspend every one of its
+        // licences, and the run would exit SUCCESS.
+        if ($response === []) {
+            throw new AppRiverClientException('AppRiver subscription response was empty or unparseable; refusing to treat it as an empty subscription list — a genuinely empty list arrives as a JSON list or {"Subscriptions":[]}.');
+        }
+
+        throw new AppRiverClientException('AppRiver subscription response has no Subscriptions array; refusing to treat the envelope as a subscription list.');
     }
 
     /**
      * Get full detail for a specific subscription.
+     *
+     * This is the read the seat count is written from, so a body that cannot supply a
+     * seat count is the demonstrated corruption path: extractLicenseCounts() yields
+     * nulls, the licence row is written quantity 0 / status 'active', nothing is counted
+     * unobserved and the run exits SUCCESS with a live seat count zeroed.
+     *
+     * HOW the body came to be count-less is not the question, because every route to it
+     * zeroes the same seats: an empty, unparseable or literal-null body, `{}`, and an
+     * in-band `{"Message":"Request limit exceeded"}` served with a 200 are all written as
+     * quantity 0 over a live subscription. So the guard is on whether the payload carries
+     * the one entry the seat count is actually read from — a `TotalLicenses` entry with a
+     * numeric value, the only name extractLicenseCounts() looks at — and not on whether the
+     * ReadonlySubscriptionDetails section that contains it merely exists: a present,
+     * populated section naming every field except that one leaves $total null and writes the
+     * same zero. Nor on how it decoded, which is why $jsonKind is no longer consulted here.
+     * Refusing raises to
+     * AppRiverLicenseSyncService, which records the subscription unobserved and keeps its
+     * client out of the stale cleanup.
+     *
+     * Deliberately NOT applied to patch(): an empty success body may be legitimate on
+     * the write lane, and refusing it there would fail updates the vendor accepted.
      */
     public function getSubscriptionDetail(string $customerId, string $subscriptionKey): array
     {
-        return $this->get("customers/{$customerId}/subscriptions/{$subscriptionKey}");
+        $response = $this->request('GET', "customers/{$customerId}/subscriptions/{$subscriptionKey}", ['query' => []]);
+
+        // `{}`, an empty body, an unparseable one and a literal `null` all arrive here as
+        // the same []. None of them is a subscription we read.
+        if ($response === []) {
+            throw new AppRiverClientException("AppRiver subscription detail for {$subscriptionKey} was empty or unparseable; refusing to read it as a subscription with no licence counts.");
+        }
+
+        // A readable envelope with no seat count is the same corruption wearing a different
+        // hat: it parses, it is not empty, and it still writes zero. So the check is the
+        // entry the sync reads, not the section holding it — extractLicenseCounts()
+        // (AppRiverLicenseSyncService) takes the total from `Name === 'TotalLicenses'` and
+        // from no other name, so an absent section, an empty one, and a populated one that
+        // never mentions TotalLicenses all leave $total null and write the same quantity 0
+        // over a live subscription. A non-numeric value is that zero too: the sync casts it
+        // with (int).
+        $totalLicenses = null;
+
+        foreach ((array) ($response['ReadonlySubscriptionDetails'] ?? []) as $item) {
+            if (is_array($item) && ($item['Name'] ?? null) === 'TotalLicenses') {
+                $totalLicenses = $item['Value'] ?? null;
+            }
+        }
+
+        if (! is_numeric($totalLicenses)) {
+            throw new AppRiverClientException("AppRiver subscription detail for {$subscriptionKey} has no numeric TotalLicenses entry in ReadonlySubscriptionDetails; refusing to read it as a subscription with no licence counts.");
+        }
+
+        return $response;
     }
 
     /**
@@ -233,7 +353,7 @@ class AppRiverClient
      */
     private function handleRefreshFailure(AppRiverClientException $e): void
     {
-        if (in_array($e->oauthError, ['invalid_grant', 'invalid_client'], true)) {
+        if (in_array($e->oauthError, self::DEAD_CREDENTIAL_ERRORS, true)) {
             $this->disconnect();
             $clean = new AppRiverClientException(
                 'AppRiver session expired. Please reconnect in Settings > Integrations > AppRiver.',
@@ -249,9 +369,17 @@ class AppRiverClient
 
     /**
      * Internal request method with Bearer token. Auto-retries once on 401 with token refresh.
+     *
+     * $jsonKind reports the top-level JSON type the body actually had — 'list', 'object',
+     * or null when nothing parseable arrived. `{}`, an empty body and an unparseable one
+     * all decode to the same `[]` as a genuinely empty JSON list, so a caller that must
+     * tell "a list of none" from "an envelope we could not read" cannot do it from the
+     * decoded value alone.
      */
-    private function request(string $method, string $endpoint, array $options = []): array
+    private function request(string $method, string $endpoint, array $options = [], ?string &$jsonKind = null): array
     {
+        $jsonKind = null;
+
         for ($attempt = 0; $attempt <= 1; $attempt++) {
             $token = $this->getAccessToken();
             $options['headers'] = [
@@ -262,7 +390,41 @@ class AppRiverClient
             try {
                 $response = $this->http->request($method, $endpoint, $options);
 
-                return json_decode((string) $response->getBody(), true) ?? [];
+                $body = (string) $response->getBody();
+                $decoded = json_decode($body, true);
+
+                // A body that is valid JSON but a SCALAR — `"Subscription not found"`, `5`,
+                // `true`, the shape vendors emit for a soft error — is not a response any
+                // caller can read. It used to raise a TypeError out of this `: array` method;
+                // returning [] instead would be silent on the paths with no envelope check
+                // (getSubscriptionDetail(), patch()): extractLicenseCounts([]) yields nulls,
+                // the licence is written quantity 0 / status 'active', nothing is counted
+                // unobserved and the run exits SUCCESS with the seat count zeroed. Stay as
+                // loud as the TypeError was, just legibly.
+                if ($decoded !== null && ! is_array($decoded)) {
+                    throw new AppRiverClientException("AppRiver {$method} {$endpoint} returned a JSON scalar, not an object or list; refusing to read it as a response body.");
+                }
+
+                // Nothing parseable arrived (empty body, garbage, literal `null`). It is
+                // indistinguishable from `{}` once decoded, so it returns [] with $jsonKind
+                // left null, and it is the CALLER that must refuse it.
+                //
+                // Which callers do: getSubscriptions() and getSubscriptionDetail(), the two
+                // reads a licence write is derived from. patch() and the bare get() do NOT,
+                // and that is a choice rather than an oversight — an empty success body is a
+                // legitimate answer to a write. Any new caller whose result reaches a
+                // destructive write needs its own guard; this method cannot supply one,
+                // because [] is a correct answer on some lanes and a corruption on others.
+                if ($decoded === null) {
+                    return [];
+                }
+
+                // A body that decoded to an array started with either `[` or `{`, and the
+                // two are indistinguishable afterwards — `[]` and `{}` both decode to `[]`.
+                // The first non-whitespace byte is the only surviving witness.
+                $jsonKind = str_starts_with(ltrim($body), '[') ? 'list' : 'object';
+
+                return $decoded;
             } catch (GuzzleException $e) {
                 $statusCode = method_exists($e, 'getResponse') && $e->getResponse()
                     ? $e->getResponse()->getStatusCode()
@@ -319,6 +481,26 @@ class AppRiverClient
                 $body = json_decode((string) $e->getResponse()->getBody(), true);
                 $oauthError = $body['error'] ?? null;
                 $oauthDesc = $body['error_description'] ?? null;
+
+                // AppRiver nests the real OAuth error inside error_description as
+                // a JSON string (top-level error reads "invalid_request" even for a
+                // dead refresh token), so handleRefreshFailure() never matches and
+                // credentials are never cleared.
+                //
+                // Promote the nested code ONLY when it names a dead credential. An
+                // unconditional override would mask an actionable top-level code
+                // behind whatever the description happens to nest — the same bug in
+                // the opposite direction.
+                [$nested, $nestedDesc] = $this->nestedOauthEnvelope($oauthDesc);
+
+                if ($nested !== null && in_array($nested, self::DEAD_CREDENTIAL_ERRORS, true)) {
+                    $oauthError = $nested;
+                }
+
+                // Whatever the promotion decides, the nested envelope's own text is
+                // what a human should read — the raw description here is the JSON
+                // fragment that hid this bug in the first place.
+                $oauthDesc = $nestedDesc ?? $nested ?? $oauthDesc;
             }
 
             $message = $oauthDesc
@@ -327,6 +509,11 @@ class AppRiverClient
 
             Log::error("[AppRiver] Token request failed: {$message}", [
                 'oauth_error' => $oauthError,
+                // Recorded even when it is not promoted: a nested code outside
+                // DEAD_CREDENTIAL_ERRORS is exactly what the top-level field hides,
+                // and leaving it out of the log reproduces #389's diagnosability gap
+                // for every error that is not a credential death.
+                'oauth_error_nested' => $nested ?? null,
             ]);
 
             $ex = new AppRiverClientException($message, $e->getCode(), $e);
@@ -341,6 +528,39 @@ class AppRiverClient
         }
 
         return $data;
+    }
+
+    /**
+     * AppRiver returns a generic top-level error ("invalid_request") and puts the
+     * real OAuth error code in error_description as a nested JSON string, e.g.
+     * {"error":"invalid_request","error_description":"{\"error\":\"invalid_grant\"}"}.
+     *
+     * Returns [code, description] from that nested envelope, either element null when
+     * absent or empty. Accepts the description already decoded as an array as well as
+     * the JSON-string form, so a vendor that stops double-encoding does not silently
+     * reopen this bug.
+     *
+     * @return array{0: ?string, 1: ?string}
+     */
+    private function nestedOauthEnvelope(mixed $description): array
+    {
+        $nested = is_array($description)
+            ? $description
+            : (is_string($description) ? json_decode($description, true) : null);
+
+        if (! is_array($nested)) {
+            return [null, null];
+        }
+
+        $code = isset($nested['error']) && is_string($nested['error']) && $nested['error'] !== ''
+            ? $nested['error']
+            : null;
+
+        $desc = isset($nested['error_description']) && is_string($nested['error_description']) && $nested['error_description'] !== ''
+            ? $nested['error_description']
+            : null;
+
+        return [$code, $desc];
     }
 
     /**

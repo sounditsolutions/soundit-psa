@@ -1,0 +1,317 @@
+<?php
+
+namespace Tests\Feature\AppRiver;
+
+use App\Models\Setting;
+use App\Services\AppRiver\AppRiverClient;
+use App\Services\AppRiver\AppRiverClientException;
+use GuzzleHttp\Exception\ClientException;
+use GuzzleHttp\Handler\MockHandler;
+use GuzzleHttp\HandlerStack;
+use GuzzleHttp\Psr7\Request;
+use GuzzleHttp\Psr7\Response;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Tests\TestCase;
+
+/**
+ * Guard for #389. AppRiver reports a dead refresh token as
+ * {"error":"invalid_request","error_description":"{\"error\":\"invalid_grant\"}"} —
+ * the real code is nested one field over. Before the fix, handleRefreshFailure()
+ * read the top-level "invalid_request", never matched, and never cleared the dead
+ * credentials, so isConnected() stayed true and the UI kept claiming connected.
+ *
+ * Every test asserts inside a catch block, so every one calls fail() after the act:
+ * without it, a regression that stops throwing would pass these vacuously.
+ */
+class AppRiverNestedOauthErrorTest extends TestCase
+{
+    use RefreshDatabase;
+
+    private function seedConnectedTokens(): void
+    {
+        Setting::setEncrypted('appriver_client_id', 'test-client');
+        Setting::setEncrypted('appriver_client_secret', 'test-secret');
+        Setting::setEncrypted('appriver_access_token', 'stale-access-token');
+        Setting::setEncrypted('appriver_refresh_token', 'dead-refresh-token');
+        Setting::setValue('appriver_token_expires_at', now()->subMinutes(5)->toDateTimeString());
+        Setting::setValue('appriver_connected_at', now()->subDays(3)->toDateTimeString());
+    }
+
+    private function clientRespondingWith(string $body): AppRiverClient
+    {
+        $mock = new MockHandler([
+            new ClientException(
+                'Client error',
+                new Request('POST', 'auth/token'),
+                new Response(400, [], $body),
+            ),
+        ]);
+
+        return new AppRiverClient([
+            'base_url' => 'https://appriver.test',
+            'handler' => HandlerStack::create($mock),
+        ]);
+    }
+
+    public function test_nested_invalid_grant_clears_dead_credentials(): void
+    {
+        $this->seedConnectedTokens();
+        $this->assertTrue(AppRiverClient::isConnected());
+
+        $client = $this->clientRespondingWith(
+            '{"error":"invalid_request","error_description":"{\"error\":\"invalid_grant\"}"}'
+        );
+
+        try {
+            $client->getSubscriptions('customer-1');
+            $this->fail('Expected AppRiverClientException for a dead refresh token.');
+        } catch (AppRiverClientException $e) {
+            $this->assertSame('invalid_grant', $e->oauthError);
+        }
+
+        $this->assertFalse(
+            AppRiverClient::isConnected(),
+            'Dead credentials must be cleared so the integrations page stops reporting connected.'
+        );
+        $this->assertNull(Setting::getEncrypted('appriver_refresh_token'));
+        $this->assertNotNull(
+            Setting::getValue('appriver_connected_at'),
+            'connected_at must survive a disconnect — it is the only field separating '.
+            '"credentials died on a date" from "never connected".'
+        );
+    }
+
+    public function test_top_level_error_code_is_still_honoured(): void
+    {
+        $this->seedConnectedTokens();
+
+        $client = $this->clientRespondingWith(
+            '{"error":"invalid_client","error_description":"Client authentication failed"}'
+        );
+
+        try {
+            $client->getSubscriptions('customer-1');
+            $this->fail('Expected AppRiverClientException for a rejected client credential.');
+        } catch (AppRiverClientException $e) {
+            $this->assertSame('invalid_client', $e->oauthError);
+        }
+
+        $this->assertFalse(AppRiverClient::isConnected());
+    }
+
+    /**
+     * The nested code must never MASK an actionable top-level one. An
+     * unconditional override would reproduce #389 in the opposite direction:
+     * a real top-level invalid_grant hidden behind whatever the description nests.
+     */
+    public function test_nested_code_does_not_mask_an_actionable_top_level_code(): void
+    {
+        $this->seedConnectedTokens();
+
+        $client = $this->clientRespondingWith(
+            '{"error":"invalid_grant","error_description":"{\"error\":\"server_error\",\"trace\":\"abc\"}"}'
+        );
+
+        try {
+            $client->getSubscriptions('customer-1');
+            $this->fail('Expected AppRiverClientException for a dead refresh token.');
+        } catch (AppRiverClientException $e) {
+            $this->assertSame(
+                'invalid_grant',
+                $e->oauthError,
+                'A nested non-credential code must not displace an actionable top-level one.'
+            );
+        }
+
+        $this->assertFalse(AppRiverClient::isConnected());
+    }
+
+    public function test_unrelated_oauth_error_leaves_credentials_alone(): void
+    {
+        $this->seedConnectedTokens();
+
+        $client = $this->clientRespondingWith(
+            '{"error":"temporarily_unavailable","error_description":"try again later"}'
+        );
+
+        try {
+            $client->getSubscriptions('customer-1');
+            $this->fail('Expected AppRiverClientException for a transient vendor error.');
+        } catch (AppRiverClientException $e) {
+            $this->assertSame('temporarily_unavailable', $e->oauthError);
+        }
+
+        $this->assertTrue(
+            AppRiverClient::isConnected(),
+            'A transient vendor error must not disconnect a live integration.'
+        );
+    }
+
+    public function test_non_json_description_does_not_break_parsing(): void
+    {
+        $this->seedConnectedTokens();
+
+        $client = $this->clientRespondingWith(
+            '{"error":"invalid_grant","error_description":"refresh token expired"}'
+        );
+
+        try {
+            $client->getSubscriptions('customer-1');
+            $this->fail('Expected AppRiverClientException for an expired refresh token.');
+        } catch (AppRiverClientException $e) {
+            $this->assertSame('invalid_grant', $e->oauthError);
+        }
+
+        $this->assertFalse(AppRiverClient::isConnected());
+    }
+
+    public function test_nested_invalid_client_is_promoted_too(): void
+    {
+        $this->seedConnectedTokens();
+
+        $client = $this->clientRespondingWith(
+            '{"error":"invalid_request","error_description":"{\"error\":\"invalid_client\"}"}'
+        );
+
+        try {
+            $client->getSubscriptions('customer-1');
+            $this->fail('Expected AppRiverClientException for a rejected client credential.');
+        } catch (AppRiverClientException $e) {
+            $this->assertSame('invalid_client', $e->oauthError);
+        }
+
+        $this->assertFalse(AppRiverClient::isConnected());
+    }
+
+    /**
+     * The nested envelope's own text is what an operator reads — the raw description
+     * is the JSON fragment that hid this bug. It reaches humans through the OAuth
+     * callback flash and the Test Connection result, so it must not be a blob.
+     */
+    public function test_operator_facing_message_uses_the_nested_description(): void
+    {
+        $this->seedConnectedTokens();
+
+        $client = $this->clientRespondingWith(
+            '{"error":"invalid_request","error_description":"{\"error\":\"invalid_grant\",\"error_description\":\"The refresh token has expired.\"}"}'
+        );
+
+        // Driven through exchangeCode() because that is the operator-facing path:
+        // AppRiverOAuthController flashes this message straight onto the integrations
+        // page. The refresh path replaces it with handleRefreshFailure()'s fixed
+        // "session expired" text, so it never shows the vendor's wording either way.
+        try {
+            $client->exchangeCode('stale-authorization-code');
+            $this->fail('Expected AppRiverClientException.');
+        } catch (AppRiverClientException $e) {
+            $this->assertStringContainsString('The refresh token has expired.', $e->getMessage());
+            $this->assertStringNotContainsString('{"error"', $e->getMessage());
+        }
+    }
+
+    /**
+     * A vendor that stops double-encoding must not silently reopen #389.
+     */
+    public function test_an_already_decoded_nested_envelope_is_read_the_same_way(): void
+    {
+        $this->seedConnectedTokens();
+
+        $client = $this->clientRespondingWith(
+            '{"error":"invalid_request","error_description":{"error":"invalid_grant"}}'
+        );
+
+        try {
+            $client->getSubscriptions('customer-1');
+            $this->fail('Expected AppRiverClientException.');
+        } catch (AppRiverClientException $e) {
+            $this->assertSame('invalid_grant', $e->oauthError);
+        }
+
+        $this->assertFalse(AppRiverClient::isConnected());
+    }
+
+    /**
+     * disconnect() is also reached from the Settings > Integrations disconnect action.
+     * Keeping connected_at changes that path too, so pin it deliberately rather than
+     * leaving it as an untested side effect.
+     */
+    public function test_a_user_initiated_disconnect_also_keeps_connected_at(): void
+    {
+        $this->seedConnectedTokens();
+
+        (new AppRiverClient(['base_url' => 'https://appriver.test']))->disconnect();
+
+        $this->assertFalse(AppRiverClient::isConnected());
+        $this->assertNotNull(Setting::getValue('appriver_connected_at'));
+    }
+
+    /**
+     * The other lane into handleRefreshFailure(): the stored expiry is still in the
+     * future, so getAccessToken() does not pre-emptively refresh; the API call 401s
+     * and request() refreshes from its catch. Every other test here takes the
+     * expiry-driven path, so without this one a regression confined to the 401 lane
+     * would leave dead credentials in place with a fully green suite.
+     */
+    public function test_nested_invalid_grant_on_the_401_retry_lane_also_clears_credentials(): void
+    {
+        $this->seedConnectedTokens();
+        Setting::setValue('appriver_token_expires_at', now()->addMinutes(20)->toDateTimeString());
+
+        $mock = new MockHandler([
+            new ClientException(
+                'Unauthorized',
+                new Request('GET', 'customers/customer-1/subscriptions'),
+                new Response(401, [], '{"message":"unauthorized"}'),
+            ),
+            new ClientException(
+                'Client error',
+                new Request('POST', 'auth/token'),
+                new Response(400, [], '{"error":"invalid_request","error_description":"{\"error\":\"invalid_grant\"}"}'),
+            ),
+        ]);
+
+        $client = new AppRiverClient([
+            'base_url' => 'https://appriver.test',
+            'handler' => HandlerStack::create($mock),
+        ]);
+
+        try {
+            $client->getSubscriptions('customer-1');
+            $this->fail('Expected AppRiverClientException from the 401 retry lane.');
+        } catch (AppRiverClientException $e) {
+            $this->assertSame('invalid_grant', $e->oauthError);
+        }
+
+        $this->assertFalse(
+            AppRiverClient::isConnected(),
+            'The 401 retry lane must clear dead credentials just as the expiry lane does.'
+        );
+    }
+
+    /**
+     * tokenRequest() is shared with the authorization-code exchange, so the nested
+     * code is normalised there too. That is harmless: handleRefreshFailure() is
+     * only reached from getAccessToken() and the 401-retry path, never from
+     * exchangeCode(), so a failed re-connect cannot clear a live credential set.
+     */
+    public function test_failed_code_exchange_does_not_clear_stored_credentials(): void
+    {
+        $this->seedConnectedTokens();
+
+        $client = $this->clientRespondingWith(
+            '{"error":"invalid_request","error_description":"{\"error\":\"invalid_grant\"}"}'
+        );
+
+        try {
+            $client->exchangeCode('stale-authorization-code');
+            $this->fail('Expected AppRiverClientException for a stale authorization code.');
+        } catch (AppRiverClientException $e) {
+            $this->assertSame('invalid_grant', $e->oauthError);
+        }
+
+        $this->assertTrue(
+            AppRiverClient::isConnected(),
+            'A failed re-connect must not clear credentials that are still stored.'
+        );
+    }
+}
