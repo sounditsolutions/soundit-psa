@@ -235,10 +235,42 @@ class AppRiverLicenseSyncService
 
             // A known status that is not conclusive about absence — Pending is
             // mid-provisioning, Suspended may be restored — must not license a
-            // destructive cleanup. Known, so not drift; inconclusive, so unobserved.
+            // destructive cleanup of THAT subscription's licence. But it is an ordinary
+            // vendor state that can persist for weeks, so it is neither of two things:
+            //
+            //   - an error. recordError() feeds `$result->errors > 0 ? FAILURE : SUCCESS`
+            //     in the sync commands, and a subscription the vendor leaves suspended
+            //     would fail every nightly run until it is restored.
+            //   - grounds to withhold cleanup from the client's OTHER subscriptions.
+            //     $unobserved is per-client, so counting one here excludes the whole
+            //     client from deactivateStale() — and a genuinely Cancelled sibling would
+            //     keep its seat count and go on billing for as long as this one stays
+            //     suspended.
+            //
+            // So protect exactly the licence this entry names, by marking it seen: it is
+            // held out of stale cleanup with its stored seat count untouched, and the rest
+            // of the client is still observed normally.
             if (in_array($status, self::INCONCLUSIVE_SUBSCRIPTION_STATUSES, true)) {
-                $unobserved++;
-                $this->recordUnobserved($result, $client, "inconclusive SubscriptionStatus {$status}");
+                $inconclusiveKey = $sub['SubscriptionKey'] ?? null;
+
+                if (! $inconclusiveKey) {
+                    // An entry with no key names no licence, so nothing can be held out
+                    // individually — fall back to withholding cleanup for the whole client,
+                    // as with any other malformed entry.
+                    $unobserved++;
+                    $this->recordUnobserved($result, $client, "inconclusive SubscriptionStatus {$status} with no SubscriptionKey");
+
+                    continue;
+                }
+
+                $protectedIds = License::where('client_id', $client->id)
+                    ->where('vendor_ref', $inconclusiveKey)
+                    ->pluck('id')
+                    ->all();
+
+                $seenLicenseIds = array_merge($seenLicenseIds, $protectedIds);
+
+                Log::info("[AppRiverSync] Subscription {$inconclusiveKey} for {$client->name} is {$status}; leaving its licence as it stands and out of stale cleanup");
 
                 continue;
             }

@@ -88,7 +88,7 @@ class AppRiverInconclusiveStatusGuardTest extends TestCase
 
         $this->assertSame(4, $licence->quantity, 'A suspended subscription must not zero a live seat count.');
         $this->assertSame('active', $licence->status, 'A suspended subscription is not an observation of absence.');
-        $this->assertGreaterThan(0, $result->errors, 'Withheld cleanup must be recorded, not just logged.');
+        $this->assertSame(0, $result->errors, 'Suspended is an ordinary vendor state, not an error — routing it through recordError() would fail the nightly run for as long as the vendor leaves it suspended.');
     }
 
     /**
@@ -106,7 +106,61 @@ class AppRiverInconclusiveStatusGuardTest extends TestCase
 
         $this->assertSame(4, $licence->quantity, 'A pending subscription must not zero a live seat count.');
         $this->assertSame('active', $licence->status);
-        $this->assertGreaterThan(0, $result->errors);
+        $this->assertSame(0, $result->errors, 'A subscription mid-provisioning is not an error.');
+    }
+
+    /**
+     * The withheld cleanup is per-subscription, not per-client. A suspended subscription
+     * holds back its OWN licence; a cancelled sibling on the same client must still be
+     * zeroed, or that cancelled subscription bills for as long as the vendor leaves the
+     * other one suspended.
+     */
+    public function test_an_inconclusive_subscription_does_not_block_cleanup_of_a_cancelled_sibling(): void
+    {
+        [$client, $suspendedLicence] = $this->mappedClientWithLicence(4);
+
+        $cancelledType = LicenseType::create([
+            'vendor' => 'appriver',
+            'vendor_sku_id' => 'exchange-plan-1',
+            'name' => 'Exchange Plan 1',
+            'is_active' => true,
+        ]);
+
+        $cancelledLicence = License::create([
+            'license_type_id' => $cancelledType->id,
+            'client_id' => $client->id,
+            'vendor_ref' => 'sub-2',
+            'quantity' => 4,
+            'assigned_quantity' => 4,
+            'status' => 'active',
+            'synced_at' => now()->subDay(),
+        ]);
+
+        $mock = $this->createMock(AppRiverClient::class);
+        $mock->method('getSubscriptions')->willReturn([
+            [
+                'SubscriptionStatus' => 'Suspended',
+                'SubscriptionKey' => 'sub-1',
+                'ProductName' => 'Business Premium',
+            ],
+            [
+                'SubscriptionStatus' => 'Cancelled',
+                'SubscriptionKey' => 'sub-2',
+                'ProductName' => 'Exchange Plan 1',
+            ],
+        ]);
+
+        $service = new AppRiverLicenseSyncService($mock);
+        $result = $service->syncLicenses();
+
+        $suspendedLicence->refresh();
+        $cancelledLicence->refresh();
+
+        $this->assertSame(4, $suspendedLicence->quantity, 'The suspended subscription must keep its seat count.');
+        $this->assertSame('active', $suspendedLicence->status);
+        $this->assertSame(0, $cancelledLicence->quantity, 'A cancelled sibling must still be cleaned up — one inconclusive subscription does not shield the whole client.');
+        $this->assertSame('suspended', $cancelledLicence->status);
+        $this->assertSame(0, $result->errors);
     }
 
     public static function conclusiveInactiveStatuses(): array
