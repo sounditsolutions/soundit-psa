@@ -307,7 +307,15 @@ class AppRiverLicenseSyncService
             if (! in_array($status, self::ACTIVE_SUBSCRIPTION_STATUSES, true)) {
                 $inactiveKey = json_encode($sub['SubscriptionKey'] ?? null);
 
-                Log::info("[AppRiverSync] Subscription {$inactiveKey} for {$client->name} reported conclusive inactive SubscriptionStatus {$status}; its licence is eligible for stale cleanup");
+                // Say only what this point in the run knows. Eligibility is NOT decided here:
+                // this method returns an unobserved count, and syncLicenses() keeps the whole
+                // client out of deactivateStale() unless that count is zero — so a single
+                // unrecognised or malformed sibling later in this same loop leaves this seat
+                // count exactly as it stands. Asserting eligibility from inside the loop would
+                // tell an operator the opposite of what the run did on precisely the payload
+                // they are investigating, so this line names the status and stops there; the
+                // withheld-cleanup case has its own warning in the caller.
+                Log::info("[AppRiverSync] Subscription {$inactiveKey} for {$client->name} reported conclusive inactive SubscriptionStatus {$status}; not holding its licence out of stale cleanup — whether cleanup runs for this client is decided once every subscription has been read, and is logged separately");
 
                 continue;
             }
