@@ -9,6 +9,7 @@ use App\Models\LicenseType;
 use App\Services\AppRiver\AppRiverClient;
 use App\Services\AppRiver\AppRiverLicenseSyncService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Log;
 use Tests\TestCase;
 
 /**
@@ -23,17 +24,19 @@ use Tests\TestCase;
  * subscription AppRiver had just stopped reporting. A billing write, unattended,
  * on every sync run.
  *
- * The guard is in retryScheduledReductions(): it refuses to send a queued value
- * ABOVE the current quantity, whatever put it there — a row zeroed by the stale
- * cleanup in this same run, a row an earlier build already zeroed and which the stale
- * query can no longer see (quantity 0, already suspended), or a vendor-side reduction
- * observed by an ordinary sync.
- *
- * deactivateStale() deliberately does NOT clear the queue. Staleness is only "absent
- * from this run's response", so clearing it would let a paging glitch or a partial
- * response silently destroy an operator's billing instruction that nothing can
- * re-derive; quantity self-heals when the subscription reappears, and the reduction
- * goes then.
+ * Two guards, and they answer different states:
+ *   1. deactivateStale() clears scheduled_quantity with the rest of the row, so the
+ *      state is not created — and NAMES each cleared instruction in the log and on
+ *      SyncResult, because dropping an operator's billing intent in silence is its own
+ *      defect. Keeping it instead was tried and is worse: a queue left on a zeroed row
+ *      has no expiry, and reactivation of the same SubscriptionKey revives the row at
+ *      the new seat count, at which point the old instruction passes guard 2 and bills
+ *      the new subscription down.
+ *   2. retryScheduledReductions() refuses to SEND a queued value above the current
+ *      quantity, whatever put it there. That is what protects rows an earlier build
+ *      already zeroed and left queued, which guard 1 cannot reach: the stale query only
+ *      matches quantity > 0 or status active, and such a row is neither. It refuses
+ *      without clearing, because there it does not know the row's history.
  */
 class AppRiverScheduledReductionGuardTest extends TestCase
 {
@@ -97,11 +100,11 @@ class AppRiverScheduledReductionGuardTest extends TestCase
      * The reported path, end to end. A queued reduction of 4 → 2 is outstanding when
      * AppRiver reports the subscription cancelled. Cleanup is correct and must
      * happen; what must NOT happen is the retry pass then telling the vendor to put
-     * the subscription back up to 2 seats — and the operator's queued instruction must
-     * still be standing afterwards, because "cancelled" here is only "AppRiver did not
-     * list it in this response".
+     * the subscription back up to 2 seats. The queue is cleared rather than left
+     * standing — but the discarded instruction is named, not dropped in silence, and
+     * this pins both halves of that.
      */
-    public function test_stale_cleanup_sends_no_seat_change_and_keeps_the_queued_reduction(): void
+    public function test_stale_cleanup_sends_no_seat_change_and_records_the_queue_it_discards(): void
     {
         $client = $this->mappedClient();
         $licence = $this->licenceFor($client, [
@@ -121,7 +124,9 @@ class AppRiverScheduledReductionGuardTest extends TestCase
         $sent = [];
         $this->recordSeatWrites($mock, $sent);
 
-        (new AppRiverLicenseSyncService($mock))->syncLicenses();
+        Log::spy();
+
+        $result = (new AppRiverLicenseSyncService($mock))->syncLicenses();
 
         $licence->refresh();
 
@@ -132,10 +137,23 @@ class AppRiverScheduledReductionGuardTest extends TestCase
         );
         $this->assertSame(0, $licence->quantity, 'a cancelled subscription must still be cleaned up');
         $this->assertSame('suspended', $licence->status);
-        $this->assertSame(
-            2,
+        $this->assertNull(
             $licence->scheduled_quantity,
-            'the operator instruction survives cleanup — a vendor omission may be transient, and the retry guard already refuses to send a queued value above quantity'
+            'the queued reduction must not survive the licence being zeroed — a queue standing on a zeroed row is an increase waiting for the next reactivation to make it sendable'
+        );
+
+        // Cleared is not the same as dropped. The instruction was an operator's, so
+        // both the log and the run summary have to carry what was discarded — the same
+        // rule recordUnobserved() applies to a withheld cleanup.
+        Log::shouldHaveReceived('warning')
+            ->withArgs(fn (string $message): bool => str_contains($message, 'Discarding queued seat reduction to 2')
+                && str_contains($message, 'Business Premium'))
+            ->once();
+
+        $this->assertGreaterThan(
+            0,
+            $result->errors,
+            'a discarded operator instruction must reach the run summary, not only the log'
         );
     }
 
@@ -210,6 +228,50 @@ class AppRiverScheduledReductionGuardTest extends TestCase
         $licence->refresh();
 
         $this->assertNull($licence->scheduled_quantity, 'an applied reduction clears the queue');
+    }
+
+    /**
+     * The hazard guard 2 cannot see, on the population guard 1 cannot repair: a row an
+     * EARLIER build zeroed and left queued, whose subscription then comes back at a
+     * different seat count. Reviving it restores quantity above the queued value, so
+     * `scheduled > quantity` is false and the refusal never fires — the stale
+     * instruction is simply sendable again. Nothing in this build creates that state;
+     * it is what is sitting in the database from before the fix.
+     */
+    public function test_a_returning_subscription_does_not_make_an_old_queued_reduction_sendable(): void
+    {
+        $client = $this->mappedClient();
+        $licence = $this->licenceFor($client, [
+            'quantity' => 0,
+            'assigned_quantity' => 0,
+            'scheduled_quantity' => 3,
+            'status' => 'suspended',
+        ]);
+
+        $mock = $this->createMock(AppRiverClient::class);
+        $mock->method('getSubscriptions')->willReturn([
+            [
+                'SubscriptionStatus' => 'Active',
+                'SubscriptionKey' => 'sub-1',
+                'ProductName' => 'Business Premium',
+            ],
+        ]);
+        $mock->method('getSubscriptionDetail')->willReturn($this->detail(10, 8));
+
+        $sent = [];
+        $this->recordSeatWrites($mock, $sent);
+
+        (new AppRiverLicenseSyncService($mock))->syncLicenses();
+
+        $licence->refresh();
+
+        $this->assertSame(
+            [],
+            $sent,
+            'a queued reduction written against a subscription that has since ended must not be applied to the one that replaced it'
+        );
+        $this->assertSame(10, $licence->quantity, 'the returning subscription is still synced at its real seat count');
+        $this->assertNull($licence->scheduled_quantity, 'the superseded instruction is retired, not left to fire later');
     }
 
     /**
