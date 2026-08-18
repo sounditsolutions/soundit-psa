@@ -37,6 +37,12 @@ use Tests\TestCase;
  *      already zeroed and left queued, which guard 1 cannot reach: the stale query only
  *      matches quantity > 0 or status active, and such a row is neither. It refuses
  *      without clearing, because there it does not know the row's history.
+ *   3. the status filter clears a queued reduction when AppRiver reports the
+ *      subscription on an inconclusive status, on the same terms as guard 1 — named in
+ *      the log, recorded as a withdrawal — while leaving the licence row itself alone.
+ *      Guard 1 never sees those rows (they are held out of cleanup) and guard 2 passes
+ *      them (the row was not zeroed, so the queued value is below quantity like any
+ *      healthy licence). Hold the data, withdraw the instruction.
  */
 class AppRiverScheduledReductionGuardTest extends TestCase
 {
@@ -340,6 +346,142 @@ class AppRiverScheduledReductionGuardTest extends TestCase
         $this->assertStringContainsString("licence #{$licence->id}", $result->withdrawnMessages[0]);
         $this->assertStringContainsString('sub-1', $result->withdrawnMessages[0]);
         $this->assertSame(0, $result->errors, 'a subscription coming back is not a sync failure');
+    }
+
+    /**
+     * The path the inconclusive-status guards opened, and the one neither guard above
+     * can see. AppRiver reports the subscription Suspended, so its licence is held out
+     * of stale cleanup and keeps its seat count — which means guard 2 does not fire
+     * either: the queued value sits BELOW the intact quantity, exactly as it does on a
+     * healthy licence.
+     *
+     * This restores rather than invents. Before the inconclusive guards, a Suspended
+     * subscription was read as absence, so deactivateStale() named the queued
+     * instruction and cleared it in the same update — a queued reduction outliving a
+     * vendor suspension has never been behaviour of this system. The guard removed the
+     * clearing as a side effect of stopping the zeroing.
+     *
+     * Hold the DATA, withdraw the INSTRUCTION: the row keeps its seat count and its
+     * active status, and only the pending outbound write is retired.
+     */
+    public function test_a_suspended_subscription_withdraws_its_queued_reduction_and_leaves_the_row_alone(): void
+    {
+        $client = $this->mappedClient();
+        $licence = $this->licenceFor($client, [
+            'quantity' => 10,
+            'assigned_quantity' => 5,
+            'scheduled_quantity' => 6,
+        ]);
+
+        $mock = $this->createMock(AppRiverClient::class);
+        $mock->method('getSubscriptions')->willReturn([
+            [
+                'SubscriptionStatus' => 'Suspended',
+                'SubscriptionKey' => 'sub-1',
+                'ProductName' => 'Business Premium',
+            ],
+        ]);
+
+        $sent = [];
+        $this->recordSeatWrites($mock, $sent);
+
+        Log::spy();
+
+        $result = (new AppRiverLicenseSyncService($mock))->syncLicenses();
+
+        $licence->refresh();
+
+        $this->assertSame(
+            [],
+            $sent,
+            'no seat count may be pushed to a subscription the vendor is reporting suspended'
+        );
+        $this->assertNull(
+            $licence->scheduled_quantity,
+            'the instruction was written against a subscription whose state has since changed; it does not carry across'
+        );
+
+        // ...and the licence itself is untouched. This is the half #424 exists to
+        // protect, and clearing the queue must not become a route back to zeroing.
+        $this->assertSame(10, $licence->quantity, 'a suspended subscription must not zero a live seat count');
+        $this->assertSame('active', $licence->status, 'a suspended subscription is not an observation of absence');
+
+        // Destroying an operator's billing intent is loud on both channels, exactly as
+        // the stale-cleanup discard is.
+        Log::shouldHaveReceived('warning')
+            ->withArgs(fn (string $message): bool => str_contains($message, 'Discarding queued seat reduction to 6')
+                && str_contains($message, 'Business Premium')
+                && str_contains($message, 'Suspended'))
+            ->once();
+
+        $this->assertSame(1, $result->withdrawn, 'a discarded instruction must reach the run summary, not only the log');
+        $this->assertStringContainsString('withdrawn', $result->summary());
+        $this->assertStringContainsString("licence #{$licence->id}", $result->withdrawnMessages[0]);
+        $this->assertStringContainsString('sub-1', $result->withdrawnMessages[0]);
+
+        // A vendor-suspended subscription is an ordinary state that can persist for
+        // weeks. It must not fail the nightly run.
+        $this->assertSame(0, $result->errors, 'a suspended subscription is not a sync failure');
+    }
+
+    /**
+     * The sibling, and the more valuable of the two: an assertion of an ABSENCE. Once
+     * the subscription is reported active again the row looks entirely ordinary —
+     * active, at its seat count — so nothing downstream would refuse a queued value
+     * still sitting on it. Proving no PATCH is sent proves the instruction is genuinely
+     * gone rather than merely quiet, which is what survives someone later reading the
+     * clear as a no-op on the happy path and tidying it away.
+     */
+    public function test_a_withdrawn_reduction_does_not_fire_when_the_subscription_returns(): void
+    {
+        $client = $this->mappedClient();
+        $licence = $this->licenceFor($client, [
+            'quantity' => 10,
+            'assigned_quantity' => 5,
+            'scheduled_quantity' => 6,
+        ]);
+
+        $mock = $this->createMock(AppRiverClient::class);
+        $mock->method('getSubscriptions')->willReturnOnConsecutiveCalls(
+            [[
+                'SubscriptionStatus' => 'Suspended',
+                'SubscriptionKey' => 'sub-1',
+                'ProductName' => 'Business Premium',
+            ]],
+            [[
+                'SubscriptionStatus' => 'Active',
+                'SubscriptionKey' => 'sub-1',
+                'ProductName' => 'Business Premium',
+            ]],
+        );
+        $mock->method('getSubscriptionDetail')->willReturn($this->detail(10, 5));
+
+        $sent = [];
+        $this->recordSeatWrites($mock, $sent);
+
+        $service = new AppRiverLicenseSyncService($mock);
+
+        $suspendedRun = $service->syncLicenses();
+
+        // Ordered so the "nothing was sent" claim fires before any bookkeeping
+        // assertion, for the reason recordSeatWrites() gives: an assertion that fails
+        // earlier masks the one the test exists to make.
+        $this->assertSame([], $sent, 'nothing may be sent on the night the subscription is reported suspended');
+        $this->assertSame(1, $suspendedRun->withdrawn, 'and the withdrawal fires that same night');
+
+        $restoredRun = $service->syncLicenses();
+
+        $licence->refresh();
+
+        $this->assertSame(
+            [],
+            $sent,
+            'the withdrawn reduction must not fire when the subscription comes back — it was retired, not paused'
+        );
+        $this->assertSame(10, $licence->quantity, 'the returning subscription is synced at its real seat count');
+        $this->assertSame('active', $licence->status);
+        $this->assertNull($licence->scheduled_quantity, 'nothing may reinstate a withdrawn instruction');
+        $this->assertSame(0, $restoredRun->withdrawn, 'and there is nothing left to withdraw a second time');
     }
 
     /**

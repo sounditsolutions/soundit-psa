@@ -9,6 +9,7 @@ use App\Models\LicenseType;
 use App\Services\AppRiver\AppRiverClient;
 use App\Services\AppRiver\AppRiverLicenseSyncService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Log;
 use Tests\TestCase;
 
 /**
@@ -322,5 +323,48 @@ class AppRiverInconclusiveStatusGuardTest extends TestCase
         $this->assertSame(0, $licence->quantity, 'An observed zero is an observation and must be written.');
         $this->assertSame('active', $licence->status, 'An observed zero is not a stale-cleanup suspension.');
         $this->assertSame(0, $result->errors, 'An observed zero is not an error.');
+    }
+
+    /**
+     * The split between conclusive and inconclusive statuses is a judgement with no
+     * vendor documentation behind it, and until this line the conclusive side was the
+     * one branch of the filter that dropped its entry in silence — which is what made
+     * the judgement unfalsifiable. Every branch now names the status it saw, so the log
+     * of a real run is evidence about what AppRiver actually returns.
+     *
+     * The line says what this point in the run knows and no more. Whether cleanup
+     * actually runs for the client is decided after every subscription has been read,
+     * so a claim about eligibility from inside the loop could be the opposite of what
+     * the run did.
+     */
+    public function test_a_conclusive_inactive_status_is_named_in_the_log_not_dropped_in_silence(): void
+    {
+        [, $licence] = $this->mappedClientWithLicence(4);
+
+        Log::spy();
+
+        $result = (new AppRiverLicenseSyncService($this->clientReportingStatus('Cancelled')))->syncLicenses();
+
+        $licence->refresh();
+
+        Log::shouldHaveReceived('info')
+            ->withArgs(fn (string $message): bool => str_contains($message, 'sub-1')
+                && str_contains($message, 'conclusive inactive SubscriptionStatus Cancelled'))
+            ->once();
+
+        // The affirmative half of the same pointer: the line above tells the operator the
+        // cleanup decision is logged separately, so there has to BE such a line when the
+        // client qualifies. deactivateStale() only emits an aggregate that names no
+        // client, and nothing at all when it zeroes nothing.
+        Log::shouldHaveReceived('info')
+            ->withArgs(fn (string $message): bool => str_contains($message, 'All subscriptions observed')
+                && str_contains($message, 'stale cleanup runs for this client'))
+            ->once();
+
+        // Behaviour is unchanged: a cancelled subscription is still cleaned up, and
+        // still is not an error.
+        $this->assertSame(0, $licence->quantity, 'a conclusive inactive status is still an observation of absence');
+        $this->assertSame('suspended', $licence->status);
+        $this->assertSame(0, $result->errors, 'a cancelled subscription is not a sync failure');
     }
 }
