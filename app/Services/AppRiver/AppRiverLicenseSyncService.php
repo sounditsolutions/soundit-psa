@@ -21,6 +21,18 @@ class AppRiverLicenseSyncService
 
     private const ACTIVE_SUBSCRIPTION_STATUSES = ['Active', 'Trial'];
 
+    /**
+     * Known statuses that are NOT evidence the subscription is gone. 'Pending' is a
+     * subscription mid-provisioning and 'Suspended' is one the vendor may restore —
+     * treating either as an observation of absence zeroes a licence that still exists.
+     * They are known (so not drift) but not conclusive (so not cleanup-eligible).
+     *
+     * This list is not sourced from vendor documentation — none is public. It is a
+     * judgement about which statuses are safe to act destructively on, and the safe
+     * default for an unlisted one is the drift path, which withholds cleanup.
+     */
+    private const INCONCLUSIVE_SUBSCRIPTION_STATUSES = ['Suspended', 'Pending'];
+
     public function __construct(
         private readonly AppRiverClient $client,
     ) {}
@@ -221,8 +233,18 @@ class AppRiverLicenseSyncService
                 continue;
             }
 
-            // A known-but-inactive status IS an observation: the subscription really
-            // is gone, and its licence should be cleaned up.
+            // A known status that is not conclusive about absence — Pending is
+            // mid-provisioning, Suspended may be restored — must not license a
+            // destructive cleanup. Known, so not drift; inconclusive, so unobserved.
+            if (in_array($status, self::INCONCLUSIVE_SUBSCRIPTION_STATUSES, true)) {
+                $unobserved++;
+                $this->recordUnobserved($result, $client, "inconclusive SubscriptionStatus {$status}");
+
+                continue;
+            }
+
+            // A known, conclusive inactive status IS an observation: the subscription
+            // really is gone, and its licence should be cleaned up.
             if (! in_array($status, self::ACTIVE_SUBSCRIPTION_STATUSES, true)) {
                 continue;
             }
@@ -244,6 +266,25 @@ class AppRiverLicenseSyncService
             try {
                 $detail = $this->client->getSubscriptionDetail($customerId, $subscriptionKey);
                 $counts = $this->extractLicenseCounts($detail);
+
+                // Null counts are NOT an observation of zero seats. extractLicenseCounts()
+                // returns nulls when ReadonlySubscriptionDetails is absent or renamed, and
+                // the write below defaults total to 0 — so a drifted detail payload would
+                // write quantity 0 / status active with nothing counted unobserved, zeroing
+                // a live seat count on the write path itself. Same rule as the envelope and
+                // the status filter: unreadable is not empty.
+                //
+                // Handled HERE rather than by raising inside extractLicenseCounts(), because
+                // that helper is shared with updateQuantity() and retryScheduledReductions()
+                // and a throw would be swallowed by the latter's catch AFTER its vendor write
+                // has already succeeded — leaving scheduled_quantity set and the reduction
+                // re-issued every run. Those two call sites are deliberately untouched.
+                if ($counts['total'] === null && $counts['assigned'] === null) {
+                    $unobserved++;
+                    $this->recordUnobserved($result, $client, "unreadable licence counts for subscription {$productName}");
+
+                    continue;
+                }
 
                 $licenseType = LicenseType::updateOrCreate(
                     ['vendor' => 'appriver', 'vendor_sku_id' => Str::slug($productName)],
