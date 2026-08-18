@@ -11,6 +11,8 @@ Sound PSA is MIT-licensed and developed in the open. Patches, issues and downstr
 Requires **PHP 8.3 or newer**. Do not trust `composer.json` here: its `"php": "^8.2"` constraint is stale and looser than the code. The tree uses typed class constants — an 8.3-only syntax feature — in `app/Services/Tactical/TacticalAlertService.php` and `app/Services/Technician/PromptFence.php`, so on 8.2 `composer install` succeeds and then anything that autoloads those classes, `php artisan test` included, dies with a `ParseError`. CI builds on 8.3 and that is the only version the project is developed and tested against. The contributor path is a manual Composer setup:
 
 ```
+git clone https://github.com/sounditsolutions/soundit-psa.git
+cd soundit-psa
 composer install
 cp .env.example .env
 php artisan key:generate
@@ -19,13 +21,15 @@ php artisan migrate
 php artisan serve
 ```
 
+You need the PHP extensions CI installs: `mbstring`, `pdo_sqlite`, `sqlite3`, `bcmath`, `intl`, `gd`, `zip`. `composer.json` does not declare them, so a missing one shows up as a runtime error rather than a failed install.
+
 `.env.example` ships `DB_CONNECTION=sqlite` and leaves `DB_DATABASE` unset, so Laravel falls back to `database/database.sqlite` — a file that is not in the repo. Create it before migrating; that is what the `touch` is for. Use `php artisan serve` rather than `php -S ... -t public`: the built-in server without a router script treats any request path containing a dot as a static file and returns 404 instead of reaching the framework, which matters on an API-first app whose routes end in `.json` or `.csv`.
 
 The steps above are the whole contributor path. [`docs/INSTALL.md`](docs/INSTALL.md) is a different document — a production deployment guide for standing up your own instance on a VPS (domain, TLS, nginx, queue workers); reach for it when you are deploying, not when you are contributing. The [README](README.md) covers the stack and architecture, and [`docs/DOCKER.md`](docs/DOCKER.md) documents the Docker Compose path.
 
 ### Getting logged in
 
-That leaves you a running app with an empty database and **no way to sign in**: every route is behind auth and `/login` offers Microsoft Entra ID SSO only — there is no username/password form. On a local machine:
+That leaves you a running app with an empty database and **no way into the staff application**: its routes are all behind auth, and the staff `/login` offers Microsoft Entra ID SSO only — no username/password form. (The separate client portal does ship its own email/password login at `portal/login`; that is not a way into the staff side.) On a local machine:
 
 1. Set `ADMIN_EMAIL` and `ADMIN_PASSWORD` in `.env` (both ship blank), then create the user:
 
@@ -35,7 +39,9 @@ That leaves you a running app with an empty database and **no way to sign in**: 
 
    `AdminSeeder` creates nothing and prints an error if either variable is unset.
 
-2. With the dev server running, open `http://127.0.0.1:8000/dev/login/1` — a bypass route registered **only** when `APP_ENV=local` (`routes/web.php`). The path segment is the user id; `1` is the first user created. It must never be reachable anywhere but a local dev machine.
+2. With the dev server running, open `http://127.0.0.1:8000/dev/login/1` — a bypass route registered **only** when `APP_ENV=local` (`routes/web.php`). The path segment is the user id; `1` is the first user created.
+
+   **`APP_ENV` is what arms that route, and `.env.example` ships `APP_ENV=local`.** So the setup above deliberately turns on an unauthenticated admin login, which is right for a laptop and catastrophic anywhere reachable. If you are deploying rather than contributing, set `APP_ENV=production` — check that first, before anything else in [`docs/INSTALL.md`](docs/INSTALL.md).
 
 ### Demo data
 
@@ -61,7 +67,9 @@ bash scripts/gc-verify.sh
 
 It runs, in order: `php artisan test` · `vendor/bin/pint --test` scoped to the PHP files your branch changed against `main` · a real-data and secret guard. That script is the single source of truth — CI runs it, maintainers run it, and so should you before opening a pull request.
 
-CI runs on pull requests and on pushes to `main`. Pushing a branch with no open pull request runs nothing, so open the PR if you want the gate's verdict. One thing can legitimately differ between your machine and CI: the changed-file set Pint checks is computed against `main`, so a stale branch gets a larger set there than locally. Rebase and re-run before concluding the gate is wrong — but if it still passes locally and fails in CI, say so in the PR; that is worth knowing on its own.
+CI runs on pull requests and on pushes to `main`. Pushing a branch with no open pull request runs nothing, so open the PR if you want the gate's verdict.
+
+One caveat worth knowing, because it makes the gate quietly weaker rather than louder: both the Pint check and the secret guard diff against `git merge-base HEAD origin/main`, falling back to `main`. **If neither ref resolves — a shallow clone, or a fork whose remote is named something else — that base is empty and both checks silently fall back to your uncommitted changes only.** Committed work is then never examined and the script still prints `PASS`. Fetch `main` before trusting a green run. If it passes locally and fails in CI with `main` present on both sides, say so in the PR; that is worth knowing on its own.
 
 ## Before you write code
 
