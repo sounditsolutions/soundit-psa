@@ -70,6 +70,15 @@ class AppRiverLicenseSyncService
                 // throwing, and either would otherwise have it zeroed.
                 if ($unobserved === 0) {
                     $successfulClientIds[] = $client->id;
+
+                    // The affirmative outcome needs a per-client record of its own. The
+                    // conclusive-inactive line in the status filter tells the operator the
+                    // cleanup decision is logged separately, and only the withheld branch
+                    // below had such a line: deactivateStale() emits nothing but an aggregate
+                    // count that names no client, and nothing at all when it zeroes nothing.
+                    // Without this, a client that DID qualify leaves no trace, and that
+                    // pointer sends the operator looking for evidence that does not exist.
+                    Log::info("[AppRiverSync] All subscriptions observed for {$client->name}; stale cleanup runs for this client");
                 } else {
                     Log::warning("[AppRiverSync] {$unobserved} subscription(s) unobserved for {$client->name}; skipping stale cleanup for this client");
                 }
@@ -196,6 +205,13 @@ class AppRiverLicenseSyncService
      *                                           failed or silently skipped. A non-zero
      *                                           count must keep the client out of the
      *                                           stale-cleanup set — see the caller.
+     *                                           Licences held out on an inconclusive
+     *                                           status are included in the seen ids —
+     *                                           that is what keeps them out of stale
+     *                                           cleanup; their queued reductions are
+     *                                           withdrawn at the point of observation,
+     *                                           so no later pass needs to tell them
+     *                                           apart.
      */
     private function syncClientSubscriptions(Client $client, string $customerId, SyncResult $result): array
     {
@@ -292,12 +308,69 @@ class AppRiverLicenseSyncService
 
                 Log::info("[AppRiverSync] Subscription {$inconclusiveKey} for {$client->name} is {$status}; leaving its licence as it stands and out of stale cleanup");
 
+                // Hold the DATA, withdraw the INSTRUCTION. The seat count, the status and
+                // the row itself are left exactly as they stand — that is the whole point
+                // of the inconclusive guard — but a queued seat reduction is not data
+                // about the subscription, it is a pending outbound write against it, and
+                // the vendor has just said it does not know what state that subscription
+                // is in.
+                //
+                // This RESTORES behaviour rather than inventing it. Before the
+                // inconclusive guards, a Suspended subscription was read as absence, so
+                // its licence went through deactivateStale() — which names each queued
+                // instruction and clears scheduled_quantity in the same update. A queued
+                // reduction surviving a vendor suspension has never existed in this
+                // system; the guard removed the clearing as a side effect of stopping the
+                // zeroing. Without this, the row keeps its full seat count, so the queued
+                // value sits BELOW quantity, passes the retry guard untouched, and the
+                // reduction is pushed to a subscription the vendor is reporting suspended.
+                //
+                // Withdrawn, not held: the instruction is genuinely retired and the
+                // operator re-queues it if they still want it. That is the recoverable
+                // failure — loud in the summary, nothing sent — where carrying it across
+                // the interruption fails by issuing an unattended billing write months
+                // after it was written. On ANY inconclusive status, Pending included:
+                // making the behaviour depend on which one would build on AppRiver
+                // semantics nobody has, which is what this guard exists to stop.
+                foreach (License::whereIn('id', $protectedIds)->whereNotNull('scheduled_quantity')->with(['licenseType'])->get() as $queued) {
+                    Log::warning("[AppRiverSync] Discarding queued seat reduction to {$queued->scheduled_quantity} for {$queued->licenseType?->name} on {$client->name}: AppRiver reports subscription {$inconclusiveKey} as {$status}, so the state the reduction was written against no longer holds. The licence itself is left untouched. Re-queue the reduction once the subscription is reported active again.");
+                    $result->recordWithdrawn("Queued seat reduction to {$queued->scheduled_quantity} discarded for licence #{$queued->id} ({$queued->licenseType?->name}) on {$client->name} — subscription {$inconclusiveKey} reported {$status}");
+                    $queued->update(['scheduled_quantity' => null]);
+                }
+
                 continue;
             }
 
-            // A known, conclusive inactive status IS an observation: the subscription
-            // really is gone, and its licence should be cleaned up.
+            // A known status this build treats as CONCLUSIVE about absence — Cancelled,
+            // Canceled, Expired, Deleted. It is an observation, so the entry does not
+            // count unobserved; the licence is simply not marked seen, and stale cleanup
+            // will zero it.
+            //
+            // Stated as what we do rather than as what is true of the subscription. The
+            // split between these statuses and INCONCLUSIVE_SUBSCRIPTION_STATUSES is a
+            // judgement with no vendor documentation behind it — the constant's own
+            // docblock says so — so "the subscription really is gone" asserts the very
+            // thing we have no evidence for, on the branch that acts destructively.
+            //
+            // Log the status on the way past, because silently dropping the entry here is
+            // what makes that judgement unfalsifiable: every other branch of this filter
+            // names the status it saw, and this was the last one that did not. When the
+            // credential is live again, this line is what says whether a real cancelled
+            // subscription comes back as Cancelled or as something we have never seen.
             if (! in_array($status, self::ACTIVE_SUBSCRIPTION_STATUSES, true)) {
+                $inactiveKey = json_encode($sub['SubscriptionKey'] ?? null);
+
+                // Say only what this point in the run knows. Eligibility is NOT decided here:
+                // this method returns an unobserved count, and syncLicenses() keeps the whole
+                // client out of deactivateStale() unless that count is zero — so a single
+                // unrecognised or malformed sibling later in this same loop leaves this seat
+                // count exactly as it stands. Asserting eligibility from inside the loop would
+                // tell an operator the opposite of what the run did on precisely the payload
+                // they are investigating, so this line names the status and stops there; the
+                // withheld-cleanup case has its own warning in the caller, and so now does the
+                // affirmative one.
+                Log::info("[AppRiverSync] Subscription {$inactiveKey} for {$client->name} reported conclusive inactive SubscriptionStatus {$status}; not holding its licence out of stale cleanup — whether cleanup runs for this client is decided once every subscription has been read, and is logged separately");
+
                 continue;
             }
 
@@ -357,6 +430,22 @@ class AppRiverLicenseSyncService
                 // it, the retry guard passes, and a months-old instruction bills a
                 // resubscription down unattended. The instruction was written against a
                 // subscription that has since ended; it does not carry over.
+                //
+                // This catches the ZEROED row only, and since the inconclusive-status
+                // guards that is no longer the only way a subscription's state changes
+                // underneath a queued reduction. A subscription reported Suspended and
+                // later Active never leaves the payload: its licence is held out of
+                // cleanup, keeps its seat count, and so comes back here as an ORDINARY
+                // active row this query does not match. It does not need to. The
+                // instruction was already withdrawn on the night the vendor first
+                // reported the subscription inconclusive, at the point in the status
+                // filter that knew why — so by the time the subscription returns there is
+                // nothing left on the row to fire, and nothing for this query to catch.
+                //
+                // The two sites answer the same question — has the subscription changed
+                // under the instruction — at the only two places the run can see it
+                // happen: absence, and an inconclusive status. Neither subsumes the
+                // other.
                 $revived = License::where($identity)
                     ->where('status', 'suspended')
                     ->whereNotNull('scheduled_quantity')
@@ -439,6 +528,14 @@ class AppRiverLicenseSyncService
      * the `total <= scheduled` clear does not fire when the new count is larger, so a
      * months-old instruction passes the guard below and silently bills a new
      * subscription down. An instruction the operator can re-issue is the cheaper loss.
+     *
+     * Note what this method no longer sees. Since the inconclusive-status guards, a
+     * subscription the vendor reports Suspended does NOT reach here: its licence is
+     * marked seen and held out, so the row keeps its seat count and its status. This
+     * clause is therefore no longer the only place a queued instruction is retired when
+     * a subscription's state moves under it — the status filter does the same thing, on
+     * the same reasoning, for the licences this method is deliberately not shown. The
+     * hazard is one premise with two observation points, not two defects.
      */
     private function deactivateStale(array $seenLicenseIds, array $mappedClientIds, SyncResult $result): void
     {
@@ -486,6 +583,12 @@ class AppRiverLicenseSyncService
      * Retry any queued seat reductions. Called during each sync run.
      * Reductions queued when AppRiver rejects immediate decreases (past refundable window).
      * May succeed at the start of a new billing cycle.
+     *
+     * Nothing here can tell an interrupted subscription from a healthy one, and it is
+     * not asked to. A licence whose subscription the vendor reports on an inconclusive
+     * status keeps its seat count, so its queued value sits BELOW quantity and reads as
+     * ordinary — the status filter clears such an instruction where it observes it,
+     * before this pass runs, which is the only point in the run that knows.
      */
     private function retryScheduledReductions(): void
     {
@@ -508,9 +611,17 @@ class AppRiverLicenseSyncService
             // closed at source in deactivateStale(); what reaches here is what a clear
             // cannot repair — above all a row an EARLIER build already zeroed and left
             // queued, which the stale query can no longer see (quantity 0, already
-            // suspended) and which is sitting in the database right now. It also
-            // subsumes "the licence is suspended", because a suspended row is zeroed
-            // and a queued value is always >= 1.
+            // suspended) and which is sitting in the database right now.
+            //
+            // It used to subsume "the licence is suspended" as well, because every
+            // suspended row was a zeroed one and a queued value is always >= 1. That
+            // reasoning DIED with the inconclusive-status guards: a subscription the
+            // vendor reports Suspended now keeps its row live, its seat count and — but
+            // for the withdrawal in the status filter — its queued value, so it would
+            // reach this loop looking like any other active licence and pass this test.
+            // The clear happens at the point of observation instead, where the status is
+            // actually known. This guard no longer covers that case and must not be read
+            // as though it does.
             //
             // Refuse, do not clear. Here the row's history is unknown — this is the
             // path that meets state no code in this build created — so leaving the

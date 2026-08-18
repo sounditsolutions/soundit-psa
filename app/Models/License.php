@@ -159,6 +159,22 @@ class License extends Model
      * its trigger is a vendor response rather than an operator. Only AppRiver writes
      * the column today; the invariant belongs wherever a licence is zeroed, not only
      * where the hazard has already been demonstrated.
+     *
+     * Read the direction carefully, because only one of the two survives. ZEROED AND
+     * SUSPENDED IMPLIES NO QUEUED CHANGE still holds — every writer of that state
+     * clears the column in the same update. The converse does NOT: a suspended
+     * SUBSCRIPTION no longer means a zeroed, suspended licence ROW. AppRiver's sync
+     * holds a licence out of cleanup while the vendor reports its subscription
+     * Suspended or Pending, so the row stays active and at its seat count. Code that
+     * wants "this subscription is interrupted" cannot read that off the row's status,
+     * and this docblock is not evidence that it can.
+     *
+     * What does still hold everywhere is the rule underneath: a queued seat change
+     * does not survive a change of state in the subscription it was written against.
+     * The two bulk methods here enforce it by zeroing; AppRiver's status filter
+     * enforces it by clearing the column where it observes the vendor saying so, on a
+     * row it otherwise leaves alone. A new consumer needs to say which of the two it
+     * is relying on.
      */
     public static function deactivateOrphaned(string|array $vendors, string $mappingColumn): int
     {
