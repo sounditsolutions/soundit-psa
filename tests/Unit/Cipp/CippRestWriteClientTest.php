@@ -432,6 +432,51 @@ class CippRestWriteClientTest extends TestCase
         }
     }
 
+    public function test_list_user_mailbox_rules_throws_on_a_non_object_entry_rather_than_filtering_it_away(): void
+    {
+        // The shape guard has to reach the ELEMENTS. CIPP answers a failed
+        // Exchange call HTTP 200 with the error as a bare string inside a list,
+        // and an empty object is the other degraded shape. Filtering non-objects
+        // out is the same fault as collapsing the body to []: the removal gate
+        // reports whatever survives as authoritative, so a listing that could
+        // not be read becomes 'No inbox rule named "X" exists on this mailbox'
+        // — a live BEC forwarding rule closed as clean (psa-7lgo rule 3, one
+        // level down).
+        foreach ([
+            '["Failed to connect to Exchange"]',
+            '{"Results":["Failed to connect to Exchange"]}',
+            '[{"Identity":"mbx-guid-1\\\\rule-id-1","Name":"Move invoices to RSS Feeds"},"Failed to connect to Exchange"]',
+            '[null]',
+            '[123]',
+        ] as $payload) {
+            Http::fake([
+                'login.microsoftonline.com/*' => Http::response(['access_token' => 'WRITE-TOKEN', 'expires_in' => 3600]),
+                'cipp.example.test/api/ListUserMailboxRules*' => Http::response($payload, 200, ['Content-Type' => 'application/json']),
+            ]);
+
+            try {
+                $this->emailSecurityClient()->listUserMailboxRules('acme.onmicrosoft.com', 'alex@acme.example');
+                $this->fail("Expected CippClientException for upstream body {$payload}");
+            } catch (CippClientException $e) {
+                $this->assertStringContainsString('non-object entry', $e->getMessage(), $payload);
+            }
+        }
+    }
+
+    public function test_list_user_mailbox_rules_still_reads_a_genuinely_empty_mailbox_as_empty(): void
+    {
+        // The element guard must not turn "this mailbox has no rules" into a
+        // refusal — that would decline every clean-mailbox approval and take the
+        // remediation path with it. An empty LIST is a real answer; only a
+        // non-object ELEMENT is drift.
+        Http::fake([
+            'login.microsoftonline.com/*' => Http::response(['access_token' => 'WRITE-TOKEN', 'expires_in' => 3600]),
+            'cipp.example.test/api/ListUserMailboxRules*' => Http::response('[]', 200, ['Content-Type' => 'application/json']),
+        ]);
+
+        $this->assertSame([], $this->emailSecurityClient()->listUserMailboxRules('acme.onmicrosoft.com', 'alex@acme.example'));
+    }
+
     public function test_list_mail_quarantine_throws_on_a_queue_backed_payload_rather_than_reporting_no_rows(): void
     {
         // The write client unwraps {"Results": ...} like the two read clients do, so it owns

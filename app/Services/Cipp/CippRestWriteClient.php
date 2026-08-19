@@ -398,12 +398,27 @@ class CippRestWriteClient
      * decline for the wrong reason on the removal gate, but the day this read
      * backs an answer it would be a false all-clear.
      *
-     * Same rule for the payload SHAPE. Only a list, or a {"Results": [...]}
-     * envelope, is a rule listing: an HTTP-200 error envelope ({"Results":
-     * "Failed to connect to Exchange"}), a non-array body, or any other drift
-     * THROWS. Collapsing those to [] would surface to the approver as "no inbox
-     * rule named X exists on this mailbox" — a degraded read reading as a clean
-     * mailbox, the exact polarity psa-7lgo rule 3 forbids.
+     * Same rule for the payload SHAPE, and it reaches ALL THE WAY DOWN TO THE
+     * ELEMENTS. Only a list of rule OBJECTS, or a {"Results": [...]} envelope
+     * of them, is a rule listing: an HTTP-200 error envelope ({"Results":
+     * "Failed to connect to Exchange"}), a non-array body, a list carrying any
+     * non-array element (CIPP answers a failed Exchange call 200 with the error
+     * as a bare STRING in a list — `["Failed to connect to Exchange"]`), or any
+     * other drift THROWS. Collapsing those to [] would surface to the approver
+     * as "no inbox rule named X exists on this mailbox" — a degraded read
+     * reading as a clean mailbox, the exact polarity psa-7lgo rule 3 forbids.
+     * Filtering the bad elements out instead of throwing is the same fault one
+     * level down: it turns a listing that could not be read into a SHORTER
+     * listing that reads as authoritative.
+     *
+     * KNOWN RESIDUAL, stated rather than hidden: a bare `200 {}` is NOT
+     * distinguishable here from a genuinely empty mailbox. sendGet() hands back
+     * an already-decoded body and PHP's associative json_decode maps both `{}`
+     * and `[]` to the same empty array, so this method cannot tell them apart;
+     * `[]` is a real answer (a mailbox with no rules) and must not refuse, so
+     * the pair resolves to "empty". Closing it needs the RAW body at the
+     * sendGet() layer, which every CIPP read shares — a change with a blast
+     * radius well beyond this verb, and not one to slip in alongside it.
      *
      * @return array<int, array<string, mixed>>
      */
@@ -421,20 +436,41 @@ class CippRestWriteClient
         CippQueueGuard::assertNotQueueBacked($body);
 
         if (array_is_list($body)) {
-            return array_values(array_filter($body, 'is_array'));
+            return self::assertMailboxRuleRows($body);
         }
 
         // Defensive: some CIPP endpoints wrap list payloads as {"Results": [...]}.
         $results = $body['Results'] ?? null;
 
         if (is_array($results) && array_is_list($results)) {
-            return array_values(array_filter($results, 'is_array'));
+            return self::assertMailboxRuleRows($results);
         }
 
         // Not a listing — a DEGRADED read, never an empty mailbox. See the
         // docblock: the removal gate reports emptiness as "no such rule exists",
         // so this must scream rather than fail open.
         throw new CippClientException('CIPP read api/ListUserMailboxRules returned an unrecognized payload; the mailbox rule listing could not be read.');
+    }
+
+    /**
+     * Every element of a rule listing must itself be a rule object. A scalar in
+     * the list is upstream reporting a failure in the shape of data — dropping
+     * it would hand the removal gate a listing it can only read as "this rule
+     * is not here". Refuse the whole listing instead; see listUserMailboxRules'
+     * docblock.
+     *
+     * @param  array<int, mixed>  $rows
+     * @return array<int, array<string, mixed>>
+     */
+    private static function assertMailboxRuleRows(array $rows): array
+    {
+        foreach ($rows as $row) {
+            if (! is_array($row)) {
+                throw new CippClientException('CIPP read api/ListUserMailboxRules returned a non-object entry in the mailbox rule listing; the listing could not be read.');
+            }
+        }
+
+        return array_values($rows);
     }
 
     /**

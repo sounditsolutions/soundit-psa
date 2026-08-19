@@ -12,6 +12,7 @@ use App\Models\TechnicianRun;
 use App\Models\Ticket;
 use App\Models\User;
 use App\Services\Cipp\CippRestWriteClient;
+use App\Services\Mcp\StaffCippWriteToolExecutor;
 use App\Support\McpConfig;
 use App\Support\McpToolModes;
 use App\Support\McpToolRegistry;
@@ -34,8 +35,10 @@ use Tests\TestCase;
  * requires exactly ONE match whose Identity prefix does not comparably name
  * another mailbox, and confirms the matched Identity on a SECOND live read of
  * the same mailbox before the single-rule removal is sent. Markers on this
- * endpoint are display-name/legacy-DN/opaque shapes, so ownership is proven by
- * membership, never by marker equality.
+ * endpoint are display-name/legacy-DN/opaque shapes, so marker equality proves
+ * nothing — and neither does the re-read, which is the same UPN-keyed call and
+ * proves PERSISTENCE, not membership. CIPP has no per-rule read keyed on a
+ * mailbox to close that with, so the approver text states the gap (r3 diff:5).
  */
 class CippWriteMailboxRuleTest extends TestCase
 {
@@ -144,8 +147,8 @@ class CippWriteMailboxRuleTest extends TestCase
      * fencing of identity/mailboxOwnerId): MailboxOwnerId is a legacy-DN marker
      * and Identity is "<mailbox>\<ruleId>" whose mailbox segment is an opaque
      * mailbox key — NEITHER is one of the mailbox's comparable identifiers, so
-     * approval proves ownership by MEMBERSHIP on a second live read, never by
-     * marker equality.
+     * marker equality decides nothing here and the second live read is a
+     * persistence check, not an ownership proof.
      *
      * @return array<int, array<string, mixed>>
      */
@@ -600,6 +603,109 @@ class CippWriteMailboxRuleTest extends TestCase
     }
 
     /**
+     * The fenced form can be LONGER than the raw name, and the input bound has to
+     * allow for it. PromptFence's role-marker defang expands ("user:" -> "[user]:"),
+     * so a rule named with 255 characters of packed markers — inside Exchange's own
+     * 256 cap — is shown to the agent as 357. Bounding rule_name at the raw cap
+     * refused that string before the match ever ran, and the operator was told the
+     * rule did not exist: un-removable AND reported clean, on the one verb that
+     * cleans up after a takeover. The name is still resolved to a stable upstream
+     * Identity chosen from the live listing; only the caller-facing bound moved.
+     */
+    public function test_a_rule_whose_fenced_name_expands_past_the_raw_exchange_cap_is_still_removable(): void
+    {
+        $this->configureCipp();
+        $actor = $this->configureAiActor();
+        $fixture = $this->cippFixture('echo');
+        $token = $this->token(['cipp_stage_remove_mailbox_rule']);
+
+        $rawName = str_repeat('user:', 51);
+        $fencedName = str_repeat('[user]:', 51);
+        $this->assertSame(255, mb_strlen($rawName));
+        $this->assertGreaterThan(256, mb_strlen($fencedName));
+
+        $stageClient = Mockery::mock(CippRestWriteClient::class);
+        $stageClient->shouldNotReceive('removeMailboxRule');
+        $stageClient->shouldNotReceive('listUserMailboxRules');
+        $this->app->instance(CippRestWriteClient::class, $stageClient);
+
+        // The agent types back exactly what the per-mailbox read displayed.
+        $response = $this->callTool($token, 'cipp_stage_remove_mailbox_rule', $this->ruleArguments($fixture, [
+            'rule_name' => $fencedName,
+        ]));
+        $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
+        $run = TechnicianRun::findOrFail($this->decodedResult($response)['run_id']);
+
+        $approveClient = Mockery::mock(CippRestWriteClient::class);
+        $approveClient->shouldReceive('listUserMailboxRules')
+            ->twice()
+            ->with($fixture['client']->cipp_tenant_domain, $fixture['person']->cipp_upn)
+            ->andReturn([[
+                'MailboxOwnerId' => $this->legacyDnMarker('echo'),
+                'Identity' => 'mbx-guid-1\\rule-long',
+                'Name' => $rawName,
+                'Enabled' => true,
+                'Priority' => 1,
+            ]]);
+        $approveClient->shouldReceive('removeMailboxRule')
+            ->once()
+            ->with($fixture['client']->cipp_tenant_domain, $fixture['person']->cipp_upn, 'mbx-guid-1\\rule-long', $rawName)
+            ->andReturn(['success' => true, 'status' => 200]);
+        $this->app->instance(CippRestWriteClient::class, $approveClient);
+
+        $this->actingAs($actor)->post(route('cockpit.approve', $run));
+
+        $this->assertSame(TechnicianRunState::Done, $run->fresh()->state);
+    }
+
+    /**
+     * The approver text IS the control on a held-only destructive delete, so it may
+     * not describe a check the code does not run. r3 diff:5: it claimed the matched
+     * rule's "own mailbox marker names this mailbox", which nothing establishes —
+     * unmarked rows and incomparable marker shapes survive the filter, and both
+     * live reads are the same UPN-keyed call, so an upstream mis-scope is re-served
+     * rather than caught. CIPP exposes no per-rule read keyed on a mailbox to close
+     * it with, so the text states the limit instead.
+     */
+    public function test_the_approver_text_states_what_was_not_verified_and_never_claims_membership(): void
+    {
+        $this->configureCipp();
+        $this->configureAiActor();
+        $fixture = $this->cippFixture();
+        $token = $this->token(['cipp_stage_remove_mailbox_rule']);
+
+        $stageClient = Mockery::mock(CippRestWriteClient::class);
+        $stageClient->shouldNotReceive('listUserMailboxRules');
+        $this->app->instance(CippRestWriteClient::class, $stageClient);
+
+        $response = $this->callTool($token, 'cipp_stage_remove_mailbox_rule', $this->ruleArguments($fixture));
+        $this->assertFalse((bool) $response->json('result.isError'), (string) $response->json('result.content.0.text'));
+        $run = TechnicianRun::findOrFail($this->decodedResult($response)['run_id']);
+
+        $summary = (string) $run->proposed_content;
+
+        $this->assertStringContainsString('NOT VERIFIED: that the rule is on this mailbox', $summary);
+        $this->assertStringContainsString('no per-rule read keyed on a mailbox', $summary);
+        $this->assertStringContainsString('both reads are the same', $summary);
+
+        // The retired overclaim, in the display AND in both tool descriptions.
+        $descriptions = collect(StaffCippWriteToolExecutor::definitions())
+            ->whereIn('name', ['cipp_remove_mailbox_rule', 'cipp_stage_remove_mailbox_rule'])
+            ->pluck('description');
+
+        $this->assertCount(2, $descriptions);
+
+        foreach ($descriptions->push($summary) as $text) {
+            $this->assertStringNotContainsStringIgnoringCase('marker names this mailbox', (string) $text);
+            $this->assertStringNotContainsStringIgnoringCase('marker names THIS mailbox', (string) $text);
+        }
+
+        foreach ($descriptions->take(2) as $description) {
+            $this->assertStringContainsString('no per-rule read keyed on a mailbox', (string) $description);
+        }
+    }
+
+    /**
      * A mailbox's own marker is routinely its primary SMTP address, which need not
      * be the UPN (an onmicrosoft UPN, or a rename that left the UPN behind). The
      * write guard therefore carries the same identity forms as the read guard it
@@ -740,9 +846,20 @@ class CippWriteMailboxRuleTest extends TestCase
         $this->assertTrue((bool) $missingName->json('result.isError'));
         $this->assertStringContainsString('rule_name', (string) $missingName->json('result.content.0.text'));
 
-        // ...and bounded: an overlong name is refused before any state is touched.
-        $overlong = $this->callTool($token, 'cipp_stage_remove_mailbox_rule', $this->ruleArguments($fixture, [
+        // ...and bounded — but bounded at the FENCED width, not the raw Exchange
+        // name cap. What a caller can type is what the reads showed them, and
+        // the reads show the fenced form, which PromptFence's role-marker
+        // rewrite can push past 256 characters. A name just over the raw cap is
+        // therefore accepted (see the round-trip test below); only one past the
+        // projection's own width is refused.
+        $withinFencedWidth = $this->callTool($token, 'cipp_stage_remove_mailbox_rule', $this->ruleArguments($fixture, [
             'rule_name' => str_repeat('a', 257),
+        ]));
+        $this->assertFalse((bool) $withinFencedWidth->json('result.isError'), (string) $withinFencedWidth->json('result.content.0.text'));
+        TechnicianRun::query()->delete();
+
+        $overlong = $this->callTool($token, 'cipp_stage_remove_mailbox_rule', $this->ruleArguments($fixture, [
+            'rule_name' => str_repeat('a', 1001),
         ]));
         $this->assertTrue((bool) $overlong->json('result.isError'));
         $this->assertStringContainsString('rule_name', (string) $overlong->json('result.content.0.text'));
