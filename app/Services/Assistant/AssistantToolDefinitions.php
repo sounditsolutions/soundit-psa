@@ -188,7 +188,7 @@ class AssistantToolDefinitions
             ],
             [
                 'name' => 'get_ticket_detail',
-                'description' => 'Get details, recent notes, and a summary of any linked phone calls for a ticket by ID. Use to inspect a specific ticket. Includes an applicable_sop block: the ticket\'s taxonomy category path and that category\'s FULL standard-operating-procedure text, with its authoring status (a hint only — draft SOPs are still served), last-updated time, and an edit deep-link. A gap marker (no_category / no_sop_text) means the ticket needs a category assigned or the SOP needs authoring — worth fixing as you work. For full call transcripts, follow up with get_ticket_calls.',
+                'description' => 'Get details, recent notes, and a summary of any linked phone calls for a ticket by ID. Use to inspect a specific ticket. Ticket-level attachments and each note\'s attachments are listed as metadata refs (attachment_id, filename, mime_type, size_bytes, is_inline — inline means an image embedded in an email body); fetch bytes with get_ticket_attachment. Includes an applicable_sop block: the ticket\'s taxonomy category path and that category\'s FULL standard-operating-procedure text, with its authoring status (a hint only — draft SOPs are still served), last-updated time, and an edit deep-link. A gap marker (no_category / no_sop_text) means the ticket needs a category assigned or the SOP needs authoring — worth fixing as you work. For full call transcripts, follow up with get_ticket_calls.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -270,7 +270,7 @@ class AssistantToolDefinitions
             ],
             [
                 'name' => 'get_ticket_notes',
-                'description' => 'Get the notes and conversation history for a specific ticket. Useful for understanding how a past issue was resolved.',
+                'description' => 'Get the notes and conversation history for a specific ticket. Useful for understanding how a past issue was resolved. Each note carries an attachments list of metadata refs (attachment_id, filename, mime_type, size_bytes, is_inline — inline means an image embedded in an email body, e.g. a pasted screenshot); pass an attachment_id to get_ticket_attachment to see the file itself.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -284,7 +284,7 @@ class AssistantToolDefinitions
             ],
             [
                 'name' => 'get_ticket_attachment',
-                'description' => 'Fetch the binary content of an image or file attachment on one of THIS client\'s tickets, returned base64-encoded so you can actually see what a client or operator put on the ticket — error screenshots (the normal way non-technical people report problems), photos, PDFs. Note bodies reference attachments as /attachments/{id}/{filename}; pass that {id} as attachment_id together with the ticket_id it appears on. Images are downscaled and re-encoded for direct visual inspection; the response carries media_type + data_base64. The attachment must belong to the given ticket (its ticket or a note on it) or the fetch is refused.',
+                'description' => 'Fetch the binary content of an image or file attachment on one of THIS client\'s tickets, returned base64-encoded so you can actually see what a client or operator put on the ticket — error screenshots (the normal way non-technical people report problems), photos, PDFs. get_ticket_notes and get_ticket_detail list each note\'s attachments as refs carrying attachment_id — pass that id together with the ticket_id it appears on. (Note bodies may also reference attachments as /attachments/{id}/{filename}; that {id} works too.) Images are downscaled and re-encoded for direct visual inspection; the response carries media_type + data_base64. The attachment must belong to the given ticket (its ticket or a note on it) or the fetch is refused.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
